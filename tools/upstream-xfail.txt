@@ -22,7 +22,6 @@ cursor-test4.sh
 decrqm-sync.sh
 floating-pane-geometry.sh
 format-strings.sh
-has-session-return.sh
 if-shell-TERM.sh
 if-shell-error.sh
 if-shell-nested.sh

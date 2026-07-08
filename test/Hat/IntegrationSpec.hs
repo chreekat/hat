@@ -339,6 +339,17 @@ spec = do
         gone <- pollServerGone sockPath 50
         gone `shouldBe` True
 
+    it "autostarts the server when the socket directory does not exist yet" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        -- the parent of the socket must be created by the server itself
+        let sockPath = dir <> "/fresh/subdir/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
 pollServerGone path n = do

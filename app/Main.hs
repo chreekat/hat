@@ -61,7 +61,15 @@ parseCli = go Cli
         ("-L" : name : rest) -> go cli { socketName = name } rest
         ("-S" : path : rest) -> go cli { socketPathOverride = Just path } rest
         ("-f" : path : rest) -> go cli { configFile = Just path } rest
+        (arg : rest)
+            | Just v <- attached "-L" arg -> go cli { socketName = v } rest
+            | Just v <- attached "-S" arg ->
+                go cli { socketPathOverride = Just v } rest
+            | Just v <- attached "-f" arg -> go cli { configFile = Just v } rest
         rest -> cli { command = rest }
+    attached flag arg = case splitAt 2 arg of
+        (pre, v) | pre == flag && not (null v) -> Just v
+        _ -> Nothing
 
 clientMain :: Cli -> IO ()
 clientMain cli = do
@@ -70,7 +78,7 @@ clientMain cli = do
         [] -> attach path cli.configFile
         ["attach"] -> attach path cli.configFile
         ["attach-session"] -> attach path cli.configFile
-        ws -> control path (T.pack (unwords ws))
+        ws -> control path cli.configFile (T.pack (unwords ws))
 
 attach :: FilePath -> Maybe FilePath -> IO ()
 attach path mconfig = do
@@ -86,9 +94,18 @@ attach path mconfig = do
             hPutStrLn stderr ("hat: " <> T.unpack e)
             exitWith (ExitFailure 1)
 
-control :: FilePath -> T.Text -> IO ()
-control path cmdline = do
-    msock <- connectTo path
+control :: FilePath -> Maybe FilePath -> T.Text -> IO ()
+control path mconfig cmdline = do
+    -- Session-creating commands start the server, like tmux; anything
+    -- else against a dead server is an error.
+    let starters = ["new-session", "new", "start-server", "start",
+                    "attach-session", "attach"] :: [T.Text]
+        firstWord = case T.words cmdline of
+            (w : _) -> w
+            [] -> ""
+    msock <- if firstWord `elem` starters
+        then Just <$> connectOrStart path mconfig
+        else connectTo path
     case msock of
         Nothing -> do
             hPutStrLn stderr "hat: no server running"

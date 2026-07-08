@@ -3,6 +3,7 @@ module Hat.Socket
     ( socketDir
     , socketPath
     , defaultSocketPath
+    , ensureSocketDir
     , listenOn
     , connectTo
     ) where
@@ -35,14 +36,19 @@ defaultSocketPath name = do
     uid <- getRealUserID
     pure (socketPath tmpdir uid name)
 
--- | Create the socket directory (0700), remove any stale socket file,
--- and listen. The caller is responsible for having checked that no
--- live server owns the path.
-listenOn :: FilePath -> IO N.Socket
-listenOn path = do
+-- | Create the directory that will hold the socket (and the server's
+-- lock and log files), mode 0700.
+ensureSocketDir :: FilePath -> IO ()
+ensureSocketDir path = do
     let dir = takeDirectory path
     createDirectoryIfMissing True dir
     setFileMode dir 0o700
+
+-- | Remove any stale socket file and listen. The caller is responsible
+-- for having checked that no live server owns the path.
+listenOn :: FilePath -> IO N.Socket
+listenOn path = do
+    ensureSocketDir path
     stale <- doesPathExist path
     when stale $ removeFile path
     bracketOnError (N.socket N.AF_UNIX N.Stream 0) N.close $ \sock -> do

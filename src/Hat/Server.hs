@@ -48,13 +48,16 @@ import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Render
-import Hat.Socket (listenOn)
+import Hat.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 import Hat.Wire
 
 runServer :: FilePath -> Maybe FilePath -> IO ()
 runServer path mconfig = do
+    -- The lock and log files live next to the socket; the directory
+    -- must exist before any of them are touched.
+    ensureSocketDir path
     locked <- acquireLock (path <> ".lock")
     unless locked exitSuccess  -- another server won the race
     lg <- newLogger (takeDirectory path <> "/server.log")
@@ -824,6 +827,8 @@ commandTable = Map.fromList $ concatMap expand
     , (["new-session", "new"], cmdNewSession)
     , (["attach-session", "attach"], cmdAttachSession)
     , (["kill-session"], cmdKillSession)
+    , (["has-session", "has"], cmdHasSession)
+    , (["start-server", "start"], cmdStartServer)
     , (["rename-session", "rename"], cmdRenameSession)
     , (["list-sessions", "ls"], cmdListSessions)
     , (["list-windows", "lsw"], cmdListWindows)
@@ -837,18 +842,35 @@ commandTable = Map.fromList $ concatMap expand
   where
     expand (names, impl) = [(n, impl) | n <- names]
 
--- Tiny flag parser: flags that take a value, boolean flags, positional.
-parseArgs :: [Text] -> [Text] -> ([(Text, Text)], [Text], [Text])
-parseArgs argFlags = go [] []
+-- getopt-style flag parser: @spec@ lists the letters that take a
+-- value. Bundled forms work like tmux: @-dsfoo@ is @-d -s foo@.
+-- Returns (value flags as ("-s", value), boolean flags as "-d",
+-- positional args).
+parseArgs :: [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
+parseArgs spec = go [] []
   where
     go opts flags = \case
         [] -> (opts, flags, [])
-        (a : v : rest)
-            | a `elem` argFlags -> go ((a, v) : opts) flags rest
         (a : rest)
-            | "-" `T.isPrefixOf` a && T.length a > 1 && not (isNumber a) ->
-                go opts (a : flags) rest
+            | Just bundle <- T.stripPrefix "-" a
+            , not (T.null bundle)
+            , a /= "--"
+            , not (isNumber a) ->
+                let (opts', flags', rest') = scanBundle bundle rest
+                in go (opts' <> opts) (flags' <> flags) rest'
             | otherwise -> (opts, flags, a : rest)
+    scanBundle bundle rest = case T.uncons bundle of
+        Nothing -> ([], [], rest)
+        Just (c, more)
+            | c `elem` spec ->
+                case (T.null more, rest) of
+                    (False, _) -> ([(dash c, more)], [], rest)
+                    (True, v : rest') -> ([(dash c, v)], [], rest')
+                    (True, []) -> ([(dash c, "")], [], [])
+            | otherwise ->
+                let (opts', flags', rest') = scanBundle more rest
+                in (opts', dash c : flags', rest')
+    dash c = T.pack ['-', c]
     isNumber a = case TR.signed TR.decimal a of
         Right (_ :: Int, restT) -> T.null restT
         Left _ -> False
@@ -905,7 +927,7 @@ withCurrentWindow st mclient body = do
 
 cmdBind :: CommandImpl
 cmdBind st _ args = do
-    let (opts, flags, pos) = parseArgs ["-T", "-N"] args
+    let (opts, flags, pos) = parseArgs "TN" args
         table
             | "-n" `elem` flags = "root"
             | Just t <- lookup "-T" opts = t
@@ -939,7 +961,7 @@ splitBinding = \case
 
 cmdUnbind :: CommandImpl
 cmdUnbind st _ args = do
-    let (opts, flags, pos) = parseArgs ["-T"] args
+    let (opts, flags, pos) = parseArgs "T" args
         table
             | "-n" `elem` flags = "root"
             | Just t <- lookup "-T" opts = t
@@ -953,7 +975,7 @@ cmdUnbind st _ args = do
 
 cmdSet :: CommandImpl
 cmdSet st _ args = do
-    let (_, _, pos) = parseArgs ["-t"] args
+    let (_, _, pos) = parseArgs "t" args
     case pos of
         (nameT : rest) -> do
             let value = T.unwords rest
@@ -1015,7 +1037,7 @@ cmdSourceFile st mclient args = case args of
 
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args = do
-    let (opts, flags, pos) = parseArgs ["-n", "-c", "-t"] args
+    let (opts, flags, pos) = parseArgs "nct" args
     withTargetSession st mclient Nothing $ \sess -> do
         eff <- readTVarIO sess.lastSize
         srvOpts <- readTVarIO st.options
@@ -1061,7 +1083,7 @@ cmdNewWindow st mclient args = do
 
 cmdSelectWindow :: CommandImpl
 cmdSelectWindow st mclient args = do
-    let (opts, _, pos) = parseArgs ["-t"] args
+    let (opts, _, pos) = parseArgs "t" args
         target = case (lookup "-t" opts, pos) of
             (Just t, _) -> Just t
             (Nothing, [t]) -> Just t
@@ -1130,7 +1152,7 @@ cmdRenameWindow st mclient args = case args of
 
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args = do
-    let (opts, flags, pos) = parseArgs ["-c", "-t", "-l", "-p"] args
+    let (opts, flags, pos) = parseArgs "ctlp" args
         orient
             | "-h" `elem` flags = LeftRight
             | otherwise = TopBottom
@@ -1187,7 +1209,7 @@ paneCurrentPath pane = do
 
 cmdSelectPane :: CommandImpl
 cmdSelectPane st mclient args = do
-    let (_, flags, _) = parseArgs ["-t"] args
+    let (_, flags, _) = parseArgs "t" args
         mdir
             | "-L" `elem` flags = Just DirLeft
             | "-R" `elem` flags = Just DirRight
@@ -1231,7 +1253,7 @@ cmdKillPane st mclient _ =
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do
-    let (_, flags, pos) = parseArgs ["-t"] args
+    let (_, flags, pos) = parseArgs "t" args
         delta = case pos of
             (n : _) | Right (v, restT) <- TR.decimal n, T.null restT -> v
             _ -> 1
@@ -1290,7 +1312,7 @@ cmdSendPrefix st mclient _ = do
 
 cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do
-    let (_, flags, pos) = parseArgs ["-t"] args
+    let (_, flags, pos) = parseArgs "t" args
         literal = "-l" `elem` flags
         bytes = B.concat (map (argBytes literal) pos)
     forM_ mclient $ \client -> do
@@ -1305,7 +1327,7 @@ cmdSendKeys st mclient args = do
 
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args = do
-    let (opts, flags, _) = parseArgs ["-s", "-c", "-t", "-n"] args
+    let (opts, flags, _) = parseArgs "sctnxy" args
         mname = lookup "-s" opts
     dup <- case mname of
         Nothing -> pure False
@@ -1342,7 +1364,7 @@ switchClientTo st client sess = do
 
 cmdAttachSession :: CommandImpl
 cmdAttachSession st mclient args = do
-    let (opts, _, _) = parseArgs ["-t", "-c"] args
+    let (opts, _, _) = parseArgs "tc" args
     withTargetSession st mclient (lookup "-t" opts) $ \sess ->
         case mclient of
             Just client -> switchClientTo st client sess >> pure []
@@ -1350,13 +1372,26 @@ cmdAttachSession st mclient args = do
 
 cmdKillSession :: CommandImpl
 cmdKillSession st mclient args = do
-    let (opts, _, _) = parseArgs ["-t"] args
+    let (opts, _, _) = parseArgs "t" args
     withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
         panes <- atomically $ do
             ws <- readTVar sess.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
         forM_ panes $ \p -> Hat.Pty.closePty p.pty
         pure []
+
+cmdHasSession :: CommandImpl
+cmdHasSession st mclient args = do
+    let (opts, _, _) = parseArgs "t" args
+    msess <- targetSession st mclient (lookup "-t" opts)
+    pure $ case msess of
+        Just _ -> []
+        Nothing -> [RErr $ "can't find session: "
+            <> fromMaybe "" (lookup "-t" opts)]
+
+-- The server is necessarily running by the time this executes.
+cmdStartServer :: CommandImpl
+cmdStartServer _ _ _ = pure []
 
 cmdRenameSession :: CommandImpl
 cmdRenameSession st mclient args = case args of
@@ -1408,7 +1443,7 @@ cmdListPanes st mclient _ =
 
 cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient args = do
-    let (opts, flags, _) = parseArgs ["-t"] args
+    let (opts, flags, _) = parseArgs "t" args
     case mclient of
         Nothing -> pure [RErr "no client"]
         Just client
@@ -1440,7 +1475,7 @@ cmdKillServer st mclient _ = do
 
 cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do
-    let (_, flags, pos) = parseArgs ["-t"] args
+    let (_, flags, pos) = parseArgs "t" args
         raw = T.unwords pos
     msess <- targetSession st mclient Nothing
     text <- case msess of
@@ -1456,7 +1491,7 @@ cmdDisplayMessage st mclient args = do
 
 cmdRunShell :: CommandImpl
 cmdRunShell st mclient args = do
-    let (_, _, pos) = parseArgs ["-t"] args
+    let (_, _, pos) = parseArgs "t" args
         cmdText = T.unwords pos
     void . forkIO $ do
         (code, out, errOut) <- readCreateProcessWithExitCode
@@ -1475,7 +1510,7 @@ cmdRunShell st mclient args = do
 
 cmdIfShell :: CommandImpl
 cmdIfShell st mclient args = do
-    let (_, _, pos) = parseArgs ["-t"] args
+    let (_, _, pos) = parseArgs "t" args
     case pos of
         (cond : thenCmd : rest) -> do
             (code, _, _) <- readCreateProcessWithExitCode
