@@ -3,7 +3,6 @@ import Test.Hspec
 import qualified Hat.Command.ParserSpec
 import qualified Hat.IntegrationSpec
 import qualified Hat.PtySpec
-import qualified Hat.Server.InputSpec
 import qualified Hat.Server.KeysSpec
 import qualified Hat.Server.LayoutSpec
 import qualified Hat.Server.RenderSpec
@@ -20,7 +19,6 @@ main = hspec $ do
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Wire" Hat.WireSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
-    describe "Hat.Server.Input" Hat.Server.InputSpec.spec
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec

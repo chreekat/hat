@@ -1,5 +1,6 @@
 -- | The server: owns PTYs, emulators, and the state tree; accepts
--- clients and streams frame diffs at them.
+-- clients, streams frame diffs at them, and runs the command engine
+-- that configs, bindings, and @hat <command>@ all share.
 module Hat.Server
     ( runServer
     ) where
@@ -10,34 +11,39 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, finally, try)
-import Control.Monad (forM, forM_, forever, unless, void, when)
+import Control.Monad (foldM, forM, forM_, forever, unless, void, when)
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
 import qualified Data.List as List
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
+import qualified Data.Text.Read as TR
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
-import Data.Word (Word8)
 import qualified Network.Socket as N
-import System.Directory (removeFile)
-import System.Exit (exitSuccess)
+import System.Directory (doesFileExist, removeFile)
+import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
-import qualified System.Posix.IO as PIO
 import qualified System.Posix.Files as PFiles
+import qualified System.Posix.IO as PIO
 import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
+import System.Process (readCreateProcessWithExitCode, shell)
 
+import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Geometry
 import Hat.Log
 import Hat.Model
+import Hat.Model.Options
 import qualified Hat.Pty
-import Hat.Server.Input
+import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Render
 import Hat.Socket (listenOn)
@@ -45,19 +51,13 @@ import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 import Hat.Wire
 
--- M6 makes this configurable; C-b until then.
-prefixByte :: Word8
-prefixByte = 0x02
-
-defaultHistoryLimit :: Int
-defaultHistoryLimit = 50000
-
-runServer :: FilePath -> IO ()
-runServer path = do
+runServer :: FilePath -> Maybe FilePath -> IO ()
+runServer path mconfig = do
     locked <- acquireLock (path <> ".lock")
     unless locked exitSuccess  -- another server won the race
     lg <- newLogger (takeDirectory path <> "/server.log")
-    st <- newServerState lg path
+    st <- newServerState defaultKeymap lg path
+    loadConfig st mconfig
     bracket (listenOn path) N.close $ \lsock -> do
         logEvent lg ServerStarted { socket = path }
         -- Keep status-line clocks fresh.
@@ -85,6 +85,53 @@ waitIdle st = atomically $ do
     armed <- readTVar st.everAttached
     sess <- readTVar st.sessions
     check (armed && Map.null sess)
+
+-- Configuration --------------------------------------------------------
+
+defaultKeymap :: Keymap
+defaultKeymap = Map.fromList
+    [ ("prefix", Map.fromList (map bindArgv prefixBindings))
+    , ("root", Map.empty)
+    ]
+  where
+    bindArgv (k, cmd) = (k, [cmd])
+    prefixBindings =
+        [ ("d", ["detach-client"])
+        , ("c", ["new-window"])
+        , ("%", ["split-window", "-h"])
+        , ("\"", ["split-window", "-v"])
+        , ("x", ["kill-pane"])
+        , ("&", ["kill-window"])
+        , ("z", ["resize-pane", "-Z"])
+        , ("n", ["next-window"])
+        , ("p", ["previous-window"])
+        , ("l", ["last-window"])
+        , (";", ["last-pane"])
+        , ("C-b", ["send-prefix"])
+        , ("Left", ["select-pane", "-L"])
+        , ("Right", ["select-pane", "-R"])
+        , ("Up", ["select-pane", "-U"])
+        , ("Down", ["select-pane", "-D"])
+        ]
+        <> [ (tshow i, ["select-window", "-t", tshow (i :: Int)])
+           | i <- [0 .. 9]
+           ]
+
+loadConfig :: ServerState -> Maybe FilePath -> IO ()
+loadConfig st mconfig =
+    forM_ mconfig $ \p -> do
+        exists <- doesFileExist p
+        when exists $ do
+            contents <- TIO.readFile p
+            case parseConfig contents of
+                Left err -> logEvent st.logger ConfigError
+                    { file = p, err = err }
+                Right cmds -> forM_ cmds $ \argv -> do
+                    replies <- runArgv st Nothing argv
+                    forM_ [e | RErr e <- replies] $ \e ->
+                        logEvent st.logger ConfigError { file = p, err = e }
+
+-- Connections ----------------------------------------------------------
 
 acceptLoop :: ServerState -> N.Socket -> IO ()
 acceptLoop st lsock = forever $ do
@@ -114,7 +161,7 @@ welcome st conn h = do
             sendMessage conn (Welcome "")
             controlLoop st client
         AttachIntent -> do
-            sess <- ensureSession st h
+            sess <- ensureSession st client
             sname <- readTVarIO sess.name
             atomically $ do
                 writeTVar client.session sess.id
@@ -134,20 +181,26 @@ newClient st conn h = do
     sendLock <- newMVar ()
     sizeVar <- newTVarIO h.size
     sessVar <- newTVarIO (SessionId (-1))
-    keyVar <- newIORef Normal
+    lastSessVar <- newTVarIO Nothing
+    keyVar <- newIORef NoPrefix
     frameVar <- newIORef (blankFrame h.size)
     cursorVar <- newIORef (Pos 0 0, True)
     fullVar <- newTVarIO True
+    toastVar <- newTVarIO Nothing
     pure Client
         { id = ClientId cid
         , sock = conn
         , sendLock = sendLock
         , size = sizeVar
         , session = sessVar
+        , lastSession = lastSessVar
         , keyState = keyVar
         , lastFrame = frameVar
         , lastCursor = cursorVar
         , needsFull = fullVar
+        , toast = toastVar
+        , env = h.env
+        , cwd = h.cwd
         }
 
 removeClient :: ServerState -> Client -> IO ()
@@ -168,26 +221,30 @@ broadcast st sid msg = do
     cs <- atomically (sessionClients st sid)
     forM_ cs $ \c -> send c msg
 
--- Sessions -----------------------------------------------------------
+-- Sessions --------------------------------------------------------------
 
-ensureSession :: ServerState -> ClientToServer -> IO Session
-ensureSession st h = do
+ensureSession :: ServerState -> Client -> IO Session
+ensureSession st client = do
     existing <- readTVarIO st.sessions
     case Map.lookupMin existing of
         Just (_, sess) -> pure sess
-        Nothing -> createSession st h
+        Nothing -> createSession st Nothing client.env
+            (T.unpack client.cwd) =<< readTVarIO client.size
 
-createSession :: ServerState -> ClientToServer -> IO Session
-createSession st h = do
+createSession
+    :: ServerState -> Maybe Text -> [(Text, Text)] -> FilePath -> Size
+    -> IO Session
+createSession st mname environ dir sz = do
     sid <- atomically (freshId st.nextSession)
-    let shell = maybe "/bin/sh" T.unpack (List.lookup "SHELL" h.env)
-        dir = T.unpack h.cwd
-    (win, pane) <- newWindowWithPane st (SessionId sid) shell dir h.env h.size
-    nameVar <- newTVarIO (tshow sid)
-    windowsVar <- newTVarIO (Map.singleton windowBaseIndex win)
-    currentVar <- newTVarIO windowBaseIndex
+    opts <- readTVarIO st.options
+    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
+    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd Nothing
+        dir environ (windowArea sz)
+    nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
+    windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
+    currentVar <- newTVarIO opts.baseIndex
     lastVar <- newTVarIO Nothing
-    sizeVar <- newTVarIO h.size
+    sizeVar <- newTVarIO sz
     let sess = Session
             { id = SessionId sid
             , name = nameVar
@@ -195,24 +252,23 @@ createSession st h = do
             , currentIx = currentVar
             , lastIx = lastVar
             , lastSize = sizeVar
-            , environ = h.env
+            , environ = environ
             , startCwd = dir
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
     pure sess
 
-windowBaseIndex :: Int
-windowBaseIndex = 0
-
 newWindowWithPane
-    :: ServerState -> SessionId -> FilePath -> FilePath
+    :: ServerState -> SessionId -> FilePath -> Maybe Text -> FilePath
     -> [(Text, Text)] -> Size -> IO (Window, Pane)
-newWindowWithPane st sid shell dir env sz = do
+newWindowWithPane st sid shellCmd mrun dir environ sz = do
     (wid, pid) <- atomically $
         (,) <$> freshId st.nextWindow <*> freshId st.nextPane
-    pane <- spawnPane st (PaneId pid) sid shell dir env sz
-    nameVar <- newTVarIO (T.pack (baseName shell))
+    pane <- spawnPane st (PaneId pid) sid shellCmd mrun dir environ sz
+    nameVar <- newTVarIO $ case mrun of
+        Just cmd -> T.takeWhile (/= ' ') cmd
+        Nothing -> T.pack (baseName shellCmd)
     layoutVar <- newTVarIO (Leaf pane.id)
     panesVar <- newTVarIO (Map.singleton pane.id pane)
     activeVar <- newTVarIO pane.id
@@ -234,13 +290,14 @@ newWindowWithPane st sid shell dir env sz = do
     baseName = Prelude.reverse . takeWhile (/= '/') . Prelude.reverse
 
 spawnPane
-    :: ServerState -> PaneId -> SessionId -> FilePath -> FilePath
-    -> [(Text, Text)] -> Size -> IO Pane
-spawnPane st pid sid shell dir env sz = do
+    :: ServerState -> PaneId -> SessionId -> FilePath -> Maybe Text
+    -> FilePath -> [(Text, Text)] -> Size -> IO Pane
+spawnPane st pid sid shellCmd mrun dir environ sz = do
     serverPid <- getProcessID
+    opts <- readTVarIO st.options
     let cleanEnv =
             [ (T.unpack k, T.unpack v)
-            | (k, v) <- env
+            | (k, v) <- environ
             , k `notElem` ["TERM", "TMUX", "TMUX_PANE", "HAT", "HAT_PANE"]
             ]
         hatVar = st.sockPath <> "," <> show serverPid <> ","
@@ -252,18 +309,21 @@ spawnPane st pid sid shell dir env sz = do
             , ("TMUX_PANE", "%" <> show (rawPane pid))
             , ("HAT_PANE", "%" <> show (rawPane pid))
             ]
+        (cmd, args) = case mrun of
+            Nothing -> (shellCmd, [])
+            Just run -> ("/bin/sh", ["-c", T.unpack run])
     pty <- Hat.Pty.spawn Hat.Pty.Spawn
-        { cmd = shell
-        , args = []
+        { cmd = cmd
+        , args = args
         , env = paneEnv
         , cwd = Just dir
         , size = sz
         }
-    emu <- Emu.newEmulator sz defaultHistoryLimit
+    emu <- Emu.newEmulator sz opts.historyLimit
     sizeVar <- newTVarIO sz
     deadVar <- newTVarIO False
     logEvent st.logger PaneSpawned
-        { pane = rawPane pid, cmd = T.pack shell }
+        { pane = rawPane pid, cmd = T.pack cmd }
     pure Pane
         { id = pid
         , pty = pty
@@ -318,7 +378,7 @@ paneDied st sid win pane = do
             Just lay' -> do
                 writeTVar win.layout lay'
                 active <- readTVar win.activeId
-                when (active == pane.id) $ do
+                when (active == pane.id) $
                     case layoutPanes lay' of
                         (next : _) -> writeTVar win.activeId next
                         [] -> pure ()
@@ -347,7 +407,11 @@ paneDied st sid win pane = do
     forM_ sessionGone $ \_ -> broadcast st sid Exited
     applySessionSize st sid
 
--- Sizing -------------------------------------------------------------
+-- Sizing ----------------------------------------------------------------
+
+-- | The pane area of the screen: everything except the status line.
+windowArea :: Size -> Size
+windowArea sz = sz { rows = max 1 (sz.rows - 1) }
 
 -- Effective session size = smallest attached client; panes follow.
 applySessionSize :: ServerState -> SessionId -> IO ()
@@ -391,7 +455,7 @@ rectSize r = Size
     , cols = fromIntegral (max 1 (r.endCol - r.startCol))
     }
 
--- Rendering ----------------------------------------------------------
+-- Rendering ---------------------------------------------------------------
 
 renderLoop :: ServerState -> Client -> IO ()
 renderLoop st client = loop (-1)
@@ -408,6 +472,13 @@ renderLoop st client = loop (-1)
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
     csize <- readTVarIO client.size
+    opts <- readTVarIO st.options
+    let rowOff = case opts.statusPosition of
+            StatusTop -> 1
+            StatusBottom -> 0
+        statusRowIx = case opts.statusPosition of
+            StatusTop -> 0
+            StatusBottom -> fromIntegral csize.rows - 1
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions
@@ -426,24 +497,32 @@ renderOnce st client = do
     (frame, cursor) <- case view of
         Nothing -> pure (blankFrame csize, (Pos 0 0, False))
         Just (sess, rects, borders, ps, active) -> do
-            base0 <- pure (applyBorders (blankFrame csize) borders)
+            let shiftedBorders =
+                    [ (p { row = p.row + rowOff }, ch) | (p, ch) <- borders ]
+                shiftRect r = r
+                    { startRow = r.startRow + rowOff
+                    , endRow = r.endRow + rowOff
+                    }
+                base0 = applyBorders (blankFrame csize) shiftedBorders
             base <- foldM' base0 rects $ \acc (pidL, rect) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure acc
                     Just pane -> do
                         scr <- Emu.snapshot pane.emulator
-                        pure (overlayGrid acc rect scr.cells)
-            statusRow <- statusCells st sess (fromIntegral csize.cols)
+                        pure (overlayGrid acc (shiftRect rect) scr.cells)
+            mtoast <- readTVarIO client.toast
+            statusRow <- case mtoast of
+                Just t -> pure (toastCells t (fromIntegral csize.cols))
+                Nothing -> statusCells st sess (fromIntegral csize.cols)
             let withStatus
-                    | csize.rows >= 2 =
-                        base V.// [(fromIntegral csize.rows - 1, statusRow)]
+                    | csize.rows >= 2 = base V.// [(statusRowIx, statusRow)]
                     | otherwise = base
             cur <- case Map.lookup active ps of
                 Nothing -> pure (Pos 0 0, False)
                 Just pane -> do
                     scr <- Emu.snapshot pane.emulator
                     let origin = paneOrigin rects active
-                    pure ( Pos { row = scr.cursor.row + origin.row
+                    pure ( Pos { row = scr.cursor.row + origin.row + rowOff
                                , col = scr.cursor.col + origin.col }
                          , scr.cursorVisible )
             pure (withStatus, cur)
@@ -457,316 +536,14 @@ renderOnce st client = do
     writeIORef client.lastCursor cursor
     when needSend $ send client (Draw (ops <> [cursorOp]))
   where
-    foldM' z xs f = go z xs where
-        go acc [] = pure acc
-        go acc (x : rest) = f acc x >>= \acc' -> go acc' rest
+    foldM' z xs f = foldM f z xs
 
 paneOrigin :: [(PaneId, Rect)] -> PaneId -> Pos
 paneOrigin rects pidL = case List.lookup pidL rects of
     Just r -> Pos { row = r.startRow, col = r.startCol }
     Nothing -> Pos 0 0
 
--- Input --------------------------------------------------------------
-
-inputLoop :: ServerState -> Client -> IO ()
-inputLoop st client = loop
-  where
-    loop = do
-        m <- recvMessage client.sock
-        case m of
-            Nothing -> pure ()
-            Just (Left err) -> logEvent st.logger ProtocolError
-                { client = rawClient client.id, err = T.pack err }
-            Just (Right msg) -> case msg of
-                Input bs -> do
-                    ks <- readIORef client.keyState
-                    let (ks', acts) = routeInput prefixByte ks bs
-                    writeIORef client.keyState ks'
-                    continue <- performAll acts
-                    when continue loop
-                Resize sz -> do
-                    atomically (writeTVar client.size sz)
-                    sid <- readTVarIO client.session
-                    applySessionSize st sid
-                    loop
-                Detach -> send client DetachOk
-                Command t -> do
-                    runCommand st client t
-                    loop
-                Hello {} -> pure ()
-    performAll [] = pure True
-    performAll (a : rest) = do
-        continue <- perform a
-        if continue then performAll rest else pure False
-    perform = \case
-        ToPane bs -> do
-            mpane <- clientActivePane st client
-            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty bs
-            pure True
-        Prefixed key -> performPrefixed st client key
-
-clientActivePane :: ServerState -> Client -> IO (Maybe Pane)
-clientActivePane st client = atomically $ do
-    sid <- readTVar client.session
-    msess <- Map.lookup sid <$> readTVar st.sessions
-    case msess of
-        Nothing -> pure Nothing
-        Just sess -> do
-            mwin <- currentWindow sess
-            case mwin of
-                Nothing -> pure Nothing
-                Just win -> activePane win
-
--- The hardcoded binding table. M6 replaces this with a real keymap.
-performPrefixed :: ServerState -> Client -> Word8 -> IO Bool
-performPrefixed st client key = case toEnum (fromIntegral key) of
-    'd' -> do
-        send client DetachOk
-        pure False
-    '%' -> splitActive st client LeftRight >> pure True
-    '"' -> splitActive st client TopBottom >> pure True
-    'h' -> selectDir st client DirLeft >> pure True
-    'j' -> selectDir st client DirDown >> pure True
-    'k' -> selectDir st client DirUp >> pure True
-    'l' -> selectDir st client DirRight >> pure True
-    ';' -> selectLastPane st client >> pure True
-    'x' -> killActivePane st client >> pure True
-    'z' -> toggleZoom st client >> pure True
-    'H' -> resizeActive st client DirLeft 5 >> pure True
-    'J' -> resizeActive st client DirDown 5 >> pure True
-    'K' -> resizeActive st client DirUp 5 >> pure True
-    'L' -> resizeActive st client DirRight 5 >> pure True
-    'c' -> newWindowAction st client >> pure True
-    'n' -> cycleWindow st client 1 >> pure True
-    'p' -> cycleWindow st client (-1) >> pure True
-    'a' -> selectLastWindow st client >> pure True
-    ch | ch >= '0' && ch <= '9' ->
-        selectWindowIx st client (fromEnum ch - fromEnum '0') >> pure True
-    _ | key == prefixByte -> do
-        mpane <- clientActivePane st client
-        forM_ mpane $ \pane ->
-            Hat.Pty.writePty pane.pty (B8.pack [toEnum (fromIntegral key)])
-        pure True
-    _ -> pure True  -- unbound key: ignore
-
--- | The session and current window of a client, if both exist.
-clientView :: ServerState -> Client -> STM (Maybe (Session, Window))
-clientView st client = do
-    sid <- readTVar client.session
-    msess <- Map.lookup sid <$> readTVar st.sessions
-    case msess of
-        Nothing -> pure Nothing
-        Just sess -> do
-            mwin <- currentWindow sess
-            pure ((,) sess <$> mwin)
-
--- | Where is a pane's child process now? /proc, with a fallback.
-paneCurrentPath :: Pane -> IO FilePath
-paneCurrentPath pane = do
-    r <- try (PFiles.readSymbolicLink
-        ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/cwd"))
-    pure $ case r of
-        Left (_ :: IOException) -> pane.startCwd
-        Right dir -> dir
-
-splitActive :: ServerState -> Client -> Orientation -> IO ()
-splitActive st client orient = do
-    mview <- atomically $ do
-        mv <- clientView st client
-        case mv of
-            Nothing -> pure Nothing
-            Just (sess, win) -> do
-                mpane <- activePane win
-                eff <- readTVar sess.lastSize
-                pure ((,,,) sess win eff <$> mpane)
-    forM_ mview $ \(sess, win, eff, active) -> do
-        -- Reject splits that would leave either side under 2 cells.
-        (rects, _) <- atomically (windowArrange eff win)
-        let mrect = List.lookup active.id rects
-            fits = case (orient, mrect) of
-                (LeftRight, Just r) -> r.endCol - r.startCol >= 5
-                (TopBottom, Just r) -> r.endRow - r.startRow >= 5
-                _ -> False
-        when fits $ do
-            pid <- PaneId <$> atomically (freshId st.nextPane)
-            dir <- paneCurrentPath active
-            let shell = maybe "/bin/sh" T.unpack
-                    (List.lookup "SHELL" sess.environ)
-            pane <- spawnPane st pid sess.id shell dir sess.environ eff
-            atomically $ do
-                modifyTVar' win.panes (Map.insert pane.id pane)
-                modifyTVar' win.layout
-                    (splitLeaf active.id orient False pane.id)
-                lastA <- readTVar win.activeId
-                writeTVar win.lastActive (Just lastA)
-                writeTVar win.activeId pane.id
-                writeTVar win.zoomed Nothing
-                bumpDirty st
-            startPaneReader st sess.id win pane
-            applySessionSize st sess.id
-
-selectDir :: ServerState -> Client -> Direction -> IO ()
-selectDir st client dir = atomically $ do
-    mv <- clientView st client
-    forM_ mv $ \(sess, win) -> do
-        eff <- readTVar sess.lastSize
-        (rects, _) <- windowArrange eff win
-        active <- readTVar win.activeId
-        forM_ (neighbor rects active dir) $ \next -> do
-            writeTVar win.lastActive (Just active)
-            writeTVar win.activeId next
-            bumpDirty st
-
-selectLastPane :: ServerState -> Client -> IO ()
-selectLastPane st client = atomically $ do
-    mv <- clientView st client
-    forM_ mv $ \(_, win) -> do
-        mlast <- readTVar win.lastActive
-        ps <- readTVar win.panes
-        forM_ mlast $ \lastP -> when (Map.member lastP ps) $ do
-            cur <- readTVar win.activeId
-            writeTVar win.lastActive (Just cur)
-            writeTVar win.activeId lastP
-            bumpDirty st
-
-killActivePane :: ServerState -> Client -> IO ()
-killActivePane st client = do
-    mpane <- clientActivePane st client
-    -- closePty hangs up the child; the pane reader sees EOF and takes
-    -- care of the tree.
-    forM_ mpane $ \pane -> Hat.Pty.closePty pane.pty
-
-toggleZoom :: ServerState -> Client -> IO ()
-toggleZoom st client = do
-    changed <- atomically $ do
-        mv <- clientView st client
-        case mv of
-            Nothing -> pure Nothing
-            Just (sess, win) -> do
-                mz <- readTVar win.zoomed
-                active <- readTVar win.activeId
-                writeTVar win.zoomed $ case mz of
-                    Just _ -> Nothing
-                    Nothing -> Just active
-                bumpDirty st
-                pure (Just sess.id)
-    forM_ changed (applySessionSize st)
-
-resizeActive :: ServerState -> Client -> Direction -> Int -> IO ()
-resizeActive st client dir delta = do
-    msid <- atomically $ do
-        mv <- clientView st client
-        case mv of
-            Nothing -> pure Nothing
-            Just (sess, win) -> do
-                eff <- readTVar sess.lastSize
-                active <- readTVar win.activeId
-                modifyTVar' win.layout
-                    (resizeSplit active dir delta (sizeRect eff))
-                bumpDirty st
-                pure (Just sess.id)
-    forM_ msid (applySessionSize st)
-
--- Commands (a stub until M6's engine) --------------------------------
-
-runCommand :: ServerState -> Client -> Text -> IO ()
-runCommand st client cmdline = do
-    logEvent st.logger CommandRun
-        { client = rawClient client.id, command = cmdline }
-    case T.words cmdline of
-        ["kill-server"] -> do
-            sessions <- readTVarIO st.sessions
-            forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
-            send client Exited
-            panes <- allPanes st
-            forM_ panes $ \p -> Hat.Pty.closePty p.pty
-            atomically $ do
-                writeTVar st.sessions Map.empty
-                writeTVar st.everAttached True
-        ["detach"] -> send client DetachOk
-        _ -> send client (ServerError ("unknown command: " <> cmdline))
-
-allPanes :: ServerState -> IO [Pane]
-allPanes st = atomically $ do
-    sessions <- readTVar st.sessions
-    fmap concat . forM (Map.elems sessions) $ \sess -> do
-        ws <- readTVar sess.windows
-        fmap concat . forM (Map.elems ws) $ windowPanes
-
-controlLoop :: ServerState -> Client -> IO ()
-controlLoop st client = do
-    m <- recvMessage client.sock
-    case m of
-        Just (Right (Command t)) -> do
-            runCommand st client t
-            controlLoop st client
-        Just (Right Detach) -> pure ()
-        Nothing -> pure ()
-        _ -> controlLoop st client
-
--- Windows --------------------------------------------------------------
-
--- | The pane area of the screen: everything above the status line.
-windowArea :: Size -> Size
-windowArea sz = sz { rows = max 1 (sz.rows - 1) }
-
-newWindowAction :: ServerState -> Client -> IO ()
-newWindowAction st client = do
-    mv <- atomically (clientView st client)
-    forM_ mv $ \(sess, _) -> do
-        eff <- readTVarIO sess.lastSize
-        let shell = maybe "/bin/sh" T.unpack (List.lookup "SHELL" sess.environ)
-        (win, pane) <- newWindowWithPane st sess.id shell sess.startCwd
-            sess.environ (windowArea eff)
-        atomically $ do
-            ws <- readTVar sess.windows
-            let ix = head [i | i <- [windowBaseIndex ..], not (Map.member i ws)]
-            modifyTVar' sess.windows (Map.insert ix win)
-            cur <- readTVar sess.currentIx
-            writeTVar sess.lastIx (Just cur)
-            writeTVar sess.currentIx ix
-            bumpDirty st
-        startPaneReader st sess.id win pane
-        applySessionSize st sess.id
-
-selectWindowIx :: ServerState -> Client -> Int -> IO ()
-selectWindowIx st client ix = atomically $ do
-    mv <- clientView st client
-    forM_ mv $ \(sess, _) -> switchTo st sess ix
-
-switchTo :: ServerState -> Session -> Int -> STM ()
-switchTo st sess ix = do
-    ws <- readTVar sess.windows
-    cur <- readTVar sess.currentIx
-    when (ix /= cur) $ forM_ (Map.lookup ix ws) $ \win -> do
-        writeTVar sess.lastIx (Just cur)
-        writeTVar sess.currentIx ix
-        writeTVar win.bellFlag False
-        bumpDirty st
-
-cycleWindow :: ServerState -> Client -> Int -> IO ()
-cycleWindow st client step = atomically $ do
-    mv <- clientView st client
-    forM_ mv $ \(sess, _) -> do
-        ws <- readTVar sess.windows
-        cur <- readTVar sess.currentIx
-        let ixs = Map.keys ws
-        case ixs of
-            [] -> pure ()
-            _ -> do
-                let n = length ixs
-                    curPos = maybe 0 (\x -> x) (List.elemIndex cur ixs)
-                    ix = ixs !! ((curPos + step + n) `mod` n)
-                switchTo st sess ix
-
-selectLastWindow :: ServerState -> Client -> IO ()
-selectLastWindow st client = atomically $ do
-    mv <- clientView st client
-    forM_ mv $ \(sess, _) -> do
-        mlast <- readTVar sess.lastIx
-        forM_ mlast (switchTo st sess)
-
--- Status line ----------------------------------------------------------
+-- Status line -------------------------------------------------------------
 
 statusStyle :: Cell.Style
 statusStyle = Cell.defaultStyle
@@ -774,7 +551,22 @@ statusStyle = Cell.defaultStyle
     , Cell.bg = Cell.Indexed 2
     }
 
--- The default status line; the real format engine arrives in M7.
+lineCells :: Cell.Style -> Int -> Text -> V.Vector Cell.Cell
+lineCells style width line = V.fromList (take width (cells <> repeat blank))
+  where
+    cells = [ Cell.Cell { Cell.text = T.singleton ch
+                        , Cell.width = 1
+                        , Cell.style = style }
+            | ch <- T.unpack line ]
+    blank = Cell.Cell { Cell.text = " ", Cell.width = 1, Cell.style = style }
+
+toastCells :: Text -> Int -> V.Vector Cell.Cell
+toastCells t width = lineCells toastStyle width t
+  where
+    toastStyle = Cell.defaultStyle
+        { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
+
+-- The default status line; the format engine (M7) will replace this.
 statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
 statusCells _st sess width = do
     (sname, entries) <- atomically $ do
@@ -800,15 +592,801 @@ statusCells _st sess width = do
         pad = width - T.length left - T.length right
         line
             | pad >= 0 = left <> T.replicate pad " " <> right
-            | otherwise = T.take (fromIntegral width) (left <> " " <> right)
-        cells = [ Cell.Cell { Cell.text = T.singleton ch
-                            , Cell.width = 1
-                            , Cell.style = statusStyle }
-                | ch <- T.unpack line ]
-        padded = take width (cells <> repeat blankStatus)
-        blankStatus = Cell.Cell { Cell.text = " ", Cell.width = 1
-                                , Cell.style = statusStyle }
-    pure (V.fromList padded)
+            | otherwise = T.take width (left <> " " <> right)
+    pure (lineCells statusStyle width line)
+
+-- Input ---------------------------------------------------------------------
+
+inputLoop :: ServerState -> Client -> IO ()
+inputLoop st client = loop
+  where
+    loop = do
+        m <- recvMessage client.sock
+        case m of
+            Nothing -> pure ()
+            Just (Left err) -> logEvent st.logger ProtocolError
+                { client = rawClient client.id, err = T.pack err }
+            Just (Right msg) -> case msg of
+                Input bs -> do
+                    handleInput st client bs
+                    loop
+                Resize sz -> do
+                    atomically (writeTVar client.size sz)
+                    sid <- readTVarIO client.session
+                    applySessionSize st sid
+                    loop
+                Detach -> send client DetachOk
+                Command t -> do
+                    replies <- runCommandText st (Just client) t
+                    forM_ replies $ \case
+                        ROutput out -> showToast st client out
+                        RErr e -> showToast st client ("error: " <> e)
+                    loop
+                Hello {} -> pure ()
+
+handleInput :: ServerState -> Client -> B.ByteString -> IO ()
+handleInput st client bs = do
+    opts <- readTVarIO st.options
+    km <- readTVarIO st.keymap
+    st0 <- readIORef client.keyState
+    let (st1, actions) = routeKeys opts.prefix km st0 (tokenizeKeys bs)
+    writeIORef client.keyState st1
+    forM_ actions $ \case
+        Passthrough raw -> do
+            mpane <- clientActivePane st client
+            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty raw
+        RunCommands cmds -> forM_ cmds $ \argv -> do
+            replies <- runArgv st (Just client) argv
+            forM_ replies $ \case
+                ROutput out -> showToast st client out
+                RErr e -> showToast st client ("error: " <> e)
+
+showToast :: ServerState -> Client -> Text -> IO ()
+showToast st client t = do
+    atomically $ do
+        writeTVar client.toast (Just t)
+        bumpDirty st
+    void . forkIO $ do
+        threadDelay 3_000_000
+        atomically $ do
+            cur <- readTVar client.toast
+            when (cur == Just t) $ do
+                writeTVar client.toast Nothing
+                bumpDirty st
+
+clientActivePane :: ServerState -> Client -> IO (Maybe Pane)
+clientActivePane st client = atomically $ do
+    mv <- clientView st client
+    case mv of
+        Nothing -> pure Nothing
+        Just (_, win) -> activePane win
+
+-- | The session and current window of a client, if both exist.
+clientView :: ServerState -> Client -> STM (Maybe (Session, Window))
+clientView st client = do
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Nothing -> pure Nothing
+        Just sess -> do
+            mwin <- currentWindow sess
+            pure ((,) sess <$> mwin)
+
+-- The command engine ---------------------------------------------------------
+
+data Reply = ROutput Text | RErr Text
+
+runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
+runCommandText st mclient input = case parseCommandLine input of
+    Left err -> pure [RErr err]
+    Right cmds -> concat <$> mapM (runArgv st mclient) cmds
+
+runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
+runArgv _ _ [] = pure []
+runArgv st mclient (name : args) = do
+    forM_ mclient $ \c -> logEvent st.logger CommandRun
+        { client = rawClient c.id, command = T.unwords (name : args) }
+    case Map.lookup name commandTable of
+        Nothing -> pure [RErr ("unknown command: " <> name)]
+        Just impl -> impl st mclient args
+            `catch` \(e :: SomeException) ->
+                pure [RErr (name <> ": " <> T.pack (show e))]
+
+type CommandImpl = ServerState -> Maybe Client -> [Text] -> IO [Reply]
+
+commandTable :: Map.Map Text CommandImpl
+commandTable = Map.fromList $ concatMap expand
+    [ (["bind-key", "bind"], cmdBind)
+    , (["unbind-key", "unbind"], cmdUnbind)
+    , (["set-option", "set", "set-window-option", "setw"], cmdSet)
+    , (["source-file", "source"], cmdSourceFile)
+    , (["new-window", "neww"], cmdNewWindow)
+    , (["select-window", "selectw"], cmdSelectWindow)
+    , (["next-window", "next"], cmdNextWindow)
+    , (["previous-window", "prev"], cmdPrevWindow)
+    , (["last-window", "last"], cmdLastWindow)
+    , (["kill-window", "killw"], cmdKillWindow)
+    , (["rename-window", "renamew"], cmdRenameWindow)
+    , (["split-window", "splitw"], cmdSplitWindow)
+    , (["select-pane", "selectp"], cmdSelectPane)
+    , (["kill-pane", "killp"], cmdKillPane)
+    , (["resize-pane", "resizep"], cmdResizePane)
+    , (["last-pane", "lastp"], cmdLastPane)
+    , (["detach-client", "detach"], cmdDetachClient)
+    , (["send-prefix"], cmdSendPrefix)
+    , (["send-keys", "send"], cmdSendKeys)
+    , (["new-session", "new"], cmdNewSession)
+    , (["attach-session", "attach"], cmdAttachSession)
+    , (["kill-session"], cmdKillSession)
+    , (["rename-session", "rename"], cmdRenameSession)
+    , (["list-sessions", "ls"], cmdListSessions)
+    , (["list-windows", "lsw"], cmdListWindows)
+    , (["list-panes", "lsp"], cmdListPanes)
+    , (["switch-client", "switchc"], cmdSwitchClient)
+    , (["kill-server"], cmdKillServer)
+    , (["display-message", "display"], cmdDisplayMessage)
+    , (["run-shell", "run"], cmdRunShell)
+    , (["if-shell", "if"], cmdIfShell)
+    ]
+  where
+    expand (names, impl) = [(n, impl) | n <- names]
+
+-- Tiny flag parser: flags that take a value, boolean flags, positional.
+parseArgs :: [Text] -> [Text] -> ([(Text, Text)], [Text], [Text])
+parseArgs argFlags = go [] []
+  where
+    go opts flags = \case
+        [] -> (opts, flags, [])
+        (a : v : rest)
+            | a `elem` argFlags -> go ((a, v) : opts) flags rest
+        (a : rest)
+            | "-" `T.isPrefixOf` a && T.length a > 1 && not (isNumber a) ->
+                go opts (a : flags) rest
+            | otherwise -> (opts, flags, a : rest)
+    isNumber a = case TR.signed TR.decimal a of
+        Right (_ :: Int, restT) -> T.null restT
+        Left _ -> False
+
+targetSession :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Session)
+targetSession st mclient mtarget = atomically $ do
+    sessions <- readTVar st.sessions
+    case mtarget of
+        Just t -> do
+            let stripped = fromMaybe t (T.stripSuffix ":" t)
+            found <- forM (Map.elems sessions) $ \sess -> do
+                nm <- readTVar sess.name
+                pure $ if nm == stripped
+                    || tshow (rawSession sess.id) == stripped
+                    || ("$" <> tshow (rawSession sess.id)) == stripped
+                    then Just sess else Nothing
+            pure (foldr (\m acc -> maybe acc Just m) Nothing found)
+        Nothing -> case mclient of
+            Just client -> do
+                sid <- readTVar client.session
+                case Map.lookup sid sessions of
+                    Just sess -> pure (Just sess)
+                    Nothing -> pure (snd <$> Map.lookupMin sessions)
+            Nothing -> pure (snd <$> Map.lookupMin sessions)
+
+withTargetSession
+    :: ServerState -> Maybe Client -> Maybe Text
+    -> (Session -> IO [Reply]) -> IO [Reply]
+withTargetSession st mclient mtarget body = do
+    msess <- targetSession st mclient mtarget
+    case msess of
+        Nothing -> pure [RErr "no such session"]
+        Just sess -> body sess
+
+withCurrentWindow
+    :: ServerState -> Maybe Client
+    -> (Session -> Window -> IO [Reply]) -> IO [Reply]
+withCurrentWindow st mclient body = do
+    mv <- atomically (maybe (pure Nothing) (clientView st) mclient)
+    view <- case mv of
+        Just v -> pure (Just v)
+        Nothing -> do
+            msess <- targetSession st mclient Nothing
+            case msess of
+                Nothing -> pure Nothing
+                Just sess -> do
+                    mwin <- atomically (currentWindow sess)
+                    pure ((,) sess <$> mwin)
+    case view of
+        Nothing -> pure [RErr "no current window"]
+        Just (sess, win) -> body sess win
+
+-- Command implementations.
+
+cmdBind :: CommandImpl
+cmdBind st _ args = do
+    let (opts, flags, pos) = parseArgs ["-T", "-N"] args
+        table
+            | "-n" `elem` flags = "root"
+            | Just t <- lookup "-T" opts = t
+            | otherwise = "prefix"
+    case pos of
+        (keyName : rest)
+            | Just key <- parseKeyName keyName
+            , not (null rest) -> do
+                let cmds = splitBinding rest
+                atomically $ modifyTVar' st.keymap $
+                    Map.insertWith Map.union table
+                        (Map.singleton key.name cmds)
+                pure []
+        (keyName : _) ->
+            pure [RErr ("bind: bad key or command: " <> keyName)]
+        _ -> pure [RErr "usage: bind [-n] [-T table] key command..."]
+
+-- A binding's command part: one brace block to re-parse, or argv split
+-- on ";" tokens (from escaped semicolons).
+splitBinding :: [Text] -> [[Text]]
+splitBinding = \case
+    [block] | T.any (\c -> c == ' ' || c == ';' || c == '\n') block ->
+        case parseConfig block of
+            Right cmds -> cmds
+            Left _ -> [[block]]
+    rest -> filter (not . null) (splitOnSemis rest)
+  where
+    splitOnSemis xs = case break (== ";") xs of
+        (before, []) -> [before]
+        (before, _ : after) -> before : splitOnSemis after
+
+cmdUnbind :: CommandImpl
+cmdUnbind st _ args = do
+    let (opts, flags, pos) = parseArgs ["-T"] args
+        table
+            | "-n" `elem` flags = "root"
+            | Just t <- lookup "-T" opts = t
+            | otherwise = "prefix"
+    case pos of
+        [keyName] | Just key <- parseKeyName keyName -> do
+            atomically $ modifyTVar' st.keymap $
+                Map.adjust (Map.delete key.name) table
+            pure []
+        _ -> pure [RErr "usage: unbind [-n] [-T table] key"]
+
+cmdSet :: CommandImpl
+cmdSet st _ args = do
+    let (_, _, pos) = parseArgs ["-t"] args
+    case pos of
+        (nameT : rest) -> do
+            let value = T.unwords rest
+            r <- atomically $ do
+                opts <- readTVar st.options
+                case setOption opts nameT value of
+                    Left err -> pure (Just err)
+                    Right opts' -> do
+                        writeTVar st.options opts'
+                        bumpDirty st
+                        pure Nothing
+            pure $ case r of
+                Just err -> [RErr err]
+                Nothing -> []
+        [] -> pure [RErr "usage: set [-g] option value"]
+
+setOption :: Options -> Text -> Text -> Either Text Options
+setOption opts name value = case name of
+    "prefix" -> case parseKeyName value of
+        Just k -> Right opts { prefix = k.name }
+        Nothing -> Left ("bad prefix key: " <> value)
+    "base-index" -> withInt $ \n -> opts { baseIndex = n }
+    "pane-base-index" -> withInt $ \n -> opts { paneBaseIndex = n }
+    "history-limit" -> withInt $ \n -> opts { historyLimit = n }
+    "status-position" -> case value of
+        "top" -> Right opts { statusPosition = StatusTop }
+        "bottom" -> Right opts { statusPosition = StatusBottom }
+        _ -> Left "status-position: top or bottom"
+    "mode-keys" -> case value of
+        "vi" -> Right opts { modeKeys = KeysVi }
+        "emacs" -> Right opts { modeKeys = KeysEmacs }
+        _ -> Left "mode-keys: vi or emacs"
+    _
+        | "@" `T.isPrefixOf` name ->
+            Right opts { user = Map.insert name value opts.user }
+        | otherwise ->
+            -- Unknown options are preserved rather than rejected so
+            -- tmux configs load; features pick them up as they land.
+            Right (opts :: Options) { raw = Map.insert name value opts.raw }
+  where
+    withInt f = case TR.decimal value of
+        Right (n, restT) | T.null restT -> Right (f n)
+        _ -> Left (name <> ": not a number: " <> value)
+
+cmdSourceFile :: CommandImpl
+cmdSourceFile st mclient args = case args of
+    [path] -> do
+        let p = T.unpack path
+        exists <- doesFileExist p
+        if not exists
+            then pure [RErr ("no such file: " <> path)]
+            else do
+                contents <- TIO.readFile p
+                case parseConfig contents of
+                    Left err -> pure [RErr err]
+                    Right cmds ->
+                        concat <$> mapM (runArgv st mclient) cmds
+    _ -> pure [RErr "usage: source-file path"]
+
+cmdNewWindow :: CommandImpl
+cmdNewWindow st mclient args = do
+    let (opts, flags, pos) = parseArgs ["-n", "-c", "-t"] args
+    withTargetSession st mclient Nothing $ \sess -> do
+        eff <- readTVarIO sess.lastSize
+        srvOpts <- readTVarIO st.options
+        let shellCmd = maybe "/bin/sh" T.unpack
+                (List.lookup "SHELL" sess.environ)
+            dir = maybe sess.startCwd T.unpack (lookup "-c" opts)
+            mrun = case pos of
+                [] -> Nothing
+                ws -> Just (T.unwords ws)
+        (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
+            sess.environ (windowArea eff)
+        forM_ (lookup "-n" opts) $ \nm -> atomically (writeTVar win.name nm)
+        atomically $ do
+            ws <- readTVar sess.windows
+            cur <- readTVar sess.currentIx
+            let requested = do
+                    t <- lookup "-t" opts
+                    case TR.decimal t of
+                        Right (n, restT) | T.null restT -> Just n
+                        _ -> Nothing
+                nextFreeFrom n = head
+                    [i | i <- [n ..], not (Map.member i ws)]
+                ix = case requested of
+                    Just n
+                        | "-a" `elem` flags -> nextFreeFrom (n + 1)
+                        | otherwise -> n
+                    Nothing
+                        | "-a" `elem` flags -> nextFreeFrom (cur + 1)
+                        | otherwise -> nextFreeFrom srvOpts.baseIndex
+                ix' = if Map.member ix ws then nextFreeFrom srvOpts.baseIndex else ix
+            modifyTVar' sess.windows (Map.insert ix' win)
+            unless ("-d" `elem` flags) $ do
+                writeTVar sess.lastIx (Just cur)
+                writeTVar sess.currentIx ix'
+            bumpDirty st
+        startPaneReader st sess.id win pane
+        applySessionSize st sess.id
+        pure []
+
+cmdSelectWindow :: CommandImpl
+cmdSelectWindow st mclient args = do
+    let (opts, _, pos) = parseArgs ["-t"] args
+        target = case (lookup "-t" opts, pos) of
+            (Just t, _) -> Just t
+            (Nothing, [t]) -> Just t
+            _ -> Nothing
+    case target >>= parseIx of
+        Nothing -> pure [RErr "usage: select-window -t index"]
+        Just ix -> withTargetSession st mclient Nothing $ \sess -> do
+            atomically (switchTo st sess ix)
+            pure []
+  where
+    parseIx t = case TR.decimal (fromMaybe t (T.stripPrefix ":" t)) of
+        Right (n, restT) | T.null restT -> Just n
+        _ -> Nothing
+
+switchTo :: ServerState -> Session -> Int -> STM ()
+switchTo st sess ix = do
+    ws <- readTVar sess.windows
+    cur <- readTVar sess.currentIx
+    when (ix /= cur) $ forM_ (Map.lookup ix ws) $ \win -> do
+        writeTVar sess.lastIx (Just cur)
+        writeTVar sess.currentIx ix
+        writeTVar win.bellFlag False
+        bumpDirty st
+
+cmdNextWindow, cmdPrevWindow, cmdLastWindow :: CommandImpl
+cmdNextWindow st mclient _ = cycleWindow st mclient 1
+cmdPrevWindow st mclient _ = cycleWindow st mclient (-1)
+cmdLastWindow st mclient _ =
+    withTargetSession st mclient Nothing $ \sess -> do
+        atomically $ do
+            mlast <- readTVar sess.lastIx
+            forM_ mlast (switchTo st sess)
+        pure []
+
+cycleWindow :: ServerState -> Maybe Client -> Int -> IO [Reply]
+cycleWindow st mclient step =
+    withTargetSession st mclient Nothing $ \sess -> do
+        atomically $ do
+            ws <- readTVar sess.windows
+            cur <- readTVar sess.currentIx
+            let ixs = Map.keys ws
+            case ixs of
+                [] -> pure ()
+                _ -> do
+                    let n = length ixs
+                        curPos = fromMaybe 0 (List.elemIndex cur ixs)
+                        ix = ixs !! ((curPos + step + n) `mod` n)
+                    switchTo st sess ix
+        pure []
+
+cmdKillWindow :: CommandImpl
+cmdKillWindow st mclient _ =
+    withCurrentWindow st mclient $ \_ win -> do
+        ps <- readTVarIO win.panes
+        forM_ (Map.elems ps) $ \p -> Hat.Pty.closePty p.pty
+        pure []
+
+cmdRenameWindow :: CommandImpl
+cmdRenameWindow st mclient args = case args of
+    [nm] -> withCurrentWindow st mclient $ \_ win -> do
+        atomically $ do
+            writeTVar win.name nm
+            bumpDirty st
+        pure []
+    _ -> pure [RErr "usage: rename-window name"]
+
+cmdSplitWindow :: CommandImpl
+cmdSplitWindow st mclient args = do
+    let (opts, flags, pos) = parseArgs ["-c", "-t", "-l", "-p"] args
+        orient
+            | "-h" `elem` flags = LeftRight
+            | otherwise = TopBottom
+        before = "-b" `elem` flags
+        mrun = case pos of
+            [] -> Nothing
+            ws -> Just (T.unwords ws)
+    withCurrentWindow st mclient $ \sess win -> do
+        mactive <- atomically (activePane win)
+        case mactive of
+            Nothing -> pure [RErr "no active pane"]
+            Just active -> do
+                eff <- readTVarIO sess.lastSize
+                (rects, _) <- atomically (windowArrange (windowArea eff) win)
+                let mrect = List.lookup active.id rects
+                    fits = case (orient, mrect) of
+                        (LeftRight, Just r) -> r.endCol - r.startCol >= 5
+                        (TopBottom, Just r) -> r.endRow - r.startRow >= 5
+                        _ -> False
+                if not fits
+                    then pure [RErr "create pane failed: pane too small"]
+                    else do
+                        pid <- PaneId <$> atomically (freshId st.nextPane)
+                        dir <- case lookup "-c" opts of
+                            Just d -> pure (T.unpack d)
+                            Nothing -> paneCurrentPath active
+                        let shellCmd = maybe "/bin/sh" T.unpack
+                                (List.lookup "SHELL" sess.environ)
+                        pane <- spawnPane st pid sess.id shellCmd mrun dir
+                            sess.environ (windowArea eff)
+                        atomically $ do
+                            modifyTVar' win.panes (Map.insert pane.id pane)
+                            modifyTVar' win.layout
+                                (splitLeaf active.id orient before pane.id)
+                            lastA <- readTVar win.activeId
+                            writeTVar win.lastActive (Just lastA)
+                            writeTVar win.activeId pane.id
+                            writeTVar win.zoomed Nothing
+                            bumpDirty st
+                        startPaneReader st sess.id win pane
+                        applySessionSize st sess.id
+                        pure []
+
+-- | Where is a pane's child process now? /proc, with a fallback.
+paneCurrentPath :: Pane -> IO FilePath
+paneCurrentPath pane = do
+    r <- try (PFiles.readSymbolicLink
+        ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/cwd"))
+    pure $ case r of
+        Left (_ :: IOException) -> pane.startCwd
+        Right dir -> dir
+
+cmdSelectPane :: CommandImpl
+cmdSelectPane st mclient args = do
+    let (_, flags, _) = parseArgs ["-t"] args
+        mdir
+            | "-L" `elem` flags = Just DirLeft
+            | "-R" `elem` flags = Just DirRight
+            | "-U" `elem` flags = Just DirUp
+            | "-D" `elem` flags = Just DirDown
+            | otherwise = Nothing
+    case mdir of
+        Nothing
+            | "-l" `elem` flags -> cmdLastPane st mclient []
+            | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l"]
+        Just dir -> withCurrentWindow st mclient $ \sess win -> do
+            atomically $ do
+                eff <- readTVar sess.lastSize
+                (rects, _) <- windowArrange (windowArea eff) win
+                active <- readTVar win.activeId
+                forM_ (neighbor rects active dir) $ \next -> do
+                    writeTVar win.lastActive (Just active)
+                    writeTVar win.activeId next
+                    bumpDirty st
+            pure []
+
+cmdLastPane :: CommandImpl
+cmdLastPane st mclient _ =
+    withCurrentWindow st mclient $ \_ win -> do
+        atomically $ do
+            mlast <- readTVar win.lastActive
+            ps <- readTVar win.panes
+            forM_ mlast $ \lastP -> when (Map.member lastP ps) $ do
+                cur <- readTVar win.activeId
+                writeTVar win.lastActive (Just cur)
+                writeTVar win.activeId lastP
+                bumpDirty st
+        pure []
+
+cmdKillPane :: CommandImpl
+cmdKillPane st mclient _ =
+    withCurrentWindow st mclient $ \_ win -> do
+        mpane <- atomically (activePane win)
+        forM_ mpane $ \pane -> Hat.Pty.closePty pane.pty
+        pure []
+
+cmdResizePane :: CommandImpl
+cmdResizePane st mclient args = do
+    let (_, flags, pos) = parseArgs ["-t"] args
+        delta = case pos of
+            (n : _) | Right (v, restT) <- TR.decimal n, T.null restT -> v
+            _ -> 1
+    if "-Z" `elem` flags
+        then toggleZoom st mclient >> pure []
+        else do
+            let mdir
+                    | "-L" `elem` flags = Just DirLeft
+                    | "-R" `elem` flags = Just DirRight
+                    | "-U" `elem` flags = Just DirUp
+                    | "-D" `elem` flags = Just DirDown
+                    | otherwise = Nothing
+            case mdir of
+                Nothing ->
+                    pure [RErr "usage: resize-pane -L|-R|-U|-D [n] | -Z"]
+                Just dir -> withCurrentWindow st mclient $ \sess win -> do
+                    atomically $ do
+                        eff <- readTVar sess.lastSize
+                        active <- readTVar win.activeId
+                        modifyTVar' win.layout
+                            (resizeSplit active dir delta
+                                (sizeRect (windowArea eff)))
+                        bumpDirty st
+                    applySessionSize st sess.id
+                    pure []
+
+toggleZoom :: ServerState -> Maybe Client -> IO ()
+toggleZoom st mclient = do
+    changed <- atomically $ do
+        mv <- maybe (pure Nothing) (clientView st) mclient
+        case mv of
+            Nothing -> pure Nothing
+            Just (sess, win) -> do
+                mz <- readTVar win.zoomed
+                active <- readTVar win.activeId
+                writeTVar win.zoomed $ case mz of
+                    Just _ -> Nothing
+                    Nothing -> Just active
+                bumpDirty st
+                pure (Just sess.id)
+    forM_ changed (applySessionSize st)
+
+cmdDetachClient :: CommandImpl
+cmdDetachClient _ mclient _ = do
+    forM_ mclient $ \client -> send client DetachOk
+    pure []
+
+cmdSendPrefix :: CommandImpl
+cmdSendPrefix st mclient _ = do
+    forM_ mclient $ \client -> do
+        opts <- readTVarIO st.options
+        forM_ (parseKeyName opts.prefix) $ \key -> do
+            mpane <- clientActivePane st client
+            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty key.raw
+    pure []
+
+cmdSendKeys :: CommandImpl
+cmdSendKeys st mclient args = do
+    let (_, flags, pos) = parseArgs ["-t"] args
+        literal = "-l" `elem` flags
+        bytes = B.concat (map (argBytes literal) pos)
+    forM_ mclient $ \client -> do
+        mpane <- clientActivePane st client
+        forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty bytes
+    pure []
+  where
+    argBytes True a = TE.encodeUtf8 a
+    argBytes False a = case parseKeyName a of
+        Just k -> k.raw
+        Nothing -> TE.encodeUtf8 a
+
+cmdNewSession :: CommandImpl
+cmdNewSession st mclient args = do
+    let (opts, flags, _) = parseArgs ["-s", "-c", "-t", "-n"] args
+        mname = lookup "-s" opts
+    dup <- case mname of
+        Nothing -> pure False
+        Just nm -> atomically $ do
+            sessions <- readTVar st.sessions
+            names <- mapM (\s -> readTVar s.name) (Map.elems sessions)
+            pure (nm `elem` names)
+    if dup
+        then pure [RErr ("duplicate session: " <> fromMaybe "" mname)]
+        else do
+            (environ, dir, sz) <- case mclient of
+                Just c -> do
+                    csz <- readTVarIO c.size
+                    pure (c.env, T.unpack c.cwd, csz)
+                Nothing -> pure ([], "/", Size { rows = 24, cols = 80 })
+            let dir' = maybe dir T.unpack (lookup "-c" opts)
+            sess <- createSession st mname environ dir' sz
+            atomically (writeTVar st.everAttached True)
+            unless ("-d" `elem` flags) $
+                forM_ mclient $ \client -> switchClientTo st client sess
+            pure []
+
+switchClientTo :: ServerState -> Client -> Session -> IO ()
+switchClientTo st client sess = do
+    old <- readTVarIO client.session
+    atomically $ do
+        when (old /= sess.id) $ do
+            writeTVar client.lastSession (Just old)
+            writeTVar client.session sess.id
+        writeTVar client.needsFull True
+        bumpDirty st
+    applySessionSize st old
+    applySessionSize st sess.id
+
+cmdAttachSession :: CommandImpl
+cmdAttachSession st mclient args = do
+    let (opts, _, _) = parseArgs ["-t", "-c"] args
+    withTargetSession st mclient (lookup "-t" opts) $ \sess ->
+        case mclient of
+            Just client -> switchClientTo st client sess >> pure []
+            Nothing -> pure [RErr "no client to attach"]
+
+cmdKillSession :: CommandImpl
+cmdKillSession st mclient args = do
+    let (opts, _, _) = parseArgs ["-t"] args
+    withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
+        panes <- atomically $ do
+            ws <- readTVar sess.windows
+            fmap concat . forM (Map.elems ws) $ windowPanes
+        forM_ panes $ \p -> Hat.Pty.closePty p.pty
+        pure []
+
+cmdRenameSession :: CommandImpl
+cmdRenameSession st mclient args = case args of
+    [nm] -> withTargetSession st mclient Nothing $ \sess -> do
+        atomically $ do
+            writeTVar sess.name nm
+            bumpDirty st
+        pure []
+    _ -> pure [RErr "usage: rename-session name"]
+
+cmdListSessions :: CommandImpl
+cmdListSessions st _ _ = do
+    lines' <- atomically $ do
+        sessions <- readTVar st.sessions
+        forM (Map.elems sessions) $ \sess -> do
+            nm <- readTVar sess.name
+            ws <- readTVar sess.windows
+            pure (nm <> ": " <> tshow (Map.size ws) <> " windows")
+    pure (map ROutput lines')
+
+cmdListWindows :: CommandImpl
+cmdListWindows st mclient _ =
+    withTargetSession st mclient Nothing $ \sess -> do
+        lines' <- atomically $ do
+            ws <- readTVar sess.windows
+            cur <- readTVar sess.currentIx
+            forM (Map.toAscList ws) $ \(ix, win) -> do
+                nm <- readTVar win.name
+                ps <- readTVar win.panes
+                let mark = if ix == cur then "*" else ""
+                pure $ tshow ix <> ": " <> nm <> mark
+                    <> " (" <> tshow (Map.size ps) <> " panes)"
+        pure (map ROutput lines')
+
+cmdListPanes :: CommandImpl
+cmdListPanes st mclient _ =
+    withTargetSession st mclient Nothing $ \sess -> do
+        lines' <- atomically $ do
+            mwin <- currentWindow sess
+            case mwin of
+                Nothing -> pure []
+                Just win -> do
+                    ps <- readTVar win.panes
+                    forM (Map.elems ps) $ \p -> do
+                        sz <- readTVar p.size
+                        pure $ "%" <> tshow (rawPane p.id) <> ": ["
+                            <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
+        pure (map ROutput lines')
+
+cmdSwitchClient :: CommandImpl
+cmdSwitchClient st mclient args = do
+    let (opts, flags, _) = parseArgs ["-t"] args
+    case mclient of
+        Nothing -> pure [RErr "no client"]
+        Just client
+            | "-l" `elem` flags -> do
+                mlast <- readTVarIO client.lastSession
+                sessions <- readTVarIO st.sessions
+                case mlast >>= (`Map.lookup` sessions) of
+                    Nothing -> pure [RErr "no last session"]
+                    Just sess -> switchClientTo st client sess >> pure []
+            | otherwise ->
+                withTargetSession st mclient (lookup "-t" opts) $ \sess ->
+                    switchClientTo st client sess >> pure []
+
+cmdKillServer :: CommandImpl
+cmdKillServer st mclient _ = do
+    sessions <- readTVarIO st.sessions
+    forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
+    forM_ mclient $ \client -> send client Exited
+    panes <- atomically $ do
+        sess <- readTVar st.sessions
+        fmap concat . forM (Map.elems sess) $ \s -> do
+            ws <- readTVar s.windows
+            fmap concat . forM (Map.elems ws) $ windowPanes
+    forM_ panes $ \p -> Hat.Pty.closePty p.pty
+    atomically $ do
+        writeTVar st.sessions Map.empty
+        writeTVar st.everAttached True
+    pure []
+
+cmdDisplayMessage :: CommandImpl
+cmdDisplayMessage st mclient args = do
+    let (_, flags, pos) = parseArgs ["-t"] args
+        text = T.unwords pos
+    if "-p" `elem` flags
+        then pure [ROutput text]
+        else do
+            forM_ mclient $ \client -> showToast st client text
+            pure []
+
+cmdRunShell :: CommandImpl
+cmdRunShell st mclient args = do
+    let (_, _, pos) = parseArgs ["-t"] args
+        cmdText = T.unwords pos
+    void . forkIO $ do
+        (code, out, errOut) <- readCreateProcessWithExitCode
+            (shell (T.unpack cmdText)) ""
+        let firstLine = T.strip . T.takeWhile (/= '\n') . T.pack
+        case code of
+            ExitSuccess ->
+                forM_ mclient $ \client ->
+                    unless (null out) $ showToast st client (firstLine out)
+            ExitFailure n ->
+                forM_ mclient $ \client ->
+                    showToast st client $
+                        "run-shell exited " <> tshow n <> ": "
+                        <> firstLine (out <> errOut)
+    pure []
+
+cmdIfShell :: CommandImpl
+cmdIfShell st mclient args = do
+    let (_, _, pos) = parseArgs ["-t"] args
+    case pos of
+        (cond : thenCmd : rest) -> do
+            (code, _, _) <- readCreateProcessWithExitCode
+                (shell (T.unpack cond)) ""
+            let chosen = case (code, rest) of
+                    (ExitSuccess, _) -> Just thenCmd
+                    (ExitFailure _, [elseCmd]) -> Just elseCmd
+                    _ -> Nothing
+            case chosen of
+                Nothing -> pure []
+                Just cmdText -> runCommandText st mclient cmdText
+        _ -> pure [RErr "usage: if-shell condition command [command]"]
+
+-- Control clients ------------------------------------------------------------
+
+controlLoop :: ServerState -> Client -> IO ()
+controlLoop st client = do
+    m <- recvMessage client.sock
+    case m of
+        Just (Right (Command t)) -> do
+            replies <- runCommandText st (Just client) t
+            forM_ replies $ \case
+                ROutput out -> send client (Message out)
+                RErr e -> send client (ServerError e)
+            send client CommandDone
+            controlLoop st client
+        Just (Right Detach) -> pure ()
+        Nothing -> pure ()
+        _ -> controlLoop st client
 
 -- Helpers ------------------------------------------------------------
 

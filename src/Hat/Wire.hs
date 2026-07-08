@@ -78,6 +78,7 @@ data ServerToClient
     | RingBell
     | Message Text          -- ^ toast (display-message)
     | DetachOk
+    | CommandDone           -- ^ all replies for one Command were sent
     | ServerError Text
     | Exited                -- ^ session is gone; client should quit
     deriving (Eq, Show, Generic)

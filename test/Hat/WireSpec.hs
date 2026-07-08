@@ -73,6 +73,7 @@ instance Arbitrary ServerToClient where
         , pure RingBell
         , Message <$> genText
         , pure DetachOk
+        , pure CommandDone
         , ServerError <$> genText
         , pure Exited
         ]

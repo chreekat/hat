@@ -7,13 +7,18 @@
 -- a meta or CSI/SS3 sequence.
 module Hat.Server.Keys
     ( Key (..)
+    , PrefixState (..)
+    , KeyAction (..)
     , tokenizeKeys
     , parseKeyName
+    , routeKeys
     ) where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -23,6 +28,10 @@ data Key = Key
     , raw  :: ByteString  -- ^ bytes to forward when the key is unbound
     }
     deriving (Eq, Ord, Show)
+
+-- | Per-client input state: has the prefix key been pressed?
+data PrefixState = NoPrefix | PrefixArmed
+    deriving (Eq, Show)
 
 mkKey :: Text -> ByteString -> Key
 mkKey n r = Key { name = n, raw = r }
@@ -129,6 +138,38 @@ tokenizeKeys = go
         | b >= 0xe0 = 3
         | b >= 0xc0 = 2
         | otherwise = 1
+
+-- | What a batch of keys should do, in order. Consecutive unbound
+-- keys coalesce into one passthrough write.
+data KeyAction
+    = Passthrough ByteString
+    | RunCommands [[Text]]
+    deriving (Eq, Show)
+
+-- | Drive the prefix state machine over tokenized keys, resolving
+-- bindings from the given tables.
+routeKeys
+    :: Text                        -- ^ prefix key name
+    -> Map Text (Map Text [[Text]]) -- ^ keymap: table -> key -> commands
+    -> PrefixState
+    -> [Key]
+    -> (PrefixState, [KeyAction])
+routeKeys prefixName keymap = go
+  where
+    rootTable = Map.findWithDefault Map.empty "root" keymap
+    prefixTable = Map.findWithDefault Map.empty "prefix" keymap
+    go st [] = (st, [])
+    go NoPrefix (k : ks)
+        | k.name == prefixName = go PrefixArmed ks
+        | Just cmds <- Map.lookup k.name rootTable =
+            emit (RunCommands cmds) (go NoPrefix ks)
+        | otherwise = emit (Passthrough k.raw) (go NoPrefix ks)
+    go PrefixArmed (k : ks) = case Map.lookup k.name prefixTable of
+        Just cmds -> emit (RunCommands cmds) (go NoPrefix ks)
+        Nothing -> go NoPrefix ks  -- unbound prefixed key: swallowed
+    emit a (st, as) = (st, merge a as)
+    merge (Passthrough a) (Passthrough b : rest) = Passthrough (a <> b) : rest
+    merge a rest = a : rest
 
 -- | Key names as written in configs: @x@, @C-b@, @M-n@, @Up@, @C-Space@.
 parseKeyName :: Text -> Maybe Key

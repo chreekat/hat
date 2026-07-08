@@ -34,6 +34,7 @@ data LogEvent
     | PaneSpawned     { pane :: Int, cmd :: Text }
     | PaneExited      { pane :: Int }
     | CommandRun      { client :: Int, command :: Text }
+    | ConfigError     { file :: FilePath, err :: Text }
     | ProtocolError   { client :: Int, err :: Text }
     | ServerCrash     { err :: Text }
     deriving (Show, Generic)

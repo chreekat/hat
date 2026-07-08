@@ -31,9 +31,9 @@ library
         Hat.Log
         Hat.Model
         Hat.Model.Ids
+        Hat.Model.Options
         Hat.Pty
         Hat.Server
-        Hat.Server.Input
         Hat.Server.Keys
         Hat.Server.Layout
         Hat.Server.Render
@@ -54,6 +54,7 @@ library
         filepath,
         megaparsec,
         network,
+        process,
         serialise,
         stm,
         text,
@@ -68,6 +69,7 @@ executable hat
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
     build-depends:
         base,
+        directory,
         hat,
         network,
         text,
@@ -95,7 +97,6 @@ test-suite hat-test
         Hat.IntegrationSpec
         Hat.PtySpec
         Hat.SocketSpec
-        Hat.Server.InputSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.RenderSpec

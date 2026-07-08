@@ -5,7 +5,8 @@ import Control.Exception (SomeException, catch)
 import Control.Monad (void)
 import qualified Data.Text as T
 import Network.Socket (Socket)
-import System.Environment (getArgs, getExecutablePath)
+import System.Directory (doesFileExist)
+import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO
 import System.Posix.IO
@@ -20,37 +21,60 @@ import Hat.Socket (connectTo, defaultSocketPath)
 data Cli = Cli
     { socketName :: String
     , socketPathOverride :: Maybe FilePath
+    , configFile :: Maybe FilePath
     , command :: [String]
     }
+
+-- Default config: ~/.config/hat/hat.conf, if it exists.
+resolveConfig :: Cli -> IO Cli
+resolveConfig cli = case cli.configFile of
+    Just _ -> pure cli
+    Nothing -> do
+        mhome <- lookupEnv "HOME"
+        case mhome of
+            Nothing -> pure cli
+            Just home -> do
+                let p = home <> "/.config/hat/hat.conf"
+                exists <- doesFileExist p
+                pure cli { configFile = if exists then Just p else Nothing }
 
 main :: IO ()
 main = do
     args <- getArgs
     case args of
-        ["--server", path] -> runServer path
-        _ -> clientMain (parseCli args)
+        ("--server" : path : rest) ->
+            runServer path (case rest of
+                [cfg] -> Just cfg
+                _ -> Nothing)
+        _ -> clientMain =<< resolveConfig (parseCli args)
 
 parseCli :: [String] -> Cli
-parseCli = go Cli { socketName = "default", socketPathOverride = Nothing, command = [] }
+parseCli = go Cli
+    { socketName = "default"
+    , socketPathOverride = Nothing
+    , configFile = Nothing
+    , command = []
+    }
   where
     go cli = \case
         [] -> cli
         ("-L" : name : rest) -> go cli { socketName = name } rest
         ("-S" : path : rest) -> go cli { socketPathOverride = Just path } rest
+        ("-f" : path : rest) -> go cli { configFile = Just path } rest
         rest -> cli { command = rest }
 
 clientMain :: Cli -> IO ()
 clientMain cli = do
     path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
     case cli.command of
-        [] -> attach path
-        ["attach"] -> attach path
-        ["attach-session"] -> attach path
+        [] -> attach path cli.configFile
+        ["attach"] -> attach path cli.configFile
+        ["attach-session"] -> attach path cli.configFile
         ws -> control path (T.pack (unwords ws))
 
-attach :: FilePath -> IO ()
-attach path = do
-    sock <- connectOrStart path
+attach :: FilePath -> Maybe FilePath -> IO ()
+attach path mconfig = do
+    sock <- connectOrStart path mconfig
     reason <- runClient sock
     case reason of
         Detached -> putStrLn "[detached]"
@@ -77,17 +101,17 @@ control path cmdline = do
                     exitFailure
                 _ -> pure ()
 
-connectOrStart :: FilePath -> IO Socket
-connectOrStart path = do
+connectOrStart :: FilePath -> Maybe FilePath -> IO Socket
+connectOrStart path mconfig = do
     msock <- connectTo path
     case msock of
         Just sock -> pure sock
         Nothing -> do
-            startServer path
+            startServer path mconfig
             waitForServer path 50
 
-startServer :: FilePath -> IO ()
-startServer path = do
+startServer :: FilePath -> Maybe FilePath -> IO ()
+startServer path mconfig = do
     self <- getExecutablePath
     void . forkProcess $ do
         _ <- createSession
@@ -96,7 +120,8 @@ startServer path = do
         _ <- dupTo devNull stdOutput
         _ <- dupTo devNull stdError
         closeFd devNull `catch` \(_ :: SomeException) -> pure ()
-        executeFile self False ["--server", path] Nothing
+        executeFile self False
+            (["--server", path] <> maybe [] (: []) mconfig) Nothing
 
 waitForServer :: FilePath -> Int -> IO Socket
 waitForServer path attempts

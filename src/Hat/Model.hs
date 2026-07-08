@@ -31,7 +31,8 @@ import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
 import qualified Hat.Pty
-import Hat.Server.Input (KeyState)
+import Hat.Model.Options (Keymap, Options, defaultOptions)
+import Hat.Server.Keys (PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout)
 import Hat.Server.Render (Frame)
 import qualified Hat.Term.Emulator as Emu
@@ -45,6 +46,8 @@ data ServerState = ServerState
     , nextClient  :: TVar Int
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
+    , options     :: TVar Options
+    , keymap      :: TVar Keymap
     , logger      :: Logger
     , sockPath    :: FilePath
     }
@@ -86,14 +89,18 @@ data Client = Client
     , sendLock  :: MVar ()
     , size      :: TVar Size
     , session   :: TVar SessionId
-    , keyState  :: IORef KeyState  -- input thread only
-    , lastFrame :: IORef Frame     -- render thread only
+    , lastSession :: TVar (Maybe SessionId)
+    , keyState  :: IORef PrefixState  -- input thread only
+    , lastFrame :: IORef Frame        -- render thread only
     , lastCursor :: IORef (Pos, Bool)
     , needsFull :: TVar Bool
+    , toast     :: TVar (Maybe Text)  -- ^ display-message overlay
+    , env       :: [(Text, Text)]
+    , cwd       :: Text
     }
 
-newServerState :: Logger -> FilePath -> IO ServerState
-newServerState lg path = ServerState
+newServerState :: Keymap -> Logger -> FilePath -> IO ServerState
+newServerState defaultKeymap lg path = ServerState
     <$> newTVarIO Map.empty
     <*> newTVarIO Map.empty
     <*> newTVarIO 0
@@ -102,6 +109,8 @@ newServerState lg path = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO False
+    <*> newTVarIO defaultOptions
+    <*> newTVarIO defaultKeymap
     <*> pure lg
     <*> pure path
 

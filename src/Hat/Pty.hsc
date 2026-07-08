@@ -78,14 +78,21 @@ setWinsize (Fd fd) sz =
 sigWinch :: Signal
 sigWinch = #{const SIGWINCH}
 
--- | Current size of a terminal, e.g. the client's own tty.
+-- | Current size of a terminal, e.g. the client's own tty. Falls back
+-- to 80x24 when the fd is not a terminal.
 getWinsize :: Fd -> IO Size
 getWinsize (Fd fd) =
     allocaBytes #{size struct winsize} $ \ws -> do
-        _ <- c_ioctl fd #{const TIOCGWINSZ} ws
-        r <- #{peek struct winsize, ws_row} ws :: IO CUShort
-        c <- #{peek struct winsize, ws_col} ws :: IO CUShort
-        pure Size { rows = fromIntegral r, cols = fromIntegral c }
+        rc <- c_ioctl fd #{const TIOCGWINSZ} ws
+        if rc /= 0
+            then pure Size { rows = 24, cols = 80 }
+            else do
+                r <- #{peek struct winsize, ws_row} ws :: IO CUShort
+                c <- #{peek struct winsize, ws_col} ws :: IO CUShort
+                if r == 0 || c == 0
+                    then pure Size { rows = 24, cols = 80 }
+                    else pure Size
+                        { rows = fromIntegral r, cols = fromIntegral c }
 
 spawn :: Spawn -> IO PtyHandle
 spawn s = do

@@ -2,6 +2,8 @@ module Hat.Server.KeysSpec (spec) where
 
 import Test.Hspec
 
+import qualified Data.Map.Strict as Map
+
 import Hat.Server.Keys
 
 
@@ -41,6 +43,32 @@ spec = do
 
         it "reads utf-8 sequences as single keys" $
             map (.name) (tokenizeKeys "\xc3\xa9") `shouldBe` ["é"]
+
+    describe "routeKeys" $ do
+        let km = Map.fromList
+                [ ("prefix", Map.fromList
+                    [ ("d", [["detach-client"]])
+                    , ("C-Space", [["send-prefix"]])
+                    ])
+                , ("root", Map.fromList
+                    [ ("M-Up", [["resize-pane", "-U"]]) ])
+                ]
+            run st bs = routeKeys "C-Space" km st (tokenizeKeys bs)
+        it "passes plain input through, coalesced" $
+            run NoPrefix "hello" `shouldBe` (NoPrefix, [Passthrough "hello"])
+        it "arms on prefix and runs the bound command" $
+            run NoPrefix "\x00\&d" `shouldBe`
+                (NoPrefix, [RunCommands [["detach-client"]]])
+        it "holds the armed state across chunks" $ do
+            run NoPrefix "\x00" `shouldBe` (PrefixArmed, [])
+            run PrefixArmed "d" `shouldBe`
+                (NoPrefix, [RunCommands [["detach-client"]]])
+        it "runs root-table bindings without the prefix" $
+            run NoPrefix "\ESC\ESC[A" `shouldBe`
+                (NoPrefix, [RunCommands [["resize-pane", "-U"]]])
+        it "swallows unbound prefixed keys" $
+            run NoPrefix "\x00q after" `shouldBe`
+                (NoPrefix, [Passthrough " after"])
 
     describe "parseKeyName" $ do
         it "parses plain characters" $ do

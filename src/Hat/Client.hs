@@ -91,6 +91,7 @@ shuttle sock = do
                 RingBell -> B.hPut stdout "\BEL" >> receiver
                 Message _ -> receiver  -- server renders toasts into frames
                 DetachOk -> pure Detached
+                CommandDone -> receiver
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
                 Welcome _ -> receiver
@@ -122,5 +123,6 @@ runControl sock cmdline = do
             Nothing -> pure SessionEnded
             Just (Right (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain
             Just (Right (ServerError e)) -> pure (Rejected e)
+            Just (Right CommandDone) -> pure SessionEnded
             Just (Right Exited) -> pure SessionEnded
             _ -> drain

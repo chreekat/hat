@@ -3,6 +3,7 @@ module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless, when)
+import qualified Data.List as List
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
 import System.Environment (lookupEnv)
@@ -29,12 +30,15 @@ data Driver = Driver
     }
 
 startClient :: FilePath -> FilePath -> IO Driver
-startClient hatBin sockPath = do
+startClient hatBin sockPath = startClientWith ["-S", sockPath] hatBin
+
+startClientWith :: [String] -> FilePath -> IO Driver
+startClientWith hatArgs hatBin = do
     -- Pane children need terminfo for TERM=screen-256color on NixOS.
     terminfo <- lookupEnv "TERMINFO_DIRS"
     p <- spawn Spawn
         { cmd = hatBin
-        , args = ["-S", sockPath]
+        , args = hatArgs
         , env =
             [ ("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
             , ("TERM", "xterm-256color")
@@ -267,7 +271,7 @@ spec = do
         awaitScreen c1 "0:sh*"
 
         -- last-window toggles back to 1.
-        typeInto c1 "\x02\&a"
+        typeInto c1 "\x02\&l"
         awaitScreen c1 "window-one-marker"
 
         -- Kill both shells; session and server end.
@@ -276,6 +280,60 @@ spec = do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    it "loads a user config: C-Space prefix, vim keys, base-index 1" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+            confPath = dir <> "/hat.conf"
+        writeFile confPath $ unlines
+            [ "# hat test config"
+            , "set -g prefix C-Space"
+            , "unbind C-b"
+            , "set -g base-index 1"
+            , "set -g status-position top"
+            , "bind v split-window -h -c '#{pane_current_path}'"
+            , "bind s split-window -v"
+            , "bind h select-pane -L"
+            , "bind l select-pane -R"
+            , "bind X kill-pane"
+            , "bind r source-file " <> confPath <> " \\; display-message reloaded"
+            ]
+        c1 <- startClientWith ["-S", sockPath, "-f", confPath] hatBin
+        -- base-index 1 shows in the status line, at the TOP
+        awaitScreen c1 "1:sh*"
+        awaitWith "status on top row" (\d -> do
+            scr <- Emu.snapshot d.screen
+            pure ("1:sh*" `T.isInfixOf` Emu.screenRowText scr 0)) c1
+
+        -- C-Space v splits; C-b must do nothing (unbound).
+        typeInto c1 "\x00v"
+        awaitScreen c1 "\x2502"
+        typeInto c1 "echo cfg-right-pane\r"
+        awaitScreen c1 "cfg-right-pane"
+        typeInto c1 "\x00h"
+        typeInto c1 "echo cfg-left-pane\r"
+        awaitScreen c1 "cfg-left-pane"
+
+        -- config reload binding shows the toast
+        typeInto c1 "\x00r"
+        awaitScreen c1 "reloaded"
+
+        -- detach still works via the default d binding under new prefix
+        typeInto c1 "\x00\&d"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
+        -- control commands from a shell
+        out1 <- readProcess hatBin ["-S", sockPath, "list-sessions"] ""
+        out1 `shouldSatisfy` List.isInfixOf "1 windows"
+        out2 <- readProcess hatBin ["-S", sockPath, "list-panes"] ""
+        out2 `shouldSatisfy` List.isInfixOf "%"
+        out3 <- readProcess hatBin ["-S", sockPath, "display-message", "-p", "hello-cli"] ""
+        out3 `shouldSatisfy` List.isInfixOf "hello-cli"
+        _ <- readProcess hatBin ["-S", sockPath, "kill-server"] ""
+        gone <- pollServerGone sockPath 50
+        gone `shouldBe` True
 
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
