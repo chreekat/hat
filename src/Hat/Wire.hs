@@ -11,6 +11,7 @@
 -- mismatch is fatal.
 module Hat.Wire
     ( protocolVersion
+    , Intent (..)
     , ClientToServer (..)
     , ServerToClient (..)
     , DrawOp (..)
@@ -48,12 +49,20 @@ deriving anyclass instance Serialise Color
 deriving instance Generic Style
 deriving anyclass instance Serialise Style
 
+-- | Why this client connected: to attach and render, or only to issue
+-- commands (e.g. @hat kill-server@ from a shell).
+data Intent = AttachIntent | ControlIntent
+    deriving (Eq, Show, Generic)
+    deriving anyclass (Serialise)
+
 data ClientToServer
     = Hello
         { protoVersion :: Word16
         , term         :: Text
         , env          :: [(Text, Text)]
         , size         :: Size
+        , cwd          :: Text
+        , intent       :: Intent
         }
     | Input ByteString      -- ^ raw bytes from the client's tty
     | Resize Size

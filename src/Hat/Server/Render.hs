@@ -6,6 +6,7 @@ module Hat.Server.Render
     ( Frame
     , blankFrame
     , composeFrame
+    , overlayGrid
     , diffFrame
     , fullRedraw
     ) where
@@ -31,6 +32,20 @@ composeFrame sz grid = V.generate (fromIntegral sz.rows) $ \r ->
     let src = maybe V.empty id (grid V.!? r)
         w = fromIntegral sz.cols
     in V.generate w $ \c -> maybe blankCell id (src V.!? c)
+
+-- | Draw a pane grid into a frame at the given rectangle, clipping to
+-- both the rect and the frame.
+overlayGrid :: Frame -> Rect -> V.Vector (V.Vector Cell) -> Frame
+overlayGrid frame rect grid = V.imap overlayRow frame
+  where
+    overlayRow r frameRow
+        | r < rect.startRow || r >= rect.endRow = frameRow
+        | otherwise =
+            let src = maybe V.empty (\x -> x) (grid V.!? (r - rect.startRow))
+            in V.imap (overlayCell src) frameRow
+    overlayCell src c cell
+        | c < rect.startCol || c >= rect.endCol = cell
+        | otherwise = maybe blankCell (\x -> x) (src V.!? (c - rect.startCol))
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]

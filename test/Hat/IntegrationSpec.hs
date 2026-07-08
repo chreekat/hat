@@ -1,0 +1,209 @@
+-- | End-to-end tests driving the real @hat@ binary through a pty.
+module Hat.IntegrationSpec (spec) where
+
+import Control.Concurrent (threadDelay)
+import Control.Monad (unless, when)
+import qualified Data.ByteString.Char8 as B8
+import Data.IORef
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode (..))
+import System.Posix.Temp (mkdtemp)
+import System.Process (readProcess)
+import System.Timeout (timeout)
+import Test.Hspec
+
+import qualified Data.Text as T
+
+import Hat.Geometry
+import Hat.Pty
+import Hat.Socket (connectTo)
+import qualified Hat.Term.Emulator as Emu
+
+-- A hat client running inside a test-owned pty. The raw transcript
+-- catches out-of-band messages ("[detached]"); the emulator models
+-- what a human would see on the screen.
+data Driver = Driver
+    { pty :: PtyHandle
+    , transcript :: IORef B8.ByteString
+    , screen :: Emu.Emulator
+    }
+
+startClient :: FilePath -> FilePath -> IO Driver
+startClient hatBin sockPath = do
+    -- Pane children need terminfo for TERM=screen-256color on NixOS.
+    terminfo <- lookupEnv "TERMINFO_DIRS"
+    p <- spawn Spawn
+        { cmd = hatBin
+        , args = ["-S", sockPath]
+        , env =
+            [ ("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
+            , ("TERM", "xterm-256color")
+            , ("SHELL", "/bin/sh")
+            , ("HOME", "/tmp")
+            , ("PS1", "$ ")
+            ]
+            <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
+        , cwd = Just "/tmp"
+        , size = Size { rows = 24, cols = 80 }
+        }
+    t <- newIORef ""
+    emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 1000
+    pure Driver { pty = p, transcript = t, screen = emu }
+
+ingest :: Driver -> B8.ByteString -> IO ()
+ingest d chunk = do
+    modifyIORef' d.transcript (<> chunk)
+    _ <- Emu.feed d.screen chunk
+    pure ()
+
+screenText :: Driver -> IO T.Text
+screenText d = do
+    scr <- Emu.snapshot d.screen
+    pure $ T.unlines [Emu.screenRowText scr r | r <- [0 .. 23]]
+
+-- Read until the given check passes; fail after 10s.
+awaitWith :: String -> (Driver -> IO Bool) -> Driver -> IO ()
+awaitWith what check d = do
+    r <- timeout 10_000_000 go
+    case r of
+        Just () -> pure ()
+        Nothing -> do
+            scr <- screenText d
+            expectationFailure $
+                "timed out waiting for " <> what
+                <> "\nscreen:\n" <> T.unpack scr
+  where
+    go = do
+        ok <- check d
+        if ok
+            then pure ()
+            else do
+                chunk <- readPty d.pty
+                when (B8.null chunk) $
+                    expectationFailure ("pty closed while waiting for " <> what)
+                ingest d chunk
+                go
+
+-- What a user would see on screen.
+awaitScreen :: Driver -> T.Text -> IO ()
+awaitScreen d needle = awaitWith (show needle) check d
+  where
+    check drv = T.isInfixOf needle <$> screenText drv
+
+-- Raw bytes, for out-of-band client messages after the alt screen closes.
+awaitOutput :: Driver -> B8.ByteString -> IO ()
+awaitOutput d needle = awaitWith (show needle) check d
+  where
+    check drv = B8.isInfixOf needle <$> readIORef drv.transcript
+
+awaitExit :: Driver -> IO ProcessStatus
+awaitExit d = do
+    r <- timeout 10_000_000 drainAndWait
+    maybe (expectationFailure "timed out waiting for exit"
+            >> waitExit d.pty) pure r
+  where
+    drainAndWait = do
+        chunk <- readPty d.pty
+        if B8.null chunk
+            then waitExit d.pty
+            else do
+                ingest d chunk
+                drainAndWait
+
+typeInto :: Driver -> B8.ByteString -> IO ()
+typeInto d = writePty d.pty
+
+spec :: Spec
+spec = do
+    it "attaches, survives detach/reattach, and shuts down cleanly" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+
+        -- First client autostarts the server and gets a shell.
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+        typeInto c1 "echo hat-integration-$((6*7))\r"
+        awaitScreen c1 "hat-integration-42"
+
+        -- Detach with prefix-d.
+        typeInto c1 "\x02\&d"
+        status1 <- awaitExit c1
+        status1 `shouldBe` Exited ExitSuccess
+        t1 <- readIORef c1.transcript
+        t1 `shouldSatisfy` B8.isInfixOf "[detached]"
+
+        -- Server must still be alive.
+        alive <- connectTo sockPath
+        alive `shouldSatisfy` \case
+            Just _ -> True
+            Nothing -> False
+
+        -- Reattach: the redrawn screen still shows our marker.
+        c2 <- startClient hatBin sockPath
+        awaitScreen c2 "hat-integration-42"
+
+        -- Ending the shell ends the session, the client, and the server.
+        typeInto c2 "exit\r"
+        status2 <- awaitExit c2
+        status2 `shouldBe` Exited ExitSuccess
+        t2 <- readIORef c2.transcript
+        t2 `shouldSatisfy` B8.isInfixOf "[exited]"
+
+        gone <- pollServerGone sockPath 50
+        unless gone $ expectationFailure "server did not exit"
+
+    it "renders vim to two simultaneous clients" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+        typeInto c1 "vim -u NONE -i NONE\r"
+        awaitScreen c1 "VIM - Vi IMproved"
+
+        -- A second client on the same session sees vim too.
+        c2 <- startClient hatBin sockPath
+        awaitScreen c2 "VIM - Vi IMproved"
+
+        -- Typing in one client shows up in both.
+        typeInto c1 "ihello from hat"
+        awaitScreen c2 "hello from hat"
+        awaitScreen c1 "hello from hat"
+
+        -- Quit vim, then the shell; both clients exit.
+        typeInto c1 "\ESC:q!\r"
+        awaitScreen c1 "$"
+        typeInto c1 "exit\r"
+        status1 <- awaitExit c1
+        status2 <- awaitExit c2
+        status1 `shouldBe` Exited ExitSuccess
+        status2 `shouldBe` Exited ExitSuccess
+        t2 <- readIORef c2.transcript
+        t2 `shouldSatisfy` B8.isInfixOf "[exited]"
+
+    it "runs htop (colors, alt screen, live redraw)" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+        typeInto c1 "htop\r"
+        awaitScreen c1 "Mem"
+        awaitScreen c1 "Tasks"
+        typeInto c1 "q"
+        awaitScreen c1 "$"
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
+pollServerGone :: FilePath -> Int -> IO Bool
+pollServerGone _ 0 = pure False
+pollServerGone path n = do
+    m <- connectTo path
+    case m of
+        Nothing -> pure True
+        Just _ -> do
+            threadDelay 100_000
+            pollServerGone path (n - 1)

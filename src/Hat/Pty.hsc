@@ -14,15 +14,18 @@ module Hat.Pty
     , waitExit
     , closePty
     , pid
+    , getWinsize
+    , sigWinch
     , ProcessStatus (..)
     ) where
 
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
-import Control.Exception (SomeException, catch, try)
+import Control.Exception (IOException, SomeException, catch, try)
 import Control.Monad (when)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -37,7 +40,7 @@ import System.Posix.IO
 import System.Posix.Process
     (ProcessStatus (..), createSession, executeFile, exitImmediately,
      forkProcess, getProcessStatus)
-import System.Posix.Signals (signalProcess, sigHUP)
+import System.Posix.Signals (Signal, signalProcess, sigHUP)
 import System.Posix.Terminal (openPseudoTerminal)
 import System.Posix.Types (Fd (..), ProcessID)
 
@@ -71,6 +74,19 @@ setWinsize (Fd fd) sz =
         _ <- c_ioctl fd #{const TIOCSWINSZ} ws
         pure ()
 
+-- | The unix package doesn't export SIGWINCH.
+sigWinch :: Signal
+sigWinch = #{const SIGWINCH}
+
+-- | Current size of a terminal, e.g. the client's own tty.
+getWinsize :: Fd -> IO Size
+getWinsize (Fd fd) =
+    allocaBytes #{size struct winsize} $ \ws -> do
+        _ <- c_ioctl fd #{const TIOCGWINSZ} ws
+        r <- #{peek struct winsize, ws_row} ws :: IO CUShort
+        c <- #{peek struct winsize, ws_col} ws :: IO CUShort
+        pure Size { rows = fromIntegral r, cols = fromIntegral c }
+
 spawn :: Spawn -> IO PtyHandle
 spawn s = do
     (masterFd, slaveFd) <- openPseudoTerminal
@@ -93,7 +109,7 @@ spawn s = do
     exitVar <- newEmptyMVar
     _ <- forkIO $ do
         st <- getProcessStatus True False childPid
-            `catch` \(_ :: SomeException) -> pure Nothing
+            `catch` \(_ :: IOException) -> pure Nothing
         for_ st (putMVar exitVar)
     pure PtyHandle
         { master = masterFd
@@ -112,12 +128,12 @@ readPty :: PtyHandle -> IO ByteString
 readPty pty = do
     r <- try (B.hGetSome pty.handle 65536)
     pure $ case r of
-        Left (_ :: SomeException) -> B.empty  -- Linux gives EIO at pty EOF
+        Left (_ :: IOException) -> B.empty  -- Linux gives EIO at pty EOF
         Right bs -> bs
 
 writePty :: PtyHandle -> ByteString -> IO ()
 writePty pty bs =
-    B.hPut pty.handle bs `catch` \(_ :: SomeException) -> pure ()
+    B.hPut pty.handle bs `catch` \(_ :: IOException) -> pure ()
 
 -- | Change the pty size; the kernel delivers SIGWINCH to the child.
 resize :: PtyHandle -> Size -> IO ()
@@ -133,5 +149,5 @@ pid pty = pty.child
 -- | Hang up the pane: signal the child and close the master side.
 closePty :: PtyHandle -> IO ()
 closePty pty = do
-    signalProcess sigHUP pty.child `catch` \(_ :: SomeException) -> pure ()
-    hClose pty.handle `catch` \(_ :: SomeException) -> pure ()
+    signalProcess sigHUP pty.child `catch` \(_ :: IOException) -> pure ()
+    hClose pty.handle `catch` \(_ :: IOException) -> pure ()

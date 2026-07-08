@@ -56,7 +56,8 @@ instance Arbitrary DrawOp where
 instance Arbitrary ClientToServer where
     arbitrary = oneof
         [ Hello <$> arbitrary <*> genText <*> listOf ((,) <$> genText <*> genText)
-                <*> arbitrary
+                <*> arbitrary <*> genText
+                <*> elements [AttachIntent, ControlIntent]
         , Input . B.pack <$> arbitrary
         , Resize <$> arbitrary
         , Command <$> genText

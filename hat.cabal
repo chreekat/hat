@@ -23,9 +23,17 @@ library
     import:             defaults
     hs-source-dirs:     src
     exposed-modules:
+        Hat.Client
+        Hat.Client.Draw
+        Hat.Client.Tty
         Hat.Geometry
+        Hat.Log
+        Hat.Model
+        Hat.Model.Ids
         Hat.Pty
+        Hat.Server
         Hat.Server.Input
+        Hat.Server.Layout
         Hat.Server.Render
         Hat.Socket
         Hat.Term.Cell
@@ -35,13 +43,18 @@ library
     c-sources:          cbits/hat_shim.c
     extra-libraries:    vterm
     build-depends:
+        aeson,
+        async,
         base,
         bytestring,
         containers,
+        directory,
+        filepath,
         network,
         serialise,
         stm,
         text,
+        time,
         unix,
         vector
 
@@ -52,7 +65,10 @@ executable hat
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
     build-depends:
         base,
-        hat
+        hat,
+        network,
+        text,
+        unix
 
 executable gen-fixtures
     import:             defaults
@@ -72,6 +88,7 @@ test-suite hat-test
     hs-source-dirs:     test
     main-is:            Main.hs
     other-modules:
+        Hat.IntegrationSpec
         Hat.PtySpec
         Hat.SocketSpec
         Hat.Server.InputSpec
@@ -84,6 +101,7 @@ test-suite hat-test
         base,
         bytestring,
         hspec,
+        process,
         QuickCheck,
         hat,
         vector,

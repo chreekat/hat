@@ -1,0 +1,126 @@
+-- | The thin client: raw tty, byte shuttling, resize events. All the
+-- multiplexer logic lives on the other side of the socket.
+module Hat.Client
+    ( ExitReason (..)
+    , runClient
+    , runControl
+    ) where
+
+import Control.Concurrent.Async (race)
+import Control.Concurrent.STM
+import Control.Exception (SomeException, catch, finally)
+import Control.Monad (forever)
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as B8
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import Network.Socket (Socket)
+import System.Directory (getCurrentDirectory)
+import System.Environment (getEnvironment, lookupEnv)
+import System.IO
+import System.Posix.Signals (Handler (Catch), installHandler)
+
+import Hat.Client.Draw
+import Hat.Client.Tty
+import Hat.Pty (sigWinch)
+import Hat.Wire
+
+data ExitReason
+    = Detached
+    | SessionEnded
+    | ServerDied
+    | Rejected Text
+    deriving (Eq, Show)
+
+hello :: Intent -> IO ClientToServer
+hello intent = do
+    term <- maybe "xterm" T.pack <$> lookupEnv "TERM"
+    env0 <- getEnvironment
+    sz <- ttySize
+    dir <- getCurrentDirectory
+    pure Hello
+        { protoVersion = protocolVersion
+        , term = term
+        , env = [(T.pack k, T.pack v) | (k, v) <- env0]
+        , size = sz
+        , cwd = T.pack dir
+        , intent = intent
+        }
+
+-- | Attach to the server and shuttle bytes until detach or death.
+runClient :: Socket -> IO ExitReason
+runClient sock = do
+    sendMessage sock =<< hello AttachIntent
+    greeting <- recvMessage sock
+    case greeting of
+        Just (Right (Welcome _)) -> do
+            hSetBuffering stdout NoBuffering
+            hSetBuffering stdin NoBuffering
+            withRawMode $
+                (B.hPut stdout enterAltScreen >> shuttle sock)
+                    `finally` B.hPut stdout leaveAltScreen
+        Just (Right (ServerError e)) -> pure (Rejected e)
+        Just (Right _) -> pure (Rejected "unexpected greeting")
+        Just (Left e) -> pure (Rejected (T.pack e))
+        Nothing -> pure ServerDied
+
+shuttle :: Socket -> IO ExitReason
+shuttle sock = do
+    outbox <- newTQueueIO
+    _ <- installHandler sigWinch
+        (Catch $ ttySize >>= atomically . writeTQueue outbox . Resize)
+        Nothing
+    -- One writer owns the socket; stdin and SIGWINCH both feed it.
+    r <- race (receiver `catch` \(_ :: SomeException) -> pure ServerDied)
+              (race (stdinReader outbox) (sender outbox))
+    pure $ case r of
+        Left reason -> reason
+        Right _ -> ServerDied
+  where
+    receiver = do
+        m <- recvMessage sock
+        case m of
+            Nothing -> pure ServerDied
+            Just (Left _) -> pure ServerDied
+            Just (Right msg) -> case msg of
+                Draw ops -> B.hPut stdout (opsToAnsi ops) >> receiver
+                SetTitle t -> do
+                    B.hPut stdout ("\ESC]0;" <> TE.encodeUtf8 t <> "\BEL")
+                    receiver
+                RingBell -> B.hPut stdout "\BEL" >> receiver
+                Message _ -> receiver  -- server renders toasts into frames
+                DetachOk -> pure Detached
+                Exited -> pure SessionEnded
+                ServerError e -> pure (Rejected e)
+                Welcome _ -> receiver
+    stdinReader outbox = forever $ do
+        bs <- B.hGetSome stdin 4096
+        if B.null bs
+            then atomically (writeTQueue outbox Detach)
+            else atomically (writeTQueue outbox (Input bs))
+    sender outbox = forever $ do
+        msg <- atomically (readTQueue outbox)
+        sendMessage sock msg
+
+-- | Send one command line and print the responses until the server
+-- closes or answers. Used by @hat <command>@ from a shell.
+runControl :: Socket -> Text -> IO ExitReason
+runControl sock cmdline = do
+    sendMessage sock =<< hello ControlIntent
+    greeting <- recvMessage sock
+    case greeting of
+        Just (Right (Welcome _)) -> do
+            sendMessage sock (Command cmdline)
+            drain
+        Just (Right (ServerError e)) -> pure (Rejected e)
+        _ -> pure ServerDied
+  where
+    drain = do
+        m <- recvMessage sock
+        case m of
+            Nothing -> pure SessionEnded
+            Just (Right (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain
+            Just (Right (ServerError e)) -> pure (Rejected e)
+            Just (Right Exited) -> pure SessionEnded
+            _ -> drain
