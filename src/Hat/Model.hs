@@ -25,6 +25,7 @@ import Data.IORef (IORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import Data.Time.Clock (UTCTime)
 import Network.Socket (Socket)
 
 import Hat.Geometry
@@ -48,6 +49,7 @@ data ServerState = ServerState
     , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
     , options     :: TVar Options
     , keymap      :: TVar Keymap
+    , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , logger      :: Logger
     , sockPath    :: FilePath
     }
@@ -111,6 +113,7 @@ newServerState defaultKeymap lg path = ServerState
     <*> newTVarIO False
     <*> newTVarIO defaultOptions
     <*> newTVarIO defaultKeymap
+    <*> newTVarIO Map.empty
     <*> pure lg
     <*> pure path
 

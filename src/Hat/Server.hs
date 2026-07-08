@@ -23,6 +23,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Read as TR
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
@@ -43,6 +44,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import qualified Hat.Pty
+import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Render
@@ -80,11 +82,14 @@ acquireLock lockPath = do
         Left (_ :: IOException) -> False
         Right () -> True
 
+-- Exit once every session is gone AND every attached client has
+-- drained and disconnected, so nobody's final Exited message is cut off.
 waitIdle :: ServerState -> IO ()
 waitIdle st = atomically $ do
     armed <- readTVar st.everAttached
     sess <- readTVar st.sessions
-    check (armed && Map.null sess)
+    cs <- readTVar st.clients
+    check (armed && Map.null sess && Map.null cs)
 
 -- Configuration --------------------------------------------------------
 
@@ -566,33 +571,134 @@ toastCells t width = lineCells toastStyle width t
     toastStyle = Cell.defaultStyle
         { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
 
--- The default status line; the format engine (M7) will replace this.
-statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
-statusCells _st sess width = do
-    (sname, entries) <- atomically $ do
-        sname <- readTVar sess.name
-        ws <- readTVar sess.windows
-        cur <- readTVar sess.currentIx
-        mlast <- readTVar sess.lastIx
-        entries <- forM (Map.toAscList ws) $ \(ix, win) -> do
-            wname <- readTVar win.name
-            bell <- readTVar win.bellFlag
-            let flag
-                    | ix == cur = "*"
-                    | Just ix == mlast = "-"
-                    | otherwise = ""
-                bellFlag = if bell then "!" else ""
-            pure (tshow ix <> ":" <> wname <> flag <> bellFlag)
-        pure (sname, entries)
-    now <- getZonedTime
+-- Session-level format environment for the active window and pane.
+sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
+sessionFormatEnv st sess = do
     hostname <- nodeName <$> getSystemID
-    let left = "[" <> sname <> "] " <> T.intercalate " " entries
-        time = T.pack (formatTime defaultTimeLocale "%H:%M %d-%b-%y" now)
-        right = time <> " " <> T.pack hostname <> " "
-        pad = width - T.length left - T.length right
+    (sname, wEnv, mactive, nclients) <- atomically $ do
+        sname <- readTVar sess.name
+        mwin <- currentWindow sess
+        cur <- readTVar sess.currentIx
+        wEnv <- case mwin of
+            Nothing -> pure []
+            Just win -> do
+                wname <- readTVar win.name
+                pure [ ("window_index", tshow cur)
+                     , ("window_name", wname)
+                     ]
+        mactive <- maybe (pure Nothing) activePane mwin
+        cs <- sessionClients st sess.id
+        pure (sname, wEnv, mactive, length cs)
+    pEnv <- case mactive of
+        Nothing -> pure []
+        Just pane -> do
+            dir <- paneCurrentPath pane
+            title <- Emu.title pane.emulator
+            pure [ ("pane_current_path", T.pack dir)
+                 , ("pane_title", title)
+                 , ("pane_id", "%" <> tshow (rawPane pane.id))
+                 ]
+    pure . Map.fromList $
+        [ ("session_name", sname)
+        , ("host", T.pack hostname)
+        , ("window_active_clients", tshow nclients)
+        ]
+        <> wEnv <> pEnv
+
+-- Resolve #(cmd) through a 15-second cache; refreshes happen in the
+-- background so the status line never blocks on a slow script.
+resolveShell :: ServerState -> Text -> IO Text
+resolveShell st cmdText = do
+    now <- getCurrentTime
+    cache <- readTVarIO st.shellCache
+    case Map.lookup cmdText cache of
+        Just (at, val)
+            | diffUTCTime now at < 15 -> pure val
+            | otherwise -> refresh now val
+        Nothing -> refresh now ""
+  where
+    refresh now oldVal = do
+        -- Optimistically bump the timestamp so only one refresh runs.
+        atomically $ modifyTVar' st.shellCache
+            (Map.insert cmdText (now, oldVal))
+        void . forkIO $ do
+            r <- try (readCreateProcessWithExitCode
+                (shell (T.unpack cmdText)) "")
+            let val = case r of
+                    Right (ExitSuccess, out, _) ->
+                        T.strip (T.takeWhile (/= '\n') (T.pack out))
+                    Right (ExitFailure _, _, _) -> ""
+                    Left (_ :: SomeException) -> ""
+            done <- getCurrentTime
+            atomically $ modifyTVar' st.shellCache
+                (Map.insert cmdText (done, val))
+            atomically (bumpDirty st)
+        pure oldVal
+
+-- | Expand a format string fully: #{...}, cached #(...), then strftime.
+expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
+expandFormat st env fmt = do
+    -- Pre-resolve shell segments so `evaluate` stays pure.
+    resolved <- newIORef Map.empty
+    let collect t = case T.breakOn "#(" t of
+            (_, rest) | T.null rest -> pure ()
+            (_, rest) -> do
+                let inner = fst (breakBalanced (T.drop 2 rest))
+                val <- resolveShell st inner
+                modifyIORef' resolved (Map.insert inner val)
+                collect (T.drop (2 + T.length inner + 1) rest)
+    collect fmt
+    vals <- readIORef resolved
+    let expanded = evaluate env
+            (\c -> Map.findWithDefault "" c vals) fmt
+    now <- getZonedTime
+    pure (T.pack (formatTime defaultTimeLocale (T.unpack expanded) now))
+  where
+    breakBalanced = go (0 :: Int) ""
+      where
+        go depth acc t = case T.uncons t of
+            Nothing -> (acc, "")
+            Just (')', rest) | depth == 0 -> (acc, rest)
+            Just (c, rest)
+                | c == '(' -> go (depth + 1) (acc <> T.singleton c) rest
+                | c == ')' -> go (depth - 1) (acc <> T.singleton c) rest
+                | otherwise -> go depth (acc <> T.singleton c) rest
+
+statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
+statusCells st sess width = do
+    opts <- readTVarIO st.options
+    env <- sessionFormatEnv st sess
+    let optRaw name def = Map.findWithDefault def name opts.raw
+        leftFmt = optRaw "status-left" "[#S] "
+        rightFmt = optRaw "status-right" "%H:%M %d-%b-%y #H"
+        winFmt = optRaw "window-status-format" "#I:#W#F"
+        winCurFmt = optRaw "window-status-current-format" "#I:#W#F"
+    entries <- do
+        ws <- readTVarIO sess.windows
+        cur <- readTVarIO sess.currentIx
+        mlast <- readTVarIO sess.lastIx
+        forM (Map.toAscList ws) $ \(ix, win) -> do
+            (wname, bell) <- atomically $
+                (,) <$> readTVar win.name <*> readTVar win.bellFlag
+            let flags = T.concat
+                    [ if ix == cur then "*"
+                      else if Just ix == mlast then "-" else ""
+                    , if bell then "!" else ""
+                    ]
+                wenv = Map.union (Map.fromList
+                    [ ("window_index", tshow ix)
+                    , ("window_name", wname)
+                    , ("window_flags", flags)
+                    ]) env
+                fmt = if ix == cur then winCurFmt else winFmt
+            expandFormat st wenv fmt
+    left <- expandFormat st env leftFmt
+    right <- expandFormat st env rightFmt
+    let body = left <> T.intercalate " " entries
+        pad = width - T.length body - T.length right
         line
-            | pad >= 0 = left <> T.replicate pad " " <> right
-            | otherwise = T.take width (left <> " " <> right)
+            | pad >= 0 = body <> T.replicate pad " " <> right
+            | otherwise = T.take width (body <> " " <> right)
     pure (lineCells statusStyle width line)
 
 -- Input ---------------------------------------------------------------------
@@ -915,10 +1021,14 @@ cmdNewWindow st mclient args = do
         srvOpts <- readTVarIO st.options
         let shellCmd = maybe "/bin/sh" T.unpack
                 (List.lookup "SHELL" sess.environ)
-            dir = maybe sess.startCwd T.unpack (lookup "-c" opts)
             mrun = case pos of
                 [] -> Nothing
                 ws -> Just (T.unwords ws)
+        dir <- case lookup "-c" opts of
+            Nothing -> pure sess.startCwd
+            Just d -> do
+                env <- sessionFormatEnv st sess
+                T.unpack <$> expandFormat st env d
         (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
             sess.environ (windowArea eff)
         forM_ (lookup "-n" opts) $ \nm -> atomically (writeTVar win.name nm)
@@ -1045,7 +1155,9 @@ cmdSplitWindow st mclient args = do
                     else do
                         pid <- PaneId <$> atomically (freshId st.nextPane)
                         dir <- case lookup "-c" opts of
-                            Just d -> pure (T.unpack d)
+                            Just d -> do
+                                env <- sessionFormatEnv st sess
+                                T.unpack <$> expandFormat st env d
                             Nothing -> paneCurrentPath active
                         let shellCmd = maybe "/bin/sh" T.unpack
                                 (List.lookup "SHELL" sess.environ)
@@ -1329,7 +1441,13 @@ cmdKillServer st mclient _ = do
 cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do
     let (_, flags, pos) = parseArgs ["-t"] args
-        text = T.unwords pos
+        raw = T.unwords pos
+    msess <- targetSession st mclient Nothing
+    text <- case msess of
+        Nothing -> pure raw
+        Just sess -> do
+            env <- sessionFormatEnv st sess
+            expandFormat st env raw
     if "-p" `elem` flags
         then pure [ROutput text]
         else do

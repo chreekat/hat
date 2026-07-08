@@ -3,6 +3,7 @@ import Test.Hspec
 import qualified Hat.Command.ParserSpec
 import qualified Hat.IntegrationSpec
 import qualified Hat.PtySpec
+import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
 import qualified Hat.Server.LayoutSpec
 import qualified Hat.Server.RenderSpec
@@ -22,4 +23,5 @@ main = hspec $ do
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
+    describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "integration" Hat.IntegrationSpec.spec

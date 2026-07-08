@@ -34,6 +34,7 @@ library
         Hat.Model.Options
         Hat.Pty
         Hat.Server
+        Hat.Server.Format
         Hat.Server.Keys
         Hat.Server.Layout
         Hat.Server.Render
@@ -97,6 +98,7 @@ test-suite hat-test
         Hat.IntegrationSpec
         Hat.PtySpec
         Hat.SocketSpec
+        Hat.Server.FormatSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.RenderSpec

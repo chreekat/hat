@@ -298,6 +298,7 @@ spec = do
             , "bind l select-pane -R"
             , "bind X kill-pane"
             , "bind r source-file " <> confPath <> " \\; display-message reloaded"
+            , "set -g status-right 'clients=#{window_active_clients}'"
             ]
         c1 <- startClientWith ["-S", sockPath, "-f", confPath] hatBin
         -- base-index 1 shows in the status line, at the TOP
@@ -314,6 +315,9 @@ spec = do
         typeInto c1 "\x00h"
         typeInto c1 "echo cfg-left-pane\r"
         awaitScreen c1 "cfg-left-pane"
+
+        -- the format engine drives the status line
+        awaitScreen c1 "clients=1"
 
         -- config reload binding shows the toast
         typeInto c1 "\x00r"
