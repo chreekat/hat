@@ -92,6 +92,7 @@ test-suite hat-test
         Hat.PtySpec
         Hat.SocketSpec
         Hat.Server.InputSpec
+        Hat.Server.LayoutSpec
         Hat.Server.RenderSpec
         Hat.Term.EmulatorSpec
         Hat.Term.GoldenSpec
@@ -100,6 +101,7 @@ test-suite hat-test
     build-depends:
         base,
         bytestring,
+        containers,
         hspec,
         process,
         QuickCheck,

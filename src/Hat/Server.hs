@@ -26,6 +26,7 @@ import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
 import qualified System.Posix.IO as PIO
+import qualified System.Posix.Files as PFiles
 import System.Posix.Process (getProcessID)
 
 import Hat.Geometry
@@ -186,6 +187,7 @@ createSession st h = do
             , currentIx = currentVar
             , lastIx = lastVar
             , lastSize = sizeVar
+            , environ = h.env
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -282,6 +284,16 @@ startPaneReader st sid win pane = void . forkIO $ loop
                     Emu.ScreenChanged -> atomically (bumpDirty st)
                 loop
 
+-- Pane rects and borders for a window, honoring zoom.
+windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
+windowArrange eff win = do
+    mz <- readTVar win.zoomed
+    lay <- readTVar win.layout
+    ps <- readTVar win.panes
+    pure $ case mz of
+        Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
+        _ -> arrange (sizeRect eff) lay
+
 paneDied :: ServerState -> SessionId -> Window -> Pane -> IO ()
 paneDied st sid win pane = do
     _ <- Hat.Pty.waitExit pane.pty
@@ -290,14 +302,20 @@ paneDied st sid win pane = do
     sessionGone <- atomically $ do
         writeTVar pane.dead True
         modifyTVar' win.panes (Map.delete pane.id)
-        remaining <- readTVar win.panes
-        if not (Map.null remaining)
-            then do
-                -- M4: also drop the pane from the split tree.
-                writeTVar win.activeId (fst (Map.findMin remaining))
+        lay <- readTVar win.layout
+        mz <- readTVar win.zoomed
+        when (mz == Just pane.id) $ writeTVar win.zoomed Nothing
+        case removeLeaf pane.id lay of
+            Just lay' -> do
+                writeTVar win.layout lay'
+                active <- readTVar win.activeId
+                when (active == pane.id) $ do
+                    case layoutPanes lay' of
+                        (next : _) -> writeTVar win.activeId next
+                        [] -> pure ()
                 bumpDirty st
                 pure Nothing
-            else do
+            Nothing -> do
                 msess <- Map.lookup sid <$> readTVar st.sessions
                 case msess of
                     Nothing -> pure Nothing
@@ -318,6 +336,7 @@ paneDied st sid win pane = do
                                 bumpDirty st
                                 pure Nothing
     forM_ sessionGone $ \_ -> broadcast st sid Exited
+    applySessionSize st sid
 
 -- Sizing -------------------------------------------------------------
 
@@ -340,10 +359,10 @@ applySessionSize st sid = do
                 writeTVar sess.lastSize eff
                 ws <- readTVar sess.windows
                 resizes <- forM (Map.elems ws) $ \win -> do
-                    lay <- readTVar win.layout
+                    (rects, _) <- windowArrange eff win
                     ps <- readTVar win.panes
                     pure [ (p, rectSize rect)
-                         | (pidL, rect) <- paneRects eff lay
+                         | (pidL, rect) <- rects
                          , Just p <- [Map.lookup pidL ps]
                          ]
                 forM_ cs $ \c -> writeTVar c.needsFull True
@@ -391,15 +410,15 @@ renderOnce st client = do
                     Nothing -> pure Nothing
                     Just win -> do
                         eff <- readTVar sess.lastSize
-                        lay <- readTVar win.layout
+                        (rects, borders) <- windowArrange eff win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
-                        pure (Just (eff, lay, ps, active))
+                        pure (Just (rects, borders, ps, active))
     (frame, cursor) <- case view of
         Nothing -> pure (blankFrame csize, (Pos 0 0, False))
-        Just (eff, lay, ps, active) -> do
-            let rects = paneRects eff lay
-            base <- foldM' (blankFrame csize) rects $ \acc (pidL, rect) ->
+        Just (rects, borders, ps, active) -> do
+            base0 <- pure (applyBorders (blankFrame csize) borders)
+            base <- foldM' base0 rects $ \acc (pidL, rect) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure acc
                     Just pane -> do
@@ -484,17 +503,149 @@ clientActivePane st client = atomically $ do
                 Nothing -> pure Nothing
                 Just win -> activePane win
 
--- The M2 binding table. M6 replaces this with a real keymap.
+-- The hardcoded binding table. M6 replaces this with a real keymap.
 performPrefixed :: ServerState -> Client -> Word8 -> IO Bool
-performPrefixed st client key = case key of
-    0x64 {- d -} -> do
+performPrefixed st client key = case toEnum (fromIntegral key) of
+    'd' -> do
         send client DetachOk
         pure False
+    '%' -> splitActive st client LeftRight >> pure True
+    '"' -> splitActive st client TopBottom >> pure True
+    'h' -> selectDir st client DirLeft >> pure True
+    'j' -> selectDir st client DirDown >> pure True
+    'k' -> selectDir st client DirUp >> pure True
+    'l' -> selectDir st client DirRight >> pure True
+    ';' -> selectLastPane st client >> pure True
+    'x' -> killActivePane st client >> pure True
+    'z' -> toggleZoom st client >> pure True
+    'H' -> resizeActive st client DirLeft 5 >> pure True
+    'J' -> resizeActive st client DirDown 5 >> pure True
+    'K' -> resizeActive st client DirUp 5 >> pure True
+    'L' -> resizeActive st client DirRight 5 >> pure True
     _ | key == prefixByte -> do
         mpane <- clientActivePane st client
-        forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty (B8.pack [toEnum (fromIntegral key)])
+        forM_ mpane $ \pane ->
+            Hat.Pty.writePty pane.pty (B8.pack [toEnum (fromIntegral key)])
         pure True
     _ -> pure True  -- unbound key: ignore
+
+-- | The session and current window of a client, if both exist.
+clientView :: ServerState -> Client -> STM (Maybe (Session, Window))
+clientView st client = do
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Nothing -> pure Nothing
+        Just sess -> do
+            mwin <- currentWindow sess
+            pure ((,) sess <$> mwin)
+
+-- | Where is a pane's child process now? /proc, with a fallback.
+paneCurrentPath :: Pane -> IO FilePath
+paneCurrentPath pane = do
+    r <- try (PFiles.readSymbolicLink
+        ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/cwd"))
+    pure $ case r of
+        Left (_ :: IOException) -> pane.startCwd
+        Right dir -> dir
+
+splitActive :: ServerState -> Client -> Orientation -> IO ()
+splitActive st client orient = do
+    mview <- atomically $ do
+        mv <- clientView st client
+        case mv of
+            Nothing -> pure Nothing
+            Just (sess, win) -> do
+                mpane <- activePane win
+                eff <- readTVar sess.lastSize
+                pure ((,,,) sess win eff <$> mpane)
+    forM_ mview $ \(sess, win, eff, active) -> do
+        -- Reject splits that would leave either side under 2 cells.
+        (rects, _) <- atomically (windowArrange eff win)
+        let mrect = List.lookup active.id rects
+            fits = case (orient, mrect) of
+                (LeftRight, Just r) -> r.endCol - r.startCol >= 5
+                (TopBottom, Just r) -> r.endRow - r.startRow >= 5
+                _ -> False
+        when fits $ do
+            pid <- PaneId <$> atomically (freshId st.nextPane)
+            dir <- paneCurrentPath active
+            let shell = maybe "/bin/sh" T.unpack
+                    (List.lookup "SHELL" sess.environ)
+            pane <- spawnPane st pid sess.id shell dir sess.environ eff
+            atomically $ do
+                modifyTVar' win.panes (Map.insert pane.id pane)
+                modifyTVar' win.layout
+                    (splitLeaf active.id orient False pane.id)
+                lastA <- readTVar win.activeId
+                writeTVar win.lastActive (Just lastA)
+                writeTVar win.activeId pane.id
+                writeTVar win.zoomed Nothing
+                bumpDirty st
+            startPaneReader st sess.id win pane
+            applySessionSize st sess.id
+
+selectDir :: ServerState -> Client -> Direction -> IO ()
+selectDir st client dir = atomically $ do
+    mv <- clientView st client
+    forM_ mv $ \(sess, win) -> do
+        eff <- readTVar sess.lastSize
+        (rects, _) <- windowArrange eff win
+        active <- readTVar win.activeId
+        forM_ (neighbor rects active dir) $ \next -> do
+            writeTVar win.lastActive (Just active)
+            writeTVar win.activeId next
+            bumpDirty st
+
+selectLastPane :: ServerState -> Client -> IO ()
+selectLastPane st client = atomically $ do
+    mv <- clientView st client
+    forM_ mv $ \(_, win) -> do
+        mlast <- readTVar win.lastActive
+        ps <- readTVar win.panes
+        forM_ mlast $ \lastP -> when (Map.member lastP ps) $ do
+            cur <- readTVar win.activeId
+            writeTVar win.lastActive (Just cur)
+            writeTVar win.activeId lastP
+            bumpDirty st
+
+killActivePane :: ServerState -> Client -> IO ()
+killActivePane st client = do
+    mpane <- clientActivePane st client
+    -- closePty hangs up the child; the pane reader sees EOF and takes
+    -- care of the tree.
+    forM_ mpane $ \pane -> Hat.Pty.closePty pane.pty
+
+toggleZoom :: ServerState -> Client -> IO ()
+toggleZoom st client = do
+    changed <- atomically $ do
+        mv <- clientView st client
+        case mv of
+            Nothing -> pure Nothing
+            Just (sess, win) -> do
+                mz <- readTVar win.zoomed
+                active <- readTVar win.activeId
+                writeTVar win.zoomed $ case mz of
+                    Just _ -> Nothing
+                    Nothing -> Just active
+                bumpDirty st
+                pure (Just sess.id)
+    forM_ changed (applySessionSize st)
+
+resizeActive :: ServerState -> Client -> Direction -> Int -> IO ()
+resizeActive st client dir delta = do
+    msid <- atomically $ do
+        mv <- clientView st client
+        case mv of
+            Nothing -> pure Nothing
+            Just (sess, win) -> do
+                eff <- readTVar sess.lastSize
+                active <- readTVar win.activeId
+                modifyTVar' win.layout
+                    (resizeSplit active dir delta (sizeRect eff))
+                bumpDirty st
+                pure (Just sess.id)
+    forM_ msid (applySessionSize st)
 
 -- Commands (a stub until M6's engine) --------------------------------
 

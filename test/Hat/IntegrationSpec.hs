@@ -198,6 +198,51 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "splits panes, navigates, zooms, and kills" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+
+        -- Vertical split (side by side); border appears.
+        typeInto c1 "\x02%"
+        awaitScreen c1 "\x2502"  -- │
+        typeInto c1 "echo right-pane-here\r"
+        awaitScreen c1 "right-pane-here"
+
+        -- Navigate left, mark that pane.
+        typeInto c1 "\x02h"
+        typeInto c1 "echo left-pane-here\r"
+        awaitScreen c1 "left-pane-here"
+
+        -- Zoom hides the border and the other pane.
+        typeInto c1 "\x02z"
+        awaitWith "zoomed (no border)" (\d -> do
+            t <- screenText d
+            pure (not ("\x2502" `T.isInfixOf` t)
+                  && "left-pane-here" `T.isInfixOf` t)) c1
+        -- Unzoom brings it back.
+        typeInto c1 "\x02z"
+        awaitScreen c1 "\x2502"
+
+        -- Horizontal split below, then kill it.
+        typeInto c1 "\x02\""
+        awaitScreen c1 "\x2500"  -- ─
+        typeInto c1 "\x02x"
+        awaitWith "bottom pane gone" (\d -> do
+            t <- screenText d
+            pure (not ("\x2500" `T.isInfixOf` t))) c1
+
+        -- Kill remaining panes; session ends.
+        typeInto c1 "exit\r"
+        awaitWith "one pane left" (\d -> do
+            t <- screenText d
+            pure (not ("\x2502" `T.isInfixOf` t))) c1
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
 pollServerGone path n = do

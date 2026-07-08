@@ -7,10 +7,12 @@ module Hat.Server.Render
     , blankFrame
     , composeFrame
     , overlayGrid
+    , applyBorders
     , diffFrame
     , fullRedraw
     ) where
 
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
@@ -46,6 +48,25 @@ overlayGrid frame rect grid = V.imap overlayRow frame
     overlayCell src c cell
         | c < rect.startCol || c >= rect.endCol = cell
         | otherwise = maybe blankCell (\x -> x) (src V.!? (c - rect.startCol))
+
+-- | Stamp border characters onto a frame.
+applyBorders :: Frame -> [(Pos, Char)] -> Frame
+applyBorders frame borders = frame V.// updates
+  where
+    byRow = Map.toList $ Map.fromListWith (<>)
+        [ (p.row, [(p.col, ch)]) | (p, ch) <- borders ]
+    updates =
+        [ (r, row V.// [ (c, borderCell ch)
+                       | (c, ch) <- cols, c < V.length row ])
+        | (r, cols) <- byRow
+        , r < V.length frame
+        , let row = frame V.! r
+        ]
+    borderCell ch = Cell
+        { text = T.singleton ch
+        , width = 1
+        , style = defaultStyle
+        }
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]
