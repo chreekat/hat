@@ -22,6 +22,8 @@ library
     import:             defaults
     hs-source-dirs:     src
     exposed-modules:
+        Hat.Geometry
+        Hat.Pty
         Hat.Socket
     build-depends:
         base,
@@ -46,10 +48,13 @@ test-suite hat-test
     hs-source-dirs:     test
     main-is:            Main.hs
     other-modules:
+        Hat.PtySpec
         Hat.SocketSpec
     ghc-options:        -threaded
     build-depends:
         base,
+        bytestring,
         hspec,
         QuickCheck,
-        hat
+        hat,
+        unix
