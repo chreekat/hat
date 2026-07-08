@@ -25,13 +25,19 @@ library
         Hat.Geometry
         Hat.Pty
         Hat.Socket
+        Hat.Term.Cell
+        Hat.Term.Emulator
+    include-dirs:       cbits
+    c-sources:          cbits/hat_shim.c
+    extra-libraries:    vterm
     build-depends:
         base,
         bytestring,
         containers,
         stm,
         text,
-        unix
+        unix,
+        vector
 
 executable hat
     import:             defaults
@@ -42,6 +48,17 @@ executable hat
         base,
         hat
 
+executable gen-fixtures
+    import:             defaults
+    hs-source-dirs:     tools
+    main-is:            GenFixtures.hs
+    ghc-options:        -threaded
+    build-depends:
+        base,
+        bytestring,
+        hat,
+        text
+
 test-suite hat-test
     import:             defaults
     type:               exitcode-stdio-1.0
@@ -50,6 +67,8 @@ test-suite hat-test
     other-modules:
         Hat.PtySpec
         Hat.SocketSpec
+        Hat.Term.EmulatorSpec
+        Hat.Term.GoldenSpec
     ghc-options:        -threaded
     build-depends:
         base,
@@ -57,4 +76,5 @@ test-suite hat-test
         hspec,
         QuickCheck,
         hat,
+        text,
         unix

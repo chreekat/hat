@@ -1,0 +1,35 @@
+#ifndef HAT_SHIM_H
+#define HAT_SHIM_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <vterm.h>
+
+/* A VTermScreenCell flattened for the Haskell FFI: no bitfields, no
+ * tagged unions. Color kind: 0 = default, 1 = indexed, 2 = rgb. */
+typedef struct {
+    uint32_t chars[VTERM_MAX_CHARS_PER_CELL];
+    int width;
+    unsigned flags; /* 1 bold, 2 underline, 4 italic, 8 reverse, 16 strike, 32 blink */
+    int fg_kind, fg_idx, fg_r, fg_g, fg_b;
+    int bg_kind, bg_idx, bg_r, bg_g, bg_b;
+} HatCell;
+
+/* Haskell-friendly callback table: scalar arguments only. Any pointer may
+ * be NULL. Registered on the vterm instance by hat_setup. */
+typedef struct {
+    void (*damage)(int start_row, int end_row, int start_col, int end_col);
+    void (*movecursor)(int row, int col, int visible);
+    void (*settermprop_bool)(int prop, int val);
+    void (*settermprop_int)(int prop, int val);
+    void (*settermprop_str)(int prop, const char *str, size_t len, int final);
+    void (*bell)(void);
+    void (*sb_pushline)(int cols, const VTermScreenCell *cells);
+    void (*output)(const char *bytes, size_t len);
+} HatCallbacks;
+
+void hat_setup(VTerm *vt, HatCallbacks *cbs);
+int hat_get_cell(VTermScreen *screen, int row, int col, HatCell *out);
+void hat_flatten_cell_at(const VTermScreenCell *cells, int i, HatCell *out);
+
+#endif
