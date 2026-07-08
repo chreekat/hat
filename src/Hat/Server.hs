@@ -4,7 +4,7 @@ module Hat.Server
     ( runServer
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -19,6 +19,9 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Time.LocalTime (getZonedTime)
+import qualified Data.Vector as V
 import Data.Word (Word8)
 import qualified Network.Socket as N
 import System.Directory (removeFile)
@@ -28,6 +31,7 @@ import System.IO (SeekMode (AbsoluteSeek))
 import qualified System.Posix.IO as PIO
 import qualified System.Posix.Files as PFiles
 import System.Posix.Process (getProcessID)
+import System.Posix.Unistd (SystemID (nodeName), getSystemID)
 
 import Hat.Geometry
 import Hat.Log
@@ -56,6 +60,10 @@ runServer path = do
     st <- newServerState lg path
     bracket (listenOn path) N.close $ \lsock -> do
         logEvent lg ServerStarted { socket = path }
+        -- Keep status-line clocks fresh.
+        _ <- forkIO $ forever $ do
+            threadDelay 15_000_000
+            atomically (bumpDirty st)
         r <- race (acceptLoop st lsock) (waitIdle st)
         case r of
             Left () -> pure ()
@@ -188,6 +196,7 @@ createSession st h = do
             , lastIx = lastVar
             , lastSize = sizeVar
             , environ = h.env
+            , startCwd = dir
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -359,7 +368,7 @@ applySessionSize st sid = do
                 writeTVar sess.lastSize eff
                 ws <- readTVar sess.windows
                 resizes <- forM (Map.elems ws) $ \win -> do
-                    (rects, _) <- windowArrange eff win
+                    (rects, _) <- windowArrange (windowArea eff) win
                     ps <- readTVar win.panes
                     pure [ (p, rectSize rect)
                          | (pidL, rect) <- rects
@@ -410,13 +419,13 @@ renderOnce st client = do
                     Nothing -> pure Nothing
                     Just win -> do
                         eff <- readTVar sess.lastSize
-                        (rects, borders) <- windowArrange eff win
+                        (rects, borders) <- windowArrange (windowArea eff) win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
-                        pure (Just (rects, borders, ps, active))
+                        pure (Just (sess, rects, borders, ps, active))
     (frame, cursor) <- case view of
         Nothing -> pure (blankFrame csize, (Pos 0 0, False))
-        Just (rects, borders, ps, active) -> do
+        Just (sess, rects, borders, ps, active) -> do
             base0 <- pure (applyBorders (blankFrame csize) borders)
             base <- foldM' base0 rects $ \acc (pidL, rect) ->
                 case Map.lookup pidL ps of
@@ -424,6 +433,11 @@ renderOnce st client = do
                     Just pane -> do
                         scr <- Emu.snapshot pane.emulator
                         pure (overlayGrid acc rect scr.cells)
+            statusRow <- statusCells st sess (fromIntegral csize.cols)
+            let withStatus
+                    | csize.rows >= 2 =
+                        base V.// [(fromIntegral csize.rows - 1, statusRow)]
+                    | otherwise = base
             cur <- case Map.lookup active ps of
                 Nothing -> pure (Pos 0 0, False)
                 Just pane -> do
@@ -432,7 +446,7 @@ renderOnce st client = do
                     pure ( Pos { row = scr.cursor.row + origin.row
                                , col = scr.cursor.col + origin.col }
                          , scr.cursorVisible )
-            pure (base, cur)
+            pure (withStatus, cur)
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
     oldCursor <- readIORef client.lastCursor
@@ -522,6 +536,12 @@ performPrefixed st client key = case toEnum (fromIntegral key) of
     'J' -> resizeActive st client DirDown 5 >> pure True
     'K' -> resizeActive st client DirUp 5 >> pure True
     'L' -> resizeActive st client DirRight 5 >> pure True
+    'c' -> newWindowAction st client >> pure True
+    'n' -> cycleWindow st client 1 >> pure True
+    'p' -> cycleWindow st client (-1) >> pure True
+    'a' -> selectLastWindow st client >> pure True
+    ch | ch >= '0' && ch <= '9' ->
+        selectWindowIx st client (fromEnum ch - fromEnum '0') >> pure True
     _ | key == prefixByte -> do
         mpane <- clientActivePane st client
         forM_ mpane $ \pane ->
@@ -683,6 +703,112 @@ controlLoop st client = do
         Just (Right Detach) -> pure ()
         Nothing -> pure ()
         _ -> controlLoop st client
+
+-- Windows --------------------------------------------------------------
+
+-- | The pane area of the screen: everything above the status line.
+windowArea :: Size -> Size
+windowArea sz = sz { rows = max 1 (sz.rows - 1) }
+
+newWindowAction :: ServerState -> Client -> IO ()
+newWindowAction st client = do
+    mv <- atomically (clientView st client)
+    forM_ mv $ \(sess, _) -> do
+        eff <- readTVarIO sess.lastSize
+        let shell = maybe "/bin/sh" T.unpack (List.lookup "SHELL" sess.environ)
+        (win, pane) <- newWindowWithPane st sess.id shell sess.startCwd
+            sess.environ (windowArea eff)
+        atomically $ do
+            ws <- readTVar sess.windows
+            let ix = head [i | i <- [windowBaseIndex ..], not (Map.member i ws)]
+            modifyTVar' sess.windows (Map.insert ix win)
+            cur <- readTVar sess.currentIx
+            writeTVar sess.lastIx (Just cur)
+            writeTVar sess.currentIx ix
+            bumpDirty st
+        startPaneReader st sess.id win pane
+        applySessionSize st sess.id
+
+selectWindowIx :: ServerState -> Client -> Int -> IO ()
+selectWindowIx st client ix = atomically $ do
+    mv <- clientView st client
+    forM_ mv $ \(sess, _) -> switchTo st sess ix
+
+switchTo :: ServerState -> Session -> Int -> STM ()
+switchTo st sess ix = do
+    ws <- readTVar sess.windows
+    cur <- readTVar sess.currentIx
+    when (ix /= cur) $ forM_ (Map.lookup ix ws) $ \win -> do
+        writeTVar sess.lastIx (Just cur)
+        writeTVar sess.currentIx ix
+        writeTVar win.bellFlag False
+        bumpDirty st
+
+cycleWindow :: ServerState -> Client -> Int -> IO ()
+cycleWindow st client step = atomically $ do
+    mv <- clientView st client
+    forM_ mv $ \(sess, _) -> do
+        ws <- readTVar sess.windows
+        cur <- readTVar sess.currentIx
+        let ixs = Map.keys ws
+        case ixs of
+            [] -> pure ()
+            _ -> do
+                let n = length ixs
+                    curPos = maybe 0 (\x -> x) (List.elemIndex cur ixs)
+                    ix = ixs !! ((curPos + step + n) `mod` n)
+                switchTo st sess ix
+
+selectLastWindow :: ServerState -> Client -> IO ()
+selectLastWindow st client = atomically $ do
+    mv <- clientView st client
+    forM_ mv $ \(sess, _) -> do
+        mlast <- readTVar sess.lastIx
+        forM_ mlast (switchTo st sess)
+
+-- Status line ----------------------------------------------------------
+
+statusStyle :: Cell.Style
+statusStyle = Cell.defaultStyle
+    { Cell.fg = Cell.Indexed 0
+    , Cell.bg = Cell.Indexed 2
+    }
+
+-- The default status line; the real format engine arrives in M7.
+statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
+statusCells _st sess width = do
+    (sname, entries) <- atomically $ do
+        sname <- readTVar sess.name
+        ws <- readTVar sess.windows
+        cur <- readTVar sess.currentIx
+        mlast <- readTVar sess.lastIx
+        entries <- forM (Map.toAscList ws) $ \(ix, win) -> do
+            wname <- readTVar win.name
+            bell <- readTVar win.bellFlag
+            let flag
+                    | ix == cur = "*"
+                    | Just ix == mlast = "-"
+                    | otherwise = ""
+                bellFlag = if bell then "!" else ""
+            pure (tshow ix <> ":" <> wname <> flag <> bellFlag)
+        pure (sname, entries)
+    now <- getZonedTime
+    hostname <- nodeName <$> getSystemID
+    let left = "[" <> sname <> "] " <> T.intercalate " " entries
+        time = T.pack (formatTime defaultTimeLocale "%H:%M %d-%b-%y" now)
+        right = time <> " " <> T.pack hostname <> " "
+        pad = width - T.length left - T.length right
+        line
+            | pad >= 0 = left <> T.replicate pad " " <> right
+            | otherwise = T.take (fromIntegral width) (left <> " " <> right)
+        cells = [ Cell.Cell { Cell.text = T.singleton ch
+                            , Cell.width = 1
+                            , Cell.style = statusStyle }
+                | ch <- T.unpack line ]
+        padded = take width (cells <> repeat blankStatus)
+        blankStatus = Cell.Cell { Cell.text = " ", Cell.width = 1
+                                , Cell.style = statusStyle }
+    pure (V.fromList padded)
 
 -- Helpers ------------------------------------------------------------
 

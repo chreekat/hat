@@ -57,6 +57,7 @@ data Session = Session
     , lastIx   :: TVar (Maybe Int)
     , lastSize :: TVar Size              -- ^ effective size while no client is attached
     , environ  :: [(Text, Text)]         -- ^ from the creating client; used for new panes
+    , startCwd :: FilePath               -- ^ default working directory for new windows
     }
 
 data Window = Window

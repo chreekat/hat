@@ -243,6 +243,40 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "creates and switches windows with a live status line" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "0:sh*"       -- status line is up
+        typeInto c1 "echo window-zero-marker\r"
+        awaitScreen c1 "window-zero-marker"
+
+        -- New window: status shows it as current; screen is a fresh shell.
+        typeInto c1 "\x02\&c"
+        awaitScreen c1 "1:sh*"
+        awaitWith "window 0 hidden" (\d -> do
+            t <- screenText d
+            pure (not ("window-zero-marker" `T.isInfixOf` t))) c1
+        typeInto c1 "echo window-one-marker\r"
+        awaitScreen c1 "window-one-marker"
+
+        -- Direct index select back to 0.
+        typeInto c1 "\x02\&0"
+        awaitScreen c1 "window-zero-marker"
+        awaitScreen c1 "0:sh*"
+
+        -- last-window toggles back to 1.
+        typeInto c1 "\x02\&a"
+        awaitScreen c1 "window-one-marker"
+
+        -- Kill both shells; session and server end.
+        typeInto c1 "exit\r"
+        awaitScreen c1 "window-zero-marker"
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
 pollServerGone path n = do
