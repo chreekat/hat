@@ -25,6 +25,7 @@ library
     exposed-modules:
         Hat.Client
         Hat.Client.Draw
+        Hat.Command.Parser
         Hat.Client.Tty
         Hat.Geometry
         Hat.Log
@@ -33,6 +34,7 @@ library
         Hat.Pty
         Hat.Server
         Hat.Server.Input
+        Hat.Server.Keys
         Hat.Server.Layout
         Hat.Server.Render
         Hat.Socket
@@ -50,6 +52,7 @@ library
         containers,
         directory,
         filepath,
+        megaparsec,
         network,
         serialise,
         stm,
@@ -88,10 +91,12 @@ test-suite hat-test
     hs-source-dirs:     test
     main-is:            Main.hs
     other-modules:
+        Hat.Command.ParserSpec
         Hat.IntegrationSpec
         Hat.PtySpec
         Hat.SocketSpec
         Hat.Server.InputSpec
+        Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.RenderSpec
         Hat.Term.EmulatorSpec
