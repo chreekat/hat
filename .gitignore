@@ -1,0 +1,6 @@
+dist-newstyle/
+cabal.project.local
+result
+result-*
+*.hi
+*.o

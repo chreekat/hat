@@ -1,0 +1,55 @@
+cabal-version:      3.0
+name:               hat
+version:            0.1.0
+synopsis:           A terminal multiplexer
+license:            ISC
+author:             Bryan Richter
+maintainer:         b@chreekat.net
+build-type:         Simple
+
+common defaults
+    default-language:   GHC2021
+    default-extensions:
+        DuplicateRecordFields
+        LambdaCase
+        NoFieldSelectors
+        OverloadedRecordDot
+        OverloadedStrings
+    ghc-options:        -Wall -Wcompat -Wincomplete-record-updates
+                        -Wincomplete-uni-patterns -Wredundant-constraints
+
+library
+    import:             defaults
+    hs-source-dirs:     src
+    exposed-modules:
+        Hat.Socket
+    build-depends:
+        base,
+        bytestring,
+        containers,
+        stm,
+        text,
+        unix
+
+executable hat
+    import:             defaults
+    hs-source-dirs:     app
+    main-is:            Main.hs
+    ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
+    build-depends:
+        base,
+        hat
+
+test-suite hat-test
+    import:             defaults
+    type:               exitcode-stdio-1.0
+    hs-source-dirs:     test
+    main-is:            Main.hs
+    other-modules:
+        Hat.SocketSpec
+    ghc-options:        -threaded
+    build-depends:
+        base,
+        hspec,
+        QuickCheck,
+        hat
