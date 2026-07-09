@@ -45,6 +45,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import qualified Hat.Pty
+import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.Keys
 import Hat.Server.Layout
@@ -1486,27 +1487,18 @@ cmdSendKeys st mclient args = do
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
 
--- | A copy-mode @-X@ handler. 'Nothing' means \"exit copy mode\".
-type CopyModeHandler
-    = ServerState -> Pane -> CopyModeState -> IO (Maybe CopyModeState)
-
 runCopyModeCommand :: ServerState -> Pane -> Text -> IO ()
 runCopyModeCommand st pane name = do
     mmode <- readTVarIO pane.mode
     case mmode of
         Nothing -> pure ()  -- not in copy mode; -X is a no-op
-        Just state -> case Map.lookup name copyModeHandlers of
+        Just state -> case Map.lookup name CopyMode.handlers of
             Nothing -> pure ()
             Just h -> do
                 result <- h st pane state
                 atomically $ do
                     writeTVar pane.mode result
                     bumpDirty st
-
-copyModeHandlers :: Map.Map Text CopyModeHandler
-copyModeHandlers = Map.fromList
-    [ ("cancel", \_ _ _ -> pure Nothing)
-    ]
 
 -- | Resolve the pane a command should act on. For now, ignore any
 -- @-t target@ and default to the active pane of the caller's current

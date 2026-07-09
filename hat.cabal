@@ -36,6 +36,7 @@ library
         Hat.Model.Options
         Hat.Pty
         Hat.Server
+        Hat.Server.CopyMode
         Hat.Server.Format
         Hat.Server.Keys
         Hat.Server.Layout
