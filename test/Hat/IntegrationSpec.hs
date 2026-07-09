@@ -350,6 +350,47 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "runs cat: line-buffered echo, not doubled" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+        typeInto c1 "cat\r"
+        threadDelay 300000
+        -- Type without Enter: canonical mode echoes each char exactly once.
+        typeInto c1 "abcxyz"
+        awaitScreen c1 "abcxyz"
+        threadDelay 200000
+        scr <- screenText c1
+        -- doubled echo would show "aabbcc..." somewhere
+        scr `shouldNotSatisfy` T.isInfixOf "aabbccxxyyzz"
+        typeInto c1 "\r"
+        typeInto c1 "\x04"
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
+    it "runs cat: Ctrl-D sends EOF and returns to the shell" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+        typeInto c1 "cat\r"
+        threadDelay 300000
+        typeInto c1 "hello world\r"
+        awaitScreen c1 "hello world"
+        -- Ctrl-D on an empty line EOFs cat; the shell then evaluates
+        -- arithmetic that cat could never produce by echo alone.
+        typeInto c1 "\x04"
+        threadDelay 200000
+        typeInto c1 "echo done-$((21+21))\r"
+        awaitScreen c1 "done-42"
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
 pollServerGone path n = do
