@@ -29,7 +29,6 @@ input-keys.sh
 new-session-base-index.sh
 new-session-environment.sh
 new-session-size.sh
-new-window-command.sh
 osc-11colours.sh
 prompt-keys.sh
 prompt-mechanics.sh

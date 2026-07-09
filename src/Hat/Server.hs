@@ -29,6 +29,7 @@ import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
 import qualified Network.Socket as N
 import System.Directory (doesFileExist, removeFile)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
@@ -854,10 +855,10 @@ parseArgs spec = go [] []
   where
     go opts flags = \case
         [] -> (opts, flags, [])
+        ("--" : rest) -> (opts, flags, rest)   -- end-of-flags separator
         (a : rest)
             | Just bundle <- T.stripPrefix "-" a
             , not (T.null bundle)
-            , a /= "--"
             , not (isNumber a) ->
                 let (opts', flags', rest') = scanBundle bundle rest
                 in go (opts' <> opts) (flags' <> flags) rest'
@@ -1353,7 +1354,13 @@ cmdNewSession st mclient args = do
                 Just c -> do
                     csz <- readTVarIO c.size
                     pure (c.env, T.unpack c.cwd, csz)
-                Nothing -> pure ([], "/", Size { rows = 24, cols = 80 })
+                Nothing -> do
+                    -- Config-loaded or otherwise clientless: inherit the
+                    -- server process env so shells find PATH, SHELL, etc.
+                    procEnv <- getEnvironment
+                    pure ( [(T.pack k, T.pack v) | (k, v) <- procEnv]
+                         , "/"
+                         , Size { rows = 24, cols = 80 } )
             let dir' = maybe dir T.unpack (lookup "-c" opts)
             sess <- createSession st mname environ dir' sz
             atomically (writeTVar st.everAttached True)
