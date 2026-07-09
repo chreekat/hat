@@ -82,3 +82,9 @@ spec = do
     it "handles bundled flag ending in ; (e.g. -dsfoo\\;)" $
         parseArgv ["new", "-dsfoo;", "has", "-tfoo"]
             `shouldBe` [["new", "-dsfoo"], ["has", "-tfoo"]]
+
+    it "joins brace blocks that span multiple config lines" $
+        parseConfig "bind -T tbl w {\n  send -X foo\n  send -X bar }\n"
+            `shouldBe` Right
+                [["bind", "-T", "tbl", "w",
+                  "\n  send -X foo\n  send -X bar "]]

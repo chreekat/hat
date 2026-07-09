@@ -49,8 +49,39 @@ parseCommandLine input =
 parseConfig :: Text -> Either Text [[Text]]
 parseConfig input = fmap concat . traverse parseCommandLine
     $ filter (not . T.null . T.strip)
+    $ joinBraces
     $ map stripComment
     $ joinContinuations (T.lines input)
+
+-- Blocks like @bind X { ... }@ and multi-line @"..."@ strings can span
+-- lines. Keep joining while brace depth is positive OR we're mid-quote.
+joinBraces :: [Text] -> [Text]
+joinBraces = collapse 0 Free []
+  where
+    collapse 0 Free [] [] = []
+    collapse _ _ acc [] = [T.intercalate "\n" (reverse acc)]  -- unbalanced
+    collapse depth q acc (l : rest) =
+        let (d', q') = lineEndState depth q l
+            acc' = l : acc
+        in if d' > 0 || q' /= Free
+            then collapse d' q' acc' rest
+            else T.intercalate "\n" (reverse acc') : collapse 0 Free [] rest
+
+lineEndState :: Int -> QuoteState -> Text -> (Int, QuoteState)
+lineEndState d0 q0 = T.foldl' step (d0, q0)
+  where
+    step (n, Free) '{'    = (n + 1, Free)
+    step (n, Free) '}'    = (n - 1, Free)
+    step (n, Free) '\''   = (n, Single)
+    step (n, Free) '"'    = (n, Double)
+    step (n, Single) '\'' = (n, Free)
+    step (n, Double) '"'  = (n, Free)
+    step (n, Double) '\\' = (n, DoubleEsc)
+    step (n, DoubleEsc) _ = (n, Double)
+    step st _             = st
+
+data QuoteState = Free | Single | Double | DoubleEsc
+    deriving (Eq)
 
 -- Lines ending in a backslash continue on the next line.
 joinContinuations :: [Text] -> [Text]

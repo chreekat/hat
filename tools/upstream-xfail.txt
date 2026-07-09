@@ -9,7 +9,6 @@ capture-pane-sgr0.sh
 check-names.sh
 combine-test.sh
 command-alias.sh
-conf-syntax.sh
 control-client-sanity.sh
 control-client-size.sh
 copy-mode-test-emacs.sh
