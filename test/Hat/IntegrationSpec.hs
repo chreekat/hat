@@ -94,12 +94,6 @@ awaitScreen d needle = awaitWith (show needle) check d
   where
     check drv = T.isInfixOf needle <$> screenText drv
 
--- Raw bytes, for out-of-band client messages after the alt screen closes.
-awaitOutput :: Driver -> B8.ByteString -> IO ()
-awaitOutput d needle = awaitWith (show needle) check d
-  where
-    check drv = B8.isInfixOf needle <$> readIORef drv.transcript
-
 awaitExit :: Driver -> IO ProcessStatus
 awaitExit d = do
     r <- timeout 10_000_000 drainAndWait
