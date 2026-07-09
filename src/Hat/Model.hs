@@ -47,6 +47,7 @@ data ServerState = ServerState
     , nextClient  :: TVar Int
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
+    , configLoading :: TVar Bool  -- ^ suppress waitIdle exit while config runs
     , options     :: TVar Options
     , keymap      :: TVar Keymap
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
@@ -110,6 +111,7 @@ newServerState defaultKeymap lg path = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
+    <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO defaultOptions
     <*> newTVarIO defaultKeymap

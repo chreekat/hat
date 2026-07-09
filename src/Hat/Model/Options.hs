@@ -20,14 +20,15 @@ data ModeKeys = KeysVi | KeysEmacs
     deriving (Eq, Show)
 
 data Options = Options
-    { prefix         :: Text  -- ^ key name, e.g. \"C-b\", \"C-Space\"
-    , baseIndex      :: Int
-    , paneBaseIndex  :: Int
-    , statusPosition :: StatusPosition
-    , modeKeys       :: ModeKeys
-    , historyLimit   :: Int
-    , user           :: Map Text Text  -- ^ @\@foo@ options
-    , raw            :: Map Text Text  -- ^ everything else, preserved
+    { prefix          :: Text  -- ^ key name, e.g. \"C-b\", \"C-Space\"
+    , baseIndex       :: Int
+    , paneBaseIndex   :: Int
+    , statusPosition  :: StatusPosition
+    , modeKeys        :: ModeKeys
+    , historyLimit    :: Int
+    , defaultTerminal :: Text
+    , user            :: Map Text Text  -- ^ @\@foo@ options
+    , raw             :: Map Text Text  -- ^ everything else, preserved
     }
     deriving (Eq, Show)
 
@@ -42,6 +43,7 @@ defaultOptions = Options
     , statusPosition = StatusBottom
     , modeKeys = KeysEmacs
     , historyLimit = 50000
+    , defaultTerminal = "screen-256color"
     , user = Map.empty
     , raw = Map.empty
     }

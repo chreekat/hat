@@ -67,9 +67,15 @@ runServer path mconfig = do
         logEvent lg ServerStarted { socket = path }
         -- Load the config in a background thread so shell conditions
         -- like `if '$TMUX run ...' ...` can reach the accept loop while
-        -- the config is still running. everAttached only arms after a
-        -- session exists, so the empty-idle exit stays disarmed.
-        _ <- forkIO (loadConfig st mconfig)
+        -- the config is still running. configLoading suppresses the
+        -- empty-idle exit until the config has drained.
+        atomically (writeTVar st.configLoading True)
+        _ <- forkIO $ do
+            loadConfig st mconfig
+            -- Grace period so a `hat -f<conf> start` client whose fork
+            -- lost the race with a fast config still finds us listening.
+            threadDelay 500_000
+            atomically (writeTVar st.configLoading False)
         -- Keep status-line clocks fresh.
         _ <- forkIO $ forever $ do
             threadDelay 15_000_000
@@ -95,9 +101,10 @@ acquireLock lockPath = do
 waitIdle :: ServerState -> IO ()
 waitIdle st = atomically $ do
     armed <- readTVar st.everAttached
+    loading <- readTVar st.configLoading
     sess <- readTVar st.sessions
     cs <- readTVar st.clients
-    check (armed && Map.null sess && Map.null cs)
+    check (armed && not loading && Map.null sess && Map.null cs)
 
 -- Configuration --------------------------------------------------------
 
@@ -171,8 +178,9 @@ welcome st conn h = do
     client <- newClient st conn h
     case h.intent of
         ControlIntent -> do
+            atomically $ modifyTVar' st.clients (Map.insert client.id client)
             sendMessage conn (Welcome "")
-            controlLoop st client
+            controlLoop st client `finally` removeClient st client
         AttachIntent -> do
             sess <- ensureSession st client
             sname <- readTVarIO sess.name
@@ -315,8 +323,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             ]
         hatVar = st.sockPath <> "," <> show serverPid <> ","
             <> show (rawSession sid)
-        term = maybe "screen-256color" T.unpack
-            (Map.lookup "default-terminal" opts.raw)
+        term = T.unpack opts.defaultTerminal
         paneEnv = cleanEnv <>
             [ ("TERM", term)
             , ("TMUX", hatVar)
@@ -1027,6 +1034,7 @@ lookupOption opts name = case name of
     "base-index" -> Just (tshow opts.baseIndex)
     "pane-base-index" -> Just (tshow opts.paneBaseIndex)
     "history-limit" -> Just (tshow opts.historyLimit)
+    "default-terminal" -> Just opts.defaultTerminal
     "status-position" -> Just (case opts.statusPosition of
         StatusTop -> "top"; StatusBottom -> "bottom")
     "mode-keys" -> Just (case opts.modeKeys of
@@ -1043,6 +1051,7 @@ setOption opts name value = case name of
     "base-index" -> withInt $ \n -> opts { baseIndex = n }
     "pane-base-index" -> withInt $ \n -> opts { paneBaseIndex = n }
     "history-limit" -> withInt $ \n -> opts { historyLimit = n }
+    "default-terminal" -> Right opts { defaultTerminal = value }
     "status-position" -> case value of
         "top" -> Right opts { statusPosition = StatusTop }
         "bottom" -> Right opts { statusPosition = StatusBottom }

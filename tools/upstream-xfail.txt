@@ -22,7 +22,6 @@ floating-pane-geometry.sh
 format-strings.sh
 if-shell-error.sh
 input-keys.sh
-new-session-environment.sh
 osc-11colours.sh
 prompt-keys.sh
 prompt-mechanics.sh
