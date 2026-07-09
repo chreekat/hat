@@ -863,8 +863,9 @@ parseArgs spec = go [] []
         Nothing -> ([], [], rest)
         Just (c, more)
             | c `elem` spec ->
-                case (T.null more, rest) of
-                    (False, _) -> ([(dash c, more)], [], rest)
+                let val = fromMaybe more (T.stripPrefix "=" more)
+                in case (T.null val, rest) of
+                    (False, _) -> ([(dash c, val)], [], rest)
                     (True, v : rest') -> ([(dash c, v)], [], rest')
                     (True, []) -> ([(dash c, "")], [], [])
             | otherwise ->
