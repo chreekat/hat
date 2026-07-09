@@ -32,6 +32,10 @@ cabal test                                # unit + property + integration
 ./tools/run-upstream-tests.sh ~/src/tmux  # tmux's regress suite (xfail-tracked)
 ```
 
+Both run inside `nix develop` — the devShell provides libvterm plus the
+coreutils/sed/awk/... that the upstream regress scripts assume in
+`/bin:/usr/bin`.
+
 The integration tests drive the real binary through a pty: detach and
 reattach, two clients on one session running vim, htop, splits, and a
 config with a custom prefix. `gen-fixtures` regenerates the emulator

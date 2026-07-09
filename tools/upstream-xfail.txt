@@ -28,9 +28,7 @@ if-shell-nested.sh
 input-keys.sh
 kill-session-process-exit.sh
 new-session-base-index.sh
-new-session-command.sh
 new-session-environment.sh
-new-session-no-client.sh
 new-session-size.sh
 new-window-command.sh
 osc-11colours.sh

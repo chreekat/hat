@@ -31,6 +31,14 @@
             pkgs.cabal-install
             pkgs.haskellPackages.ghc
             pkgs.libvterm-neovim
+
+            # Upstream tmux regress/ scripts need FHS-ish utilities on PATH.
+            pkgs.coreutils
+            pkgs.diffutils
+            pkgs.gawk
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.procps
           ];
         };
       });

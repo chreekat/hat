@@ -31,9 +31,15 @@ else
     tests=$(cd "$regress" && ls ./*.sh)
 fi
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0 1 15
+
 for t in $tests; do
     name=$(basename "$t")
-    ( cd "$regress" && TEST_TMUX="$hat_bin" timeout 30 sh "$name" ) \
+    # Upstream scripts hardcode PATH=/bin:/usr/bin, which is empty-ish on
+    # NixOS. Strip that line so the script inherits our devShell PATH.
+    sed '/^PATH=\/bin:\/usr\/bin$/d' "$regress/$name" > "$work/$name"
+    ( cd "$regress" && TEST_TMUX="$hat_bin" timeout 30 sh "$work/$name" ) \
         >/dev/null 2>&1
     code=$?
     expected_fail=false
