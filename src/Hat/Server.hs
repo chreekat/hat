@@ -1344,17 +1344,35 @@ paneCurrentPath pane = do
 
 cmdSelectPane :: CommandImpl
 cmdSelectPane st mclient args = do
-    let (_, flags, _) = parseArgs "t" args
+    let (opts, flags, _) = parseArgs "tT" args
         mdir
             | "-L" `elem` flags = Just DirLeft
             | "-R" `elem` flags = Just DirRight
             | "-U" `elem` flags = Just DirUp
             | "-D" `elem` flags = Just DirDown
             | otherwise = Nothing
+        parseNum t = case TR.decimal t of
+            Right (n, rest) | T.null rest -> Just n
+            _ -> Nothing
+        -- Bare @-t N@ picks the Nth pane in the current window (0-based).
+        mIndex = lookup "-t" opts >>= parseNum
     case mdir of
         Nothing
             | "-l" `elem` flags -> cmdLastPane st mclient []
-            | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l"]
+            | Just n <- mIndex ->
+                withCurrentWindow st mclient $ \_ win -> do
+                    atomically $ do
+                        ps <- readTVar win.panes
+                        let ordered = Map.elems ps
+                        case drop n ordered of
+                            (p : _) -> do
+                                active <- readTVar win.activeId
+                                writeTVar win.lastActive (Just active)
+                                writeTVar win.activeId p.id
+                                bumpDirty st
+                            [] -> pure ()
+                    pure []
+            | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l|-t index"]
         Just dir -> withCurrentWindow st mclient $ \sess win -> do
             atomically $ do
                 eff <- readTVar sess.lastSize
