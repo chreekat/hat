@@ -854,6 +854,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["list-sessions", "ls"], cmdListSessions)
     , (["list-windows", "lsw"], cmdListWindows)
     , (["list-panes", "lsp"], cmdListPanes)
+    , (["capture-pane", "capturep"], cmdCapturePane)
     , (["switch-client", "switchc"], cmdSwitchClient)
     , (["kill-server"], cmdKillServer)
     , (["display-message", "display"], cmdDisplayMessage)
@@ -1192,6 +1193,23 @@ cycleWindow st mclient step =
                         ix = ixs !! ((curPos + step + n) `mod` n)
                     switchTo st sess ix
         pure []
+
+-- Only @-p@ (print to stdout, plain text) is supported so far; escape,
+-- range, and hyperlink flags are ignored — enough for the light-touch
+-- @capturep -p@ uses in upstream tests.
+cmdCapturePane :: CommandImpl
+cmdCapturePane st mclient _ = do
+    withCurrentWindow st mclient $ \_ win -> do
+        mactive <- atomically (activePane win)
+        case mactive of
+            Nothing -> pure []
+            Just pane -> do
+                scr <- Emu.snapshot pane.emulator
+                let rows = V.toList scr.cells
+                    rowText r = T.stripEnd . T.concat
+                        $ [ c.text | c <- V.toList r ]
+                    body = T.intercalate "\n" (map rowText rows)
+                pure [ROutput body]
 
 cmdKillWindow :: CommandImpl
 cmdKillWindow st mclient _ =
