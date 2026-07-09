@@ -237,17 +237,17 @@ ensureSession st client = do
     existing <- readTVarIO st.sessions
     case Map.lookupMin existing of
         Just (_, sess) -> pure sess
-        Nothing -> createSession st Nothing client.env
+        Nothing -> createSession st Nothing Nothing client.env
             (T.unpack client.cwd) =<< readTVarIO client.size
 
 createSession
-    :: ServerState -> Maybe Text -> [(Text, Text)] -> FilePath -> Size
-    -> IO Session
-createSession st mname environ dir sz = do
+    :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
+    -> FilePath -> Size -> IO Session
+createSession st mname mrun environ dir sz = do
     sid <- atomically (freshId st.nextSession)
     opts <- readTVarIO st.options
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
-    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd Nothing
+    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
         dir environ (windowArea sz)
     nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
@@ -311,8 +311,10 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             ]
         hatVar = st.sockPath <> "," <> show serverPid <> ","
             <> show (rawSession sid)
+        term = maybe "screen-256color" T.unpack
+            (Map.lookup "default-terminal" opts.raw)
         paneEnv = cleanEnv <>
-            [ ("TERM", "screen-256color")
+            [ ("TERM", term)
             , ("TMUX", hatVar)
             , ("HAT", hatVar)
             , ("TMUX_PANE", "%" <> show (rawPane pid))
@@ -1342,8 +1344,11 @@ cmdSendKeys st mclient args = do
 
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args = do
-    let (opts, flags, _) = parseArgs "sctnxy" args
+    let (opts, flags, pos) = parseArgs "sctnxy" args
         mname = lookup "-s" opts
+        mrun = case pos of
+            [] -> Nothing
+            ws -> Just (T.unwords ws)
     dup <- case mname of
         Nothing -> pure False
         Just nm -> atomically $ do
@@ -1372,7 +1377,7 @@ cmdNewSession st mclient args = do
                     { cols = fromMaybe baseSz.cols (parseInt =<< lookup "-x" opts)
                     , rows = fromMaybe baseSz.rows (parseInt =<< lookup "-y" opts)
                     }
-            sess <- createSession st mname environ dir' sz
+            sess <- createSession st mname mrun environ dir' sz
             atomically $ do
                 writeTVar st.everAttached True
                 forM_ (lookup "-n" opts) $ \wname -> do
