@@ -855,6 +855,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["list-windows", "lsw"], cmdListWindows)
     , (["list-panes", "lsp"], cmdListPanes)
     , (["capture-pane", "capturep"], cmdCapturePane)
+    , (["resize-window", "resizew"], cmdResizeWindow)
     , (["switch-client", "switchc"], cmdSwitchClient)
     , (["kill-server"], cmdKillServer)
     , (["display-message", "display"], cmdDisplayMessage)
@@ -1148,14 +1149,55 @@ cmdSelectWindow st mclient args = do
             (Just t, _) -> Just t
             (Nothing, [t]) -> Just t
             _ -> Nothing
-    case target >>= parseIx of
+    mres <- resolveWindowTarget st mclient target
+    case mres of
         Nothing -> pure [RErr "usage: select-window -t index"]
-        Just ix -> withTargetSession st mclient Nothing $ \sess -> do
+        Just (sess, ix) -> do
             atomically (switchTo st sess ix)
             pure []
+
+-- Accepts @[session][:window]@ where session may be a name or @$id@ and
+-- window may be a number, @$@ for the last window, or omitted to mean
+-- the session's current window. A bare token without @:@ is a window
+-- spec in the current session (or a session spec if it starts with @$@).
+resolveWindowTarget
+    :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe (Session, Int))
+resolveWindowTarget st mclient mtarget = case mtarget of
+    Nothing -> do
+        msess <- targetSession st mclient Nothing
+        traverse currentPair msess
+    Just t
+        | ":" `T.isInfixOf` t -> withColon t
+        | "$" `T.isPrefixOf` t -> do
+            msess <- targetSession st mclient (Just t)
+            traverse currentPair msess
+        | otherwise -> do  -- bare window spec in current session
+            msess <- targetSession st mclient Nothing
+            case msess of
+                Nothing -> pure Nothing
+                Just sess -> do
+                    mix <- parseWinIx sess t
+                    pure $ (,) sess <$> mix
   where
-    parseIx t = case TR.decimal (fromMaybe t (T.stripPrefix ":" t)) of
-        Right (n, restT) | T.null restT -> Just n
+    withColon t =
+        let (s, rest) = T.break (== ':') t
+            w = T.drop 1 rest
+        in do
+            msess <- targetSession st mclient
+                (if T.null s then Nothing else Just s)
+            case msess of
+                Nothing -> pure Nothing
+                Just sess
+                    | T.null w -> Just <$> currentPair sess
+                    | otherwise -> do
+                        mix <- parseWinIx sess w
+                        pure $ (,) sess <$> mix
+    currentPair sess = (,) sess <$> readTVarIO sess.currentIx
+    parseWinIx sess "$" = do
+        ws <- readTVarIO sess.windows
+        pure (fst <$> Map.lookupMax ws)
+    parseWinIx _ w = pure $ case TR.decimal w of
+        Right (n, rest) | T.null rest -> Just n
         _ -> Nothing
 
 switchTo :: ServerState -> Session -> Int -> STM ()
@@ -1210,6 +1252,22 @@ cmdCapturePane st mclient _ = do
                         $ [ c.text | c <- V.toList r ]
                     body = T.intercalate "\n" (map rowText rows)
                 pure [ROutput body]
+
+cmdResizeWindow :: CommandImpl
+cmdResizeWindow st mclient args = do
+    let (opts, _, _) = parseArgs "txy" args
+        parseInt t = case TR.decimal t of
+            Right (n, rest) | T.null rest -> Just n
+            _ -> Nothing
+    withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
+        current <- readTVarIO sess.lastSize
+        let sz = current
+                { cols = fromMaybe current.cols (parseInt =<< lookup "-x" opts)
+                , rows = fromMaybe current.rows (parseInt =<< lookup "-y" opts)
+                }
+        atomically $ writeTVar sess.lastSize sz
+        applySessionSize st sess.id
+        pure []
 
 cmdKillWindow :: CommandImpl
 cmdKillWindow st mclient _ =
