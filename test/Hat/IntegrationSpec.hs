@@ -9,7 +9,7 @@ import Data.IORef
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.Posix.Temp (mkdtemp)
-import System.Process (readProcess)
+import System.Process (readProcess, readProcessWithExitCode)
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -343,6 +343,14 @@ spec = do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    it "attaches without a controlling terminal: exits with 'not a terminal'" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        (code, _, err) <- readProcessWithExitCode hatBin ["-S", sockPath] ""
+        code `shouldBe` ExitFailure 1
+        err `shouldSatisfy` List.isInfixOf "not a terminal"
 
     it "runs cat: line-buffered echo, not doubled" $ do
         hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""

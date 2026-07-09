@@ -19,7 +19,9 @@ import Network.Socket (Socket)
 import System.Directory (getCurrentDirectory)
 import System.Environment (getEnvironment, lookupEnv)
 import System.IO
+import System.Posix.IO (stdInput)
 import System.Posix.Signals (Handler (Catch), installHandler)
+import System.Posix.Terminal (queryTerminal)
 
 import Hat.Client.Draw
 import Hat.Client.Tty
@@ -51,6 +53,13 @@ hello intent = do
 -- | Attach to the server and shuttle bytes until detach or death.
 runClient :: Socket -> IO ExitReason
 runClient sock = do
+    isTty <- queryTerminal stdInput
+    if not isTty
+        then pure (Rejected "not a terminal")
+        else attachClient sock
+
+attachClient :: Socket -> IO ExitReason
+attachClient sock = do
     sendMessage sock =<< hello AttachIntent
     greeting <- recvMessage sock
     case greeting of
