@@ -115,13 +115,13 @@ shuttle sock = do
 
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell.
-runControl :: Socket -> Text -> IO ExitReason
-runControl sock cmdline = do
+runControl :: Socket -> [[Text]] -> IO ExitReason
+runControl sock cmds = do
     sendMessage sock =<< hello ControlIntent
     greeting <- recvMessage sock
     case greeting of
         Just (Right (Welcome _)) -> do
-            sendMessage sock (Command cmdline)
+            sendMessage sock (Command cmds)
             drain
         Just (Right (ServerError e)) -> pure (Rejected e)
         _ -> pure ServerDied

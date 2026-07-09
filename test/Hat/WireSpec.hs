@@ -60,7 +60,7 @@ instance Arbitrary ClientToServer where
                 <*> elements [AttachIntent, ControlIntent]
         , Input . B.pack <$> arbitrary
         , Resize <$> arbitrary
-        , Command <$> genText
+        , Command <$> listOf (listOf genText)
         , pure Detach
         ]
     shrink _ = []

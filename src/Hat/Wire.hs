@@ -38,7 +38,7 @@ import Hat.Geometry
 import Hat.Term.Cell
 
 protocolVersion :: Word16
-protocolVersion = 1
+protocolVersion = 2
 
 deriving instance Generic Size
 deriving anyclass instance Serialise Size
@@ -66,7 +66,7 @@ data ClientToServer
         }
     | Input ByteString      -- ^ raw bytes from the client's tty
     | Resize Size
-    | Command Text          -- ^ command-line form, parsed server side
+    | Command [[Text]]      -- ^ pre-tokenised commands, one inner list per @;@-separated command
     | Detach
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)

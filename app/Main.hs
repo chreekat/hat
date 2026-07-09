@@ -15,6 +15,7 @@ import System.Posix.IO
 import System.Posix.Process (createSession, executeFile, forkProcess)
 
 import Hat.Client
+import Hat.Command.Parser (parseArgv)
 import Hat.Server (runServer)
 import Hat.Socket (connectTo, defaultSocketPath)
 
@@ -78,7 +79,7 @@ clientMain cli = do
         [] -> attach path cli.configFile
         ["attach"] -> attach path cli.configFile
         ["attach-session"] -> attach path cli.configFile
-        ws -> control path cli.configFile (T.pack (unwords ws))
+        ws -> control path cli.configFile (parseArgv ws)
 
 attach :: FilePath -> Maybe FilePath -> IO ()
 attach path mconfig = do
@@ -94,15 +95,15 @@ attach path mconfig = do
             hPutStrLn stderr ("hat: " <> T.unpack e)
             exitWith (ExitFailure 1)
 
-control :: FilePath -> Maybe FilePath -> T.Text -> IO ()
-control path mconfig cmdline = do
+control :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
+control path mconfig cmds = do
     -- Session-creating commands start the server, like tmux; anything
     -- else against a dead server is an error.
     let starters = ["new-session", "new", "start-server", "start",
                     "attach-session", "attach"] :: [T.Text]
-        firstWord = case T.words cmdline of
-            (w : _) -> w
-            [] -> ""
+        firstWord = case cmds of
+            ((w : _) : _) -> w
+            _ -> ""
     msock <- if firstWord `elem` starters
         then Just <$> connectOrStart path mconfig
         else connectTo path
@@ -111,7 +112,7 @@ control path mconfig cmdline = do
             hPutStrLn stderr "hat: no server running"
             exitFailure
         Just sock -> do
-            reason <- runControl sock cmdline
+            reason <- runControl sock cmds
             case reason of
                 Rejected e -> do
                     hPutStrLn stderr ("hat: " <> T.unpack e)

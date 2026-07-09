@@ -725,8 +725,8 @@ inputLoop st client = loop
                     applySessionSize st sid
                     loop
                 Detach -> send client DetachOk
-                Command t -> do
-                    replies <- runCommandText st (Just client) t
+                Command cmds -> do
+                    replies <- runCommands st (Just client) cmds
                     forM_ replies $ \case
                         ROutput out -> showToast st client out
                         RErr e -> showToast st client ("error: " <> e)
@@ -788,7 +788,10 @@ data Reply = ROutput Text | RErr Text
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
 runCommandText st mclient input = case parseCommandLine input of
     Left err -> pure [RErr err]
-    Right cmds -> concat <$> mapM (runArgv st mclient) cmds
+    Right cmds -> runCommands st mclient cmds
+
+runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
+runCommands st mclient cmds = concat <$> mapM (runArgv st mclient) cmds
 
 runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
 runArgv _ _ [] = pure []
@@ -1531,8 +1534,8 @@ controlLoop :: ServerState -> Client -> IO ()
 controlLoop st client = do
     m <- recvMessage client.sock
     case m of
-        Just (Right (Command t)) -> do
-            replies <- runCommandText st (Just client) t
+        Just (Right (Command cmds)) -> do
+            replies <- runCommands st (Just client) cmds
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
                 RErr e -> send client (ServerError e)

@@ -7,6 +7,7 @@
 module Hat.Command.Parser
     ( parseCommandLine
     , parseConfig
+    , parseArgv
     ) where
 
 import Data.Char (isSpace)
@@ -17,6 +18,25 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 
 type Parser = Parsec Void Text
+
+-- | Split argv (from @getArgs@) into a list of commands, using tmux's
+-- convention: a trailing unescaped @;@ on a token is a command boundary,
+-- a trailing @\;@ is a literal @;@, and semicolons in the middle of a
+-- token are literal. Empty commands are dropped.
+parseArgv :: [String] -> [[Text]]
+parseArgv = finish . foldl step ([], [])
+  where
+    step (cmds, cur) arg = case classify arg of
+        (arg', True)
+            | null arg' -> (reverse cur : cmds, [])
+            | otherwise -> (reverse (T.pack arg' : cur) : cmds, [])
+        (arg', False) -> (cmds, T.pack arg' : cur)
+    finish (cmds, cur) =
+        filter (not . null) . reverse $ reverse cur : cmds
+    classify s = case reverse s of
+        ';' : '\\' : rest -> (reverse rest ++ ";", False)
+        ';' : rest        -> (reverse rest, True)
+        _                 -> (s, False)
 
 -- | Parse a single command line (possibly @;@-separated).
 parseCommandLine :: Text -> Either Text [[Text]]
