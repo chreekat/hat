@@ -22,7 +22,6 @@ decrqm-sync.sh
 floating-pane-geometry.sh
 format-strings.sh
 if-shell-error.sh
-if-shell-nested.sh
 input-keys.sh
 new-session-environment.sh
 osc-11colours.sh

@@ -63,9 +63,13 @@ runServer path mconfig = do
     unless locked exitSuccess  -- another server won the race
     lg <- newLogger (takeDirectory path <> "/server.log")
     st <- newServerState defaultKeymap lg path
-    loadConfig st mconfig
     bracket (listenOn path) N.close $ \lsock -> do
         logEvent lg ServerStarted { socket = path }
+        -- Load the config in a background thread so shell conditions
+        -- like `if '$TMUX run ...' ...` can reach the accept loop while
+        -- the config is still running. everAttached only arms after a
+        -- session exists, so the empty-idle exit stays disarmed.
+        _ <- forkIO (loadConfig st mconfig)
         -- Keep status-line clocks fresh.
         _ <- forkIO $ forever $ do
             threadDelay 15_000_000
@@ -817,6 +821,7 @@ commandTable = Map.fromList $ concatMap expand
     [ (["bind-key", "bind"], cmdBind)
     , (["unbind-key", "unbind"], cmdUnbind)
     , (["set-option", "set", "set-window-option", "setw"], cmdSet)
+    , (["show-options", "show", "show-option"], cmdShow)
     , (["source-file", "source"], cmdSourceFile)
     , (["new-window", "neww"], cmdNewWindow)
     , (["select-window", "selectw"], cmdSelectWindow)
@@ -1001,6 +1006,34 @@ cmdSet st _ args = do
                 Just err -> [RErr err]
                 Nothing -> []
         [] -> pure [RErr "usage: set [-g] option value"]
+
+cmdShow :: CommandImpl
+cmdShow st _ args = do
+    let (_, flags, pos) = parseArgs "t" args
+        valueOnly = "-v" `elem` flags
+        quiet = "-q" `elem` flags
+    opts <- readTVarIO st.options
+    case pos of
+        [name] -> case lookupOption opts name of
+            Just v -> pure [ROutput (if valueOnly then v else name <> " " <> v)]
+            Nothing
+                | quiet -> pure []
+                | otherwise -> pure [RErr ("unknown option: " <> name)]
+        _ -> pure [RErr "usage: show-options [-gsvq] name"]
+
+lookupOption :: Options -> Text -> Maybe Text
+lookupOption opts name = case name of
+    "prefix" -> Just opts.prefix
+    "base-index" -> Just (tshow opts.baseIndex)
+    "pane-base-index" -> Just (tshow opts.paneBaseIndex)
+    "history-limit" -> Just (tshow opts.historyLimit)
+    "status-position" -> Just (case opts.statusPosition of
+        StatusTop -> "top"; StatusBottom -> "bottom")
+    "mode-keys" -> Just (case opts.modeKeys of
+        KeysVi -> "vi"; KeysEmacs -> "emacs")
+    _
+        | "@" `T.isPrefixOf` name -> Map.lookup name opts.user
+        | otherwise -> Map.lookup name opts.raw
 
 setOption :: Options -> Text -> Text -> Either Text Options
 setOption opts name value = case name of
