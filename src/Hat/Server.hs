@@ -901,8 +901,8 @@ targetSession st mclient mtarget = atomically $ do
                 sid <- readTVar client.session
                 case Map.lookup sid sessions of
                     Just sess -> pure (Just sess)
-                    Nothing -> pure (snd <$> Map.lookupMin sessions)
-            Nothing -> pure (snd <$> Map.lookupMin sessions)
+                    Nothing -> pure (snd <$> Map.lookupMax sessions)
+            Nothing -> pure (snd <$> Map.lookupMax sessions)
 
 withTargetSession
     :: ServerState -> Maybe Client -> Maybe Text
@@ -1373,7 +1373,11 @@ cmdNewSession st mclient args = do
                     , rows = fromMaybe baseSz.rows (parseInt =<< lookup "-y" opts)
                     }
             sess <- createSession st mname environ dir' sz
-            atomically (writeTVar st.everAttached True)
+            atomically $ do
+                writeTVar st.everAttached True
+                forM_ (lookup "-n" opts) $ \wname -> do
+                    ws <- readTVar sess.windows
+                    forM_ (Map.elems ws) $ \w -> writeTVar w.name wname
             unless ("-d" `elem` flags) $
                 forM_ mclient $ \client -> switchClientTo st client sess
             pure []
@@ -1445,18 +1449,35 @@ cmdListSessions st _ args = do
     pure (map ROutput lines')
 
 cmdListWindows :: CommandImpl
-cmdListWindows st mclient _ =
-    withTargetSession st mclient Nothing $ \sess -> do
-        lines' <- atomically $ do
-            ws <- readTVar sess.windows
-            cur <- readTVar sess.currentIx
-            forM (Map.toAscList ws) $ \(ix, win) -> do
+cmdListWindows st mclient args = do
+    let (opts, flags, _) = parseArgs "Ft" args
+        mfmt = lookup "-F" opts
+        allSessions = "-a" `elem` flags
+    sessions <- if allSessions
+        then Map.elems <$> readTVarIO st.sessions
+        else do
+            msess <- targetSession st mclient (lookup "-t" opts)
+            pure (maybe [] pure msess)
+    fmap (map ROutput . concat) . forM sessions $ \sess -> do
+        ws <- Map.toAscList <$> readTVarIO sess.windows
+        cur <- readTVarIO sess.currentIx
+        forM ws $ \(ix, win) -> case mfmt of
+            Just fmt -> do
+                env <- windowFormatEnv st sess ix win
+                expandFormat st env fmt
+            Nothing -> atomically $ do
                 nm <- readTVar win.name
                 ps <- readTVar win.panes
                 let mark = if ix == cur then "*" else ""
                 pure $ tshow ix <> ": " <> nm <> mark
                     <> " (" <> tshow (Map.size ps) <> " panes)"
-        pure (map ROutput lines')
+
+windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
+windowFormatEnv st sess ix win = do
+    base <- sessionFormatEnv st sess
+    wname <- readTVarIO win.name
+    pure $ Map.insert "window_index" (tshow ix)
+         $ Map.insert "window_name" wname base
 
 cmdListPanes :: CommandImpl
 cmdListPanes st mclient _ =
