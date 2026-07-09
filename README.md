@@ -1,7 +1,7 @@
 # HAT
 
-A terminal multiplexer. Haskell around libvterm; tmux-shaped commands,
-config, and key bindings. See ARCHITECTURE.md for the design and
+A Haskell-Adapted Terminal multiplexer. Haskell around libvterm; tmux-shaped
+commands, config, and key bindings. See ARCHITECTURE.md for the design and
 FEATURES.md for the scope.
 
 ## Try it
