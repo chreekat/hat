@@ -602,10 +602,13 @@ sessionFormatEnv st sess = do
                  , ("pane_title", title)
                  , ("pane_id", "%" <> tshow (rawPane pane.id))
                  ]
+    sz <- readTVarIO sess.lastSize
     pure . Map.fromList $
         [ ("session_name", sname)
         , ("host", T.pack hostname)
         , ("window_active_clients", tshow nclients)
+        , ("window_width", tshow sz.cols)
+        , ("window_height", tshow sz.rows)
         ]
         <> wEnv <> pEnv
 
@@ -1350,7 +1353,7 @@ cmdNewSession st mclient args = do
     if dup
         then pure [RErr ("duplicate session: " <> fromMaybe "" mname)]
         else do
-            (environ, dir, sz) <- case mclient of
+            (environ, dir, baseSz) <- case mclient of
                 Just c -> do
                     csz <- readTVarIO c.size
                     pure (c.env, T.unpack c.cwd, csz)
@@ -1362,6 +1365,13 @@ cmdNewSession st mclient args = do
                          , "/"
                          , Size { rows = 24, cols = 80 } )
             let dir' = maybe dir T.unpack (lookup "-c" opts)
+                parseInt t = case TR.decimal t of
+                    Right (n, rest) | T.null rest -> Just n
+                    _ -> Nothing
+                sz = baseSz
+                    { cols = fromMaybe baseSz.cols (parseInt =<< lookup "-x" opts)
+                    , rows = fromMaybe baseSz.rows (parseInt =<< lookup "-y" opts)
+                    }
             sess <- createSession st mname environ dir' sz
             atomically (writeTVar st.everAttached True)
             unless ("-d" `elem` flags) $
@@ -1421,10 +1431,14 @@ cmdRenameSession st mclient args = case args of
     _ -> pure [RErr "usage: rename-session name"]
 
 cmdListSessions :: CommandImpl
-cmdListSessions st _ _ = do
-    lines' <- atomically $ do
-        sessions <- readTVar st.sessions
-        forM (Map.elems sessions) $ \sess -> do
+cmdListSessions st _ args = do
+    let (opts, _, _) = parseArgs "F" args
+    sessions <- Map.elems <$> readTVarIO st.sessions
+    lines' <- case lookup "-F" opts of
+        Just fmt -> forM sessions $ \sess -> do
+            env <- sessionFormatEnv st sess
+            expandFormat st env fmt
+        Nothing -> forM sessions $ \sess -> atomically $ do
             nm <- readTVar sess.name
             ws <- readTVar sess.windows
             pure (nm <> ": " <> tshow (Map.size ws) <> " windows")
