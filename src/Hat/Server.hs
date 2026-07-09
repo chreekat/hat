@@ -1470,17 +1470,43 @@ cmdSendPrefix st mclient _ = do
 
 cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do
-    let (_, flags, pos) = parseArgs "t" args
+    let (opts, flags, pos) = parseArgs "tN" args
         literal = "-l" `elem` flags
-        bytes = B.concat (map (argBytes literal) pos)
-    mpane <- targetPane st mclient Nothing
-    forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty bytes
+        modeCmd = "-X" `elem` flags
+    mpane <- targetPane st mclient (lookup "-t" opts)
+    forM_ mpane $ \pane ->
+        if modeCmd
+            then mapM_ (runCopyModeCommand st pane) pos
+            else Hat.Pty.writePty pane.pty
+                (B.concat (map (argBytes literal) pos))
     pure []
   where
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
+
+-- | A copy-mode @-X@ handler. 'Nothing' means \"exit copy mode\".
+type CopyModeHandler
+    = ServerState -> Pane -> CopyModeState -> IO (Maybe CopyModeState)
+
+runCopyModeCommand :: ServerState -> Pane -> Text -> IO ()
+runCopyModeCommand st pane name = do
+    mmode <- readTVarIO pane.mode
+    case mmode of
+        Nothing -> pure ()  -- not in copy mode; -X is a no-op
+        Just state -> case Map.lookup name copyModeHandlers of
+            Nothing -> pure ()
+            Just h -> do
+                result <- h st pane state
+                atomically $ do
+                    writeTVar pane.mode result
+                    bumpDirty st
+
+copyModeHandlers :: Map.Map Text CopyModeHandler
+copyModeHandlers = Map.fromList
+    [ ("cancel", \_ _ _ -> pure Nothing)
+    ]
 
 -- | Resolve the pane a command should act on. For now, ignore any
 -- @-t target@ and default to the active pane of the caller's current
