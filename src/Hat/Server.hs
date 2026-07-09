@@ -1025,19 +1025,26 @@ setOption opts name value = case name of
         _ -> Left (name <> ": not a number: " <> value)
 
 cmdSourceFile :: CommandImpl
-cmdSourceFile st mclient args = case args of
+cmdSourceFile st mclient args = case pos of
     [path] -> do
         let p = T.unpack path
         exists <- doesFileExist p
         if not exists
-            then pure [RErr ("no such file: " <> path)]
+            then if "-q" `elem` flags
+                then pure []
+                else pure [RErr ("no such file: " <> path)]
             else do
                 contents <- TIO.readFile p
                 case parseConfig contents of
                     Left err -> pure [RErr err]
-                    Right cmds ->
-                        concat <$> mapM (runArgv st mclient) cmds
+                    Right cmds
+                        -- -n: check syntax, do not execute
+                        | "-n" `elem` flags -> pure []
+                        | otherwise ->
+                            concat <$> mapM (runArgv st mclient) cmds
     _ -> pure [RErr "usage: source-file path"]
+  where
+    (_, flags, pos) = parseArgs "" args
 
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args = do
