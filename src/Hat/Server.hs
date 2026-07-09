@@ -847,6 +847,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["detach-client", "detach"], cmdDetachClient)
     , (["send-prefix"], cmdSendPrefix)
     , (["send-keys", "send"], cmdSendKeys)
+    , (["copy-mode"], cmdCopyMode)
     , (["new-session", "new"], cmdNewSession)
     , (["attach-session", "attach"], cmdAttachSession)
     , (["kill-session"], cmdKillSession)
@@ -1039,6 +1040,7 @@ lookupOption opts name = case name of
     "pane-base-index" -> Just (tshow opts.paneBaseIndex)
     "history-limit" -> Just (tshow opts.historyLimit)
     "default-terminal" -> Just opts.defaultTerminal
+    "word-separators" -> Just opts.wordSeparators
     "status-position" -> Just (case opts.statusPosition of
         StatusTop -> "top"; StatusBottom -> "bottom")
     "mode-keys" -> Just (case opts.modeKeys of
@@ -1056,6 +1058,7 @@ setOption opts name value = case name of
     "pane-base-index" -> withInt $ \n -> opts { paneBaseIndex = n }
     "history-limit" -> withInt $ \n -> opts { historyLimit = n }
     "default-terminal" -> Right opts { defaultTerminal = value }
+    "word-separators" -> Right opts { wordSeparators = value }
     "status-position" -> case value of
         "top" -> Right opts { statusPosition = StatusTop }
         "bottom" -> Right opts { statusPosition = StatusBottom }
@@ -1470,15 +1473,63 @@ cmdSendKeys st mclient args = do
     let (_, flags, pos) = parseArgs "t" args
         literal = "-l" `elem` flags
         bytes = B.concat (map (argBytes literal) pos)
-    forM_ mclient $ \client -> do
-        mpane <- clientActivePane st client
-        forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty bytes
+    mpane <- targetPane st mclient Nothing
+    forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty bytes
     pure []
   where
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
+
+-- | Resolve the pane a command should act on. For now, ignore any
+-- @-t target@ and default to the active pane of the caller's current
+-- window (or, absent a client, the active pane of the most-recently
+-- created session's current window).
+targetPane :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
+targetPane st mclient _ = case mclient of
+    Just client -> clientActivePane st client
+    Nothing -> do
+        msess <- targetSession st Nothing Nothing
+        case msess of
+            Nothing -> pure Nothing
+            Just sess -> atomically $ do
+                mwin <- currentWindow sess
+                maybe (pure Nothing) activePane mwin
+
+cmdCopyMode :: CommandImpl
+cmdCopyMode st mclient args = do
+    let (opts, flags, _) = parseArgs "st" args
+        quit = "-q" `elem` flags
+    mpane <- targetPane st mclient (lookup "-t" opts)
+    case mpane of
+        Nothing -> pure []
+        Just pane
+            | quit -> do
+                atomically $ do
+                    writeTVar pane.mode Nothing
+                    bumpDirty st
+                pure []
+            | otherwise -> do
+                scr <- Emu.snapshot pane.emulator
+                hsize <- Emu.scrollbackLength pane.emulator
+                srvOpts <- readTVarIO st.options
+                let table = case srvOpts.modeKeys of
+                        KeysVi -> "copy-mode-vi"
+                        KeysEmacs -> "copy-mode"
+                    startRow = hsize + scr.cursor.row
+                    startCol = scr.cursor.col
+                    state = CopyModeState
+                        { cursorRow = startRow
+                        , cursorCol = startCol
+                        , selection = Nothing
+                        , keyTable = table
+                        , viewportOffY = 0
+                        }
+                atomically $ do
+                    writeTVar pane.mode (Just state)
+                    bumpDirty st
+                pure []
 
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args = do

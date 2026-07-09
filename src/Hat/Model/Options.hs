@@ -27,6 +27,7 @@ data Options = Options
     , modeKeys        :: ModeKeys
     , historyLimit    :: Int
     , defaultTerminal :: Text
+    , wordSeparators  :: Text  -- ^ characters that split @next-word@ etc.
     , user            :: Map Text Text  -- ^ @\@foo@ options
     , raw             :: Map Text Text  -- ^ everything else, preserved
     }
@@ -44,6 +45,7 @@ defaultOptions = Options
     , modeKeys = KeysEmacs
     , historyLimit = 50000
     , defaultTerminal = "screen-256color"
+    , wordSeparators = " -_@"
     , user = Map.empty
     , raw = Map.empty
     }
