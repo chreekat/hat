@@ -2,10 +2,12 @@ cabal-version:      3.0
 name:               hat
 version:            0.1.0
 synopsis:           A terminal multiplexer
-license:            ISC
+license:            AGPL-3.0-or-later
+license-file:       LICENSE
 author:             Bryan Richter
 maintainer:         b@chreekat.net
 build-type:         Simple
+tested-with:        GHC == 9.10.3
 
 common defaults
     default-language:   GHC2021
@@ -46,22 +48,22 @@ library
     c-sources:          cbits/hat_shim.c
     pkgconfig-depends:  vterm
     build-depends:
-        aeson,
-        async,
-        base,
-        bytestring,
-        containers,
-        directory,
-        filepath,
-        megaparsec,
-        network,
-        process,
-        serialise,
-        stm,
-        text,
-        time,
-        unix,
-        vector
+        aeson       ^>= 2.2.3.0,
+        async       ^>= 2.2.6,
+        base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
+        containers  ^>= 0.7,
+        directory   ^>= 1.3.8.5,
+        filepath    ^>= 1.5.4.0,
+        megaparsec  ^>= 9.7.0,
+        network     ^>= 3.2.8.0,
+        process     ^>= 1.6.26.1,
+        serialise   ^>= 0.2.6.1,
+        stm         ^>= 2.5.3.1,
+        text        ^>= 2.1.3,
+        time        ^>= 1.12.2,
+        unix        ^>= 2.8.7.0,
+        vector      ^>= 0.13.2.0
 
 executable hat
     import:             defaults
@@ -69,12 +71,12 @@ executable hat
     main-is:            Main.hs
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
     build-depends:
-        base,
-        directory,
+        base        ^>= 4.20.2.0,
+        directory   ^>= 1.3.8.5,
         hat,
-        network,
-        text,
-        unix
+        network     ^>= 3.2.8.0,
+        text        ^>= 2.1.3,
+        unix        ^>= 2.8.7.0
 
 executable gen-fixtures
     import:             defaults
@@ -82,11 +84,11 @@ executable gen-fixtures
     main-is:            GenFixtures.hs
     ghc-options:        -threaded
     build-depends:
-        base,
-        bytestring,
+        base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
         hat,
-        vector,
-        text
+        vector      ^>= 0.13.2.0,
+        text        ^>= 2.1.3
 
 test-suite hat-test
     import:             defaults
@@ -108,13 +110,13 @@ test-suite hat-test
         Hat.WireSpec
     ghc-options:        -threaded
     build-depends:
-        base,
-        bytestring,
-        containers,
-        hspec,
-        process,
-        QuickCheck,
+        base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
+        containers  ^>= 0.7,
+        hspec       ^>= 2.11.17,
+        process     ^>= 1.6.26.1,
+        QuickCheck  ^>= 2.15.0.1,
         hat,
-        vector,
-        text,
-        unix
+        vector      ^>= 0.13.2.0,
+        text        ^>= 2.1.3,
+        unix        ^>= 2.8.7.0
