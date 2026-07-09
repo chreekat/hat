@@ -39,6 +39,8 @@ evaluate env shellRes = go
         Just ('P', rest) -> var "pane_index" <> go rest
         Just ('H', rest) -> var "host" <> go rest
         Just ('T', rest) -> var "pane_title" <> go rest
+        Just (',', rest) -> "," <> go rest
+        Just ('}', rest) -> "}" <> go rest
         Just (c, rest) -> "#" <> T.singleton c <> go rest
 
     var name = Map.findWithDefault "" name env
