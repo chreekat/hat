@@ -344,6 +344,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     emu <- Emu.newEmulator sz opts.historyLimit
     sizeVar <- newTVarIO sz
     deadVar <- newTVarIO False
+    modeVar <- newTVarIO Nothing
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
     pure Pane
@@ -353,6 +354,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , size = sizeVar
         , dead = deadVar
         , startCwd = dir
+        , mode = modeVar
         }
 
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()

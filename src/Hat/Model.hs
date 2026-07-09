@@ -10,6 +10,8 @@ module Hat.Model
     , Window (..)
     , Pane (..)
     , Client (..)
+    , CopyModeState (..)
+    , SelKind (..)
     , newServerState
     , bumpDirty
     , freshId
@@ -24,6 +26,8 @@ import Control.Concurrent.STM
 import Data.IORef (IORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Network.Socket (Socket)
@@ -45,11 +49,14 @@ data ServerState = ServerState
     , nextWindow  :: TVar Int
     , nextPane    :: TVar Int
     , nextClient  :: TVar Int
+    , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
     , configLoading :: TVar Bool  -- ^ suppress waitIdle exit while config runs
     , options     :: TVar Options
     , keymap      :: TVar Keymap
+    , buffers     :: TVar (Seq (Text, Text))
+        -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , logger      :: Logger
     , sockPath    :: FilePath
@@ -84,7 +91,28 @@ data Pane = Pane
     , size     :: TVar Size
     , dead     :: TVar Bool
     , startCwd :: FilePath
+    , mode     :: TVar (Maybe CopyModeState)
+        -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
+        -- its own cursor/selection over the pane's scrollback + screen.
     }
+
+-- | Per-pane copy-mode state. Cursor rows are absolute in the pane's
+-- grid: row @0@ is the oldest scrollback line, rows @hsize@ through
+-- @hsize+sy-1@ are the live screen.
+data CopyModeState = CopyModeState
+    { cursorRow    :: !Int
+    , cursorCol    :: !Int
+    , selection    :: !(Maybe ((Int, Int), SelKind))
+        -- ^ anchor position + kind; the current cursor is the other endpoint.
+    , keyTable     :: !Text   -- ^ @copy-mode@ or @copy-mode-vi@
+    , viewportOffY :: !Int    -- ^ lines scrolled up from the bottom
+    }
+    deriving (Eq, Show)
+
+-- | Selection granularity, matching tmux's @SEL_CHAR@ / @SEL_WORD@ /
+-- @SEL_LINE@ (plus rectangle).
+data SelKind = SelChar | SelWord | SelLine | SelRect
+    deriving (Eq, Show)
 
 data Client = Client
     { id        :: ClientId
@@ -111,10 +139,12 @@ newServerState defaultKeymap lg path = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
+    <*> newTVarIO 0
     <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO defaultOptions
     <*> newTVarIO defaultKeymap
+    <*> newTVarIO Seq.empty
     <*> newTVarIO Map.empty
     <*> pure lg
     <*> pure path
