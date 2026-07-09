@@ -7,7 +7,7 @@ FEATURES.md for the scope.
 ## Try it
 
 ```sh
-./tools/dev-setup.sh     # point cabal at the nix-store libvterm
+nix develop              # or `direnv allow` if you use direnv
 cabal build hat
 cabal exec hat           # attach (autostarts the server)
 ```

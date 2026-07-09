@@ -1,9 +1,15 @@
 {
   description = "HAT — a terminal multiplexer";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-compat = {
+      url = "github:edolstra/flake-compat";
+      flake = false;
+    };
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f:
@@ -20,11 +26,11 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [
             pkgs.cabal-install
             pkgs.haskellPackages.ghc
             pkgs.libvterm-neovim
-            pkgs.pkg-config
           ];
         };
       });

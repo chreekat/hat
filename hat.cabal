@@ -44,7 +44,7 @@ library
         Hat.Wire
     include-dirs:       cbits
     c-sources:          cbits/hat_shim.c
-    extra-libraries:    vterm
+    pkgconfig-depends:  vterm
     build-depends:
         aeson,
         async,
