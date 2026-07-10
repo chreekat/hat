@@ -7,9 +7,12 @@ paste-buffer. Also the buffer primitives (`set-buffer`, `list-buffers`,
 `save-buffer`, `paste-buffer`, `copy-pipe`, `pipe-pane -I`) so the mode
 plugs into the rest of the shell.
 
-Acceptance targets (upstream regress, currently xfailed):
-- `regress/copy-mode-test-vi.sh`
-- `regress/copy-mode-test-emacs.sh`
+Acceptance targets (upstream regress):
+- `regress/copy-mode-test-vi.sh` — **passing**.
+- `regress/copy-mode-test-emacs.sh` — blocked on tab preservation.
+  libvterm expands tabs to spaces in the grid, so a copied tab-indented
+  line comes back as spaces where upstream keeps a literal `\t`. Needs
+  emulator-level tab tracking; stays xfailed until then.
 
 Both tests drive copy mode entirely via `send-keys -X <cmd>` and read
 back with `show-buffer`. They don't attach a client, so **passing them
@@ -78,8 +81,9 @@ test as its green light. Commits within a milestone stay small.
 ### M8a — Data model, `-X` dispatch, buffers, and the two upstream tests
 
 *The demo:* running `nix develop --command tools/run-upstream-tests.sh
-~/src/tmux` reports `pass=14 xfail=37` — the two copy-mode tests
-graduate from the xfail list.
+~/src/tmux` reports `pass=13 xfail=38` — `copy-mode-test-vi` graduates
+from the xfail list. `copy-mode-test-emacs` stays xfailed pending
+emulator tab tracking (see Acceptance targets).
 
 Steps (roughly one commit each):
 
@@ -136,10 +140,10 @@ Steps (roughly one commit each):
   each `-X` command through pure state transitions, assert
   cursor/selection/buffer outcomes for each of the ~30 cases in the
   regress scripts.
-- Integration test: run
-  `regress/copy-mode-test-vi.sh` and `regress/copy-mode-test-emacs.sh`
-  under `run-upstream-tests.sh`, confirm exit 0, remove from
-  `tools/upstream-xfail.txt`. Baseline moves to `pass=14`.
+- Integration test: run `regress/copy-mode-test-vi.sh` under
+  `run-upstream-tests.sh`, confirm exit 0, remove from
+  `tools/upstream-xfail.txt`. Baseline moves to `pass=13`.
+  `copy-mode-test-emacs.sh` stays xfailed (tab preservation).
 
 **Anti-patterns to avoid:**
 - Do not add wire messages. Server-side state only.
