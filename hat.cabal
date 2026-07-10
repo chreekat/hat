@@ -18,11 +18,37 @@ common defaults
         NoFieldSelectors
         OverloadedRecordDot
         OverloadedStrings
-    ghc-options:        -Wall -Wcompat -Wincomplete-record-updates
-                        -Wincomplete-uni-patterns -Wredundant-constraints
+
+-- Warnings are mandatory: -Weverything -Werror, with a curated set of
+-- exemptions. -Wno-* silences noise; -Wno-error=* keeps a warning
+-- visible but non-fatal (things we intend to clean up eventually).
+common pedantry
+    ghc-options:
+        -Werror
+        -Weverything
+        -Wno-all-missed-specialisations
+        -Wno-missed-specialisations
+        -Wno-missing-exported-signatures
+        -Wno-missing-import-lists
+        -Wno-missing-local-signatures
+        -Wno-missing-safe-haskell-mode
+        -Wno-monomorphism-restriction
+        -Wno-safe
+        -Wno-unsafe
+        -Wno-missing-deriving-strategies
+        -Wno-missing-kind-signatures
+        -Wno-error=unticked-promoted-constructors
+        -Wno-error=deprecations
+        -Wno-error=identities
+        -Wno-error=orphans
+        -Wno-error=type-equality-out-of-scope
+        -Wno-error=unused-type-patterns
+        -- Stylistic and repo-wide; enforcing either is pure churn.
+        -Wno-implicit-prelude
+        -Wno-prepositive-qualified-module
 
 library
-    import:             defaults
+    import:             defaults, pedantry
     hs-source-dirs:     src
     exposed-modules:
         Hat.Client
@@ -67,7 +93,7 @@ library
         vector      ^>= 0.13.2.0
 
 executable hat
-    import:             defaults
+    import:             defaults, pedantry
     hs-source-dirs:     app
     main-is:            Main.hs
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
@@ -80,7 +106,7 @@ executable hat
         unix        ^>= 2.8.7.0
 
 executable gen-fixtures
-    import:             defaults
+    import:             defaults, pedantry
     hs-source-dirs:     tools
     main-is:            GenFixtures.hs
     ghc-options:        -threaded
@@ -88,11 +114,10 @@ executable gen-fixtures
         base        ^>= 4.20.2.0,
         bytestring  ^>= 0.12.2.0,
         hat,
-        vector      ^>= 0.13.2.0,
         text        ^>= 2.1.3
 
 test-suite hat-test
-    import:             defaults
+    import:             defaults, pedantry
     type:               exitcode-stdio-1.0
     hs-source-dirs:     test
     main-is:            Main.hs
