@@ -17,6 +17,8 @@ import qualified Data.ByteString.Char8 as B8
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -849,6 +851,10 @@ commandTable = Map.fromList $ concatMap expand
     , (["send-prefix"], cmdSendPrefix)
     , (["send-keys", "send"], cmdSendKeys)
     , (["copy-mode"], cmdCopyMode)
+    , (["show-buffer", "showb"], cmdShowBuffer)
+    , (["set-buffer", "setb"], cmdSetBuffer)
+    , (["list-buffers", "lsb"], cmdListBuffers)
+    , (["delete-buffer", "deleteb"], cmdDeleteBuffer)
     , (["new-session", "new"], cmdNewSession)
     , (["attach-session", "attach"], cmdAttachSession)
     , (["kill-session"], cmdKillSession)
@@ -1548,6 +1554,78 @@ cmdCopyMode st mclient args = do
                     writeTVar pane.mode (Just state)
                     bumpDirty st
                 pure []
+
+cmdShowBuffer :: CommandImpl
+cmdShowBuffer st _ args = do
+    let (opts, _, _) = parseArgs "b" args
+    bufs <- readTVarIO st.buffers
+    let mbody = case lookup "-b" opts of
+            Just name -> lookupBuffer name bufs
+            Nothing -> case bufs of
+                Seq.Empty -> Nothing
+                (_, body) Seq.:<| _ -> Just body
+    pure $ case mbody of
+        Nothing -> [RErr "no buffers"]
+        Just body -> [ROutput body]
+
+cmdSetBuffer :: CommandImpl
+cmdSetBuffer st _ args = do
+    let (opts, flags, pos) = parseArgs "bn" args
+        appendMode = "-a" `elem` flags
+        mname = lookup "-b" opts
+        body = T.unwords pos
+    if null pos
+        then pure [RErr "usage: set-buffer [-a] [-b name] data"]
+        else atomically $ do
+            bufs <- readTVar st.buffers
+            case mname of
+                Just name -> do
+                    let existing = lookupBuffer name bufs
+                        newBody = case (appendMode, existing) of
+                            (True, Just prev) -> prev <> body
+                            _ -> body
+                        others = Seq.filter ((/= name) . fst) bufs
+                    writeTVar st.buffers ((name, newBody) Seq.<| others)
+                Nothing -> do
+                    n <- readTVar st.nextBuffer
+                    writeTVar st.nextBuffer (n + 1)
+                    let name = "buffer" <> T.pack (show n)
+                    writeTVar st.buffers ((name, body) Seq.<| bufs)
+            bumpDirty st
+            pure []
+
+cmdListBuffers :: CommandImpl
+cmdListBuffers st _ _ = do
+    bufs <- readTVarIO st.buffers
+    pure . map row $ toList' bufs
+  where
+    row (name, body) =
+        ROutput (name <> ": " <> tshow (T.length body) <> " bytes")
+    toList' s = case Seq.viewl s of
+        Seq.EmptyL -> []
+        x Seq.:< xs -> x : toList' xs
+
+cmdDeleteBuffer :: CommandImpl
+cmdDeleteBuffer st _ args = do
+    let (opts, _, _) = parseArgs "b" args
+    atomically $ do
+        bufs <- readTVar st.buffers
+        let bufs' = case lookup "-b" opts of
+                Just name -> Seq.filter ((/= name) . fst) bufs
+                Nothing -> case bufs of
+                    Seq.Empty -> bufs
+                    _ Seq.:<| rest -> rest
+        writeTVar st.buffers bufs'
+        pure []
+
+lookupBuffer :: Text -> Seq (Text, Text) -> Maybe Text
+lookupBuffer name = go
+  where
+    go s = case Seq.viewl s of
+        Seq.EmptyL -> Nothing
+        (n, b) Seq.:< rest
+            | n == name -> Just b
+            | otherwise -> go rest
 
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args = do
