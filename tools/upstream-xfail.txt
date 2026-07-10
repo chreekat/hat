@@ -11,8 +11,11 @@ combine-test.sh
 command-alias.sh
 control-client-sanity.sh
 control-client-size.sh
+# copy-mode-test-emacs: blocked on tab preservation. libvterm expands
+# tabs to spaces in the grid, so a copied tab-indented line comes back
+# as spaces where upstream keeps a literal \t. Needs emulator-level tab
+# tracking; out of M8 scope.
 copy-mode-test-emacs.sh
-copy-mode-test-vi.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test3.sh

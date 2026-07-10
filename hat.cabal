@@ -102,6 +102,7 @@ test-suite hat-test
         Hat.IntegrationSpec
         Hat.PtySpec
         Hat.SocketSpec
+        Hat.Server.CopyModeSpec
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
