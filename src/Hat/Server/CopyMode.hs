@@ -1,3 +1,5 @@
+{-# LANGUAGE RoleAnnotations #-}
+
 -- | Copy-mode motion, selection, and extraction. Motions are a
 -- faithful port of tmux's @grid-reader.c@ and the selection extraction
 -- of @window-copy.c@, expressed over an abstract 'Grid' so they can be
@@ -41,6 +43,7 @@ import qualified Hat.Term.Emulator as Emu
 -- | A read-only view of a pane's absolute grid. All access is monadic
 -- so the same motion code runs against the live emulator (@m ~ IO@) and
 -- against a fixed test grid (@m ~ Identity@).
+type role Grid representational
 data Grid m = Grid
     { gHsize    :: !Int              -- ^ scrollback line count
     , gSy       :: !Int              -- ^ visible rows

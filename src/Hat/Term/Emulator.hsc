@@ -39,7 +39,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
-import Data.Word (Word32)
 import Foreign
 import Foreign.C.String (CString)
 import Foreign.C.Types
@@ -209,7 +208,7 @@ newEmulator sz historyLimit = do
         _ -> pure ()
     bellW <- wrapBell $ modifyIORef' eventsR (Bell :)
     pushW <- wrapPushline $ \ncols cellsPtr -> do
-        line <- forM [0 .. fromIntegral ncols - 1] $ \i ->
+        line <- forM [0 .. fromIntegral ncols - 1 :: Int] $ \i ->
             allocaBytes #{size HatCell} $ \hc -> do
                 c_flatten_cell_at cellsPtr (fromIntegral i) hc
                 peekHatCell hc
@@ -396,7 +395,7 @@ peekHatCell p = do
             | kind == 1 = Indexed (fromIntegral idx)
             | kind == 2 = RGB (fromIntegral rr) (fromIntegral gg) (fromIntegral bb)
             | otherwise = DefaultColor
-        has bit = flags .&. bit /= 0
+        has mask = flags .&. mask /= 0
     pure Cell
         { text = txt
         , width = if continuation then 0 else fromIntegral (max 1 w)

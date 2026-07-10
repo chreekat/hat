@@ -33,8 +33,8 @@ instance Arbitrary Style where
     arbitrary = Style <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
         <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     shrink st =
-        [ Style fg' bg' bo un it rv sk bl
-        | (fg', bg', bo, un, it, rv, sk, bl) <-
+        [ Style fg' bg' bo un ita rv sk bl
+        | (fg', bg', bo, un, ita, rv, sk, bl) <-
             shrink (st.fg, st.bg, st.bold, st.underline, st.italic,
                     st.reverse, st.strike, st.blink)
         ]
@@ -55,9 +55,11 @@ instance Arbitrary DrawOp where
 
 instance Arbitrary ClientToServer where
     arbitrary = oneof
-        [ Hello <$> arbitrary <*> genText <*> listOf ((,) <$> genText <*> genText)
-                <*> arbitrary <*> genText
-                <*> elements [AttachIntent, ControlIntent]
+        [ ClientHello <$>
+            (Hello <$> arbitrary <*> genText
+                   <*> listOf ((,) <$> genText <*> genText)
+                   <*> arbitrary <*> genText
+                   <*> elements [AttachIntent, ControlIntent])
         , Input . B.pack <$> arbitrary
         , Resize <$> arbitrary
         , Command <$> listOf (listOf genText)

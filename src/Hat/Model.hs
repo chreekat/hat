@@ -37,7 +37,7 @@ import Hat.Log (Logger)
 import Hat.Model.Ids
 import qualified Hat.Pty
 import Hat.Model.Options (Keymap, Options, defaultOptions)
-import Hat.Server.Keys (PrefixState (NoPrefix))
+import Hat.Server.Keys (PrefixState)
 import Hat.Server.Layout (Layout)
 import Hat.Server.Render (Frame)
 import qualified Hat.Term.Emulator as Emu

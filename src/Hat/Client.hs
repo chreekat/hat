@@ -41,7 +41,7 @@ hello intent = do
     env0 <- getEnvironment
     sz <- ttySize
     dir <- getCurrentDirectory
-    pure Hello
+    pure $ ClientHello Hello
         { protoVersion = protocolVersion
         , term = term
         , env = [(T.pack k, T.pack v) | (k, v) <- env0]

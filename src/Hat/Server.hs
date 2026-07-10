@@ -169,14 +169,14 @@ handleConn :: ServerState -> N.Socket -> IO ()
 handleConn st conn = do
     m <- recvMessage conn
     case m of
-        Just (Right h@Hello {})
+        Just (Right (ClientHello h))
             | h.protoVersion == protocolVersion -> welcome st conn h
             | otherwise -> sendMessage conn $ ServerError $
                 "protocol mismatch: server " <> tshow protocolVersion
                 <> ", client " <> tshow h.protoVersion
         _ -> sendMessage conn (ServerError "expected hello")
 
-welcome :: ServerState -> N.Socket -> ClientToServer -> IO ()
+welcome :: ServerState -> N.Socket -> Hello -> IO ()
 welcome st conn h = do
     client <- newClient st conn h
     case h.intent of
@@ -199,7 +199,7 @@ welcome st conn h = do
                 inputLoop st client
                     `finally` removeClient st client
 
-newClient :: ServerState -> N.Socket -> ClientToServer -> IO Client
+newClient :: ServerState -> N.Socket -> Hello -> IO Client
 newClient st conn h = do
     cid <- atomically (freshId st.nextClient)
     sendLock <- newMVar ()
@@ -753,7 +753,7 @@ inputLoop st client = loop
                         ROutput out -> showToast st client out
                         RErr e -> showToast st client ("error: " <> e)
                     loop
-                Hello {} -> pure ()
+                ClientHello {} -> pure ()
 
 handleInput :: ServerState -> Client -> B.ByteString -> IO ()
 handleInput st client bs = do
@@ -1080,7 +1080,7 @@ setOption opts name value = case name of
         | otherwise ->
             -- Unknown options are preserved rather than rejected so
             -- tmux configs load; features pick them up as they land.
-            Right (opts :: Options) { raw = Map.insert name value opts.raw }
+            Right (insertRawOption name value opts)
   where
     withInt f = case TR.decimal value of
         Right (n, restT) | T.null restT -> Right (f n)
@@ -1135,8 +1135,7 @@ cmdNewWindow st mclient args = do
                     case TR.decimal t of
                         Right (n, restT) | T.null restT -> Just n
                         _ -> Nothing
-                nextFreeFrom n = head
-                    [i | i <- [n ..], not (Map.member i ws)]
+                nextFreeFrom n = until (\i -> not (Map.member i ws)) (+ 1) n
                 ix = case requested of
                     Just n
                         | "-a" `elem` flags -> nextFreeFrom (n + 1)

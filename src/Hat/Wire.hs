@@ -12,6 +12,7 @@
 module Hat.Wire
     ( protocolVersion
     , Intent (..)
+    , Hello (..)
     , ClientToServer (..)
     , ServerToClient (..)
     , DrawOp (..)
@@ -55,15 +56,21 @@ data Intent = AttachIntent | ControlIntent
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
 
+-- | The client's opening handshake. A standalone single-constructor
+-- record so its field selectors are total.
+data Hello = Hello
+    { protoVersion :: Word16
+    , term         :: Text
+    , env          :: [(Text, Text)]
+    , size         :: Size
+    , cwd          :: Text
+    , intent       :: Intent
+    }
+    deriving (Eq, Show, Generic)
+    deriving anyclass (Serialise)
+
 data ClientToServer
-    = Hello
-        { protoVersion :: Word16
-        , term         :: Text
-        , env          :: [(Text, Text)]
-        , size         :: Size
-        , cwd          :: Text
-        , intent       :: Intent
-        }
+    = ClientHello Hello
     | Input ByteString      -- ^ raw bytes from the client's tty
     | Resize Size
     | Command [[Text]]      -- ^ pre-tokenised commands, one inner list per @;@-separated command
@@ -72,7 +79,7 @@ data ClientToServer
     deriving anyclass (Serialise)
 
 data ServerToClient
-    = Welcome { sessionName :: Text }
+    = Welcome Text          -- ^ carries the attached session's name
     | Draw [DrawOp]
     | SetTitle Text
     | RingBell
@@ -120,14 +127,15 @@ recvMessage sock = do
     mheader <- recvExactly sock 4
     case mheader of
         Nothing -> pure Nothing
-        Just header -> do
-            let [a, b, c, d] = fromIntegral <$> B.unpack header :: [Word32]
-                n = a `shiftL` 24 .|. b `shiftL` 16 .|. c `shiftL` 8 .|. d
-            if n > maxFrame
-                then pure (Just (Left "frame too large"))
-                else do
-                    mbody <- recvExactly sock (fromIntegral n)
-                    pure $ decodeMessage <$> mbody
+        Just header -> case fromIntegral <$> B.unpack header :: [Word32] of
+            [a, b, c, d] -> do
+                let n = a `shiftL` 24 .|. b `shiftL` 16 .|. c `shiftL` 8 .|. d
+                if n > maxFrame
+                    then pure (Just (Left "frame too large"))
+                    else do
+                        mbody <- recvExactly sock (fromIntegral n)
+                        pure $ decodeMessage <$> mbody
+            _ -> pure (Just (Left "short frame header"))
 
 recvExactly :: Socket -> Int -> IO (Maybe ByteString)
 recvExactly sock n = go n []

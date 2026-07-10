@@ -7,6 +7,7 @@ module Hat.Model.Options
     , ModeKeys (..)
     , Keymap
     , defaultOptions
+    , insertRawOption
     ) where
 
 import Data.Map.Strict (Map)
@@ -49,3 +50,10 @@ defaultOptions = Options
     , user = Map.empty
     , raw = Map.empty
     }
+
+-- | Record an unknown option in 'raw'. Lives here (rather than inline at
+-- the call site) so the update is unambiguous: 'raw' collides with other
+-- record fields of the same name once several models are in scope.
+insertRawOption :: Text -> Text -> Options -> Options
+insertRawOption name value opts =
+    opts { raw = Map.insert name value opts.raw }
