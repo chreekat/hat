@@ -1511,15 +1511,19 @@ runCopyModeCommand st pane name = do
 -- window (or, absent a client, the active pane of the most-recently
 -- created session's current window).
 targetPane :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
-targetPane st mclient _ = case mclient of
-    Just client -> clientActivePane st client
-    Nothing -> do
-        msess <- targetSession st Nothing Nothing
-        case msess of
-            Nothing -> pure Nothing
-            Just sess -> atomically $ do
-                mwin <- currentWindow sess
-                maybe (pure Nothing) activePane mwin
+targetPane st mclient _ = do
+    mfromClient <- case mclient of
+        Just client -> clientActivePane st client
+        Nothing -> pure Nothing
+    case mfromClient of
+        Just pane -> pure (Just pane)
+        Nothing -> do
+            msess <- targetSession st mclient Nothing
+            case msess of
+                Nothing -> pure Nothing
+                Just sess -> atomically $ do
+                    mwin <- currentWindow sess
+                    maybe (pure Nothing) activePane mwin
 
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
