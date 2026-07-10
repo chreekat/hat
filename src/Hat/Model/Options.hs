@@ -45,7 +45,7 @@ defaultOptions = Options
     , modeKeys = KeysEmacs
     , historyLimit = 50000
     , defaultTerminal = "screen-256color"
-    , wordSeparators = " -_@"
+    , wordSeparators = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
     , user = Map.empty
     , raw = Map.empty
     }
