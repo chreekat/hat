@@ -296,6 +296,45 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "opens the command prompt (:) and runs the typed command" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"       -- status line is up
+
+        -- prefix : opens the prompt; typed text echoes on the status row.
+        typeInto c1 "\x02:"
+        awaitScreen c1 ":"
+        typeInto c1 "rename-window promptwin"
+        awaitScreen c1 ":rename-window promptwin"
+
+        -- Enter runs it: the status line shows the renamed window. The
+        -- trailing '*' (current-window marker) never appears in the
+        -- echoed prompt text, so this only matches after execution.
+        typeInto c1 "\r"
+        awaitScreen c1 "promptwin*"
+
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
+    it "cancels the command prompt on Escape without running it" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02:"
+        awaitScreen c1 ":"
+        typeInto c1 "rename-window nope"
+        awaitScreen c1 ":rename-window nope"
+        -- Escape closes the prompt; the window keeps its name.
+        typeInto c1 "\ESC"
+        awaitWith "prompt gone, name unchanged" (\d -> do
+            t <- screenText d
+            pure ("0:sh*" `T.isInfixOf` t
+                  && not ("nope" `T.isInfixOf` t))) c1
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
     it "creates and switches windows with a live status line" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

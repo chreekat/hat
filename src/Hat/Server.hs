@@ -52,6 +52,7 @@ import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.Format (FormatEnv, renderFormat)
 import Hat.Server.Keys
 import Hat.Server.Layout
+import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
 import Hat.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Cell as Cell
@@ -138,6 +139,7 @@ defaultKeymap = Map.fromList
         , ("C-b", ["send-prefix"])
         , ("[", ["copy-mode"])
         , ("]", ["paste-buffer"])
+        , (":", ["command-prompt"])
         , ("Left", ["select-pane", "-L"])
         , ("Right", ["select-pane", "-R"])
         , ("Up", ["select-pane", "-U"])
@@ -577,18 +579,25 @@ renderOnce st client = do
                     Just pane -> do
                         cells <- paneViewCells st pane
                         pure (overlayGrid acc (shiftRect rect) cells)
+            mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast
-            statusRow <- case mtoast of
-                Just t -> pure (toastCells t (fromIntegral csize.cols))
-                Nothing -> statusCells st sess (fromIntegral csize.cols)
+            statusRow <- case (mprompt, mtoast) of
+                (Just pr, _) -> pure (promptCells pr (fromIntegral csize.cols))
+                (Nothing, Just t) -> pure (toastCells t (fromIntegral csize.cols))
+                (Nothing, Nothing) -> statusCells st sess (fromIntegral csize.cols)
             let withStatus
                     | csize.rows >= 2 = base V.// [(statusRowIx, statusRow)]
                     | otherwise = base
-            cur <- case Map.lookup active ps of
-                Nothing -> pure (Pos 0 0, False)
-                Just pane -> do
-                    let origin = paneOrigin rects active
-                    paneCursor pane origin rowOff
+            cur <- case mprompt of
+                Just pr | csize.rows >= 2 ->
+                    pure (Pos { row = statusRowIx
+                              , col = min (fromIntegral csize.cols - 1)
+                                          (promptCursorCol pr) }, True)
+                _ -> case Map.lookup active ps of
+                    Nothing -> pure (Pos 0 0, False)
+                    Just pane -> do
+                        let origin = paneOrigin rects active
+                        paneCursor pane origin rowOff
             pure (withStatus, cur)
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
@@ -700,6 +709,21 @@ toastCells t width = lineCells toastStyle width t
   where
     toastStyle = Cell.defaultStyle
         { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
+
+-- | The command-prompt status row: the @:@ prefix followed by the line
+-- being edited, styled like tmux's message line.
+promptCells :: PromptState -> Int -> V.Vector Cell.Cell
+promptCells pr width = lineCells promptStyle width (promptPrefix <> pr.input)
+  where
+    promptStyle = Cell.defaultStyle
+        { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
+
+-- | The screen column of the prompt's edit cursor.
+promptCursorCol :: PromptState -> Int
+promptCursorCol pr = T.length promptPrefix + pr.cursor
+
+promptPrefix :: Text
+promptPrefix = ":"
 
 -- Session-level format environment for the active window and pane.
 sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
@@ -886,6 +910,40 @@ inputLoop st client = loop
 
 handleInput :: ServerState -> Client -> B.ByteString -> IO ()
 handleInput st client bs = do
+    mprompt <- readTVarIO client.prompt
+    case mprompt of
+        Just pr -> handlePromptInput st client pr bs
+        Nothing -> handleKeys st client bs
+
+-- | While the command prompt is open it owns every keystroke: the line
+-- editor consumes them until Enter (run and close) or Escape (close).
+handlePromptInput
+    :: ServerState -> Client -> PromptState -> B.ByteString -> IO ()
+handlePromptInput st client pr0 bs = do
+    history <- readTVarIO st.cmdHistory
+    let step acc k = case acc of
+            Prompt.Editing pr -> Prompt.editPrompt history pr k
+            done -> done
+        result = List.foldl' step (Prompt.Editing pr0) (tokenizeKeys bs)
+    case result of
+        Prompt.Editing pr -> atomically $ do
+            writeTVar client.prompt (Just pr)
+            bumpDirty st
+        Prompt.Cancel -> atomically $ do
+            writeTVar client.prompt Nothing
+            bumpDirty st
+        Prompt.Submit line -> do
+            atomically $ do
+                writeTVar client.prompt Nothing
+                bumpDirty st
+            unless (T.null (T.strip line)) $ do
+                replies <- runCommandText st (Just client) line
+                forM_ replies $ \case
+                    ROutput out -> showToast st client out
+                    RErr e -> showToast st client ("error: " <> e)
+
+handleKeys :: ServerState -> Client -> B.ByteString -> IO ()
+handleKeys st client bs = do
     opts <- readTVarIO st.options
     km <- readTVarIO st.keymap
     st0 <- readIORef client.keyState
@@ -1003,6 +1061,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["send-prefix"], cmdSendPrefix)
     , (["send-keys", "send"], cmdSendKeys)
     , (["copy-mode"], cmdCopyMode)
+    , (["command-prompt"], cmdCommandPrompt)
     , (["show-buffer", "showb"], cmdShowBuffer)
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)
@@ -1722,6 +1781,14 @@ cmdCopyMode st mclient args = do
                     writeTVar pane.mode (Just state)
                     bumpDirty st
                 pure []
+
+-- | Open the interactive command prompt on the invoking client.
+cmdCommandPrompt :: CommandImpl
+cmdCommandPrompt st mclient _args = do
+    forM_ mclient $ \client -> atomically $ do
+        writeTVar client.prompt (Just Prompt.emptyPrompt)
+        bumpDirty st
+    pure []
 
 cmdShowBuffer :: CommandImpl
 cmdShowBuffer st _ args = do
