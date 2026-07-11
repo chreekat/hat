@@ -451,6 +451,19 @@ spec = parallel $ do
         contents <- readFile outPath
         contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
 
+    it "shows the [scroll/history] position indicator on entering copy mode" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        -- No indicator until copy mode is entered.
+        scr0 <- screenText c1
+        scr0 `shouldNotSatisfy` T.isInfixOf "[0/"
+        typeInto c1 "\x02["              -- C-b [
+        awaitScreen c1 "[0/"             -- top-right box appears immediately
+        typeInto c1 "q"                  -- exit
+        awaitWith "indicator gone" (\d ->
+            not . T.isInfixOf "[0/" <$> screenText d) c1
+
     it "surfaces copy mode in the status line via pane_in_mode" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf")

@@ -621,7 +621,10 @@ paneViewCells st pane = do
                 sx = fromIntegral scr.size.cols
                 top = hsize - s.viewportOffY
             rows <- mapM (viewportRow pane scr hsize sx top) [0 .. sy - 1]
-            pure (CopyMode.overlaySelection opts.modeKeys top s (V.fromList rows))
+            let overlaid = CopyMode.overlaySelection opts.modeKeys top s
+                    (V.fromList rows)
+                label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
+            pure (stampTopRight label copyIndicatorStyle overlaid)
   where
     padTo sx v = V.generate sx (\c -> fromMaybe Cell.blankCell (v V.!? c))
     viewportRow pane' scr hsize sx top i =
@@ -631,6 +634,29 @@ paneViewCells st pane = do
             else do
                 mline <- Emu.scrollbackLine pane'.emulator a
                 pure (padTo sx (maybe V.empty V.fromList mline))
+
+-- | tmux's copy-mode position indicator: black on yellow, like the
+-- default @mode-style@.
+copyIndicatorStyle :: Cell.Style
+copyIndicatorStyle = Cell.defaultStyle
+    { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
+
+-- | Overlay a label onto the top-right corner of a grid (e.g. the
+-- @[scroll/history]@ copy-mode indicator), clipped to the first row.
+stampTopRight
+    :: Text -> Cell.Style
+    -> V.Vector (V.Vector Cell.Cell) -> V.Vector (V.Vector Cell.Cell)
+stampTopRight label sty grid
+    | V.null grid = grid
+    | otherwise = grid V.// [(0, row0 V.// updates)]
+  where
+    row0 = grid V.! 0
+    w = V.length row0
+    start = max 0 (w - T.length label)
+    updates =
+        [ (start + i, cell c)
+        | (i, c) <- zip [0 ..] (T.unpack label), start + i < w ]
+    cell c = Cell.Cell { Cell.text = T.singleton c, Cell.width = 1, Cell.style = sty }
 
 -- | The cursor a pane shows: its shell cursor, or the copy cursor when
 -- in copy mode (hidden when scrolled off the viewport).
