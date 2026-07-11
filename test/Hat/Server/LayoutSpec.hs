@@ -42,8 +42,9 @@ spec = do
                 paneCells = concatMap (cellsOf . snd) rects
                 borderCells = [(p.row, p.col) | (p, _) <- borders]
                 allCells = paneCells <> borderCells
-            in List.sort allCells === List.sort (List.nub allCells)
-                .&&. Set.fromList allCells === Set.fromList (cellsOf windowRect)
+                cellSet = Set.fromList allCells
+            in length allCells === Set.size cellSet  -- no cell covered twice
+                .&&. cellSet === Set.fromList (cellsOf windowRect)
 
     prop "splitting adds exactly the new pane" $
         forAll (genLayout 3) $ \lay ->
