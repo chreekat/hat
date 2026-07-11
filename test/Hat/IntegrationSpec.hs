@@ -175,7 +175,7 @@ reverseCellCount d = do
              , let Style { reverse = r } = cell.style, r ]
 
 spec :: Spec
-spec = do
+spec = parallel $ do
     hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
 
     it "attaches, survives detach/reattach, and shuts down cleanly" $

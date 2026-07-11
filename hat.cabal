@@ -135,7 +135,7 @@ test-suite hat-test
         Hat.Term.EmulatorSpec
         Hat.Term.GoldenSpec
         Hat.WireSpec
-    ghc-options:        -threaded
+    ghc-options:        -threaded -with-rtsopts=-N
     build-depends:
         base        ^>= 4.20.2.0,
         bytestring  ^>= 0.12.2.0,
