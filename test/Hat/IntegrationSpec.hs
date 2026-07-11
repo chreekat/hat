@@ -203,8 +203,12 @@ reverseCellCount d = do
         [ () | row <- V.toList scr.cells, cell <- V.toList row
              , let Style { reverse = r } = cell.style, r ]
 
+-- These end-to-end tests each spawn a real hat server plus shells (and
+-- sometimes vim/htop), so they run sequentially: ~35 of them racing to
+-- autostart servers at once saturates a constrained box and makes the
+-- server-autostart handshake flaky. The cheap unit specs stay parallel.
 spec :: Spec
-spec = parallel $ do
+spec = do
     hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
 
     it "attaches, survives detach/reattach, and shuts down cleanly" $

@@ -126,7 +126,10 @@ connectOrStart path mconfig = do
         Just sock -> pure sock
         Nothing -> do
             startServer path mconfig
-            waitForServer path 50
+            -- 10s of headroom: the fresh server forks, sets up its socket
+            -- dir/lock, and loads config before it starts listening, which
+            -- can take a while under heavy load.
+            waitForServer path 100
 
 startServer :: FilePath -> Maybe FilePath -> IO ()
 startServer path mconfig = do

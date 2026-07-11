@@ -25,25 +25,19 @@ module Hat.Pty
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
-import Control.Exception (IOException, SomeException, catch, try)
+import Control.Exception (IOException, catch, try)
 import Control.Monad (when)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Foldable (for_)
 import Foreign
+import Foreign.C.String (CString, withCString)
 import Foreign.C.Types
-import System.Exit (ExitCode (..))
 import System.IO
-import System.Posix.Directory (changeWorkingDirectory)
-import System.Posix.IO
-    (closeFd, dupTo, fdToHandle, stdError, stdInput, stdOutput)
-import System.Posix.Process
-    (ProcessStatus (..), createSession, executeFile, exitImmediately,
-     forkProcess, getProcessStatus)
+import System.Posix.IO (closeFd, fdToHandle)
+import System.Posix.Process (ProcessStatus (..), getProcessStatus)
 import System.Posix.Signals (Signal, signalProcess, sigHUP)
-import System.Posix.Terminal
-    (TerminalMode (..), TerminalState (..), getTerminalAttributes,
-     openPseudoTerminal, setTerminalAttributes, withMode)
+import System.Posix.Terminal (openPseudoTerminal)
 import System.Posix.Types (Fd (..), ProcessID)
 
 import Hat.Geometry
@@ -65,6 +59,15 @@ data PtyHandle = PtyHandle
 
 foreign import capi "sys/ioctl.h ioctl"
     c_ioctl :: CInt -> CULong -> Ptr () -> IO CInt
+
+-- Forks and execs the child entirely in C (see cbits/hat_shim.c), so no
+-- Haskell/RTS code runs in the child between fork and exec — the manual
+-- forkProcess path did, and under heavy parallel load its post-fork safe
+-- FFI could fail to create an OS thread, killing the child before exec.
+foreign import ccall unsafe "hat_spawn_pty"
+    c_spawn_pty
+        :: CInt -> CInt -> CString -> CString
+        -> Ptr CString -> Ptr CString -> IO CInt
 
 setWinsize :: Fd -> Size -> IO ()
 setWinsize (Fd fd) sz =
@@ -100,20 +103,18 @@ spawn :: Spawn -> IO PtyHandle
 spawn s = do
     (masterFd, slaveFd) <- openPseudoTerminal
     setWinsize slaveFd s.size
-    childPid <- forkProcess $ do
-        closeFd masterFd
-        _ <- createSession
-        _ <- c_ioctl (case slaveFd of Fd fd -> fd) #{const TIOCSCTTY} nullPtr
-        _ <- dupTo slaveFd stdInput
-        _ <- dupTo slaveFd stdOutput
-        _ <- dupTo slaveFd stdError
-        when (slaveFd > Fd 2) $ closeFd slaveFd
-        normalizeTermios stdInput
-        for_ s.cwd $ \dir ->
-            changeDirLenient dir
-        executeFile s.cmd True s.args (Just s.env)
-            `catch` \(_ :: SomeException) -> exitImmediately (ExitFailure 127)
+    let Fd m = masterFd
+        Fd sl = slaveFd
+        argv = s.cmd : s.args                       -- argv[0] = program
+        envv = [k <> "=" <> v | (k, v) <- s.env]
+    rawPid <- withCString s.cmd $ \cCmd ->
+        withMaybeCString s.cwd $ \cCwd ->
+        withCStringArray0 argv $ \pArgv ->
+        withCStringArray0 envv $ \pEnv ->
+            c_spawn_pty m sl cCwd cCmd pArgv pEnv
     closeFd slaveFd
+    when (rawPid < 0) $ ioError (userError "hat: fork failed")
+    let childPid = fromIntegral rawPid :: ProcessID
     h <- fdToHandle masterFd
     hSetBuffering h NoBuffering
     exitVar <- newEmptyMVar
@@ -127,32 +128,18 @@ spawn s = do
         , child = childPid
         , exited = exitVar
         }
-  where
-    changeDirLenient dir =
-        changeWorkingDirectory dir
-            `catch` \(_ :: SomeException) -> pure ()
 
--- | Force canonical, echoing, signal-processing termios on the slave post-dup.
--- Without this, bash/readline sees a subtly uninitialized line discipline and
--- leaves the tty in non-canonical mode when forking children (so @cat@ echoes
--- doubled bytes and Ctrl-D shows as literal ^D instead of EOF).
-normalizeTermios :: Fd -> IO ()
-normalizeTermios fd = do
-    ta <- getTerminalAttributes fd
-    let ta' = foldr (flip withMode) ta
-            [ ProcessInput      -- ICANON
-            , EnableEcho        -- ECHO
-            , EchoErase         -- ECHOE
-            , EchoKill          -- ECHOK
-            , KeyboardInterrupts -- ISIG
-            , ExtendedFunctions -- IEXTEN
-            , MapCRtoLF         -- ICRNL
-            , StartStopInput    -- IXON
-            , ProcessOutput     -- OPOST
-            , MapLFtoCR         -- ONLCR (misnamed)
-            , ReadEnable        -- CREAD
-            ]
-    setTerminalAttributes fd ta' Immediately
+withMaybeCString :: Maybe String -> (CString -> IO a) -> IO a
+withMaybeCString Nothing  f = f nullPtr
+withMaybeCString (Just s) f = withCString s f
+
+-- A NULL-terminated array of C strings, e.g. an argv or envp.
+withCStringArray0 :: [String] -> (Ptr CString -> IO a) -> IO a
+withCStringArray0 xs f =
+    withMany withCString xs $ \ptrs -> withArray0 nullPtr ptrs f
+
+-- The canonical/echo/signal line discipline the pty child needs is set in
+-- C (hat_spawn_pty), after the slave becomes its controlling terminal.
 
 -- | Blocking read of whatever bytes are available. Empty result means the
 -- pty is gone (child exited and the slave side closed).

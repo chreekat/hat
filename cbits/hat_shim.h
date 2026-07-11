@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #include <vterm.h>
 
 /* A VTermScreenCell flattened for the Haskell FFI: no bitfields, no
@@ -31,5 +32,13 @@ typedef struct {
 void hat_setup(VTerm *vt, HatCallbacks *cbs);
 int hat_get_cell(VTermScreen *screen, int row, int col, HatCell *out);
 void hat_flatten_cell_at(const VTermScreenCell *cells, int i, HatCell *out);
+
+/* fork() a child that becomes the session leader of the given pty slave,
+ * redirects stdio to it, chdir()s (if cwd is non-NULL), and execs. Runs
+ * entirely in C, so no Haskell/RTS code executes in the child between
+ * fork and exec (avoiding the threaded-RTS fork hazard under load).
+ * Returns the child pid, or -1 on fork failure. */
+pid_t hat_spawn_pty(int master_fd, int slave_fd, const char *cwd,
+                    const char *file, char *const argv[], char *const envp[]);
 
 #endif

@@ -1,6 +1,10 @@
+#define _GNU_SOURCE  /* execvpe */
 #include "hat_shim.h"
 
 #include <string.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 static void flatten_color(const VTermColor *c, int *kind, int *idx,
                           int *r, int *g, int *b) {
@@ -121,4 +125,42 @@ void hat_setup(VTerm *vt, HatCallbacks *cbs) {
     VTermScreen *screen = vterm_obtain_screen(vt);
     vterm_screen_set_callbacks(screen, &screen_callbacks, cbs);
     vterm_output_set_callback(vt, tramp_output, cbs);
+}
+
+pid_t hat_spawn_pty(int master_fd, int slave_fd, const char *cwd,
+                    const char *file, char *const argv[], char *const envp[]) {
+    pid_t pid = fork();
+    if (pid != 0)
+        return pid;  /* parent (pid > 0) or fork failure (pid < 0) */
+
+    /* child: no Haskell runtime here — plain syscalls until execvpe */
+    close(master_fd);
+    setsid();
+    ioctl(slave_fd, TIOCSCTTY, 0);
+    dup2(slave_fd, 0);
+    dup2(slave_fd, 1);
+    dup2(slave_fd, 2);
+    if (slave_fd > 2)
+        close(slave_fd);
+    /* Force canonical, echoing, signal-processing line discipline now that
+     * the slave is our controlling terminal — matching normalizeTermios.
+     * Without it bash/readline leaves the tty non-canonical when forking
+     * children (cat echoes doubled bytes, Ctrl-D shows as ^D). */
+    {
+        struct termios tio;
+        if (tcgetattr(0, &tio) == 0) {
+            tio.c_lflag |= (ICANON | ECHO | ECHOE | ECHOK | ISIG | IEXTEN);
+            tio.c_iflag |= (ICRNL | IXON);
+            tio.c_oflag |= (OPOST | ONLCR);
+            tio.c_cflag |= CREAD;
+            tcsetattr(0, TCSANOW, &tio);
+        }
+    }
+    if (cwd != NULL && cwd[0] != '\0') {
+        if (chdir(cwd) != 0) {
+            /* lenient: exec in the inherited directory if chdir fails */
+        }
+    }
+    execvpe(file, argv, envp);
+    _exit(127);
 }
