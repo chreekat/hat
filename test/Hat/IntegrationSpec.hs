@@ -300,6 +300,39 @@ spec = do
         gone <- pollServerGone sockPath 50
         gone `shouldBe` True
 
+    it "swallows typing while in copy mode (prefix [)" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+
+        -- Control: typed text echoes at the shell.
+        typeInto c1 "echo before-copy-zone\r"
+        awaitScreen c1 "before-copy-zone"
+
+        -- prefix [ enters copy mode. Keys with no copy-mode binding are
+        -- swallowed, so this marker never reaches the shell to be echoed.
+        typeInto c1 "\x02["
+        threadDelay 200000
+        typeInto c1 "zapzap42"
+        threadDelay 200000
+
+        -- q exits copy mode; the pane takes input again.
+        typeInto c1 "q"
+        threadDelay 200000
+        typeInto c1 "echo after-copy-zone\r"
+        awaitScreen c1 "after-copy-zone"
+
+        -- after-copy-zone came after the swallowed marker in the same
+        -- input stream, so its presence proves the marker was dropped.
+        scr <- screenText c1
+        scr `shouldNotSatisfy` T.isInfixOf "zapzap42"
+
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $ do
         hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
         dir <- mkdtemp "/tmp/hat-test-"

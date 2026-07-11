@@ -114,9 +114,13 @@ defaultKeymap :: Keymap
 defaultKeymap = Map.fromList
     [ ("prefix", Map.fromList (map bindArgv prefixBindings))
     , ("root", Map.empty)
+    , ("copy-mode", Map.fromList (map copyBind copyModeBindings))
+    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings))
     ]
   where
     bindArgv (k, cmd) = (k, [cmd])
+    -- A copy-mode key runs a single @send-keys -X <name>@ command.
+    copyBind (k, name) = (k, [["send-keys", "-X", name]])
     prefixBindings =
         [ ("d", ["detach-client"])
         , ("c", ["new-window"])
@@ -130,6 +134,7 @@ defaultKeymap = Map.fromList
         , ("l", ["last-window"])
         , (";", ["last-pane"])
         , ("C-b", ["send-prefix"])
+        , ("[", ["copy-mode"])
         , ("Left", ["select-pane", "-L"])
         , ("Right", ["select-pane", "-R"])
         , ("Up", ["select-pane", "-U"])
@@ -138,6 +143,33 @@ defaultKeymap = Map.fromList
         <> [ (tshow i, ["select-window", "-t", tshow (i :: Int)])
            | i <- [0 .. 9]
            ]
+    copyModeViBindings =
+        [ ("h", "cursor-left"), ("j", "cursor-down")
+        , ("k", "cursor-up"), ("l", "cursor-right")
+        , ("0", "start-of-line"), ("$", "end-of-line")
+        , ("w", "next-word"), ("b", "previous-word"), ("e", "next-word-end")
+        , ("W", "next-space"), ("B", "previous-space"), ("E", "next-space-end")
+        , ("g", "history-top")
+        , ("v", "begin-selection"), ("Escape", "clear-selection")
+        , ("y", "copy-selection-and-cancel")
+        , ("Enter", "copy-selection-and-cancel")
+        , ("q", "cancel")
+        , ("Left", "cursor-left"), ("Right", "cursor-right")
+        , ("Up", "cursor-up"), ("Down", "cursor-down")
+        ]
+    copyModeBindings =
+        [ ("C-b", "cursor-left"), ("C-f", "cursor-right")
+        , ("C-p", "cursor-up"), ("C-n", "cursor-down")
+        , ("C-a", "start-of-line"), ("C-e", "end-of-line")
+        , ("M-f", "next-word-end"), ("M-b", "previous-word")
+        , ("M-<", "history-top")
+        , ("Space", "begin-selection"), ("C-g", "clear-selection")
+        , ("M-w", "copy-selection-and-cancel")
+        , ("Enter", "copy-selection-and-cancel")
+        , ("q", "cancel"), ("Escape", "cancel")
+        , ("Left", "cursor-left"), ("Right", "cursor-right")
+        , ("Up", "cursor-up"), ("Down", "cursor-down")
+        ]
 
 loadConfig :: ServerState -> Maybe FilePath -> IO ()
 loadConfig st mconfig =
