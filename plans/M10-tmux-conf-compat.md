@@ -1,5 +1,10 @@
 # M10 — Faithful `~/.tmux.conf` compatibility
 
+**Status: complete.** All sub-milestones M10a–g are implemented; `hat -f
+~/.tmux.conf` loads with zero config errors (the burn-down list in
+`test/Hat/Server/OptionsSpec.hs` is empty) and each binding/option behaves
+as under tmux.
+
 Make hat load the author's real `~/.tmux.conf` (174 lines) and behave
 the way tmux does for every line of it. This is Phase 1 of "daily
 driver"; tmux-resurrect support is Phase 2 ([[M11-resurrect]]).

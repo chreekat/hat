@@ -299,15 +299,21 @@ can switch to it as my daily driver.
 
 ## Roadmap
 
-Remaining work is organized around two concrete acceptance targets rather
-than the priority tiers above (those were pre-implementation guesses).
-Living plans in `plans/`:
+Work is organized around two concrete acceptance targets rather than the
+priority tiers above (those were pre-implementation guesses). Living plans
+in `plans/`:
 
-- **Phase 1 — `plans/M10-tmux-conf-compat.md`**: load `~/.tmux.conf`
-  verbatim and behave faithfully for every line. Governing rule: never
-  accept an option/command without implementing its behavior; anything
-  unimplemented fails loudly.
-- **Phase 2 — `plans/M11-resurrect.md`**: tmux-resurrect save & restore.
+- **Phase 1 — `plans/M10-tmux-conf-compat.md`** ✅ **done**: `hat -f
+  ~/.tmux.conf` loads with zero config errors and behaves faithfully for
+  every line. Governing rule held throughout: never accept an
+  option/command without implementing its behavior. The config-load
+  burn-down list (`test/Hat/Server/OptionsSpec.hs`) is now empty.
+- **Phase 2 — `plans/M11-resurrect.md`** ✅ **done**: tmux-resurrect's
+  save/restore primitives — `@`-option round-trip, rich `list-panes -aF`,
+  the `window_layout` string codec, `select-layout "<string>"` and
+  `move-window` — with a save → kill-server → restart → restore
+  integration test.
 
-Done through M9: multiplexer core (M0–M7), copy mode + buffers (M8),
-command prompt (M9).
+Done through M11: multiplexer core (M0–M7), copy mode + buffers (M8),
+command prompt (M9), tmux.conf compatibility (M10), resurrect
+save/restore (M11).

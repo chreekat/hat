@@ -1,5 +1,13 @@
 # M11 — tmux-resurrect save & restore
 
+**Status: complete.** M11a–e implemented: `@`-option round-trip
+(`set -gq`/`show -gqv`), rich `list-panes`/`list-windows -aF` with every
+field resurrect dumps, the `window_layout` string codec
+(`Hat.Server.LayoutString`, tmux checksum included), `select-layout
+"<string>"` + `move-window`, and a scripted save → kill-server → restart →
+restore integration test. Pane *content* replay (`capture-pane`) remains
+an optional follow-up.
+
 Phase 2 of "daily driver": make the author's installed tmux-resurrect
 (`~/.tmux/plugins/tmux-resurrect`) save and restore a hat session tree.
 Depends on Phase 1 ([[M10-tmux-conf-compat]]) — resurrect is sourced from
