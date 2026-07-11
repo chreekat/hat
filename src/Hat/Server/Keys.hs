@@ -184,10 +184,13 @@ routeKeys prefixName keymap modeTable = go
     merge a rest = a : rest
 
 -- | Key names as written in configs: @x@, @C-b@, @M-n@, @Up@, @C-Space@.
+-- Named keys (@Space@, @Enter@, @Up@, ...) match case-insensitively, as
+-- tmux does; the caret form @^h@ is an alias for @C-h@.
 parseKeyName :: Text -> Maybe Key
 parseKeyName t
-    | Just r <- lookup t namedKeys = Just (mkKey t r)
+    | Just (n, r) <- lookupNamed t = Just (mkKey n r)
     | Just rest <- T.stripPrefix "C-" t = ctrl rest
+    | Just rest <- T.stripPrefix "^" t, not (T.null rest) = ctrl rest
     | Just rest <- T.stripPrefix "M-" t = do
         k <- parseKeyName rest
         pure (mkKey ("M-" <> k.name) ("\ESC" <> k.raw))
@@ -195,10 +198,21 @@ parseKeyName t
     | otherwise = Nothing
   where
     ctrl rest
-        | rest == "Space" = Just (mkKey "C-Space" "\NUL")
+        | T.toLower rest == "space" = Just (mkKey "C-Space" "\NUL")
         | T.length rest == 1
-        , c <- T.head rest
+        , c <- toLowerAscii (T.head rest)
         , c >= 'a' && c <= 'z' =
-            Just $ mkKey ("C-" <> rest)
+            Just $ mkKey ("C-" <> T.singleton c)
                 (B8.singleton (toEnum (fromEnum c - fromEnum 'a' + 1)))
         | otherwise = Nothing
+    toLowerAscii c
+        | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
+        | otherwise = c
+
+-- Case-insensitive lookup of a multi-character named key, returning its
+-- canonical name and bytes.
+lookupNamed :: Text -> Maybe (Text, ByteString)
+lookupNamed t =
+    case [ pair | pair@(n, _) <- namedKeys, T.toLower n == T.toLower t ] of
+        (pair : _) -> Just pair
+        [] -> Nothing
