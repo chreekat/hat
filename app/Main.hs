@@ -1,18 +1,14 @@
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, catch)
-import Control.Monad (void)
 import qualified Data.Text as T
 import Network.Socket (Socket)
 import System.Directory (doesFileExist)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO
-import System.Posix.IO
-    (OpenMode (..), closeFd, defaultFileFlags, dupTo, openFd, stdError,
-     stdInput, stdOutput)
-import System.Posix.Process (createSession, executeFile, forkProcess)
+import System.Process
+    (CreateProcess (..), StdStream (..), createProcess, proc)
 
 import Hat.Client
 import Hat.Command.Parser (parseArgv)
@@ -131,18 +127,28 @@ connectOrStart path mconfig = do
             -- can take a while under heavy load.
             waitForServer path 100
 
+-- Spawn the detached server via 'createProcess' rather than a manual
+-- 'forkProcess'/'executeFile': createProcess does the fork+exec entirely
+-- in C, so no Haskell runs in the child between them. The old approach
+-- juggled fds in the forked child, which under parallel load could stall
+-- before exec (the threaded-RTS fork hazard) — the server then never came
+-- up and the client gave up with "server failed to start". @new_session@
+-- setsid()s the daemon off the controlling tty.
 startServer :: FilePath -> Maybe FilePath -> IO ()
 startServer path mconfig = do
     self <- getExecutablePath
-    void . forkProcess $ do
-        _ <- createSession
-        devNull <- openFd "/dev/null" ReadWrite defaultFileFlags
-        _ <- dupTo devNull stdInput
-        _ <- dupTo devNull stdOutput
-        _ <- dupTo devNull stdError
-        closeFd devNull `catch` \(_ :: SomeException) -> pure ()
-        executeFile self False
-            (["--server", path] <> maybe [] (: []) mconfig) Nothing
+    devIn <- openFile "/dev/null" ReadMode
+    devOut <- openFile "/dev/null" WriteMode
+    devErr <- openFile "/dev/null" WriteMode
+    _ <- createProcess
+        (proc self (["--server", path] <> maybe [] (: []) mconfig))
+            { std_in = UseHandle devIn
+            , std_out = UseHandle devOut
+            , std_err = UseHandle devErr
+            , new_session = True
+            , close_fds = True
+            }
+    pure ()
 
 waitForServer :: FilePath -> Int -> IO Socket
 waitForServer path attempts
