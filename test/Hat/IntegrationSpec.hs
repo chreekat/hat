@@ -2,14 +2,17 @@
 module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, catch, finally)
 import Control.Monad (unless, when)
 import qualified Data.List as List
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
+import System.Directory (removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.Posix.Temp (mkdtemp)
-import System.Process (readProcess, readProcessWithExitCode)
+import System.Process (readProcess)
+import qualified System.Process as P
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -22,6 +25,55 @@ import Hat.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Style (..))
 import qualified Hat.Term.Emulator as Emu
 
+-- An isolated hat instance for one test: a private HOME (so @hat@ never
+-- reads any ambient config) and a private socket. See 'withHat'.
+data Hat = Hat
+    { bin  :: FilePath
+    , home :: FilePath
+    , sock :: FilePath
+    }
+
+-- Minimal PATH for spawned shells and the hat binary. Deliberately does
+-- not inherit the ambient environment.
+testPath :: String
+testPath = "/run/current-system/sw/bin:/usr/bin:/bin"
+
+-- | Run a test against a freshly isolated hat, tearing the server and
+-- its temp dir down afterwards no matter how the test ends. The socket
+-- lives at @<tmp>/socket@.
+withHat :: FilePath -> (Hat -> IO ()) -> IO ()
+withHat hatBin = withHatOn hatBin "socket"
+
+-- | 'withHat' with a custom socket path relative to the temp HOME (used
+-- by the test that needs the socket's parent dirs to not exist yet).
+withHatOn :: FilePath -> FilePath -> (Hat -> IO ()) -> IO ()
+withHatOn hatBin sockRel action = do
+    dir <- mkdtemp "/tmp/hat-test-"
+    let h = Hat { bin = hatBin, home = dir, sock = dir <> "/" <> sockRel }
+    action h `finally` teardown h
+
+-- Kill the server (harmless if already gone) and remove the temp dir.
+teardown :: Hat -> IO ()
+teardown h = do
+    _ <- hatCtl h ["kill-server"]
+        `catch` \(_ :: SomeException) -> pure (ExitFailure 1, "", "")
+    _ <- pollServerGone h.sock 50
+    removeDirectoryRecursive h.home
+        `catch` \(_ :: SomeException) -> pure ()
+
+-- Run a hat control command with the isolated HOME so it never resolves
+-- the ambient user config (even when it autostarts a server).
+hatCtl :: Hat -> [String] -> IO (ExitCode, String, String)
+hatCtl h args =
+    P.readCreateProcessWithExitCode
+        (P.proc h.bin (["-S", h.sock] <> args))
+            { P.env = Just [("HOME", h.home), ("PATH", testPath)] }
+        ""
+
+-- Stdout of a hat control command.
+ctlOut :: Hat -> [String] -> IO String
+ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
+
 -- A hat client running inside a test-owned pty. The raw transcript
 -- catches out-of-band messages ("[detached]"); the emulator models
 -- what a human would see on the screen.
@@ -31,21 +83,21 @@ data Driver = Driver
     , screen :: Emu.Emulator
     }
 
-startClient :: FilePath -> FilePath -> IO Driver
-startClient hatBin sockPath = startClientWith ["-S", sockPath] hatBin
+startClient :: Hat -> IO Driver
+startClient h = startClientArgs h []
 
-startClientWith :: [String] -> FilePath -> IO Driver
-startClientWith hatArgs hatBin = do
+startClientArgs :: Hat -> [String] -> IO Driver
+startClientArgs h extra = do
     -- Pane children need terminfo for TERM=tmux-256color on NixOS.
     terminfo <- lookupEnv "TERMINFO_DIRS"
     p <- spawn Spawn
-        { cmd = hatBin
-        , args = hatArgs
+        { cmd = h.bin
+        , args = ["-S", h.sock] <> extra
         , env =
-            [ ("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
+            [ ("PATH", testPath)
             , ("TERM", "xterm-256color")
             , ("SHELL", "/bin/sh")
-            , ("HOME", "/tmp")
+            , ("HOME", h.home)
             , ("PS1", "$ ")
             ]
             <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
@@ -124,13 +176,12 @@ reverseCellCount d = do
 
 spec :: Spec
 spec = do
-    it "attaches, survives detach/reattach, and shuts down cleanly" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
+    hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
 
+    it "attaches, survives detach/reattach, and shuts down cleanly" $
+        withHat hatBin $ \h -> do
         -- First client autostarts the server and gets a shell.
-        c1 <- startClient hatBin sockPath
+        c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "echo hat-integration-$((6*7))\r"
         awaitScreen c1 "hat-integration-42"
@@ -143,13 +194,13 @@ spec = do
         t1 `shouldSatisfy` B8.isInfixOf "[detached]"
 
         -- Server must still be alive.
-        alive <- connectTo sockPath
+        alive <- connectTo h.sock
         alive `shouldSatisfy` \case
             Just _ -> True
             Nothing -> False
 
         -- Reattach: the redrawn screen still shows our marker.
-        c2 <- startClient hatBin sockPath
+        c2 <- startClient h
         awaitScreen c2 "hat-integration-42"
 
         -- Ending the shell ends the session, the client, and the server.
@@ -159,21 +210,18 @@ spec = do
         t2 <- readIORef c2.transcript
         t2 `shouldSatisfy` B8.isInfixOf "[exited]"
 
-        gone <- pollServerGone sockPath 50
+        gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not exit"
 
-    it "renders vim to two simultaneous clients" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-
-        c1 <- startClient hatBin sockPath
+    it "renders vim to two simultaneous clients" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "vim -u NONE -i NONE\r"
         awaitScreen c1 "VIM - Vi IMproved"
 
         -- A second client on the same session sees vim too.
-        c2 <- startClient hatBin sockPath
+        c2 <- startClient h
         awaitScreen c2 "VIM - Vi IMproved"
 
         -- Typing in one client shows up in both.
@@ -192,11 +240,9 @@ spec = do
         t2 <- readIORef c2.transcript
         t2 `shouldSatisfy` B8.isInfixOf "[exited]"
 
-    it "runs htop (colors, alt screen, live redraw)" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "runs htop (colors, alt screen, live redraw)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "htop\r"
         awaitScreen c1 "Mem"
@@ -207,11 +253,9 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "splits panes, navigates, zooms, and kills" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "splits panes, navigates, zooms, and kills" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
 
         -- Vertical split (side by side); border appears.
@@ -252,11 +296,9 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "creates and switches windows with a live status line" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "creates and switches windows with a live status line" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "0:sh*"       -- status line is up
         typeInto c1 "echo window-zero-marker\r"
         awaitScreen c1 "window-zero-marker"
@@ -286,15 +328,12 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "marks only viewed windows: window_active_clients is per-window" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-            confPath = dir <> "/hat.conf"
-        writeFile confPath
+    it "marks only viewed windows: window_active_clients is per-window" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf")
             "set -g window-status-format \
             \'#I:#W#{?window_active_clients,<watched>,}'\n"
-        c1 <- startClientWith ["-S", sockPath, "-f", confPath] hatBin
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "0:sh"
 
         -- New window: window 0 is now idle, viewed by nobody.
@@ -307,15 +346,9 @@ spec = do
         scr `shouldSatisfy` T.isInfixOf "0:sh"
         scr `shouldNotSatisfy` T.isInfixOf "<watched>"
 
-        _ <- readProcess hatBin ["-S", sockPath, "kill-server"] ""
-        gone <- pollServerGone sockPath 50
-        gone `shouldBe` True
-
-    it "swallows typing while in copy mode (prefix [)" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "swallows typing while in copy mode (prefix [)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
 
         -- Control: typed text echoes at the shell.
@@ -340,15 +373,9 @@ spec = do
         scr <- screenText c1
         scr `shouldNotSatisfy` T.isInfixOf "zapzap42"
 
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
-    it "reverse-videos the copy-mode selection on screen" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "reverse-videos the copy-mode selection on screen" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
 
         -- Leave a line of default-styled text on the input line (unentered).
@@ -371,15 +398,9 @@ spec = do
         awaitWith "highlight cleared" (\d ->
             (<= baseline) <$> reverseCellCount d) c1
 
-        _ <- readProcess hatBin ["-S", sockPath, "kill-server"] ""
-        gone <- pollServerGone sockPath 50
-        gone `shouldBe` True
-
-    it "loads a user config: C-Space prefix, vim keys, base-index 1" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-            confPath = dir <> "/hat.conf"
+    it "loads a user config: C-Space prefix, vim keys, base-index 1" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
         writeFile confPath $ unlines
             [ "# hat test config"
             , "set -g prefix C-Space"
@@ -394,7 +415,7 @@ spec = do
             , "bind r source-file " <> confPath <> " \\; display-message reloaded"
             , "set -g status-right 'clients=#{window_active_clients}'"
             ]
-        c1 <- startClientWith ["-S", sockPath, "-f", confPath] hatBin
+        c1 <- startClientArgs h ["-f", confPath]
         -- base-index 1 shows in the status line, at the TOP
         awaitScreen c1 "1:sh*"
         awaitWith "status on top row" (\d -> do
@@ -423,40 +444,31 @@ spec = do
         status `shouldBe` Exited ExitSuccess
 
         -- control commands from a shell
-        out1 <- readProcess hatBin ["-S", sockPath, "list-sessions"] ""
+        out1 <- ctlOut h ["list-sessions"]
         out1 `shouldSatisfy` List.isInfixOf "1 windows"
-        out2 <- readProcess hatBin ["-S", sockPath, "list-panes"] ""
+        out2 <- ctlOut h ["list-panes"]
         out2 `shouldSatisfy` List.isInfixOf "%"
-        out3 <- readProcess hatBin ["-S", sockPath, "display-message", "-p", "hello-cli"] ""
+        out3 <- ctlOut h ["display-message", "-p", "hello-cli"]
         out3 `shouldSatisfy` List.isInfixOf "hello-cli"
-        _ <- readProcess hatBin ["-S", sockPath, "kill-server"] ""
-        gone <- pollServerGone sockPath 50
-        gone `shouldBe` True
 
-    it "autostarts the server when the socket directory does not exist yet" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        -- the parent of the socket must be created by the server itself
-        let sockPath = dir <> "/fresh/subdir/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "autostarts the server when the socket directory does not exist yet" $
+        -- the parent dirs of the socket must be created by the server.
+        withHatOn hatBin "fresh/subdir/socket" $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "attaches without a controlling terminal: exits with 'not a terminal'" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        (code, _, err) <- readProcessWithExitCode hatBin ["-S", sockPath] ""
+    it "attaches without a controlling terminal: exits with 'not a terminal'" $
+        withHat hatBin $ \h -> do
+        (code, _, err) <- hatCtl h []
         code `shouldBe` ExitFailure 1
         err `shouldSatisfy` List.isInfixOf "not a terminal"
 
-    it "runs cat: line-buffered echo, not doubled" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "runs cat: line-buffered echo, not doubled" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "cat\r"
         threadDelay 300000
@@ -473,11 +485,9 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "runs cat: Ctrl-D sends EOF and returns to the shell" $ do
-        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
-        dir <- mkdtemp "/tmp/hat-test-"
-        let sockPath = dir <> "/test-socket"
-        c1 <- startClient hatBin sockPath
+    it "runs cat: Ctrl-D sends EOF and returns to the shell" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "cat\r"
         threadDelay 300000
