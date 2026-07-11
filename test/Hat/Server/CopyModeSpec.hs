@@ -70,7 +70,7 @@ step keys seps cmd sim = case cmd of
     "cursor-right" -> motion mCursorRight
     "cursor-up" -> sim { sState = runIdentity (cursorVertical (-1) grid st) }
     "cursor-down" -> sim { sState = runIdentity (cursorVertical 1 grid st) }
-    "end-of-line" -> sim { sState = runIdentity (endOfLine grid st) }
+    "end-of-line" -> sim { sState = runIdentity (endOfLine keys grid st) }
     other -> error ("unknown copy-mode command: " <> show other)
   where
     st = sim.sState

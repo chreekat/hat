@@ -1584,7 +1584,9 @@ cmdSendKeys st mclient args = do
     mpane <- targetPane st mclient (lookup "-t" opts)
     forM_ mpane $ \pane ->
         if modeCmd
-            then mapM_ (runCopyModeCommand st pane) pos
+            then case pos of
+                (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
+                [] -> pure ()
             else Hat.Pty.writePty pane.pty
                 (B.concat (map (argBytes literal) pos))
     pure []
@@ -1594,15 +1596,15 @@ cmdSendKeys st mclient args = do
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
 
-runCopyModeCommand :: ServerState -> Pane -> Text -> IO ()
-runCopyModeCommand st pane name = do
+runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO ()
+runCopyModeCommand st pane name cmdArgs = do
     mmode <- readTVarIO pane.mode
     case mmode of
         Nothing -> pure ()  -- not in copy mode; -X is a no-op
         Just state -> case Map.lookup name CopyMode.handlers of
             Nothing -> pure ()
             Just h -> do
-                result <- h st pane state
+                result <- h st pane state cmdArgs
                 result' <- traverse (scrollPaneToCursor pane) result
                 atomically $ do
                     writeTVar pane.mode result'

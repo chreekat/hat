@@ -30,12 +30,15 @@ module Hat.Server.CopyMode
     ) where
 
 import Control.Concurrent.STM
+import Control.Exception (SomeException, try)
+import Control.Monad (forM_, unless, void)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
+import System.Process (readCreateProcess, shell)
 import qualified Data.Vector as V
 
 import Hat.Geometry (Pos (..), Size (..))
@@ -313,11 +316,17 @@ cursorVertical d g st = do
     len <- g.gLineLen row'
     pure st { cursorRow = row', cursorCol = min st.cursorCol len }
 
--- | Move to the last non-blank cell of the current line.
-endOfLine :: Monad m => Grid m -> CopyModeState -> m CopyModeState
-endOfLine g st = do
+-- | Move to the end of the current line. Vi lands on the last cell (so an
+-- inclusive selection covers it); emacs lands one cell past it (so an
+-- exclusive selection covers it).
+endOfLine :: Monad m => ModeKeys -> Grid m -> CopyModeState -> m CopyModeState
+endOfLine keys g st = do
     len <- g.gLineLen st.cursorRow
-    pure st { cursorCol = max 0 (len - 1) }
+    pure st { cursorCol = endCol len }
+  where
+    endCol len = case keys of
+        KeysEmacs -> len
+        KeysVi -> max 0 (len - 1)
 
 -- ---------------------------------------------------------------------
 -- Selection extraction (port of window_copy_get_selection, no rectangle)
@@ -475,13 +484,15 @@ runMotion g keys seps motion st = do
 -- ---------------------------------------------------------------------
 -- Handler table
 
--- | A copy-mode @-X@ handler. 'Nothing' means \"exit copy mode\".
+-- | A copy-mode @-X@ handler. Receives the command's positional args
+-- (e.g. the shell command for @copy-pipe@). 'Nothing' means \"exit copy
+-- mode\".
 type Handler
-    = ServerState -> Pane -> CopyModeState -> IO (Maybe CopyModeState)
+    = ServerState -> Pane -> CopyModeState -> [Text] -> IO (Maybe CopyModeState)
 
 handlers :: Map Text Handler
 handlers = Map.fromList
-    [ ("cancel",            \_ _ _ -> pure Nothing)
+    [ ("cancel",            \_ _ _ _ -> pure Nothing)
     , ("start-of-line",     pureH (\s -> s { cursorCol = 0 }))
     , ("history-top",       pureH (\s -> s { cursorRow = 0, cursorCol = 0 }))
     , ("begin-selection",   pureH beginSelection)
@@ -496,24 +507,43 @@ handlers = Map.fromList
     , ("cursor-right",      motionH (\_ -> mCursorRight))
     , ("cursor-up",         gridH (cursorVertical (-1)))
     , ("cursor-down",       gridH (cursorVertical 1))
-    , ("end-of-line",       gridH endOfLine)
+    , ("end-of-line",       endOfLineH)
     , ("copy-selection",
-        \sst p s -> yankSelection sst p s
+        \sst p s _ -> yankSelection sst p s
             >> pure (Just s { selection = Nothing }))
     , ("copy-selection-and-cancel",
-        \sst p s -> yankSelection sst p s >> pure Nothing)
+        \sst p s _ -> yankSelection sst p s >> pure Nothing)
+    , ("copy-pipe",            pipeH False)
+    , ("copy-pipe-and-cancel", pipeH True)
     ]
   where
-    pureH f _ _ s = pure (Just (f s))
-    motionH mk sst pane st = do
+    pureH f _ _ s _ = pure (Just (f s))
+    motionH mk sst pane st _ = do
         opts <- readTVarIO sst.options
         g <- paneGrid pane
         st' <- runMotion g opts.modeKeys opts.wordSeparators
             (mk opts.wordSeparators) st
         pure (Just st')
-    gridH f _ pane st = do
+    gridH f _ pane st _ = do
         g <- paneGrid pane
         Just <$> f g st
+    endOfLineH sst pane st _ = do
+        opts <- readTVarIO sst.options
+        g <- paneGrid pane
+        Just <$> endOfLine opts.modeKeys g st
+    -- copy-pipe [-flags] <shell command>: yank the selection into a
+    -- buffer AND feed it to @sh -c <command>@ on stdin.
+    pipeH cancelAfter sst pane s args = do
+        let cmd = T.strip (T.unwords (filter (not . T.isPrefixOf "-") args))
+        opts <- readTVarIO sst.options
+        g <- paneGrid pane
+        mtext <- extractSelection g opts.modeKeys s
+        forM_ mtext $ \body -> do
+            unless (T.null cmd) . void $
+                (try (readCreateProcess (shell (T.unpack cmd)) (T.unpack body))
+                    :: IO (Either SomeException String))
+            pushBuffer sst body
+        pure (if cancelAfter then Nothing else Just s { selection = Nothing })
 
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s
@@ -526,11 +556,13 @@ yankSelection st pane s = do
     opts <- readTVarIO st.options
     g <- paneGrid pane
     mtext <- extractSelection g opts.modeKeys s
-    case mtext of
-        Nothing -> pure ()
-        Just body -> atomically $ do
-            n <- readTVar st.nextBuffer
-            writeTVar st.nextBuffer (n + 1)
-            let name = "buffer" <> T.pack (show n)
-            modifyTVar' st.buffers ((name, body) Seq.<|)
-            bumpDirty st
+    forM_ mtext (pushBuffer st)
+
+-- | Push a fresh, auto-named buffer onto the front of the buffer store.
+pushBuffer :: ServerState -> Text -> IO ()
+pushBuffer st body = atomically $ do
+    n <- readTVar st.nextBuffer
+    writeTVar st.nextBuffer (n + 1)
+    let name = "buffer" <> T.pack (show n)
+    modifyTVar' st.buffers ((name, body) Seq.<|)
+    bumpDirty st

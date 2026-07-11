@@ -428,6 +428,29 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "copy-pipe feeds the selection to a shell command" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        -- Leave a marker on the input line, unentered, then select it.
+        typeInto c1 "echo PIPEDWORD"
+        awaitScreen c1 "PIPEDWORD"
+        baseline <- reverseCellCount c1
+        typeInto c1 "\x02["
+        threadDelay 200000
+        typeInto c1 "\x01"           -- C-a start-of-line
+        typeInto c1 " "              -- Space begin-selection
+        typeInto c1 "\x05"           -- C-e end-of-line
+        awaitWith "selection highlighted" (\d ->
+            (> baseline) <$> reverseCellCount d) c1
+
+        -- copy-pipe writes the selected line to a file via the shell.
+        let outPath = h.home <> "/piped.txt"
+        _ <- ctlOut h ["send-keys", "-X", "copy-pipe", "cat > " <> outPath]
+        threadDelay 300000
+        contents <- readFile outPath
+        contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
