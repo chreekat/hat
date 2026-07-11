@@ -1,6 +1,7 @@
 module Hat.Server.LayoutSpec (spec) where
 
 import qualified Data.List as List
+import Data.Ratio ((%))
 import qualified Data.Set as Set
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
@@ -94,6 +95,27 @@ spec = do
                 (a : b : _) ->
                     swapLeaves a b (swapLeaves a b lay) === lay
                 _ -> property Discard
+
+    describe "namedLayout" $ do
+        let pids4 = map PaneId [0, 1, 2, 3]
+        it "main-vertical gives the main pane the requested width share" $ do
+            -- window 120 wide; main share 90 -> main pane ~90 cols on the left
+            -- (one column goes to the border between it and the stack).
+            let lay = namedLayout MainVertical (90 % 120) pids4
+                (rects, _) = arrange windowRect lay
+            case List.lookup (PaneId 0) rects of
+                Just r -> do
+                    r.startCol `shouldBe` 0
+                    r.endCol `shouldSatisfy` (\c -> c >= 88 && c <= 90)
+                Nothing -> expectationFailure "main pane missing"
+        it "preserves the full pane set for every layout" $
+            [ Set.fromList (layoutPanes (namedLayout n (1 % 2) pids4))
+            | n <- [EvenHorizontal, EvenVertical, MainVertical, MainHorizontal, Tiled] ]
+                `shouldSatisfy` all (== Set.fromList pids4)
+        it "even-horizontal splits four panes into equal columns" $ do
+            let (rects, _) = arrange windowRect (namedLayout EvenHorizontal (1 % 2) pids4)
+                widths = [ r.endCol - r.startCol | (_, r) <- rects ]
+            maximum widths - minimum widths `shouldSatisfy` (<= 1)
 
     describe "neighbor" $ do
         -- +-------+-------+

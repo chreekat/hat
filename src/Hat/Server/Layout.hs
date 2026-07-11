@@ -4,6 +4,7 @@ module Hat.Server.Layout
     ( Layout (..)
     , Orientation (..)
     , Direction (..)
+    , LayoutName (..)
     , arrange
     , paneRects
     , sizeRect
@@ -14,6 +15,7 @@ module Hat.Server.Layout
     , removeLeaf
     , neighbor
     , resizeSplit
+    , namedLayout
     ) where
 
 import qualified Data.List as List
@@ -129,6 +131,44 @@ removeLeaf target = \case
         (Nothing, _) -> Just b
         (_, Nothing) -> Just a
         (Just a', Just b') -> Just (Split o r a' b')
+
+-- | The tmux named layouts.
+data LayoutName
+    = EvenHorizontal | EvenVertical | MainVertical | MainHorizontal | Tiled
+    deriving (Eq, Show)
+
+-- | Arrange @pids@ into a named layout. @mainRatio@ is the main pane's
+-- share of the window (from @main-pane-width@/@-height@), used only by the
+-- @main-*@ layouts. Assumes a non-empty pane list.
+namedLayout :: LayoutName -> Rational -> [PaneId] -> Layout
+namedLayout name mainRatio pids = case pids of
+    []      -> error "namedLayout: no panes"
+    [p]     -> Leaf p
+    (m : rest) -> case name of
+        EvenHorizontal -> evenChain LeftRight (map Leaf pids)
+        EvenVertical   -> evenChain TopBottom (map Leaf pids)
+        MainVertical   ->
+            Split LeftRight mainRatio (Leaf m) (evenChain TopBottom (map Leaf rest))
+        MainHorizontal ->
+            Split TopBottom mainRatio (Leaf m) (evenChain LeftRight (map Leaf rest))
+        Tiled          -> tiled pids
+
+-- | A balanced chain of equal-ratio splits along one axis.
+evenChain :: Orientation -> [Layout] -> Layout
+evenChain _ []       = error "evenChain: empty"
+evenChain _ [l]      = l
+evenChain o (l : ls) = Split o (1 % toInteger (length (l : ls))) l (evenChain o ls)
+
+-- | A grid: ceil(sqrt n) columns of rows, each row an even horizontal row.
+tiled :: [PaneId] -> Layout
+tiled pids =
+    evenChain TopBottom [ evenChain LeftRight (map Leaf row) | row <- rows ]
+  where
+    n = length pids
+    cols = ceiling (sqrt (fromIntegral n :: Double))
+    rows = chunksOf (max 1 cols) pids
+    chunksOf _ [] = []
+    chunksOf k xs = let (a, b) = splitAt k xs in a : chunksOf k b
 
 -- | Geometric pane navigation: the adjacent pane in a direction with
 -- the largest shared edge.
