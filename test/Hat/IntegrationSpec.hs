@@ -138,8 +138,10 @@ awaitWith what check d = do
             then pure ()
             else do
                 chunk <- readPty d.pty
-                when (B8.null chunk) $
-                    expectationFailure ("pty closed while waiting for " <> what)
+                when (B8.null chunk) $ do
+                    t <- readIORef d.transcript
+                    expectationFailure $ "pty closed while waiting for " <> what
+                        <> "\ntranscript: " <> show t
                 ingest d chunk
                 go
 
@@ -203,12 +205,8 @@ reverseCellCount d = do
         [ () | row <- V.toList scr.cells, cell <- V.toList row
              , let Style { reverse = r } = cell.style, r ]
 
--- These end-to-end tests each spawn a real hat server plus shells (and
--- sometimes vim/htop), so they run sequentially: ~35 of them racing to
--- autostart servers at once saturates a constrained box and makes the
--- server-autostart handshake flaky. The cheap unit specs stay parallel.
 spec :: Spec
-spec = do
+spec = parallel $ do
     hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
 
     it "attaches, survives detach/reattach, and shuts down cleanly" $
