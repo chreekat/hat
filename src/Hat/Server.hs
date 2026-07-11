@@ -566,8 +566,8 @@ renderOnce st client = do
                 case Map.lookup pidL ps of
                     Nothing -> pure acc
                     Just pane -> do
-                        scr <- Emu.snapshot pane.emulator
-                        pure (overlayGrid acc (shiftRect rect) scr.cells)
+                        cells <- paneViewCells st pane
+                        pure (overlayGrid acc (shiftRect rect) cells)
             mtoast <- readTVarIO client.toast
             statusRow <- case mtoast of
                 Just t -> pure (toastCells t (fromIntegral csize.cols))
@@ -578,11 +578,8 @@ renderOnce st client = do
             cur <- case Map.lookup active ps of
                 Nothing -> pure (Pos 0 0, False)
                 Just pane -> do
-                    scr <- Emu.snapshot pane.emulator
                     let origin = paneOrigin rects active
-                    pure ( Pos { row = scr.cursor.row + origin.row + rowOff
-                               , col = scr.cursor.col + origin.col }
-                         , scr.cursorVisible )
+                    paneCursor pane origin rowOff
             pure (withStatus, cur)
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
@@ -600,6 +597,51 @@ paneOrigin :: [(PaneId, Rect)] -> PaneId -> Pos
 paneOrigin rects pidL = case List.lookup pidL rects of
     Just r -> Pos { row = r.startRow, col = r.startCol }
     Nothing -> Pos 0 0
+
+-- | The cells a pane contributes to a frame. Normally its live screen;
+-- in copy mode, a viewport over scrollback+screen with the selection
+-- reverse-videoed.
+paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
+paneViewCells st pane = do
+    scr <- Emu.snapshot pane.emulator
+    mmode <- readTVarIO pane.mode
+    case mmode of
+        Nothing -> pure scr.cells
+        Just s -> do
+            hsize <- Emu.scrollbackLength pane.emulator
+            opts <- readTVarIO st.options
+            let sy = V.length scr.cells
+                sx = fromIntegral scr.size.cols
+                top = hsize - s.viewportOffY
+            rows <- mapM (viewportRow pane scr hsize sx top) [0 .. sy - 1]
+            pure (CopyMode.overlaySelection opts.modeKeys top s (V.fromList rows))
+  where
+    padTo sx v = V.generate sx (\c -> fromMaybe Cell.blankCell (v V.!? c))
+    viewportRow pane' scr hsize sx top i =
+        let a = top + i
+        in if a >= hsize
+            then pure (padTo sx (fromMaybe V.empty (scr.cells V.!? (a - hsize))))
+            else do
+                mline <- Emu.scrollbackLine pane'.emulator a
+                pure (padTo sx (maybe V.empty V.fromList mline))
+
+-- | The cursor a pane shows: its shell cursor, or the copy cursor when
+-- in copy mode (hidden when scrolled off the viewport).
+paneCursor :: Pane -> Pos -> Int -> IO (Pos, Bool)
+paneCursor pane origin rowOff = do
+    scr <- Emu.snapshot pane.emulator
+    mmode <- readTVarIO pane.mode
+    case mmode of
+        Nothing -> pure (place scr.cursor, scr.cursorVisible)
+        Just s -> do
+            hsize <- Emu.scrollbackLength pane.emulator
+            let top = hsize - s.viewportOffY
+            case CopyMode.copyCursorPos top (V.length scr.cells) s of
+                Just p -> pure (place p, True)
+                Nothing -> pure (Pos 0 0, False)
+  where
+    place p = Pos { row = p.row + origin.row + rowOff
+                  , col = p.col + origin.col }
 
 -- Status line -------------------------------------------------------------
 
@@ -1558,9 +1600,17 @@ runCopyModeCommand st pane name = do
             Nothing -> pure ()
             Just h -> do
                 result <- h st pane state
+                result' <- traverse (scrollPaneToCursor pane) result
                 atomically $ do
-                    writeTVar pane.mode result
+                    writeTVar pane.mode result'
                     bumpDirty st
+
+-- | Re-center a pane's copy-mode viewport on its cursor after a motion.
+scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
+scrollPaneToCursor pane s = do
+    hsize <- Emu.scrollbackLength pane.emulator
+    scr <- Emu.snapshot pane.emulator
+    pure (CopyMode.scrollToCursor hsize (V.length scr.cells) s)
 
 -- | Resolve the pane a command should act on. For now, ignore any
 -- @-t target@ and default to the active pane of the caller's current

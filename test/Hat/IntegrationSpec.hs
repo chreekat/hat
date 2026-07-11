@@ -14,10 +14,12 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 import qualified Data.Text as T
+import qualified Data.Vector as V
 
 import Hat.Geometry
 import Hat.Pty
 import Hat.Socket (connectTo)
+import Hat.Term.Cell (Cell (..), Style (..))
 import qualified Hat.Term.Emulator as Emu
 
 -- A hat client running inside a test-owned pty. The raw transcript
@@ -110,6 +112,15 @@ awaitExit d = do
 
 typeInto :: Driver -> B8.ByteString -> IO ()
 typeInto d = writePty d.pty
+
+-- Count cells drawn with the reverse-video attribute (how a copy-mode
+-- selection renders).
+reverseCellCount :: Driver -> IO Int
+reverseCellCount d = do
+    scr <- Emu.snapshot d.screen
+    pure $ length
+        [ () | row <- V.toList scr.cells, cell <- V.toList row
+             , let Style { reverse = r } = cell.style, r ]
 
 spec :: Spec
 spec = do
@@ -332,6 +343,37 @@ spec = do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    it "reverse-videos the copy-mode selection on screen" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+        c1 <- startClient hatBin sockPath
+        awaitScreen c1 "$"
+
+        -- Leave a line of default-styled text on the input line (unentered).
+        typeInto c1 "echo SELECTMEMARKER"
+        awaitScreen c1 "SELECTMEMARKER"
+        baseline <- reverseCellCount c1
+
+        -- Enter copy mode (default mode-keys = emacs) and select the
+        -- line: C-a start-of-line, Space begin-selection, C-e end-of-line.
+        typeInto c1 "\x02["
+        threadDelay 200000
+        typeInto c1 "\x01"           -- C-a
+        typeInto c1 " "              -- Space: begin-selection
+        typeInto c1 "\x05"           -- C-e
+        awaitWith "selection highlighted" (\d ->
+            (> baseline) <$> reverseCellCount d) c1
+
+        -- C-g clears the selection, so the highlight goes away.
+        typeInto c1 "\x07"           -- C-g: clear-selection
+        awaitWith "highlight cleared" (\d ->
+            (<= baseline) <$> reverseCellCount d) c1
+
+        _ <- readProcess hatBin ["-S", sockPath, "kill-server"] ""
+        gone <- pollServerGone sockPath 50
+        gone `shouldBe` True
 
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $ do
         hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
