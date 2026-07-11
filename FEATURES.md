@@ -286,11 +286,28 @@ If HAT supports the bullet list above but breaks one of these, I'll notice.
    index 60 named SCRATCH running vim with an unnamed scratch buffer. Requires:
    `new-window -a -t N -n NAME 'cmd with spaces and args'`.
 6. **Save and restore everything**: `prefix M-s` / `prefix M-r` via
-   tmux-resurrect. Requires: hooks, run-shell, the ability for an external
-   process to enumerate sessions/windows/panes/working-dirs/commands and to
-   recreate them later. A native equivalent would be better.
+   tmux-resurrect. Requires: run-shell, custom `@`-options, rich
+   `list-panes/-windows -aF`, `window_layout` strings + `select-layout`,
+   and the ability for an external process to enumerate and recreate the
+   tree. (Resurrect itself needs no hooks — those are a continuum
+   dependency.) A native equivalent would be better.
 
 ---
 
 If HAT covers everything tagged P0 and P1, plus the six workflows above, I
 can switch to it as my daily driver.
+
+## Roadmap
+
+Remaining work is organized around two concrete acceptance targets rather
+than the priority tiers above (those were pre-implementation guesses).
+Living plans in `plans/`:
+
+- **Phase 1 — `plans/M10-tmux-conf-compat.md`**: load `~/.tmux.conf`
+  verbatim and behave faithfully for every line. Governing rule: never
+  accept an option/command without implementing its behavior; anything
+  unimplemented fails loudly.
+- **Phase 2 — `plans/M11-resurrect.md`**: tmux-resurrect save & restore.
+
+Done through M9: multiplexer core (M0–M7), copy mode + buffers (M8),
+command prompt (M9).
