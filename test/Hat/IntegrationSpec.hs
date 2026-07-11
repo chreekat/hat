@@ -185,6 +185,15 @@ boldBorderFg d = do
         , cell.text `elem` (["\x2502", "\x2503"] :: [T.Text])
         , cell.style.bold ]
 
+-- The column of the vertical pane border (│) on a content row, if any.
+verticalBorderCol :: Driver -> IO (Maybe Int)
+verticalBorderCol d = do
+    scr <- Emu.snapshot d.screen
+    pure $ case scr.cells V.!? 5 of
+        Just row -> listToMaybe
+            [ c | (c, cell) <- zip [0 ..] (V.toList row), cell.text == "\x2502" ]
+        Nothing -> Nothing
+
 -- Count cells drawn with the reverse-video attribute (how a copy-mode
 -- selection renders).
 reverseCellCount :: Driver -> IO Int
@@ -525,6 +534,29 @@ spec = parallel $ do
         threadDelay 300000
         typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
         awaitScreen c1 "^[[I"                -- forwarded to the pane, echoed by cat -v
+
+    it "select-layout rearranges panes; main-vertical honors main-pane-width" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g main-pane-width 50\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02%"                  -- 2 panes
+        awaitScreen c1 "\x2502"
+        typeInto c1 "\x02%"                  -- 3 panes
+        threadDelay 200000
+        -- even-vertical stacks them: horizontal borders, no vertical.
+        _ <- ctlOut h ["select-layout", "even-vertical"]
+        awaitWith "stacked (no vertical border)" (\d -> do
+            t <- screenText d
+            pure ("\x2500" `T.isInfixOf` t
+                  && not ("\x2502" `T.isInfixOf` t))) c1
+        -- main-vertical: a ~50-column main pane on the left, stack on the right.
+        _ <- ctlOut h ["select-layout", "main-vertical"]
+        awaitWith "main pane ~50 cols wide" (\d -> do
+            mcol <- verticalBorderCol d
+            t <- screenText d
+            pure (maybe False (\c -> c >= 46 && c <= 52) mcol
+                  && "\x2500" `T.isInfixOf` t)) c1
 
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do

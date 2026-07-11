@@ -65,8 +65,7 @@ spec = do
                     List.sort (loadSetErrors cmds)
                         `shouldBe` expectedUnimplemented
 
--- The living burn-down list. Delete a line here the moment its
--- milestone implements the option's behavior.
+-- The living burn-down list, now empty: every option in the author's
+-- real ~/.tmux.conf loads with behavior. M10's acceptance target.
 expectedUnimplemented :: [Text]
-expectedUnimplemented =
-    [ "unimplemented option: main-pane-width" ]
+expectedUnimplemented = []

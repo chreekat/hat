@@ -21,6 +21,7 @@ import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Maybe (fromMaybe, isJust)
+import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -1245,6 +1246,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["clear-history", "clearhist"], cmdClearHistory)
     , (["break-pane", "breakp"], cmdBreakPane)
     , (["join-pane", "joinp"], cmdJoinPane)
+    , (["select-layout", "selectl"], cmdSelectLayout)
     , (["resize-pane", "resizep"], cmdResizePane)
     , (["last-pane", "lastp"], cmdLastPane)
     , (["detach-client", "detach"], cmdDetachClient)
@@ -1530,6 +1532,8 @@ setOption append opts name value = case name of
     "aggressive-resize" -> withOnOff $ \b -> opts { aggressiveResize = b }
     "monitor-activity" -> withOnOff $ \b -> opts { monitorActivity = b }
     "update-environment" -> Right opts { updateEnvironment = T.words value }
+    "main-pane-width" -> withInt $ \n -> opts { mainPaneWidth = n }
+    "main-pane-height" -> withInt $ \n -> opts { mainPaneHeight = n }
     _
         | "@" `T.isPrefixOf` name ->
             Right opts { user = Map.insert name value opts.user }
@@ -2083,6 +2087,48 @@ cmdJoinPane st mclient args = do
                 applySessionSize st sess.id
                 pure []
             _ -> pure [RErr "no source pane"]
+
+-- | @select-layout <name>@: rearrange the current window's panes into a
+-- named layout (@main-vertical@, @even-horizontal@, @tiled@, …). The
+-- @main-*@ layouts size their main pane from @main-pane-width@/@-height@.
+cmdSelectLayout :: CommandImpl
+cmdSelectLayout st mclient args = do
+    let (_, _, pos) = parseArgs "t" args
+    case pos of
+        (nameT : _) -> case parseLayoutName nameT of
+            Just lname -> applyNamedLayout st mclient lname
+            Nothing -> pure [RErr ("unknown layout: " <> nameT)]
+        [] -> pure [RErr "usage: select-layout name"]
+
+parseLayoutName :: Text -> Maybe LayoutName
+parseLayoutName = \case
+    "main-vertical"   -> Just MainVertical
+    "main-horizontal" -> Just MainHorizontal
+    "even-horizontal" -> Just EvenHorizontal
+    "even-vertical"   -> Just EvenVertical
+    "tiled"           -> Just Tiled
+    _                 -> Nothing
+
+applyNamedLayout :: ServerState -> Maybe Client -> LayoutName -> IO [Reply]
+applyNamedLayout st mclient lname =
+    withCurrentWindow st mclient $ \sess win -> do
+        eff <- readTVarIO sess.lastSize
+        opts <- readTVarIO st.options
+        let area = windowArea eff
+            clampR r = max (1 % 10) (min (9 % 10) r) :: Rational
+            ratioOf num den = clampR (toInteger num % max 1 (toInteger den))
+            mainRatio = case lname of
+                MainVertical   -> ratioOf opts.mainPaneWidth area.cols
+                MainHorizontal -> ratioOf opts.mainPaneHeight area.rows
+                _              -> 1 % 2
+        atomically $ do
+            pids <- layoutPanes <$> readTVar win.layout
+            unless (null pids) $ do
+                writeTVar win.layout (namedLayout lname mainRatio pids)
+                writeTVar win.zoomed Nothing
+                bumpDirty st
+        applySessionSize st sess.id
+        pure []
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do

@@ -63,6 +63,8 @@ data Options = Options
     , aggressiveResize       :: Bool
     , monitorActivity        :: Bool
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
+    , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
+    , mainPaneHeight         :: Int
     , user            :: Map Text Text  -- ^ @\@foo@ options
     }
     deriving (Eq, Show)
@@ -103,6 +105,8 @@ defaultOptions = Options
     , updateEnvironment =
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
         , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]
+    , mainPaneWidth = 80
+    , mainPaneHeight = 24
     , user = Map.empty
     }
   where
