@@ -16,6 +16,7 @@ module Hat.Server.Layout
     , neighbor
     , resizeSplit
     , namedLayout
+    , childRects
     ) where
 
 import qualified Data.List as List
