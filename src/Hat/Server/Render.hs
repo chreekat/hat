@@ -49,24 +49,20 @@ overlayGrid frame rect grid = V.imap overlayRow frame
         | c < rect.startCol || c >= rect.endCol = cell
         | otherwise = maybe blankCell (\x -> x) (src V.!? (c - rect.startCol))
 
--- | Stamp border characters onto a frame.
-applyBorders :: Frame -> [(Pos, Char)] -> Frame
+-- | Stamp pre-styled border cells onto a frame. The caller chooses each
+-- cell's glyph (per @pane-border-lines@) and style (per the pane-border
+-- styles and @pane-border-indicators@).
+applyBorders :: Frame -> [(Pos, Cell)] -> Frame
 applyBorders frame borders = frame V.// updates
   where
     byRow = Map.toList $ Map.fromListWith (<>)
-        [ (p.row, [(p.col, ch)]) | (p, ch) <- borders ]
+        [ (p.row, [(p.col, cell)]) | (p, cell) <- borders ]
     updates =
-        [ (r, row V.// [ (c, borderCell ch)
-                       | (c, ch) <- cols, c < V.length row ])
+        [ (r, row V.// [ (c, cell) | (c, cell) <- cols, c < V.length row ])
         | (r, cols) <- byRow
         , r < V.length frame
         , let row = frame V.! r
         ]
-    borderCell ch = Cell
-        { text = T.singleton ch
-        , width = 1
-        , style = defaultStyle
-        }
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]
