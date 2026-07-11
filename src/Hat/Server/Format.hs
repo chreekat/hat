@@ -5,6 +5,7 @@
 module Hat.Server.Format
     ( FormatEnv
     , evaluate
+    , renderFormat
     ) where
 
 import Data.Map.Strict (Map)
@@ -12,8 +13,16 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
+import Data.Time.Format (FormatTime, defaultTimeLocale, formatTime)
 
 type FormatEnv = Map Text Text
+
+-- | Fully render a format string: run 'evaluate', then the strftime pass
+-- over the result. Because 'evaluate' escapes expansion percents, only the
+-- template's own @%@ sequences reach strftime.
+renderFormat :: FormatTime t => FormatEnv -> (Text -> Text) -> t -> Text -> Text
+renderFormat env shellRes t fmt =
+    T.pack (formatTime defaultTimeLocale (T.unpack (evaluate env shellRes fmt)) t)
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
 evaluate env shellRes = go
@@ -31,7 +40,7 @@ evaluate env shellRes = go
             in expand inner <> go rest'
         Just ('(', rest) ->
             let (inner, rest') = balanced '(' ')' rest
-            in shellRes inner <> go rest'
+            in esc (shellRes inner) <> go rest'
         Just ('S', rest) -> var "session_name" <> go rest
         Just ('I', rest) -> var "window_index" <> go rest
         Just ('W', rest) -> var "window_name" <> go rest
@@ -43,7 +52,10 @@ evaluate env shellRes = go
         Just ('}', rest) -> "}" <> go rest
         Just (c, rest) -> "#" <> T.singleton c <> go rest
 
-    var name = Map.findWithDefault "" name env
+    var name = esc (Map.findWithDefault "" name env)
+
+    -- Protect literal percents from the caller's strftime pass.
+    esc = T.replace "%" "%%"
 
     expand inner
         | Just rest <- T.stripPrefix "?" inner = conditional rest

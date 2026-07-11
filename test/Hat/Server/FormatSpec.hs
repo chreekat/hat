@@ -2,6 +2,8 @@ module Hat.Server.FormatSpec (spec) where
 
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Test.Hspec
 
 import Hat.Server.Format
@@ -19,6 +21,13 @@ env = Map.fromList
 
 eval :: Text -> Text
 eval = evaluate env (\cmd -> "OUT:" <> cmd)
+
+-- Render through the real server seam. %t (tab) is time-independent, so the
+-- epoch stands in for "now" without affecting the result.
+render :: Text -> Text
+render = renderFormat env resolver (posixSecondsToUTCTime 0)
+  where
+    resolver cmd = maybe "" id (T.stripPrefix "echo " cmd)
 
 spec :: Spec
 spec = do
@@ -63,3 +72,7 @@ spec = do
 
     it "keeps strftime sequences untouched for the caller" $
         eval "%H:%M" `shouldBe` "%H:%M"
+
+    it "strftimes literal runs but not expansion output" $
+        -- %t is a literal tab; the % from echo must survive verbatim.
+        render "#(echo -77%)·%t" `shouldBe` "-77%·\t"

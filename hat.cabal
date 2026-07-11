@@ -146,4 +146,5 @@ test-suite hat-test
         hat,
         vector      ^>= 0.13.2.0,
         text        ^>= 2.1.3,
+        time        ^>= 1.12.2,
         unix        ^>= 2.8.7.0

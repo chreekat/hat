@@ -26,7 +26,6 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Read as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
-import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
 import qualified Network.Socket as N
@@ -48,7 +47,7 @@ import Hat.Model
 import Hat.Model.Options
 import qualified Hat.Pty
 import qualified Hat.Server.CopyMode as CopyMode
-import Hat.Server.Format (FormatEnv, evaluate)
+import Hat.Server.Format (FormatEnv, renderFormat)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Render
@@ -674,10 +673,8 @@ expandFormat st env fmt = do
                 collect (T.drop (2 + T.length inner + 1) rest)
     collect fmt
     vals <- readIORef resolved
-    let expanded = evaluate env
-            (\c -> Map.findWithDefault "" c vals) fmt
     now <- getZonedTime
-    pure (T.pack (formatTime defaultTimeLocale (T.unpack expanded) now))
+    pure (renderFormat env (\c -> Map.findWithDefault "" c vals) now fmt)
   where
     breakBalanced = go (0 :: Int) ""
       where
