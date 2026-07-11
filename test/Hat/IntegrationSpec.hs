@@ -275,6 +275,31 @@ spec = do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "marks only viewed windows: window_active_clients is per-window" $ do
+        hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
+        dir <- mkdtemp "/tmp/hat-test-"
+        let sockPath = dir <> "/test-socket"
+            confPath = dir <> "/hat.conf"
+        writeFile confPath
+            "set -g window-status-format \
+            \'#I:#W#{?window_active_clients,<watched>,}'\n"
+        c1 <- startClientWith ["-S", sockPath, "-f", confPath] hatBin
+        awaitScreen c1 "0:sh"
+
+        -- New window: window 0 is now idle, viewed by nobody.
+        typeInto c1 "\x02\&c"
+        awaitScreen c1 "1:sh*"
+
+        -- With a single client, the idle window has no viewers, so its
+        -- per-window count is 0 and the marker must not appear.
+        scr <- screenText c1
+        scr `shouldSatisfy` T.isInfixOf "0:sh"
+        scr `shouldNotSatisfy` T.isInfixOf "<watched>"
+
+        _ <- readProcess hatBin ["-S", sockPath, "kill-server"] ""
+        gone <- pollServerGone sockPath 50
+        gone `shouldBe` True
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $ do
         hatBin <- init <$> readProcess "cabal" ["list-bin", "hat"] ""
         dir <- mkdtemp "/tmp/hat-test-"

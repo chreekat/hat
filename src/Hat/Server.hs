@@ -699,6 +699,7 @@ statusCells st sess width = do
         ws <- readTVarIO sess.windows
         cur <- readTVarIO sess.currentIx
         mlast <- readTVarIO sess.lastIx
+        clientCount <- length <$> atomically (sessionClients st sess.id)
         forM (Map.toAscList ws) $ \(ix, win) -> do
             (wname, bell) <- atomically $
                 (,) <$> readTVar win.name <*> readTVar win.bellFlag
@@ -707,10 +708,14 @@ statusCells st sess width = do
                       else if Just ix == mlast then "-" else ""
                     , if bell then "!" else ""
                     ]
+                -- A session's clients all view its current window, so only
+                -- that window has active clients; the rest have none.
+                activeClients = if ix == cur then clientCount else 0
                 wenv = Map.union (Map.fromList
                     [ ("window_index", tshow ix)
                     , ("window_name", wname)
                     , ("window_flags", flags)
+                    , ("window_active_clients", tshow activeClients)
                     ]) env
                 fmt = if ix == cur then winCurFmt else winFmt
             expandFormat st wenv fmt
