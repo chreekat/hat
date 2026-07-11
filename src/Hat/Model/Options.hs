@@ -45,7 +45,7 @@ defaultOptions = Options
     , statusPosition = StatusBottom
     , modeKeys = KeysEmacs
     , historyLimit = 50000
-    , defaultTerminal = "screen-256color"
+    , defaultTerminal = "tmux-256color"
     , wordSeparators = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
     , user = Map.empty
     , raw = Map.empty

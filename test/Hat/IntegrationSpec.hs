@@ -34,7 +34,7 @@ startClient hatBin sockPath = startClientWith ["-S", sockPath] hatBin
 
 startClientWith :: [String] -> FilePath -> IO Driver
 startClientWith hatArgs hatBin = do
-    -- Pane children need terminfo for TERM=screen-256color on NixOS.
+    -- Pane children need terminfo for TERM=tmux-256color on NixOS.
     terminfo <- lookupEnv "TERMINFO_DIRS"
     p <- spawn Spawn
         { cmd = hatBin
