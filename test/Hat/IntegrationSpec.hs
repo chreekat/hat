@@ -409,6 +409,53 @@ spec = parallel $ do
                   && "win1-marker" `T.isInfixOf` t
                   && "\x2502" `T.isInfixOf` t)) c1
 
+    it "choose-tree lists windows; search + Enter switches to one" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf")
+            "bind / choose-tree -GZw \\; send-keys /\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "echo win0-marker\r"
+        awaitScreen c1 "win0-marker"
+        typeInto c1 "\x02\&c"               -- new window 1
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "echo win1-marker\r"
+        awaitScreen c1 "win1-marker"
+        typeInto c1 "\x02\&0"               -- back to window 0
+        awaitScreen c1 "win0-marker"
+        -- prefix / opens choose-tree and (via send-keys /) enters search.
+        typeInto c1 "\x02/"
+        awaitScreen c1 "choose a window"
+        -- Filter to the window-1 row, then select it.
+        typeInto c1 "1"
+        typeInto c1 "\r"
+        awaitScreen c1 "win1-marker"
+
+    it "choose-window joins the chosen window's pane (V binding)" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf")
+            "bind V choose-window 'join-pane -hs \"%%\"'\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "echo win0-marker\r"
+        awaitScreen c1 "win0-marker"
+        typeInto c1 "\x02\&c"               -- new window 1
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "echo win1-marker\r"
+        awaitScreen c1 "win1-marker"
+        typeInto c1 "\x02\&0"               -- back to window 0
+        awaitScreen c1 "win0-marker"
+        -- prefix V opens choose-window; pick window 1 and join its pane.
+        typeInto c1 "\x02V"
+        awaitScreen c1 "choose a window"
+        typeInto c1 "j"                     -- cursor to window 1
+        typeInto c1 "\r"
+        awaitWith "window 1's pane joined into window 0" (\d -> do
+            t <- screenText d
+            pure ("win0-marker" `T.isInfixOf` t
+                  && "win1-marker" `T.isInfixOf` t
+                  && "\x2502" `T.isInfixOf` t)) c1
+
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

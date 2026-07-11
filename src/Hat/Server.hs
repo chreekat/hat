@@ -53,6 +53,7 @@ import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.Format (FormatEnv, renderFormat)
 import Hat.Server.Keys
 import Hat.Server.Layout
+import qualified Hat.Server.Picker as Picker
 import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
@@ -250,6 +251,7 @@ newClient st conn h = do
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
+    pickerVar <- newTVarIO Nothing
     pure Client
         { id = ClientId cid
         , sock = conn
@@ -263,6 +265,7 @@ newClient st conn h = do
         , needsFull = fullVar
         , toast = toastVar
         , prompt = promptVar
+        , picker = pickerVar
         , env = h.env
         , cwd = h.cwd
         }
@@ -601,17 +604,42 @@ renderOnce st client = do
                         let origin = paneOrigin rects active
                         paneCursor pane origin rowOff
             pure (withStatus, cur)
+    -- A chooser overlay, when open, replaces the pane content area.
+    mpicker <- readTVarIO client.picker
+    let (frame', cursor') = case mpicker of
+            Nothing -> (frame, cursor)
+            Just pk -> (overlayPicker statusRowIx csize pk frame, (Pos 0 0, False))
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
     oldCursor <- readIORef client.lastCursor
-    let ops = if full then fullRedraw frame else diffFrame old frame
-        cursorOp = CursorAt (fst cursor) (snd cursor)
-        needSend = not (null ops) || cursor /= oldCursor || full
-    writeIORef client.lastFrame frame
-    writeIORef client.lastCursor cursor
+    let ops = if full then fullRedraw frame' else diffFrame old frame'
+        cursorOp = CursorAt (fst cursor') (snd cursor')
+        needSend = not (null ops) || cursor' /= oldCursor || full
+    writeIORef client.lastFrame frame'
+    writeIORef client.lastCursor cursor'
     when needSend $ send client (Draw (ops <> [cursorOp]))
   where
     foldM' z xs f = foldM f z xs
+
+-- | Paint a chooser's list over every row except the status row.
+overlayPicker :: Int -> Size -> PickerState -> Frame -> Frame
+overlayPicker statusRowIx csize pk frame =
+    frame V.// [ (r, lineCells (rowStyle txt) width txt)
+               | (r, txt) <- zip contentRows padded ]
+  where
+    width = fromIntegral csize.cols
+    contentRows = [ r | r <- [0 .. fromIntegral csize.rows - 1], r /= statusRowIx ]
+    rendered = Picker.pickerLines (length contentRows) pk
+    padded = take (length contentRows) (rendered <> repeat "")
+    rowStyle t
+        | "\x25b8" `T.isPrefixOf` t = pickerSelStyle
+        | otherwise = pickerStyle
+
+pickerStyle :: Cell.Style
+pickerStyle = Cell.defaultStyle
+
+pickerSelStyle :: Cell.Style
+pickerSelStyle = Cell.defaultStyle { Cell.reverse = True }
 
 paneOrigin :: [(PaneId, Rect)] -> PaneId -> Pos
 paneOrigin rects pidL = case List.lookup pidL rects of
@@ -911,10 +939,39 @@ inputLoop st client = loop
 
 handleInput :: ServerState -> Client -> B.ByteString -> IO ()
 handleInput st client bs = do
+    mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
-    case mprompt of
-        Just pr -> handlePromptInput st client pr bs
-        Nothing -> handleKeys st client bs
+    case (mpicker, mprompt) of
+        (Just pk, _) -> handlePickerInput st client pk (tokenizeKeys bs)
+        (_, Just pr) -> handlePromptInput st client pr bs
+        _            -> handleKeys st client bs
+
+-- | While a chooser is open it owns every keystroke: navigate/search
+-- until Enter (run the item's command and close) or Escape (close).
+handlePickerInput
+    :: ServerState -> Client -> PickerState -> [Key] -> IO ()
+handlePickerInput _ _ _ [] = pure ()
+handlePickerInput st client pk0 keys = do
+    let step acc k = case acc of
+            Picker.PickerStay pk -> Picker.editPicker pk k
+            done -> done
+        result = List.foldl' step (Picker.PickerStay pk0) keys
+    case result of
+        Picker.PickerStay pk -> atomically $ do
+            writeTVar client.picker (Just pk)
+            bumpDirty st
+        Picker.PickerCancel -> closePicker st client
+        Picker.PickerRun line -> do
+            closePicker st client
+            replies <- runCommandText st (Just client) line
+            forM_ replies $ \case
+                ROutput out -> showToast st client out
+                RErr e -> showToast st client ("error: " <> e)
+
+closePicker :: ServerState -> Client -> IO ()
+closePicker st client = atomically $ do
+    writeTVar client.picker Nothing
+    bumpDirty st
 
 -- | While the command prompt is open it owns every keystroke: the line
 -- editor consumes them until Enter (run and close) or Escape (close).
@@ -1068,6 +1125,8 @@ commandTable = Map.fromList $ concatMap expand
     , (["send-keys", "send"], cmdSendKeys)
     , (["copy-mode"], cmdCopyMode)
     , (["command-prompt"], cmdCommandPrompt)
+    , (["choose-tree"], cmdChooseTree)
+    , (["choose-window", "choosew"], cmdChooseWindow)
     , (["show-buffer", "showb"], cmdShowBuffer)
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)
@@ -1909,15 +1968,24 @@ cmdSendKeys st mclient args = do
     let (opts, flags, pos) = parseArgs "tN" args
         literal = "-l" `elem` flags
         modeCmd = "-X" `elem` flags
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane $ \pane ->
-        if modeCmd
-            then case pos of
-                (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
-                [] -> pure ()
-            else Hat.Pty.writePty pane.pty
-                (B.concat (map (argBytes literal) pos))
-    pure []
+    mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
+    case (mpicker, mclient) of
+        -- An open chooser owns send-keys: they drive its navigation/search
+        -- (this is how the config's @… \; send-keys /@ enters search).
+        (Just pk, Just client) | not modeCmd -> do
+            handlePickerInput st client pk
+                (concatMap (tokenizeKeys . argBytes literal) pos)
+            pure []
+        _ -> do
+            mpane <- targetPane st mclient (lookup "-t" opts)
+            forM_ mpane $ \pane ->
+                if modeCmd
+                    then case pos of
+                        (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
+                        [] -> pure ()
+                    else Hat.Pty.writePty pane.pty
+                        (B.concat (map (argBytes literal) pos))
+            pure []
   where
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
@@ -2033,6 +2101,72 @@ cmdCommandPrompt st mclient _args = do
         writeTVar client.prompt (Just Prompt.emptyPrompt)
         bumpDirty st
     pure []
+
+-- | Open a chooser overlay on the invoking client.
+openPicker :: ServerState -> Client -> Text -> [PickerItem] -> IO ()
+openPicker st client titleText picked = atomically $ do
+    writeTVar client.picker $ Just PickerState
+        { title = titleText
+        , items = picked
+        , cursor = 0
+        , query = ""
+        , searching = False
+        }
+    bumpDirty st
+
+-- | @choose-tree [-GZw]@: a filterable list of every window across every
+-- session; Enter switches to the chosen one. The config opens it with
+-- @… \; send-keys /@ to jump straight into search.
+cmdChooseTree :: CommandImpl
+cmdChooseTree st mclient _args = do
+    forM_ mclient $ \client -> do
+        picked <- buildTreeItems st
+        openPicker st client "choose a window" picked
+    pure []
+
+buildTreeItems :: ServerState -> IO [PickerItem]
+buildTreeItems st = do
+    sessions <- Map.elems <$> readTVarIO st.sessions
+    fmap concat . forM sessions $ \sess -> do
+        sname <- readTVarIO sess.name
+        ws <- Map.toAscList <$> readTVarIO sess.windows
+        forM ws $ \(ix, win) -> do
+            wname <- readTVarIO win.name
+            pure PickerItem
+                { label = sname <> ":" <> tshow ix <> ":" <> wname
+                , command = "switch-client -t " <> sname
+                    <> " ; select-window -t " <> sname <> ":" <> tshow ix
+                }
+
+-- | @choose-window <template>@: a list of the current session's windows;
+-- selecting one runs @template@ with each @%%@ replaced by that window's
+-- active pane id, so @choose-window 'join-pane -hs \"%%\"'@ joins it here.
+cmdChooseWindow :: CommandImpl
+cmdChooseWindow st mclient args = do
+    let (_, _, pos) = parseArgs "" args
+    case (mclient, pos) of
+        (Just client, template : _) -> do
+            picked <- buildWindowItems st client template
+            openPicker st client "choose a window" picked
+            pure []
+        _ -> pure [RErr "usage: choose-window template"]
+
+buildWindowItems :: ServerState -> Client -> Text -> IO [PickerItem]
+buildWindowItems st client template = do
+    sid <- readTVarIO client.session
+    msess <- Map.lookup sid <$> readTVarIO st.sessions
+    case msess of
+        Nothing -> pure []
+        Just sess -> do
+            ws <- Map.toAscList <$> readTVarIO sess.windows
+            forM ws $ \(ix, win) -> do
+                wname <- readTVarIO win.name
+                apid <- readTVarIO win.activeId
+                let target = "%" <> tshow (rawPane apid)
+                pure PickerItem
+                    { label = tshow ix <> ":" <> wname
+                    , command = T.replace "%%" target template
+                    }
 
 cmdShowBuffer :: CommandImpl
 cmdShowBuffer st _ args = do
