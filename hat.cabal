@@ -69,6 +69,7 @@ library
         Hat.Server.Picker
         Hat.Server.Prompt
         Hat.Server.Render
+        Hat.Server.Style
         Hat.Server.Target
         Hat.Socket
         Hat.Term.Cell
@@ -137,6 +138,7 @@ test-suite hat-test
         Hat.Server.OptionsSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
+        Hat.Server.StyleSpec
         Hat.Server.TargetSpec
         Hat.Server.RenderSpec
         Hat.Term.EmulatorSpec

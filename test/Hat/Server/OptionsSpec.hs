@@ -74,12 +74,6 @@ expectedUnimplemented = List.sort
     , "unimplemented option: escape-time"
     , "unimplemented option: focus-events"
     , "unimplemented option: main-pane-width"
-    , "unimplemented option: pane-active-border-style"
-    , "unimplemented option: pane-border-indicators"
-    , "unimplemented option: pane-border-lines"
-    , "unimplemented option: pane-border-style"
     , "unimplemented option: set-titles"
     , "unimplemented option: update-environment"
-    , "unimplemented option: window-status-bell-style"
-    , "unimplemented option: window-status-current-style"
     ]

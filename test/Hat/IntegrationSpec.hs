@@ -19,10 +19,11 @@ import Test.Hspec
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
+import Data.Maybe (listToMaybe)
 import Hat.Geometry
 import Hat.Pty
 import Hat.Socket (connectTo)
-import Hat.Term.Cell (Cell (..), Style (..))
+import Hat.Term.Cell (Cell (..), Color, Style (..))
 import qualified Hat.Term.Emulator as Emu
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
@@ -172,6 +173,17 @@ awaitExit d = do
 
 typeInto :: Driver -> B8.ByteString -> IO ()
 typeInto d = writePty d.pty
+
+-- The foreground colour of a bold pane-border cell (│ or heavy ┃), if
+-- any — how the active-border style shows up on screen.
+boldBorderFg :: Driver -> IO (Maybe Color)
+boldBorderFg d = do
+    scr <- Emu.snapshot d.screen
+    pure $ listToMaybe
+        [ cell.style.fg
+        | row <- V.toList scr.cells, cell <- V.toList row
+        , cell.text `elem` (["\x2502", "\x2503"] :: [T.Text])
+        , cell.style.bold ]
 
 -- Count cells drawn with the reverse-video attribute (how a copy-mode
 -- selection renders).
@@ -455,6 +467,35 @@ spec = parallel $ do
             pure ("win0-marker" `T.isInfixOf` t
                   && "win1-marker" `T.isInfixOf` t
                   && "\x2502" `T.isInfixOf` t)) c1
+
+    it "prefix R toggles the pane theme, recoloring borders (styling)" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") $ unlines
+            [ "set -g pane-border-style 'fg=colour240'"
+            , "set -g pane-active-border-style 'fg=brightwhite,bold'"
+            , "set -g pane-border-lines heavy"
+            , "set -g pane-border-indicators both"
+            , "set -g @pane-theme dark"
+            , "bind R if-shell '[ \"#{@pane-theme}\" = \"dark\" ]' "
+              <> "'set -g pane-active-border-style \"fg=black,bold\" ; "
+              <> "set -g @pane-theme light ; display-message \"Theme: light\"' "
+              <> "'set -g pane-active-border-style \"fg=brightwhite,bold\" ; "
+              <> "set -g @pane-theme dark ; display-message \"Theme: dark\"'"
+            ]
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02%"                  -- split -h; heavy border ┃ appears
+        awaitScreen c1 "\x2503"              -- ┃ proves pane-border-lines heavy
+        -- Dark theme: the active border is bold; capture its colour.
+        awaitWith "bold active border" (\d -> (/= Nothing) <$> boldBorderFg d) c1
+        darkFg <- boldBorderFg c1
+        -- prefix R runs the if-shell theme toggle (needs #{@pane-theme}).
+        typeInto c1 "\x02R"
+        awaitScreen c1 "Theme: light"
+        -- Light theme recolours the (still bold) active border.
+        awaitWith "active border recoloured" (\d -> do
+            mfg <- boldBorderFg d
+            pure (mfg /= Nothing && mfg /= darkFg)) c1
 
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do

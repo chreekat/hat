@@ -56,6 +56,7 @@ import Hat.Server.Layout
 import qualified Hat.Server.Picker as Picker
 import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
+import Hat.Server.Style (parseStyle)
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
 import Hat.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Cell as Cell
@@ -571,13 +572,12 @@ renderOnce st client = do
     (frame, cursor) <- case view of
         Nothing -> pure (blankFrame csize, (Pos 0 0, False))
         Just (sess, rects, borders, ps, active) -> do
-            let shiftedBorders =
-                    [ (p { row = p.row + rowOff }, ch) | (p, ch) <- borders ]
-                shiftRect r = r
+            let shiftRect r = r
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
                     }
-                base0 = applyBorders (blankFrame csize) shiftedBorders
+                base0 = applyBorders (blankFrame csize)
+                    (borderCells opts (List.lookup active rects) rowOff borders)
             base <- foldM' base0 rects $ \acc (pidL, rect) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure acc
@@ -645,6 +645,75 @@ paneOrigin :: [(PaneId, Rect)] -> PaneId -> Pos
 paneOrigin rects pidL = case List.lookup pidL rects of
     Just r -> Pos { row = r.startRow, col = r.startCol }
     Nothing -> Pos 0 0
+
+-- | Turn @arrange@'s raw border glyphs into styled cells: the active
+-- pane's border takes @pane-active-border-style@ (when
+-- @pane-border-indicators@ colours it) and gains direction arrows (when
+-- it uses arrows); everything else takes @pane-border-style@. Glyphs are
+-- remapped per @pane-border-lines@. Positions are shifted by @rowOff@ for
+-- a top status line.
+borderCells
+    :: Options -> Maybe Rect -> Int -> [(Pos, Char)] -> [(Pos, Cell.Cell)]
+borderCells opts mActive rowOff borders =
+    [ (p { row = p.row + rowOff }, cellAt p ch) | (p, ch) <- borders ]
+  where
+    (useColor, useArrows) = case opts.paneBorderIndicators of
+        IndicatorsOff     -> (False, False)
+        IndicatorsColour  -> (True, False)
+        IndicatorsArrows  -> (False, True)
+        IndicatorsBoth    -> (True, True)
+    activeAt p = maybe False (`onPerimeter` p) mActive
+    arrows = if useArrows then maybe Map.empty edgeArrows mActive else Map.empty
+    cellAt p ch =
+        let active = activeAt p
+            sty | active && useColor = opts.paneActiveBorderStyle
+                | otherwise          = opts.paneBorderStyle
+            glyph = case (active, Map.lookup p arrows) of
+                (True, Just arr) -> arr
+                _                -> mapGlyph opts.paneBorderLines ch
+        in Cell.Cell { Cell.text = T.singleton glyph, Cell.width = 1, Cell.style = sty }
+
+-- | Is a position on the (border) perimeter just outside a pane's rect?
+onPerimeter :: Rect -> Pos -> Bool
+onPerimeter r p =
+    ((p.col == r.endCol || p.col == r.startCol - 1)
+        && p.row >= r.startRow && p.row < r.endRow)
+    || ((p.row == r.endRow || p.row == r.startRow - 1)
+        && p.col >= r.startCol && p.col < r.endCol)
+
+-- | An arrow at the midpoint of each of a pane's four border edges,
+-- pointing inward.
+edgeArrows :: Rect -> Map.Map Pos Char
+edgeArrows r = Map.fromList $ concat
+    [ vEdge (r.startCol - 1) '\x25b6'  -- ▶ on the left border
+    , vEdge r.endCol         '\x25c0'  -- ◀ on the right border
+    , hEdge (r.startRow - 1) '\x25bc'  -- ▼ on the top border
+    , hEdge r.endRow         '\x25b2'  -- ▲ on the bottom border
+    ]
+  where
+    vEdge col arr = case midOf [r.startRow .. r.endRow - 1] of
+        Just row -> [(Pos { row = row, col = col }, arr)]
+        Nothing  -> []
+    hEdge row arr = case midOf [r.startCol .. r.endCol - 1] of
+        Just col -> [(Pos { row = row, col = col }, arr)]
+        Nothing  -> []
+
+midOf :: [a] -> Maybe a
+midOf xs = case drop (length xs `div` 2) xs of
+    (x : _) -> Just x
+    []      -> Nothing
+
+-- | Remap the single-line glyphs @arrange@ emits to the chosen line set.
+mapGlyph :: BorderLines -> Char -> Char
+mapGlyph bl ch = case bl of
+    BorderSingle -> ch
+    BorderHeavy  -> heavy ch
+    BorderDouble -> dbl ch
+    BorderSimple -> simple ch
+  where
+    heavy '\x2502' = '\x2503'; heavy '\x2500' = '\x2501'; heavy c = c
+    dbl '\x2502' = '\x2551'; dbl '\x2500' = '\x2550'; dbl c = c
+    simple '\x2502' = '|'; simple '\x2500' = '-'; simple c = c
 
 -- | The cells a pane contributes to a frame. Normally its live screen;
 -- in copy mode, a viewport over scrollback+screen with the selection
@@ -719,12 +788,6 @@ paneCursor pane origin rowOff = do
 
 -- Status line -------------------------------------------------------------
 
-statusStyle :: Cell.Style
-statusStyle = Cell.defaultStyle
-    { Cell.fg = Cell.Indexed 0
-    , Cell.bg = Cell.Indexed 2
-    }
-
 lineCells :: Cell.Style -> Int -> Text -> V.Vector Cell.Cell
 lineCells style width line = V.fromList (take width (cells <> repeat blank))
   where
@@ -784,7 +847,10 @@ sessionFormatEnv st sess = do
                    , ("pane_id", "%" <> tshow (rawPane pane.id))
                    ] <> modeEnv
     sz <- readTVarIO sess.lastSize
-    pure . Map.fromList $
+    -- @-options are readable as #{@foo}, so if-shell theme conditionals
+    -- (@#{@pane-theme}@) resolve.
+    userOpts <- (.user) <$> readTVarIO st.options
+    pure . Map.union userOpts . Map.fromList $
         [ ("session_name", sname)
         , ("host", T.pack hostname)
         , ("window_active_clients", tshow nclients)
@@ -898,15 +964,35 @@ statusCells st sess width = do
                     , ("window_active_clients", tshow activeClients)
                     ]) env
                 fmt = if ix == cur then winCurFmt else winFmt
-            expandFormat st wenv fmt
+                style | ix == cur = opts.windowStatusCurrentStyle
+                      | bell      = opts.windowStatusBellStyle
+                      | otherwise = opts.windowStatusStyle
+            txt <- expandFormat st wenv fmt
+            pure (txt, style)
     left <- T.take opts.statusLeftLength <$> expandFormat st env leftFmt
     right <- T.take opts.statusRightLength <$> expandFormat st env rightFmt
-    let body = left <> T.intercalate " " entries
-        pad = width - T.length body - T.length right
-        line
-            | pad >= 0 = body <> T.replicate pad " " <> right
-            | otherwise = T.take width (body <> " " <> right)
-    pure (lineCells statusStyle width line)
+    let sty = opts.statusStyle
+        blank = blankOf sty
+        sep = styledCells sty " "
+        leftCells = styledCells sty left
+        rightCells = styledCells sty right
+        entryCells =
+            List.intercalate sep [ styledCells est etxt | (etxt, est) <- entries ]
+        body = leftCells <> entryCells
+        pad = width - length body - length rightCells
+        cells
+            | pad >= 0 = body <> replicate pad blank <> rightCells
+            | otherwise = take width (body <> sep <> rightCells)
+    pure (V.fromList (take width (cells <> repeat blank)))
+
+-- | One cell per character, all in the given style.
+styledCells :: Cell.Style -> Text -> [Cell.Cell]
+styledCells sty t =
+    [ Cell.Cell { Cell.text = T.singleton c, Cell.width = 1, Cell.style = sty }
+    | c <- T.unpack t ]
+
+blankOf :: Cell.Style -> Cell.Cell
+blankOf sty = Cell.Cell { Cell.text = " ", Cell.width = 1, Cell.style = sty }
 
 -- Input ---------------------------------------------------------------------
 
@@ -1374,6 +1460,28 @@ setOption append opts name value = case name of
     "window-status-current-format" ->
         Right opts { windowStatusCurrentFormat =
             withAppend opts.windowStatusCurrentFormat }
+    "status-style" -> Right opts { statusStyle = parseStyle value }
+    "window-status-style" -> Right opts { windowStatusStyle = parseStyle value }
+    "window-status-current-style" ->
+        Right opts { windowStatusCurrentStyle = parseStyle value }
+    "window-status-bell-style" ->
+        Right opts { windowStatusBellStyle = parseStyle value }
+    "pane-border-style" -> Right opts { paneBorderStyle = parseStyle value }
+    "pane-active-border-style" ->
+        Right opts { paneActiveBorderStyle = parseStyle value }
+    "pane-border-lines" -> case value of
+        "single" -> Right opts { paneBorderLines = BorderSingle }
+        "heavy"  -> Right opts { paneBorderLines = BorderHeavy }
+        "double" -> Right opts { paneBorderLines = BorderDouble }
+        "simple" -> Right opts { paneBorderLines = BorderSimple }
+        _ -> Left "pane-border-lines: single, heavy, double, or simple"
+    "pane-border-indicators" -> case value of
+        "off"     -> Right opts { paneBorderIndicators = IndicatorsOff }
+        "colour"  -> Right opts { paneBorderIndicators = IndicatorsColour }
+        "color"   -> Right opts { paneBorderIndicators = IndicatorsColour }
+        "arrows"  -> Right opts { paneBorderIndicators = IndicatorsArrows }
+        "both"    -> Right opts { paneBorderIndicators = IndicatorsBoth }
+        _ -> Left "pane-border-indicators: off, colour, arrows, or both"
     _
         | "@" `T.isPrefixOf` name ->
             Right opts { user = Map.insert name value opts.user }
@@ -2603,7 +2711,15 @@ cmdIfShell :: CommandImpl
 cmdIfShell st mclient args = do
     let (_, _, pos) = parseArgs "t" args
     case pos of
-        (cond : thenCmd : rest) -> do
+        (cond0 : thenCmd : rest) -> do
+            -- tmux expands #{...} in the condition before running it, so
+            -- @if-shell '[ "#{@pane-theme}" = dark ]' …@ works.
+            msess <- targetSession st mclient Nothing
+            cond <- case msess of
+                Just sess -> do
+                    env <- sessionFormatEnv st sess
+                    expandFormat st env cond0
+                Nothing -> pure cond0
             (code, _, _) <- readCreateProcessWithExitCode
                 (shell (T.unpack cond)) ""
             let chosen = case (code, rest) of
