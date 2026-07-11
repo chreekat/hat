@@ -150,9 +150,11 @@ data KeyAction
 -- bindings from the given tables.
 --
 -- When the active pane is in copy mode, its key table name is passed as
--- @Just table@: unprefixed keys resolve against that table first, and a
--- miss is /swallowed/ rather than forwarded to the pty (so browsing keys
--- never leak into the shell). The prefix table still applies.
+-- @Just table@: that table /owns/ every unprefixed key. Bound keys run
+-- their command; a miss is /swallowed/ rather than forwarded to the pty
+-- (so browsing keys never leak into the shell). The prefix key is not
+-- intercepted while in mode — copy mode binds it itself (e.g. @C-b@ ->
+-- @cursor-left@ in emacs), matching tmux.
 routeKeys
     :: Text                        -- ^ prefix key name
     -> Map Text (Map Text [[Text]]) -- ^ keymap: table -> key -> commands
@@ -166,11 +168,11 @@ routeKeys prefixName keymap modeTable = go
     prefixTable = Map.findWithDefault Map.empty "prefix" keymap
     go st [] = (st, [])
     go NoPrefix (k : ks)
-        | k.name == prefixName = go PrefixArmed ks
         | Just table <- modeTable =
             case Map.lookup k.name (Map.findWithDefault Map.empty table keymap) of
                 Just cmds -> emit (RunCommands cmds) (go NoPrefix ks)
                 Nothing -> go NoPrefix ks  -- unbound in copy mode: swallowed
+        | k.name == prefixName = go PrefixArmed ks
         | Just cmds <- Map.lookup k.name rootTable =
             emit (RunCommands cmds) (go NoPrefix ks)
         | otherwise = emit (Passthrough k.raw) (go NoPrefix ks)

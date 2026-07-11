@@ -88,9 +88,15 @@ spec = do
                 (NoPrefix, [RunCommands [["send-keys", "-X", "cursor-left"]]])
         it "swallows keys not bound in the copy-mode table" $
             run NoPrefix "xyz" `shouldBe` (NoPrefix, [])
-        it "still honors the prefix table while in mode" $
-            run NoPrefix "\x00]" `shouldBe`
-                (NoPrefix, [RunCommands [["paste-buffer"]]])
+        it "does not arm the prefix while in mode; the mode table owns keys" $
+            run NoPrefix "\x00]" `shouldBe` (NoPrefix, [])
+        it "runs a copy-mode binding on the prefix key rather than arming" $ do
+            let kmp = Map.insert "copy-mode-vi"
+                    (Map.fromList [("C-Space", [["send-keys", "-X", "top-line"]])])
+                    km
+            routeKeys "C-Space" kmp (Just "copy-mode-vi") NoPrefix
+                (tokenizeKeys "\x00")
+                `shouldBe` (NoPrefix, [RunCommands [["send-keys", "-X", "top-line"]]])
         it "does not fall through to root bindings while in mode" $
             run NoPrefix "\ESC\ESC[A" `shouldBe` (NoPrefix, [])
 
