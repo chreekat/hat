@@ -66,6 +66,7 @@ library
         Hat.Server.Format
         Hat.Server.Keys
         Hat.Server.Layout
+        Hat.Server.Picker
         Hat.Server.Prompt
         Hat.Server.Render
         Hat.Server.Target
@@ -134,6 +135,7 @@ test-suite hat-test
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.OptionsSpec
+        Hat.Server.PickerSpec
         Hat.Server.PromptSpec
         Hat.Server.TargetSpec
         Hat.Server.RenderSpec

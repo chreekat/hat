@@ -13,6 +13,8 @@ module Hat.Model
     , Client (..)
     , CopyModeState (..)
     , PromptState (..)
+    , PickerState (..)
+    , PickerItem (..)
     , SelKind (..)
     , newServerState
     , bumpDirty
@@ -143,6 +145,25 @@ data PromptState = PromptState
     }
     deriving (Eq, Show)
 
+-- | A modal chooser overlay (@choose-tree@ / @choose-window@): a
+-- filterable list where each item carries the command to run when
+-- selected. Opens in menu mode; @/@ switches to search, where keys type
+-- into 'query' instead of navigating.
+data PickerState = PickerState
+    { title     :: !Text
+    , items     :: ![PickerItem]
+    , cursor    :: !Int    -- ^ index into the /filtered/ list
+    , query     :: !Text
+    , searching :: !Bool
+    }
+    deriving (Eq, Show)
+
+data PickerItem = PickerItem
+    { label   :: !Text  -- ^ shown, and matched against 'query'
+    , command :: !Text  -- ^ command line run when the item is chosen
+    }
+    deriving (Eq, Show)
+
 data Client = Client
     { id        :: ClientId
     , sock      :: Socket
@@ -156,6 +177,7 @@ data Client = Client
     , needsFull :: TVar Bool
     , toast     :: TVar (Maybe Text)  -- ^ display-message overlay
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
+    , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
     , env       :: [(Text, Text)]
     , cwd       :: Text
     }
