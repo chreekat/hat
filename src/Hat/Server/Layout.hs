@@ -9,6 +9,8 @@ module Hat.Server.Layout
     , sizeRect
     , layoutPanes
     , splitLeaf
+    , splitFull
+    , swapLeaves
     , removeLeaf
     , neighbor
     , resizeSplit
@@ -96,6 +98,26 @@ splitLeaf target orient before newPid = go
                     else Split orient (1 % 2) (Leaf p) (Leaf newPid)
             | otherwise -> Leaf p
         Split o r a b -> Split o r (go a) (go b)
+
+-- | A full-window split: the new pane becomes a sibling of the /entire/
+-- existing layout, spanning the full window height (@LeftRight@) or width
+-- (@TopBottom@). @before@ puts it on the left/top. Backs @split-window -f@.
+splitFull :: Orientation -> Bool -> PaneId -> Layout -> Layout
+splitFull orient before newPid old
+    | before    = Split orient (1 % 2) (Leaf newPid) old
+    | otherwise = Split orient (1 % 2) old (Leaf newPid)
+
+-- | Exchange two panes' positions in the tree, moving their content
+-- between screen locations. Backs @swap-pane@.
+swapLeaves :: PaneId -> PaneId -> Layout -> Layout
+swapLeaves a b = go
+  where
+    go = \case
+        Leaf p
+            | p == a -> Leaf b
+            | p == b -> Leaf a
+            | otherwise -> Leaf p
+        Split o r x y -> Split o r (go x) (go y)
 
 -- | Nothing when the last pane goes; the sibling absorbs the space.
 removeLeaf :: PaneId -> Layout -> Maybe Layout

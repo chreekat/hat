@@ -21,6 +21,7 @@ module Hat.Term.Emulator
     , title
     , scrollbackLength
     , scrollbackLine
+    , clearScrollback
     , screenRowText
     , screenCell
     ) where
@@ -338,6 +339,11 @@ scrollbackLength e = Seq.length <$> readIORef e.sbRef
 -- | Scrollback line by age: 0 is the oldest.
 scrollbackLine :: Emulator -> Int -> IO (Maybe [Cell])
 scrollbackLine e i = Seq.lookup i <$> readIORef e.sbRef
+
+-- | Drop all scrollback (the live screen is untouched). Backs
+-- @clear-history@.
+clearScrollback :: Emulator -> IO ()
+clearScrollback e = writeIORef e.sbRef Seq.empty
 
 screenRowText :: Screen -> Int -> Text
 screenRowText scr r = case scr.cells V.!? r of

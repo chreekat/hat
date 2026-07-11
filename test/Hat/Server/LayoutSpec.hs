@@ -69,6 +69,32 @@ spec = do
     prop "removing the only pane empties the layout" $ \n ->
         removeLeaf (PaneId n) (Leaf (PaneId n)) === Nothing
 
+    describe "splitFull" $ do
+        it "makes the new pane a full-height sibling of the whole tree" $ do
+            -- Two stacked panes; a full -h split adds a full-height column
+            -- on the right, so its rect spans the entire window height.
+            let stacked = Split TopBottom 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
+                lay' = splitFull LeftRight False (PaneId 9) stacked
+                (rects, _) = arrange windowRect lay'
+            case List.lookup (PaneId 9) rects of
+                Nothing -> expectationFailure "new pane has no rect"
+                Just r -> (r.startRow, r.endRow) `shouldBe` (0, 40)
+        it "adds exactly the new pane to the set" $
+            forAll (genLayout 3) $ \lay ->
+                Set.fromList (layoutPanes (splitFull TopBottom True (PaneId 999) lay))
+                    === Set.insert (PaneId 999) (Set.fromList (layoutPanes lay))
+
+    describe "swapLeaves" $ do
+        it "exchanges two panes' positions" $ do
+            let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
+            swapLeaves (PaneId 0) (PaneId 1) two
+                `shouldBe` Split LeftRight 0.5 (Leaf (PaneId 1)) (Leaf (PaneId 0))
+        it "preserves the pane set and is its own inverse" $
+            forAll (genLayout 3) $ \lay -> case layoutPanes lay of
+                (a : b : _) ->
+                    swapLeaves a b (swapLeaves a b lay) === lay
+                _ -> property Discard
+
     describe "neighbor" $ do
         -- +-------+-------+
         -- |   0   |   1   |
