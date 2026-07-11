@@ -1057,6 +1057,10 @@ commandTable = Map.fromList $ concatMap expand
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
+    , (["swap-pane", "swapp"], cmdSwapPane)
+    , (["clear-history", "clearhist"], cmdClearHistory)
+    , (["break-pane", "breakp"], cmdBreakPane)
+    , (["join-pane", "joinp"], cmdJoinPane)
     , (["resize-pane", "resizep"], cmdResizePane)
     , (["last-pane", "lastp"], cmdLastPane)
     , (["detach-client", "detach"], cmdDetachClient)
@@ -1538,6 +1542,8 @@ cmdSplitWindow st mclient args = do
             | "-h" `elem` flags = LeftRight
             | otherwise = TopBottom
         before = "-b" `elem` flags
+        -- @-f@: split spans the whole window, not just the active pane.
+        full = "-f" `elem` flags
         mrun = case pos of
             [] -> Nothing
             ws -> Just (T.unwords ws)
@@ -1549,7 +1555,9 @@ cmdSplitWindow st mclient args = do
                 eff <- readTVarIO sess.lastSize
                 (rects, _) <- atomically (windowArrange (windowArea eff) win)
                 let mrect = List.lookup active.id rects
-                    fits = case (orient, mrect) of
+                    wholeRect = sizeRect (windowArea eff)
+                    fitRect = if full then Just wholeRect else mrect
+                    fits = case (orient, fitRect) of
                         (LeftRight, Just r) -> r.endCol - r.startCol >= 5
                         (TopBottom, Just r) -> r.endRow - r.startRow >= 5
                         _ -> False
@@ -1568,8 +1576,9 @@ cmdSplitWindow st mclient args = do
                             sess.environ (windowArea eff)
                         atomically $ do
                             modifyTVar' win.panes (Map.insert pane.id pane)
-                            modifyTVar' win.layout
-                                (splitLeaf active.id orient before pane.id)
+                            modifyTVar' win.layout $ if full
+                                then splitFull orient before pane.id
+                                else splitLeaf active.id orient before pane.id
                             lastA <- readTVar win.activeId
                             writeTVar win.lastActive (Just lastA)
                             writeTVar win.activeId pane.id
@@ -1652,11 +1661,182 @@ cmdLastPane st mclient _ =
         pure []
 
 cmdKillPane :: CommandImpl
-cmdKillPane st mclient _ =
-    withCurrentWindow st mclient $ \_ win -> do
-        mpane <- atomically (activePane win)
-        forM_ mpane $ \pane -> Hat.Pty.closePty pane.pty
-        pure []
+cmdKillPane st mclient args = do
+    let (opts, _, _) = parseArgs "t" args
+    mpane <- targetPane st mclient (lookup "-t" opts)
+    forM_ mpane $ \pane -> Hat.Pty.closePty pane.pty
+    pure []
+
+-- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
+-- positions. @src@ defaults to the active pane; without @-d@ the active
+-- pane follows to @dst@'s slot, so the config's @splitw … \; swapp -t !
+-- \; killp -t !@ edge-move idiom lands the content and kills the emptied
+-- slot.
+cmdSwapPane :: CommandImpl
+cmdSwapPane st mclient args = do
+    let (opts, flags, _) = parseArgs "st" args
+        keepActive = "-d" `elem` flags
+    withCurrentWindow st mclient $ \sess win -> do
+        msrc <- targetPane st mclient (lookup "-s" opts)
+        mdst <- case lookup "-t" opts of
+            Just t -> targetPane st mclient (Just t)
+            Nothing
+                | "-U" `elem` flags -> siblingPane st win (-1)
+                | "-D" `elem` flags -> siblingPane st win 1
+                | otherwise -> pure Nothing
+        case (msrc, mdst) of
+            (Just src, Just dst) | src.id /= dst.id -> do
+                atomically $ do
+                    ps <- readTVar win.panes
+                    when (Map.member src.id ps && Map.member dst.id ps) $ do
+                        modifyTVar' win.layout (swapLeaves src.id dst.id)
+                        unless keepActive $ do
+                            writeTVar win.lastActive (Just src.id)
+                            writeTVar win.activeId dst.id
+                        writeTVar win.zoomed Nothing
+                        bumpDirty st
+                applySessionSize st sess.id
+                pure []
+            _ -> pure []
+
+-- | The pane @step@ positions from the active one in layout order.
+siblingPane :: ServerState -> Window -> Int -> IO (Maybe Pane)
+siblingPane _ win step = atomically $ do
+    lay <- readTVar win.layout
+    ps <- readTVar win.panes
+    active <- readTVar win.activeId
+    let order = layoutPanes lay
+    pure $ case List.elemIndex active order of
+        Just i | not (null order) ->
+            let pid = order !! ((i + step + length order) `mod` length order)
+            in Map.lookup pid ps
+        _ -> Nothing
+
+-- | @clear-history [-t target]@: drop a pane's scrollback.
+cmdClearHistory :: CommandImpl
+cmdClearHistory st mclient args = do
+    let (opts, _, _) = parseArgs "t" args
+    mpane <- targetPane st mclient (lookup "-t" opts)
+    forM_ mpane $ \pane -> do
+        Emu.clearScrollback pane.emulator
+        atomically (bumpDirty st)
+    pure []
+
+-- | Detach a pane from whichever window holds it, collapsing the layout
+-- and dropping the window if it becomes empty. The pane's pty keeps
+-- running — this only re-parents it, backing @break-pane@/@join-pane@.
+removePaneFromTree :: ServerState -> PaneId -> STM ()
+removePaneFromTree st pid = do
+    sessions <- readTVar st.sessions
+    forM_ (Map.elems sessions) $ \sess -> do
+        ws <- readTVar sess.windows
+        forM_ (Map.toList ws) $ \(ix, win) -> do
+            ps <- readTVar win.panes
+            when (Map.member pid ps) $ do
+                writeTVar win.panes (Map.delete pid ps)
+                mz <- readTVar win.zoomed
+                when (mz == Just pid) $ writeTVar win.zoomed Nothing
+                lay <- readTVar win.layout
+                case removeLeaf pid lay of
+                    Just lay' -> do
+                        writeTVar win.layout lay'
+                        active <- readTVar win.activeId
+                        when (active == pid) $ case layoutPanes lay' of
+                            (n : _) -> writeTVar win.activeId n
+                            [] -> pure ()
+                    Nothing -> do
+                        modifyTVar' sess.windows (Map.delete ix)
+                        cur <- readTVar sess.currentIx
+                        when (cur == ix) $ do
+                            ws' <- readTVar sess.windows
+                            forM_ (Map.lookupMin ws') $ \(i, _) ->
+                                writeTVar sess.currentIx i
+                bumpDirty st
+
+-- | Build a fresh single-pane window around an already-running pane.
+wrapPaneInWindow :: ServerState -> Pane -> IO Window
+wrapPaneInWindow st pane = do
+    wid <- atomically (freshId st.nextWindow)
+    name <- paneCommandName pane
+    nameVar <- newTVarIO name
+    layoutVar <- newTVarIO (Leaf pane.id)
+    panesVar <- newTVarIO (Map.singleton pane.id pane)
+    activeVar <- newTVarIO pane.id
+    lastActiveVar <- newTVarIO Nothing
+    bellVar <- newTVarIO False
+    zoomVar <- newTVarIO Nothing
+    pure Window
+        { id = WindowId wid
+        , name = nameVar
+        , layout = layoutVar
+        , panes = panesVar
+        , activeId = activeVar
+        , lastActive = lastActiveVar
+        , bellFlag = bellVar
+        , zoomed = zoomVar
+        }
+
+-- | A pane's foreground command name (from @/proc@), for naming a window
+-- broken out around it; falls back to @sh@.
+paneCommandName :: Pane -> IO Text
+paneCommandName pane = do
+    r <- try (TIO.readFile ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/comm"))
+    pure $ case r of
+        Right s -> let t = T.strip s in if T.null t then "sh" else t
+        Left (_ :: IOException) -> "sh"
+
+-- | @break-pane [-d] [-t]@: move the active pane into a new window of
+-- its own. No-op when it is the window's only pane.
+cmdBreakPane :: CommandImpl
+cmdBreakPane st mclient args = do
+    let (_, flags, _) = parseArgs "t" args
+    withCurrentWindow st mclient $ \sess win -> do
+        mactive <- atomically (activePane win)
+        ps <- readTVarIO win.panes
+        case mactive of
+            Just pane | Map.size ps > 1 -> do
+                win2 <- wrapPaneInWindow st pane
+                atomically $ do
+                    removePaneFromTree st pane.id
+                    ws <- readTVar sess.windows
+                    let ix = until (\i -> not (Map.member i ws)) (+ 1) 0
+                    modifyTVar' sess.windows (Map.insert ix win2)
+                    unless ("-d" `elem` flags) $ do
+                        cur <- readTVar sess.currentIx
+                        writeTVar sess.lastIx (Just cur)
+                        writeTVar sess.currentIx ix
+                    bumpDirty st
+                applySessionSize st sess.id
+                pure []
+            _ -> pure [RErr "can't break with only one pane"]
+
+-- | @join-pane [-h|-v] [-b] -s src [-t dst]@: move the @src@ pane into
+-- the destination window (default: the current one), splitting its
+-- active pane. Backs the config's @choose-window 'join-pane -?s "%%"'@.
+cmdJoinPane :: CommandImpl
+cmdJoinPane st mclient args = do
+    let (opts, flags, _) = parseArgs "st" args
+        orient | "-h" `elem` flags = LeftRight
+               | otherwise = TopBottom
+        before = "-b" `elem` flags
+    msrc <- targetPane st mclient (lookup "-s" opts)
+    withCurrentWindow st mclient $ \sess dstWin -> do
+        dstPanes <- readTVarIO dstWin.panes
+        case msrc of
+            Just src | not (Map.member src.id dstPanes) -> do
+                atomically $ do
+                    dstActive <- readTVar dstWin.activeId
+                    removePaneFromTree st src.id
+                    modifyTVar' dstWin.panes (Map.insert src.id src)
+                    modifyTVar' dstWin.layout
+                        (splitLeaf dstActive orient before src.id)
+                    writeTVar dstWin.lastActive (Just dstActive)
+                    writeTVar dstWin.activeId src.id
+                    writeTVar dstWin.zoomed Nothing
+                    bumpDirty st
+                applySessionSize st sess.id
+                pure []
+            _ -> pure [RErr "no source pane"]
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do

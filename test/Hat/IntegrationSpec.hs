@@ -326,6 +326,89 @@ spec = parallel $ do
                   && not ("\x2502" `T.isInfixOf` t)
                   && not ("main-pane-zone" `T.isInfixOf` t))) c1
 
+    it "clear-history drops the pane's scrollback" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        -- Fill scrollback, then confirm copy mode reports a non-empty history.
+        -- The arithmetic echo output ("hist199") appears only once the 200
+        -- lines above it have scrolled into scrollback, avoiding a race with
+        -- the echoed input line.
+        typeInto c1 "seq 1 200\r"
+        typeInto c1 "echo hist$((100+99))\r"
+        awaitScreen c1 "hist199"
+        typeInto c1 "\x02["                 -- copy mode
+        awaitScreen c1 "[0/"
+        scr <- screenText c1
+        scr `shouldNotSatisfy` T.isInfixOf "[0/0]"
+        typeInto c1 "q"                     -- exit copy mode
+        awaitWith "indicator gone" (\d ->
+            not . T.isInfixOf "[0/" <$> screenText d) c1
+
+        -- clear-history empties the scrollback; copy mode now shows [0/0].
+        _ <- ctlOut h ["clear-history"]
+        typeInto c1 "\x02["
+        awaitScreen c1 "[0/0]"
+
+    it "moves a pane to the far edge (splitw -f; swap-pane; kill-pane)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "echo edge-marker\r"
+        awaitScreen c1 "edge-marker"
+        -- Stack a second pane below; the original (top) keeps the marker.
+        typeInto c1 "\x02\""                -- split -v
+        awaitScreen c1 "\x2500"             -- ─
+        -- Focus the marked pane, then run the tmux move-to-edge idiom.
+        _ <- ctlOut h ["select-pane", "-U"]
+        _ <- ctlOut h ["split-window", "-fh"]
+        _ <- ctlOut h ["swap-pane", "-t", "!"]
+        _ <- ctlOut h ["kill-pane", "-t", "!"]
+        -- The marker survives and now lives in a full-height edge column
+        -- (a vertical border proves two side-by-side panes remain).
+        awaitWith "pane moved to edge, content preserved" (\d -> do
+            t <- screenText d
+            pure ("edge-marker" `T.isInfixOf` t && "\x2502" `T.isInfixOf` t)) c1
+
+    it "break-pane moves the active pane into its own window" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02%"                 -- split -h; new pane active
+        awaitScreen c1 "\x2502"
+        typeInto c1 "echo b-marker\r"
+        awaitScreen c1 "b-marker"
+        _ <- ctlOut h ["break-pane"]
+        -- The pane is now window 1 (current), sharing no split border, and
+        -- window 0 still exists in the status line.
+        awaitWith "broken out into window 1" (\d -> do
+            t <- screenText d
+            pure ("b-marker" `T.isInfixOf` t
+                  && not ("\x2502" `T.isInfixOf` t)
+                  && "0:" `T.isInfixOf` t && "1:" `T.isInfixOf` t)) c1
+
+    it "join-pane merges a pane in from another window" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "echo win0-marker\r"
+        awaitScreen c1 "win0-marker"
+        typeInto c1 "\x02\&c"               -- new window (index 1)
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "echo win1-marker\r"
+        awaitScreen c1 "win1-marker"
+        -- Grab window 1's pane id, switch back to window 0, join it in.
+        pidOut <- ctlOut h ["list-panes"]
+        let paneId = takeWhile (/= ':') pidOut
+        typeInto c1 "\x02\&0"
+        awaitScreen c1 "win0-marker"
+        _ <- ctlOut h ["join-pane", "-h", "-s", paneId]
+        awaitWith "both panes share window 0" (\d -> do
+            t <- screenText d
+            pure ("win0-marker" `T.isInfixOf` t
+                  && "win1-marker" `T.isInfixOf` t
+                  && "\x2502" `T.isInfixOf` t)) c1
+
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
