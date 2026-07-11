@@ -3,11 +3,14 @@ module Hat.Server.CopyModeSpec (spec) where
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import Test.Hspec
 
+import Hat.Geometry (Pos (..))
 import Hat.Model (CopyModeState (..), SelKind (SelChar))
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.CopyMode
+import Hat.Term.Cell (Cell (..), Style (..), defaultStyle)
 
 -- | The pane grid the upstream copy-mode tests build (40x10). The
 -- source file's leading TAB on row 1 reaches hat's grid as spaces
@@ -179,3 +182,59 @@ spec = do
                 , "copy-selection"
                 ]
             `shouldBe` ["A"]
+
+    describe "selection overlay (reverse video)" $ do
+        let cellsOf txt = V.fromList
+                [ Cell { text = T.singleton c, width = 1, style = defaultStyle }
+                | c <- take 5 (T.unpack txt <> repeat ' ') ]
+            gridOf = V.fromList . map cellsOf
+            -- All board cells start from defaultStyle, so a highlighted
+            -- cell is exactly defaultStyle with reverse flipped on.
+            revAt g r c = (g V.! r V.! c).style == defaultStyle { reverse = True }
+            sel row col anchor keys = CopyModeState
+                { cursorRow = row, cursorCol = col
+                , selection = Just (anchor, SelChar)
+                , keyTable = keys, viewportOffY = 0 }
+            board = gridOf ["abcde", "fghij", "klmno"]
+
+        it "reverse-videos a one-line span through the cursor cell (vi)" $ do
+            let g = overlaySelection KeysVi 0 (sel 0 3 (0, 1) "copy-mode-vi") board
+            map (revAt g 0) [0 .. 4] `shouldBe` [False, True, True, True, False]
+            map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 False
+
+        it "ends the span before the cursor cell for emacs" $ do
+            let g = overlaySelection KeysEmacs 0 (sel 0 3 (0, 1) "copy-mode") board
+            map (revAt g 0) [0 .. 4] `shouldBe` [False, True, True, False, False]
+
+        it "spans rows, filling the middle line to full width" $ do
+            let g = overlaySelection KeysVi 0 (sel 2 1 (0, 2) "copy-mode-vi") board
+            map (revAt g 0) [0 .. 4] `shouldBe` [False, False, True, True, True]
+            map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 True
+            map (revAt g 2) [0 .. 4] `shouldBe` [True, True, False, False, False]
+
+        it "leaves the grid untouched with no selection" $ do
+            let noSel = (sel 0 0 (0, 0) "copy-mode-vi") { selection = Nothing }
+                g = overlaySelection KeysVi 0 noSel board
+            any (revAt g 0) [0 .. 4] `shouldBe` False
+
+    describe "copy cursor placement" $ do
+        let st row = CopyModeState
+                { cursorRow = row, cursorCol = 2, selection = Nothing
+                , keyTable = "copy-mode-vi", viewportOffY = 0 }
+        it "maps an absolute cursor row into the viewport" $
+            copyCursorPos 5 10 (st 7) `shouldBe` Just Pos { row = 2, col = 2 }
+        it "is Nothing above the viewport" $
+            copyCursorPos 5 10 (st 3) `shouldBe` Nothing
+        it "is Nothing below the viewport" $
+            copyCursorPos 5 3 (st 12) `shouldBe` Nothing
+
+    describe "viewport scrolling (scrollToCursor)" $ do
+        let st row voY = CopyModeState
+                { cursorRow = row, cursorCol = 0, selection = Nothing
+                , keyTable = "copy-mode-vi", viewportOffY = voY }
+        it "keeps a visible cursor's viewport unchanged" $
+            (scrollToCursor 5 10 (st 7 0)).viewportOffY `shouldBe` 0
+        it "scrolls up to reveal a cursor in scrollback" $
+            (scrollToCursor 5 3 (st 0 0)).viewportOffY `shouldBe` 5
+        it "scrolls back down when the cursor drops below the viewport" $
+            (scrollToCursor 5 3 (st 7 5)).viewportOffY `shouldBe` 0

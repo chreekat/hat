@@ -24,6 +24,9 @@ module Hat.Server.CopyMode
     , endOfLine
     , extractSelection
     , yankSelection
+    , overlaySelection
+    , copyCursorPos
+    , scrollToCursor
     ) where
 
 import Control.Concurrent.STM
@@ -35,7 +38,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
-import Hat.Geometry (Size (..))
+import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
 import qualified Hat.Term.Cell as Cell
@@ -364,6 +367,62 @@ copyLine g row sx ex
             then mapM (g.gChar row) [sx' .. ex' - 1]
             else pure []
         pure (T.pack cells <> "\n")
+
+-- ---------------------------------------------------------------------
+-- Viewport rendering (selection highlight + copy cursor placement)
+
+-- | True if the absolute cell @(row, col)@ lies within the current
+-- selection. Honors vi's inclusive end cell; @sx@ bounds the row width.
+cellSelected :: ModeKeys -> CopyModeState -> Int -> Int -> Int -> Bool
+cellSelected keys st sx row col = case st.selection of
+    Nothing -> False
+    Just ((ar, ac), _) ->
+        let (sRow, sCol, eRow, eCol)
+                | (st.cursorRow, st.cursorCol) `before` (ar, ac) =
+                    (st.cursorRow, st.cursorCol, ar, ac)
+                | otherwise = (ar, ac, st.cursorRow, st.cursorCol)
+            inclusive = case keys of KeysVi -> 1; KeysEmacs -> 0
+            lo = if row == sRow then sCol else 0
+            hi = min sx (if row == eRow then eCol + inclusive else sx)
+        in row >= sRow && row <= eRow && col >= lo && col < hi
+  where
+    before (a, b) (x, y) = a < x || (a == x && b < y)
+
+-- | Reverse-video the selected cells of an assembled viewport grid.
+-- @topRow@ is the absolute grid row shown at visible row 0.
+overlaySelection
+    :: ModeKeys -> Int -> CopyModeState
+    -> V.Vector (V.Vector Cell.Cell) -> V.Vector (V.Vector Cell.Cell)
+overlaySelection keys topRow st = V.imap overRow
+  where
+    overRow i row = V.imap (overCell (topRow + i) (V.length row)) row
+    overCell a sx col cell
+        | cellSelected keys st sx a col =
+            cell { Cell.style =
+                (cell.style) { Cell.reverse = not cell.style.reverse } }
+        | otherwise = cell
+
+-- | Where the copy cursor sits within a viewport of @sy@ rows whose top
+-- line is absolute row @topRow@; 'Nothing' when it is scrolled off.
+copyCursorPos :: Int -> Int -> CopyModeState -> Maybe Pos
+copyCursorPos topRow sy st =
+    let r = st.cursorRow - topRow
+    in if r >= 0 && r < sy
+        then Just Pos { row = r, col = st.cursorCol }
+        else Nothing
+
+-- | Adjust @viewportOffY@ (lines scrolled up from the live screen) so the
+-- copy cursor stays visible in an @sy@-row viewport over a grid with
+-- @hsize@ scrollback lines. Preserves the offset when the cursor is
+-- already on screen.
+scrollToCursor :: Int -> Int -> CopyModeState -> CopyModeState
+scrollToCursor hsize sy st =
+    let top0 = hsize - st.viewportOffY
+        top | st.cursorRow < top0 = st.cursorRow
+            | st.cursorRow > top0 + sy - 1 = st.cursorRow - sy + 1
+            | otherwise = top0
+        voY = max 0 (min hsize (hsize - top))
+    in st { viewportOffY = voY }
 
 -- ---------------------------------------------------------------------
 -- Wiring to the live pane
