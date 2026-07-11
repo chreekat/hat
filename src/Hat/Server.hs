@@ -54,6 +54,7 @@ import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.Format (FormatEnv, renderFormat)
 import Hat.Server.Keys
 import Hat.Server.Layout
+import Hat.Server.LayoutString (emitLayout, layoutFromString)
 import qualified Hat.Server.Picker as Picker
 import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
@@ -1239,6 +1240,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["last-window", "last"], cmdLastWindow)
     , (["kill-window", "killw"], cmdKillWindow)
     , (["rename-window", "renamew"], cmdRenameWindow)
+    , (["move-window", "movew"], cmdMoveWindow)
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
@@ -1774,13 +1776,20 @@ cmdKillWindow st mclient _ =
         pure []
 
 cmdRenameWindow :: CommandImpl
-cmdRenameWindow st mclient args = case args of
-    [nm] -> withCurrentWindow st mclient $ \_ win -> do
-        atomically $ do
-            writeTVar win.name nm
-            bumpDirty st
-        pure []
-    _ -> pure [RErr "usage: rename-window name"]
+cmdRenameWindow st mclient args = do
+    let (opts, _, pos) = parseArgs "t" args
+    case pos of
+        [nm] -> do
+            mres <- resolveWindowTarget st mclient (lookup "-t" opts)
+            case mres of
+                Just (sess, ix) -> do
+                    ws <- readTVarIO sess.windows
+                    forM_ (Map.lookup ix ws) $ \win -> atomically $ do
+                        writeTVar win.name nm
+                        bumpDirty st
+                    pure []
+                Nothing -> pure [RErr "no such window"]
+        _ -> pure [RErr "usage: rename-window [-t target] name"]
 
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args = do
@@ -2097,8 +2106,26 @@ cmdSelectLayout st mclient args = do
     case pos of
         (nameT : _) -> case parseLayoutName nameT of
             Just lname -> applyNamedLayout st mclient lname
-            Nothing -> pure [RErr ("unknown layout: " <> nameT)]
+            Nothing -> applyLayoutString st mclient nameT
         [] -> pure [RErr "usage: select-layout name"]
+
+-- | Reshape the current window to a saved tmux layout string, mapping
+-- its geometry onto the window's panes in order (resurrect's restore).
+applyLayoutString :: ServerState -> Maybe Client -> Text -> IO [Reply]
+applyLayoutString st mclient str =
+    withCurrentWindow st mclient $ \sess win -> do
+        ok <- atomically $ do
+            pids <- layoutPanes <$> readTVar win.layout
+            case layoutFromString str pids of
+                Just lay -> do
+                    writeTVar win.layout lay
+                    writeTVar win.zoomed Nothing
+                    bumpDirty st
+                    pure True
+                Nothing -> pure False
+        if ok
+            then applySessionSize st sess.id >> pure []
+            else pure [RErr ("invalid layout: " <> str)]
 
 parseLayoutName :: Text -> Maybe LayoutName
 parseLayoutName = \case
@@ -2129,6 +2156,31 @@ applyNamedLayout st mclient lname =
                 bumpDirty st
         applySessionSize st sess.id
         pure []
+
+-- | @move-window -s src -t dst@: renumber (or relocate) a window to the
+-- destination index, possibly in another session. Restore replays this
+-- to place windows at their saved indices.
+cmdMoveWindow :: CommandImpl
+cmdMoveWindow st mclient args = do
+    let (opts, _, _) = parseArgs "st" args
+    msrc <- resolveWindowTarget st mclient (lookup "-s" opts)
+    mdst <- resolveWindowTarget st mclient (lookup "-t" opts)
+    case (msrc, mdst) of
+        (Just (srcSess, srcIx), Just (dstSess, dstIx)) -> do
+            atomically $ do
+                sws <- readTVar srcSess.windows
+                forM_ (Map.lookup srcIx sws) $ \win ->
+                    when (srcSess.id /= dstSess.id || srcIx /= dstIx) $ do
+                        modifyTVar' srcSess.windows (Map.delete srcIx)
+                        modifyTVar' dstSess.windows (Map.insert dstIx win)
+                        cur <- readTVar srcSess.currentIx
+                        when (cur == srcIx) $ do
+                            ws' <- readTVar srcSess.windows
+                            forM_ (Map.lookupMin ws') $ \(i, _) ->
+                                writeTVar srcSess.currentIx i
+                        bumpDirty st
+            pure []
+        _ -> pure [RErr "usage: move-window -s src -t dst"]
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do
@@ -2746,24 +2798,85 @@ cmdListWindows st mclient args = do
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = do
     base <- sessionFormatEnv st sess
-    wname <- readTVarIO win.name
-    pure $ Map.insert "window_index" (tshow ix)
-         $ Map.insert "window_name" wname base
+    eff <- readTVarIO sess.lastSize
+    (wname, lay, cur, bell, act) <- atomically $ (,,,,)
+        <$> readTVar win.name <*> readTVar win.layout
+        <*> readTVar sess.currentIx <*> readTVar win.bellFlag
+        <*> readTVar win.activity
+    ps <- readTVarIO win.panes
+    let flags = T.concat
+            [ if ix == cur then "*" else ""
+            , if bell then "!" else "", if act then "#" else "" ]
+    pure $ Map.union (Map.fromList
+        [ ("window_index", tshow ix)
+        , ("window_name", wname)
+        , ("window_layout", emitLayout (sizeRect (windowArea eff)) lay)
+        , ("window_active", if ix == cur then "1" else "0")
+        , ("window_flags", flags)
+        , ("window_panes", tshow (Map.size ps))
+        , ("automatic_rename", "0")  -- hat never auto-renames
+        ]) base
+
+-- | The full format environment for a specific pane, including the
+-- fields tmux-resurrect's @save.sh@ dumps (pid, command, cursor,
+-- history, cwd).
+paneFormatEnv
+    :: ServerState -> Session -> Int -> Window -> Int -> Pane -> IO FormatEnv
+paneFormatEnv st sess wix win pix pane = do
+    wenv <- windowFormatEnv st sess wix win
+    dir <- paneCurrentPath pane
+    cmd <- paneCommandName pane
+    scr <- Emu.snapshot pane.emulator
+    hsize <- Emu.scrollbackLength pane.emulator
+    active <- readTVarIO win.activeId
+    sz <- readTVarIO pane.size
+    pure $ Map.union (Map.fromList
+        [ ("pane_id", "%" <> tshow (rawPane pane.id))
+        , ("pane_index", tshow pix)
+        , ("pane_pid", tshow (Hat.Pty.pid pane.pty))
+        , ("pane_current_path", T.pack dir)
+        , ("pane_current_command", cmd)
+        , ("pane_active", if pane.id == active then "1" else "0")
+        , ("cursor_x", tshow scr.cursor.col)
+        , ("cursor_y", tshow scr.cursor.row)
+        , ("history_size", tshow hsize)
+        , ("pane_width", tshow sz.cols)
+        , ("pane_height", tshow sz.rows)
+        , ("session_grouped", "0")  -- hat has no session groups
+        ]) wenv
 
 cmdListPanes :: CommandImpl
-cmdListPanes st mclient _ =
-    withTargetSession st mclient Nothing $ \sess -> do
-        lines' <- atomically $ do
-            mwin <- currentWindow sess
-            case mwin of
+cmdListPanes st mclient args = do
+    let (opts, flags, _) = parseArgs "Ft" args
+        mfmt = lookup "-F" opts
+        allSessions = "-a" `elem` flags
+    -- Which (session, window-index, window) triples to list panes from:
+    -- -a covers every window of every session; otherwise the target
+    -- session's current window.
+    targets <- if allSessions
+        then do
+            sessions <- Map.elems <$> readTVarIO st.sessions
+            fmap concat . forM sessions $ \sess -> do
+                ws <- Map.toAscList <$> readTVarIO sess.windows
+                pure [ (sess, ix, win) | (ix, win) <- ws ]
+        else do
+            msess <- targetSession st mclient (lookup "-t" opts)
+            case msess of
                 Nothing -> pure []
-                Just win -> do
-                    ps <- readTVar win.panes
-                    forM (Map.elems ps) $ \p -> do
-                        sz <- readTVar p.size
-                        pure $ "%" <> tshow (rawPane p.id) <> ": ["
-                            <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
-        pure (map ROutput lines')
+                Just sess -> do
+                    cur <- readTVarIO sess.currentIx
+                    mwin <- atomically (currentWindow sess)
+                    pure [ (sess, cur, win) | win <- maybe [] pure mwin ]
+    fmap (map ROutput . concat) . forM targets $ \(sess, wix, win) -> do
+        ps <- Map.elems <$> readTVarIO win.panes
+        forM (zip [0 ..] ps) $ \(pix, pane) -> case mfmt of
+            Just fmt -> do
+                env <- paneFormatEnv st sess wix win pix pane
+                expandFormat st env fmt
+            Nothing -> do
+                sz <- readTVarIO pane.size
+                pure $ "%" <> tshow (rawPane pane.id) <> ": ["
+                    <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
 
 cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient args = do

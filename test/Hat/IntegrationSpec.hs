@@ -3,7 +3,7 @@ module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch, finally)
-import Control.Monad (unless, when)
+import Control.Monad (forM_, unless, when)
 import qualified Data.List as List
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
@@ -557,6 +557,88 @@ spec = parallel $ do
             t <- screenText d
             pure (maybe False (\c -> c >= 46 && c <= 52) mcol
                   && "\x2500" `T.isInfixOf` t)) c1
+
+    it "round-trips @-options via set -gq / show -gqv (resurrect config)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        _ <- ctlOut h ["set", "-gq", "@resurrect-save", "M-s"]
+        out <- ctlOut h ["show", "-gqv", "@resurrect-save"]
+        out `shouldSatisfy` List.isInfixOf "M-s"
+
+    it "list-panes -aF emits resurrect's per-pane fields" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "\x02%"                  -- two panes
+        awaitScreen c1 "\x2502"
+        out <- ctlOut h
+            [ "list-panes", "-a", "-F"
+            , "#{pane_id}|#{pane_current_path}|#{pane_current_command}|#{window_layout}" ]
+        -- a row per pane, each carrying id, cwd, command and a layout string
+        length (lines out) `shouldSatisfy` (>= 2)
+        out `shouldSatisfy` List.isInfixOf "%"     -- pane_id
+        out `shouldSatisfy` List.isInfixOf "/"     -- pane_current_path
+        out `shouldSatisfy` List.isInfixOf "x"     -- WxH in window_layout
+
+    it "moves a window to a new index (move-window)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02\&c"                -- window 1
+        awaitScreen c1 "1:sh*"
+        _ <- ctlOut h ["move-window", "-s", "1", "-t", "5"]
+        out <- ctlOut h ["list-windows", "-F", "#{window_index}"]
+        lines out `shouldSatisfy` elem "5"
+
+    it "restores a saved window_layout (resurrect's select-layout replay)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "\x02%"                  -- split -h: side-by-side panes
+        awaitScreen c1 "\x2502"
+        -- "save": capture the window_layout string, as save.sh does
+        layoutOut <- ctlOut h ["list-windows", "-F", "#{window_layout}"]
+        let layout = takeWhile (/= '\n') layoutOut
+        -- mangle: stack the panes (no vertical border)
+        _ <- ctlOut h ["select-layout", "even-vertical"]
+        awaitWith "stacked" (\d -> not . T.isInfixOf "\x2502" <$> screenText d) c1
+        -- "restore": replay the saved layout -> side-by-side returns
+        _ <- ctlOut h ["select-layout", layout]
+        awaitScreen c1 "\x2502"
+
+    it "save -> kill-server -> restart -> restore rebuilds the window tree" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        -- Build a tree: window 0 renamed, plus a named window 1.
+        _ <- ctlOut h ["rename-window", "built0"]
+        typeInto c1 "\x02\&c"
+        awaitScreen c1 "1:sh*"
+        _ <- ctlOut h ["rename-window", "editor"]
+        awaitScreen c1 "1:editor*"
+        -- Save, as resurrect's save.sh does: dump index+name per window.
+        saved <- ctlOut h ["list-windows", "-F", "#{window_index}:#{window_name}"]
+
+        -- Kill the server; wait for it to be gone.
+        _ <- ctlOut h ["kill-server"]
+        _ <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "server did not die"
+
+        -- Restart: a fresh client autostarts a new server and session.
+        c2 <- startClient h
+        awaitScreen c2 "0:sh*"
+        -- Restore: replay the saved windows (resurrect replays new-window).
+        forM_ (lines saved) $ \line -> case break (== ':') line of
+            (ix, ':' : nm)
+                | ix == "0" -> ctlOut h ["rename-window", "-t", "0", nm] >> pure ()
+                | otherwise ->
+                    ctlOut h ["new-window", "-d", "-t", ix, "-n", nm] >> pure ()
+            _ -> pure ()
+        -- The saved tree is back: window 0 renamed, window 1 'editor'.
+        awaitScreen c2 "0:built0"
+        awaitScreen c2 "1:editor"
 
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do
