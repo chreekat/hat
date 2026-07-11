@@ -148,19 +148,29 @@ data KeyAction
 
 -- | Drive the prefix state machine over tokenized keys, resolving
 -- bindings from the given tables.
+--
+-- When the active pane is in copy mode, its key table name is passed as
+-- @Just table@: unprefixed keys resolve against that table first, and a
+-- miss is /swallowed/ rather than forwarded to the pty (so browsing keys
+-- never leak into the shell). The prefix table still applies.
 routeKeys
     :: Text                        -- ^ prefix key name
     -> Map Text (Map Text [[Text]]) -- ^ keymap: table -> key -> commands
+    -> Maybe Text                  -- ^ active pane's copy-mode table, if any
     -> PrefixState
     -> [Key]
     -> (PrefixState, [KeyAction])
-routeKeys prefixName keymap = go
+routeKeys prefixName keymap modeTable = go
   where
     rootTable = Map.findWithDefault Map.empty "root" keymap
     prefixTable = Map.findWithDefault Map.empty "prefix" keymap
     go st [] = (st, [])
     go NoPrefix (k : ks)
         | k.name == prefixName = go PrefixArmed ks
+        | Just table <- modeTable =
+            case Map.lookup k.name (Map.findWithDefault Map.empty table keymap) of
+                Just cmds -> emit (RunCommands cmds) (go NoPrefix ks)
+                Nothing -> go NoPrefix ks  -- unbound in copy mode: swallowed
         | Just cmds <- Map.lookup k.name rootTable =
             emit (RunCommands cmds) (go NoPrefix ks)
         | otherwise = emit (Passthrough k.raw) (go NoPrefix ks)

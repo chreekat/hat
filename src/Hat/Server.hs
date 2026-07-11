@@ -763,8 +763,11 @@ handleInput st client bs = do
     km <- readTVarIO st.keymap
     st0 <- readIORef client.keyState
     mpane <- clientActivePane st client
+    modeTable <- case mpane of
+        Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
+        Nothing -> pure Nothing
     keys <- mapM (reencodeCursor mpane) (tokenizeKeys bs)
-    let (st1, actions) = routeKeys opts.prefix km st0 keys
+    let (st1, actions) = routeKeys opts.prefix km modeTable st0 keys
     writeIORef client.keyState st1
     forM_ actions $ \case
         Passthrough raw ->

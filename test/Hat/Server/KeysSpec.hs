@@ -53,7 +53,7 @@ spec = do
                 , ("root", Map.fromList
                     [ ("M-Up", [["resize-pane", "-U"]]) ])
                 ]
-            run st bs = routeKeys "C-Space" km st (tokenizeKeys bs)
+            run st bs = routeKeys "C-Space" km Nothing st (tokenizeKeys bs)
         it "passes plain input through, coalesced" $
             run NoPrefix "hello" `shouldBe` (NoPrefix, [Passthrough "hello"])
         it "arms on prefix and runs the bound command" $
@@ -69,6 +69,30 @@ spec = do
         it "swallows unbound prefixed keys" $
             run NoPrefix "\x00q after" `shouldBe`
                 (NoPrefix, [Passthrough " after"])
+
+    describe "routeKeys in copy mode" $ do
+        let km = Map.fromList
+                [ ("prefix", Map.fromList
+                    [ ("]", [["paste-buffer"]]) ])
+                , ("root", Map.fromList
+                    [ ("M-Up", [["resize-pane", "-U"]]) ])
+                , ("copy-mode-vi", Map.fromList
+                    [ ("h", [["send-keys", "-X", "cursor-left"]])
+                    , ("q", [["send-keys", "-X", "cancel"]])
+                    ])
+                ]
+            run st bs =
+                routeKeys "C-Space" km (Just "copy-mode-vi") st (tokenizeKeys bs)
+        it "runs bindings from the pane's copy-mode table" $
+            run NoPrefix "h" `shouldBe`
+                (NoPrefix, [RunCommands [["send-keys", "-X", "cursor-left"]]])
+        it "swallows keys not bound in the copy-mode table" $
+            run NoPrefix "xyz" `shouldBe` (NoPrefix, [])
+        it "still honors the prefix table while in mode" $
+            run NoPrefix "\x00]" `shouldBe`
+                (NoPrefix, [RunCommands [["paste-buffer"]]])
+        it "does not fall through to root bindings while in mode" $
+            run NoPrefix "\ESC\ESC[A" `shouldBe` (NoPrefix, [])
 
     describe "parseKeyName" $ do
         it "parses plain characters" $ do
