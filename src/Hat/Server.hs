@@ -245,6 +245,7 @@ newClient st conn h = do
     cursorVar <- newIORef (Pos 0 0, True)
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
+    promptVar <- newTVarIO Nothing
     pure Client
         { id = ClientId cid
         , sock = conn
@@ -257,6 +258,7 @@ newClient st conn h = do
         , lastCursor = cursorVar
         , needsFull = fullVar
         , toast = toastVar
+        , prompt = promptVar
         , env = h.env
         , cwd = h.cwd
         }

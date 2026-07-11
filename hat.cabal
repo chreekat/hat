@@ -66,6 +66,7 @@ library
         Hat.Server.Format
         Hat.Server.Keys
         Hat.Server.Layout
+        Hat.Server.Prompt
         Hat.Server.Render
         Hat.Socket
         Hat.Term.Cell
@@ -131,6 +132,7 @@ test-suite hat-test
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
+        Hat.Server.PromptSpec
         Hat.Server.RenderSpec
         Hat.Term.EmulatorSpec
         Hat.Term.GoldenSpec

@@ -7,6 +7,7 @@ import qualified Hat.Server.CopyModeSpec
 import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
 import qualified Hat.Server.LayoutSpec
+import qualified Hat.Server.PromptSpec
 import qualified Hat.Server.RenderSpec
 import qualified Hat.SocketSpec
 import qualified Hat.Term.EmulatorSpec
@@ -25,5 +26,6 @@ main = hspec $ do
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
+    describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "integration" Hat.IntegrationSpec.spec

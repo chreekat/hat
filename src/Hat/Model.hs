@@ -12,6 +12,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , CopyModeState (..)
+    , PromptState (..)
     , SelKind (..)
     , newServerState
     , bumpDirty
@@ -62,6 +63,7 @@ data ServerState = ServerState
     , buffers     :: TVar (Seq (Text, Text))
         -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
+    , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
     , logger      :: Logger
     , sockPath    :: FilePath
     }
@@ -129,6 +131,17 @@ data CopyModeState = CopyModeState
 data SelKind = SelChar | SelWord | SelLine | SelRect
     deriving (Eq, Show)
 
+-- | Per-client command-prompt state: the line being edited, the cursor's
+-- index into it, and (when browsing) the position in command history.
+data PromptState = PromptState
+    { input   :: !Text
+    , cursor  :: !Int          -- ^ index into 'input', @0..T.length input@
+    , histIx  :: !(Maybe Int)  -- ^ 'Nothing' while editing a fresh line;
+                               --   @Just n@ while showing history entry @n@
+    , pending :: !Text         -- ^ the fresh line stashed while browsing history
+    }
+    deriving (Eq, Show)
+
 data Client = Client
     { id        :: ClientId
     , sock      :: Socket
@@ -141,6 +154,7 @@ data Client = Client
     , lastCursor :: IORef (Pos, Bool)
     , needsFull :: TVar Bool
     , toast     :: TVar (Maybe Text)  -- ^ display-message overlay
+    , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , env       :: [(Text, Text)]
     , cwd       :: Text
     }
@@ -161,6 +175,7 @@ newServerState defaultKeymap lg path = ServerState
     <*> newTVarIO defaultKeymap
     <*> newTVarIO Seq.empty
     <*> newTVarIO Map.empty
+    <*> newTVarIO []
     <*> pure lg
     <*> pure path
 
