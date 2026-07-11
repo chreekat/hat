@@ -10,9 +10,11 @@ module Hat.Term.Emulator
     , Screen (..)
     , Modes (..)
     , MouseMode (..)
+    , CursorKey (..)
     , newEmulator
     , freeEmulator
     , feed
+    , encodeKey
     , resize
     , snapshot
     , modes
@@ -64,6 +66,8 @@ foreign import ccall unsafe "vterm_obtain_screen"
     c_vterm_obtain_screen :: Ptr CVTerm -> IO (Ptr CVTermScreen)
 foreign import ccall safe "vterm_input_write"
     c_vterm_input_write :: Ptr CVTerm -> CString -> CSize -> IO CSize
+foreign import ccall safe "vterm_keyboard_key"
+    c_vterm_keyboard_key :: Ptr CVTerm -> CInt -> CInt -> IO ()
 foreign import ccall safe "vterm_screen_flush_damage"
     c_flush_damage :: Ptr CVTermScreen -> IO ()
 foreign import ccall unsafe "vterm_screen_set_damage_merge"
@@ -105,6 +109,12 @@ data Event
     deriving (Eq, Show)
 
 data MouseMode = MouseOff | MouseClick | MouseDrag | MouseMove
+    deriving (Eq, Show)
+
+-- | Keys whose byte encoding depends on terminal mode (DECCKM), so the
+-- pane must be asked how to encode them rather than forwarding raw bytes.
+data CursorKey
+    = CursorUp | CursorDown | CursorLeft | CursorRight | CursorHome | CursorEnd
     deriving (Eq, Show)
 
 data Modes = Modes
@@ -282,6 +292,23 @@ feed e bs = withMVar e.lock $ \_ -> do
     pure $ evs
         <> [Output outs | not (B.null outs)]
         <> [ScreenChanged | dirty]
+
+-- | Encode a cursor key the way this pane currently expects it: libvterm
+-- consults its own DECCKM state, so @man@/@less@ (application cursor keys)
+-- get @\\ESC O A@ while normal mode gets @\\ESC [ A@.
+encodeKey :: Emulator -> CursorKey -> IO ByteString
+encodeKey e key = withMVar e.lock $ \_ -> do
+    writeIORef e.outRef []
+    c_vterm_keyboard_key e.vt (keyCode key) #{const VTERM_MOD_NONE}
+    B.concat . reverse <$> readIORef e.outRef
+  where
+    keyCode k = case k of
+        CursorUp    -> #{const VTERM_KEY_UP}
+        CursorDown  -> #{const VTERM_KEY_DOWN}
+        CursorLeft  -> #{const VTERM_KEY_LEFT}
+        CursorRight -> #{const VTERM_KEY_RIGHT}
+        CursorHome  -> #{const VTERM_KEY_HOME}
+        CursorEnd   -> #{const VTERM_KEY_END}
 
 resize :: Emulator -> Size -> IO ()
 resize e sz = withMVar e.lock $ \_ -> do

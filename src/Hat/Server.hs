@@ -757,17 +757,37 @@ handleInput st client bs = do
     opts <- readTVarIO st.options
     km <- readTVarIO st.keymap
     st0 <- readIORef client.keyState
-    let (st1, actions) = routeKeys opts.prefix km st0 (tokenizeKeys bs)
+    mpane <- clientActivePane st client
+    keys <- mapM (reencodeCursor mpane) (tokenizeKeys bs)
+    let (st1, actions) = routeKeys opts.prefix km st0 keys
     writeIORef client.keyState st1
     forM_ actions $ \case
-        Passthrough raw -> do
-            mpane <- clientActivePane st client
+        Passthrough raw ->
             forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty raw
         RunCommands cmds -> forM_ cmds $ \argv -> do
             replies <- runArgv st (Just client) argv
             forM_ replies $ \case
                 ROutput out -> showToast st client out
                 RErr e -> showToast st client ("error: " <> e)
+
+-- | Cursor keys ('\ESC[A' vs '\ESCOA') depend on the pane's DECCKM mode,
+-- so re-encode them via the pane's emulator instead of forwarding the raw
+-- bytes the client's terminal happened to send.
+reencodeCursor :: Maybe Pane -> Key -> IO Key
+reencodeCursor mpane key = case (mpane, cursorKeyOf key.name) of
+    (Just pane, Just ck) -> do
+        enc <- Emu.encodeKey pane.emulator ck
+        pure Key { name = key.name, raw = enc }
+    _ -> pure key
+  where
+    cursorKeyOf n = case n of
+        "Up"    -> Just Emu.CursorUp
+        "Down"  -> Just Emu.CursorDown
+        "Left"  -> Just Emu.CursorLeft
+        "Right" -> Just Emu.CursorRight
+        "Home"  -> Just Emu.CursorHome
+        "End"   -> Just Emu.CursorEnd
+        _       -> Nothing
 
 showToast :: ServerState -> Client -> Text -> IO ()
 showToast st client t = do

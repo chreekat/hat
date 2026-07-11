@@ -69,6 +69,17 @@ spec = do
         m2 <- modes e
         m2.altScreen `shouldBe` False
 
+    it "encodes cursor keys per application-cursor-keys mode" $ do
+        e <- new80x24
+        normal <- encodeKey e CursorUp
+        normal `shouldBe` "\ESC[A"
+        _ <- feedStr e "\ESC[?1h"          -- DECCKM on (application)
+        app <- encodeKey e CursorUp
+        app `shouldBe` "\ESCOA"
+        _ <- feedStr e "\ESC[?1l"          -- DECCKM off (normal)
+        back <- encodeKey e CursorUp
+        back `shouldBe` "\ESC[A"
+
     it "reports title changes" $ do
         e <- new80x24
         evs <- feedStr e "\ESC]2;my title\BEL"
