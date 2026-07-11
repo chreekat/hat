@@ -84,8 +84,11 @@ bgCode = \case
         <> BB.intDec (fromIntegral g) <> BB.char8 ';'
         <> BB.intDec (fromIntegral b)
 
+-- Also enables focus reporting (@?1004@) so the outer terminal sends
+-- @\ESC[I@/@\ESC[O@; the server forwards them to panes when
+-- @focus-events@ is on.
 enterAltScreen :: ByteString
-enterAltScreen = "\ESC[?1049h\ESC[2J\ESC[H"
+enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[2J\ESC[H"
 
 leaveAltScreen :: ByteString
-leaveAltScreen = "\ESC[?1049l\ESC[0m\ESC[?25h"
+leaveAltScreen = "\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h"

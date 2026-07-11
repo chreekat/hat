@@ -78,7 +78,7 @@ data Session = Session
     , currentIx :: TVar Int
     , lastIx   :: TVar (Maybe Int)
     , lastSize :: TVar Size              -- ^ effective size while no client is attached
-    , environ  :: [(Text, Text)]         -- ^ from the creating client; used for new panes
+    , environ  :: TVar [(Text, Text)]    -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: FilePath               -- ^ default working directory for new windows
     }
 
@@ -90,6 +90,7 @@ data Window = Window
     , activeId   :: TVar PaneId
     , lastActive :: TVar (Maybe PaneId)
     , bellFlag   :: TVar Bool
+    , activity   :: TVar Bool  -- ^ output since last viewed (monitor-activity)
     , zoomed     :: TVar (Maybe PaneId)
     }
 

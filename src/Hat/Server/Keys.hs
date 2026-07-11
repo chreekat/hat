@@ -63,6 +63,7 @@ csiNames =
     , ("OH", "Home"), ("OF", "End")
     , ("[5~", "PgUp"), ("[6~", "PgDn"), ("[3~", "Delete")
     , ("[1~", "Home"), ("[4~", "End")
+    , ("[I", "FocusIn"), ("[O", "FocusOut")
     ]
 
 tokenizeKeys :: ByteString -> [Key]

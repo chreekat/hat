@@ -56,6 +56,13 @@ data Options = Options
     , paneActiveBorderStyle  :: Cell.Style
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
+    , setTitles              :: Bool
+    , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
+    , displayTime            :: Int   -- ^ toast duration, ms
+    , focusEvents            :: Bool
+    , aggressiveResize       :: Bool
+    , monitorActivity        :: Bool
+    , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , user            :: Map Text Text  -- ^ @\@foo@ options
     }
     deriving (Eq, Show)
@@ -87,6 +94,15 @@ defaultOptions = Options
     , paneActiveBorderStyle = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
     , paneBorderLines = BorderSingle
     , paneBorderIndicators = IndicatorsColour
+    , setTitles = False
+    , escapeTime = 0
+    , displayTime = 3000
+    , focusEvents = False
+    , aggressiveResize = False
+    , monitorActivity = False
+    , updateEnvironment =
+        [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
+        , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]
     , user = Map.empty
     }
   where
