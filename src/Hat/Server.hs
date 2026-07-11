@@ -135,6 +135,7 @@ defaultKeymap = Map.fromList
         , (";", ["last-pane"])
         , ("C-b", ["send-prefix"])
         , ("[", ["copy-mode"])
+        , ("]", ["paste-buffer"])
         , ("Left", ["select-pane", "-L"])
         , ("Right", ["select-pane", "-R"])
         , ("Up", ["select-pane", "-U"])
@@ -954,6 +955,8 @@ commandTable = Map.fromList $ concatMap expand
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)
     , (["delete-buffer", "deleteb"], cmdDeleteBuffer)
+    , (["save-buffer", "saveb"], cmdSaveBuffer)
+    , (["paste-buffer", "pasteb"], cmdPasteBuffer)
     , (["new-session", "new"], cmdNewSession)
     , (["attach-session", "attach"], cmdAttachSession)
     , (["kill-session"], cmdKillSession)
@@ -1669,12 +1672,7 @@ cmdShowBuffer :: CommandImpl
 cmdShowBuffer st _ args = do
     let (opts, _, _) = parseArgs "b" args
     bufs <- readTVarIO st.buffers
-    let mbody = case lookup "-b" opts of
-            Just name -> lookupBuffer name bufs
-            Nothing -> case bufs of
-                Seq.Empty -> Nothing
-                (_, body) Seq.:<| _ -> Just body
-    pure $ case mbody of
+    pure $ case bufferBody (lookup "-b" opts) bufs of
         Nothing -> [RErr "no buffers"]
         Just body -> [ROutput body]
 
@@ -1720,13 +1718,81 @@ cmdDeleteBuffer st _ args = do
     let (opts, _, _) = parseArgs "b" args
     atomically $ do
         bufs <- readTVar st.buffers
-        let bufs' = case lookup "-b" opts of
-                Just name -> Seq.filter ((/= name) . fst) bufs
-                Nothing -> case bufs of
-                    Seq.Empty -> bufs
-                    _ Seq.:<| rest -> rest
-        writeTVar st.buffers bufs'
+        writeTVar st.buffers (dropBuffer (lookup "-b" opts) bufs)
         pure []
+
+-- | Write the top (or named) buffer to a file. @-a@ appends; the path
+-- may start with @~/@.
+cmdSaveBuffer :: CommandImpl
+cmdSaveBuffer st _ args = do
+    let (opts, flags, pos) = parseArgs "b" args
+        appendMode = "-a" `elem` flags
+    case pos of
+        [] -> pure [RErr "usage: save-buffer [-a] [-b name] path"]
+        (rawPath : _) -> do
+            bufs <- readTVarIO st.buffers
+            case bufferBody (lookup "-b" opts) bufs of
+                Nothing -> pure [RErr "no buffers"]
+                Just body -> do
+                    path <- expandTilde (T.unpack rawPath)
+                    let write = if appendMode then TIO.appendFile else TIO.writeFile
+                    r <- try (write path body)
+                    pure $ case r of
+                        Left (e :: IOException) -> [RErr (T.pack (show e))]
+                        Right () -> []
+
+-- | Paste the top (or named) buffer into a pane's pty. @-d@ deletes the
+-- buffer afterwards, @-p@ wraps it in bracketed-paste markers, @-r@
+-- turns carriage returns into newlines.
+cmdPasteBuffer :: CommandImpl
+cmdPasteBuffer st mclient args = do
+    let (opts, flags, _) = parseArgs "bt" args
+        del = "-d" `elem` flags
+        bracketed = "-p" `elem` flags
+        crToNl = "-r" `elem` flags
+        mname = lookup "-b" opts
+    bufs <- readTVarIO st.buffers
+    case bufferBody mname bufs of
+        Nothing -> pure [RErr "no buffers"]
+        Just body0 -> do
+            mpane <- targetPane st mclient (lookup "-t" opts)
+            case mpane of
+                Nothing -> pure [RErr "no target pane"]
+                Just pane -> do
+                    let body = if crToNl
+                            then T.map (\c -> if c == '\r' then '\n' else c) body0
+                            else body0
+                        payload
+                            | bracketed = "\ESC[200~" <> body <> "\ESC[201~"
+                            | otherwise = body
+                    Hat.Pty.writePty pane.pty (TE.encodeUtf8 payload)
+                    when del $ atomically $ do
+                        cur <- readTVar st.buffers
+                        writeTVar st.buffers (dropBuffer mname cur)
+                    pure []
+
+-- | @HOME@-relative @~/@ prefix expansion for buffer paths.
+expandTilde :: FilePath -> IO FilePath
+expandTilde ('~' : '/' : rest) = do
+    env <- getEnvironment
+    pure $ maybe ('~' : '/' : rest) (\h -> h <> "/" <> rest) (lookup "HOME" env)
+expandTilde p = pure p
+
+-- | The top buffer, or a named one.
+bufferBody :: Maybe Text -> Seq (Text, Text) -> Maybe Text
+bufferBody mname bufs = case mname of
+    Just name -> lookupBuffer name bufs
+    Nothing -> case bufs of
+        Seq.Empty -> Nothing
+        (_, body) Seq.:<| _ -> Just body
+
+-- | Drop the top buffer, or a named one.
+dropBuffer :: Maybe Text -> Seq (Text, Text) -> Seq (Text, Text)
+dropBuffer mname bufs = case mname of
+    Just name -> Seq.filter ((/= name) . fst) bufs
+    Nothing -> case bufs of
+        Seq.Empty -> bufs
+        _ Seq.:<| rest -> rest
 
 lookupBuffer :: Text -> Seq (Text, Text) -> Maybe Text
 lookupBuffer name = go

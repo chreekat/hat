@@ -398,6 +398,36 @@ spec = parallel $ do
         awaitWith "highlight cleared" (\d ->
             (<= baseline) <$> reverseCellCount d) c1
 
+    it "save-buffer writes a buffer to disk, and -a appends" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        let path = h.home <> "/out.txt"
+        _ <- ctlOut h ["set-buffer", "alpha"]
+        _ <- ctlOut h ["save-buffer", path]
+        readFile path >>= (`shouldBe` "alpha")
+        -- a fresh set-buffer pushes a new top buffer; -a appends it.
+        _ <- ctlOut h ["set-buffer", "beta"]
+        _ <- ctlOut h ["save-buffer", "-a", path]
+        readFile path >>= (`shouldBe` "alphabeta")
+
+    it "prefix ] pastes the top buffer into the pane" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        -- Run cat so pasted input is echoed straight back.
+        typeInto c1 "cat\r"
+        threadDelay 300000
+        _ <- ctlOut h ["set-buffer", "bracketpastemarker"]
+        typeInto c1 "\x02]"          -- C-b ]  -> paste-buffer
+        awaitScreen c1 "bracketpastemarker"
+        -- Finish the line, EOF cat, exit the shell.
+        typeInto c1 "\r"
+        typeInto c1 "\x04"
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
