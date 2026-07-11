@@ -462,6 +462,24 @@ spec = parallel $ do
         typeInto c1 "q"                  -- exit copy mode
         awaitScreen c1 "normal"          -- and it reverts
 
+    it "pipe-pane tees pane output to a command, and stops on demand" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        let logPath = h.home <> "/pane.log"
+        _ <- ctlOut h ["pipe-pane", "cat >> " <> logPath]
+        typeInto c1 "echo PIPEPANEMARKER\r"
+        awaitScreen c1 "PIPEPANEMARKER"
+        threadDelay 300000
+        readFile logPath >>= (`shouldSatisfy` List.isInfixOf "PIPEPANEMARKER")
+
+        -- No-arg pipe-pane stops the pipe; later output is not captured.
+        _ <- ctlOut h ["pipe-pane"]
+        typeInto c1 "echo AFTERSTOPMARKER\r"
+        awaitScreen c1 "AFTERSTOPMARKER"
+        threadDelay 300000
+        readFile logPath >>= (`shouldNotSatisfy` List.isInfixOf "AFTERSTOPMARKER")
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"

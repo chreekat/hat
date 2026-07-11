@@ -5,7 +5,7 @@ module Hat.Server
     ( runServer
     ) where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.Async (race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -19,7 +19,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -33,12 +33,14 @@ import System.Directory (doesFileExist, removeFile)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory)
-import System.IO (SeekMode (AbsoluteSeek))
+import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
 import qualified System.Posix.Files as PFiles
 import qualified System.Posix.IO as PIO
 import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
-import System.Process (readCreateProcessWithExitCode, shell)
+import System.Process
+    (CreateProcess (..), StdStream (..), createProcess,
+     readCreateProcessWithExitCode, shell, terminateProcess, waitForProcess)
 
 import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Geometry
@@ -380,6 +382,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     sizeVar <- newTVarIO sz
     deadVar <- newTVarIO False
     modeVar <- newTVarIO Nothing
+    pipeVar <- newTVarIO Nothing
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
     pure Pane
@@ -390,6 +393,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , dead = deadVar
         , startCwd = dir
         , mode = modeVar
+        , pipe = pipeVar
         }
 
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
@@ -400,6 +404,7 @@ startPaneReader st sid win pane = void . forkIO $ loop
         if B8.null bs
             then paneDied st sid win pane
             else do
+                forwardToPipe pane bs
                 events <- Emu.feed pane.emulator bs
                 forM_ events $ \case
                     Emu.Output out -> Hat.Pty.writePty pane.pty out
@@ -424,6 +429,7 @@ windowArrange eff win = do
 
 paneDied :: ServerState -> SessionId -> Window -> Pane -> IO ()
 paneDied st sid win pane = do
+    stopPipe pane
     _ <- Hat.Pty.waitExit pane.pty
     Hat.Pty.closePty pane.pty
     logEvent st.logger PaneExited { pane = rawPane pane.id }
@@ -975,6 +981,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["delete-buffer", "deleteb"], cmdDeleteBuffer)
     , (["save-buffer", "saveb"], cmdSaveBuffer)
     , (["paste-buffer", "pasteb"], cmdPasteBuffer)
+    , (["pipe-pane", "pipep"], cmdPipePane)
     , (["new-session", "new"], cmdNewSession)
     , (["attach-session", "attach"], cmdAttachSession)
     , (["kill-session"], cmdKillSession)
@@ -1790,6 +1797,78 @@ cmdPasteBuffer st mclient args = do
                         cur <- readTVar st.buffers
                         writeTVar st.buffers (dropBuffer mname cur)
                     pure []
+
+-- | @pipe-pane [-IOo] [-t target] [command]@. With no command (or @-o@
+-- while already piping) it stops the pane's pipe. Otherwise it spawns
+-- @sh -c command@: @-O@ (the default) feeds pane output to the process's
+-- stdin, @-I@ feeds the process's stdout back into the pane.
+cmdPipePane :: CommandImpl
+cmdPipePane st mclient args = do
+    let (opts, flags, pos) = parseArgs "t" args
+        hasI = "-I" `elem` flags
+        hasO = "-O" `elem` flags
+        wantO = hasO || not hasI   -- default direction is -O
+        toggle = "-o" `elem` flags
+        cmd = T.strip (T.unwords pos)
+    mpane <- targetPane st mclient (lookup "-t" opts)
+    case mpane of
+        Nothing -> pure []
+        Just pane -> do
+            wasPiping <- isJust <$> readTVarIO pane.pipe
+            stopPipe pane
+            if T.null cmd || (toggle && wasPiping)
+                then pure []
+                else startPipe pane (T.unpack cmd) wantO hasI >> pure []
+
+-- Spawn the pipe subprocess and record it on the pane.
+startPipe :: Pane -> String -> Bool -> Bool -> IO ()
+startPipe pane cmd wantO wantI = do
+    (mIn, mOut, _, ph) <- createProcess (shell cmd)
+        { std_in  = if wantO then CreatePipe else Inherit
+        , std_out = if wantI then CreatePipe else Inherit
+        }
+    rtid <- case (wantI, mOut) of
+        (True, Just hout) -> Just <$> forkIO (pumpPipeOutput pane hout)
+        _ -> pure Nothing
+    atomically $ writeTVar pane.pipe $ Just PipeHandle
+        { process = ph
+        , toStdin = if wantO then mIn else Nothing
+        , reader = rtid
+        }
+
+-- Read the process's stdout and write it into the pane's pty (@-I@).
+pumpPipeOutput :: Pane -> Handle -> IO ()
+pumpPipeOutput pane hout = loop `catch` \(_ :: SomeException) -> pure ()
+  where
+    loop = do
+        chunk <- B8.hGetSome hout 4096
+        unless (B8.null chunk) $ do
+            Hat.Pty.writePty pane.pty chunk
+            loop
+
+-- Feed a chunk of pane output to the pipe subprocess (@-O@).
+forwardToPipe :: Pane -> B.ByteString -> IO ()
+forwardToPipe pane bs = do
+    mp <- readTVarIO pane.pipe
+    forM_ mp $ \ph -> forM_ ph.toStdin $ \hdl ->
+        (B8.hPut hdl bs >> hFlush hdl)
+            `catch` \(_ :: SomeException) -> pure ()
+
+-- Stop and reap any pipe subprocess on the pane.
+stopPipe :: Pane -> IO ()
+stopPipe pane = do
+    mp <- atomically $ do
+        m <- readTVar pane.pipe
+        writeTVar pane.pipe Nothing
+        pure m
+    forM_ mp $ \ph -> do
+        forM_ ph.reader killThread
+        forM_ ph.toStdin $ \hdl ->
+            hClose hdl `catch` \(_ :: SomeException) -> pure ()
+        terminateProcess ph.process `catch` \(_ :: SomeException) -> pure ()
+        void . forkIO $
+            void (waitForProcess ph.process)
+                `catch` \(_ :: SomeException) -> pure ()
 
 -- | @HOME@-relative @~/@ prefix expansion for buffer paths.
 expandTilde :: FilePath -> IO FilePath

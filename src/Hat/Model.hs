@@ -9,6 +9,7 @@ module Hat.Model
     , Session (..)
     , Window (..)
     , Pane (..)
+    , PipeHandle (..)
     , Client (..)
     , CopyModeState (..)
     , SelKind (..)
@@ -21,9 +22,12 @@ module Hat.Model
     , windowPanes
     ) where
 
+import Control.Concurrent (ThreadId)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Data.IORef (IORef)
+import System.IO (Handle)
+import System.Process (ProcessHandle)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
@@ -94,6 +98,17 @@ data Pane = Pane
     , mode     :: TVar (Maybe CopyModeState)
         -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
         -- its own cursor/selection over the pane's scrollback + screen.
+    , pipe     :: TVar (Maybe PipeHandle)
+        -- ^ an active @pipe-pane@ subprocess, if any.
+    }
+
+-- | A @pipe-pane@ subprocess. Pane output is forwarded to 'toStdin'
+-- (@-O@); 'reader' is the thread pumping the process's stdout back into
+-- the pane pty (@-I@).
+data PipeHandle = PipeHandle
+    { process :: ProcessHandle
+    , toStdin :: Maybe Handle
+    , reader  :: Maybe ThreadId
     }
 
 -- | Per-pane copy-mode state. Cursor rows are absolute in the pane's
