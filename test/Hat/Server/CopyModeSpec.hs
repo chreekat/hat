@@ -63,6 +63,11 @@ step keys seps cmd sim = case cmd of
     "next-space" -> motion (mNextWord "")
     "next-space-end" -> motion (mNextWordEnd "")
     "previous-space" -> motion (mPreviousWord "")
+    "cursor-left" -> motion mCursorLeft
+    "cursor-right" -> motion mCursorRight
+    "cursor-up" -> sim { sState = runIdentity (cursorVertical (-1) grid st) }
+    "cursor-down" -> sim { sState = runIdentity (cursorVertical 1 grid st) }
+    "end-of-line" -> sim { sState = runIdentity (endOfLine grid st) }
     other -> error ("unknown copy-mode command: " <> show other)
   where
     st = sim.sState
@@ -131,6 +136,32 @@ spec = do
                 , "line...\n.", "... @nd then", "$ym_bols[]{}\n ?"
                 , "? 500xyz", "500xyz", "500xyz"
                 ]
+
+    describe "basic cursor motions" $ do
+        -- Row 0 is "A line of words" (l at col 2). A single-cell vi
+        -- selection yanks the character under the cursor, so each script
+        -- reveals where the cursor came to rest.
+        it "cursor-right advances one cell per press" $
+            vi [ "history-top", "cursor-right", "cursor-right"
+               , "begin-selection", "copy-selection" ]
+                `shouldBe` ["l"]
+        it "cursor-left retreats one cell" $
+            vi [ "history-top", "cursor-right", "cursor-right"
+               , "cursor-right", "cursor-left", "begin-selection"
+               , "copy-selection" ]
+                `shouldBe` ["l"]
+        it "end-of-line lands on the last non-blank cell" $
+            vi [ "history-top", "end-of-line"
+               , "begin-selection", "copy-selection" ]
+                `shouldBe` ["s"]
+        it "cursor-down moves to the next row, clamping the column" $
+            vi [ "history-top", "end-of-line", "cursor-down"
+               , "begin-selection", "copy-selection" ]
+                `shouldBe` ["e"]  -- row 1 "        Indented line", col 14
+        it "cursor-up returns toward the previous row" $
+            vi [ "history-top", "cursor-down", "cursor-up"
+               , "begin-selection", "copy-selection" ]
+                `shouldBe` ["A"]
 
     describe "emacs copy-mode motions (upstream copy-mode-test-emacs)" $ do
         it "clamps previous-word/space at the start of text" $

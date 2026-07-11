@@ -18,6 +18,10 @@ module Hat.Server.CopyMode
     , mNextWord
     , mNextWordEnd
     , mPreviousWord
+    , mCursorLeft
+    , mCursorRight
+    , cursorVertical
+    , endOfLine
     , extractSelection
     , yankSelection
     ) where
@@ -288,6 +292,30 @@ mNextWordEnd seps g keys _ s = case keys of
 mPreviousWord :: Monad m => Text -> Motion m
 mPreviousWord seps g keys _ = previousWord g seps True (keys == KeysEmacs)
 
+-- | Move one cell left, staying on the line (or onto the previous line
+-- when it wrapped).
+mCursorLeft :: Monad m => Motion m
+mCursorLeft g _ _ = cursorLeft g False
+
+-- | Move one cell right, allowing one column past the last character
+-- (@onemore@) as copy mode does.
+mCursorRight :: Monad m => Motion m
+mCursorRight g _ _ = cursorRight g False False True
+
+-- | Move the cursor @d@ rows (negative = up), clamped to the grid, and
+-- clamp the column to the destination line's length.
+cursorVertical :: Monad m => Int -> Grid m -> CopyModeState -> m CopyModeState
+cursorVertical d g st = do
+    let row' = max 0 (min (gBottom g) (st.cursorRow + d))
+    len <- g.gLineLen row'
+    pure st { cursorRow = row', cursorCol = min st.cursorCol len }
+
+-- | Move to the last non-blank cell of the current line.
+endOfLine :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+endOfLine g st = do
+    len <- g.gLineLen st.cursorRow
+    pure st { cursorCol = max 0 (len - 1) }
+
 -- ---------------------------------------------------------------------
 -- Selection extraction (port of window_copy_get_selection, no rectangle)
 
@@ -405,6 +433,11 @@ handlers = Map.fromList
     , ("next-space",        motionH (\_ -> mNextWord ""))
     , ("next-space-end",    motionH (\_ -> mNextWordEnd ""))
     , ("previous-space",    motionH (\_ -> mPreviousWord ""))
+    , ("cursor-left",       motionH (\_ -> mCursorLeft))
+    , ("cursor-right",      motionH (\_ -> mCursorRight))
+    , ("cursor-up",         gridH (cursorVertical (-1)))
+    , ("cursor-down",       gridH (cursorVertical 1))
+    , ("end-of-line",       gridH endOfLine)
     , ("copy-selection",
         \sst p s -> yankSelection sst p s
             >> pure (Just s { selection = Nothing }))
@@ -419,6 +452,9 @@ handlers = Map.fromList
         st' <- runMotion g opts.modeKeys opts.wordSeparators
             (mk opts.wordSeparators) st
         pure (Just st')
+    gridH f _ pane st = do
+        g <- paneGrid pane
+        Just <$> f g st
 
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s
