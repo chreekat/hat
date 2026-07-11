@@ -690,10 +690,11 @@ sessionFormatEnv st sess = do
         Just pane -> do
             dir <- paneCurrentPath pane
             title <- Emu.title pane.emulator
-            pure [ ("pane_current_path", T.pack dir)
-                 , ("pane_title", title)
-                 , ("pane_id", "%" <> tshow (rawPane pane.id))
-                 ]
+            modeEnv <- paneModeEnv pane
+            pure $ [ ("pane_current_path", T.pack dir)
+                   , ("pane_title", title)
+                   , ("pane_id", "%" <> tshow (rawPane pane.id))
+                   ] <> modeEnv
     sz <- readTVarIO sess.lastSize
     pure . Map.fromList $
         [ ("session_name", sname)
@@ -703,6 +704,23 @@ sessionFormatEnv st sess = do
         , ("window_height", tshow sz.rows)
         ]
         <> wEnv <> pEnv
+
+-- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
+-- plus @copy_cursor_{x,y,line}@ while in mode.
+paneModeEnv :: Pane -> IO [(Text, Text)]
+paneModeEnv pane = do
+    mmode <- readTVarIO pane.mode
+    case mmode of
+        Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
+        Just s -> do
+            hsize <- Emu.scrollbackLength pane.emulator
+            let top = hsize - s.viewportOffY
+            pure [ ("pane_in_mode", "1")
+                 , ("pane_mode", "copy-mode")
+                 , ("copy_cursor_x", tshow s.cursorCol)
+                 , ("copy_cursor_y", tshow (s.cursorRow - top))
+                 , ("copy_cursor_line", tshow s.cursorRow)
+                 ]
 
 -- Resolve #(cmd) through a 15-second cache; refreshes happen in the
 -- background so the status line never blocks on a slow script.

@@ -451,6 +451,17 @@ spec = parallel $ do
         contents <- readFile outPath
         contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
 
+    it "surfaces copy mode in the status line via pane_in_mode" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf")
+            "set -g status-right '#{?pane_in_mode,COPYMODE,normal}'\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "normal"          -- not in copy mode yet
+        typeInto c1 "\x02["              -- C-b [ enters copy mode
+        awaitScreen c1 "COPYMODE"        -- the indicator flips
+        typeInto c1 "q"                  -- exit copy mode
+        awaitScreen c1 "normal"          -- and it reverts
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
