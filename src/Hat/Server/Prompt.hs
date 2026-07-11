@@ -39,9 +39,29 @@ editPrompt _history st key = case key.name of
     "C-c"    -> Cancel
     "C-g"    -> Cancel
     "BSpace" -> Editing (backspace st)
+    "Delete" -> Editing (deleteAt st)
+    "C-d"    -> Editing (deleteAt st)
+    "Left"   -> Editing (moveTo (st.cursor - 1) st)
+    "Right"  -> Editing (moveTo (st.cursor + 1) st)
+    "Home"   -> Editing (moveTo 0 st)
+    "C-a"    -> Editing (moveTo 0 st)
+    "End"    -> Editing (moveTo (T.length st.input) st)
+    "C-e"    -> Editing (moveTo (T.length st.input) st)
     _        -> case insertText key of
         Just t  -> Editing (insert t st)
         Nothing -> Editing st  -- unhandled key: swallowed, no change
+
+-- | Clamp the cursor to @0..length@.
+moveTo :: Int -> PromptState -> PromptState
+moveTo n st = st { cursor = max 0 (min (T.length st.input) n) }
+
+-- | Delete the character at the cursor (forward delete).
+deleteAt :: PromptState -> PromptState
+deleteAt st
+    | st.cursor >= T.length st.input = st
+    | otherwise = st { input = before <> T.drop 1 after }
+  where
+    (before, after) = T.splitAt st.cursor st.input
 
 -- | The text a key inserts, if it is a self-inserting character. Named
 -- keys (Up, Enter, C-a, …) insert nothing.

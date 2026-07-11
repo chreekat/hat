@@ -19,8 +19,12 @@ typeKeys history st0 raw =
 
 -- | The buffer after typing, assuming the prompt stays open.
 bufferAfter :: Text -> Text
-bufferAfter raw = case typeKeys [] emptyPrompt raw of
-    Editing st -> st.input
+bufferAfter raw = (stateAfter raw).input
+
+-- | The full prompt state after typing, assuming the prompt stays open.
+stateAfter :: Text -> PromptState
+stateAfter raw = case typeKeys [] emptyPrompt raw of
+    Editing st -> st
     other -> error ("prompt closed unexpectedly: " <> show other)
 
 spec :: Spec
@@ -38,6 +42,38 @@ spec = do
 
         it "is a no-op on an empty buffer" $
             bufferAfter "\DEL" `shouldBe` ""
+
+        it "deletes mid-line, before the cursor" $
+            -- abc, Left, BSpace -> deletes 'b'
+            bufferAfter "abc\ESC[D\DEL" `shouldBe` "ac"
+
+    describe "cursor movement" $ do
+        it "Left then insert lands before the moved-over char" $
+            bufferAfter "ac\ESC[Db" `shouldBe` "abc"
+
+        it "Left is a no-op at the start of the line" $
+            stateAfter "\ESC[D" `shouldBe` emptyPrompt
+
+        it "Right is a no-op at the end of the line" $ do
+            let st = stateAfter "ab\ESC[C"
+            st.input `shouldBe` "ab"
+            st.cursor `shouldBe` 2
+
+        it "Home / C-a jump to the start" $ do
+            bufferAfter "abc\SOHX" `shouldBe` "Xabc"      -- C-a
+            bufferAfter "abc\ESC[HX" `shouldBe` "Xabc"    -- Home
+
+        it "End / C-e jump to the end" $ do
+            bufferAfter "abc\SOH\ENQX" `shouldBe` "abcX"  -- C-a then C-e
+            bufferAfter "abc\SOH\ESC[FX" `shouldBe` "abcX"
+
+    describe "delete" $ do
+        it "Delete / C-d removes the char at the cursor" $ do
+            bufferAfter "abc\SOH\EOT" `shouldBe` "bc"     -- C-a then C-d
+            bufferAfter "abc\SOH\ESC[3~" `shouldBe` "bc"  -- C-a then Delete
+
+        it "C-d is a no-op at the end of the line" $
+            bufferAfter "abc\EOT" `shouldBe` "abc"
 
     describe "submit" $
         it "Enter submits the current line" $
