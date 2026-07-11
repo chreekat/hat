@@ -64,6 +64,7 @@ data ServerState = ServerState
         -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
+    , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
     , logger      :: Logger
     , sockPath    :: FilePath
     }
@@ -176,6 +177,7 @@ newServerState defaultKeymap lg path = ServerState
     <*> newTVarIO Seq.empty
     <*> newTVarIO Map.empty
     <*> newTVarIO []
+    <*> newTVarIO Nothing
     <*> pure lg
     <*> pure path
 

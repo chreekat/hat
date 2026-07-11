@@ -304,6 +304,28 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "resize-pane -t ! -Z zooms the alternate pane, not the active one" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        -- Original pane gets a marker; it becomes the alternate after split.
+        typeInto c1 "echo alt-pane-zone\r"
+        awaitScreen c1 "alt-pane-zone"
+        -- Vertical split: the new right pane is active, the original is last.
+        typeInto c1 "\x02%"
+        awaitScreen c1 "\x2502"      -- │
+        typeInto c1 "echo main-pane-zone\r"
+        awaitScreen c1 "main-pane-zone"
+
+        -- Zoom the ALTERNATE pane (-t !): the original fills the screen,
+        -- the border and the active pane's content both vanish.
+        _ <- ctlOut h ["resize-pane", "-t", "!", "-Z"]
+        awaitWith "alternate pane zoomed" (\d -> do
+            t <- screenText d
+            pure ("alt-pane-zone" `T.isInfixOf` t
+                  && not ("\x2502" `T.isInfixOf` t)
+                  && not ("main-pane-zone" `T.isInfixOf` t))) c1
+
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

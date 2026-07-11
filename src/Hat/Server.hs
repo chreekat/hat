@@ -55,6 +55,7 @@ import Hat.Server.Keys
 import Hat.Server.Layout
 import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
+import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
 import Hat.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
@@ -1603,6 +1604,14 @@ cmdSelectPane st mclient args = do
         mIndex = lookup "-t" opts >>= parseNum
     case mdir of
         Nothing
+            | "-M" `elem` flags -> do
+                atomically $ writeTVar st.markedPane Nothing >> bumpDirty st
+                pure []
+            | "-m" `elem` flags -> do
+                mp <- targetPane st mclient (lookup "-t" opts)
+                forM_ mp $ \pane -> atomically $
+                    writeTVar st.markedPane (Just pane.id) >> bumpDirty st
+                pure []
             | "-l" `elem` flags -> cmdLastPane st mclient []
             | Just n <- mIndex ->
                 withCurrentWindow st mclient $ \_ win -> do
@@ -1651,12 +1660,12 @@ cmdKillPane st mclient _ =
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do
-    let (_, flags, pos) = parseArgs "t" args
+    let (opts, flags, pos) = parseArgs "t" args
         delta = case pos of
             (n : _) | Right (v, restT) <- TR.decimal n, T.null restT -> v
             _ -> 1
     if "-Z" `elem` flags
-        then toggleZoom st mclient >> pure []
+        then zoomTarget st mclient (lookup "-t" opts) >> pure []
         else do
             let mdir
                     | "-L" `elem` flags = Just DirLeft
@@ -1678,21 +1687,28 @@ cmdResizePane st mclient args = do
                     applySessionSize st sess.id
                     pure []
 
-toggleZoom :: ServerState -> Maybe Client -> IO ()
-toggleZoom st mclient = do
-    changed <- atomically $ do
-        mv <- maybe (pure Nothing) (clientView st) mclient
-        case mv of
-            Nothing -> pure Nothing
-            Just (sess, win) -> do
-                mz <- readTVar win.zoomed
+-- | Toggle zoom on the caller's current window. With a @-t@ target the
+-- targeted pane becomes active first, so @resize-pane -t ! -Z@ zooms the
+-- alternate pane (as the config's @Z@ binding intends).
+zoomTarget :: ServerState -> Maybe Client -> Maybe Text -> IO ()
+zoomTarget st mclient mtok = do
+    mtarget <- targetPane st mclient mtok
+    void . withCurrentWindow st mclient $ \sess win -> do
+        atomically $ do
+            ps <- readTVar win.panes
+            forM_ mtarget $ \pane -> when (Map.member pane.id ps) $ do
                 active <- readTVar win.activeId
-                writeTVar win.zoomed $ case mz of
-                    Just _ -> Nothing
-                    Nothing -> Just active
-                bumpDirty st
-                pure (Just sess.id)
-    forM_ changed (applySessionSize st)
+                when (active /= pane.id) $ do
+                    writeTVar win.lastActive (Just active)
+                    writeTVar win.activeId pane.id
+            mz <- readTVar win.zoomed
+            newActive <- readTVar win.activeId
+            writeTVar win.zoomed $ case mz of
+                Just _ -> Nothing
+                Nothing -> Just newActive
+            bumpDirty st
+        applySessionSize st sess.id
+        pure []
 
 cmdDetachClient :: CommandImpl
 cmdDetachClient _ mclient _ = do
@@ -1749,24 +1765,52 @@ scrollPaneToCursor pane s = do
     scr <- Emu.snapshot pane.emulator
     pure (CopyMode.scrollToCursor hsize (V.length scr.cells) s)
 
--- | Resolve the pane a command should act on. For now, ignore any
--- @-t target@ and default to the active pane of the caller's current
--- window (or, absent a client, the active pane of the most-recently
--- created session's current window).
+-- | Resolve the pane a command should act on from its @-t target@.
+-- @!@ is the current window's last-active pane, @~@/@{marked}@ the
+-- marked pane, @%N@ a pane by id anywhere; otherwise the current pane
+-- of the caller's window.
 targetPane :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
-targetPane st mclient _ = do
-    mfromClient <- case mclient of
-        Just client -> clientActivePane st client
-        Nothing -> pure Nothing
-    case mfromClient of
-        Just pane -> pure (Just pane)
+targetPane st mclient mtok = case parsePaneTarget mtok of
+    PaneById n -> atomically (findPaneById st n)
+    PaneMarked -> atomically $ do
+        mpid <- readTVar st.markedPane
+        maybe (pure Nothing) (findPaneById st . rawPane) mpid
+    tgt -> do
+        mwin <- currentWindowOf st mclient
+        case mwin of
+            Nothing -> pure Nothing
+            Just win -> atomically $ do
+                ps <- readTVar win.panes
+                case tgt of
+                    PaneLast -> do
+                        ml <- readTVar win.lastActive
+                        pure (ml >>= (`Map.lookup` ps))
+                    _ -> do
+                        a <- readTVar win.activeId
+                        pure (Map.lookup a ps)
+
+-- | The window a command acts in: the caller's current window, or (for
+-- a clientless control command) the current window of the most-recent
+-- session.
+currentWindowOf :: ServerState -> Maybe Client -> IO (Maybe Window)
+currentWindowOf st mclient = do
+    mv <- atomically (maybe (pure Nothing) (clientView st) mclient)
+    case mv of
+        Just (_, win) -> pure (Just win)
         Nothing -> do
             msess <- targetSession st mclient Nothing
             case msess of
                 Nothing -> pure Nothing
-                Just sess -> atomically $ do
-                    mwin <- currentWindow sess
-                    maybe (pure Nothing) activePane mwin
+                Just sess -> atomically (currentWindow sess)
+
+-- | Find a pane by its numeric id across every session and window.
+findPaneById :: ServerState -> Int -> STM (Maybe Pane)
+findPaneById st n = do
+    sessions <- readTVar st.sessions
+    panes <- fmap concat . forM (Map.elems sessions) $ \sess -> do
+        ws <- readTVar sess.windows
+        fmap concat . forM (Map.elems ws) $ windowPanes
+    pure (List.find (\p -> rawPane p.id == n) panes)
 
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
