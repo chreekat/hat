@@ -132,6 +132,7 @@ test-suite hat-test
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
+        Hat.Server.OptionsSpec
         Hat.Server.PromptSpec
         Hat.Server.RenderSpec
         Hat.Term.EmulatorSpec

@@ -7,6 +7,7 @@ import qualified Hat.Server.CopyModeSpec
 import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
 import qualified Hat.Server.LayoutSpec
+import qualified Hat.Server.OptionsSpec
 import qualified Hat.Server.PromptSpec
 import qualified Hat.Server.RenderSpec
 import qualified Hat.SocketSpec
@@ -23,6 +24,7 @@ main = hspec $ do
     describe "Hat.Wire" Hat.WireSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
+    describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
