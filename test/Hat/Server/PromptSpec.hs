@@ -75,6 +75,48 @@ spec = do
         it "C-d is a no-op at the end of the line" $
             bufferAfter "abc\EOT" `shouldBe` "abc"
 
+    describe "history browsing" $ do
+        -- history is most-recent-first.
+        let hist = ["second", "first"]
+            recall raw = case typeKeys hist emptyPrompt raw of
+                Editing st -> st.input
+                other -> error (show other)
+
+        it "Up recalls the most recent command" $ do
+            let st = case typeKeys hist emptyPrompt "\ESC[A" of
+                    Editing s -> s
+                    other -> error (show other)
+            st.input `shouldBe` "second"
+            st.cursor `shouldBe` 6  -- cursor lands at end
+
+        it "repeated Up walks back to older commands" $
+            recall "\ESC[A\ESC[A" `shouldBe` "first"
+
+        it "Up stops at the oldest command" $
+            recall "\ESC[A\ESC[A\ESC[A" `shouldBe` "first"
+
+        it "Down walks back toward the newest" $
+            recall "\ESC[A\ESC[A\ESC[B" `shouldBe` "second"
+
+        it "Down past the newest restores the in-progress line" $
+            recall "wip\ESC[A\ESC[B" `shouldBe` "wip"
+
+        it "Down is a no-op when not browsing history" $
+            recall "wip\ESC[B" `shouldBe` "wip"
+
+        it "Up is a no-op with empty history" $
+            bufferAfter "wip\ESC[A" `shouldBe` "wip"
+
+    describe "pushHistory" $ do
+        it "prepends the newest line" $
+            pushHistory "c" ["b", "a"] `shouldBe` ["c", "b", "a"]
+
+        it "drops a line identical to the most recent" $
+            pushHistory "b" ["b", "a"] `shouldBe` ["b", "a"]
+
+        it "ignores empty lines" $
+            pushHistory "   " ["a"] `shouldBe` ["a"]
+
     describe "submit" $
         it "Enter submits the current line" $
             typeKeys [] emptyPrompt "new-window\r"

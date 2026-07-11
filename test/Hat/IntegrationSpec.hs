@@ -148,6 +148,14 @@ awaitScreen d needle = awaitWith (show needle) check d
   where
     check drv = T.isInfixOf needle <$> screenText drv
 
+-- The command prompt replaces the status line, so the current window's
+-- status marker (e.g. "0:sh*") disappearing is a reliable "the prompt is
+-- open" signal — unlike the bare ':', which the status line also shows.
+awaitPromptOpen :: Driver -> T.Text -> IO ()
+awaitPromptOpen d marker = awaitWith "command prompt to open" check d
+  where
+    check drv = not . T.isInfixOf marker <$> screenText drv
+
 awaitExit :: Driver -> IO ProcessStatus
 awaitExit d = do
     r <- timeout 10_000_000 drainAndWait
@@ -303,7 +311,7 @@ spec = parallel $ do
 
         -- prefix : opens the prompt; typed text echoes on the status row.
         typeInto c1 "\x02:"
-        awaitScreen c1 ":"
+        awaitPromptOpen c1 "0:sh*"
         typeInto c1 "rename-window promptwin"
         awaitScreen c1 ":rename-window promptwin"
 
@@ -317,12 +325,40 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "recalls a previous command from prompt history with Up" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+
+        -- Run one command through the prompt.
+        typeInto c1 "\x02:"
+        awaitPromptOpen c1 "0:sh*"
+        typeInto c1 "rename-window histwin"
+        awaitScreen c1 ":rename-window histwin"
+        typeInto c1 "\r"
+        awaitScreen c1 "histwin*"
+
+        -- Reopen the prompt; Up recalls that command onto the line.
+        typeInto c1 "\x02:"
+        awaitPromptOpen c1 "histwin*"
+        typeInto c1 "\ESC[A"  -- Up
+        awaitScreen c1 ":rename-window histwin"
+
+        typeInto c1 "\ESC"    -- cancel; wait for the prompt to close
+        awaitWith "prompt closed" (\d -> do
+            t <- screenText d
+            pure ("histwin*" `T.isInfixOf` t
+                  && not (":rename-window" `T.isInfixOf` t))) c1
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
     it "cancels the command prompt on Escape without running it" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "0:sh*"
         typeInto c1 "\x02:"
-        awaitScreen c1 ":"
+        awaitPromptOpen c1 "0:sh*"
         typeInto c1 "rename-window nope"
         awaitScreen c1 ":rename-window nope"
         -- Escape closes the prompt; the window keeps its name.

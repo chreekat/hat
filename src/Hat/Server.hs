@@ -935,6 +935,7 @@ handlePromptInput st client pr0 bs = do
         Prompt.Submit line -> do
             atomically $ do
                 writeTVar client.prompt Nothing
+                modifyTVar' st.cmdHistory (Prompt.pushHistory line)
                 bumpDirty st
             unless (T.null (T.strip line)) $ do
                 replies <- runCommandText st (Just client) line

@@ -6,6 +6,7 @@ module Hat.Server.Prompt
     ( PromptEdit (..)
     , emptyPrompt
     , editPrompt
+    , pushHistory
     ) where
 
 import Data.Text (Text)
@@ -47,9 +48,52 @@ editPrompt _history st key = case key.name of
     "C-a"    -> Editing (moveTo 0 st)
     "End"    -> Editing (moveTo (T.length st.input) st)
     "C-e"    -> Editing (moveTo (T.length st.input) st)
+    "Up"     -> Editing (historyBack _history st)
+    "Down"   -> Editing (historyForward _history st)
     _        -> case insertText key of
         Just t  -> Editing (insert t st)
         Nothing -> Editing st  -- unhandled key: swallowed, no change
+
+-- | Recall an older command. On first step the in-progress line is
+-- stashed in 'pending' so 'historyForward' can restore it.
+historyBack :: [Text] -> PromptState -> PromptState
+historyBack history st = case history !? next of
+    Nothing -> st  -- already at the oldest (or empty history)
+    Just line -> setLine line st
+        { histIx = Just next
+        , pending = maybe st.input (const st.pending) st.histIx
+        }
+  where
+    next = maybe 0 (+ 1) st.histIx
+
+-- | Step back toward the newest command, then to the stashed line.
+historyForward :: [Text] -> PromptState -> PromptState
+historyForward history st = case st.histIx of
+    Nothing -> st  -- not browsing
+    Just 0  -> setLine st.pending st { histIx = Nothing }
+    Just n  -> case history !? (n - 1) of
+        Just line -> setLine line st { histIx = Just (n - 1) }
+        Nothing -> st
+
+-- | Replace the buffer and drop the cursor at its end.
+setLine :: Text -> PromptState -> PromptState
+setLine line st = st { input = line, cursor = T.length line }
+
+(!?) :: [a] -> Int -> Maybe a
+xs !? n
+    | n < 0 = Nothing
+    | otherwise = case drop n xs of
+        (x : _) -> Just x
+        []      -> Nothing
+
+-- | Add a submitted line to the front of the history, most-recent
+-- first. Blank lines and consecutive duplicates are dropped.
+pushHistory :: Text -> [Text] -> [Text]
+pushHistory line history
+    | T.null (T.strip line) = history
+    | otherwise = case history of
+        (recent : _) | recent == line -> history
+        _ -> line : history
 
 -- | Clamp the cursor to @0..length@.
 moveTo :: Int -> PromptState -> PromptState
