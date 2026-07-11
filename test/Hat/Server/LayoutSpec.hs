@@ -48,11 +48,13 @@ spec = do
     prop "splitting adds exactly the new pane" $
         forAll (genLayout 3) $ \lay ->
             let pids = layoutPanes lay
-                target = head pids
                 newPid = PaneId 999
-                lay' = splitLeaf target LeftRight False newPid lay
-            in Set.fromList (layoutPanes lay')
-                === Set.insert newPid (Set.fromList pids)
+            in case pids of
+                [] -> property Discard
+                (target : _) ->
+                    let lay' = splitLeaf target LeftRight False newPid lay
+                    in Set.fromList (layoutPanes lay')
+                        === Set.insert newPid (Set.fromList pids)
 
     prop "removing a split pane restores the original pane set" $
         forAll (genLayout 3) $ \lay ->
@@ -92,9 +94,9 @@ spec = do
         it "grows the active pane toward the divider" $ do
             let lay' = resizeSplit (PaneId 0) DirRight 10 windowRect two
                 (rects, _) = arrange windowRect lay'
-                Just r0 = List.lookup (PaneId 0) rects
-                width = r0.endCol - r0.startCol
-            width `shouldSatisfy` (> 59)
+            case List.lookup (PaneId 0) rects of
+                Nothing -> expectationFailure "pane 0 has no rect"
+                Just r0 -> (r0.endCol - r0.startCol) `shouldSatisfy` (> 59)
         it "keeps every pane at least one cell wide" $ do
             let lay' = iterate (resizeSplit (PaneId 0) DirRight 30 windowRect) two !! 10
                 (rects, _) = arrange windowRect lay'
