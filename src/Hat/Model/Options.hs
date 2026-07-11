@@ -1,13 +1,13 @@
--- | Server options and the key-binding tables. Options the engine
--- doesn't know yet are preserved in 'raw' so user configs keep working
--- as features land.
+-- | Server options and the key-binding tables. Every option hat accepts
+-- also has behavior somewhere; unknown options are rejected at 'setOption'
+-- rather than silently stored, so a config never looks supported when it
+-- isn't.
 module Hat.Model.Options
     ( Options (..)
     , StatusPosition (..)
     , ModeKeys (..)
     , Keymap
     , defaultOptions
-    , insertRawOption
     ) where
 
 import Data.Map.Strict (Map)
@@ -29,8 +29,13 @@ data Options = Options
     , historyLimit    :: Int
     , defaultTerminal :: Text
     , wordSeparators  :: Text  -- ^ characters that split @next-word@ etc.
+    , statusLeft      :: Text
+    , statusLeftLength :: Int
+    , statusRight     :: Text
+    , statusRightLength :: Int
+    , windowStatusFormat :: Text
+    , windowStatusCurrentFormat :: Text
     , user            :: Map Text Text  -- ^ @\@foo@ options
-    , raw             :: Map Text Text  -- ^ everything else, preserved
     }
     deriving (Eq, Show)
 
@@ -47,13 +52,11 @@ defaultOptions = Options
     , historyLimit = 50000
     , defaultTerminal = "tmux-256color"
     , wordSeparators = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
+    , statusLeft = "[#S] "
+    , statusLeftLength = 10
+    , statusRight = "%H:%M %d-%b-%y #H"
+    , statusRightLength = 40
+    , windowStatusFormat = "#I:#W#F"
+    , windowStatusCurrentFormat = "#I:#W#F"
     , user = Map.empty
-    , raw = Map.empty
     }
-
--- | Record an unknown option in 'raw'. Lives here (rather than inline at
--- the call site) so the update is unambiguous: 'raw' collides with other
--- record fields of the same name once several models are in scope.
-insertRawOption :: Text -> Text -> Options -> Options
-insertRawOption name value opts =
-    opts { raw = Map.insert name value opts.raw }

@@ -3,6 +3,7 @@
 -- that configs, bindings, and @hat <command>@ all share.
 module Hat.Server
     ( runServer
+    , setOption  -- ^ exported for the config-load burn-down test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -841,11 +842,10 @@ statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
 statusCells st sess width = do
     opts <- readTVarIO st.options
     env <- sessionFormatEnv st sess
-    let optRaw name def = Map.findWithDefault def name opts.raw
-        leftFmt = optRaw "status-left" "[#S] "
-        rightFmt = optRaw "status-right" "%H:%M %d-%b-%y #H"
-        winFmt = optRaw "window-status-format" "#I:#W#F"
-        winCurFmt = optRaw "window-status-current-format" "#I:#W#F"
+    let leftFmt = opts.statusLeft
+        rightFmt = opts.statusRight
+        winFmt = opts.windowStatusFormat
+        winCurFmt = opts.windowStatusCurrentFormat
     entries <- do
         ws <- readTVarIO sess.windows
         cur <- readTVarIO sess.currentIx
@@ -870,8 +870,8 @@ statusCells st sess width = do
                     ]) env
                 fmt = if ix == cur then winCurFmt else winFmt
             expandFormat st wenv fmt
-    left <- expandFormat st env leftFmt
-    right <- expandFormat st env rightFmt
+    left <- T.take opts.statusLeftLength <$> expandFormat st env leftFmt
+    right <- T.take opts.statusRightLength <$> expandFormat st env rightFmt
     let body = left <> T.intercalate " " entries
         pad = width - T.length body - T.length right
         line
@@ -1224,13 +1224,14 @@ cmdUnbind st _ args = do
 
 cmdSet :: CommandImpl
 cmdSet st _ args = do
-    let (_, _, pos) = parseArgs "t" args
+    let (_, flags, pos) = parseArgs "t" args
+        append = "-a" `elem` flags
     case pos of
         (nameT : rest) -> do
             let value = T.unwords rest
             r <- atomically $ do
                 opts <- readTVar st.options
-                case setOption opts nameT value of
+                case setOption append opts nameT value of
                     Left err -> pure (Just err)
                     Right opts' -> do
                         writeTVar st.options opts'
@@ -1267,12 +1268,23 @@ lookupOption opts name = case name of
         StatusTop -> "top"; StatusBottom -> "bottom")
     "mode-keys" -> Just (case opts.modeKeys of
         KeysVi -> "vi"; KeysEmacs -> "emacs")
+    "status-left" -> Just opts.statusLeft
+    "status-left-length" -> Just (tshow opts.statusLeftLength)
+    "status-right" -> Just opts.statusRight
+    "status-right-length" -> Just (tshow opts.statusRightLength)
+    "window-status-format" -> Just opts.windowStatusFormat
+    "window-status-current-format" -> Just opts.windowStatusCurrentFormat
     _
         | "@" `T.isPrefixOf` name -> Map.lookup name opts.user
-        | otherwise -> Map.lookup name opts.raw
+        | otherwise -> Nothing
 
-setOption :: Options -> Text -> Text -> Either Text Options
-setOption opts name value = case name of
+-- | Apply a @set-option@. @append@ is tmux's @-a@: for string-valued
+-- options it concatenates onto the current value (used to build up
+-- @status-right@ across several lines). Unknown non-@\@@ options are
+-- rejected so a config never looks supported when its behavior is not
+-- yet implemented.
+setOption :: Bool -> Options -> Text -> Text -> Either Text Options
+setOption append opts name value = case name of
     "prefix" -> case parseKeyName value of
         Just k -> Right opts { prefix = k.name }
         Nothing -> Left ("bad prefix key: " <> value)
@@ -1289,17 +1301,24 @@ setOption opts name value = case name of
         "vi" -> Right opts { modeKeys = KeysVi }
         "emacs" -> Right opts { modeKeys = KeysEmacs }
         _ -> Left "mode-keys: vi or emacs"
+    "status-left" -> Right opts { statusLeft = withAppend opts.statusLeft }
+    "status-left-length" -> withInt $ \n -> opts { statusLeftLength = n }
+    "status-right" -> Right opts { statusRight = withAppend opts.statusRight }
+    "status-right-length" -> withInt $ \n -> opts { statusRightLength = n }
+    "window-status-format" ->
+        Right opts { windowStatusFormat = withAppend opts.windowStatusFormat }
+    "window-status-current-format" ->
+        Right opts { windowStatusCurrentFormat =
+            withAppend opts.windowStatusCurrentFormat }
     _
         | "@" `T.isPrefixOf` name ->
             Right opts { user = Map.insert name value opts.user }
-        | otherwise ->
-            -- Unknown options are preserved rather than rejected so
-            -- tmux configs load; features pick them up as they land.
-            Right (insertRawOption name value opts)
+        | otherwise -> Left ("unimplemented option: " <> name)
   where
     withInt f = case TR.decimal value of
         Right (n, restT) | T.null restT -> Right (f n)
         _ -> Left (name <> ": not a number: " <> value)
+    withAppend old = if append then old <> value else value
 
 cmdSourceFile :: CommandImpl
 cmdSourceFile st mclient args = case pos of
