@@ -497,6 +497,35 @@ spec = parallel $ do
             mfg <- boldBorderFg d
             pure (mfg /= Nothing && mfg /= darkFg)) c1
 
+    it "monitor-activity flags a background window; next-window -a jumps to it" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") $ unlines
+            [ "set -g monitor-activity on"
+            , "bind C-a next-window -a" ]
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        -- Arm delayed output in window 0, then leave it for a new window.
+        typeInto c1 "sleep 1 && echo bg-activity-marker\r"
+        typeInto c1 "\x02\&c"                -- new window 1
+        awaitScreen c1 "1:sh*"
+        -- When window 0 emits, it is flagged with activity (# in the flags;
+        -- it is also the last window, so "-#").
+        awaitScreen c1 "0:sh-#"
+        -- prefix C-a jumps to the window carrying activity (window 0).
+        typeInto c1 "\x02\x01"
+        awaitScreen c1 "bg-activity-marker"
+        awaitScreen c1 "0:sh*"               -- now current; activity cleared
+
+    it "forwards focus events to panes only when focus-events is on" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g focus-events on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        typeInto c1 "cat -v\r"               -- render control chars visibly
+        threadDelay 300000
+        typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
+        awaitScreen c1 "^[[I"                -- forwarded to the pane, echoed by cat -v
+
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

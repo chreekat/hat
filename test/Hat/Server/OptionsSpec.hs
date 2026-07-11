@@ -68,12 +68,5 @@ spec = do
 -- The living burn-down list. Delete a line here the moment its
 -- milestone implements the option's behavior.
 expectedUnimplemented :: [Text]
-expectedUnimplemented = List.sort
-    [ "unimplemented option: aggressive-resize"
-    , "unimplemented option: display-time"
-    , "unimplemented option: escape-time"
-    , "unimplemented option: focus-events"
-    , "unimplemented option: main-pane-width"
-    , "unimplemented option: set-titles"
-    , "unimplemented option: update-environment"
-    ]
+expectedUnimplemented =
+    [ "unimplemented option: main-pane-width" ]

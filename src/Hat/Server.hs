@@ -226,6 +226,7 @@ welcome st conn h = do
             controlLoop st client `finally` removeClient st client
         AttachIntent -> do
             sess <- ensureSession st client
+            refreshSessionEnv st sess client
             sname <- readTVarIO sess.name
             atomically $ do
                 writeTVar client.session sess.id
@@ -291,6 +292,17 @@ broadcast st sid msg = do
 
 -- Sessions --------------------------------------------------------------
 
+-- | On attach, copy the @update-environment@ vars from the attaching
+-- client's env into the session, so panes spawned afterward see fresh
+-- values (e.g. a new @DISPLAY@ after reconnecting over @ssh -X@).
+refreshSessionEnv :: ServerState -> Session -> Client -> IO ()
+refreshSessionEnv st sess client = do
+    vars <- (.updateEnvironment) <$> readTVarIO st.options
+    atomically $ modifyTVar' sess.environ $ \env0 ->
+        List.foldl' (\env v -> case List.lookup v client.env of
+            Just val -> (v, val) : filter ((/= v) . fst) env
+            Nothing  -> env) env0 vars
+
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do
     existing <- readTVarIO st.sessions
@@ -313,6 +325,7 @@ createSession st mname mrun environ dir sz = do
     currentVar <- newTVarIO opts.baseIndex
     lastVar <- newTVarIO Nothing
     sizeVar <- newTVarIO sz
+    environVar <- newTVarIO environ
     let sess = Session
             { id = SessionId sid
             , name = nameVar
@@ -320,7 +333,7 @@ createSession st mname mrun environ dir sz = do
             , currentIx = currentVar
             , lastIx = lastVar
             , lastSize = sizeVar
-            , environ = environ
+            , environ = environVar
             , startCwd = dir
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
@@ -342,6 +355,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     activeVar <- newTVarIO pane.id
     lastActiveVar <- newTVarIO Nothing
     bellVar <- newTVarIO False
+    activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
     let win = Window
             { id = WindowId wid
@@ -351,6 +365,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , activeId = activeVar
             , lastActive = lastActiveVar
             , bellFlag = bellVar
+            , activity = activityVar
             , zoomed = zoomVar
             }
     pure (win, pane)
@@ -415,17 +430,34 @@ startPaneReader st sid win pane = void . forkIO $ loop
             then paneDied st sid win pane
             else do
                 forwardToPipe pane bs
+                opts <- readTVarIO st.options
                 events <- Emu.feed pane.emulator bs
                 forM_ events $ \case
                     Emu.Output out -> Hat.Pty.writePty pane.pty out
-                    Emu.TitleChanged t -> broadcast st sid (SetTitle t)
+                    Emu.TitleChanged t ->
+                        when opts.setTitles $ broadcast st sid (SetTitle t)
                     Emu.Bell -> do
                         atomically $ do
                             writeTVar win.bellFlag True
                             bumpDirty st
                         broadcast st sid RingBell
-                    Emu.ScreenChanged -> atomically (bumpDirty st)
+                    Emu.ScreenChanged -> atomically $ do
+                        markActivity st sid win
+                        bumpDirty st
                 loop
+
+-- | Flag a background window as having activity, when @monitor-activity@
+-- is on. The current window is exempt — you are already watching it.
+markActivity :: ServerState -> SessionId -> Window -> STM ()
+markActivity st sid win = do
+    opts <- readTVar st.options
+    when opts.monitorActivity $ do
+        msess <- Map.lookup sid <$> readTVar st.sessions
+        forM_ msess $ \sess -> do
+            cur <- readTVar sess.currentIx
+            ws <- readTVar sess.windows
+            let isCurrent = maybe False (\w -> w.id == win.id) (Map.lookup cur ws)
+            unless isCurrent $ writeTVar win.activity True
 
 -- Pane rects and borders for a window, honoring zoom.
 windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
@@ -947,12 +979,14 @@ statusCells st sess width = do
         mlast <- readTVarIO sess.lastIx
         clientCount <- length <$> atomically (sessionClients st sess.id)
         forM (Map.toAscList ws) $ \(ix, win) -> do
-            (wname, bell) <- atomically $
-                (,) <$> readTVar win.name <*> readTVar win.bellFlag
+            (wname, bell, act) <- atomically $ (,,)
+                <$> readTVar win.name <*> readTVar win.bellFlag
+                <*> readTVar win.activity
             let flags = T.concat
                     [ if ix == cur then "*"
                       else if Just ix == mlast then "-" else ""
                     , if bell then "!" else ""
+                    , if act then "#" else ""
                     ]
                 -- A session's clients all view its current window, so only
                 -- that window has active clients; the rest have none.
@@ -1096,8 +1130,14 @@ handleKeys st client bs = do
     modeTable <- case mpane of
         Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
         Nothing -> pure Nothing
-    keys <- mapM (reencodeCursor mpane) (tokenizeKeys bs)
-    let (st1, actions) = routeKeys opts.prefix km modeTable st0 keys
+    keys0 <- mapM (reencodeCursor mpane) (tokenizeKeys bs)
+    -- Focus in/out reach the pane only when focus-events is on; otherwise
+    -- they are dropped rather than leaking into the shell.
+    let keys
+            | opts.focusEvents = keys0
+            | otherwise =
+                filter (\k -> k.name `notElem` ["FocusIn", "FocusOut"]) keys0
+        (st1, actions) = routeKeys opts.prefix km modeTable st0 keys
     writeIORef client.keyState st1
     forM_ actions $ \case
         Passthrough raw ->
@@ -1132,8 +1172,9 @@ showToast st client t = do
     atomically $ do
         writeTVar client.toast (Just t)
         bumpDirty st
+    displayMs <- (.displayTime) <$> readTVarIO st.options
     void . forkIO $ do
-        threadDelay 3_000_000
+        threadDelay (displayMs * 1000)
         atomically $ do
             cur <- readTVar client.toast
             when (cur == Just t) $ do
@@ -1482,6 +1523,13 @@ setOption append opts name value = case name of
         "arrows"  -> Right opts { paneBorderIndicators = IndicatorsArrows }
         "both"    -> Right opts { paneBorderIndicators = IndicatorsBoth }
         _ -> Left "pane-border-indicators: off, colour, arrows, or both"
+    "set-titles" -> withOnOff $ \b -> opts { setTitles = b }
+    "escape-time" -> withInt $ \n -> opts { escapeTime = n }
+    "display-time" -> withInt $ \n -> opts { displayTime = n }
+    "focus-events" -> withOnOff $ \b -> opts { focusEvents = b }
+    "aggressive-resize" -> withOnOff $ \b -> opts { aggressiveResize = b }
+    "monitor-activity" -> withOnOff $ \b -> opts { monitorActivity = b }
+    "update-environment" -> Right opts { updateEnvironment = T.words value }
     _
         | "@" `T.isPrefixOf` name ->
             Right opts { user = Map.insert name value opts.user }
@@ -1490,6 +1538,10 @@ setOption append opts name value = case name of
     withInt f = case TR.decimal value of
         Right (n, restT) | T.null restT -> Right (f n)
         _ -> Left (name <> ": not a number: " <> value)
+    withOnOff f = case value of
+        "on"  -> Right (f True)
+        "off" -> Right (f False)
+        _ -> Left (name <> ": on or off")
     withAppend old = if append then old <> value else value
 
 cmdSourceFile :: CommandImpl
@@ -1520,8 +1572,8 @@ cmdNewWindow st mclient args = do
     withTargetSession st mclient Nothing $ \sess -> do
         eff <- readTVarIO sess.lastSize
         srvOpts <- readTVarIO st.options
-        let shellCmd = maybe "/bin/sh" T.unpack
-                (List.lookup "SHELL" sess.environ)
+        environ <- readTVarIO sess.environ
+        let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
             mrun = case pos of
                 [] -> Nothing
                 ws -> Just (T.unwords ws)
@@ -1531,7 +1583,7 @@ cmdNewWindow st mclient args = do
                 env <- sessionFormatEnv st sess
                 T.unpack <$> expandFormat st env d
         (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
-            sess.environ (windowArea eff)
+            environ (windowArea eff)
         forM_ (lookup "-n" opts) $ \nm -> atomically (writeTVar win.name nm)
         atomically $ do
             ws <- readTVar sess.windows
@@ -1625,16 +1677,40 @@ switchTo st sess ix = do
         writeTVar sess.lastIx (Just cur)
         writeTVar sess.currentIx ix
         writeTVar win.bellFlag False
+        writeTVar win.activity False
         bumpDirty st
 
 cmdNextWindow, cmdPrevWindow, cmdLastWindow :: CommandImpl
-cmdNextWindow st mclient _ = cycleWindow st mclient 1
+cmdNextWindow st mclient args
+    | "-a" `elem` flags = nextActivityWindow st mclient
+    | otherwise = cycleWindow st mclient 1
+  where (_, flags, _) = parseArgs "t" args
 cmdPrevWindow st mclient _ = cycleWindow st mclient (-1)
 cmdLastWindow st mclient _ =
     withTargetSession st mclient Nothing $ \sess -> do
         atomically $ do
             mlast <- readTVar sess.lastIx
             forM_ mlast (switchTo st sess)
+        pure []
+
+-- | @next-window -a@: switch to the next window (cyclically) that has an
+-- activity flag set.
+nextActivityWindow :: ServerState -> Maybe Client -> IO [Reply]
+nextActivityWindow st mclient =
+    withTargetSession st mclient Nothing $ \sess -> do
+        atomically $ do
+            ws <- readTVar sess.windows
+            cur <- readTVar sess.currentIx
+            let ixs = Map.keys ws
+                curPos = fromMaybe (-1) (List.elemIndex cur ixs)
+                (before, after) = splitAt (curPos + 1) ixs
+                ordered = after <> before
+            flagged <- forM ordered $ \ix -> do
+                a <- maybe (pure False) (readTVar . (.activity)) (Map.lookup ix ws)
+                pure (ix, a)
+            case [ ix | (ix, True) <- flagged ] of
+                (ix : _) -> switchTo st sess ix
+                []       -> pure ()
         pure []
 
 cycleWindow :: ServerState -> Maybe Client -> Int -> IO [Reply]
@@ -1737,10 +1813,11 @@ cmdSplitWindow st mclient args = do
                                 env <- sessionFormatEnv st sess
                                 T.unpack <$> expandFormat st env d
                             Nothing -> paneCurrentPath active
+                        environ <- readTVarIO sess.environ
                         let shellCmd = maybe "/bin/sh" T.unpack
-                                (List.lookup "SHELL" sess.environ)
+                                (List.lookup "SHELL" environ)
                         pane <- spawnPane st pid sess.id shellCmd mrun dir
-                            sess.environ (windowArea eff)
+                            environ (windowArea eff)
                         atomically $ do
                             modifyTVar' win.panes (Map.insert pane.id pane)
                             modifyTVar' win.layout $ if full
@@ -1931,6 +2008,7 @@ wrapPaneInWindow st pane = do
     activeVar <- newTVarIO pane.id
     lastActiveVar <- newTVarIO Nothing
     bellVar <- newTVarIO False
+    activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
     pure Window
         { id = WindowId wid
@@ -1940,6 +2018,7 @@ wrapPaneInWindow st pane = do
         , activeId = activeVar
         , lastActive = lastActiveVar
         , bellFlag = bellVar
+        , activity = activityVar
         , zoomed = zoomVar
         }
 
