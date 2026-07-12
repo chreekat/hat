@@ -51,6 +51,7 @@ start = Sim
         , numPrefix = Nothing
         , pendingSearch = Nothing
         , lastSearch = Nothing
+        , lastQuery = Nothing
         }
     , sBufs = []
     }
@@ -244,6 +245,24 @@ spec = do
         it "does not move when the target is absent" $
             (search True False 'z' (row0 0)).cursorCol `shouldBe` 0
 
+    describe "string search (/ ? n N)" $ do
+        -- "line" occurs at (0,2), (1,17) and (2,8) in the shared grid.
+        let from r c = (start.sState) { cursorRow = r, cursorCol = c }
+            find fwd q st =
+                runIdentity (findMatch grid fwd q (st.cursorRow, st.cursorCol))
+        it "/ finds the next match" $
+            find True "line" (from 0 0) `shouldBe` Just (0, 2)
+        it "n advances to the following match" $
+            find True "line" (from 0 2) `shouldBe` Just (1, 17)
+        it "forward search wraps to the first match" $
+            find True "line" (from 2 8) `shouldBe` Just (0, 2)
+        it "? / N find the previous match" $
+            find False "line" (from 2 8) `shouldBe` Just (1, 17)
+        it "backward search wraps to the last match" $
+            find False "line" (from 0 2) `shouldBe` Just (2, 8)
+        it "no match returns Nothing" $
+            find True "zzz" (from 0 0) `shouldBe` Nothing
+
     describe "paragraph motions" $ do
         -- Shared grid: rows 0..4 hold text, rows 5..9 are blank.
         let at row col = start.sState { cursorRow = row, cursorCol = col }
@@ -291,7 +310,8 @@ spec = do
                 { cursorRow = row, cursorCol = col
                 , selection = Just (anchor, SelChar)
                 , keyTable = keys, viewportOffY = 0, numPrefix = Nothing
-                , pendingSearch = Nothing, lastSearch = Nothing }
+                , pendingSearch = Nothing, lastSearch = Nothing
+                , lastQuery = Nothing }
             board = gridOf ["abcde", "fghij", "klmno"]
 
         it "reverse-videos a one-line span through the cursor cell (vi)" $ do
@@ -328,7 +348,8 @@ spec = do
         let st row = CopyModeState
                 { cursorRow = row, cursorCol = 2, selection = Nothing
                 , keyTable = "copy-mode-vi", viewportOffY = 0, numPrefix = Nothing
-                , pendingSearch = Nothing, lastSearch = Nothing }
+                , pendingSearch = Nothing, lastSearch = Nothing
+                , lastQuery = Nothing }
         it "maps an absolute cursor row into the viewport" $
             copyCursorPos 5 10 (st 7) `shouldBe` Just Pos { row = 2, col = 2 }
         it "is Nothing above the viewport" $
@@ -340,7 +361,8 @@ spec = do
         let st row voY = CopyModeState
                 { cursorRow = row, cursorCol = 0, selection = Nothing
                 , keyTable = "copy-mode-vi", viewportOffY = voY, numPrefix = Nothing
-                , pendingSearch = Nothing, lastSearch = Nothing }
+                , pendingSearch = Nothing, lastSearch = Nothing
+                , lastQuery = Nothing }
         it "keeps a visible cursor's viewport unchanged" $
             (scrollToCursor 5 10 (st 7 0)).viewportOffY `shouldBe` 0
         it "scrolls up to reveal a cursor in scrollback" $

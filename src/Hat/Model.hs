@@ -137,6 +137,9 @@ data CopyModeState = CopyModeState
         -- ^ an @f@/@F@/@t@/@T@ awaiting its target character.
     , lastSearch    :: !(Maybe (CharSearch, Char))
         -- ^ the most recent char search, for @;@ (repeat) and @,@ (reverse).
+    , lastQuery     :: !(Maybe (Text, Bool))
+        -- ^ the most recent string search (@/@ @?@): query + forward flag,
+        -- for @n@ (repeat) and @N@ (reverse).
     }
     deriving (Eq, Show)
 

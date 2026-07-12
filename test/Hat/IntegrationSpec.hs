@@ -1113,6 +1113,27 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "vi copy-mode: / searches the scrollback and jumps to a match" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        typeInto c1 "echo FINDMEHERE\r"      -- unique marker, near the top
+        awaitScreen c1 "FINDMEHERE"
+        typeInto c1 "seq 1 200\r"            -- push it up into scrollback
+        awaitScreen c1 "199"                 -- seq output (not the echoed cmd)
+        typeInto c1 "\x02["
+        awaitScreen c1 "[0/"
+        -- The marker has scrolled off the bottom view.
+        scr <- screenText c1
+        scr `shouldNotSatisfy` T.isInfixOf "FINDMEHERE"
+        -- / opens the search prompt (its own chunk, like the rename tests);
+        -- the query submits on Enter and the view jumps to the match.
+        typeInto c1 "/"
+        awaitScreen c1 "(search down)"
+        typeInto c1 "FINDMEHERE\r"
+        awaitScreen c1 "FINDMEHERE"
+
     it "vi copy-mode: f<char> captures the next key and jumps to it" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"

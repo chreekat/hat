@@ -35,6 +35,7 @@ module Hat.Server.CopyMode
     , beginLineSelection
     , otherEnd
     , charSearch
+    , findMatch
     , extractSelection
     , yankSelection
     , overlaySelection
@@ -44,7 +45,7 @@ module Hat.Server.CopyMode
 
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_, unless, void)
+import Control.Monad (forM, forM_, unless, void)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -437,6 +438,54 @@ charSearch g cs target st = do
             c <- g.gChar row i
             if c == target then pure (Just i) else findFrom (step i) inBounds step
 
+-- | The trimmed text of a grid row.
+rowText :: Monad m => Grid m -> Int -> m Text
+rowText g r = do
+    len <- g.gLineLen r
+    T.pack <$> mapM (g.gChar r) [0 .. len - 1]
+
+-- | Every start column of @query@ within @txt@ (non-overlapping is fine;
+-- advances by one so overlapping matches are still found).
+matchCols :: Text -> Text -> [Int]
+matchCols query = go 0
+  where
+    go _ _ | T.null query = []
+    go off txt = case T.breakOn query txt of
+        (pre, rest)
+            | T.null rest -> []
+            | otherwise ->
+                let i = off + T.length pre
+                in i : go (i + 1) (T.drop (T.length pre + 1) txt)
+
+-- | All matches of @query@ across the grid, in reading order.
+gridMatches :: Monad m => Grid m -> Text -> m [(Int, Int)]
+gridMatches g query =
+    fmap concat . forM [0 .. gBottom g] $ \r -> do
+        txt <- rowText g r
+        pure [ (r, c) | c <- matchCols query txt ]
+
+-- | The next match of @query@ from @(row, col)@ in the given direction,
+-- wrapping around the grid. 'Nothing' when there are no matches at all.
+findMatch
+    :: Monad m => Grid m -> Bool -> Text -> (Int, Int) -> m (Maybe (Int, Int))
+findMatch g forward query (row, col) = do
+    ms <- gridMatches g query
+    pure $ case ms of
+        [] -> Nothing
+        (first : _)
+            | forward ->
+                -- first match after the cursor, else wrap to the very first
+                case filter (\(r, c) -> r > row || (r == row && c > col)) ms of
+                    (m : _) -> Just m
+                    []      -> Just first
+            | otherwise ->
+                -- last match before the cursor, else wrap to the very last
+                case reverse (filter (\(r, c) -> r < row || (r == row && c < col)) ms) of
+                    (m : _) -> Just m
+                    []      -> case reverse ms of
+                        (m : _) -> Just m
+                        []      -> Just first
+
 -- | Whether a grid row has no non-blank content.
 blankRow :: Monad m => Grid m -> Int -> m Bool
 blankRow g r = (== 0) <$> g.gLineLen r
@@ -678,6 +727,11 @@ handlers = Map.fromList
     , ("jump-reverse",      gridH (jumpRepeat flipDir))
     , ("apply-search",      applySearchH)
     , ("cancel-search",     pureH (\s -> s { pendingSearch = Nothing }))
+    -- String search: / and ? submit a query via command-prompt; n/N repeat.
+    , ("search-forward",    searchStringH True)
+    , ("search-backward",   searchStringH False)
+    , ("search-again",      searchRepeatH id)
+    , ("search-reverse",    searchRepeatH not)
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s
@@ -714,6 +768,23 @@ handlers = Map.fromList
             st' <- charSearch g cs c st
             pure (Just st' { pendingSearch = Nothing, lastSearch = Just (cs, c) })
         _ -> pure (Just st { pendingSearch = Nothing })
+    -- / and ? submit their query as the command args.
+    searchStringH forward _ pane st args = do
+        let query = T.unwords args
+        if T.null query then pure (Just st) else do
+            g <- paneGrid pane
+            m <- findMatch g forward query (st.cursorRow, st.cursorCol)
+            let st' = st { lastQuery = Just (query, forward) }
+            pure . Just $ maybe st'
+                (\(r, c) -> st' { cursorRow = r, cursorCol = c }) m
+    -- n repeats in the stored direction; N (flip = not) reverses it.
+    searchRepeatH flipDir' _ pane st _ = case st.lastQuery of
+        Nothing -> pure (Just st)
+        Just (query, forward) -> do
+            g <- paneGrid pane
+            m <- findMatch g (flipDir' forward) query (st.cursorRow, st.cursorCol)
+            pure . Just $ maybe st
+                (\(r, c) -> st { cursorRow = r, cursorCol = c }) m
     -- copy-pipe [-flags] <shell command>: yank the selection into a
     -- buffer AND feed it to @sh -c <command>@ on stdin.
     pipeH cancelAfter sst pane s args = do

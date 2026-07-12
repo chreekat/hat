@@ -128,7 +128,7 @@ defaultKeymap = Map.fromList
     [ ("prefix", Map.fromList (map bindArgv prefixBindings))
     , ("root", Map.empty)
     , ("copy-mode", Map.fromList (map copyBind copyModeBindings))
-    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings <> digitBinds))
+    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings <> digitBinds <> searchBinds))
     ]
   where
     bindArgv (k, cmd) = (k, [cmd])
@@ -137,6 +137,14 @@ defaultKeymap = Map.fromList
     -- Digit keys feed the vi @[count]@ prefix; a bare @0@ is start-of-line.
     digitBinds =
         [ (tshow d, [["send-keys", "-X", "digit", tshow d]]) | d <- [0 .. 9 :: Int] ]
+    -- @/@ and @?@ open the command prompt to collect a search query, then
+    -- run the search on submit (the @%%@ splice carries the typed line).
+    searchBinds =
+        [ ("/", [["command-prompt", "-p", "(search down)"
+                 , "send-keys -X search-forward '%%'"]])
+        , ("?", [["command-prompt", "-p", "(search up)"
+                 , "send-keys -X search-backward '%%'"]])
+        ]
     prefixBindings =
         [ ("d", ["detach-client"])
         , ("c", ["new-window"])
@@ -174,6 +182,7 @@ defaultKeymap = Map.fromList
         , ("f", "jump-forward"), ("F", "jump-backward")
         , ("t", "jump-to-forward"), ("T", "jump-to-backward")
         , (";", "jump-again"), (",", "jump-reverse")
+        , ("n", "search-again"), ("N", "search-reverse")
         , ("g", "history-top"), ("G", "history-bottom")
         , ("H", "top-line"), ("M", "middle-line"), ("L", "bottom-line")
         , ("C-f", "page-down"), ("PgDn", "page-down")
@@ -2543,6 +2552,7 @@ cmdCopyMode st mclient args = do
                         , numPrefix = Nothing
                         , pendingSearch = Nothing
                         , lastSearch = Nothing
+                        , lastQuery = Nothing
                         }
                 atomically $ do
                     writeTVar pane.mode (Just state)
