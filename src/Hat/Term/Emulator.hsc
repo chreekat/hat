@@ -119,8 +119,9 @@ data CursorKey
     deriving (Eq, Show)
 
 data Modes = Modes
-    { altScreen :: Bool
-    , mouse     :: MouseMode
+    { altScreen   :: Bool
+    , mouse       :: MouseMode
+    , focusReport :: Bool  -- ^ app enabled focus reporting (?1004)
     }
     deriving (Eq, Show)
 
@@ -144,6 +145,7 @@ data Emulator = Emulator
     , titleAcc  :: IORef ByteString
     , altRef    :: IORef Bool
     , mouseRef  :: IORef MouseMode
+    , focusRef  :: IORef Bool
     , dirtyRef  :: IORef Bool
     , damageRef :: IORef [Rect]
     , eventsRef :: IORef [Event]       -- reversed
@@ -171,6 +173,7 @@ newEmulator sz historyLimit = do
     titleA <- newIORef ""
     altR <- newIORef False
     mouseR <- newIORef MouseOff
+    focusR <- newIORef False
     dirtyR <- newIORef False
     damageR <- newIORef []
     eventsR <- newIORef []
@@ -196,6 +199,7 @@ newEmulator sz historyLimit = do
         #{const VTERM_PROP_ALTSCREEN} -> do
             writeIORef altR (val /= 0)
             writeIORef dirtyR True
+        #{const VTERM_PROP_FOCUSREPORT} -> writeIORef focusR (val /= 0)
         _ -> pure ()
     propIntW <- wrapPropInt $ \prop val -> case prop of
         #{const VTERM_PROP_MOUSE} -> writeIORef mouseR $ case val of
@@ -254,6 +258,7 @@ newEmulator sz historyLimit = do
             , titleAcc = titleA
             , altRef = altR
             , mouseRef = mouseR
+            , focusRef = focusR
             , dirtyRef = dirtyR
             , damageRef = damageR
             , eventsRef = eventsR
@@ -329,6 +334,7 @@ snapshot e = withMVar e.lock $ \_ -> do
 
 modes :: Emulator -> IO Modes
 modes e = Modes <$> readIORef e.altRef <*> readIORef e.mouseRef
+    <*> readIORef e.focusRef
 
 title :: Emulator -> IO Text
 title e = readIORef e.titleRef

@@ -527,11 +527,29 @@ spec = parallel $ do
         awaitScreen c1 "bg-activity-marker"
         awaitScreen c1 "0:sh*"               -- now current; activity cleared
 
-    it "forwards focus events to panes only when focus-events is on" $
+    it "drops focus reports for a pane that never enabled ?1004" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g focus-events on\n"
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "$"
+        typeInto c1 "cat -v\r"               -- render control chars visibly
+        threadDelay 300000
+        typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
+        typeInto c1 "sentinel\r"
+        -- The bare shell/cat never requested focus reporting, so the report
+        -- is dropped rather than echoed as a stray "^[[I".
+        awaitWith "no stray focus report" (\d -> do
+            t <- screenText d
+            pure ("sentinel" `T.isInfixOf` t
+                  && not ("^[[I" `T.isInfixOf` t))) c1
+
+    it "forwards focus reports to a pane that enabled ?1004" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g focus-events on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        typeInto c1 "printf '\\033[?1004h'\r" -- the app requests focus reporting
+        threadDelay 200000
         typeInto c1 "cat -v\r"               -- render control chars visibly
         threadDelay 300000
         typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal

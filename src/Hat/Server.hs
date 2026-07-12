@@ -1137,10 +1137,14 @@ handleKeys st client bs = do
         Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
         Nothing -> pure Nothing
     keys0 <- mapM (reencodeCursor mpane) (tokenizeKeys bs)
-    -- Focus in/out reach the pane only when focus-events is on; otherwise
-    -- they are dropped rather than leaking into the shell.
+    -- Focus in/out reach the pane only when focus-events is on AND the
+    -- pane's app has requested focus reporting (?1004). A bare shell never
+    -- asks, so the report is dropped rather than echoed as a stray "^[[I".
+    paneWantsFocus <- case mpane of
+        Just pane -> (.focusReport) <$> Emu.modes pane.emulator
+        Nothing -> pure False
     let keys
-            | opts.focusEvents = keys0
+            | opts.focusEvents && paneWantsFocus = keys0
             | otherwise =
                 filter (\k -> k.name `notElem` ["FocusIn", "FocusOut"]) keys0
         (st1, actions) = routeKeys opts.prefix km modeTable st0 keys

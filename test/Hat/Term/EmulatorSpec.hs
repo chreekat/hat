@@ -69,6 +69,17 @@ spec = do
         m2 <- modes e
         m2.altScreen `shouldBe` False
 
+    it "tracks focus reporting (?1004)" $ do
+        e <- new80x24
+        m0 <- modes e
+        m0.focusReport `shouldBe` False
+        _ <- feedStr e "\ESC[?1004h"
+        m1 <- modes e
+        m1.focusReport `shouldBe` True
+        _ <- feedStr e "\ESC[?1004l"
+        m2 <- modes e
+        m2.focusReport `shouldBe` False
+
     it "encodes cursor keys per application-cursor-keys mode" $ do
         e <- new80x24
         normal <- encodeKey e CursorUp
