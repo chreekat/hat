@@ -219,9 +219,9 @@ typeInto :: Driver -> B8.ByteString -> IO ()
 typeInto d = writePty d.pty
 
 -- Poll a file until its contents satisfy the predicate; fail after ~5s.
--- A subprocess (copy-pipe, pipe-pane) writes on its own schedule and there
--- is no pty event for "the file is ready", so this retries until the
--- condition holds rather than assuming a fixed delay.
+-- pipe-pane's long-lived subprocess flushes on its own schedule and nothing
+-- in hat publishes a "the file is ready" event (only OS-level inotify would),
+-- so this retries until the condition holds rather than assuming a fixed delay.
 awaitFile :: FilePath -> (String -> Bool) -> IO String
 awaitFile path ok = go (500 :: Int)
   where
@@ -234,8 +234,10 @@ awaitFile path ok = go (500 :: Int)
         pure s
 
 -- Poll until the current pane's foreground command matches, so a test can
--- wait for a program (e.g. cat) to actually be running before driving it,
--- instead of sleeping a guessed interval.
+-- wait for a program (e.g. cat) to actually be running before driving it.
+-- This is genuinely a poll, not a laziness: Unix publishes no event when a
+-- child becomes a terminal's foreground process group (tcsetpgrp notifies
+-- nobody), so the only way to observe it is to sample it.
 awaitForeground :: Hat -> String -> IO ()
 awaitForeground h cmd = go (500 :: Int)
   where
@@ -244,17 +246,6 @@ awaitForeground h cmd = go (500 :: Int)
         if cmd `List.isInfixOf` out || n <= 0
             then pure ()
             else threadDelay 10000 >> go (n - 1)
-
--- Poll until the current window holds at least @n@ panes, so a test can
--- wait for an async split to finish rather than sleeping.
-awaitPanes :: Hat -> Int -> IO ()
-awaitPanes h n = go (500 :: Int)
-  where
-    go k = do
-        out <- ctlOut h ["list-panes", "-F", "p"]
-        if length (lines out) >= n || k <= 0
-            then pure ()
-            else threadDelay 10000 >> go (k - 1)
 
 -- The foreground colour of a bold pane-border cell (│ or heavy ┃), if
 -- any — how the active-border style shows up on screen.
@@ -742,7 +733,14 @@ spec = parallel $ do
         typeInto c1 "\x02%"                  -- 2 panes
         awaitScreen c1 "\x2502"
         typeInto c1 "\x02%"                  -- 3 panes
-        awaitPanes h 3                       -- the third pane has spawned
+        -- The third pane renders a second vertical border to the client; wait
+        -- for that (an event on the render stream), not a poll.
+        awaitWith "three panes side by side" (\d -> do
+            scr <- Emu.snapshot d.screen
+            let cols = [ c | row <- V.toList scr.cells
+                           , (c, cell) <- zip [0 :: Int ..] (V.toList row)
+                           , cell.text == "\x2502" ]
+            pure (length (List.nub cols) >= 2)) c1
         -- even-vertical stacks them: horizontal borders, no vertical.
         _ <- ctlOut h ["select-layout", "even-vertical"]
         awaitWith "stacked (no vertical border)" (\d -> do
@@ -1178,10 +1176,11 @@ spec = parallel $ do
         awaitWith "selection highlighted" (\d ->
             (> baseline) <$> reverseCellCount d) c1
 
-        -- copy-pipe writes the selected line to a file via the shell.
+        -- copy-pipe runs the shell command synchronously (readCreateProcess),
+        -- so the file is fully written by the time this control call returns.
         let outPath = h.home <> "/piped.txt"
         _ <- ctlOut h ["send-keys", "-X", "copy-pipe", "cat > " <> outPath]
-        contents <- awaitFile outPath (List.isInfixOf "PIPEDWORD")
+        contents <- readFile outPath
         contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
 
     it "shows the [scroll/history] position indicator on entering copy mode" $
