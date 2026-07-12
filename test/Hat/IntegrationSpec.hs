@@ -709,6 +709,25 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "renames the current window via prefix , (pre-filled prompt)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+
+        -- prefix , opens a rename prompt pre-filled with the window name
+        -- (#W), behind the (rename-window) label.
+        typeInto c1 "\x02,"
+        awaitScreen c1 "(rename-window) sh"
+
+        -- The pre-fill is editable; Enter runs the spliced template and
+        -- the status line shows the new name.
+        typeInto c1 "\DEL\DELlogs\r"
+        awaitScreen c1 "logs*"
+
+        typeInto c1 "exit\r"
+        status <- awaitExit c1
+        status `shouldBe` Exited ExitSuccess
+
     it "creates and switches windows with a live status line" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
