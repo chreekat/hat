@@ -92,6 +92,9 @@ data Window = Window
     , bellFlag   :: TVar Bool
     , activity   :: TVar Bool  -- ^ output since last viewed (monitor-activity)
     , zoomed     :: TVar (Maybe PaneId)
+    , autoRename :: TVar Bool
+        -- ^ when set, the name tracks the active pane's foreground command
+        -- (@automatic-rename@); an explicit @rename-window@ clears it.
     }
 
 data Pane = Pane

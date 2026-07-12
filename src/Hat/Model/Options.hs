@@ -62,6 +62,8 @@ data Options = Options
     , focusEvents            :: Bool
     , aggressiveResize       :: Bool
     , monitorActivity        :: Bool
+    , automaticRename        :: Bool   -- ^ windows track their foreground command
+    , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
     , mainPaneHeight         :: Int
@@ -102,6 +104,8 @@ defaultOptions = Options
     , focusEvents = False
     , aggressiveResize = False
     , monitorActivity = False
+    , automaticRename = True
+    , automaticRenameFormat = "#{pane_current_command}"
     , updateEnvironment =
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
         , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]

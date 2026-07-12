@@ -91,6 +91,10 @@ runServer path mconfig = do
         _ <- forkIO $ forever $ do
             threadDelay 15_000_000
             atomically (bumpDirty st)
+        -- Track foreground commands for automatic-rename windows.
+        _ <- forkIO $ forever $ do
+            threadDelay 500_000
+            refreshAutoNames st
         r <- race (acceptLoop st lsock) (waitIdle st)
         case r of
             Left () -> pure ()
@@ -389,6 +393,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     bellVar <- newTVarIO False
     activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
+    autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -399,6 +404,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , bellFlag = bellVar
             , activity = activityVar
             , zoomed = zoomVar
+            , autoRename = autoRenameVar
             }
     pure (win, pane)
   where
@@ -1506,6 +1512,8 @@ lookupOption opts name = case name of
     "status-right-length" -> Just (tshow opts.statusRightLength)
     "window-status-format" -> Just opts.windowStatusFormat
     "window-status-current-format" -> Just opts.windowStatusCurrentFormat
+    "automatic-rename" -> Just (if opts.automaticRename then "on" else "off")
+    "automatic-rename-format" -> Just opts.automaticRenameFormat
     _
         | "@" `T.isPrefixOf` name -> Map.lookup name opts.user
         | otherwise -> Nothing
@@ -1570,6 +1578,8 @@ setOption append opts name value = case name of
     "focus-events" -> withOnOff $ \b -> opts { focusEvents = b }
     "aggressive-resize" -> withOnOff $ \b -> opts { aggressiveResize = b }
     "monitor-activity" -> withOnOff $ \b -> opts { monitorActivity = b }
+    "automatic-rename" -> withOnOff $ \b -> opts { automaticRename = b }
+    "automatic-rename-format" -> Right opts { automaticRenameFormat = value }
     "update-environment" -> Right opts { updateEnvironment = T.words value }
     "main-pane-width" -> withInt $ \n -> opts { mainPaneWidth = n }
     "main-pane-height" -> withInt $ \n -> opts { mainPaneHeight = n }
@@ -1627,7 +1637,9 @@ cmdNewWindow st mclient args = do
                 T.unpack <$> expandFormat st env d
         (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
             environ (windowArea eff)
-        forM_ (lookup "-n" opts) $ \nm -> atomically (writeTVar win.name nm)
+        forM_ (lookup "-n" opts) $ \nm -> atomically $ do
+            writeTVar win.name nm
+            writeTVar win.autoRename False
         atomically $ do
             ws <- readTVar sess.windows
             cur <- readTVar sess.currentIx
@@ -1821,9 +1833,17 @@ cmdRenameWindow st mclient args = do
             case mres of
                 Just (sess, ix) -> do
                     ws <- readTVarIO sess.windows
-                    forM_ (Map.lookup ix ws) $ \win -> atomically $ do
-                        writeTVar win.name nm
-                        bumpDirty st
+                    forM_ (Map.lookup ix ws) $ \win ->
+                        -- An empty name hands the window back to
+                        -- automatic-rename; a real name pins it.
+                        if T.null nm
+                            then do
+                                atomically (writeTVar win.autoRename True)
+                                refreshAutoNames st
+                            else atomically $ do
+                                writeTVar win.name nm
+                                writeTVar win.autoRename False
+                                bumpDirty st
                     pure []
                 Nothing -> pure [RErr "no such window"]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
@@ -2060,6 +2080,7 @@ wrapPaneInWindow st pane = do
     bellVar <- newTVarIO False
     activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
+    autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -2070,6 +2091,7 @@ wrapPaneInWindow st pane = do
         , bellFlag = bellVar
         , activity = activityVar
         , zoomed = zoomVar
+        , autoRename = autoRenameVar
         }
 
 -- | A pane's foreground command name (from @/proc@), for naming a window
@@ -2084,6 +2106,41 @@ paneCommandName pane = do
             pure $ case r of
                 Right s -> let t = T.strip s in if T.null t then "sh" else t
                 Left (_ :: IOException) -> "sh"
+
+-- | Recompute the names of every @automatic-rename@ window from its
+-- active pane's foreground command, bumping the render generation on any
+-- change. Driven by a periodic poll so no-output commands (an idle
+-- @less@, a waiting @cat@) still get picked up.
+refreshAutoNames :: ServerState -> IO ()
+refreshAutoNames st = do
+    fmt <- (.automaticRenameFormat) <$> readTVarIO st.options
+    sessions <- Map.elems <$> readTVarIO st.sessions
+    forM_ sessions $ \sess -> do
+        ws <- Map.toAscList <$> readTVarIO sess.windows
+        forM_ ws $ \(ix, win) -> do
+            auto <- readTVarIO win.autoRename
+            when auto $ do
+                mnew <- autoName st sess ix win fmt
+                forM_ mnew $ \newName -> atomically $ do
+                    cur <- readTVar win.name
+                    when (cur /= newName && not (T.null newName)) $ do
+                        writeTVar win.name newName
+                        bumpDirty st
+
+-- | The name an @automatic-rename@ window should currently take: the
+-- @automatic-rename-format@ expanded against the active pane. The default
+-- format is just @#{pane_current_command}@, so it takes a cheap path.
+autoName :: ServerState -> Session -> Int -> Window -> Text -> IO (Maybe Text)
+autoName st sess ix win fmt = do
+    mpane <- atomically (activePane win)
+    case mpane of
+        Nothing -> pure Nothing
+        Just pane
+            | fmt == "#{pane_current_command}" -> Just <$> paneCommandName pane
+            | otherwise -> do
+                pbase <- (.paneBaseIndex) <$> readTVarIO st.options
+                env <- paneFormatEnv st sess ix win pbase pane
+                Just <$> expandFormat st env fmt
 
 -- | @break-pane [-d] [-t]@: move the active pane into a new window of
 -- its own. No-op when it is the window's only pane.
@@ -2769,7 +2826,9 @@ cmdNewSession st mclient args = do
                 writeTVar st.everAttached True
                 forM_ (lookup "-n" opts) $ \wname -> do
                     ws <- readTVar sess.windows
-                    forM_ (Map.elems ws) $ \w -> writeTVar w.name wname
+                    forM_ (Map.elems ws) $ \w -> do
+                        writeTVar w.name wname
+                        writeTVar w.autoRename False
             unless ("-d" `elem` flags) $
                 forM_ mclient $ \client -> switchClientTo st client sess
             pure []
@@ -2868,10 +2927,10 @@ windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = do
     base <- sessionFormatEnv st sess
     eff <- readTVarIO sess.lastSize
-    (wname, lay, cur, bell, act) <- atomically $ (,,,,)
+    (wname, lay, cur, bell, act, auto) <- atomically $ (,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
         <*> readTVar sess.currentIx <*> readTVar win.bellFlag
-        <*> readTVar win.activity
+        <*> readTVar win.activity <*> readTVar win.autoRename
     ps <- readTVarIO win.panes
     let flags = T.concat
             [ if ix == cur then "*" else ""
@@ -2883,7 +2942,7 @@ windowFormatEnv st sess ix win = do
         , ("window_active", if ix == cur then "1" else "0")
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))
-        , ("automatic_rename", "0")  -- hat never auto-renames
+        , ("automatic_rename", if auto then "1" else "0")
         ]) base
 
 -- | The full format environment for a specific pane, including the

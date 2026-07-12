@@ -649,6 +649,9 @@ spec = parallel $ do
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") $ unlines
             [ "set -g monitor-activity on"
+            -- Keep window names stable ('sh') so the flag assertions below
+            -- read "0:sh-#" regardless of the foreground command.
+            , "set -g automatic-rename off"
             , "bind C-a next-window -a" ]
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "0:sh*"
@@ -882,6 +885,40 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    it "automatic-rename follows the pane's foreground command" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        -- A foreground program becomes the window name.
+        typeInto c1 "cat\r"
+        awaitScreen c1 "0:cat*"
+        -- Ending it (Ctrl-D) returns the name to the shell.
+        typeInto c1 "\x04"
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
+    it "an explicit rename-window pins the name and stops auto-rename" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        _ <- ctlOut h ["rename-window", "pinned"]
+        awaitScreen c1 "0:pinned*"
+        -- With auto-rename disabled by the manual name, a foreground
+        -- program does not change it. Read server state directly so the
+        -- assertion doesn't depend on a (non-)render.
+        typeInto c1 "cat\r"
+        threadDelay 900000       -- longer than the auto-rename poll interval
+        nm <- T.pack <$> ctlOut h ["list-windows", "-F", "#{window_name}"]
+        nm `shouldSatisfy` (\t -> "pinned" `T.isInfixOf` t && not ("cat" `T.isInfixOf` t))
+        typeInto c1 "\x04"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
 
     it "creates and switches windows with a live status line" $
         withHat hatBin $ \h -> do
