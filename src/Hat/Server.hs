@@ -2076,10 +2076,14 @@ wrapPaneInWindow st pane = do
 -- broken out around it; falls back to @sh@.
 paneCommandName :: Pane -> IO Text
 paneCommandName pane = do
-    r <- try (TIO.readFile ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/comm"))
-    pure $ case r of
-        Right s -> let t = T.strip s in if T.null t then "sh" else t
-        Left (_ :: IOException) -> "sh"
+    mfg <- Hat.Pty.foregroundCommand pane.pty
+    case mfg of
+        Just cmd -> pure cmd
+        Nothing -> do
+            r <- try (TIO.readFile ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/comm"))
+            pure $ case r of
+                Right s -> let t = T.strip s in if T.null t then "sh" else t
+                Left (_ :: IOException) -> "sh"
 
 -- | @break-pane [-d] [-t]@: move the active pane into a new window of
 -- its own. No-op when it is the window's only pane.

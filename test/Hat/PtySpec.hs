@@ -1,6 +1,8 @@
 module Hat.PtySpec (spec) where
 
+import Control.Concurrent (threadDelay)
 import qualified Data.ByteString.Char8 as B8
+import qualified Data.Text as T
 import System.Exit (ExitCode (..))
 import Test.Hspec
 
@@ -35,6 +37,15 @@ readUntil pty needle = go B8.empty
         | otherwise = do
             chunk <- readPty pty
             if B8.null chunk then pure acc else go (acc <> chunk)
+
+-- Poll an IO action up to @n@ times (20ms apart) until it satisfies the
+-- predicate, returning the last value seen.
+retryFor :: Int -> IO a -> (a -> Bool) -> IO a
+retryFor n act ok = do
+    v <- act
+    if ok v || n <= 0
+        then pure v
+        else threadDelay 20000 >> retryFor (n - 1) act ok
 
 spec :: Spec
 spec = do
@@ -77,6 +88,16 @@ spec = do
         writePty pty "exit\n"
         status <- waitExit pty
         status `shouldBe` Exited ExitSuccess
+
+    -- The foreground command follows a child running under the shell, not
+    -- the shell itself: 'sleep' owns the terminal's foreground process
+    -- group while it runs.
+    it "reports the pane's foreground command, not the shell" $ do
+        pty <- spawn baseSpawn
+        writePty pty "sleep 5\n"
+        cmd <- retryFor 100 (foregroundCommand pty) (== Just (T.pack "sleep"))
+        cmd `shouldBe` Just (T.pack "sleep")
+        closePty pty
 
     it "reports a nonzero exit" $ do
         pty <- spawn baseSpawn { args = ["-c", "exit 3"] }

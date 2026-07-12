@@ -14,6 +14,7 @@ module Hat.Pty
     , waitExit
     , closePty
     , pid
+    , foregroundCommand
     , getWinsize
     , setWinsize
     , sigWinch
@@ -31,6 +32,9 @@ import Control.Monad (when)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Foldable (for_)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import Foreign
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types
@@ -38,7 +42,7 @@ import System.IO
 import System.Posix.IO (closeFd, fdToHandle)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
 import System.Posix.Signals (Signal, signalProcess, sigHUP)
-import System.Posix.Terminal (openPseudoTerminal)
+import System.Posix.Terminal (getTerminalProcessGroupID, openPseudoTerminal)
 import System.Posix.Types (Fd (..), ProcessID)
 
 import Hat.Geometry
@@ -171,6 +175,22 @@ waitExit pty = readMVar pty.exited
 
 pid :: PtyHandle -> ProcessID
 pid pty = pty.child
+
+-- | The command name (@/proc/<pid>/comm@) of the process group that
+-- currently owns the pty's terminal — i.e. the foreground program, which
+-- is a child running under the shell rather than the shell itself.
+-- 'Nothing' if the terminal has no foreground group or @/proc@ can't be
+-- read (e.g. the process just exited).
+foregroundCommand :: PtyHandle -> IO (Maybe Text)
+foregroundCommand pty = do
+    r <- try (getTerminalProcessGroupID pty.master)
+    case r of
+        Left (_ :: IOException) -> pure Nothing
+        Right pgrp -> do
+            c <- try (TIO.readFile ("/proc/" <> show pgrp <> "/comm"))
+            pure $ case c of
+                Left (_ :: IOException) -> Nothing
+                Right s -> let t = T.strip s in if T.null t then Nothing else Just t
 
 -- | Hang up the pane: signal the child and close the master side.
 closePty :: PtyHandle -> IO ()
