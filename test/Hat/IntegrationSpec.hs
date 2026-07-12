@@ -620,6 +620,26 @@ spec = parallel $ do
         typeInto c1 "\r"
         awaitScreen c1 "win1-marker"
 
+    it "default prefix w opens choose-tree" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "echo win0-marker\r"
+        awaitScreen c1 "win0-marker"
+        typeInto c1 "\x02\&c"               -- new window 1
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "echo win1-marker\r"
+        awaitScreen c1 "win1-marker"
+        typeInto c1 "\x02\&0"               -- back to window 0
+        awaitScreen c1 "win0-marker"
+        -- prefix w opens choose-tree with no config binding at all.
+        typeInto c1 "\x02w"
+        awaitScreen c1 "choose a window"
+        -- Navigate to the window-1 row and select it.
+        typeInto c1 "/1"
+        typeInto c1 "\r"
+        awaitScreen c1 "win1-marker"
+
     it "choose-window joins the chosen window's pane (V binding)" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf")

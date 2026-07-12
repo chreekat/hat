@@ -148,6 +148,7 @@ defaultKeymap = Map.fromList
     prefixBindings =
         [ ("d", ["detach-client"])
         , ("c", ["new-window"])
+        , ("w", ["choose-tree", "-Zw"])
         , ("%", ["split-window", "-h"])
         , ("\"", ["split-window", "-v"])
         , ("x", ["kill-pane"])
