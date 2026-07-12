@@ -2,15 +2,20 @@
 module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, catch, finally)
+import Control.Exception (IOException, SomeException, catch, finally, try)
 import Control.Monad (forM_, unless, when)
 import qualified Data.List as List
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
 import System.Directory (removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
+import System.IO (Handle, hSetBuffering, BufferMode (..))
+import System.Posix.IO (fdToHandle)
+import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Temp (mkdtemp)
+import System.Posix.Terminal (openPseudoTerminal)
 import System.Process (readProcess)
 import qualified System.Process as P
 import System.Timeout (timeout)
@@ -21,7 +26,7 @@ import qualified Data.Vector as V
 
 import Data.Maybe (listToMaybe)
 import Hat.Geometry
-import Hat.Pty
+import Hat.Pty (setWinsize)
 import Hat.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Color, Style (..))
 import qualified Hat.Term.Emulator as Emu
@@ -42,12 +47,12 @@ testPath = "/run/current-system/sw/bin:/usr/bin:/bin"
 -- | Run a test against a freshly isolated hat, tearing the server and
 -- its temp dir down afterwards no matter how the test ends. The socket
 -- lives at @<tmp>/socket@.
-withHat :: FilePath -> (Hat -> IO ()) -> IO ()
+withHat :: FilePath -> (Hat -> IO a) -> IO a
 withHat hatBin = withHatOn hatBin "socket"
 
 -- | 'withHat' with a custom socket path relative to the temp HOME (used
 -- by the test that needs the socket's parent dirs to not exist yet).
-withHatOn :: FilePath -> FilePath -> (Hat -> IO ()) -> IO ()
+withHatOn :: FilePath -> FilePath -> (Hat -> IO a) -> IO a
 withHatOn hatBin sockRel action = do
     dir <- mkdtemp "/tmp/hat-test-"
     let h = Hat { bin = hatBin, home = dir, sock = dir <> "/" <> sockRel }
@@ -79,9 +84,17 @@ ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
 -- catches out-of-band messages ("[detached]"); the emulator models
 -- what a human would see on the screen.
 data Driver = Driver
-    { pty :: PtyHandle
+    { pty :: Client
     , transcript :: IORef B8.ByteString
     , screen :: Emu.Emulator
+    }
+
+-- The hat binary driven as a black box: a plain child process wired to a
+-- test-owned pty. No controlling-terminal setup or in-process fork — just
+-- 'createProcess' onto the pty slave, so the test binary is never forked.
+data Client = Client
+    { master :: Handle           -- our end of the pty
+    , proch  :: P.ProcessHandle   -- the hat client process
     }
 
 startClient :: Hat -> IO Driver
@@ -91,23 +104,51 @@ startClientArgs :: Hat -> [String] -> IO Driver
 startClientArgs h extra = do
     -- Pane children need terminfo for TERM=tmux-256color on NixOS.
     terminfo <- lookupEnv "TERMINFO_DIRS"
-    p <- spawn Spawn
-        { cmd = h.bin
-        , args = ["-S", h.sock] <> extra
-        , env =
-            [ ("PATH", testPath)
-            , ("TERM", "xterm-256color")
-            , ("SHELL", "/bin/sh")
-            , ("HOME", h.home)
-            , ("PS1", "$ ")
-            ]
-            <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
-        , cwd = Just "/tmp"
-        , size = Size { rows = 24, cols = 80 }
-        }
+    let size = Size { rows = 24, cols = 80 }
+    (masterFd, slaveFd) <- openPseudoTerminal
+    setWinsize slaveFd size
+    slaveH <- fdToHandle slaveFd
+    (_, _, _, ph) <-
+        P.createProcess (P.proc h.bin (["-S", h.sock] <> extra))
+            { P.std_in  = P.UseHandle slaveH
+            , P.std_out = P.UseHandle slaveH
+            , P.std_err = P.UseHandle slaveH
+            , P.new_session = True
+            , P.cwd = Just "/tmp"
+            , P.env = Just $
+                [ ("PATH", testPath)
+                , ("TERM", "xterm-256color")
+                , ("SHELL", "/bin/sh")
+                , ("HOME", h.home)
+                , ("PS1", "$ ")
+                ]
+                <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
+            }
+    masterH <- fdToHandle masterFd
+    hSetBuffering masterH NoBuffering
     t <- newIORef ""
-    emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 1000
-    pure Driver { pty = p, transcript = t, screen = emu }
+    emu <- Emu.newEmulator size 1000
+    pure Driver
+        { pty = Client { master = masterH, proch = ph }
+        , transcript = t
+        , screen = emu
+        }
+
+-- Blocking read of available bytes; empty means the pty closed (the hat
+-- client exited and the slave went away — Linux reports EIO at pty EOF).
+readPty :: Client -> IO B8.ByteString
+readPty c = do
+    r <- try (B.hGetSome c.master 65536)
+    pure $ case r of
+        Left (_ :: IOException) -> B.empty
+        Right bs -> bs
+
+writePty :: Client -> B8.ByteString -> IO ()
+writePty c bs = B.hPut c.master bs `catch` \(_ :: IOException) -> pure ()
+
+-- Block on the real child exit — no polling, no clock.
+waitExit :: Client -> IO ProcessStatus
+waitExit c = Exited <$> P.waitForProcess c.proch
 
 ingest :: Driver -> B8.ByteString -> IO ()
 ingest d chunk = do

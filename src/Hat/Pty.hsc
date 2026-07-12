@@ -15,6 +15,7 @@ module Hat.Pty
     , closePty
     , pid
     , getWinsize
+    , setWinsize
     , sigWinch
     , ProcessStatus (..)
     ) where
