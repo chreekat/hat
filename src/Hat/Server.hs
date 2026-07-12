@@ -170,6 +170,7 @@ defaultKeymap = Map.fromList
         , ("w", "next-word"), ("b", "previous-word"), ("e", "next-word-end")
         , ("W", "next-space"), ("B", "previous-space"), ("E", "next-space-end")
         , ("^", "back-to-indentation")
+        , ("{", "previous-paragraph"), ("}", "next-paragraph")
         , ("g", "history-top"), ("G", "history-bottom")
         , ("H", "top-line"), ("M", "middle-line"), ("L", "bottom-line")
         , ("C-f", "page-down"), ("PgDn", "page-down")

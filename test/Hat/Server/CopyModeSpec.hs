@@ -206,6 +206,14 @@ spec = do
             -- Row 1 is \"        Indented line\" (8 leading spaces).
             (runG backToIndentation (at 1 20)).cursorCol `shouldBe` 8
 
+    describe "paragraph motions" $ do
+        -- Shared grid: rows 0..4 hold text, rows 5..9 are blank.
+        let at row col = start.sState { cursorRow = row, cursorCol = col }
+        it "next-paragraph (}) jumps to the following blank line" $
+            (runIdentity (paragraphDown grid (at 0 3))).cursorRow `shouldBe` 5
+        it "previous-paragraph ({) jumps to the preceding blank line" $
+            (runIdentity (paragraphUp grid (at 5 0))).cursorRow `shouldBe` 0
+
     describe "numeric count prefix" $ do
         let base = start.sState
         it "accumulates digits into the count" $ do

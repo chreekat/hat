@@ -30,6 +30,8 @@ module Hat.Server.CopyMode
     , middleLine
     , bottomLine
     , backToIndentation
+    , paragraphUp
+    , paragraphDown
     , extractSelection
     , yankSelection
     , overlaySelection
@@ -407,6 +409,33 @@ backToIndentation g st = do
             c <- g.gChar st.cursorRow i
             if whitespace c then firstNonBlank (i + 1) len else pure i
 
+-- | Whether a grid row has no non-blank content.
+blankRow :: Monad m => Grid m -> Int -> m Bool
+blankRow g r = (== 0) <$> g.gLineLen r
+
+-- | @next-paragraph@ (vi @}@): move down to the next blank line, or the
+-- bottom of the grid.
+paragraphDown :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+paragraphDown g st = loop st.cursorRow >>= \row' -> gotoRow row' g st
+  where
+    bot = gBottom g
+    loop r
+        | r >= bot = pure bot
+        | otherwise = do
+            b <- blankRow g (r + 1)
+            if b then pure (r + 1) else loop (r + 1)
+
+-- | @previous-paragraph@ (vi @{@): move up to the previous blank line, or
+-- the top of the grid.
+paragraphUp :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+paragraphUp g st = loop st.cursorRow >>= \row' -> gotoRow row' g st
+  where
+    loop r
+        | r <= 0 = pure 0
+        | otherwise = do
+            b <- blankRow g (r - 1)
+            if b then pure (r - 1) else loop (r - 1)
+
 -- ---------------------------------------------------------------------
 -- Selection extraction (port of window_copy_get_selection, no rectangle)
 
@@ -595,6 +624,8 @@ handlers = Map.fromList
     , ("middle-line",       gridH middleLine)
     , ("bottom-line",       gridH bottomLine)
     , ("back-to-indentation", gridH backToIndentation)
+    , ("next-paragraph",    gridH paragraphDown)
+    , ("previous-paragraph", gridH paragraphUp)
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s
