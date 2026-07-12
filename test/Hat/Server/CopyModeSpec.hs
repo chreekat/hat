@@ -7,7 +7,7 @@ import qualified Data.Vector as V
 import Test.Hspec
 
 import Hat.Geometry (Pos (..))
-import Hat.Model (CopyModeState (..), SelKind (SelChar, SelLine))
+import Hat.Model (CharSearch (..), CopyModeState (..), SelKind (SelChar, SelLine))
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.CopyMode
 import Hat.Term.Cell (Cell (..), Style (..), defaultStyle)
@@ -49,6 +49,8 @@ start = Sim
         , keyTable = "copy-mode"
         , viewportOffY = 0
         , numPrefix = Nothing
+        , pendingSearch = Nothing
+        , lastSearch = Nothing
         }
     , sBufs = []
     }
@@ -224,6 +226,24 @@ spec = do
                 `shouldBe` Just
                     "A line of words\n        Indented line\nAnother line..."
 
+    describe "char search (f/F/t/T)" $ do
+        -- Row 0 is "A line of words"; 'o' is at columns 7 and 11.
+        let row0 col = (start.sState) { cursorRow = 0, cursorCol = col }
+            search fwd till c st =
+                runIdentity (charSearch grid (CharSearch fwd till) c st)
+        it "f moves onto the next occurrence" $
+            (search True False 'o' (row0 0)).cursorCol `shouldBe` 7
+        it "t stops one cell before the next occurrence" $
+            (search True True 'o' (row0 0)).cursorCol `shouldBe` 6
+        it "F moves onto the previous occurrence" $
+            (search False False 'o' (row0 10)).cursorCol `shouldBe` 7
+        it "T stops one cell after the previous occurrence" $
+            (search False True 'o' (row0 10)).cursorCol `shouldBe` 8
+        it "repeating f (via ;) finds the following occurrence" $
+            (search True False 'o' (row0 7)).cursorCol `shouldBe` 11
+        it "does not move when the target is absent" $
+            (search True False 'z' (row0 0)).cursorCol `shouldBe` 0
+
     describe "paragraph motions" $ do
         -- Shared grid: rows 0..4 hold text, rows 5..9 are blank.
         let at row col = start.sState { cursorRow = row, cursorCol = col }
@@ -270,7 +290,8 @@ spec = do
             sel row col anchor keys = CopyModeState
                 { cursorRow = row, cursorCol = col
                 , selection = Just (anchor, SelChar)
-                , keyTable = keys, viewportOffY = 0, numPrefix = Nothing }
+                , keyTable = keys, viewportOffY = 0, numPrefix = Nothing
+                , pendingSearch = Nothing, lastSearch = Nothing }
             board = gridOf ["abcde", "fghij", "klmno"]
 
         it "reverse-videos a one-line span through the cursor cell (vi)" $ do
@@ -306,7 +327,8 @@ spec = do
     describe "copy cursor placement" $ do
         let st row = CopyModeState
                 { cursorRow = row, cursorCol = 2, selection = Nothing
-                , keyTable = "copy-mode-vi", viewportOffY = 0, numPrefix = Nothing }
+                , keyTable = "copy-mode-vi", viewportOffY = 0, numPrefix = Nothing
+                , pendingSearch = Nothing, lastSearch = Nothing }
         it "maps an absolute cursor row into the viewport" $
             copyCursorPos 5 10 (st 7) `shouldBe` Just Pos { row = 2, col = 2 }
         it "is Nothing above the viewport" $
@@ -317,7 +339,8 @@ spec = do
     describe "viewport scrolling (scrollToCursor)" $ do
         let st row voY = CopyModeState
                 { cursorRow = row, cursorCol = 0, selection = Nothing
-                , keyTable = "copy-mode-vi", viewportOffY = voY, numPrefix = Nothing }
+                , keyTable = "copy-mode-vi", viewportOffY = voY, numPrefix = Nothing
+                , pendingSearch = Nothing, lastSearch = Nothing }
         it "keeps a visible cursor's viewport unchanged" $
             (scrollToCursor 5 10 (st 7 0)).viewportOffY `shouldBe` 0
         it "scrolls up to reveal a cursor in scrollback" $

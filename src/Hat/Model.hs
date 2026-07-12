@@ -12,6 +12,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , CopyModeState (..)
+    , CharSearch (..)
     , PromptState (..)
     , PickerState (..)
     , PickerItem (..)
@@ -132,12 +133,24 @@ data CopyModeState = CopyModeState
     , viewportOffY :: !Int    -- ^ lines scrolled up from the bottom
     , numPrefix    :: !(Maybe Int)
         -- ^ the @[count]@ being typed; the next motion runs this many times.
+    , pendingSearch :: !(Maybe CharSearch)
+        -- ^ an @f@/@F@/@t@/@T@ awaiting its target character.
+    , lastSearch    :: !(Maybe (CharSearch, Char))
+        -- ^ the most recent char search, for @;@ (repeat) and @,@ (reverse).
     }
     deriving (Eq, Show)
 
 -- | Selection granularity, matching tmux's @SEL_CHAR@ / @SEL_WORD@ /
 -- @SEL_LINE@ (plus rectangle).
 data SelKind = SelChar | SelWord | SelLine | SelRect
+    deriving (Eq, Show)
+
+-- | A vi character search on the current line: @f@\/@t@ go forward, @F@\/@T@
+-- backward; @t@\/@T@ ('till') stop one cell short of the target.
+data CharSearch = CharSearch
+    { searchForward :: !Bool
+    , searchTill    :: !Bool
+    }
     deriving (Eq, Show)
 
 -- | Per-client command-prompt state: the line being edited, the cursor's

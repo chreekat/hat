@@ -34,6 +34,7 @@ module Hat.Server.CopyMode
     , paragraphDown
     , beginLineSelection
     , otherEnd
+    , charSearch
     , extractSelection
     , yankSelection
     , overlaySelection
@@ -411,6 +412,31 @@ backToIndentation g st = do
             c <- g.gChar st.cursorRow i
             if whitespace c then firstNonBlank (i + 1) len else pure i
 
+-- | vi character search on the current line (@f@/@F@/@t@/@T@). Scans from
+-- the cell next to the cursor for @target@; @to@ lands on it, @till@ one
+-- cell short. No move if the target is not found.
+charSearch
+    :: Monad m => Grid m -> CharSearch -> Char -> CopyModeState -> m CopyModeState
+charSearch g cs target st = do
+    len <- g.gLineLen st.cursorRow
+    mcol <- if cs.searchForward
+        then findFrom (st.cursorCol + 1) (\i -> i < len) (+ 1)
+        else findFrom (st.cursorCol - 1) (>= 0) (subtract 1)
+    pure $ case mcol of
+        Nothing -> st
+        Just j -> st { cursorCol = landing j }
+  where
+    row = st.cursorRow
+    landing j
+        | not cs.searchTill = j
+        | cs.searchForward  = j - 1
+        | otherwise         = j + 1
+    findFrom i inBounds step
+        | not (inBounds i) = pure Nothing
+        | otherwise = do
+            c <- g.gChar row i
+            if c == target then pure (Just i) else findFrom (step i) inBounds step
+
 -- | Whether a grid row has no non-blank content.
 blankRow :: Monad m => Grid m -> Int -> m Bool
 blankRow g r = (== 0) <$> g.gLineLen r
@@ -642,6 +668,16 @@ handlers = Map.fromList
     , ("back-to-indentation", gridH backToIndentation)
     , ("next-paragraph",    gridH paragraphDown)
     , ("previous-paragraph", gridH paragraphUp)
+    -- Char search: f/F/t/T arm a pending search; the next key (captured in
+    -- handleKeys) runs @apply-search@; ; and , repeat it.
+    , ("jump-forward",      pureH (armSearch True False))
+    , ("jump-backward",     pureH (armSearch False False))
+    , ("jump-to-forward",   pureH (armSearch True True))
+    , ("jump-to-backward",  pureH (armSearch False True))
+    , ("jump-again",        gridH (jumpRepeat id))
+    , ("jump-reverse",      gridH (jumpRepeat flipDir))
+    , ("apply-search",      applySearchH)
+    , ("cancel-search",     pureH (\s -> s { pendingSearch = Nothing }))
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s
@@ -666,6 +702,18 @@ handlers = Map.fromList
         opts <- readTVarIO sst.options
         g <- paneGrid pane
         Just <$> endOfLine opts.modeKeys g st
+    armSearch fwd till s = s { pendingSearch = Just (CharSearch fwd till) }
+    flipDir cs = cs { searchForward = not cs.searchForward }
+    jumpRepeat modify g st = case st.lastSearch of
+        Nothing -> pure st
+        Just (cs, c) -> charSearch g (modify cs) c st
+    -- The captured target character arrives as the sole argument.
+    applySearchH _ pane st args = case (st.pendingSearch, args) of
+        (Just cs, a : _) | Just (c, _) <- T.uncons a -> do
+            g <- paneGrid pane
+            st' <- charSearch g cs c st
+            pure (Just st' { pendingSearch = Nothing, lastSearch = Just (cs, c) })
+        _ -> pure (Just st { pendingSearch = Nothing })
     -- copy-pipe [-flags] <shell command>: yank the selection into a
     -- buffer AND feed it to @sh -c <command>@ on stdin.
     pipeH cancelAfter sst pane s args = do

@@ -171,6 +171,9 @@ defaultKeymap = Map.fromList
         , ("W", "next-space"), ("B", "previous-space"), ("E", "next-space-end")
         , ("^", "back-to-indentation")
         , ("{", "previous-paragraph"), ("}", "next-paragraph")
+        , ("f", "jump-forward"), ("F", "jump-backward")
+        , ("t", "jump-to-forward"), ("T", "jump-to-backward")
+        , (";", "jump-again"), (",", "jump-reverse")
         , ("g", "history-top"), ("G", "history-bottom")
         , ("H", "top-line"), ("M", "middle-line"), ("L", "bottom-line")
         , ("C-f", "page-down"), ("PgDn", "page-down")
@@ -1185,12 +1188,16 @@ handleKeys st client bs = do
     let loop kst [] = writeIORef client.keyState kst
         loop kst (k0 : rest) = do
             mpane <- clientActivePane st client
-            modeTable <- case mpane of
+            -- A pending vi char search (f/F/t/T) captures this key as its
+            -- target, ahead of any keymap lookup.
+            searchFed <- maybe (pure False) (feedPendingSearch k0) mpane
+            if searchFed then loop kst rest else do
+              modeTable <- case mpane of
                 Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
-            k <- reencodeCursor mpane k0
-            keep <- keepKey opts mpane k
-            if not keep
+              k <- reencodeCursor mpane k0
+              keep <- keepKey opts mpane k
+              if not keep
                 then loop kst rest
                 else do
                     let (kst', actions) =
@@ -1216,6 +1223,19 @@ handleKeys st client bs = do
         | otherwise = case mpane of
             Just pane -> (.focusReport) <$> Emu.modes pane.emulator
             Nothing -> pure False
+    -- When the pane's copy mode is waiting for a char-search target, this
+    -- key IS the target: a single printable char runs the search, anything
+    -- else (Escape, Enter, an arrow) cancels it. Returns whether it was
+    -- consumed here.
+    feedPendingSearch key pane = do
+        mmode <- readTVarIO pane.mode
+        case mmode of
+            Just s | Just _ <- s.pendingSearch -> do
+                if T.length key.name == 1
+                    then runCopyModeCommand st pane "apply-search" [key.name]
+                    else runCopyModeCommand st pane "cancel-search" []
+                pure True
+            _ -> pure False
 
 -- | Cursor keys ('\ESC[A' vs '\ESCOA') depend on the pane's DECCKM mode,
 -- so re-encode them via the pane's emulator instead of forwarding the raw
@@ -2521,6 +2541,8 @@ cmdCopyMode st mclient args = do
                         , keyTable = table
                         , viewportOffY = 0
                         , numPrefix = Nothing
+                        , pendingSearch = Nothing
+                        , lastSearch = Nothing
                         }
                 atomically $ do
                     writeTVar pane.mode (Just state)

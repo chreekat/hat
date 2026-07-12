@@ -1113,6 +1113,22 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "vi copy-mode: f<char> captures the next key and jumps to it" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        typeInto c1 "printf '0123456789\\n'\r"
+        awaitScreen c1 "0123456789"
+        baseline <- reverseCellCount c1
+        -- k: onto the digit line. 0: start-of-line. v: begin selection.
+        -- f5: arm char-search, then '5' is captured as the target, moving the
+        -- cursor to column 5. The selection then spans 0..5 = six cells; if the
+        -- capture were broken, '5' would fall through and only one cell selects.
+        typeInto c1 "\x02[k0vf5"
+        awaitWith "f jumped through the 5 (six cells)"
+            (\d -> (== baseline + 6) <$> reverseCellCount d) c1
+
     it "vi copy-mode: V selects the whole line" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
