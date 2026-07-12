@@ -142,6 +142,7 @@ defaultKeymap = Map.fromList
         , ("x", ["kill-pane"])
         , ("&", ["kill-window"])
         , (",", ["command-prompt", "-I", "#W", "rename-window '%%'"])
+        , ("$", ["command-prompt", "-I", "#S", "rename-session '%%'"])
         , ("z", ["resize-pane", "-Z"])
         , ("n", ["next-window"])
         , ("p", ["previous-window"])
@@ -2877,13 +2878,23 @@ cmdStartServer :: CommandImpl
 cmdStartServer _ _ _ = pure []
 
 cmdRenameSession :: CommandImpl
-cmdRenameSession st mclient args = case args of
-    [nm] -> withTargetSession st mclient Nothing $ \sess -> do
-        atomically $ do
-            writeTVar sess.name nm
-            bumpDirty st
-        pure []
-    _ -> pure [RErr "usage: rename-session name"]
+cmdRenameSession st mclient args = do
+    let (opts, _, pos) = parseArgs "t" args
+    case pos of
+        [nm] -> withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
+            dup <- atomically $ do
+                sessions <- readTVar st.sessions
+                names <- mapM (\s -> readTVar s.name)
+                    (filter (\s -> s.id /= sess.id) (Map.elems sessions))
+                pure (nm `elem` names)
+            if dup
+                then pure [RErr ("duplicate session: " <> nm)]
+                else do
+                    atomically $ do
+                        writeTVar sess.name nm
+                        bumpDirty st
+                    pure []
+        _ -> pure [RErr "usage: rename-session [-t target] name"]
 
 cmdListSessions :: CommandImpl
 cmdListSessions st _ args = do

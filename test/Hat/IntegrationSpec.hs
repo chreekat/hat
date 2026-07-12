@@ -920,6 +920,39 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "renames the session via prefix $ (pre-filled prompt)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        -- The default session name is its numeric id; status-left shows [0].
+        awaitScreen c1 "[0]"
+        -- prefix $ opens a rename-session prompt pre-filled with #S.
+        typeInto c1 "\x02$"
+        awaitScreen c1 "(rename-session) 0"
+        -- Replace the pre-filled name; status-left reflects the new one.
+        typeInto c1 "\DELwork\r"
+        awaitScreen c1 "[work]"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
+    it "rename-session targets by -t and rejects a duplicate name" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        _ <- ctlOut h ["new-session", "-d", "-s", "other"]
+        -- Renaming session 0 onto an existing name is refused.
+        (_, _, err) <- hatCtl h ["rename-session", "-t", "0", "other"]
+        err `shouldSatisfy` (\e -> "duplicate" `List.isInfixOf` e)
+        -- -t names the session to rename (not the client's current one).
+        _ <- ctlOut h ["rename-session", "-t", "other", "renamed"]
+        names <- T.pack <$> ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        names `shouldSatisfy`
+            (\t -> "renamed" `T.isInfixOf` t && not ("other" `T.isInfixOf` t))
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "creates and switches windows with a live status line" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
