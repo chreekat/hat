@@ -106,9 +106,15 @@ spawn s = do
     setWinsize slaveFd s.size
     let Fd m = masterFd
         Fd sl = slaveFd
-        argv = s.cmd : s.args                       -- argv[0] = program
+        -- Trampoline: normalize the line discipline in the pane's own
+        -- foreground context AFTER an exec (clean process state), then
+        -- exec the real program — doing it in the forked child of the
+        -- threaded RTS is unreliable under load.
+        wrapFile = "/bin/sh"
+        argv = wrapFile : "-c" : "stty sane; exec \"$@\"" : "hat-pane"
+             : s.cmd : s.args
         envv = [k <> "=" <> v | (k, v) <- s.env]
-    rawPid <- withCString s.cmd $ \cCmd ->
+    rawPid <- withCString wrapFile $ \cCmd ->
         withMaybeCString s.cwd $ \cCwd ->
         withCStringArray0 argv $ \pArgv ->
         withCStringArray0 envv $ \pEnv ->
@@ -139,8 +145,8 @@ withCStringArray0 :: [String] -> (Ptr CString -> IO a) -> IO a
 withCStringArray0 xs f =
     withMany withCString xs $ \ptrs -> withArray0 nullPtr ptrs f
 
--- The canonical/echo/signal line discipline the pty child needs is set in
--- C (hat_spawn_pty), after the slave becomes its controlling terminal.
+-- The canonical/echo/signal line discipline is normalized by the trampoline
+-- (@stty sane@) that 'spawn' execs, not here and not in the forked child.
 
 -- | Blocking read of whatever bytes are available. Empty result means the
 -- pty is gone (child exited and the slave side closed).

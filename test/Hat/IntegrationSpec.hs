@@ -1,9 +1,10 @@
 -- | End-to-end tests driving the real @hat@ binary through a pty.
 module Hat.IntegrationSpec (spec) where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, SomeException, catch, finally, try)
-import Control.Monad (forM_, unless, when)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (IOException, SomeException, catch, finally, throwIO, try)
+import Control.Monad (forM, forM_, unless, when)
 import qualified Data.List as List
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -246,9 +247,49 @@ reverseCellCount d = do
         [ () | row <- V.toList scr.cells, cell <- V.toList row
              , let Style { reverse = r } = cell.style, r ]
 
+-- Run all actions concurrently, collect their results, and re-raise the
+-- first exception. (The test suite has no async dependency.)
+runConcurrently :: forall a. [IO a] -> IO [a]
+runConcurrently actions = do
+    vars <- forM actions $ \act -> do
+        v <- newEmptyMVar
+        _ <- forkIO $ do
+            r <- try act
+            putMVar v (r :: Either SomeException a)
+        pure v
+    forM vars $ \v -> takeMVar v >>= either throwIO pure
+
+-- Run a shell line that ends in @stty -a@ and report whether the rendered
+-- line discipline is non-canonical (@-icanon@) — the state that stops
+-- Ctrl-D from signalling EOF. The command runs everything on one line so
+-- bash/readline does not restore its saved termios between a preceding
+-- @stty@ and the read-back.
+paneNonCanonicalVia :: B8.ByteString -> Driver -> IO Bool
+paneNonCanonicalVia line c = do
+    typeInto c (line <> "\r")
+    awaitScreen c "baud"          -- the stty -a report has rendered
+    T.isInfixOf "-icanon" <$> screenText c
+
+-- A healthy pane is canonical (@icanon@); the bug leaves it @-icanon@.
+paneIsNonCanonical :: Driver -> IO Bool
+paneIsNonCanonical = paneNonCanonicalVia "stty -a"
+
 spec :: Spec
 spec = parallel $ do
     hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
+
+    it "gives every pane a canonical line discipline under concurrent spawn load" $ do
+        let n = 24 :: Int
+        bads <- runConcurrently
+            [ withHat hatBin $ \h -> do
+                c <- startClient h
+                awaitScreen c "$"
+                paneIsNonCanonical c
+            | _ <- [1 .. n] ]
+        let bad = length (filter id bads)
+        when (bad > 0) $ expectationFailure $
+            show bad <> " of " <> show n
+                <> " panes came up non-canonical (-icanon), which breaks Ctrl-D/EOF"
 
     it "attaches, survives detach/reattach, and shuts down cleanly" $
         withHat hatBin $ \h -> do

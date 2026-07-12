@@ -4,7 +4,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <termios.h>
 
 static void flatten_color(const VTermColor *c, int *kind, int *idx,
                           int *r, int *g, int *b) {
@@ -142,20 +141,10 @@ pid_t hat_spawn_pty(int master_fd, int slave_fd, const char *cwd,
     dup2(slave_fd, 2);
     if (slave_fd > 2)
         close(slave_fd);
-    /* Force canonical, echoing, signal-processing line discipline now that
-     * the slave is our controlling terminal — matching normalizeTermios.
-     * Without it bash/readline leaves the tty non-canonical when forking
-     * children (cat echoes doubled bytes, Ctrl-D shows as ^D). */
-    {
-        struct termios tio;
-        if (tcgetattr(0, &tio) == 0) {
-            tio.c_lflag |= (ICANON | ECHO | ECHOE | ECHOK | ISIG | IEXTEN);
-            tio.c_iflag |= (ICRNL | IXON);
-            tio.c_oflag |= (OPOST | ONLCR);
-            tio.c_cflag |= CREAD;
-            tcsetattr(0, TCSANOW, &tio);
-        }
-    }
+    /* No termios work here: doing it in a fork of the threaded RTS is
+     * unreliable under load. The line discipline is normalized after exec,
+     * in the pane's own foreground context (see the trampoline in
+     * Hat.Pty.spawn). */
     if (cwd != NULL && cwd[0] != '\0') {
         if (chdir(cwd) != 0) {
             /* lenient: exec in the inherited directory if chdir fails */
