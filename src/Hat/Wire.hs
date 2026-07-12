@@ -39,7 +39,7 @@ import Hat.Geometry
 import Hat.Term.Cell
 
 protocolVersion :: Word16
-protocolVersion = 2
+protocolVersion = 3
 
 deriving instance Generic Size
 deriving anyclass instance Serialise Size
@@ -52,7 +52,13 @@ deriving anyclass instance Serialise Style
 
 -- | Why this client connected: to attach and render, or only to issue
 -- commands (e.g. @hat kill-server@ from a shell).
-data Intent = AttachIntent | ControlIntent
+--
+-- 'AttachIntent' carries setup commands the server runs to establish the
+-- client's session before rendering — e.g. @new-session@ or
+-- @attach-session -t@ typed at a shell. An empty list attaches to the
+-- existing (or a freshly created) session, the plain @hat@/@hat attach@
+-- behaviour.
+data Intent = AttachIntent [[Text]] | ControlIntent
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
 

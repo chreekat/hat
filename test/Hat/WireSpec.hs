@@ -59,7 +59,8 @@ instance Arbitrary ClientToServer where
             (Hello <$> arbitrary <*> genText
                    <*> listOf ((,) <$> genText <*> genText)
                    <*> arbitrary <*> genText
-                   <*> elements [AttachIntent, ControlIntent])
+                   <*> oneof [ AttachIntent <$> listOf (listOf genText)
+                             , pure ControlIntent ])
         , Input . B.pack <$> arbitrary
         , Resize <$> arbitrary
         , Command <$> listOf (listOf genText)

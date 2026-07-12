@@ -20,7 +20,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -227,21 +227,50 @@ welcome st conn h = do
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
             sendMessage conn (Welcome "")
             controlLoop st client `finally` removeClient st client
-        AttachIntent -> do
-            sess <- ensureSession st client
-            refreshSessionEnv st sess client
-            sname <- readTVarIO sess.name
-            atomically $ do
-                writeTVar client.session sess.id
-                modifyTVar' st.clients (Map.insert client.id client)
-                writeTVar st.everAttached True
-            applySessionSize st sess.id
-            sendMessage conn (Welcome sname)
-            logEvent st.logger ClientConnected
-                { client = rawClient client.id, term = h.term }
-            withAsync (renderLoop st client) $ \_ ->
-                inputLoop st client
-                    `finally` removeClient st client
+        AttachIntent setupCmds -> do
+            -- Register early so the setup commands (new-session,
+            -- attach-session -t) act on a live client and can switch it.
+            atomically $ modifyTVar' st.clients (Map.insert client.id client)
+            setupErr <- attachSetup st client setupCmds
+            msess <- case setupErr of
+                Just _ -> pure Nothing
+                Nothing -> currentSession st client
+            case (setupErr, msess) of
+                (Just e, _) ->
+                    sendMessage conn (ServerError e) >> removeClient st client
+                (_, Nothing) -> do
+                    sendMessage conn (ServerError "no session to attach")
+                    removeClient st client
+                (_, Just sess) -> do
+                    refreshSessionEnv st sess client
+                    sname <- readTVarIO sess.name
+                    atomically $ writeTVar st.everAttached True
+                    applySessionSize st sess.id
+                    sendMessage conn (Welcome sname)
+                    logEvent st.logger ClientConnected
+                        { client = rawClient client.id, term = h.term }
+                    withAsync (renderLoop st client) $ \_ ->
+                        inputLoop st client
+                            `finally` removeClient st client
+
+-- | Run an attaching client's setup commands, leaving @client.session@
+-- pointing at the session it should render. An empty command list means a
+-- plain attach: reuse an existing session or create one. Returns the
+-- first error, if any, so 'welcome' can reject the attach.
+attachSetup :: ServerState -> Client -> [[Text]] -> IO (Maybe Text)
+attachSetup st client [] = do
+    sess <- ensureSession st client
+    atomically $ writeTVar client.session sess.id
+    pure Nothing
+attachSetup st client cmds = do
+    replies <- runCommands st (Just client) cmds
+    pure (listToMaybe [e | RErr e <- replies])
+
+-- | The session @client.session@ currently names, if it still exists.
+currentSession :: ServerState -> Client -> IO (Maybe Session)
+currentSession st client = do
+    sid <- readTVarIO client.session
+    Map.lookup sid <$> readTVarIO st.sessions
 
 newClient :: ServerState -> N.Socket -> Hello -> IO Client
 newClient st conn h = do

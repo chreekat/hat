@@ -50,17 +50,19 @@ hello intent = do
         , intent = intent
         }
 
--- | Attach to the server and shuttle bytes until detach or death.
-runClient :: Socket -> IO ExitReason
-runClient sock = do
+-- | Attach to the server and shuttle bytes until detach or death. The
+-- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
+-- shell) run server-side to establish which session we render.
+runClient :: Socket -> [[Text]] -> IO ExitReason
+runClient sock setup = do
     isTty <- queryTerminal stdInput
     if not isTty
         then pure (Rejected "not a terminal")
-        else attachClient sock
+        else attachClient sock setup
 
-attachClient :: Socket -> IO ExitReason
-attachClient sock = do
-    sendMessage sock =<< hello AttachIntent
+attachClient :: Socket -> [[Text]] -> IO ExitReason
+attachClient sock setup = do
+    sendMessage sock =<< hello (AttachIntent setup)
     greeting <- recvMessage sock
     case greeting of
         Just (Right (Welcome _)) -> do

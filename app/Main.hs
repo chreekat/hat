@@ -71,16 +71,28 @@ parseCli = go Cli
 clientMain :: Cli -> IO ()
 clientMain cli = do
     path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
+    let cmds = parseArgv cli.command
     case cli.command of
-        [] -> attach path cli.configFile
-        ["attach"] -> attach path cli.configFile
-        ["attach-session"] -> attach path cli.configFile
-        ws -> control path cli.configFile (parseArgv ws)
+        [] -> attach path cli.configFile []
+        ["attach"] -> attach path cli.configFile []
+        ["attach-session"] -> attach path cli.configFile []
+        _ | attachesTerminal cmds -> attach path cli.configFile cmds
+          | otherwise -> control path cli.configFile cmds
 
-attach :: FilePath -> Maybe FilePath -> IO ()
-attach path mconfig = do
+-- | Verbs that should grab this terminal and render, running server-side
+-- first to establish the session: @new-session@/@new@ (unless detached
+-- with @-d@) and @attach-session@/@attach@ with an explicit target. A
+-- bare @new@ still attaches; a @new -d@ stays a fire-and-exit command.
+attachesTerminal :: [[T.Text]] -> Bool
+attachesTerminal [cmd@(verb : _)]
+    | verb `elem` ["new-session", "new"] = "-d" `notElem` cmd
+    | verb `elem` ["attach-session", "attach"] = True
+attachesTerminal _ = False
+
+attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
+attach path mconfig setup = do
     sock <- connectOrStart path mconfig
-    reason <- runClient sock
+    reason <- runClient sock setup
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"

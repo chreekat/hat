@@ -326,6 +326,61 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not exit"
 
+    it "new-session creates and attaches to a fresh session" $
+        withHat hatBin $ \h -> do
+        -- First client autostarts the server on session $1.
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "echo one-$((1+1))\r"
+        awaitScreen c1 "one-2"
+
+        -- `hat new` from a shell must attach this terminal to a brand-new
+        -- session with its own fresh shell, not create-and-exit.
+        c2 <- startClientArgs h ["new"]
+        awaitScreen c2 "$"
+        typeInto c2 "echo two-$((2+2))\r"
+        awaitScreen c2 "two-4"
+
+        -- Two independent sessions now exist.
+        out <- ctlOut h ["list-sessions"]
+        length (lines out) `shouldBe` 2
+
+        -- The new session is a distinct shell: c1's marker is not on c2.
+        scr2 <- screenText c2
+        T.isInfixOf "one-2" scr2 `shouldBe` False
+
+        typeInto c2 "exit\r"
+        _ <- awaitExit c2
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
+    it "attach -t attaches this terminal to the named session" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+
+        -- A detached second session named "work".
+        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
+        out <- ctlOut h ["list-sessions"]
+        length (lines out) `shouldBe` 2
+
+        -- Attaching a fresh terminal explicitly to "work" must render it.
+        c2 <- startClientArgs h ["attach", "-t", "work"]
+        awaitScreen c2 "$"
+        typeInto c2 "echo work-$((3+4))\r"
+        awaitScreen c2 "work-7"
+
+        typeInto c2 "\x02\&d"
+        status2 <- awaitExit c2
+        status2 `shouldBe` Exited ExitSuccess
+        t2 <- readIORef c2.transcript
+        t2 `shouldSatisfy` B8.isInfixOf "[detached]"
+
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "renders vim to two simultaneous clients" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
