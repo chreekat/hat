@@ -3,7 +3,7 @@ module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (IOException, SomeException, catch, finally, throwIO, try)
+import Control.Exception (IOException, SomeException, catch, evaluate, finally, throwIO, try)
 import Control.Monad (forM, forM_, unless, when)
 import qualified Data.List as List
 import qualified Data.ByteString as B
@@ -217,6 +217,44 @@ awaitExit d = do
 
 typeInto :: Driver -> B8.ByteString -> IO ()
 typeInto d = writePty d.pty
+
+-- Poll a file until its contents satisfy the predicate; fail after ~5s.
+-- A subprocess (copy-pipe, pipe-pane) writes on its own schedule and there
+-- is no pty event for "the file is ready", so this retries until the
+-- condition holds rather than assuming a fixed delay.
+awaitFile :: FilePath -> (String -> Bool) -> IO String
+awaitFile path ok = go (500 :: Int)
+  where
+    go n = do
+        c <- readStrict `catch` \(_ :: IOException) -> pure ""
+        if ok c || n <= 0 then pure c else threadDelay 10000 >> go (n - 1)
+    readStrict = do
+        s <- readFile path
+        _ <- evaluate (length s)
+        pure s
+
+-- Poll until the current pane's foreground command matches, so a test can
+-- wait for a program (e.g. cat) to actually be running before driving it,
+-- instead of sleeping a guessed interval.
+awaitForeground :: Hat -> String -> IO ()
+awaitForeground h cmd = go (500 :: Int)
+  where
+    go n = do
+        out <- ctlOut h ["list-panes", "-F", "#{pane_current_command}"]
+        if cmd `List.isInfixOf` out || n <= 0
+            then pure ()
+            else threadDelay 10000 >> go (n - 1)
+
+-- Poll until the current window holds at least @n@ panes, so a test can
+-- wait for an async split to finish rather than sleeping.
+awaitPanes :: Hat -> Int -> IO ()
+awaitPanes h n = go (500 :: Int)
+  where
+    go k = do
+        out <- ctlOut h ["list-panes", "-F", "p"]
+        if length (lines out) >= n || k <= 0
+            then pure ()
+            else threadDelay 10000 >> go (k - 1)
 
 -- The foreground colour of a bold pane-border cell (│ or heavy ┃), if
 -- any — how the active-border style shows up on screen.
@@ -673,7 +711,7 @@ spec = parallel $ do
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "$"
         typeInto c1 "cat -v\r"               -- render control chars visibly
-        threadDelay 300000
+        awaitForeground h "cat"              -- cat is now the foreground program
         typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
         typeInto c1 "sentinel\r"
         -- The bare shell/cat never requested focus reporting, so the report
@@ -689,9 +727,10 @@ spec = parallel $ do
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "$"
         typeInto c1 "printf '\\033[?1004h'\r" -- the app requests focus reporting
-        threadDelay 200000
         typeInto c1 "cat -v\r"               -- render control chars visibly
-        threadDelay 300000
+        -- cat runs after printf, so its foreground presence proves ?1004 is
+        -- already enabled on the pane.
+        awaitForeground h "cat"
         typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
         awaitScreen c1 "^[[I"                -- forwarded to the pane, echoed by cat -v
 
@@ -703,7 +742,7 @@ spec = parallel $ do
         typeInto c1 "\x02%"                  -- 2 panes
         awaitScreen c1 "\x2502"
         typeInto c1 "\x02%"                  -- 3 panes
-        threadDelay 200000
+        awaitPanes h 3                       -- the third pane has spawned
         -- even-vertical stacks them: horizontal borders, no vertical.
         _ <- ctlOut h ["select-layout", "even-vertical"]
         awaitWith "stacked (no vertical border)" (\d -> do
@@ -908,17 +947,19 @@ spec = parallel $ do
         awaitScreen c1 "0:sh*"
         _ <- ctlOut h ["rename-window", "pinned"]
         awaitScreen c1 "0:pinned*"
-        -- With auto-rename disabled by the manual name, a foreground
-        -- program does not change it. Read server state directly so the
-        -- assertion doesn't depend on a (non-)render.
+        -- Run cat in the pinned window, then open a second, UNPINNED window
+        -- and run cat there too.
         typeInto c1 "cat\r"
-        threadDelay 900000       -- longer than the auto-rename poll interval
-        nm <- T.pack <$> ctlOut h ["list-windows", "-F", "#{window_name}"]
-        nm `shouldSatisfy` (\t -> "pinned" `T.isInfixOf` t && not ("cat" `T.isInfixOf` t))
-        typeInto c1 "\x04"
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
+        typeInto c1 "\x02\&c"            -- new-window (window 1, auto-rename on)
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "cat\r"
+        -- The unpinned window auto-renaming to cat proves the rename poll has
+        -- run; in that same pass the pinned window was left alone, so its
+        -- staying "pinned" is decidable now without waiting on a clock.
+        awaitScreen c1 "1:cat*"
+        nm <- T.pack <$> ctlOut h ["list-windows", "-F", "#{window_index}:#{window_name}"]
+        nm `shouldSatisfy`
+            (\t -> "0:pinned" `T.isInfixOf` t && not ("0:cat" `T.isInfixOf` t))
 
     it "renames the session via prefix $ (pre-filled prompt)" $
         withHat hatBin $ \h -> do
@@ -1014,14 +1055,9 @@ spec = parallel $ do
 
         -- prefix [ enters copy mode. Keys with no copy-mode binding are
         -- swallowed, so this marker never reaches the shell to be echoed.
-        typeInto c1 "\x02["
-        threadDelay 200000
-        typeInto c1 "zapzap42"
-        threadDelay 200000
-
-        -- q exits copy mode; the pane takes input again.
-        typeInto c1 "q"
-        threadDelay 200000
+        -- q exits copy mode; the pane takes input again. Keys route one at a
+        -- time, so the whole sequence is correct even in a single chunk.
+        typeInto c1 "\x02[zapzap42q"
         typeInto c1 "echo after-copy-zone\r"
         awaitScreen c1 "after-copy-zone"
 
@@ -1043,14 +1079,8 @@ spec = parallel $ do
         awaitScreen c1 "199"
         typeInto c1 "echo BOTmark\r"
         awaitScreen c1 "BOTmark"
-        -- Enter copy mode with the vi table. The delay avoids the known
-        -- batch-leak: the first key after [ must arrive in its own chunk,
-        -- once the pane's copy-mode table is live.
-        typeInto c1 "\x02["
-        awaitScreen c1 "[0/"          -- copy-mode indicator confirms entry
-        threadDelay 200000
-        -- g jumps to the top of history.
-        typeInto c1 "g"
+        -- Enter copy mode with the vi table; g jumps to the top of history.
+        typeInto c1 "\x02[g"
         awaitScreen c1 "TOPmark"
         -- G returns to the bottom of history.
         typeInto c1 "G"
@@ -1059,11 +1089,8 @@ spec = parallel $ do
         typeInto c1 "\x02"
         awaitWith "page-up scrolls off the bottom"
             (\d -> not . T.isInfixOf "BOTmark" <$> screenText d) c1
-        -- q leaves copy mode; the delay keeps the following 'exit' out of
-        -- the same input chunk (which copy mode would swallow).
-        typeInto c1 "q"
-        threadDelay 200000
-        typeInto c1 "exit\r"
+        -- q leaves copy mode; exit then reaches the shell (per-key routing).
+        typeInto c1 "qexit\r"
         _ <- awaitExit c1
         pure ()
 
@@ -1075,17 +1102,16 @@ spec = parallel $ do
         -- A line of digits as output; the prompt sits directly below it.
         typeInto c1 "printf '0123456789\\n'\r"
         awaitScreen c1 "0123456789"
-        typeInto c1 "\x02["
-        awaitScreen c1 "[0/"
-        threadDelay 200000
+        baseline <- reverseCellCount c1        -- no highlight yet
         -- k: up onto the digit line. 0: start-of-line. v: begin selection.
-        -- 4l: cursor-right x4 (the count). y: yank + cancel. All are copy-mode
-        -- keys, so one chunk is safe (y, the exit, comes last).
-        typeInto c1 "k0v4ly"
-        threadDelay 200000
-        buf <- T.strip . T.pack <$> ctlOut h ["show-buffer"]
-        buf `shouldBe` "01234"
-        typeInto c1 "exit\r"
+        -- 4l: cursor-right x4 (the [count]). The selection then covers five
+        -- cells (0..4 inclusive); a broken count would move l only once and
+        -- highlight two. Counting highlighted cells is a direct, render-driven
+        -- check with no timing.
+        typeInto c1 "\x02[k0v4l"
+        awaitWith "count selects exactly five cells"
+            (\d -> (== baseline + 5) <$> reverseCellCount d) c1
+        typeInto c1 "qexit\r"
         _ <- awaitExit c1
         pure ()
 
@@ -1101,11 +1127,7 @@ spec = parallel $ do
 
         -- Enter copy mode (default mode-keys = emacs) and select the
         -- line: C-a start-of-line, Space begin-selection, C-e end-of-line.
-        typeInto c1 "\x02["
-        threadDelay 200000
-        typeInto c1 "\x01"           -- C-a
-        typeInto c1 " "              -- Space: begin-selection
-        typeInto c1 "\x05"           -- C-e
+        typeInto c1 "\x02[\x01 \x05"
         awaitWith "selection highlighted" (\d ->
             (> baseline) <$> reverseCellCount d) c1
 
@@ -1133,7 +1155,7 @@ spec = parallel $ do
         awaitScreen c1 "$"
         -- Run cat so pasted input is echoed straight back.
         typeInto c1 "cat\r"
-        threadDelay 300000
+        awaitForeground h "cat"
         _ <- ctlOut h ["set-buffer", "bracketpastemarker"]
         typeInto c1 "\x02]"          -- C-b ]  -> paste-buffer
         awaitScreen c1 "bracketpastemarker"
@@ -1152,19 +1174,14 @@ spec = parallel $ do
         typeInto c1 "echo PIPEDWORD"
         awaitScreen c1 "PIPEDWORD"
         baseline <- reverseCellCount c1
-        typeInto c1 "\x02["
-        threadDelay 200000
-        typeInto c1 "\x01"           -- C-a start-of-line
-        typeInto c1 " "              -- Space begin-selection
-        typeInto c1 "\x05"           -- C-e end-of-line
+        typeInto c1 "\x02[\x01 \x05"     -- enter; C-a, Space (select), C-e
         awaitWith "selection highlighted" (\d ->
             (> baseline) <$> reverseCellCount d) c1
 
         -- copy-pipe writes the selected line to a file via the shell.
         let outPath = h.home <> "/piped.txt"
         _ <- ctlOut h ["send-keys", "-X", "copy-pipe", "cat > " <> outPath]
-        threadDelay 300000
-        contents <- readFile outPath
+        contents <- awaitFile outPath (List.isInfixOf "PIPEDWORD")
         contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
 
     it "shows the [scroll/history] position indicator on entering copy mode" $
@@ -1199,14 +1216,15 @@ spec = parallel $ do
         _ <- ctlOut h ["pipe-pane", "cat >> " <> logPath]
         typeInto c1 "echo PIPEPANEMARKER\r"
         awaitScreen c1 "PIPEPANEMARKER"
-        threadDelay 300000
-        readFile logPath >>= (`shouldSatisfy` List.isInfixOf "PIPEPANEMARKER")
+        _ <- awaitFile logPath (List.isInfixOf "PIPEPANEMARKER")
 
-        -- No-arg pipe-pane stops the pipe; later output is not captured.
+        -- No-arg pipe-pane stops the pipe (synchronously); later output is
+        -- not captured. The pane taps output to the pipe BEFORE the emulator
+        -- renders it, so once AFTERSTOPMARKER is on screen, a still-live pipe
+        -- would already have written it — its absence is thus decidable now.
         _ <- ctlOut h ["pipe-pane"]
         typeInto c1 "echo AFTERSTOPMARKER\r"
         awaitScreen c1 "AFTERSTOPMARKER"
-        threadDelay 300000
         readFile logPath >>= (`shouldNotSatisfy` List.isInfixOf "AFTERSTOPMARKER")
 
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
@@ -1282,13 +1300,13 @@ spec = parallel $ do
         c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "cat\r"
-        threadDelay 300000
+        awaitForeground h "cat"
         -- Type without Enter: canonical mode echoes each char exactly once.
+        -- A doubled echo would render "aabbccxxyyzz", which does NOT contain
+        -- "abcxyz", so awaiting "abcxyz" already proves the echo was single.
         typeInto c1 "abcxyz"
         awaitScreen c1 "abcxyz"
-        threadDelay 200000
         scr <- screenText c1
-        -- doubled echo would show "aabbcc..." somewhere
         scr `shouldNotSatisfy` T.isInfixOf "aabbccxxyyzz"
         typeInto c1 "\r"
         typeInto c1 "\x04"
@@ -1301,13 +1319,13 @@ spec = parallel $ do
         c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "cat\r"
-        threadDelay 300000
+        awaitForeground h "cat"
         typeInto c1 "hello world\r"
         awaitScreen c1 "hello world"
         -- Ctrl-D on an empty line EOFs cat; the shell then evaluates
-        -- arithmetic that cat could never produce by echo alone.
+        -- arithmetic that cat could never produce by echo alone. "done-42"
+        -- can only appear once cat has exited, so it is its own sync.
         typeInto c1 "\x04"
-        threadDelay 200000
         typeInto c1 "echo done-$((21+21))\r"
         awaitScreen c1 "done-42"
         typeInto c1 "exit\r"
