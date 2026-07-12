@@ -128,3 +128,30 @@ spec = do
 
         it "C-c cancels" $
             typeKeys [] emptyPrompt "abc\ETX" `shouldBe` Cancel
+
+    describe "promptFor" $ do
+        let st = promptFor "(rename-window) " "editor" "rename-window '%%'"
+
+        it "pre-fills the buffer with the initial text" $ do
+            st.input `shouldBe` "editor"
+            st.cursor `shouldBe` 6  -- cursor lands at the end
+
+        it "carries the template and prompt label" $ do
+            st.template `shouldBe` "rename-window '%%'"
+            st.promptLabel `shouldBe` "(rename-window) "
+
+        it "starts unbrowsed, like a fresh prompt" $ do
+            st.histIx `shouldBe` Nothing
+            st.pending `shouldBe` ""
+
+    describe "applyTemplate" $ do
+        it "substitutes %% with the typed line" $
+            applyTemplate "rename-window '%%'" "my win"
+                `shouldBe` "rename-window 'my win'"
+
+        it "substitutes %1 as an alias for %%" $
+            applyTemplate "rename-window '%1'" "logs"
+                `shouldBe` "rename-window 'logs'"
+
+        it "runs the typed line verbatim when the template is empty" $
+            applyTemplate "" "new-window" `shouldBe` "new-window"

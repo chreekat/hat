@@ -5,6 +5,8 @@
 module Hat.Server.Prompt
     ( PromptEdit (..)
     , emptyPrompt
+    , promptFor
+    , applyTemplate
     , editPrompt
     , pushHistory
     ) where
@@ -22,14 +24,34 @@ data PromptEdit
     | Cancel               -- ^ close the prompt, running nothing
     deriving (Eq, Show)
 
--- | A fresh, empty prompt.
+-- | A fresh, empty prompt: the bare @:@ command line.
 emptyPrompt :: PromptState
 emptyPrompt = PromptState
     { input = ""
     , cursor = 0
     , histIx = Nothing
     , pending = ""
+    , template = ""
+    , promptLabel = ":"
     }
+
+-- | A prompt pre-filled with @initial@ and shown behind @prefix@. On
+-- submit the typed line is spliced into @tmpl@ (see 'applyTemplate').
+-- Backs @command-prompt -I initial tmpl@, e.g. the @,@ rename binding.
+promptFor :: Text -> Text -> Text -> PromptState
+promptFor label initial tmpl = emptyPrompt
+    { input = initial
+    , cursor = T.length initial
+    , template = tmpl
+    , promptLabel = label
+    }
+
+-- | Splice a submitted line into a @command-prompt@ template, replacing
+-- every @%%@ or @%1@ with the line. An empty template runs the line as-is.
+applyTemplate :: Text -> Text -> Text
+applyTemplate tmpl line
+    | T.null tmpl = line
+    | otherwise = T.replace "%1" line (T.replace "%%" line tmpl)
 
 -- | Apply one key to the prompt. @history@ is the command history,
 -- most-recent first, used by the Up/Down keys.

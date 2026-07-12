@@ -143,6 +143,11 @@ data PromptState = PromptState
     , histIx  :: !(Maybe Int)  -- ^ 'Nothing' while editing a fresh line;
                                --   @Just n@ while showing history entry @n@
     , pending :: !Text         -- ^ the fresh line stashed while browsing history
+    , template :: !Text        -- ^ @command-prompt@ template; the submitted
+                               --   line is spliced in for @%%@/@%1@. Empty
+                               --   means run the line verbatim.
+    , promptLabel :: !Text     -- ^ text shown before the edit buffer (@:@ for
+                               --   the bare prompt, @(rename-window) @ etc.)
     }
     deriving (Eq, Show)
 

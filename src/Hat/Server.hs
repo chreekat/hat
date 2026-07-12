@@ -137,6 +137,7 @@ defaultKeymap = Map.fromList
         , ("\"", ["split-window", "-v"])
         , ("x", ["kill-pane"])
         , ("&", ["kill-window"])
+        , (",", ["command-prompt", "-I", "#W", "rename-window '%%'"])
         , ("z", ["resize-pane", "-Z"])
         , ("n", ["next-window"])
         , ("p", ["previous-window"])
@@ -840,17 +841,14 @@ toastCells t width = lineCells toastStyle width t
 -- | The command-prompt status row: the @:@ prefix followed by the line
 -- being edited, styled like tmux's message line.
 promptCells :: PromptState -> Int -> V.Vector Cell.Cell
-promptCells pr width = lineCells promptStyle width (promptPrefix <> pr.input)
+promptCells pr width = lineCells promptStyle width (pr.promptLabel <> pr.input)
   where
     promptStyle = Cell.defaultStyle
         { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
 
 -- | The screen column of the prompt's edit cursor.
 promptCursorCol :: PromptState -> Int
-promptCursorCol pr = T.length promptPrefix + pr.cursor
-
-promptPrefix :: Text
-promptPrefix = ":"
+promptCursorCol pr = T.length pr.promptLabel + pr.cursor
 
 -- Session-level format environment for the active window and pane.
 sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
@@ -1113,12 +1111,18 @@ handlePromptInput st client pr0 bs = do
             writeTVar client.prompt Nothing
             bumpDirty st
         Prompt.Submit line -> do
+            let templated = not (T.null pr0.template)
+                cmd = Prompt.applyTemplate pr0.template line
             atomically $ do
                 writeTVar client.prompt Nothing
-                modifyTVar' st.cmdHistory (Prompt.pushHistory line)
+                -- Templated prompts (rename-window, …) keep the : history
+                -- clean; only bare command lines are remembered.
+                unless templated $
+                    modifyTVar' st.cmdHistory (Prompt.pushHistory line)
                 bumpDirty st
+            -- A blank submission cancels: never rename a window to "".
             unless (T.null (T.strip line)) $ do
-                replies <- runCommandText st (Just client) line
+                replies <- runCommandText st (Just client) cmd
                 forM_ replies $ \case
                     ROutput out -> showToast st client out
                     RErr e -> showToast st client ("error: " <> e)
@@ -2380,12 +2384,40 @@ cmdCopyMode st mclient args = do
                 pure []
 
 -- | Open the interactive command prompt on the invoking client.
+-- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line
+-- editor; @-I@ pre-fills it (format-expanded, so @#W@ is the window name),
+-- and a @template@ has the submitted line spliced in for @%%@. Backs the
+-- @,@ rename binding: @command-prompt -I "#W" "rename-window '%%'"@.
 cmdCommandPrompt :: CommandImpl
-cmdCommandPrompt st mclient _args = do
-    forM_ mclient $ \client -> atomically $ do
-        writeTVar client.prompt (Just Prompt.emptyPrompt)
-        bumpDirty st
+cmdCommandPrompt st mclient args = do
+    let (opts, _flags, pos) = parseArgs "Ip" args
+        tmpl = T.unwords pos
+        pfx = case lookup "-p" opts of
+            Just p -> p
+            Nothing
+                | T.null tmpl -> ":"
+                | otherwise -> "(" <> T.takeWhile (/= ' ') tmpl <> ") "
+    forM_ mclient $ \client -> do
+        initial <- case lookup "-I" opts of
+            Nothing -> pure ""
+            Just raw -> do
+                env <- clientPromptEnv st client
+                expandFormat st env raw
+        atomically $ do
+            writeTVar client.prompt (Just (Prompt.promptFor pfx initial tmpl))
+            bumpDirty st
     pure []
+
+-- | The format environment of a client's current window, for expanding a
+-- @command-prompt -I@ initial string. Empty if the client has no window.
+clientPromptEnv :: ServerState -> Client -> IO FormatEnv
+clientPromptEnv st client = do
+    mv <- atomically (clientView st client)
+    case mv of
+        Nothing -> pure Map.empty
+        Just (sess, win) -> do
+            ix <- readTVarIO sess.currentIx
+            windowFormatEnv st sess ix win
 
 -- | Open a chooser overlay on the invoking client.
 openPicker :: ServerState -> Client -> Text -> [PickerItem] -> IO ()
