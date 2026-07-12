@@ -32,6 +32,8 @@ module Hat.Server.CopyMode
     , backToIndentation
     , paragraphUp
     , paragraphDown
+    , beginLineSelection
+    , otherEnd
     , extractSelection
     , yankSelection
     , overlaySelection
@@ -446,6 +448,15 @@ extractSelection
     :: Monad m => Grid m -> ModeKeys -> CopyModeState -> m (Maybe Text)
 extractSelection g keys st = case st.selection of
     Nothing -> pure Nothing
+    -- Line-wise (vi @V@): whole lines from the anchor row to the cursor row.
+    Just ((ar, _), SelLine) -> do
+        let sy = min ar st.cursorRow
+            ey = max ar st.cursorRow
+        pieces <- mapM (\i -> g.gLineLen i >>= copyLine g i 0) [sy .. ey]
+        let joined = T.concat pieces
+        pure . Just $
+            if not (T.null joined) && T.last joined == '\n'
+                then T.init joined else joined
     Just ((ar, ac), _kind) -> do
         let selx = ac; sely = ar
             endx = st.cursorCol; endy = st.cursorRow
@@ -493,6 +504,9 @@ copyLine g row sx ex
 cellSelected :: ModeKeys -> CopyModeState -> Int -> Int -> Int -> Bool
 cellSelected keys st sx row col = case st.selection of
     Nothing -> False
+    -- Line-wise: every column of every row between anchor and cursor.
+    Just ((ar, _), SelLine) ->
+        row >= min ar st.cursorRow && row <= max ar st.cursorRow && col < sx
     Just ((ar, ac), _) ->
         let (sRow, sCol, eRow, eCol)
                 | (st.cursorRow, st.cursorCol) `before` (ar, ac) =
@@ -604,6 +618,8 @@ handlers = Map.fromList
     , ("start-of-line",     pureH (\s -> s { cursorCol = 0 }))
     , ("history-top",       pureH (\s -> s { cursorRow = 0, cursorCol = 0 }))
     , ("begin-selection",   pureH beginSelection)
+    , ("select-line",       pureH beginLineSelection)
+    , ("other-end",         pureH otherEnd)
     , ("clear-selection",   pureH (\s -> s { selection = Nothing }))
     , ("next-word",         motionH (\seps -> mNextWord seps))
     , ("next-word-end",     motionH (\seps -> mNextWordEnd seps))
@@ -667,6 +683,21 @@ handlers = Map.fromList
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s
     { selection = Just ((s.cursorRow, s.cursorCol), SelChar) }
+
+-- | @select-line@ (vi @V@): start a line-wise selection anchored at the
+-- current line; moving up/down then extends it whole lines at a time.
+beginLineSelection :: CopyModeState -> CopyModeState
+beginLineSelection s = s
+    { selection = Just ((s.cursorRow, s.cursorCol), SelLine) }
+
+-- | @other-end@ (vi @o@): swap the cursor with the selection anchor, so
+-- motions extend the opposite end. A no-op without a selection.
+otherEnd :: CopyModeState -> CopyModeState
+otherEnd s = case s.selection of
+    Nothing -> s
+    Just ((ar, ac), kind) -> s
+        { cursorRow = ar, cursorCol = ac
+        , selection = Just ((s.cursorRow, s.cursorCol), kind) }
 
 -- | Extract the current selection and push it onto the buffer store as
 -- a fresh, auto-named buffer at the front of the stack.

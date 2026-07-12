@@ -7,7 +7,7 @@ import qualified Data.Vector as V
 import Test.Hspec
 
 import Hat.Geometry (Pos (..))
-import Hat.Model (CopyModeState (..), SelKind (SelChar))
+import Hat.Model (CopyModeState (..), SelKind (SelChar, SelLine))
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.CopyMode
 import Hat.Term.Cell (Cell (..), Style (..), defaultStyle)
@@ -206,6 +206,24 @@ spec = do
             -- Row 1 is \"        Indented line\" (8 leading spaces).
             (runG backToIndentation (at 1 20)).cursorCol `shouldBe` 8
 
+    describe "line selection (V) and other-end (o)" $ do
+        it "other-end swaps the cursor and the selection anchor" $ do
+            let s = (start.sState)
+                    { cursorRow = 3, cursorCol = 5
+                    , selection = Just ((1, 2), SelChar) }
+                s' = otherEnd s
+            (s'.cursorRow, s'.cursorCol) `shouldBe` (1, 2)
+            s'.selection `shouldBe` Just ((3, 5), SelChar)
+        it "other-end is a no-op without a selection" $
+            otherEnd (start.sState) `shouldBe` start.sState
+        it "select-line yanks whole lines from anchor to cursor" $ do
+            let s = (start.sState)
+                    { cursorRow = 2, cursorCol = 3
+                    , selection = Just ((0, 5), SelLine) }
+            runIdentity (extractSelection grid KeysVi s)
+                `shouldBe` Just
+                    "A line of words\n        Indented line\nAnother line..."
+
     describe "paragraph motions" $ do
         -- Shared grid: rows 0..4 hold text, rows 5..9 are blank.
         let at row col = start.sState { cursorRow = row, cursorCol = col }
@@ -274,6 +292,16 @@ spec = do
             let noSel = (sel 0 0 (0, 0) "copy-mode-vi") { selection = Nothing }
                 g = overlaySelection KeysVi 0 noSel board
             any (revAt g 0) [0 .. 4] `shouldBe` False
+
+        it "line selection reverse-videos whole rows between the ends" $ do
+            -- Anchor row 0, cursor row 1: rows 0 and 1 fully highlighted,
+            -- row 2 untouched, regardless of columns.
+            let lineSel = (sel 1 2 (0, 3) "copy-mode-vi")
+                    { selection = Just ((0, 3), SelLine) }
+                g = overlaySelection KeysVi 0 lineSel board
+            map (revAt g 0) [0 .. 4] `shouldBe` replicate 5 True
+            map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 True
+            map (revAt g 2) [0 .. 4] `shouldBe` replicate 5 False
 
     describe "copy cursor placement" $ do
         let st row = CopyModeState

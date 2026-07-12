@@ -1113,6 +1113,19 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "vi copy-mode: V selects the whole line" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        typeInto c1 "echo LINEWISEMARK"      -- unentered; cursor on this line
+        awaitScreen c1 "LINEWISEMARK"
+        -- Enter copy mode and select-line. Line-wise selection highlights the
+        -- whole row width, far more cells than a char/word selection would.
+        typeInto c1 "\x02[V"
+        awaitWith "whole line highlighted"
+            (\d -> (>= 40) <$> reverseCellCount d) c1
+
     it "reverse-videos the copy-mode selection on screen" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
