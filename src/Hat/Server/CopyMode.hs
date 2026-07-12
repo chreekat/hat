@@ -24,6 +24,7 @@ module Hat.Server.CopyMode
     , endOfLine
     , scrollUp
     , scrollDown
+    , pushDigit
     , historyBottom
     , topLine
     , middleLine
@@ -342,6 +343,14 @@ gotoRow row g st = do
     let row' = max 0 (min (gBottom g) row)
     len <- g.gLineLen row'
     pure st { cursorRow = row', cursorCol = min st.cursorCol len }
+
+-- | Feed a digit key to the numeric prefix (vi @[count]@). A bare @0@
+-- with no count in progress is not a digit but @start-of-line@, so it
+-- resets the column instead of starting a count.
+pushDigit :: Int -> CopyModeState -> CopyModeState
+pushDigit d st = case st.numPrefix of
+    Nothing | d == 0 -> st { cursorCol = 0 }
+    mp -> st { numPrefix = Just (maybe 0 id mp * 10 + d) }
 
 -- | @history-bottom@ (vi @G@): jump to the last row of the grid.
 historyBottom :: Monad m => Grid m -> CopyModeState -> m CopyModeState

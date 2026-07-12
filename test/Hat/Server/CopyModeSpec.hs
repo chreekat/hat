@@ -48,6 +48,7 @@ start = Sim
         , selection = Nothing
         , keyTable = "copy-mode"
         , viewportOffY = 0
+        , numPrefix = Nothing
         }
     , sBufs = []
     }
@@ -205,6 +206,16 @@ spec = do
             -- Row 1 is \"        Indented line\" (8 leading spaces).
             (runG backToIndentation (at 1 20)).cursorCol `shouldBe` 8
 
+    describe "numeric count prefix" $ do
+        let base = start.sState
+        it "accumulates digits into the count" $ do
+            (pushDigit 3 base).numPrefix `shouldBe` Just 3
+            (pushDigit 0 (pushDigit 1 base)).numPrefix `shouldBe` Just 10
+            (pushDigit 5 (pushDigit 2 base)).numPrefix `shouldBe` Just 25
+        it "treats a bare 0 as start-of-line, not a count" $ do
+            let s = pushDigit 0 (base { cursorCol = 7 })
+            (s.numPrefix, s.cursorCol) `shouldBe` (Nothing, 0)
+
     describe "emacs copy-mode motions (upstream copy-mode-test-emacs)" $ do
         it "clamps previous-word/space at the start of text" $
             emacs
@@ -233,7 +244,7 @@ spec = do
             sel row col anchor keys = CopyModeState
                 { cursorRow = row, cursorCol = col
                 , selection = Just (anchor, SelChar)
-                , keyTable = keys, viewportOffY = 0 }
+                , keyTable = keys, viewportOffY = 0, numPrefix = Nothing }
             board = gridOf ["abcde", "fghij", "klmno"]
 
         it "reverse-videos a one-line span through the cursor cell (vi)" $ do
@@ -259,7 +270,7 @@ spec = do
     describe "copy cursor placement" $ do
         let st row = CopyModeState
                 { cursorRow = row, cursorCol = 2, selection = Nothing
-                , keyTable = "copy-mode-vi", viewportOffY = 0 }
+                , keyTable = "copy-mode-vi", viewportOffY = 0, numPrefix = Nothing }
         it "maps an absolute cursor row into the viewport" $
             copyCursorPos 5 10 (st 7) `shouldBe` Just Pos { row = 2, col = 2 }
         it "is Nothing above the viewport" $
@@ -270,7 +281,7 @@ spec = do
     describe "viewport scrolling (scrollToCursor)" $ do
         let st row voY = CopyModeState
                 { cursorRow = row, cursorCol = 0, selection = Nothing
-                , keyTable = "copy-mode-vi", viewportOffY = voY }
+                , keyTable = "copy-mode-vi", viewportOffY = voY, numPrefix = Nothing }
         it "keeps a visible cursor's viewport unchanged" $
             (scrollToCursor 5 10 (st 7 0)).viewportOffY `shouldBe` 0
         it "scrolls up to reveal a cursor in scrollback" $

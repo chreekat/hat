@@ -1067,6 +1067,28 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "vi copy-mode: a [count] repeats a motion (4l selects five cells)" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        -- A line of digits as output; the prompt sits directly below it.
+        typeInto c1 "printf '0123456789\\n'\r"
+        awaitScreen c1 "0123456789"
+        typeInto c1 "\x02["
+        awaitScreen c1 "[0/"
+        threadDelay 200000
+        -- k: up onto the digit line. 0: start-of-line. v: begin selection.
+        -- 4l: cursor-right x4 (the count). y: yank + cancel. All are copy-mode
+        -- keys, so one chunk is safe (y, the exit, comes last).
+        typeInto c1 "k0v4ly"
+        threadDelay 200000
+        buf <- T.strip . T.pack <$> ctlOut h ["show-buffer"]
+        buf `shouldBe` "01234"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "reverse-videos the copy-mode selection on screen" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

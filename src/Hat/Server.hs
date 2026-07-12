@@ -128,12 +128,15 @@ defaultKeymap = Map.fromList
     [ ("prefix", Map.fromList (map bindArgv prefixBindings))
     , ("root", Map.empty)
     , ("copy-mode", Map.fromList (map copyBind copyModeBindings))
-    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings))
+    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings <> digitBinds))
     ]
   where
     bindArgv (k, cmd) = (k, [cmd])
     -- A copy-mode key runs a single @send-keys -X <name>@ command.
     copyBind (k, name) = (k, [["send-keys", "-X", name]])
+    -- Digit keys feed the vi @[count]@ prefix; a bare @0@ is start-of-line.
+    digitBinds =
+        [ (tshow d, [["send-keys", "-X", "digit", tshow d]]) | d <- [0 .. 9 :: Int] ]
     prefixBindings =
         [ ("d", ["detach-client"])
         , ("c", ["new-window"])
@@ -163,7 +166,7 @@ defaultKeymap = Map.fromList
     copyModeViBindings =
         [ ("h", "cursor-left"), ("j", "cursor-down")
         , ("k", "cursor-up"), ("l", "cursor-right")
-        , ("0", "start-of-line"), ("$", "end-of-line")
+        , ("$", "end-of-line")
         , ("w", "next-word"), ("b", "previous-word"), ("e", "next-word-end")
         , ("W", "next-space"), ("B", "previous-space"), ("E", "next-space-end")
         , ("^", "back-to-indentation")
@@ -2386,14 +2389,39 @@ runCopyModeCommand st pane name cmdArgs = do
     mmode <- readTVarIO pane.mode
     case mmode of
         Nothing -> pure ()  -- not in copy mode; -X is a no-op
-        Just state -> case Map.lookup name CopyMode.handlers of
-            Nothing -> pure ()
-            Just h -> do
-                result <- h st pane state cmdArgs
-                result' <- traverse (scrollPaneToCursor pane) result
+        Just state
+            -- A digit key builds the @[count]@ prefix rather than running
+            -- a motion; @0@ with no count pending is @start-of-line@.
+            | name == "digit", Just d <- readDigit cmdArgs ->
                 atomically $ do
-                    writeTVar pane.mode result'
+                    writeTVar pane.mode (Just (CopyMode.pushDigit d state))
                     bumpDirty st
+            | otherwise -> case Map.lookup name CopyMode.handlers of
+                Nothing -> pure ()
+                Just h -> do
+                    -- Motions repeat [count] times; yanks never do. Every
+                    -- command clears the pending count.
+                    let count
+                            | name `elem` ["copy-selection", "copy-pipe"] = 1
+                            | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
+                    result <- applyN h (state { numPrefix = Nothing }) count
+                    result' <- traverse (scrollPaneToCursor pane) result
+                    atomically $ do
+                        writeTVar pane.mode result'
+                        bumpDirty st
+  where
+    readDigit (a : _) = case TR.decimal a of
+        Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
+        _ -> Nothing
+    readDigit [] = Nothing
+    -- Run a handler @n@ times, threading the state and stopping early if
+    -- it exits copy mode (@Nothing@).
+    applyN _ s 0 = pure (Just s)
+    applyN h s n = do
+        r <- h st pane s cmdArgs
+        case r of
+            Nothing -> pure Nothing
+            Just s' -> applyN h s' (n - 1)
 
 -- | Re-center a pane's copy-mode viewport on its cursor after a motion.
 scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
@@ -2477,6 +2505,7 @@ cmdCopyMode st mclient args = do
                         , selection = Nothing
                         , keyTable = table
                         , viewportOffY = 0
+                        , numPrefix = Nothing
                         }
                 atomically $ do
                     writeTVar pane.mode (Just state)

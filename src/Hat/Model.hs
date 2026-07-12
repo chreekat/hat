@@ -130,6 +130,8 @@ data CopyModeState = CopyModeState
         -- ^ anchor position + kind; the current cursor is the other endpoint.
     , keyTable     :: !Text   -- ^ @copy-mode@ or @copy-mode-vi@
     , viewportOffY :: !Int    -- ^ lines scrolled up from the bottom
+    , numPrefix    :: !(Maybe Int)
+        -- ^ the @[count]@ being typed; the next motion runs this many times.
     }
     deriving (Eq, Show)
 
