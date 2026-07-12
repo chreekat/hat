@@ -299,21 +299,21 @@ can switch to it as my daily driver.
 
 ## Roadmap
 
-Work is organized around two concrete acceptance targets rather than the
-priority tiers above (those were pre-implementation guesses). Living plans
-in `plans/`:
+The milestone-driven build-out is complete:
 
-- **Phase 1 — `plans/M10-tmux-conf-compat.md`** ✅ **done**: `hat -f
-  ~/.tmux.conf` loads with zero config errors and behaves faithfully for
-  every line. Governing rule held throughout: never accept an
-  option/command without implementing its behavior. The config-load
-  burn-down list (`test/Hat/Server/OptionsSpec.hs`) is now empty.
-- **Phase 2 — `plans/M11-resurrect.md`** ✅ **done**: tmux-resurrect's
-  save/restore primitives — `@`-option round-trip, rich `list-panes -aF`,
-  the `window_layout` string codec, `select-layout "<string>"` and
-  `move-window` — with a save → kill-server → restart → restore
-  integration test.
+- **M0–M7** — multiplexer core (server/client split, sessions/windows/panes,
+  PTY allocation, terminal emulation, scrollback, keybindings).
+- **M8** — copy mode and paste buffers.
+- **M9** — command prompt (`:`) with history.
+- **M10** — tmux.conf compatibility: `hat -f ~/.tmux.conf` loads with zero
+  config errors and behaves faithfully for every line. Governing rule held
+  throughout: never accept an option/command without implementing its
+  behavior.
+- **M11** — tmux-resurrect save/restore primitives: `@`-option round-trip,
+  rich `list-panes -aF`, the `window_layout` string codec,
+  `select-layout "<string>"`, `move-window`.
 
-Done through M11: multiplexer core (M0–M7), copy mode + buffers (M8),
-command prompt (M9), tmux.conf compatibility (M10), resurrect
-save/restore (M11).
+From here, work proceeds one feature at a time as gaps are noticed in daily
+use. Each is a self-contained slice: a failing test, the implementation, and
+a scripted regression that lands in the suite. Completed feature write-ups
+live in git history, not in `plans/`; `plans/` holds only the in-flight one.
