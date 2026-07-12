@@ -28,6 +28,11 @@ testRows =
 grid :: Grid Identity
 grid = listGrid 40 testRows
 
+-- A grid with scrollback for the paging motions: 20 scrollback lines
+-- above a 10-row screen (bottom row = 29), every row a single 'x'.
+scrollGrid :: Grid Identity
+scrollGrid = (listGrid 40 (replicate 30 "x")) { gHsize = 20, gSy = 10 }
+
 viSeparators :: Text
 viSeparators = defaultOptions.wordSeparators
 
@@ -165,6 +170,40 @@ spec = do
             vi [ "history-top", "cursor-down", "cursor-up"
                , "begin-selection", "copy-selection" ]
                 `shouldBe` ["A"]
+
+    describe "paging and jump motions" $ do
+        -- The shared grid has 10 rows (sy = 10, no scrollback), so the
+        -- bottom row is 9 and the viewport spans rows 0..9.
+        let at row col = start.sState { cursorRow = row, cursorCol = col }
+            runG f s = runIdentity (f grid s)
+        it "history-bottom (G) jumps to the last grid row" $ do
+            let s = runG historyBottom (at 0 3)
+            (s.cursorRow, s.cursorCol) `shouldBe` (9, 0)  -- row 9 is blank
+        it "top/middle/bottom-line land on viewport rows" $ do
+            (runG topLine (at 5 0)).cursorRow `shouldBe` 0
+            (runG middleLine (at 0 0)).cursorRow `shouldBe` 4
+            (runG bottomLine (at 0 0)).cursorRow `shouldBe` 9
+        it "page-up scrolls the viewport and cursor up a screenful" $ do
+            -- 20 scrollback + 10 screen; start at the bottom (offset 0).
+            let bottom = (at 29 0) { viewportOffY = 0 }
+                s = runIdentity (scrollUp scrollGrid.gSy scrollGrid bottom)
+            (s.viewportOffY, s.cursorRow) `shouldBe` (10, 19)
+        it "page-down reverses page-up" $ do
+            let up = runIdentity (scrollUp scrollGrid.gSy scrollGrid
+                        ((at 29 0) { viewportOffY = 0 }))
+                s = runIdentity (scrollDown scrollGrid.gSy scrollGrid up)
+            (s.viewportOffY, s.cursorRow) `shouldBe` (0, 29)
+        it "halfpage-up scrolls half a screenful" $ do
+            let s = runIdentity (scrollUp (scrollGrid.gSy `div` 2) scrollGrid
+                        ((at 29 0) { viewportOffY = 0 }))
+            (s.viewportOffY, s.cursorRow) `shouldBe` (5, 24)
+        it "page-up clamps at the top of the scrollback" $ do
+            let s = runIdentity (scrollUp 999 scrollGrid
+                        ((at 29 0) { viewportOffY = 0 }))
+            s.viewportOffY `shouldBe` 20   -- gHsize
+        it "back-to-indentation (^) lands on the first non-blank column" $
+            -- Row 1 is \"        Indented line\" (8 leading spaces).
+            (runG backToIndentation (at 1 20)).cursorCol `shouldBe` 8
 
     describe "emacs copy-mode motions (upstream copy-mode-test-emacs)" $ do
         it "clamps previous-word/space at the start of text" $

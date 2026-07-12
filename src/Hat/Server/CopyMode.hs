@@ -22,6 +22,13 @@ module Hat.Server.CopyMode
     , mCursorRight
     , cursorVertical
     , endOfLine
+    , scrollUp
+    , scrollDown
+    , historyBottom
+    , topLine
+    , middleLine
+    , bottomLine
+    , backToIndentation
     , extractSelection
     , yankSelection
     , overlaySelection
@@ -328,6 +335,69 @@ endOfLine keys g st = do
         KeysEmacs -> len
         KeysVi -> max 0 (len - 1)
 
+-- | Move to an absolute row, clamping to the grid and to the
+-- destination line's length (columns are preserved where possible).
+gotoRow :: Monad m => Int -> Grid m -> CopyModeState -> m CopyModeState
+gotoRow row g st = do
+    let row' = max 0 (min (gBottom g) row)
+    len <- g.gLineLen row'
+    pure st { cursorRow = row', cursorCol = min st.cursorCol len }
+
+-- | @history-bottom@ (vi @G@): jump to the last row of the grid.
+historyBottom :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+historyBottom g = gotoRow (gBottom g) g
+
+-- | Scroll the viewport up by @n@ lines (vi @C-b@/@C-u@): the offset and
+-- the cursor move together by however much scrollback is left, so the
+-- cursor keeps its position on screen and the view actually scrolls.
+scrollUp :: Monad m => Int -> Grid m -> CopyModeState -> m CopyModeState
+scrollUp n g st = do
+    let voY' = max 0 (min g.gHsize (st.viewportOffY + n))
+        moved = voY' - st.viewportOffY
+        row' = max 0 (st.cursorRow - moved)
+    len <- g.gLineLen row'
+    pure st { viewportOffY = voY', cursorRow = row', cursorCol = min st.cursorCol len }
+
+-- | Scroll the viewport down by @n@ lines (vi @C-f@/@C-d@), the inverse
+-- of 'scrollUp'.
+scrollDown :: Monad m => Int -> Grid m -> CopyModeState -> m CopyModeState
+scrollDown n g st = do
+    let voY' = max 0 (min g.gHsize (st.viewportOffY - n))
+        moved = st.viewportOffY - voY'
+        row' = min (gBottom g) (st.cursorRow + moved)
+    len <- g.gLineLen row'
+    pure st { viewportOffY = voY', cursorRow = row', cursorCol = min st.cursorCol len }
+
+-- | The absolute grid row currently shown at the top of the viewport.
+viewportTop :: Grid m -> CopyModeState -> Int
+viewportTop g st = g.gHsize - st.viewportOffY
+
+-- | @top-line@ (vi @H@): the first visible row of the viewport.
+topLine :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+topLine g st = gotoRow (viewportTop g st) g st
+
+-- | @middle-line@ (vi @M@): the middle visible row of the viewport.
+middleLine :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+middleLine g st = gotoRow (viewportTop g st + (g.gSy - 1) `div` 2) g st
+
+-- | @bottom-line@ (vi @L@): the last visible row of the viewport.
+bottomLine :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+bottomLine g st = gotoRow (viewportTop g st + g.gSy - 1) g st
+
+-- | @back-to-indentation@ (vi @^@): the first non-blank column of the
+-- current line, or column 0 when the line is blank.
+backToIndentation :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+backToIndentation g st = do
+    len <- g.gLineLen st.cursorRow
+    col <- firstNonBlank 0 len
+    pure st { cursorCol = col }
+  where
+    firstNonBlank i len
+        | i >= len = pure 0
+        | otherwise = do
+            c <- g.gChar st.cursorRow i
+            if whitespace c then firstNonBlank (i + 1) len else pure i
+
 -- ---------------------------------------------------------------------
 -- Selection extraction (port of window_copy_get_selection, no rectangle)
 
@@ -507,6 +577,15 @@ handlers = Map.fromList
     , ("cursor-right",      motionH (\_ -> mCursorRight))
     , ("cursor-up",         gridH (cursorVertical (-1)))
     , ("cursor-down",       gridH (cursorVertical 1))
+    , ("page-up",           gridH (\g -> scrollUp g.gSy g))
+    , ("page-down",         gridH (\g -> scrollDown g.gSy g))
+    , ("halfpage-up",       gridH (\g -> scrollUp (g.gSy `div` 2) g))
+    , ("halfpage-down",     gridH (\g -> scrollDown (g.gSy `div` 2) g))
+    , ("history-bottom",    gridH historyBottom)
+    , ("top-line",          gridH topLine)
+    , ("middle-line",       gridH middleLine)
+    , ("bottom-line",       gridH bottomLine)
+    , ("back-to-indentation", gridH backToIndentation)
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s

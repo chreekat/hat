@@ -1030,6 +1030,43 @@ spec = parallel $ do
         scr <- screenText c1
         scr `shouldNotSatisfy` T.isInfixOf "zapzap42"
 
+    it "vi copy-mode: g/G jump history ends, C-b pages up" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        -- Distinct top/bottom markers, on their own command lines so the
+        -- echoed input doesn't carry the other marker.
+        typeInto c1 "echo TOPmark\r"
+        awaitScreen c1 "TOPmark"
+        typeInto c1 "seq 1 200\r"
+        awaitScreen c1 "199"
+        typeInto c1 "echo BOTmark\r"
+        awaitScreen c1 "BOTmark"
+        -- Enter copy mode with the vi table. The delay avoids the known
+        -- batch-leak: the first key after [ must arrive in its own chunk,
+        -- once the pane's copy-mode table is live.
+        typeInto c1 "\x02["
+        awaitScreen c1 "[0/"          -- copy-mode indicator confirms entry
+        threadDelay 200000
+        -- g jumps to the top of history.
+        typeInto c1 "g"
+        awaitScreen c1 "TOPmark"
+        -- G returns to the bottom of history.
+        typeInto c1 "G"
+        awaitScreen c1 "BOTmark"
+        -- C-b (page-up) scrolls a full screen up off the bottom.
+        typeInto c1 "\x02"
+        awaitWith "page-up scrolls off the bottom"
+            (\d -> not . T.isInfixOf "BOTmark" <$> screenText d) c1
+        -- q leaves copy mode; the delay keeps the following 'exit' out of
+        -- the same input chunk (which copy mode would swallow).
+        typeInto c1 "q"
+        threadDelay 200000
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "reverse-videos the copy-mode selection on screen" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
