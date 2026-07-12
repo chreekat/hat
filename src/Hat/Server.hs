@@ -1172,36 +1172,49 @@ handlePromptInput st client pr0 bs = do
                     ROutput out -> showToast st client out
                     RErr e -> showToast st client ("error: " <> e)
 
+-- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
+-- its copy-mode table before each. A key that enters or leaves copy mode
+-- therefore changes how the very next key in the same input chunk is
+-- routed, so @prefix [@ followed immediately by motions never leaks the
+-- motions to the shell (and vice versa on exit).
 handleKeys :: ServerState -> Client -> B.ByteString -> IO ()
 handleKeys st client bs = do
     opts <- readTVarIO st.options
     km <- readTVarIO st.keymap
+    let loop kst [] = writeIORef client.keyState kst
+        loop kst (k0 : rest) = do
+            mpane <- clientActivePane st client
+            modeTable <- case mpane of
+                Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
+                Nothing -> pure Nothing
+            k <- reencodeCursor mpane k0
+            keep <- keepKey opts mpane k
+            if not keep
+                then loop kst rest
+                else do
+                    let (kst', actions) =
+                            routeKeys opts.prefix km modeTable kst [k]
+                    forM_ actions $ \case
+                        Passthrough raw ->
+                            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty raw
+                        RunCommands cmds -> forM_ cmds $ \argv -> do
+                            replies <- runArgv st (Just client) argv
+                            forM_ replies $ \case
+                                ROutput out -> showToast st client out
+                                RErr e -> showToast st client ("error: " <> e)
+                    loop kst' rest
     st0 <- readIORef client.keyState
-    mpane <- clientActivePane st client
-    modeTable <- case mpane of
-        Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
-        Nothing -> pure Nothing
-    keys0 <- mapM (reencodeCursor mpane) (tokenizeKeys bs)
+    loop st0 (tokenizeKeys bs)
+  where
     -- Focus in/out reach the pane only when focus-events is on AND the
     -- pane's app has requested focus reporting (?1004). A bare shell never
     -- asks, so the report is dropped rather than echoed as a stray "^[[I".
-    paneWantsFocus <- case mpane of
-        Just pane -> (.focusReport) <$> Emu.modes pane.emulator
-        Nothing -> pure False
-    let keys
-            | opts.focusEvents && paneWantsFocus = keys0
-            | otherwise =
-                filter (\k -> k.name `notElem` ["FocusIn", "FocusOut"]) keys0
-        (st1, actions) = routeKeys opts.prefix km modeTable st0 keys
-    writeIORef client.keyState st1
-    forM_ actions $ \case
-        Passthrough raw ->
-            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty raw
-        RunCommands cmds -> forM_ cmds $ \argv -> do
-            replies <- runArgv st (Just client) argv
-            forM_ replies $ \case
-                ROutput out -> showToast st client out
-                RErr e -> showToast st client ("error: " <> e)
+    keepKey opts mpane k
+        | k.name `notElem` ["FocusIn", "FocusOut"] = pure True
+        | not opts.focusEvents = pure False
+        | otherwise = case mpane of
+            Just pane -> (.focusReport) <$> Emu.modes pane.emulator
+            Nothing -> pure False
 
 -- | Cursor keys ('\ESC[A' vs '\ESCOA') depend on the pane's DECCKM mode,
 -- so re-encode them via the pane's emulator instead of forwarding the raw
