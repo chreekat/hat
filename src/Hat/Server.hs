@@ -718,16 +718,13 @@ renderOnce st client = do
 -- | Paint a chooser's list over every row except the status row.
 overlayPicker :: Int -> Size -> PickerState -> Frame -> Frame
 overlayPicker statusRowIx csize pk frame =
-    frame V.// [ (r, lineCells (rowStyle txt) width txt)
-               | (r, txt) <- zip contentRows padded ]
+    frame V.// [ (r, lineCells (if sel then pickerSelStyle else pickerStyle) width txt)
+               | (r, (sel, txt)) <- zip contentRows padded ]
   where
     width = fromIntegral csize.cols
     contentRows = [ r | r <- [0 .. fromIntegral csize.rows - 1], r /= statusRowIx ]
     rendered = Picker.pickerLines (length contentRows) pk
-    padded = take (length contentRows) (rendered <> repeat "")
-    rowStyle t
-        | "\x25b8" `T.isPrefixOf` t = pickerSelStyle
-        | otherwise = pickerStyle
+    padded = take (length contentRows) (rendered <> repeat (False, ""))
 
 pickerStyle :: Cell.Style
 pickerStyle = Cell.defaultStyle
@@ -2597,40 +2594,67 @@ clientPromptEnv st client = do
             windowFormatEnv st sess ix win
 
 -- | Open a chooser overlay on the invoking client.
-openPicker :: ServerState -> Client -> Text -> [PickerItem] -> IO ()
+openPicker :: ServerState -> Client -> Text -> [PickerNode] -> IO ()
 openPicker st client titleText picked = atomically $ do
     writeTVar client.picker $ Just PickerState
         { title = titleText
-        , items = picked
+        , roots = picked
         , cursor = 0
         , query = ""
         , searching = False
         }
     bumpDirty st
 
--- | @choose-tree [-GZw]@: a filterable list of every window across every
--- session; Enter switches to the chosen one. The config opens it with
+-- | @choose-tree [-GswZ]@: a filterable tree of every session, its
+-- windows and their panes; Enter switches to the chosen one. @-s@ opens
+-- with sessions collapsed (sessions only), @-w@ with windows expanded but
+-- panes collapsed, and neither fully expanded. The config opens it with
 -- @… \; send-keys /@ to jump straight into search.
 cmdChooseTree :: CommandImpl
-cmdChooseTree st mclient _args = do
+cmdChooseTree st mclient args = do
+    let (_, flags, _) = parseArgs "" args
+        sessionsOnly = "-s" `elem` flags
+        windowsOnly  = "-w" `elem` flags
+        expandWindows = not sessionsOnly
+        expandPanes   = not sessionsOnly && not windowsOnly
     forM_ mclient $ \client -> do
-        picked <- buildTreeItems st
+        picked <- buildTreeNodes st expandWindows expandPanes
         openPicker st client "choose a window" picked
     pure []
 
-buildTreeItems :: ServerState -> IO [PickerItem]
-buildTreeItems st = do
+buildTreeNodes :: ServerState -> Bool -> Bool -> IO [PickerNode]
+buildTreeNodes st expandWindows expandPanes = do
     sessions <- Map.elems <$> readTVarIO st.sessions
-    fmap concat . forM sessions $ \sess -> do
+    forM sessions $ \sess -> do
         sname <- readTVarIO sess.name
         ws <- Map.toAscList <$> readTVarIO sess.windows
-        forM ws $ \(ix, win) -> do
+        winNodes <- forM ws $ \(ix, win) -> do
             wname <- readTVarIO win.name
-            pure PickerItem
-                { label = sname <> ":" <> tshow ix <> ":" <> wname
-                , command = "switch-client -t " <> sname
+            apid <- readTVarIO win.activeId
+            ordered <- Map.elems <$> readTVarIO win.panes
+            let winCmd = "switch-client -t " <> sname
                     <> " ; select-window -t " <> sname <> ":" <> tshow ix
-                }
+                paneNodes =
+                    [ PickerNode
+                        { label = "pane " <> tshow pix
+                            <> (if pane.id == apid then "*" else "")
+                        , command = winCmd <> " ; select-pane -t " <> tshow pix
+                        , preview = Just pane.id
+                        , children = []
+                        , expanded = False }
+                    | (pix, pane) <- zip [0 :: Int ..] ordered ]
+            pure PickerNode
+                { label = tshow ix <> ":" <> wname
+                , command = winCmd
+                , preview = Just apid
+                , children = paneNodes
+                , expanded = expandPanes }
+        pure PickerNode
+            { label = sname
+            , command = "switch-client -t " <> sname
+            , preview = Nothing
+            , children = winNodes
+            , expanded = expandWindows }
 
 -- | @choose-window <template>@: a list of the current session's windows;
 -- selecting one runs @template@ with each @%%@ replaced by that window's
@@ -2645,7 +2669,7 @@ cmdChooseWindow st mclient args = do
             pure []
         _ -> pure [RErr "usage: choose-window template"]
 
-buildWindowItems :: ServerState -> Client -> Text -> IO [PickerItem]
+buildWindowItems :: ServerState -> Client -> Text -> IO [PickerNode]
 buildWindowItems st client template = do
     sid <- readTVarIO client.session
     msess <- Map.lookup sid <$> readTVarIO st.sessions
@@ -2657,10 +2681,8 @@ buildWindowItems st client template = do
                 wname <- readTVarIO win.name
                 apid <- readTVarIO win.activeId
                 let target = "%" <> tshow (rawPane apid)
-                pure PickerItem
-                    { label = tshow ix <> ":" <> wname
-                    , command = T.replace "%%" target template
-                    }
+                pure $ Picker.leaf (tshow ix <> ":" <> wname)
+                    (T.replace "%%" target template)
 
 cmdShowBuffer :: CommandImpl
 cmdShowBuffer st _ args = do

@@ -15,7 +15,7 @@ module Hat.Model
     , CharSearch (..)
     , PromptState (..)
     , PickerState (..)
-    , PickerItem (..)
+    , PickerNode (..)
     , SelKind (..)
     , newServerState
     , bumpDirty
@@ -173,21 +173,26 @@ data PromptState = PromptState
     deriving (Eq, Show)
 
 -- | A modal chooser overlay (@choose-tree@ / @choose-window@): a
--- filterable list where each item carries the command to run when
--- selected. Opens in menu mode; @/@ switches to search, where keys type
--- into 'query' instead of navigating.
+-- filterable tree of sessions, windows and panes where each node carries
+-- the command to run when selected. Opens in menu mode; @/@ switches to
+-- search, where keys type into 'query' instead of navigating.
 data PickerState = PickerState
     { title     :: !Text
-    , items     :: ![PickerItem]
-    , cursor    :: !Int    -- ^ index into the /filtered/ list
+    , roots     :: ![PickerNode]
+    , cursor    :: !Int    -- ^ index into the /visible/ (flattened) rows
     , query     :: !Text
     , searching :: !Bool
     }
     deriving (Eq, Show)
 
-data PickerItem = PickerItem
-    { label   :: !Text  -- ^ shown, and matched against 'query'
-    , command :: !Text  -- ^ command line run when the item is chosen
+-- | One node in the chooser tree. Sessions hold window nodes, which hold
+-- pane nodes; a childless node (e.g. @choose-window@) is a plain leaf.
+data PickerNode = PickerNode
+    { label    :: !Text  -- ^ shown, and matched against 'query'
+    , command  :: !Text  -- ^ command line run when the node is chosen
+    , preview  :: !(Maybe PaneId)  -- ^ pane whose contents preview this node
+    , children :: ![PickerNode]
+    , expanded :: !Bool  -- ^ whether 'children' are shown
     }
     deriving (Eq, Show)
 

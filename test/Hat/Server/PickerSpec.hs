@@ -1,10 +1,9 @@
 module Hat.Server.PickerSpec (spec) where
 
-import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
 import Test.Hspec
 
-import Hat.Model (PickerItem (..), PickerState (..))
+import Hat.Model (PickerNode (..), PickerState (..))
 import Hat.Server.Keys (Key, parseKeyName)
 import Hat.Server.Picker
 
@@ -12,53 +11,87 @@ import Hat.Server.Picker
 key :: T.Text -> Key
 key n = maybe (error ("bad key: " <> T.unpack n)) id (parseKeyName n)
 
+-- A collapsible parent node, initially expanded.
+node :: T.Text -> T.Text -> [PickerNode] -> PickerNode
+node lbl cmd kids = PickerNode lbl cmd Nothing kids True
+
 demo :: PickerState
 demo = PickerState
-    { title = "windows"
-    , items =
-        [ PickerItem "0:editor" "select-window -t 0"
-        , PickerItem "1:shell"  "select-window -t 1"
-        , PickerItem "2:logs"   "select-window -t 2"
+    { title = "tree"
+    , roots =
+        [ node "work" "switch-client -t work"
+            [ leaf "0:editor" "select-window -t work:0"
+            , leaf "1:shell"  "select-window -t work:1" ]
+        , node "play" "switch-client -t play"
+            [ leaf "0:game" "select-window -t play:0" ]
         ]
     , cursor = 0
     , query = ""
     , searching = False
     }
 
+stay :: PickerState -> Key -> PickerState
+stay p k = case editPicker p k of
+    PickerStay p' -> p'
+    _             -> error "expected the picker to stay open"
+
+labels :: PickerState -> [T.Text]
+labels = map ((.label) . (.node)) . visibleRows
+
 spec :: Spec
 spec = do
+    describe "visibleRows" $ do
+        it "flattens the fully expanded tree depth-first" $
+            labels demo `shouldBe` ["work", "0:editor", "1:shell", "play", "0:game"]
+
+        it "records the depth of each row" $
+            map (.depth) (visibleRows demo) `shouldBe` [0, 1, 1, 0, 1]
+
     describe "editPicker (menu mode)" $ do
-        it "moves the cursor down with j, clamped to the last item" $ do
-            let step p = case editPicker p (key "j") of
-                    PickerStay p' -> p'
-                    _ -> p
-                p3 = iterate step demo !! 5
-            p3.cursor `shouldBe` 2
-        it "runs the selected item's command on Enter" $
-            editPicker demo { cursor = 1 } (key "Enter")
-                `shouldBe` PickerRun "select-window -t 1"
+        it "moves the cursor down with j, clamped to the last row" $ do
+            let p = iterate (`stay` key "j") demo !! 9
+            p.cursor `shouldBe` 4
+
+        it "collapses the node under the cursor with h, hiding its children" $
+            labels (stay demo (key "h")) `shouldBe` ["work", "play", "0:game"]
+
+        it "re-expands a collapsed node with l" $ do
+            let collapsed = stay demo (key "h")
+            labels (stay collapsed (key "l")) `shouldBe` labels demo
+
+        it "toggles the node under the cursor with O" $
+            labels (stay demo (key "O")) `shouldBe` ["work", "play", "0:game"]
+
+        it "runs a leaf's command on Enter" $
+            editPicker demo { cursor = 2 } (key "Enter")
+                `shouldBe` PickerRun "select-window -t work:1"
+
+        it "runs a parent's own command on Enter" $
+            editPicker demo (key "Enter")
+                `shouldBe` PickerRun "switch-client -t work"
+
         it "cancels on q and Escape" $ do
             editPicker demo (key "q") `shouldBe` PickerCancel
             editPicker demo (key "Escape") `shouldBe` PickerCancel
+
         it "enters search mode on /" $
-            case editPicker demo (key "/") of
-                PickerStay p -> p.searching `shouldBe` True
-                _ -> expectationFailure "expected to stay open in search mode"
+            (stay demo (key "/")).searching `shouldBe` True
 
     describe "search mode" $ do
         let searching = demo { searching = True }
-        it "types into the query and filters items" $ do
-            let afterL = case editPicker searching (key "l") of
-                    PickerStay p -> p
-                    _ -> error "expected stay"
-            afterL.query `shouldBe` "l"
-            map (.label) (visibleItems afterL) `shouldBe` ["1:shell", "2:logs"]
-        it "runs the sole match on Enter" $ do
-            let p = searching { query = "logs" }
-            editPicker p (key "Enter") `shouldBe` PickerRun "select-window -t 2"
+        it "filters to matches and keeps their ancestors" $ do
+            let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
+            p.query `shouldBe` "shell"
+            labels p `shouldBe` ["work", "1:shell"]
+
+        it "puts the cursor on the match so Enter runs the matched leaf" $ do
+            let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
+            editPicker p (key "Enter")
+                `shouldBe` PickerRun "select-window -t work:1"
 
     describe "pickerLines" $
-        it "marks the cursor row and shows the title" $ do
+        it "shows the title, marks the cursor row, and draws arrows" $ do
             let ls = pickerLines 10 demo { cursor = 1 }
-            listToMaybe ls `shouldBe` Just "windows"
-            filter (T.isPrefixOf "\x25b8") ls `shouldBe` ["\x25b8 1:shell"]
+            map snd (take 1 ls) `shouldBe` ["tree"]
+            [ t | (selected, t) <- ls, selected ] `shouldBe` ["    0:editor"]
+            [ t | (_, t) <- ls, "\x25be" `T.isInfixOf` t ] `shouldBe` ["\x25be work", "\x25be play"]
