@@ -70,6 +70,7 @@ data ServerState = ServerState
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
     , logger      :: Logger
     , sockPath    :: FilePath
+    , store       :: FilePath  -- ^ SQLite persistence file for this socket
     }
 
 data Session = Session
@@ -216,8 +217,8 @@ data Client = Client
     , cwd       :: Text
     }
 
-newServerState :: Keymap -> Logger -> FilePath -> IO ServerState
-newServerState defaultKeymap lg path = ServerState
+newServerState :: Keymap -> Logger -> FilePath -> FilePath -> IO ServerState
+newServerState defaultKeymap lg path storePath = ServerState
     <$> newTVarIO Map.empty
     <*> newTVarIO Map.empty
     <*> newTVarIO 0
@@ -236,6 +237,7 @@ newServerState defaultKeymap lg path = ServerState
     <*> newTVarIO Nothing
     <*> pure lg
     <*> pure path
+    <*> pure storePath
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

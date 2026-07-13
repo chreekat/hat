@@ -66,6 +66,9 @@ withStore path action =
 -- | Create the tables if they do not exist. Additive only.
 bootstrap :: Connection -> IO ()
 bootstrap conn = do
+    -- The poll thread and an explicit kill-server save may open write
+    -- connections at once; wait for the lock rather than erroring.
+    execute_ conn "PRAGMA busy_timeout = 3000"
     execute_ conn
         "CREATE TABLE IF NOT EXISTS meta \
         \(key TEXT PRIMARY KEY, value TEXT NOT NULL)"

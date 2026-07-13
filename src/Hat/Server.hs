@@ -20,7 +20,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -31,10 +31,10 @@ import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
 import qualified Network.Socket as N
-import System.Directory (doesFileExist, removeFile)
-import System.Environment (getEnvironment)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
-import System.FilePath (takeDirectory)
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
 import qualified System.Posix.Files as PFiles
 import qualified System.Posix.IO as PIO
@@ -49,6 +49,9 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
+import Hat.Persist
+    (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
+    , saveSnapshot, withStore)
 import qualified Hat.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.Format (FormatEnv, renderFormat)
@@ -73,7 +76,8 @@ runServer path mconfig = do
     locked <- acquireLock (path <> ".lock")
     unless locked exitSuccess  -- another server won the race
     lg <- newLogger (takeDirectory path <> "/server.log")
-    st <- newServerState defaultKeymap lg path
+    storePath <- storePathFor path
+    st <- newServerState defaultKeymap lg path storePath
     bracket (listenOn path) N.close $ \lsock -> do
         logEvent lg ServerStarted { socket = path }
         -- Load the config in a background thread so shell conditions
@@ -95,6 +99,9 @@ runServer path mconfig = do
         _ <- forkIO $ forever $ do
             threadDelay 500_000
             refreshAutoNames st
+        -- Continuously mirror the session tree into the SQLite store so a
+        -- restart can rebuild it (see 'persistLoop').
+        _ <- forkIO (persistLoop st)
         r <- race (acceptLoop st lsock) (waitIdle st)
         case r of
             Left () -> pure ()
@@ -120,6 +127,91 @@ waitIdle st = atomically $ do
     sess <- readTVar st.sessions
     cs <- readTVar st.clients
     check (armed && not loading && Map.null sess && Map.null cs)
+
+-- Persistence ----------------------------------------------------------
+
+-- | The SQLite store for a socket: @$XDG_DATA_HOME/hat/<socket>.db@,
+-- falling back to @~/.local/share@. It lives in a reboot-surviving
+-- location (not beside the socket under @/tmp@) and is keyed per socket,
+-- so @-L foo@ and @-L bar@ never clobber each other. The directory is
+-- created if absent.
+storePathFor :: FilePath -> IO FilePath
+storePathFor sockPath = do
+    mxdg <- lookupEnv "XDG_DATA_HOME"
+    base <- case mxdg of
+        Just d | not (null d) -> pure d
+        _ -> do
+            home <- fromMaybe "/tmp" <$> lookupEnv "HOME"
+            pure (home </> ".local" </> "share")
+    let dir = base </> "hat"
+    createDirectoryIfMissing True dir
+    pure (dir </> (takeFileName sockPath <> ".db"))
+
+-- | Poll the live tree and write a fresh snapshot whenever it changes.
+-- The tree is tiny, so we rewrite it wholesale rather than diffing, and
+-- skip writes when nothing changed. A change to a pane's working
+-- directory (a bare @cd@, which fires no event) is caught here too.
+persistLoop :: ServerState -> IO ()
+persistLoop st = go Nothing
+  where
+    go prev = do
+        threadDelay 2_000_000
+        snap <- captureSnapshot st
+        next <- if not (null snap.sessions) && prev /= Just snap
+            then saveSnapshotNow st snap >> pure (Just snap)
+            else pure prev
+        go next
+
+-- | Capture and persist immediately. Called at 'cmdKillServer' so an
+-- explicit quit never loses a last-moment change. An empty tree is never
+-- written: closing every pane leaves the last non-empty arrangement in
+-- the store, so the next start restores it.
+saveNow :: ServerState -> IO ()
+saveNow st = do
+    snap <- captureSnapshot st
+    unless (null snap.sessions) (saveSnapshotNow st snap)
+
+-- Best-effort write; persistence must never take down the server, so any
+-- store failure (I/O, a lost lock race) is swallowed rather than raised.
+saveSnapshotNow :: ServerState -> Snapshot -> IO ()
+saveSnapshotNow st snap =
+    (withStore st.store $ \conn -> saveSnapshot conn snap)
+        `catch` \(_ :: SomeException) -> pure ()
+
+-- | Read the whole session tree into a pure 'Snapshot': sessions in id
+-- order, windows by index, panes in layout order with their live cwd.
+captureSnapshot :: ServerState -> IO Snapshot
+captureSnapshot st = do
+    sess <- Map.elems <$> readTVarIO st.sessions
+    Snapshot <$> mapM captureSession sess
+
+captureSession :: Session -> IO SessionSnap
+captureSession s = do
+    nm    <- readTVarIO s.name
+    curIx <- readTVarIO s.currentIx
+    eff   <- readTVarIO s.lastSize
+    ws    <- Map.toAscList <$> readTVarIO s.windows
+    wsnaps <- mapM (captureWindow eff) ws
+    pure SessionSnap
+        { name = nm, startCwd = T.pack s.startCwd
+        , currentIx = curIx, windows = wsnaps }
+
+captureWindow :: Size -> (Int, Window) -> IO WindowSnap
+captureWindow eff (wix, w) = do
+    nm       <- readTVarIO w.name
+    lay      <- readTVarIO w.layout
+    activeId <- readTVarIO w.activeId
+    paneMap  <- readTVarIO w.panes
+    let order = layoutPanes lay
+        activeOrd = fromMaybe 0 (List.elemIndex activeId order)
+    psnaps <- fmap catMaybes . forM order $ \pid ->
+        forM (Map.lookup pid paneMap) $ \pane -> do
+            dir <- paneCurrentPath pane
+            pure PaneSnap { cwd = T.pack dir }
+    pure WindowSnap
+        { ix = wix, name = nm
+        , layout = emitLayout (sizeRect (windowArea eff)) lay
+        , active = activeOrd, panes = psnaps }
 
 -- Configuration --------------------------------------------------------
 
@@ -3212,6 +3304,7 @@ cmdSwitchClient st mclient args = do
 
 cmdKillServer :: CommandImpl
 cmdKillServer st mclient _ = do
+    saveNow st  -- capture the tree before we tear it down
     sessions <- readTVarIO st.sessions
     forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
     forM_ mclient $ \client -> send client Exited

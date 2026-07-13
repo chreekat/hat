@@ -26,7 +26,9 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 
 import Data.Maybe (listToMaybe)
+import System.FilePath (takeFileName, (</>))
 import Hat.Geometry
+import qualified Hat.Persist as Persist
 import Hat.Pty (setWinsize)
 import Hat.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Color, Style (..))
@@ -80,6 +82,13 @@ hatCtl h args =
 -- Stdout of a hat control command.
 ctlOut :: Hat -> [String] -> IO String
 ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
+
+-- Where the server writes its persistence store for this isolated Hat.
+-- The test env sets HOME but not XDG_DATA_HOME, so it falls back to
+-- @$HOME/.local/share@ (mirrors 'Hat.Server.storePathFor').
+storeOf :: Hat -> FilePath
+storeOf h =
+    h.home </> ".local" </> "share" </> "hat" </> (takeFileName h.sock <> ".db")
 
 -- A hat client running inside a test-owned pty. The raw transcript
 -- catches out-of-band messages ("[detached]"); the emulator models
@@ -449,6 +458,32 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    it "mirrors the session/window/pane tree into the SQLite store" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+
+        -- A second window with a live shell. The \& keeps the hex escape
+        -- from swallowing the 'c' (\x02c would parse as one char, 0x2C).
+        typeInto c1 "\x02\&c"
+        typeInto c1 "echo win2-marker\r"
+        awaitScreen c1 "win2-marker"
+
+        -- Split that window in two.
+        typeInto c1 "\x02%"
+        awaitScreen c1 "\x2502"
+
+        -- kill-server captures the tree synchronously before teardown.
+        _ <- hatCtl h ["kill-server"]
+        snap <- Persist.withStore (storeOf h) Persist.loadSnapshot
+        let wins = concatMap (.windows) snap.sessions
+            paneCounts = List.sort (map (length . (.panes)) wins)
+            cwds = concatMap (.panes) wins
+        length snap.sessions `shouldBe` 1
+        length wins `shouldBe` 2
+        paneCounts `shouldBe` [1, 2]
+        all (not . T.null . (.cwd)) cwds `shouldBe` True
 
     it "splits panes, navigates, zooms, and kills" $
         withHat hatBin $ \h -> do
