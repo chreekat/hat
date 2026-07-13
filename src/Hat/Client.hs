@@ -65,10 +65,14 @@ attachClient sock setup = do
     sendMessage sock =<< hello (AttachIntent setup)
     greeting <- recvMessage sock
     case greeting of
-        Just (Right (Welcome _)) -> do
-            hSetBuffering stdout NoBuffering
-            hSetBuffering stdin NoBuffering
-            withRawMode $
+        Just (Right (Welcome _)) ->
+            -- Buffering changes go INSIDE withRawMode: hSetBuffering
+            -- NoBuffering on a readable tty handle does a hidden tcsetattr
+            -- (clears ICANON), so it must come after the raw-mode save or
+            -- the exit path restores the clobbered state.
+            withRawMode $ do
+                hSetBuffering stdout NoBuffering
+                hSetBuffering stdin NoBuffering
                 (B.hPut stdout enterAltScreen >> shuttle sock)
                     `finally` B.hPut stdout leaveAltScreen
         Just (Right (ServerError e)) -> pure (Rejected e)
