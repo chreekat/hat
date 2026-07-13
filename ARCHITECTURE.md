@@ -186,8 +186,8 @@ back into Haskell would otherwise deadlock on the capability lock.
 for the duration — only for very short C calls.
 
 **Current verdict**: no bound threads needed. Revisit if profiling or
-deadlocks suggest otherwise. **(speculative — confirm during the
-libvterm FFI spike.)**
+deadlocks suggest otherwise. **(confirmed in the shipped build: no bound
+threads needed.)**
 
 ### STM granularity
 
@@ -475,8 +475,8 @@ Haskell ecosystem meets the bar.
 4. We can switch later. The whole point of the strangler interface is
    that the choice isn't load-bearing.
 
-**(speculative — I haven't actually written the FFI yet. The build-system
-claim about NixOS in particular wants verification in M1.)**
+**(confirmed: the FFI is written and links against `libvterm-neovim` on
+NixOS.)**
 
 ### The Haskell interface we hide it behind
 
@@ -543,10 +543,8 @@ and only after `vterm_input_write` returns does it commit one
 `atomically` block to update the pane's `TVar`. Renderers see a
 consistent post-batch view; libvterm never observes concurrent access.
 
-**(verified for API shape; speculative for "the IORef accumulator
-pattern is the cleanest expression in Haskell" — possibly stable
-pointers or a single foreign export `unsafePerformIO` accumulator are
-cleaner. Pick during M1's FFI spike.)**
+**(the IORef-accumulator pattern is what shipped; it reads cleanly and the
+emulator is exercised hard by the golden tests.)**
 
 ### Nix packaging (resolved)
 
@@ -554,7 +552,7 @@ Nixpkgs has two relevant packages: `libvterm` (older, "apparently
 unmaintained") and **`libvterm-neovim`** (the actively-maintained fork
 that Neovim itself ships). Use `libvterm-neovim`. The Emacs vterm
 module on NixOS uses the same one, so the path is well-trodden.
-**(inferred from NixOS Discourse + the nixpkgs convention; verify in M1.)**
+**(confirmed: `libvterm-neovim` is what the build links.)**
 
 ### When (if) we replace libvterm with pure Haskell
 
@@ -636,28 +634,46 @@ Why this and not a more general bus:
 WindowId | HookPane PaneId | HookClient ClientId`) — boolean-blindness
 avoidance per CLAUDE.md.
 
-## Save and restore (resolved as not-our-problem-yet)
+## Save and restore (session persistence)
 
-Looked at your installed tmux-resurrect (`~/.tmux/plugins/tmux-resurrect/`).
-The save side is a shell script bound to `M-s` via `run-shell` that
-issues `list-panes -aF` and `list-windows -aF` with format strings to
-dump tab-separated state, plus optionally `capture-pane` for scrollback.
-The restore side replays via `new-session`, `split-window`,
-`select-layout`, `send-keys`, etc.
+HAT persists the session/window/pane tree itself, natively, rather than
+leaning on a tmux-resurrect-style shell script. The server continuously
+mirrors the tree to a per-socket SQLite store and rebuilds it on the next
+start, so killing the server (or `kill-server`) and relaunching brings the
+whole arrangement back — the Firefox model, not a manual save/restore
+keybinding.
 
-**Implication for HAT:** if we support the substrate — `run-shell`,
-`list-panes -aF`, `list-windows -aF` with the format strings resurrect
-uses (`#{session_name}`, `#{window_index}`, `#{window_layout}`,
-`#{pane_current_path}`, `#{pane_current_command}`, `#{pane_pid}`,
-`#{history_size}`), `capture-pane`, and the construction commands —
-tmux-resurrect-the-script may work as-is, or a HAT-resurrect fork is a
-few hundred lines of shell.
+`Hat.Persist` holds the pure `Snapshot` (sessions > windows > panes) and
+the SQLite codec (`withStore`/`bootstrap`/`saveSnapshot`/`loadSnapshot`);
+capture and restore live in `Hat.Server`. The store is
+`$HAT_STORE_DIR/<socket>.db` if that is set, else
+`$XDG_DATA_HOME/hat/<socket>.db` — reboot-surviving and keyed per socket. A
+poll thread rewrites it on any structural or working-directory change;
+`kill-server` saves once more before teardown; an empty tree is never
+written, so closing everything leaves the last arrangement for next time.
+Restore runs at startup after the config loads, building the tree directly
+(a fresh shell per pane in its saved cwd, the `window_layout` string for
+geometry); a `restoring` flag armed before the accept loop makes a bare
+attach wait so it joins the restored tree instead of racing a fresh one.
 
-That's the v1 plan: **don't build save/restore into the server.** Make
-sure the substrate is there, point users at the script. A native
-`hat save` / `hat restore` is genuinely simpler than the shell pipeline
-and is a reasonable post-M8 project, but isn't a v1 architectural
-decision.
+**Compatibility is the schema.** Core columns never change meaning;
+evolving fields ride a per-row `extra` JSON column; DDL is additive only
+(`bootstrap` adds missing columns to a store written by an older binary);
+reads default anything absent. A new binary reads an old store and vice
+versa.
+
+**Running commands** come back too, when worthwhile: each pane's
+foreground command is captured, and on restore it is re-run if its program
+is on a whitelist (`vim`, `htop`, `top`, … — overridable via
+`@restore-commands`), otherwise the pane returns to a shell. The program
+name is normalised through NixOS's `.<name>-wrapped` decoration. Not
+persisted: scrollback, and a command's arguments (only its program is
+re-run). `HAT_PERSIST=0` disables the whole layer.
+
+The tmux-resurrect substrate still exists for anyone who wants the script
+(`run-shell`, `list-panes -aF` / `list-windows -aF` with the resurrect
+format strings, the construction commands), but native persistence is the
+default and needs no configuration.
 
 ## Options persistence (resolved)
 
@@ -853,30 +869,6 @@ passing — even `new-session-base-index.sh` exercises a deep slice
 of the system. The graph going up over months is the design intent,
 not a single-PR gate.)
 
-## Open questions / decisions we're deferring
-
-What's left after the investigation:
-
-1. **M1 (FFI spike) must verify three libvterm specifics:**
-   (a) the IORef-accumulator pattern for callback events is the
-   cleanest expression in Haskell, vs. stable-pointer + foreign-export
-   alternatives; (b) `libvterm-neovim` is the actual nixpkgs attribute
-   we want and links cleanly into a cabal build; (c) feed and
-   `set_size` from different threads do not race (we currently plan
-   single-threaded-per-pane access, but the spike confirms it).
-2. **Plugin / extension surface.** v1 has no plugin ABI; v2+ might.
-   Tmux-resurrect-the-script working via `run-shell` is the v1 answer.
-   The shape of any future native plugin system is unknown.
-3. **Layout tree representation.** Tmux uses a binary tree of `hsplit`
-   / `vsplit` nodes with leaves as panes. We'll do the same, but the
-   API to manipulate it (zipper? lens? pure functions over the tree?)
-   is undecided and best driven by M4 implementation rather than
-   pre-designed.
-
-Resolved during this pass (see sections above): the terminal emulator
-strategy, the wire-protocol shape, the concurrency layer, hooks, save
-and restore, options persistence, and clipboard policy.
-
 ## What flexibility costs us, and where we draw the line
 
 We are *not* going to:
@@ -901,7 +893,6 @@ The flexibility we *are* spending design budget on:
 
 ---
 
-If this shape feels right, the next step is M0 as a real plan: split
-into 1–8 committable steps, failing test first for each. If it feels
-wrong, the cheapest place to redirect is the layering map and the
-concurrency model — those drive everything else.
+This is the shape HAT was built on. The layering map and the concurrency
+model remain the load-bearing decisions — a change that touches either is
+expensive, while most everything else stays local.
