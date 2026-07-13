@@ -12,7 +12,6 @@ module Hat.Term.Emulator
     , MouseMode (..)
     , CursorKey (..)
     , newEmulator
-    , freeEmulator
     , feed
     , encodeKey
     , resize
@@ -43,6 +42,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Foreign
+import qualified Foreign.Concurrent as FC
 import Foreign.C.String (CString)
 import Foreign.C.Types
 
@@ -134,8 +134,11 @@ data Screen = Screen
     }
 
 data Emulator = Emulator
-    { vt        :: Ptr CVTerm
-    , screen    :: Ptr CVTermScreen
+    { vt        :: ForeignPtr CVTerm
+        -- ^ owns the libvterm object: a finalizer frees it, the callback
+        --   struct and the callback FunPtrs when the emulator is GC'd, so
+        --   a dead pane's C resources are released without a manual call.
+    , screen    :: Ptr CVTermScreen  -- ^ borrowed from 'vt', valid while it lives
     , lock      :: MVar ()
     , sizeRef   :: IORef Size
     , gridRef   :: IORef (V.Vector (V.Vector Cell))
@@ -152,8 +155,6 @@ data Emulator = Emulator
     , outRef    :: IORef [ByteString]  -- reversed
     , sbRef     :: IORef (Seq [Cell])
     , sbLimit   :: Int
-    , cbStruct  :: Ptr CHatCallbacks
-    , funPtrs   :: [FunPtr ()]
     }
 
 newEmulator :: Size -> Int -> IO Emulator
@@ -246,8 +247,21 @@ newEmulator sz historyLimit = do
     c_hat_setup vtp cbs
     c_screen_reset scr 1
 
+    -- Release every C resource once the emulator becomes unreachable, so
+    -- a closed pane's libvterm object is never leaked and never freed
+    -- while a render still holds it.
+    let funptrs =
+            [ castFunPtr damageW, castFunPtr moveW, castFunPtr propBoolW
+            , castFunPtr propIntW, castFunPtr propStrW, castFunPtr bellW
+            , castFunPtr pushW, castFunPtr outputW
+            ]
+    vtFP <- FC.newForeignPtr vtp $ do
+        c_vterm_free vtp
+        free cbs
+        mapM_ freeHaskellFunPtr funptrs
+
     let e = Emulator
-            { vt = vtp
+            { vt = vtFP
             , screen = scr
             , lock = lockVar
             , sizeRef = sizeR
@@ -265,21 +279,9 @@ newEmulator sz historyLimit = do
             , outRef = outR
             , sbRef = sbR
             , sbLimit = historyLimit
-            , cbStruct = cbs
-            , funPtrs =
-                [ castFunPtr damageW, castFunPtr moveW, castFunPtr propBoolW
-                , castFunPtr propIntW, castFunPtr propStrW, castFunPtr bellW
-                , castFunPtr pushW, castFunPtr outputW
-                ]
             }
     refreshGrid e
     pure e
-
-freeEmulator :: Emulator -> IO ()
-freeEmulator e = withMVar e.lock $ \_ -> do
-    c_vterm_free e.vt
-    free e.cbStruct
-    mapM_ freeHaskellFunPtr e.funPtrs
 
 -- | Feed pty output into the emulator; returns what happened.
 feed :: Emulator -> ByteString -> IO [Event]
@@ -288,9 +290,10 @@ feed e bs = withMVar e.lock $ \_ -> do
     writeIORef e.outRef []
     writeIORef e.damageRef []
     writeIORef e.dirtyRef False
-    _ <- BU.unsafeUseAsCStringLen bs $ \(p, n) ->
-        c_vterm_input_write e.vt p (fromIntegral n)
-    c_flush_damage e.screen
+    withForeignPtr e.vt $ \vtp -> do
+        _ <- BU.unsafeUseAsCStringLen bs $ \(p, n) ->
+            c_vterm_input_write vtp p (fromIntegral n)
+        c_flush_damage e.screen
     applyDamage e
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
@@ -305,7 +308,8 @@ feed e bs = withMVar e.lock $ \_ -> do
 encodeKey :: Emulator -> CursorKey -> IO ByteString
 encodeKey e key = withMVar e.lock $ \_ -> do
     writeIORef e.outRef []
-    c_vterm_keyboard_key e.vt (keyCode key) #{const VTERM_MOD_NONE}
+    withForeignPtr e.vt $ \vtp ->
+        c_vterm_keyboard_key vtp (keyCode key) #{const VTERM_MOD_NONE}
     B.concat . reverse <$> readIORef e.outRef
   where
     keyCode k = case k of
@@ -318,8 +322,9 @@ encodeKey e key = withMVar e.lock $ \_ -> do
 
 resize :: Emulator -> Size -> IO ()
 resize e sz = withMVar e.lock $ \_ -> do
-    c_vterm_set_size e.vt (fromIntegral sz.rows) (fromIntegral sz.cols)
-    c_flush_damage e.screen
+    withForeignPtr e.vt $ \vtp -> do
+        c_vterm_set_size vtp (fromIntegral sz.rows) (fromIntegral sz.cols)
+        c_flush_damage e.screen
     writeIORef e.sizeRef sz
     writeIORef e.damageRef []
     refreshGrid e
@@ -402,9 +407,10 @@ refreshGrid e = do
     writeIORef e.gridRef grid
 
 readCell :: Emulator -> Int -> Int -> IO Cell
-readCell e r c = allocaBytes #{size HatCell} $ \hc -> do
-    _ <- c_hat_get_cell e.screen (fromIntegral r) (fromIntegral c) hc
-    peekHatCell hc
+readCell e r c = withForeignPtr e.vt $ \_ ->
+    allocaBytes #{size HatCell} $ \hc -> do
+        _ <- c_hat_get_cell e.screen (fromIntegral r) (fromIntegral c) hc
+        peekHatCell hc
 
 peekHatCell :: Ptr CHatCell -> IO Cell
 peekHatCell p = do
