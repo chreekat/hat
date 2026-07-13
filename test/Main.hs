@@ -2,6 +2,7 @@ import Test.Hspec
 
 import qualified Hat.Command.ParserSpec
 import qualified Hat.IntegrationSpec
+import qualified Hat.PersistSpec
 import qualified Hat.PtySpec
 import qualified Hat.Server.CopyModeSpec
 import qualified Hat.Server.FormatSpec
@@ -23,6 +24,7 @@ main :: IO ()
 main = hspec $ do
     describe "Hat.Socket" Hat.SocketSpec.spec
     describe "Hat.Pty" Hat.PtySpec.spec
+    describe "Hat.Persist" Hat.PersistSpec.spec
     describe "Hat.Term.Emulator" Hat.Term.EmulatorSpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Wire" Hat.WireSpec.spec

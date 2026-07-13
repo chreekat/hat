@@ -60,6 +60,7 @@ library
         Hat.Model
         Hat.Model.Ids
         Hat.Model.Options
+        Hat.Persist
         Hat.Pty
         Hat.Server
         Hat.Server.CopyMode
@@ -91,6 +92,7 @@ library
         network     ^>= 3.2.8.0,
         process     ^>= 1.6.26.1,
         serialise   ^>= 0.2.6.1,
+        sqlite-simple ^>= 0.4.19.0,
         stm         ^>= 2.5.3.1,
         text        ^>= 2.1.3,
         time        ^>= 1.12.2,
@@ -130,6 +132,7 @@ test-suite hat-test
     other-modules:
         Hat.Command.ParserSpec
         Hat.IntegrationSpec
+        Hat.PersistSpec
         Hat.PtySpec
         Hat.SocketSpec
         Hat.Server.CopyModeSpec
