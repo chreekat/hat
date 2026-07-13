@@ -1,5 +1,9 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric  #-}
+-- The event fields name the JSON keys (via Generic ToJSON) and are only
+-- ever set by record construction, never read as selectors — so their
+-- partiality across constructors is intentional and safe here.
+{-# OPTIONS_GHC -Wno-partial-fields #-}
 
 -- | Structured JSON logging: one event per line, written by a
 -- dedicated thread so callers never block on disk.
