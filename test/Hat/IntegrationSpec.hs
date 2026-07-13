@@ -42,10 +42,16 @@ import qualified Hat.Term.Emulator as Emu
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
 -- reads any ambient config) and a private socket. See 'withHat'.
 data Hat = Hat
-    { bin  :: FilePath
-    , home :: FilePath
-    , sock :: FilePath
+    { bin     :: FilePath
+    , home    :: FilePath
+    , sock    :: FilePath
+    , persist :: Bool   -- ^ whether the server keeps its SQLite store
     }
+
+-- Disable the SQLite persistence layer unless a test opts in, so most
+-- servers start from a clean slate and skip the background poll thread.
+persistEnv :: Hat -> [(String, String)]
+persistEnv h = [("HAT_PERSIST", "0") | not h.persist]
 
 -- Minimal PATH for spawned shells and the hat binary. Deliberately does
 -- not inherit the ambient environment.
@@ -56,14 +62,21 @@ testPath = "/run/current-system/sw/bin:/usr/bin:/bin"
 -- its temp dir down afterwards no matter how the test ends. The socket
 -- lives at @<tmp>/socket@.
 withHat :: FilePath -> (Hat -> IO a) -> IO a
-withHat hatBin = withHatOn hatBin "socket"
+withHat hatBin = withHatOn hatBin False "socket"
+
+-- | 'withHat' with persistence left on, for the tests that exercise
+-- save/restore across a server restart.
+withHatPersist :: FilePath -> (Hat -> IO a) -> IO a
+withHatPersist hatBin = withHatOn hatBin True "socket"
 
 -- | 'withHat' with a custom socket path relative to the temp HOME (used
 -- by the test that needs the socket's parent dirs to not exist yet).
-withHatOn :: FilePath -> FilePath -> (Hat -> IO a) -> IO a
-withHatOn hatBin sockRel action = do
+withHatOn :: FilePath -> Bool -> FilePath -> (Hat -> IO a) -> IO a
+withHatOn hatBin persistOn sockRel action = do
     dir <- mkdtemp "/tmp/hat-test-"
-    let h = Hat { bin = hatBin, home = dir, sock = dir <> "/" <> sockRel }
+    let h = Hat
+            { bin = hatBin, home = dir
+            , sock = dir <> "/" <> sockRel, persist = persistOn }
     action h `finally` teardown h
 
 -- Kill the server (harmless if already gone) and remove the temp dir.
@@ -81,7 +94,7 @@ hatCtl :: Hat -> [String] -> IO (ExitCode, String, String)
 hatCtl h args =
     P.readCreateProcessWithExitCode
         (P.proc h.bin (["-S", h.sock] <> args))
-            { P.env = Just [("HOME", h.home), ("PATH", testPath)] }
+            { P.env = Just ([("HOME", h.home), ("PATH", testPath)] <> persistEnv h) }
         ""
 
 -- Stdout of a hat control command.
@@ -137,6 +150,7 @@ startClientArgs h extra = do
                 , ("HOME", h.home)
                 , ("PS1", "$ ")
                 ]
+                <> persistEnv h
                 <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
             }
     masterH <- fdToHandle masterFd
@@ -465,7 +479,7 @@ spec = parallel $ do
         status `shouldBe` Exited ExitSuccess
 
     it "mirrors the session/window/pane tree into the SQLite store" $
-        withHat hatBin $ \h -> do
+        withHatPersist hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
 
@@ -491,7 +505,7 @@ spec = parallel $ do
         all (not . T.null . (.cwd)) cwds `shouldBe` True
 
     it "restores a saved session tree when the server starts" $
-        withHat hatBin $ \h -> do
+        withHatPersist hatBin $ \h -> do
         -- Seed the store the server reads on startup: two windows, the
         -- second split into two panes.
         let rect = sizeRect (Size { rows = 24, cols = 80 })
@@ -934,7 +948,7 @@ spec = parallel $ do
         awaitScreen c1 "\x2502"
 
     it "save -> kill-server -> restart -> restore rebuilds the window tree" $
-        withHat hatBin $ \h -> do
+        withHatPersist hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "0:sh*"
         -- Build a tree with the targeted resurrect primitives: rename
@@ -1450,7 +1464,7 @@ spec = parallel $ do
 
     it "autostarts the server when the socket directory does not exist yet" $
         -- the parent dirs of the socket must be created by the server.
-        withHatOn hatBin "fresh/subdir/socket" $ \h -> do
+        withHatOn hatBin False "fresh/subdir/socket" $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "exit\r"

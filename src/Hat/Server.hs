@@ -76,8 +76,9 @@ runServer path mconfig = do
     locked <- acquireLock (path <> ".lock")
     unless locked exitSuccess  -- another server won the race
     lg <- newLogger (takeDirectory path <> "/server.log")
-    storePath <- storePathFor path
-    st <- newServerState defaultKeymap lg path storePath
+    persistOn <- persistEnabled
+    mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
+    st <- newServerState defaultKeymap lg path mstore
     bracket (listenOn path) N.close $ \lsock -> do
         logEvent lg ServerStarted { socket = path }
         -- Load the config in a background thread so shell conditions
@@ -89,10 +90,10 @@ runServer path mconfig = do
             -- Armed before the accept loop can serve, so a client that
             -- autostarts us and attaches waits for the restore to finish
             -- (see 'ensureSession') and joins the restored tree.
-            writeTVar st.restoring True
+            when persistOn (writeTVar st.restoring True)
         _ <- forkIO $ do
             loadConfig st mconfig
-            restoreSaved st
+            forM_ mstore (restoreSaved st)
             atomically (writeTVar st.restoring False)
             -- Grace period so a `hat -f<conf> start` client whose fork
             -- lost the race with a fast config still finds us listening.
@@ -108,7 +109,7 @@ runServer path mconfig = do
             refreshAutoNames st
         -- Continuously mirror the session tree into the SQLite store so a
         -- restart can rebuild it (see 'persistLoop').
-        _ <- forkIO (persistLoop st)
+        forM_ mstore $ \p -> forkIO (persistLoop st p)
         r <- race (acceptLoop st lsock) (waitIdle st)
         case r of
             Left () -> pure ()
@@ -137,6 +138,11 @@ waitIdle st = atomically $ do
 
 -- Persistence ----------------------------------------------------------
 
+-- | Whether to persist the session tree. On by default; @HAT_PERSIST=0@
+-- turns it off (tests set this so each server starts from a clean slate).
+persistEnabled :: IO Bool
+persistEnabled = (/= Just "0") <$> lookupEnv "HAT_PERSIST"
+
 -- | The SQLite store for a socket: @$XDG_DATA_HOME/hat/<socket>.db@,
 -- falling back to @~/.local/share@. It lives in a reboot-surviving
 -- location (not beside the socket under @/tmp@) and is keyed per socket,
@@ -158,31 +164,32 @@ storePathFor sockPath = do
 -- The tree is tiny, so we rewrite it wholesale rather than diffing, and
 -- skip writes when nothing changed. A change to a pane's working
 -- directory (a bare @cd@, which fires no event) is caught here too.
-persistLoop :: ServerState -> IO ()
-persistLoop st = go Nothing
+persistLoop :: ServerState -> FilePath -> IO ()
+persistLoop st path = go Nothing
   where
     go prev = do
         threadDelay 2_000_000
         snap <- captureSnapshot st
         next <- if not (null snap.sessions) && prev /= Just snap
-            then saveSnapshotNow st snap >> pure (Just snap)
+            then saveSnapshotNow path snap >> pure (Just snap)
             else pure prev
         go next
 
 -- | Capture and persist immediately. Called at 'cmdKillServer' so an
--- explicit quit never loses a last-moment change. An empty tree is never
--- written: closing every pane leaves the last non-empty arrangement in
--- the store, so the next start restores it.
+-- explicit quit never loses a last-moment change. A no-op when
+-- persistence is off. An empty tree is never written: closing every pane
+-- leaves the last non-empty arrangement in the store, so the next start
+-- restores it.
 saveNow :: ServerState -> IO ()
-saveNow st = do
+saveNow st = forM_ st.store $ \path -> do
     snap <- captureSnapshot st
-    unless (null snap.sessions) (saveSnapshotNow st snap)
+    unless (null snap.sessions) (saveSnapshotNow path snap)
 
 -- Best-effort write; persistence must never take down the server, so any
 -- store failure (I/O, a lost lock race) is swallowed rather than raised.
-saveSnapshotNow :: ServerState -> Snapshot -> IO ()
-saveSnapshotNow st snap =
-    (withStore st.store $ \conn -> saveSnapshot conn snap)
+saveSnapshotNow :: FilePath -> Snapshot -> IO ()
+saveSnapshotNow path snap =
+    (withStore path $ \conn -> saveSnapshot conn snap)
         `catch` \(_ :: SomeException) -> pure ()
 
 -- | Read the whole session tree into a pure 'Snapshot': sessions in id
@@ -222,9 +229,9 @@ captureWindow eff (wix, w) = do
 
 -- | Rebuild any previously-saved session tree. An absent store or a read
 -- failure yields an empty snapshot, i.e. a normal fresh start.
-restoreSaved :: ServerState -> IO ()
-restoreSaved st = do
-    snap <- withStore st.store loadSnapshot
+restoreSaved :: ServerState -> FilePath -> IO ()
+restoreSaved st path = do
+    snap <- withStore path loadSnapshot
         `catch` \(_ :: SomeException) -> pure (Snapshot { sessions = [] })
     restoreSnapshot st snap
 

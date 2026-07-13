@@ -72,7 +72,9 @@ data ServerState = ServerState
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
     , logger      :: Logger
     , sockPath    :: FilePath
-    , store       :: FilePath  -- ^ SQLite persistence file for this socket
+    , store       :: Maybe FilePath
+        -- ^ SQLite persistence file for this socket; 'Nothing' disables
+        --   persistence entirely (used by tests via @HAT_PERSIST=0@).
     }
 
 data Session = Session
@@ -219,7 +221,7 @@ data Client = Client
     , cwd       :: Text
     }
 
-newServerState :: Keymap -> Logger -> FilePath -> FilePath -> IO ServerState
+newServerState :: Keymap -> Logger -> FilePath -> Maybe FilePath -> IO ServerState
 newServerState defaultKeymap lg path storePath = ServerState
     <$> newTVarIO Map.empty
     <*> newTVarIO Map.empty
