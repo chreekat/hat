@@ -9,6 +9,8 @@ module Hat.Server.Picker
     , Row (..)
     , leaf
     , visibleRows
+    , selectedPreview
+    , pickerSplit
     , editPicker
     , pickerLines
     ) where
@@ -17,7 +19,7 @@ import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Hat.Model (PickerNode (..), PickerState (..))
+import Hat.Model (PaneId, PickerNode (..), PickerState (..))
 import Hat.Server.Keys (Key (..))
 
 -- | What one key does to an open picker.
@@ -52,6 +54,19 @@ visibleRows p = go 0 [] (filterTree p.query p.roots)
               rest = if n.expanded then go (d + 1) here n.children else []
           in Row d n here : rest
         | (i, n) <- zip [0 ..] nodes ]
+
+-- | The pane whose contents should preview the row under the cursor.
+selectedPreview :: PickerState -> Maybe PaneId
+selectedPreview p = do
+    r <- listToMaybe (drop p.cursor (visibleRows p))
+    r.node.preview
+
+-- | How wide to make the list column when a preview is shown beside it,
+-- or 'Nothing' when the overlay is too narrow to split usefully.
+pickerSplit :: Int -> Maybe Int
+pickerSplit total
+    | total >= 40 = Just (max 20 (total `div` 3))
+    | otherwise   = Nothing
 
 -- | Keep nodes matching the query (case-insensitive substring) along with
 -- every ancestor of a match, force-expanding so matches are revealed.

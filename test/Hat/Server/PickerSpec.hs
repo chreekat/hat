@@ -3,7 +3,7 @@ module Hat.Server.PickerSpec (spec) where
 import qualified Data.Text as T
 import Test.Hspec
 
-import Hat.Model (PickerNode (..), PickerState (..))
+import Hat.Model (PaneId (..), PickerNode (..), PickerState (..))
 import Hat.Server.Keys (Key, parseKeyName)
 import Hat.Server.Picker
 
@@ -88,6 +88,22 @@ spec = do
             let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
             editPicker p (key "Enter")
                 `shouldBe` PickerRun "select-window -t work:1"
+
+    describe "selectedPreview" $ do
+        let previewTree = demo
+                { roots =
+                    [ (node "work" "switch-client -t work"
+                        [ (leaf "0:editor" "c") { preview = Just (PaneId 7) } ])
+                        { preview = Just (PaneId 3) } ] }
+        it "previews the pane of the row under the cursor" $ do
+            selectedPreview previewTree { cursor = 0 } `shouldBe` Just (PaneId 3)
+            selectedPreview previewTree { cursor = 1 } `shouldBe` Just (PaneId 7)
+
+    describe "pickerSplit" $ do
+        it "gives the list a third of a wide overlay" $
+            pickerSplit 90 `shouldBe` Just 30
+        it "declines to split a narrow overlay" $
+            pickerSplit 30 `shouldBe` Nothing
 
     describe "pickerLines" $
         it "shows the title, marks the cursor row, and draws arrows" $ do

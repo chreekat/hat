@@ -698,11 +698,14 @@ renderOnce st client = do
                         let origin = paneOrigin rects active
                         paneCursor pane origin rowOff
             pure (withStatus, cur)
-    -- A chooser overlay, when open, replaces the pane content area.
+    -- A chooser overlay, when open, replaces the pane content area, with
+    -- a live preview of the highlighted node's pane beside the list.
     mpicker <- readTVarIO client.picker
-    let (frame', cursor') = case mpicker of
-            Nothing -> (frame, cursor)
-            Just pk -> (overlayPicker statusRowIx csize pk frame, (Pos 0 0, False))
+    (frame', cursor') <- case mpicker of
+        Nothing -> pure (frame, cursor)
+        Just pk -> do
+            mPreview <- pickerPreviewCells st pk
+            pure (overlayPicker statusRowIx csize pk mPreview frame, (Pos 0 0, False))
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
     oldCursor <- readIORef client.lastCursor
@@ -715,16 +718,51 @@ renderOnce st client = do
   where
     foldM' z xs f = foldM f z xs
 
--- | Paint a chooser's list over every row except the status row.
-overlayPicker :: Int -> Size -> PickerState -> Frame -> Frame
-overlayPicker statusRowIx csize pk frame =
-    frame V.// [ (r, lineCells (if sel then pickerSelStyle else pickerStyle) width txt)
-               | (r, (sel, txt)) <- zip contentRows padded ]
+-- | The rendered cells of the pane previewing the highlighted node, or
+-- 'Nothing' when the node has no preview pane (or it no longer exists).
+pickerPreviewCells
+    :: ServerState -> PickerState -> IO (Maybe (V.Vector (V.Vector Cell.Cell)))
+pickerPreviewCells st pk = case Picker.selectedPreview pk of
+    Nothing -> pure Nothing
+    Just pid -> do
+        mpane <- atomically (findPaneById st (rawPane pid))
+        traverse (paneViewCells st) mpane
+
+-- | Paint a chooser over every row except the status row: the list on the
+-- left and, when the overlay is wide enough, a preview of the highlighted
+-- node's pane on the right, divided by a vertical rule.
+overlayPicker
+    :: Int -> Size -> PickerState -> Maybe (V.Vector (V.Vector Cell.Cell))
+    -> Frame -> Frame
+overlayPicker statusRowIx csize pk mPreview frame =
+    frame V.// [ (r, rowCells k) | (k, r) <- zip [0 ..] contentRows ]
   where
     width = fromIntegral csize.cols
     contentRows = [ r | r <- [0 .. fromIntegral csize.rows - 1], r /= statusRowIx ]
     rendered = Picker.pickerLines (length contentRows) pk
     padded = take (length contentRows) (rendered <> repeat (False, ""))
+    -- Split only when a preview pane exists and the width allows it.
+    split = case (mPreview, Picker.pickerSplit width) of
+        (Just grid, Just listW) -> Just (listW, grid)
+        _                       -> Nothing
+    rowCells k =
+        let (sel, txt) = padded !! k
+            sty = if sel then pickerSelStyle else pickerStyle
+        in case split of
+            Nothing -> lineCells sty width txt
+            Just (listW, grid) ->
+                lineCells sty listW txt
+                    <> V.singleton dividerCell
+                    <> previewRow grid k (width - listW - 1)
+
+-- | Row @k@ of a preview pane's cells, padded or clipped to @w@ columns.
+previewRow :: V.Vector (V.Vector Cell.Cell) -> Int -> Int -> V.Vector Cell.Cell
+previewRow grid k w =
+    let row = fromMaybe V.empty (grid V.!? k)
+    in V.generate w (\c -> fromMaybe Cell.blankCell (row V.!? c))
+
+dividerCell :: Cell.Cell
+dividerCell = Cell.Cell { Cell.text = "\x2502", Cell.width = 1, Cell.style = pickerStyle }
 
 pickerStyle :: Cell.Style
 pickerStyle = Cell.defaultStyle
@@ -2627,7 +2665,11 @@ buildTreeNodes st expandWindows expandPanes = do
     sessions <- Map.elems <$> readTVarIO st.sessions
     forM sessions $ \sess -> do
         sname <- readTVarIO sess.name
+        curIx <- readTVarIO sess.currentIx
         ws <- Map.toAscList <$> readTVarIO sess.windows
+        sessPreview <- case lookup curIx ws of
+            Just cur -> Just <$> readTVarIO cur.activeId
+            Nothing  -> pure Nothing
         winNodes <- forM ws $ \(ix, win) -> do
             wname <- readTVarIO win.name
             apid <- readTVarIO win.activeId
@@ -2652,7 +2694,7 @@ buildTreeNodes st expandWindows expandPanes = do
         pure PickerNode
             { label = sname
             , command = "switch-client -t " <> sname
-            , preview = Nothing
+            , preview = sessPreview
             , children = winNodes
             , expanded = expandWindows }
 

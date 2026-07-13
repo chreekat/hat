@@ -632,9 +632,14 @@ spec = parallel $ do
         awaitScreen c1 "win1-marker"
         typeInto c1 "\x02\&0"               -- back to window 0
         awaitScreen c1 "win0-marker"
-        -- prefix w opens choose-tree with no config binding at all.
+        -- prefix w opens choose-tree with no config binding at all. The
+        -- preview beside the list shows the highlighted node's live pane —
+        -- win0-marker, which a full-screen list would otherwise have erased.
         typeInto c1 "\x02w"
-        awaitScreen c1 "choose a window"
+        awaitWith "chooser open with a live preview of window 0" (\d -> do
+            t <- screenText d
+            pure ("choose a window" `T.isInfixOf` t
+                  && "win0-marker" `T.isInfixOf` t)) c1
         -- Navigate to the window-1 row and select it.
         typeInto c1 "/1"
         typeInto c1 "\r"
