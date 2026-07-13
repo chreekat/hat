@@ -210,6 +210,8 @@ data Client = Client
     , size      :: TVar Size
     , session   :: TVar SessionId
     , lastSession :: TVar (Maybe SessionId)
+    , ready     :: TVar Bool  -- ^ set once Welcome is sent; suppresses any
+                             --   broadcast to this client before the greeting
     , keyState  :: IORef PrefixState  -- input thread only
     , lastFrame :: IORef Frame        -- render thread only
     , lastCursor :: IORef (Pos, Bool)

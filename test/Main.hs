@@ -13,6 +13,7 @@ import qualified Hat.Server.OptionsSpec
 import qualified Hat.Server.PickerSpec
 import qualified Hat.Server.PromptSpec
 import qualified Hat.Server.RenderSpec
+import qualified Hat.Server.SendSpec
 import qualified Hat.Server.StyleSpec
 import qualified Hat.Server.TargetSpec
 import qualified Hat.SocketSpec
@@ -39,5 +40,6 @@ main = hspec $ do
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec
+    describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "integration" Hat.IntegrationSpec.spec

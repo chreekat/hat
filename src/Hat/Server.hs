@@ -4,6 +4,7 @@
 module Hat.Server
     ( runServer
     , setOption  -- ^ exported for the config-load burn-down test
+    , send       -- ^ exported for the greeting-ordering test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -490,6 +491,7 @@ welcome st conn h = do
         ControlIntent -> do
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
             sendMessage conn (Welcome "")
+            atomically $ writeTVar client.ready True
             controlLoop st client `finally` removeClient st client
         AttachIntent setupCmds -> do
             -- Register early so the setup commands (new-session,
@@ -511,6 +513,7 @@ welcome st conn h = do
                     atomically $ writeTVar st.everAttached True
                     applySessionSize st sess.id
                     sendMessage conn (Welcome sname)
+                    atomically $ writeTVar client.ready True
                     logEvent st.logger ClientConnected
                         { client = rawClient client.id, term = h.term }
                     withAsync (renderLoop st client) $ \_ ->
@@ -550,6 +553,7 @@ newClient st conn h = do
     toastVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
+    readyVar <- newTVarIO False
     pure Client
         { id = ClientId cid
         , sock = conn
@@ -557,6 +561,7 @@ newClient st conn h = do
         , size = sizeVar
         , session = sessVar
         , lastSession = lastSessVar
+        , ready = readyVar
         , keyState = keyVar
         , lastFrame = frameVar
         , lastCursor = cursorVar
@@ -576,10 +581,17 @@ removeClient st client = do
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
 
+-- Every server-initiated message except the Welcome/ServerError handshake
+-- (sent raw on the socket) goes through here — both broadcasts and a
+-- client's own render frames. Dropping anything before the client is
+-- 'ready' guarantees Welcome is the first byte it sees, even when it is
+-- attaching to an already-busy (e.g. restored) session.
 send :: Client -> ServerToClient -> IO ()
-send client msg =
-    withMVar client.sendLock (\_ -> sendMessage client.sock msg)
-        `catch` \(_ :: SomeException) -> pure ()
+send client msg = do
+    isReady <- readTVarIO client.ready
+    when isReady $
+        withMVar client.sendLock (\_ -> sendMessage client.sock msg)
+            `catch` \(_ :: SomeException) -> pure ()
 
 broadcast :: ServerState -> SessionId -> ServerToClient -> IO ()
 broadcast st sid msg = do

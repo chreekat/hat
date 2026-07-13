@@ -143,6 +143,7 @@ test-suite hat-test
         Hat.Server.OptionsSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
+        Hat.Server.SendSpec
         Hat.Server.StyleSpec
         Hat.Server.TargetSpec
         Hat.Server.RenderSpec
@@ -157,8 +158,10 @@ test-suite hat-test
         directory   ^>= 1.3.8.5,
         filepath    ^>= 1.5.4.0,
         hspec       ^>= 2.11.17,
+        network     ^>= 3.2.8.0,
         process     ^>= 1.6.26.1,
         QuickCheck  ^>= 2.15.0.1,
+        stm         ^>= 2.5.3.1,
         hat,
         sqlite-simple ^>= 0.4.19.0,
         vector      ^>= 0.13.2.0,
