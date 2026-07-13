@@ -75,6 +75,33 @@ spec = do
         it "C-d is a no-op at the end of the line" $
             bufferAfter "abc\EOT" `shouldBe` "abc"
 
+    describe "readline editing" $ do
+        it "C-b moves left, C-f moves right" $ do
+            bufferAfter "ac\STXb" `shouldBe` "abc"          -- C-b then insert
+            bufferAfter "ac\SOH\ACKb" `shouldBe` "abc"      -- C-a, C-f, insert
+
+        it "M-f moves to the end of the next word" $
+            bufferAfter "foo bar\SOH\ESCfX" `shouldBe` "fooX bar"
+
+        it "M-b moves to the start of the previous word" $
+            bufferAfter "foo bar\ESCbX" `shouldBe` "foo Xbar"
+
+        it "C-k kills to the end of the line" $
+            bufferAfter "foo bar\SOH\ESCf\v" `shouldBe` "foo"
+
+        it "C-u kills to the start of the line" $
+            bufferAfter "foo bar\ESCb\NAK" `shouldBe` "bar"
+
+        it "C-w kills the previous whitespace-delimited word" $
+            bufferAfter "foo bar\ETB" `shouldBe` "foo "
+
+        it "M-d kills the next word" $
+            bufferAfter "foo bar\SOH\ESCd" `shouldBe` " bar"
+
+        it "C-y yanks the last kill back at the cursor" $ do
+            bufferAfter "foo bar\ETB\EM" `shouldBe` "foo bar"       -- kill then yank
+            bufferAfter "foo bar\ETB\SOH\EM" `shouldBe` "barfoo "   -- yank elsewhere
+
     describe "history browsing" $ do
         -- history is most-recent-first.
         let hist = ["second", "first"]

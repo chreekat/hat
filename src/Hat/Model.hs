@@ -169,6 +169,7 @@ data PromptState = PromptState
                                --   means run the line verbatim.
     , promptLabel :: !Text     -- ^ text shown before the edit buffer (@:@ for
                                --   the bare prompt, @(rename-window) @ etc.)
+    , killed  :: !Text         -- ^ the last killed text, yanked back by @C-y@
     }
     deriving (Eq, Show)
 

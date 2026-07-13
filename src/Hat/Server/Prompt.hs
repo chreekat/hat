@@ -11,6 +11,7 @@ module Hat.Server.Prompt
     , pushHistory
     ) where
 
+import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -33,6 +34,7 @@ emptyPrompt = PromptState
     , pending = ""
     , template = ""
     , promptLabel = ":"
+    , killed = ""
     }
 
 -- | A prompt pre-filled with @initial@ and shown behind @prefix@. On
@@ -65,11 +67,20 @@ editPrompt _history st key = case key.name of
     "Delete" -> Editing (deleteAt st)
     "C-d"    -> Editing (deleteAt st)
     "Left"   -> Editing (moveTo (st.cursor - 1) st)
+    "C-b"    -> Editing (moveTo (st.cursor - 1) st)
     "Right"  -> Editing (moveTo (st.cursor + 1) st)
+    "C-f"    -> Editing (moveTo (st.cursor + 1) st)
     "Home"   -> Editing (moveTo 0 st)
     "C-a"    -> Editing (moveTo 0 st)
     "End"    -> Editing (moveTo (T.length st.input) st)
     "C-e"    -> Editing (moveTo (T.length st.input) st)
+    "M-b"    -> Editing (moveTo (backwardWordIx st.input st.cursor) st)
+    "M-f"    -> Editing (moveTo (forwardWordIx st.input st.cursor) st)
+    "C-k"    -> Editing (killToEnd st)
+    "C-u"    -> Editing (killToStart st)
+    "C-w"    -> Editing (killWordBack st)
+    "M-d"    -> Editing (killWordForward st)
+    "C-y"    -> Editing (insert st.killed st)
     "Up"     -> Editing (historyBack _history st)
     "Down"   -> Editing (historyForward _history st)
     _        -> case insertText key of
@@ -120,6 +131,72 @@ pushHistory line history
 -- | Clamp the cursor to @0..length@.
 moveTo :: Int -> PromptState -> PromptState
 moveTo n st = st { cursor = max 0 (min (T.length st.input) n) }
+
+-- | The index reached by moving forward over one word: skip any leading
+-- non-word characters, then the word characters (alphanumeric) themselves.
+forwardWordIx :: Text -> Int -> Int
+forwardWordIx s i = skip isAlphaNum (skip (not . isAlphaNum) i)
+  where
+    n = T.length s
+    skip p k
+        | k < n, p (T.index s k) = skip p (k + 1)
+        | otherwise = k
+
+-- | The index reached by moving backward over one word.
+backwardWordIx :: Text -> Int -> Int
+backwardWordIx s i = skipBack isAlphaNum (skipBack (not . isAlphaNum) i)
+  where
+    skipBack p k
+        | k > 0, p (T.index s (k - 1)) = skipBack p (k - 1)
+        | otherwise = k
+
+-- | The start of the previous whitespace-delimited word (readline @C-w@).
+backwardWSWordIx :: Text -> Int -> Int
+backwardWSWordIx s i = skipBack (not . isSpace) (skipBack isSpace i)
+  where
+    skipBack p k
+        | k > 0, p (T.index s (k - 1)) = skipBack p (k - 1)
+        | otherwise = k
+
+-- | Delete from the cursor to the end of the line, saving the kill.
+killToEnd :: PromptState -> PromptState
+killToEnd st
+    | st.cursor >= T.length st.input = st
+    | otherwise = st { input = before, killed = after }
+  where
+    (before, after) = T.splitAt st.cursor st.input
+
+-- | Delete from the start of the line to the cursor, saving the kill.
+killToStart :: PromptState -> PromptState
+killToStart st
+    | st.cursor <= 0 = st
+    | otherwise = st { input = after, killed = before, cursor = 0 }
+  where
+    (before, after) = T.splitAt st.cursor st.input
+
+-- | Kill from the previous word boundary to the cursor.
+killWordBack :: PromptState -> PromptState
+killWordBack st
+    | j >= st.cursor = st
+    | otherwise = st
+        { input = T.take j st.input <> T.drop st.cursor st.input
+        , killed = T.take (st.cursor - j) (T.drop j st.input)
+        , cursor = j
+        }
+  where
+    j = backwardWSWordIx st.input st.cursor
+
+-- | Kill from the cursor to the next word boundary.
+killWordForward :: PromptState -> PromptState
+killWordForward st
+    | j <= st.cursor = st
+    | otherwise = st
+        { input = before <> T.drop (j - st.cursor) after
+        , killed = T.take (j - st.cursor) after
+        }
+  where
+    j = forwardWordIx st.input st.cursor
+    (before, after) = T.splitAt st.cursor st.input
 
 -- | Delete the character at the cursor (forward delete).
 deleteAt :: PromptState -> PromptState
