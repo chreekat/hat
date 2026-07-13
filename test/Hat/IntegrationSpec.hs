@@ -418,6 +418,24 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "refuses to nest: attaching from inside a pane errors out" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+
+        -- hat-in-hat: attaching from a pane of the same server would
+        -- render the session inside itself (input/draw recursion). The
+        -- pane's $TMUX marks the nesting; attach must refuse, like tmux.
+        typeInto c1 (B8.pack (h.bin <> " -S " <> h.sock <> " attach\r"))
+        awaitScreen c1 "nested with care"
+
+        -- The shell survives the refusal, and control commands from
+        -- inside a pane still work (scripts depend on them).
+        typeInto c1 (B8.pack (h.bin <> " -S " <> h.sock <> " list-sessions\r"))
+        awaitWith "list-sessions output" (\d -> do
+            t <- screenText d
+            pure ("windows" `T.isInfixOf` t)) c1
+
     it "attach -t attaches this terminal to the named session" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
