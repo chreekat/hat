@@ -31,6 +31,7 @@
             pkgs.cabal-install
             pkgs.haskellPackages.ghc
             pkgs.libvterm-neovim
+            pkgs.haskellPackages.weeder
 
             # Upstream tmux regress/ scripts need FHS-ish utilities on PATH.
             pkgs.coreutils
