@@ -16,6 +16,12 @@ control-client-size.sh
 # as spaces where upstream keeps a literal \t. Needs emulator-level tab
 # tracking; out of M8 scope.
 copy-mode-test-emacs.sh
+# copy-mode-test-vi: blocked on the `window-size` option, which hat does
+# not implement and now rejects loudly. The test runs `set -g window-size
+# manual` during setup, so it exits before reaching the copy-mode motions
+# it means to check. Unblock by implementing window-size (manual/largest/
+# smallest/latest) plus `new -x/-y`.
+copy-mode-test-vi.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test3.sh
