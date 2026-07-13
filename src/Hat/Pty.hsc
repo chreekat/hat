@@ -108,17 +108,20 @@ spawn :: Spawn -> IO PtyHandle
 spawn s = do
     (masterFd, slaveFd) <- openPseudoTerminal
     setWinsize slaveFd s.size
+    -- Wrap the master fd FIRST: hSetBuffering NoBuffering on a terminal
+    -- handle does a hidden tcsetattr (GHC's setRaw clears ICANON, sets
+    -- MIN=1/TIME=0), and a pty pair shares one termios — so this clobbers
+    -- the pane's line discipline. Doing it before the spawn makes the
+    -- child's own tcsetattr (hat_spawn_pty) strictly last; racing it was
+    -- the source of panes coming up non-canonical under load.
+    h <- fdToHandle masterFd
+    hSetBuffering h NoBuffering
     let Fd m = masterFd
         Fd sl = slaveFd
-        -- Trampoline: normalize the line discipline in the pane's own
-        -- foreground context AFTER an exec (clean process state), then
-        -- exec the real program — doing it in the forked child of the
-        -- threaded RTS is unreliable under load.
-        wrapFile = "/bin/sh"
-        argv = wrapFile : "-c" : "stty sane; exec \"$@\"" : "hat-pane"
-             : s.cmd : s.args
+        cmd = s.cmd
+        argv = s.cmd : s.args
         envv = [k <> "=" <> v | (k, v) <- s.env]
-    rawPid <- withCString wrapFile $ \cCmd ->
+    rawPid <- withCString cmd $ \cCmd ->
         withMaybeCString s.cwd $ \cCwd ->
         withCStringArray0 argv $ \pArgv ->
         withCStringArray0 envv $ \pEnv ->
@@ -126,8 +129,6 @@ spawn s = do
     closeFd slaveFd
     when (rawPid < 0) $ ioError (userError "hat: fork failed")
     let childPid = fromIntegral rawPid :: ProcessID
-    h <- fdToHandle masterFd
-    hSetBuffering h NoBuffering
     exitVar <- newEmptyMVar
     _ <- forkIO $ do
         st <- getProcessStatus True False childPid
@@ -149,8 +150,9 @@ withCStringArray0 :: [String] -> (Ptr CString -> IO a) -> IO a
 withCStringArray0 xs f =
     withMany withCString xs $ \ptrs -> withArray0 nullPtr ptrs f
 
--- The canonical/echo/signal line discipline is normalized by the trampoline
--- (@stty sane@) that 'spawn' execs, not here and not in the forked child.
+-- The canonical/echo/signal line discipline is normalized in the C child
+-- (hat_spawn_pty), in its own foreground context after TIOCSCTTY and
+-- before exec — deterministic syscalls, no external @stty@ to lose a race.
 
 -- | Blocking read of whatever bytes are available. Empty result means the
 -- pty is gone (child exited and the slave side closed).
