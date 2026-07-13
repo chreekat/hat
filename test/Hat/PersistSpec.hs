@@ -1,7 +1,9 @@
 module Hat.PersistSpec (spec) where
 
+import Control.Exception (finally)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Database.SQLite.Simple (Connection, close, execute_, open)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
@@ -87,3 +89,56 @@ spec = do
                 saveSnapshot conn s2
                 loadSnapshot conn
             pure (got === (s2 :: Snapshot))
+
+    -- Forward/backward compatibility: the reader keys off core columns
+    -- only, so it reads a store from an older or newer binary.
+    describe "schema compatibility" $ do
+        let oneSession nm cwd0 wnm lay pcwd = Snapshot
+                { sessions =
+                    [ SessionSnap
+                        { name = nm, startCwd = cwd0, currentIx = 0
+                        , windows =
+                            [ WindowSnap { ix = 0, name = wnm, layout = lay
+                                , active = 0, panes = [PaneSnap { cwd = pcwd }] }
+                            ] } ] }
+
+        it "reads rows written before the extra column existed" $ do
+            got <- withRaw $ \conn -> do
+                execute_ conn "CREATE TABLE session (seq INTEGER PRIMARY KEY, \
+                    \name TEXT, start_cwd TEXT, current_ix INTEGER)"
+                execute_ conn "CREATE TABLE window (session_seq INTEGER, \
+                    \ix INTEGER, name TEXT, layout TEXT, active INTEGER)"
+                execute_ conn "CREATE TABLE pane (session_seq INTEGER, \
+                    \window_ix INTEGER, ordinal INTEGER, cwd TEXT)"
+                execute_ conn "INSERT INTO session VALUES (0, 'old', '/home', 0)"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0)"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/home/x')"
+                loadSnapshot conn
+            got `shouldBe` oneSession "old" "/home" "w" "lay" "/home/x"
+
+        it "ignores unknown columns, tables, and meta keys" $ do
+            got <- withRaw $ \conn -> do
+                execute_ conn "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)"
+                execute_ conn "INSERT INTO meta VALUES ('schema_version', '999')"
+                execute_ conn "INSERT INTO meta VALUES ('future_key', 'x')"
+                execute_ conn "CREATE TABLE session (seq INTEGER PRIMARY KEY, \
+                    \name TEXT, start_cwd TEXT, current_ix INTEGER, \
+                    \extra TEXT, future_col TEXT)"
+                execute_ conn "CREATE TABLE window (session_seq INTEGER, \
+                    \ix INTEGER, name TEXT, layout TEXT, active INTEGER, extra TEXT)"
+                execute_ conn "CREATE TABLE pane (session_seq INTEGER, \
+                    \window_ix INTEGER, ordinal INTEGER, cwd TEXT, extra TEXT)"
+                execute_ conn "CREATE TABLE future_table (x INTEGER)"
+                execute_ conn "INSERT INTO future_table VALUES (1)"
+                execute_ conn "INSERT INTO session \
+                    \VALUES (0, 'nu', '/w', 0, '{}', 'surprise')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'win', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/w/p', '{}')"
+                loadSnapshot conn
+            got `shouldBe` oneSession "nu" "/w" "win" "lay" "/w/p"
+
+-- Run an action against a fresh in-memory database.
+withRaw :: (Connection -> IO a) -> IO a
+withRaw act = do
+    conn <- open ":memory:"
+    act conn `finally` close conn
