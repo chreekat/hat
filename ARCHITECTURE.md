@@ -853,65 +853,6 @@ passing — even `new-session-base-index.sh` exercises a deep slice
 of the system. The graph going up over months is the design intent,
 not a single-PR gate.)
 
-## Tracer-bullet milestones
-
-Rough — *not* the plan, just a way to test the architecture is
-buildable. Each milestone is demoable (per CLAUDE.md BDD rule). I'll
-turn this into a real `/make-plan`-style plan when you give the word.
-
-**M0 — PTY tracer bullet.** `hat-server-stub` opens a PTY, runs
-`/bin/sh`, copies bytes to/from the controlling terminal in raw mode.
-No socket, no emulator, no multiplexing. Proves: `Hat.Pty`,
-`Hat.Client.Tty` (parts), signal handling (`SIGWINCH`, `SIGCHLD`),
-raw-mode discipline. Pure Haskell; no C deps yet.
-
-**M1 — libvterm FFI spike.** A separate small binary that links
-libvterm via FFI, feeds it a captured byte stream (e.g., the output
-of `script -q -O sample.raw -c 'vim README.md'`), and prints a grid
-snapshot to stdout. Proves: Nix glue against `libvterm-neovim`,
-`c2hs` (or hand-rolled FFI) hygiene, the callback-accumulator pattern
-into an `IORef`, threading discipline. Demoable: golden test
-comparing snapshot output to a `.expected` file.
-
-**M2 — Detached server, one pane.** Split into client + server.
-Server in background, client over Unix socket. One session, one
-window, one pane. Detach + reattach works. Server passes PTY bytes
-straight through to the client (still no emulator). Proves: process
-model, socket protocol skeleton, `Hat.Wire`.
-
-**M3 — Wrap libvterm.** Replace the passthrough with a libvterm-backed
-server-side emulator. Client receives diff'd frames, not raw bytes.
-Proves: the `Hat.Term.Emulator` interface, callback ↔ STM marshalling
-under load, `Hat.Server.Render`. Demoable: `vim` and `htop` run
-correctly under HAT.
-
-**M4 — Multiple panes in one window.** Split, navigate, kill.
-Layouts. Hardcoded keybindings for now. Proves: `Hat.Server.Layout`,
-`Hat.Server.Input` dispatch, multi-PTY orchestration.
-
-**M5 — Multiple windows + sessions.** `new-window`, `new-session`,
-`attach-session`, `kill-*`, `last-window`, `last-pane`. Default
-status line. Proves: the model layer is sound.
-
-**M6 — Config file + command engine.** Parse and execute
-`~/.tmux.conf`-style configs. `bind`, `set`, `set-option`,
-`source-file`. Demoable: load your real config (minus exotic
-features) and the keybindings work.
-
-**M7 — Format strings + status bar.** Render your real status line.
-Demoable: HAT shows the same status as tmux side-by-side, modulo
-features not yet implemented.
-
-**M8 — Copy mode + paste buffers.** vi mode, `copy-pipe`,
-`pipe-pane -I`. Demoable: `prefix [`, select, `y`, `prefix ]`.
-
-**M9 onward** — features that aren't on the critical path:
-`choose-tree`, `display-popup`, hooks, then plugin equivalents
-(tmux-resurrect-style save/restore).
-
-**(speculative on ordering — M3/M4 might want to swap depending on
-how the emulator goes.)**
-
 ## Open questions / decisions we're deferring
 
 What's left after the investigation:

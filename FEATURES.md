@@ -322,5 +322,5 @@ The milestone-driven build-out is complete:
 
 From here, work proceeds one feature at a time as gaps are noticed in daily
 use. Each is a self-contained slice: a failing test, the implementation, and
-a scripted regression that lands in the suite. Completed feature write-ups
-live in git history, not in `plans/`; `plans/` holds only the in-flight one.
+a scripted regression that lands in the suite, with the write-up in git
+history.
