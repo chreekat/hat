@@ -6,7 +6,6 @@ module Hat.Server.Layout
     , Direction (..)
     , LayoutName (..)
     , arrange
-    , paneRects
     , sizeRect
     , layoutPanes
     , splitLeaf
@@ -70,10 +69,6 @@ arrange rect = \case
                 , c <- [rect.startCol .. rect.endCol - 1]
                 ]
         in arrange ra a <> arrange rb b <> (mempty, border)
-
--- | Where each pane lands inside a window of the given size.
-paneRects :: Size -> Layout -> [(PaneId, Rect)]
-paneRects sz lay = fst (arrange (sizeRect sz) lay)
 
 sizeRect :: Size -> Rect
 sizeRect sz = Rect

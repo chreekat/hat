@@ -15,7 +15,6 @@ module Hat.Log
     ( Logger
     , LogEvent (..)
     , newLogger
-    , nullLogger
     , logEvent
     ) where
 
@@ -44,9 +43,7 @@ data LogEvent
     deriving (Show, Generic)
     deriving anyclass (ToJSON)
 
-data Logger
-    = Logger (TQueue Aeson.Value)
-    | NullLogger
+newtype Logger = Logger (TQueue Aeson.Value)
 
 newLogger :: FilePath -> IO Logger
 newLogger path = do
@@ -58,11 +55,7 @@ newLogger path = do
         BL8.hPutStrLn h (Aeson.encode v)
     pure (Logger q)
 
-nullLogger :: Logger
-nullLogger = NullLogger
-
 logEvent :: Logger -> LogEvent -> IO ()
-logEvent NullLogger _ = pure ()
 logEvent (Logger q) ev = do
     now <- getCurrentTime
     let v = Aeson.object ["time" .= now, "event" .= ev]
