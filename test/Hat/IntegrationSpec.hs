@@ -50,8 +50,16 @@ data Hat = Hat
 
 -- Disable the SQLite persistence layer unless a test opts in, so most
 -- servers start from a clean slate and skip the background poll thread.
+-- When on, point the store at a private dir so isolation does not lean on
+-- the server's HOME/XDG derivation.
 persistEnv :: Hat -> [(String, String)]
-persistEnv h = [("HAT_PERSIST", "0") | not h.persist]
+persistEnv h
+    | h.persist = [("HAT_STORE_DIR", storeDir h)]
+    | otherwise = [("HAT_PERSIST", "0")]
+
+-- The private store directory and file for a persistence-enabled Hat.
+storeDir :: Hat -> FilePath
+storeDir h = h.home </> "store"
 
 -- Minimal PATH for spawned shells and the hat binary. Deliberately does
 -- not inherit the ambient environment.
@@ -101,12 +109,10 @@ hatCtl h args =
 ctlOut :: Hat -> [String] -> IO String
 ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
 
--- Where the server writes its persistence store for this isolated Hat.
--- The test env sets HOME but not XDG_DATA_HOME, so it falls back to
--- @$HOME/.local/share@ (mirrors 'Hat.Server.storePathFor').
+-- Where the server writes its persistence store for this isolated Hat,
+-- matching the HAT_STORE_DIR the harness hands it in 'persistEnv'.
 storeOf :: Hat -> FilePath
-storeOf h =
-    h.home </> ".local" </> "share" </> "hat" </> (takeFileName h.sock <> ".db")
+storeOf h = storeDir h </> (takeFileName h.sock <> ".db")
 
 -- A hat client running inside a test-owned pty. The raw transcript
 -- catches out-of-band messages ("[detached]"); the emulator models

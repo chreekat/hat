@@ -143,22 +143,26 @@ waitIdle st = atomically $ do
 persistEnabled :: IO Bool
 persistEnabled = (/= Just "0") <$> lookupEnv "HAT_PERSIST"
 
--- | The SQLite store for a socket: @$XDG_DATA_HOME/hat/<socket>.db@,
--- falling back to @~/.local/share@. It lives in a reboot-surviving
--- location (not beside the socket under @/tmp@) and is keyed per socket,
--- so @-L foo@ and @-L bar@ never clobber each other. The directory is
--- created if absent.
+-- | The SQLite store for a socket: @$HAT_STORE_DIR/<socket>.db@ when that
+-- override is set, else @$XDG_DATA_HOME/hat/<socket>.db@ falling back to
+-- @~/.local/share@. It lives in a reboot-surviving location (not beside
+-- the socket under @/tmp@) and is keyed per socket, so @-L foo@ and
+-- @-L bar@ never clobber each other. The directory is created if absent.
 storePathFor :: FilePath -> IO FilePath
 storePathFor sockPath = do
-    mxdg <- lookupEnv "XDG_DATA_HOME"
-    base <- case mxdg of
-        Just d | not (null d) -> pure d
-        _ -> do
-            home <- fromMaybe "/tmp" <$> lookupEnv "HOME"
-            pure (home </> ".local" </> "share")
-    let dir = base </> "hat"
+    dir <- storeDir
     createDirectoryIfMissing True dir
     pure (dir </> (takeFileName sockPath <> ".db"))
+  where
+    storeDir = lookupEnv "HAT_STORE_DIR" >>= \case
+        Just d | not (null d) -> pure d
+        _ -> do
+            base <- lookupEnv "XDG_DATA_HOME" >>= \case
+                Just d | not (null d) -> pure d
+                _ -> do
+                    home <- fromMaybe "/tmp" <$> lookupEnv "HOME"
+                    pure (home </> ".local" </> "share")
+            pure (base </> "hat")
 
 -- | Poll the live tree and write a fresh snapshot whenever it changes.
 -- The tree is tiny, so we rewrite it wholesale rather than diffing, and
