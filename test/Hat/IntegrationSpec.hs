@@ -645,6 +645,26 @@ spec = parallel $ do
         typeInto c1 "\r"
         awaitScreen c1 "win1-marker"
 
+    it "choose-tree without -Z draws in the active pane, sparing the other" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "bind e choose-tree -w\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "echo left-marker\r"
+        awaitScreen c1 "left-marker"
+        typeInto c1 "\x02%"                  -- split -h; right pane is active
+        awaitScreen c1 "\x2502"
+        typeInto c1 "echo right-marker\r"
+        awaitScreen c1 "right-marker"
+        -- prefix e opens a non-zoomed chooser in the right (active) pane.
+        -- The left pane's content must survive beside it.  (\& terminates
+        -- the \x02 hex escape so the 'e' is a separate key, not 0x2e.)
+        typeInto c1 "\x02\&e"
+        awaitWith "chooser confined to the active pane" (\d -> do
+            t <- screenText d
+            pure ("choose a window" `T.isInfixOf` t
+                  && "left-marker" `T.isInfixOf` t)) c1
+
     it "choose-window joins the chosen window's pane (V binding)" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf")

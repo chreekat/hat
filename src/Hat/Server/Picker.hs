@@ -11,14 +11,16 @@ module Hat.Server.Picker
     , visibleRows
     , selectedPreview
     , pickerSplit
+    , pickerRegion
     , editPicker
     , pickerLines
     ) where
 
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
+import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model (PaneId, PickerNode (..), PickerState (..))
 import Hat.Server.Keys (Key (..))
 
@@ -67,6 +69,21 @@ pickerSplit :: Int -> Maybe Int
 pickerSplit total
     | total >= 40 = Just (max 20 (total `div` 3))
     | otherwise   = Nothing
+
+-- | The rectangle the picker paints into: the whole content area (every
+-- row but the status row) when zoomed, otherwise the active pane's
+-- rectangle, falling back to the content area when there is no active
+-- pane. @rowOff@ is where content starts (1 under a top status line).
+pickerRegion :: Bool -> Size -> Int -> Maybe Rect -> Rect
+pickerRegion isZoomed csize rowOff mActive
+    | isZoomed  = full
+    | otherwise = fromMaybe full mActive
+  where
+    full = Rect
+        { startRow = rowOff
+        , endRow = rowOff + max 0 (fromIntegral csize.rows - 1)
+        , startCol = 0
+        , endCol = fromIntegral csize.cols }
 
 -- | Keep nodes matching the query (case-insensitive substring) along with
 -- every ancestor of a match, force-expanding so matches are revealed.

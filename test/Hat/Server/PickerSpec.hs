@@ -3,6 +3,7 @@ module Hat.Server.PickerSpec (spec) where
 import qualified Data.Text as T
 import Test.Hspec
 
+import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model (PaneId (..), PickerNode (..), PickerState (..))
 import Hat.Server.Keys (Key, parseKeyName)
 import Hat.Server.Picker
@@ -28,6 +29,7 @@ demo = PickerState
     , cursor = 0
     , query = ""
     , searching = False
+    , zoomed = False
     }
 
 stay :: PickerState -> Key -> PickerState
@@ -104,6 +106,18 @@ spec = do
             pickerSplit 90 `shouldBe` Just 30
         it "declines to split a narrow overlay" $
             pickerSplit 30 `shouldBe` Nothing
+
+    describe "pickerRegion" $ do
+        let csize = Size { rows = 24, cols = 80 }
+            paneRect = Rect { startRow = 0, endRow = 23, startCol = 41, endCol = 80 }
+        it "uses the active pane's rect when not zoomed" $
+            pickerRegion False csize 0 (Just paneRect) `shouldBe` paneRect
+        it "fills the content area (minus the status row) when zoomed" $
+            pickerRegion True csize 0 (Just paneRect)
+                `shouldBe` Rect { startRow = 0, endRow = 23, startCol = 0, endCol = 80 }
+        it "falls back to the content area with no active pane" $
+            pickerRegion False csize 1 Nothing
+                `shouldBe` Rect { startRow = 1, endRow = 24, startCol = 0, endCol = 80 }
 
     describe "pickerLines" $
         it "shows the title, marks the cursor row, and draws arrows" $ do

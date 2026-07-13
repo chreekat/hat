@@ -182,6 +182,7 @@ data PickerState = PickerState
     , cursor    :: !Int    -- ^ index into the /visible/ (flattened) rows
     , query     :: !Text
     , searching :: !Bool
+    , zoomed    :: !Bool   -- ^ @-Z@: fill the window, not just the pane
     }
     deriving (Eq, Show)
 

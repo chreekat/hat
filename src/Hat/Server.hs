@@ -663,8 +663,8 @@ renderOnce st client = do
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
                         pure (Just (sess, rects, borders, ps, active))
-    (frame, cursor) <- case view of
-        Nothing -> pure (blankFrame csize, (Pos 0 0, False))
+    (frame, cursor, mActiveRect) <- case view of
+        Nothing -> pure (blankFrame csize, (Pos 0 0, False), Nothing)
         Just (sess, rects, borders, ps, active) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
@@ -697,15 +697,17 @@ renderOnce st client = do
                     Just pane -> do
                         let origin = paneOrigin rects active
                         paneCursor pane origin rowOff
-            pure (withStatus, cur)
-    -- A chooser overlay, when open, replaces the pane content area, with
-    -- a live preview of the highlighted node's pane beside the list.
+            pure (withStatus, cur, shiftRect <$> List.lookup active rects)
+    -- A chooser overlay, when open, is drawn in the active pane's rect
+    -- (or the whole window under -Z), with a live preview of the
+    -- highlighted node's pane beside the list.
     mpicker <- readTVarIO client.picker
     (frame', cursor') <- case mpicker of
         Nothing -> pure (frame, cursor)
         Just pk -> do
             mPreview <- pickerPreviewCells st pk
-            pure (overlayPicker statusRowIx csize pk mPreview frame, (Pos 0 0, False))
+            let region = Picker.pickerRegion pk.zoomed csize rowOff mActiveRect
+            pure (overlayPicker region pk mPreview frame, (Pos 0 0, False))
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
     oldCursor <- readIORef client.lastCursor
@@ -728,32 +730,33 @@ pickerPreviewCells st pk = case Picker.selectedPreview pk of
         mpane <- atomically (findPaneById st (rawPane pid))
         traverse (paneViewCells st) mpane
 
--- | Paint a chooser over every row except the status row: the list on the
--- left and, when the overlay is wide enough, a preview of the highlighted
--- node's pane on the right, divided by a vertical rule.
+-- | Paint a chooser into @region@: the list on the left and, when wide
+-- enough, a preview of the highlighted node's pane on the right, divided
+-- by a vertical rule. Cells outside @region@ (other panes, borders, the
+-- status line) are left untouched.
 overlayPicker
-    :: Int -> Size -> PickerState -> Maybe (V.Vector (V.Vector Cell.Cell))
+    :: Rect -> PickerState -> Maybe (V.Vector (V.Vector Cell.Cell))
     -> Frame -> Frame
-overlayPicker statusRowIx csize pk mPreview frame =
-    frame V.// [ (r, rowCells k) | (k, r) <- zip [0 ..] contentRows ]
+overlayPicker region pk mPreview frame = overlayGrid frame region grid
   where
-    width = fromIntegral csize.cols
-    contentRows = [ r | r <- [0 .. fromIntegral csize.rows - 1], r /= statusRowIx ]
-    rendered = Picker.pickerLines (length contentRows) pk
-    padded = take (length contentRows) (rendered <> repeat (False, ""))
+    rows = region.endRow - region.startRow
+    width = region.endCol - region.startCol
+    rendered = Picker.pickerLines rows pk
+    padded = take rows (rendered <> repeat (False, ""))
     -- Split only when a preview pane exists and the width allows it.
     split = case (mPreview, Picker.pickerSplit width) of
-        (Just grid, Just listW) -> Just (listW, grid)
-        _                       -> Nothing
+        (Just previewCells, Just listW) -> Just (listW, previewCells)
+        _                               -> Nothing
+    grid = V.fromList [ rowCells k | k <- [0 .. rows - 1] ]
     rowCells k =
         let (sel, txt) = padded !! k
             sty = if sel then pickerSelStyle else pickerStyle
         in case split of
             Nothing -> lineCells sty width txt
-            Just (listW, grid) ->
+            Just (listW, previewCells) ->
                 lineCells sty listW txt
                     <> V.singleton dividerCell
-                    <> previewRow grid k (width - listW - 1)
+                    <> previewRow previewCells k (width - listW - 1)
 
 -- | Row @k@ of a preview pane's cells, padded or clipped to @w@ columns.
 previewRow :: V.Vector (V.Vector Cell.Cell) -> Int -> Int -> V.Vector Cell.Cell
@@ -2632,14 +2635,15 @@ clientPromptEnv st client = do
             windowFormatEnv st sess ix win
 
 -- | Open a chooser overlay on the invoking client.
-openPicker :: ServerState -> Client -> Text -> [PickerNode] -> IO ()
-openPicker st client titleText picked = atomically $ do
+openPicker :: ServerState -> Client -> Text -> Bool -> [PickerNode] -> IO ()
+openPicker st client titleText isZoomed picked = atomically $ do
     writeTVar client.picker $ Just PickerState
         { title = titleText
         , roots = picked
         , cursor = 0
         , query = ""
         , searching = False
+        , zoomed = isZoomed
         }
     bumpDirty st
 
@@ -2655,9 +2659,10 @@ cmdChooseTree st mclient args = do
         windowsOnly  = "-w" `elem` flags
         expandWindows = not sessionsOnly
         expandPanes   = not sessionsOnly && not windowsOnly
+        isZoomed      = "-Z" `elem` flags
     forM_ mclient $ \client -> do
         picked <- buildTreeNodes st expandWindows expandPanes
-        openPicker st client "choose a window" picked
+        openPicker st client "choose a window" isZoomed picked
     pure []
 
 buildTreeNodes :: ServerState -> Bool -> Bool -> IO [PickerNode]
@@ -2707,7 +2712,7 @@ cmdChooseWindow st mclient args = do
     case (mclient, pos) of
         (Just client, template : _) -> do
             picked <- buildWindowItems st client template
-            openPicker st client "choose a window" picked
+            openPicker st client "choose a window" False picked
             pure []
         _ -> pure [RErr "usage: choose-window template"]
 
