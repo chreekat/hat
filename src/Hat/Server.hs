@@ -484,30 +484,33 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , pipe = pipeVar
         }
 
+-- | The reader thread owns a pane's lifetime: it pumps pty output into
+-- the emulator until end-of-file, and 'closePane' runs in a @finally@ so
+-- the pane's resources and model entry are released however the loop ends
+-- — clean EOF, a hang-up from a kill command, or an exception.
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
-startPaneReader st sid win pane = void . forkIO $ loop
+startPaneReader st sid win pane = void . forkIO $
+    readLoop `finally` closePane st sid win pane
   where
-    loop = do
+    readLoop = do
         bs <- Hat.Pty.readPty pane.pty
-        if B8.null bs
-            then paneDied st sid win pane
-            else do
-                forwardToPipe pane bs
-                opts <- readTVarIO st.options
-                events <- Emu.feed pane.emulator bs
-                forM_ events $ \case
-                    Emu.Output out -> Hat.Pty.writePty pane.pty out
-                    Emu.TitleChanged t ->
-                        when opts.setTitles $ broadcast st sid (SetTitle t)
-                    Emu.Bell -> do
-                        atomically $ do
-                            writeTVar win.bellFlag True
-                            bumpDirty st
-                        broadcast st sid RingBell
-                    Emu.ScreenChanged -> atomically $ do
-                        markActivity st sid win
+        unless (B8.null bs) $ do
+            forwardToPipe pane bs
+            opts <- readTVarIO st.options
+            events <- Emu.feed pane.emulator bs
+            forM_ events $ \case
+                Emu.Output out -> Hat.Pty.writePty pane.pty out
+                Emu.TitleChanged t ->
+                    when opts.setTitles $ broadcast st sid (SetTitle t)
+                Emu.Bell -> do
+                    atomically $ do
+                        writeTVar win.bellFlag True
                         bumpDirty st
-                loop
+                    broadcast st sid RingBell
+                Emu.ScreenChanged -> atomically $ do
+                    markActivity st sid win
+                    bumpDirty st
+            readLoop
 
 -- | Flag a background window as having activity, when @monitor-activity@
 -- is on. The current window is exempt — you are already watching it.
@@ -532,8 +535,11 @@ windowArrange eff win = do
         Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
         _ -> arrange (sizeRect eff) lay
 
-paneDied :: ServerState -> SessionId -> Window -> Pane -> IO ()
-paneDied st sid win pane = do
+-- | Release everything a pane owns and remove it from the model. Runs
+-- exactly once, in the reader thread's @finally@, so no teardown path can
+-- forget a resource. (The emulator frees itself via its finalizer.)
+closePane :: ServerState -> SessionId -> Window -> Pane -> IO ()
+closePane st sid win pane = do
     stopPipe pane
     _ <- Hat.Pty.waitExit pane.pty
     Hat.Pty.closePty pane.pty
