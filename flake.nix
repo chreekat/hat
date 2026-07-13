@@ -18,8 +18,12 @@
     in
     {
       packages = forAllSystems (pkgs: rec {
-        hat = pkgs.haskellPackages.callCabal2nix "hat" ./. {
-          vterm = pkgs.libvterm-neovim;
+        hat = pkgs.callPackage ./package.nix { };
+        # Fully static musl binary — portable beyond Nix (scp it anywhere).
+        # Builds GHC from source on a cold cache; the ghc910 set is pinned
+        # because hat's base bound is 4.20 and pkgsStatic defaults newer.
+        hat-static = pkgs.pkgsStatic.callPackage ./package.nix {
+          haskellPackages = pkgs.pkgsStatic.haskell.packages.ghc910;
         };
         default = hat;
       });
