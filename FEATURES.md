@@ -312,6 +312,13 @@ The milestone-driven build-out is complete:
 - **M11** — tmux-resurrect save/restore primitives: `@`-option round-trip,
   rich `list-panes -aF`, the `window_layout` string codec,
   `select-layout "<string>"`, `move-window`.
+- **Continuous persistence** — a departure from manual resurrect toward the
+  Firefox model: the server continuously mirrors the session/window/pane
+  tree to a per-socket SQLite store and rebuilds it on restart, so
+  `kill-server` then relaunch brings everything back automatically (no
+  scrollback). Whitelisted running commands (`vim`, `htop`, …, via
+  `@restore-commands`) are re-run; the schema is forward/backward
+  compatible; `HAT_PERSIST=0` disables it.
 
 From here, work proceeds one feature at a time as gaps are noticed in daily
 use. Each is a self-contained slice: a failing test, the implementation, and
