@@ -154,6 +154,7 @@ defaultKeymap = Map.fromList
         , ("x", ["kill-pane"])
         , ("&", ["kill-window"])
         , (",", ["command-prompt", "-I", "#W", "rename-window '%%'"])
+        , (".", ["command-prompt", "-p", "index", "move-window -t '%%'"])
         , ("$", ["command-prompt", "-I", "#S", "rename-session '%%'"])
         , ("z", ["resize-pane", "-Z"])
         , ("n", ["next-window"])
@@ -2357,20 +2358,39 @@ cmdMoveWindow st mclient args = do
     mdst <- resolveWindowTarget st mclient (lookup "-t" opts)
     case (msrc, mdst) of
         (Just (srcSess, srcIx), Just (dstSess, dstIx)) -> do
-            atomically $ do
+            res <- atomically $ do
                 sws <- readTVar srcSess.windows
-                forM_ (Map.lookup srcIx sws) $ \win ->
-                    when (srcSess.id /= dstSess.id || srcIx /= dstIx) $ do
-                        modifyTVar' srcSess.windows (Map.delete srcIx)
-                        modifyTVar' dstSess.windows (Map.insert dstIx win)
-                        cur <- readTVar srcSess.currentIx
-                        when (cur == srcIx) $ do
-                            ws' <- readTVar srcSess.windows
-                            forM_ (Map.lookupMin ws') $ \(i, _) ->
-                                writeTVar srcSess.currentIx i
-                        bumpDirty st
-            pure []
+                case Map.lookup srcIx sws of
+                    Nothing -> pure (Right ())  -- nothing to move
+                    Just win
+                        | srcSess.id == dstSess.id, srcIx == dstIx ->
+                            pure (Right ())  -- already there
+                        | otherwise -> do
+                            dws <- readTVar dstSess.windows
+                            if Map.member dstIx dws
+                                then pure (Left ("can't move window: "
+                                    <> tshow dstIx <> " in use"))
+                                else do
+                                    modifyTVar' srcSess.windows (Map.delete srcIx)
+                                    modifyTVar' dstSess.windows (Map.insert dstIx win)
+                                    followFocus srcSess dstSess srcIx dstIx
+                                    bumpDirty st
+                                    pure (Right ())
+            pure [RErr e | Left e <- [res]]
         _ -> pure [RErr "usage: move-window -s src -t dst"]
+  where
+    -- The moved window keeps the focus: within a session the current
+    -- index follows it to the destination; across sessions the source
+    -- session falls back to its lowest remaining window.
+    followFocus srcSess dstSess srcIx dstIx = do
+        cur <- readTVar srcSess.currentIx
+        when (cur == srcIx) $
+            if srcSess.id == dstSess.id
+                then writeTVar srcSess.currentIx dstIx
+                else do
+                    ws' <- readTVar srcSess.windows
+                    forM_ (Map.lookupMin ws') $ \(i, _) ->
+                        writeTVar srcSess.currentIx i
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do

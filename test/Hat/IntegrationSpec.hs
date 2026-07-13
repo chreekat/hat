@@ -823,6 +823,17 @@ spec = parallel $ do
         out `shouldSatisfy` List.isInfixOf "/"     -- pane_current_path
         out `shouldSatisfy` List.isInfixOf "x"     -- WxH in window_layout
 
+    it "default prefix . renumbers the current window, keeping focus" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02\&c"                -- window 1, now current
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "\x02."                  -- prefix . opens the move prompt
+        awaitPromptOpen c1 "1:sh*"
+        typeInto c1 "5\r"                    -- move current window to index 5
+        awaitScreen c1 "5:sh*"               -- renumbered, still current
+
     it "moves a window to a new index (move-window)" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
