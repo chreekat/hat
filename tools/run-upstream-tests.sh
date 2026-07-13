@@ -41,9 +41,11 @@ results="$work/results"
 : > "$results"
 
 # Each test runs in isolation: private TMUX_TMPDIR so sockets don't
-# collide, private HOME so any ~/.config lookups are neutral. Upstream
-# scripts hardcode PATH=/bin:/usr/bin — strip that line so the script
-# inherits our devShell PATH.
+# collide, private HOME so any ~/.config lookups are neutral, and
+# HAT_PERSIST=0 so hat's session persistence (a hat-only feature that
+# changes server-restart behaviour) can't skew tmux's own expectations.
+# Upstream scripts hardcode PATH=/bin:/usr/bin — strip that line so the
+# script inherits our devShell PATH.
 run_one() {
     name=$1
     tdir=$(mktemp -d)
@@ -51,7 +53,7 @@ run_one() {
     sed '/^PATH=\/bin:\/usr\/bin$/d' "$regress/$name" > "$tdir/$name"
     (
         cd "$regress"
-        TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" \
+        TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" HAT_PERSIST=0 \
             timeout 30 sh "$tdir/$name"
     ) >/dev/null 2>&1
     printf '%d %s\n' "$?" "$name" >> "$results"
