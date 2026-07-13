@@ -51,7 +51,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
-    , saveSnapshot, withStore)
+    , loadSnapshot, saveSnapshot, withStore)
 import qualified Hat.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.Format (FormatEnv, renderFormat)
@@ -84,9 +84,16 @@ runServer path mconfig = do
         -- like `if '$TMUX run ...' ...` can reach the accept loop while
         -- the config is still running. configLoading suppresses the
         -- empty-idle exit until the config has drained.
-        atomically (writeTVar st.configLoading True)
+        atomically $ do
+            writeTVar st.configLoading True
+            -- Armed before the accept loop can serve, so a client that
+            -- autostarts us and attaches waits for the restore to finish
+            -- (see 'ensureSession') and joins the restored tree.
+            writeTVar st.restoring True
         _ <- forkIO $ do
             loadConfig st mconfig
+            restoreSaved st
+            atomically (writeTVar st.restoring False)
             -- Grace period so a `hat -f<conf> start` client whose fork
             -- lost the race with a fast config still finds us listening.
             threadDelay 500_000
@@ -212,6 +219,91 @@ captureWindow eff (wix, w) = do
         { ix = wix, name = nm
         , layout = emitLayout (sizeRect (windowArea eff)) lay
         , active = activeOrd, panes = psnaps }
+
+-- | Rebuild any previously-saved session tree. An absent store or a read
+-- failure yields an empty snapshot, i.e. a normal fresh start.
+restoreSaved :: ServerState -> IO ()
+restoreSaved st = do
+    snap <- withStore st.store loadSnapshot
+        `catch` \(_ :: SomeException) -> pure (Snapshot { sessions = [] })
+    restoreSnapshot st snap
+
+-- | Recreate every session in the snapshot, spawning a fresh shell in
+-- each pane's saved working directory and reapplying the saved layout.
+restoreSnapshot :: ServerState -> Snapshot -> IO ()
+restoreSnapshot st snap = forM_ snap.sessions (restoreSession st)
+
+restoreSession :: ServerState -> SessionSnap -> IO ()
+restoreSession st ssnap = do
+    let wins = filter (not . null . (.panes)) ssnap.windows
+    unless (null wins) $ do
+        sid <- SessionId <$> atomically (freshId st.nextSession)
+        env <- restoreEnv
+        let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
+            sz = Size { rows = 24, cols = 80 }  -- resized on client attach
+        built <- forM wins $ \wsnap -> do
+            (win, panes) <- restoreWindow st sid shellCmd env sz wsnap
+            pure (wsnap.ix, win, panes)
+        let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
+            curIx | Map.member ssnap.currentIx winMap = ssnap.currentIx
+                  | otherwise = maybe ssnap.currentIx fst (Map.lookupMin winMap)
+        nameVar    <- newTVarIO ssnap.name
+        windowsVar <- newTVarIO winMap
+        currentVar <- newTVarIO curIx
+        lastVar    <- newTVarIO Nothing
+        sizeVar    <- newTVarIO sz
+        environVar <- newTVarIO env
+        let sess = Session
+                { id = sid, name = nameVar, windows = windowsVar
+                , currentIx = currentVar, lastIx = lastVar
+                , lastSize = sizeVar, environ = environVar
+                , startCwd = T.unpack ssnap.startCwd }
+        atomically $ modifyTVar' st.sessions (Map.insert sid sess)
+        forM_ built $ \(_, win, panes) ->
+            forM_ panes (startPaneReader st sid win)
+
+restoreWindow
+    :: ServerState -> SessionId -> FilePath -> [(Text, Text)] -> Size
+    -> WindowSnap -> IO (Window, [Pane])
+restoreWindow st sid shellCmd env sz wsnap = do
+    wid <- WindowId <$> atomically (freshId st.nextWindow)
+    panes <- forM wsnap.panes $ \p -> restorePane st sid shellCmd env sz p.cwd
+    let pids = map (.id) panes
+        paneMap = Map.fromList [(p.id, p) | p <- panes]
+        -- Our own emitted string round-trips; the named layout is only a
+        -- fallback for a corrupt string, and still contains every pane.
+        lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
+                        (layoutFromString wsnap.layout pids)
+        activePid = pids !! max 0 (min (length pids - 1) wsnap.active)
+    nameVar       <- newTVarIO wsnap.name
+    layoutVar     <- newTVarIO lay
+    panesVar      <- newTVarIO paneMap
+    activeVar     <- newTVarIO activePid
+    lastActiveVar <- newTVarIO Nothing
+    bellVar       <- newTVarIO False
+    activityVar   <- newTVarIO False
+    zoomVar       <- newTVarIO Nothing
+    -- The restored name is explicit; don't let auto-rename clobber it.
+    autoRenameVar <- newTVarIO False
+    let win = Window
+            { id = wid, name = nameVar, layout = layoutVar
+            , panes = panesVar, activeId = activeVar
+            , lastActive = lastActiveVar, bellFlag = bellVar
+            , activity = activityVar, zoomed = zoomVar
+            , autoRename = autoRenameVar }
+    pure (win, panes)
+
+restorePane
+    :: ServerState -> SessionId -> FilePath -> [(Text, Text)] -> Size
+    -> Text -> IO Pane
+restorePane st sid shellCmd env sz cwd = do
+    pid <- PaneId <$> atomically (freshId st.nextPane)
+    spawnPane st pid sid shellCmd Nothing (T.unpack cwd) env sz
+
+-- The server's own environment seeds restored panes; spawnPane strips and
+-- re-adds the hat-specific vars (TERM, TMUX, HAT, …).
+restoreEnv :: IO [(Text, Text)]
+restoreEnv = map (\(k, v) -> (T.pack k, T.pack v)) <$> getEnvironment
 
 -- Configuration --------------------------------------------------------
 
@@ -458,6 +550,9 @@ refreshSessionEnv st sess client = do
 
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do
+    -- Let any restore finish first, so we attach to the restored tree
+    -- rather than racing it and creating a redundant fresh session.
+    atomically $ readTVar st.restoring >>= \r -> when r retry
     existing <- readTVarIO st.sessions
     case Map.lookupMin existing of
         Just (_, sess) -> pure sess

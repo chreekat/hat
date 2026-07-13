@@ -4,12 +4,12 @@ module Hat.IntegrationSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, SomeException, catch, evaluate, finally, throwIO, try)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (forM, unless, when)
 import qualified Data.List as List
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
-import System.Directory (removeDirectoryRecursive)
+import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hSetBuffering, BufferMode (..))
@@ -26,10 +26,15 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 
 import Data.Maybe (listToMaybe)
-import System.FilePath (takeFileName, (</>))
+import Data.Ratio ((%))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
+import Hat.Model.Ids (PaneId (..))
+import Hat.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
 import qualified Hat.Persist as Persist
 import Hat.Pty (setWinsize)
+import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
+import Hat.Server.LayoutString (emitLayout)
 import Hat.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Color, Style (..))
 import qualified Hat.Term.Emulator as Emu
@@ -485,6 +490,39 @@ spec = parallel $ do
         paneCounts `shouldBe` [1, 2]
         all (not . T.null . (.cwd)) cwds `shouldBe` True
 
+    it "restores a saved session tree when the server starts" $
+        withHat hatBin $ \h -> do
+        -- Seed the store the server reads on startup: two windows, the
+        -- second split into two panes.
+        let rect = sizeRect (Size { rows = 24, cols = 80 })
+            lay1 = emitLayout rect (Leaf (PaneId 0))
+            lay2 = emitLayout rect
+                (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
+            snap = Snapshot
+                { sessions =
+                    [ SessionSnap
+                        { name = "restored", startCwd = "/tmp", currentIx = 0
+                        , windows =
+                            [ WindowSnap { ix = 0, name = "one", layout = lay1
+                                , active = 0, panes = [PaneSnap { cwd = "/tmp" }] }
+                            , WindowSnap { ix = 1, name = "two", layout = lay2
+                                , active = 0
+                                , panes = [PaneSnap { cwd = "/tmp" }
+                                          , PaneSnap { cwd = "/tmp" }] }
+                            ] } ] }
+        createDirectoryIfMissing True (takeDirectory (storeOf h))
+        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
+
+        -- Attaching autostarts the server, which restores before we attach.
+        c1 <- startClient h
+        awaitScreen c1 "$"
+
+        -- The restored tree is present: two windows, three panes total.
+        wl <- ctlOut h ["list-windows", "-a"]
+        length (lines wl) `shouldBe` 2
+        pl <- ctlOut h ["list-panes", "-a"]
+        length (lines pl) `shouldBe` 3
+
     it "splits panes, navigates, zooms, and kills" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -899,32 +937,22 @@ spec = parallel $ do
         withHat hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "0:sh*"
-        -- Build a tree: window 0 renamed, plus a named window 1.
-        _ <- ctlOut h ["rename-window", "built0"]
-        typeInto c1 "\x02\&c"
-        awaitScreen c1 "1:sh*"
-        _ <- ctlOut h ["rename-window", "editor"]
-        awaitScreen c1 "1:editor*"
-        -- Save, as resurrect's save.sh does: dump index+name per window.
-        saved <- ctlOut h ["list-windows", "-F", "#{window_index}:#{window_name}"]
+        -- Build a tree with the targeted resurrect primitives: rename
+        -- window 0 by target, add a named window 1 by target.
+        _ <- ctlOut h ["rename-window", "-t", "0", "built0"]
+        awaitScreen c1 "0:built0*"
+        _ <- ctlOut h ["new-window", "-d", "-t", "1", "-n", "editor"]
+        awaitScreen c1 "1:editor"
 
-        -- Kill the server; wait for it to be gone.
+        -- Kill the server; the tree is saved automatically on the way out.
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not die"
 
-        -- Restart: a fresh client autostarts a new server and session.
+        -- Restart: a fresh client autostarts a new server, which restores
+        -- the saved tree before we attach -- no manual replay needed.
         c2 <- startClient h
-        awaitScreen c2 "0:sh*"
-        -- Restore: replay the saved windows (resurrect replays new-window).
-        forM_ (lines saved) $ \line -> case break (== ':') line of
-            (ix, ':' : nm)
-                | ix == "0" -> ctlOut h ["rename-window", "-t", "0", nm] >> pure ()
-                | otherwise ->
-                    ctlOut h ["new-window", "-d", "-t", ix, "-n", nm] >> pure ()
-            _ -> pure ()
-        -- The saved tree is back: window 0 renamed, window 1 'editor'.
         awaitScreen c2 "0:built0"
         awaitScreen c2 "1:editor"
 

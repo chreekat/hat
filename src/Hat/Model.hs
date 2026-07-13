@@ -61,6 +61,8 @@ data ServerState = ServerState
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
     , configLoading :: TVar Bool  -- ^ suppress waitIdle exit while config runs
+    , restoring   :: TVar Bool  -- ^ a bare attach waits on this so it joins the
+                                --   restored tree instead of making a fresh session
     , options     :: TVar Options
     , keymap      :: TVar Keymap
     , buffers     :: TVar (Seq (Text, Text))
@@ -227,6 +229,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
+    <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO defaultOptions
