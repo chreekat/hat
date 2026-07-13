@@ -524,11 +524,12 @@ spec = parallel $ do
                         { name = "restored", startCwd = "/tmp", currentIx = 0
                         , windows =
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
-                                , active = 0, panes = [PaneSnap { cwd = "/tmp" }] }
+                                , active = 0
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0
-                                , panes = [PaneSnap { cwd = "/tmp" }
-                                          , PaneSnap { cwd = "/tmp" }] }
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing }
+                                          , PaneSnap { cwd = "/tmp", command = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -542,6 +543,27 @@ spec = parallel $ do
         length (lines wl) `shouldBe` 2
         pl <- ctlOut h ["list-panes", "-a"]
         length (lines pl) `shouldBe` 3
+
+    it "restores a whitelisted running command (vim), not a bare shell" $
+        withHatPersist hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "vim -u NONE -i NONE\r"
+        awaitScreen c1 "VIM - Vi IMproved"
+
+        -- kill-server saves the tree; vim is the pane's foreground command
+        -- and is on the default restore whitelist.
+        _ <- ctlOut h ["kill-server"]
+        _ <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "server did not die"
+
+        -- Restart: the restored pane comes back running vim, not a shell.
+        -- vim's empty-buffer '~' filler proves it (a restored shell shows
+        -- the '$ ' prompt and never a '~'); the intro banner is skipped
+        -- because restore re-runs bare `vim`, whose vimrc may suppress it.
+        c2 <- startClient h
+        awaitScreen c2 "~"
 
     it "splits panes, navigates, zooms, and kills" $
         withHat hatBin $ \h -> do

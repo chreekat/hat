@@ -225,7 +225,8 @@ captureWindow eff (wix, w) = do
     psnaps <- fmap catMaybes . forM order $ \pid ->
         forM (Map.lookup pid paneMap) $ \pane -> do
             dir <- paneCurrentPath pane
-            pure PaneSnap { cwd = T.pack dir }
+            cmd <- paneCommandName pane
+            pure PaneSnap { cwd = T.pack dir, command = Just (commandName cmd) }
     pure WindowSnap
         { ix = wix, name = nm
         , layout = emitLayout (sizeRect (windowArea eff)) lay
@@ -250,10 +251,11 @@ restoreSession st ssnap = do
     unless (null wins) $ do
         sid <- SessionId <$> atomically (freshId st.nextSession)
         env <- restoreEnv
+        whitelist <- restoreWhitelist st
         let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
             sz = Size { rows = 24, cols = 80 }  -- resized on client attach
         built <- forM wins $ \wsnap -> do
-            (win, panes) <- restoreWindow st sid shellCmd env sz wsnap
+            (win, panes) <- restoreWindow st sid shellCmd env sz whitelist wsnap
             pure (wsnap.ix, win, panes)
         let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
             curIx | Map.member ssnap.currentIx winMap = ssnap.currentIx
@@ -275,10 +277,10 @@ restoreSession st ssnap = do
 
 restoreWindow
     :: ServerState -> SessionId -> FilePath -> [(Text, Text)] -> Size
-    -> WindowSnap -> IO (Window, [Pane])
-restoreWindow st sid shellCmd env sz wsnap = do
+    -> [Text] -> WindowSnap -> IO (Window, [Pane])
+restoreWindow st sid shellCmd env sz whitelist wsnap = do
     wid <- WindowId <$> atomically (freshId st.nextWindow)
-    panes <- forM wsnap.panes $ \p -> restorePane st sid shellCmd env sz p.cwd
+    panes <- forM wsnap.panes $ restorePane st sid shellCmd env sz whitelist
     let pids = map (.id) panes
         paneMap = Map.fromList [(p.id, p) | p <- panes]
         -- Our own emitted string round-trips; the named layout is only a
@@ -306,15 +308,53 @@ restoreWindow st sid shellCmd env sz wsnap = do
 
 restorePane
     :: ServerState -> SessionId -> FilePath -> [(Text, Text)] -> Size
-    -> Text -> IO Pane
-restorePane st sid shellCmd env sz cwd = do
+    -> [Text] -> PaneSnap -> IO Pane
+restorePane st sid shellCmd env sz whitelist psnap = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
-    spawnPane st pid sid shellCmd Nothing (T.unpack cwd) env sz
+    spawnPane st pid sid shellCmd (restoreRun whitelist psnap.command)
+        (T.unpack psnap.cwd) env sz
 
 -- The server's own environment seeds restored panes; spawnPane strips and
 -- re-adds the hat-specific vars (TERM, TMUX, HAT, …).
 restoreEnv :: IO [(Text, Text)]
 restoreEnv = map (\(k, v) -> (T.pack k, T.pack v)) <$> getEnvironment
+
+-- | Commands worth re-running when a pane is restored, rather than
+-- dropping to a fresh shell. Overridable via the @\@restore-commands@
+-- user option (a space-separated list).
+defaultRestoreCommands :: [Text]
+defaultRestoreCommands =
+    [ "vim", "nvim", "vi", "view", "emacs", "nano"
+    , "less", "man", "tail", "watch"
+    , "top", "htop", "atop", "btop" ]
+
+restoreWhitelist :: ServerState -> IO [Text]
+restoreWhitelist st = do
+    opts <- readTVarIO st.options
+    pure $ case Map.lookup "@restore-commands" opts.user of
+        Just v | not (T.null (T.strip v)) -> T.words v
+        _                                 -> defaultRestoreCommands
+
+-- | Re-run the captured command only when its program is whitelisted;
+-- otherwise the pane comes back as a plain shell ('Nothing').
+restoreRun :: [Text] -> Maybe Text -> Maybe Text
+restoreRun whitelist mcmd = do
+    cmd <- mcmd
+    if commandName cmd `elem` whitelist then Just cmd else Nothing
+
+-- | The program a captured foreground command names: its last path
+-- segment with NixOS's @.<name>-wrapped@ decoration stripped, so a pane
+-- running @\/nix\/store\/…\/.vim-wrapped@ is recorded (and matched) as
+-- @vim@.
+commandName :: Text -> Text
+commandName raw =
+    let base  = T.takeWhileEnd (/= '/') (firstWord raw)
+        undot = T.dropWhile (== '.') base
+    in fromMaybe undot (T.stripSuffix "-wrapped" undot)
+  where
+    firstWord t = case T.words t of
+        (w : _) -> w
+        []      -> ""
 
 -- Configuration --------------------------------------------------------
 

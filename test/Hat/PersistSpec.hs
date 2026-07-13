@@ -67,8 +67,17 @@ instance Arbitrary WindowSnap where
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
 instance Arbitrary PaneSnap where
-    arbitrary = PaneSnap <$> genText
-    shrink p = PaneSnap <$> shrinkText p.cwd
+    arbitrary = PaneSnap <$> genText <*> genMaybeText
+    shrink p =
+        [ p { cwd = c } | c <- shrinkText p.cwd ]
+        ++ [ p { command = mc } | mc <- shrinkMaybeText p.command ]
+
+genMaybeText :: Gen (Maybe Text)
+genMaybeText = oneof [pure Nothing, Just <$> genText]
+
+shrinkMaybeText :: Maybe Text -> [Maybe Text]
+shrinkMaybeText Nothing   = []
+shrinkMaybeText (Just t)  = Nothing : map Just (shrinkText t)
 
 spec :: Spec
 spec = do
@@ -99,7 +108,8 @@ spec = do
                         { name = nm, startCwd = cwd0, currentIx = 0
                         , windows =
                             [ WindowSnap { ix = 0, name = wnm, layout = lay
-                                , active = 0, panes = [PaneSnap { cwd = pcwd }] }
+                                , active = 0
+                                , panes = [PaneSnap { cwd = pcwd, command = Nothing }] }
                             ] } ] }
 
         it "reads rows written before the extra column existed" $ do
@@ -113,6 +123,7 @@ spec = do
                 execute_ conn "INSERT INTO session VALUES (0, 'old', '/home', 0)"
                 execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0)"
                 execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/home/x')"
+                bootstrap conn   -- additively adds the extra columns
                 loadSnapshot conn
             got `shouldBe` oneSession "old" "/home" "w" "lay" "/home/x"
 

@@ -13,13 +13,20 @@ module Hat.Persist
     , PaneSnap (..)
     , schemaVersion
     , withStore
+    , bootstrap
     , saveSnapshot
     , loadSnapshot
     ) where
 
 import Control.Exception (bracket)
+import Control.Monad (unless)
+import Data.Aeson
+    (FromJSON (..), ToJSON (..), decode, encode, object, withObject, (.:?), (.=))
+import qualified Data.ByteString.Lazy as BL
+import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Database.SQLite.Simple
 
 -- | A point-in-time capture of the whole tree, in restore order:
@@ -46,9 +53,30 @@ data WindowSnap = WindowSnap
     }
     deriving (Eq, Show)
 
-newtype PaneSnap = PaneSnap
-    { cwd :: Text }        -- ^ the pane's working directory at capture
+data PaneSnap = PaneSnap
+    { cwd     :: Text        -- ^ the pane's working directory at capture
+    , command :: Maybe Text  -- ^ foreground command to re-run on restore,
+                             --   if any; carried in the row's @extra@ JSON
+    }
     deriving (Eq, Show)
+
+-- | The pane row's @extra@ JSON payload. Evolving, optional fields live
+-- here rather than in core columns, so old and new binaries interoperate.
+newtype PaneExtra = PaneExtra (Maybe Text)
+
+instance ToJSON PaneExtra where
+    toJSON (PaneExtra mc) = object (maybe [] (\c -> ["command" .= c]) mc)
+
+instance FromJSON PaneExtra where
+    parseJSON = withObject "pane extra" $ \o -> PaneExtra <$> o .:? "command"
+
+encodeExtra :: Maybe Text -> Text
+encodeExtra mc = TE.decodeUtf8 (BL.toStrict (encode (PaneExtra mc)))
+
+decodeExtra :: Text -> Maybe Text
+decodeExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
+    Just (PaneExtra mc) -> mc
+    Nothing             -> Nothing
 
 -- | Schema version stamped into the @meta@ table. Bump only when a change
 -- cannot be expressed additively.
@@ -89,6 +117,21 @@ bootstrap conn = do
         \ordinal INTEGER NOT NULL, cwd TEXT NOT NULL, \
         \extra TEXT NOT NULL DEFAULT '{}', \
         \PRIMARY KEY (session_seq, window_ix, ordinal))"
+    -- Additively upgrade a store written by an older binary that predates
+    -- one of these columns. New columns default, so old rows stay valid.
+    mapM_ (\t -> ensureColumn conn t "extra" "TEXT NOT NULL DEFAULT '{}'")
+        ["session", "window", "pane"]
+
+-- | Add @col@ to @table@ if it is not already present. Table and column
+-- names are internal literals, so interpolating them into the DDL is safe.
+ensureColumn :: Connection -> Text -> Text -> Text -> IO ()
+ensureColumn conn table col decl = do
+    info <- query_ conn
+        (fromString (T.unpack ("PRAGMA table_info(" <> table <> ")")))
+        :: IO [(Int, Text, Text, Int, Maybe Text, Int)]
+    unless (col `elem` [ nm | (_, nm, _, _, _, _) <- info ]) $
+        execute_ conn (fromString (T.unpack
+            ("ALTER TABLE " <> table <> " ADD COLUMN " <> col <> " " <> decl)))
 
 -- | Replace the store's contents with @snap@ in a single transaction. The
 -- whole tree is small, so we rewrite it wholesale rather than diffing.
@@ -120,9 +163,9 @@ saveSnapshot conn snap = withTransaction conn $ do
     insertPane :: Int -> Int -> (Int, PaneSnap) -> IO ()
     insertPane sseq wix (ord, p) =
         execute conn
-            "INSERT INTO pane (session_seq, window_ix, ordinal, cwd) \
-            \VALUES (?, ?, ?, ?)"
-            (sseq, wix, ord, p.cwd)
+            "INSERT INTO pane (session_seq, window_ix, ordinal, cwd, extra) \
+            \VALUES (?, ?, ?, ?, ?)"
+            (sseq, wix, ord, p.cwd, encodeExtra p.command)
 
 -- | Read the whole tree back. Returns an empty snapshot for a fresh store.
 loadSnapshot :: Connection -> IO Snapshot
@@ -144,9 +187,10 @@ loadSnapshot conn = do
     loadWindow :: Int -> (Int, Text, Text, Int) -> IO WindowSnap
     loadWindow sseq (wix, nm, lay, act) = do
         prows <- query conn
-            "SELECT cwd FROM pane \
+            "SELECT cwd, extra FROM pane \
             \WHERE session_seq = ? AND window_ix = ? ORDER BY ordinal"
-            (sseq, wix) :: IO [Only Text]
+            (sseq, wix) :: IO [(Text, Text)]
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
-            , panes = [ PaneSnap { cwd = c } | Only c <- prows ] }
+            , panes = [ PaneSnap { cwd = c, command = decodeExtra ex }
+                      | (c, ex) <- prows ] }
