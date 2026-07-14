@@ -351,7 +351,30 @@ applyScheme st scheme = do
         forM_ (Map.lookup optName opts.user) $ \path ->
             unless (T.null (T.strip path)) $
                 void $ runArgv st Nothing ["source-file", T.strip path]
+        notifySubscribedPanes st scheme
         atomically (bumpDirty st)
+
+-- | Tell every pane whose app subscribed to color-scheme reports (DEC mode
+-- 2031) that the OS scheme is now @scheme@, by writing the @CSI ? 997@ report
+-- into its pty. hat is the app's terminal, so it answers 2031 the way a
+-- terminal would, sourced from the scheme it already watches via gsettings.
+notifySubscribedPanes :: ServerState -> ColorScheme -> IO ()
+notifySubscribedPanes st scheme = do
+    sessMap <- readTVarIO st.sessions
+    forM_ (Map.elems sessMap) $ \sess -> do
+        winMap <- readTVarIO sess.windows
+        forM_ (Map.elems winMap) $ \win -> do
+            paneMap <- readTVarIO win.panes
+            forM_ (Map.elems paneMap) $ \pane -> do
+                subscribed <- (.colorReport) <$> Emu.modes pane.emulator
+                when subscribed (notifyColorScheme pane scheme)
+
+-- | Write a single DEC-mode-2031 color-scheme report to a pane's pty:
+-- @CSI ? 997 ; 1 n@ for dark, @CSI ? 997 ; 2 n@ for light.
+notifyColorScheme :: Pane -> ColorScheme -> IO ()
+notifyColorScheme pane scheme = Hat.Pty.writePty pane.pty $ case scheme of
+    SchemeDark  -> "\ESC[?997;1n"
+    SchemeLight -> "\ESC[?997;2n"
 
 -- Persistence restore ----------------------------------------------------
 
@@ -939,6 +962,11 @@ startPaneReader st sid win pane = void . forkIO $
             events <- Emu.feed pane.emulator bs
             forM_ events $ \case
                 Emu.Output out -> Hat.Pty.writePty pane.pty out
+                -- The app asked the current light/dark scheme (CSI ? 996 n);
+                -- answer from the OS scheme the server already tracks.
+                Emu.ColorSchemeQuery -> do
+                    mscheme <- readTVarIO st.colorScheme
+                    forM_ mscheme (notifyColorScheme pane)
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.

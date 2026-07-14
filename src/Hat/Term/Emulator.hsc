@@ -28,7 +28,7 @@ module Hat.Term.Emulator
 #include "hat_shim.h"
 
 import Control.Concurrent.MVar
-import Control.Monad (foldM, forM)
+import Control.Monad (foldM, forM, forM_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
@@ -106,6 +106,7 @@ data Event
     = TitleChanged Text
     | Bell
     | Output ByteString  -- ^ bytes to write back to the pty
+    | ColorSchemeQuery   -- ^ app asked the current light/dark scheme (CSI ? 996 n)
     | ScreenChanged
     deriving (Eq, Show)
 
@@ -122,6 +123,7 @@ data Modes = Modes
     { altScreen   :: Bool
     , mouse       :: MouseMode
     , focusReport :: Bool  -- ^ app enabled focus reporting (?1004)
+    , colorReport :: Bool  -- ^ app enabled color-scheme reporting (?2031)
     }
     deriving (Eq, Show)
 
@@ -149,6 +151,7 @@ data Emulator = Emulator
     , altRef    :: IORef Bool
     , mouseRef  :: IORef MouseMode
     , focusRef  :: IORef Bool
+    , colorReportRef :: IORef Bool
     , dirtyRef  :: IORef Bool
     , damageRef :: IORef [Rect]
     , eventsRef :: IORef [Event]       -- reversed
@@ -183,6 +186,7 @@ newEmulator sz historyLimit = do
     altR <- newIORef False
     mouseR <- newIORef MouseOff
     focusR <- newIORef False
+    colorReportR <- newIORef False
     dirtyR <- newIORef False
     damageR <- newIORef []
     eventsR <- newIORef []
@@ -282,6 +286,7 @@ newEmulator sz historyLimit = do
             , altRef = altR
             , mouseRef = mouseR
             , focusRef = focusR
+            , colorReportRef = colorReportR
             , dirtyRef = dirtyR
             , damageRef = damageR
             , eventsRef = eventsR
@@ -297,8 +302,13 @@ newEmulator sz historyLimit = do
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     st0 <- readIORef e.passRef
-    let (st1, bs) = scrubPassthrough st0 bs0
+    let (st1, scrubbed) = scrubPassthrough st0 bs0
+        (bs, csSignals) = extractColorScheme scrubbed
     writeIORef e.passRef st1
+    forM_ csSignals $ \sig -> case sig of
+        CsEnable  -> writeIORef e.colorReportRef True
+        CsDisable -> writeIORef e.colorReportRef False
+        CsQuery   -> pure ()
     writeIORef e.eventsRef []
     writeIORef e.outRef []
     writeIORef e.damageRef []
@@ -311,7 +321,8 @@ feed e bs0 = withMVar e.lock $ \_ -> do
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
     outs <- dropDecxcprReply . B.concat . reverse <$> readIORef e.outRef
-    pure $ evs
+    pure $ [ColorSchemeQuery | CsQuery <- csSignals]
+        <> evs
         <> [Output outs | not (B.null outs)]
         <> [ScreenChanged | dirty]
 
@@ -378,6 +389,42 @@ dropDecxcprReply bs =
   where
     isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b   -- 0-9 or ';'
 
+-- | A color-scheme control the inner app sent to its terminal. libvterm
+-- knows nothing of DEC mode 2031, so hat recognizes these itself and answers
+-- them from the OS scheme it already tracks (see 'Hat.Server.applyScheme').
+data CsSignal = CsEnable | CsDisable | CsQuery
+    deriving (Eq, Show)
+
+-- | Pull DEC-mode-2031 color-scheme controls out of a pane's output before
+-- libvterm parses it: @CSI ? 2031 h@/@l@ subscribe or unsubscribe from
+-- light/dark change reports, and @CSI ? 996 n@ queries the current scheme.
+-- The matched sequences are stripped (libvterm would ignore or mishandle
+-- them) and returned as signals. Only the standalone forms are recognized;
+-- a 2031 folded into a multi-parameter DECSET is left for libvterm.
+extractColorScheme :: ByteString -> (ByteString, [CsSignal])
+extractColorScheme bs =
+    case B.breakSubstring "\ESC[?" bs of
+        (before, rest)
+            | B.null rest -> (bs, [])
+            | otherwise ->
+                let afterIntro = B.drop 3 rest             -- past ESC [ ?
+                    (params, tailB) = B.span isParam afterIntro
+                in case B.uncons tailB of
+                    Just (final, more)
+                        | Just sig <- classify params final ->
+                            let (rest', sigs) = extractColorScheme more
+                            in (before <> rest', sig : sigs)
+                    _ ->
+                        let (rest', sigs) = extractColorScheme afterIntro
+                        in (before <> "\ESC[?" <> rest', sigs)
+  where
+    isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b     -- 0-9 or ';'
+    classify params final = case (params, final) of
+        ("2031", 0x68) -> Just CsEnable    -- 'h'
+        ("2031", 0x6c) -> Just CsDisable   -- 'l'
+        ("996",  0x6e) -> Just CsQuery     -- 'n'
+        _              -> Nothing
+
 -- | Encode a cursor key the way this pane currently expects it: libvterm
 -- consults its own DECCKM state, so @man@/@less@ (application cursor keys)
 -- get @\\ESC O A@ while normal mode gets @\\ESC [ A@.
@@ -415,7 +462,7 @@ snapshot e = withMVar e.lock $ \_ -> do
 
 modes :: Emulator -> IO Modes
 modes e = Modes <$> readIORef e.altRef <*> readIORef e.mouseRef
-    <*> readIORef e.focusRef
+    <*> readIORef e.focusRef <*> readIORef e.colorReportRef
 
 title :: Emulator -> IO Text
 title e = readIORef e.titleRef

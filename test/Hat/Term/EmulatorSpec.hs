@@ -80,6 +80,27 @@ spec = do
         m2 <- modes e
         m2.focusReport `shouldBe` False
 
+    it "tracks color-scheme reporting (?2031)" $ do
+        e <- new80x24
+        m0 <- modes e
+        m0.colorReport `shouldBe` False
+        _ <- feedStr e "\ESC[?2031h"
+        m1 <- modes e
+        m1.colorReport `shouldBe` True
+        _ <- feedStr e "\ESC[?2031l"
+        m2 <- modes e
+        m2.colorReport `shouldBe` False
+
+    it "surfaces a color-scheme query (CSI ? 996 n) as an event" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESC[?996n"
+        evs `shouldContain` [ColorSchemeQuery]
+
+    it "does not answer the color-scheme query itself" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESC[?996n"
+        B.concat [bs | Output bs <- evs] `shouldBe` ""
+
     it "encodes cursor keys per application-cursor-keys mode" $ do
         e <- new80x24
         normal <- encodeKey e CursorUp
