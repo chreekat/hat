@@ -997,6 +997,10 @@ startPaneReader st sid win pane = void . forkIO $
                     mscheme <- readTVarIO st.colorScheme
                     forM_ mscheme $ \scheme ->
                         Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
+                -- The app raised a desktop notification (OSC 9/777); hat has
+                -- no notification UI of its own, so forward it verbatim to
+                -- the session's attached terminals to raise with the OS.
+                Emu.DesktopNotification raw -> broadcast st sid (Notify raw)
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.

@@ -21,7 +21,8 @@
 -- where libvterm is excellent and where hat has no bugs. The charter test for
 -- whether a sequence belongs here: /does answering it require knowledge
 -- libvterm cannot have?/ The OS color scheme (OSC 10\/11, DEC mode 2031), the
--- multiplexer's passthrough policy (DCS @tmux;@) — yes. One neighbour,
+-- multiplexer's passthrough policy (DCS @tmux;@), routing a desktop
+-- notification (OSC 9\/777) out to the real terminal — yes. One neighbour,
 -- 'dropDecxcprReply', is a different category: not host knowledge but a
 -- libvterm quirk-correction (it answers a query real terminals ignore); it
 -- lives here because it too is peripheral rewriting of the byte stream that
@@ -136,6 +137,8 @@ dropDecxcprReply bs =
 data QuerySignal
     = SigColor CsSignal              -- ^ DEC mode 2031 subscribe/query
     | SigOsc OscColorTarget OscTerm  -- ^ OSC 10/11 color query
+    | SigNotify ByteString           -- ^ OSC 9/777 desktop notification, raw
+                                     --   (whole sequence) to forward verbatim
 
 -- | DEC-mode-2031 color-scheme controls: @CSI ? 2031 h@/@l@ subscribe or
 -- unsubscribe from light/dark change reports, @CSI ? 996 n@ queries the
@@ -143,12 +146,14 @@ data QuerySignal
 data CsSignal = CsEnable | CsDisable | CsQuery
     deriving (Eq, Show)
 
--- | Find the first color query in a chunk: a DEC 2031 control (only the
--- standalone form; one folded into a multi-parameter DECSET is left for
--- libvterm) or an OSC 10/11 color query (@OSC 1x ; ? BEL@ or @… ESC \\@;
--- color *set* sequences like @OSC 11;rgb:…@ are not queries and pass
--- through untouched). Returns the bytes before it, the query, and the
--- bytes after it, with the query itself stripped.
+-- | Find the first sequence in a chunk that hat handles itself rather than
+-- libvterm: a DEC 2031 control (only the standalone form; one folded into a
+-- multi-parameter DECSET is left for libvterm), an OSC 10/11 color query
+-- (@OSC 1x ; ? BEL@ or @… ESC \\@; color *set* sequences like @OSC 11;rgb:…@
+-- are not queries and pass through untouched), or an OSC 9/777 desktop
+-- notification (captured whole to forward to the outer terminal). Returns
+-- the bytes before it, the signal, and the bytes after it, with the
+-- sequence itself stripped.
 nextQuery :: ByteString -> Maybe (ByteString, QuerySignal, ByteString)
 nextQuery bs = go 0
   where
@@ -156,7 +161,8 @@ nextQuery bs = go 0
         Nothing -> Nothing
         Just d ->
             let p = i + d
-            in case tryCsi (B.drop p bs) <|> tryOsc (B.drop p bs) of
+                r = B.drop p bs
+            in case tryCsi r <|> tryOsc r <|> tryNotify r of
                 Just (sig, more) -> Just (B.take p bs, sig, more)
                 Nothing -> go (p + 1)
     tryCsi r = do
@@ -173,9 +179,22 @@ nextQuery bs = go 0
             (TermBel,) <$> B.stripPrefix "\a" afterIntro
             <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterIntro
         pure (SigOsc target term, more)
+    tryNotify r = do
+        afterCode <- B.stripPrefix "\ESC]9;" r <|> B.stripPrefix "\ESC]777;" r
+        more <- afterTerminator afterCode
+        pure (SigNotify (B.take (B.length r - B.length more) r), more)
     isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b     -- 0-9 or ';'
     classify params final = case (params, final) of
         ("2031", 0x68) -> Just CsEnable    -- 'h'
         ("2031", 0x6c) -> Just CsDisable   -- 'l'
         ("996",  0x6e) -> Just CsQuery     -- 'n'
         _              -> Nothing
+    -- Bytes after an OSC string terminator (BEL or ST), or Nothing if the
+    -- chunk ends before one — an unterminated notify is left for libvterm
+    -- (which drops it) rather than forwarded half-formed.
+    afterTerminator r = case B.uncons r of
+        Nothing -> Nothing
+        Just (0x07, more) -> Just more                      -- BEL
+        Just (0x1b, more)
+            | Just (0x5c, rest) <- B.uncons more -> Just rest  -- ST (ESC \)
+        Just (_, more) -> afterTerminator more

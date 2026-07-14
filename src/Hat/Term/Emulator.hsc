@@ -113,6 +113,9 @@ data Event
     | OscColorQuery OscColorTarget OscTerm
         -- ^ app asked a terminal color (OSC 10/11 @;?@); answer with the
         --   same terminator the query used
+    | DesktopNotification ByteString
+        -- ^ app raised a desktop notification (OSC 9 / OSC 777), captured
+        --   verbatim to forward to the outer terminal
     | ScreenChanged
     deriving (Eq, Show)
 
@@ -345,6 +348,7 @@ feedSegments e vtp = go
         SigColor CsDisable -> [] <$ writeIORef e.colorReportRef False
         SigColor CsQuery   -> pure [ColorSchemeQuery]
         SigOsc target term -> pure [OscColorQuery target term]
+        SigNotify raw      -> pure [DesktopNotification raw]
 
 -- | Encode a cursor key the way this pane currently expects it: libvterm
 -- consults its own DECCKM state, so @man@/@less@ (application cursor keys)

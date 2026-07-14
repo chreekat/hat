@@ -125,13 +125,15 @@ spec = do
         scr <- snapshot e
         rowText scr 0 `shouldBe` ""
 
-    -- Bug 75f20c8a: an inner app's desktop notification (OSC 9 notify or
-    -- OSC 777 notify) hits libvterm's unrecognised-OSC fallback and spills
-    -- onto the screen as text. Match tmux's default: consume it silently.
-    it "consumes OSC 9 and OSC 777 desktop notifications" $ do
+    -- Bug 75f20c8a: an inner app's desktop notification (OSC 9 or OSC 777
+    -- notify) must be surfaced verbatim so the server can forward it to the
+    -- outer terminal, and never rendered onto the pane as text.
+    it "surfaces OSC 9 and OSC 777 desktop notifications as events" $ do
         e <- new80x24
-        _ <- feedStr e "A<\ESC]9;build finished\a>B"
-        _ <- feedStr e "C<\ESC]777;notify;Title;Body\ESC\\>D"
+        evs9 <- feedStr e "A<\ESC]9;build finished\a>B"
+        evs9 `shouldContain` [DesktopNotification "\ESC]9;build finished\a"]
+        evs777 <- feedStr e "C<\ESC]777;notify;Title;Body\ESC\\>D"
+        evs777 `shouldContain` [DesktopNotification "\ESC]777;notify;Title;Body\ESC\\"]
         scr <- snapshot e
         rowText scr 0 `shouldBe` "A<>BC<>D"
 
