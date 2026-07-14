@@ -1260,6 +1260,21 @@ spec = parallel $ do
         typeInto c1 "\x04"                   -- Ctrl-D ends the read
         awaitScreen c1 "0:sh*"
 
+    it "set-titles composes hat: window: path: program, skipping numeric names" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g set-titles on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        -- The default session name ("0") is numeric noise and is skipped;
+        -- window name, pane cwd and foreground program remain.
+        awaitWith "initial composed title" (\d -> do
+            t <- readIORef d.transcript
+            pure ("\ESC]0;hat: sh: /tmp: sh\BEL" `B8.isInfixOf` t)) c1
+        typeInto c1 "cat\r"
+        awaitWith "title follows the foreground program" (\d -> do
+            t <- readIORef d.transcript
+            pure ("\ESC]0;hat: cat: /tmp: cat\BEL" `B8.isInfixOf` t)) c1
+
     it "an explicit rename-window pins the name and stops auto-rename" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"

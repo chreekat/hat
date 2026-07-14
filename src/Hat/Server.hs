@@ -67,6 +67,7 @@ import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
 import Hat.Server.Style (parseStyle)
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
+import Hat.Server.Title (TitleParts (..), composeTitle)
 import Hat.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
@@ -107,10 +108,13 @@ runServer path mconfig = do
         _ <- forkIO $ forever $ do
             threadDelay 15_000_000
             atomically (bumpDirty st)
-        -- Track foreground commands for automatic-rename windows.
+        -- Track foreground commands for automatic-rename windows and the
+        -- clients' desktop titles.
+        titlesRef <- newIORef Map.empty
         _ <- forkIO $ forever $ do
             threadDelay 500_000
             refreshAutoNames st
+            refreshTitles st titlesRef
         -- Continuously mirror the session tree into the SQLite store so a
         -- restart can rebuild it (see 'persistLoop').
         mpersist <- forM mstore $ \p -> forkIO (persistLoop st p)
@@ -807,12 +811,13 @@ startPaneReader st sid win pane = void . forkIO $
         bs <- Hat.Pty.readPty pane.pty
         unless (B8.null bs) $ do
             forwardToPipe pane bs
-            opts <- readTVarIO st.options
             events <- Emu.feed pane.emulator bs
             forM_ events $ \case
                 Emu.Output out -> Hat.Pty.writePty pane.pty out
-                Emu.TitleChanged t ->
-                    when opts.setTitles $ broadcast st sid (SetTitle t)
+                -- The pane's own OSC title only feeds #{pane_title} (the
+                -- emulator stores it); the client's desktop title is
+                -- composed in 'refreshTitles'.
+                Emu.TitleChanged _ -> pure ()
                 Emu.Bell -> do
                     atomically $ do
                         writeTVar win.bellFlag True
@@ -2541,6 +2546,44 @@ refreshAutoNames st = do
                     when (cur /= newName && not (T.null newName)) $ do
                         writeTVar win.name newName
                         bumpDirty st
+
+-- | Recompute each session's desktop title (see 'composeTitle') from its
+-- current window's active pane, broadcasting only on change. Shares the
+-- 500ms poll with 'refreshAutoNames' because the same inputs (foreground
+-- command, cwd) change without any event. A no-op unless @set-titles@ is
+-- on.
+refreshTitles :: ServerState -> IORef (Map.Map SessionId Text) -> IO ()
+refreshTitles st ref = do
+    opts <- readTVarIO st.options
+    when opts.setTitles $ do
+        homeDir <- maybe "" T.pack <$> lookupEnv "HOME"
+        sessions <- readTVarIO st.sessions
+        forM_ (Map.toList sessions) $ \(sid, sess) -> do
+            (sname, mwin) <- atomically $
+                (,) <$> readTVar sess.name <*> currentWindow sess
+            forM_ mwin $ \win -> do
+                wname <- readTVarIO win.name
+                mpane <- atomically (activePane win)
+                forM_ mpane $ \pane -> do
+                    dir <- paneCurrentPath pane
+                    prog <- paneCommandName pane
+                    let t = composeTitle titleBudget TitleParts
+                            { session = sname
+                            , window = wname
+                            , path = T.pack dir
+                            , home = homeDir
+                            , program = prog
+                            }
+                    prev <- Map.lookup sid <$> readIORef ref
+                    unless (prev == Just t) $ do
+                        modifyIORef' ref (Map.insert sid t)
+                        broadcast st sid (SetTitle t)
+
+-- | Room for the composed desktop title. The title bar's real width is
+-- unknowable from here; this keeps the tail visible in any reasonable
+-- window.
+titleBudget :: Int
+titleBudget = 80
 
 -- | The name an @automatic-rename@ window should currently take: the
 -- @automatic-rename-format@ expanded against the active pane. The default
