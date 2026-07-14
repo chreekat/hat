@@ -17,6 +17,7 @@ import qualified Hat.Server.RenderSpec
 import qualified Hat.Server.SendSpec
 import qualified Hat.Server.StyleSpec
 import qualified Hat.Server.TargetSpec
+import qualified Hat.Server.TitleSpec
 import qualified Hat.SocketSpec
 import qualified Hat.Term.EmulatorSpec
 import qualified Hat.Term.GoldenSpec
@@ -37,6 +38,7 @@ main = hspec $ do
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
+    describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Server.ColorScheme" Hat.Server.ColorSchemeSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
