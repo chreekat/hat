@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Hat.PersistSpec (spec) where
 
 import Control.Exception (finally)
