@@ -4,7 +4,8 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (finally)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
-import System.Directory (removeDirectoryRecursive)
+import System.Directory (removeDirectoryRecursive, removePathForcibly)
+import System.Environment (getEnv)
 import System.Exit (ExitCode (..))
 import System.Posix.Temp (mkdtemp)
 import System.Process (callProcess)
@@ -13,11 +14,19 @@ import Test.Hspec
 import Hat.Geometry
 import Hat.Pty
 
-baseSpawn :: Spawn
-baseSpawn = Spawn
+-- The test shells get a throwaway HOME: an interactive bash saves (and,
+-- at its default 500-line HISTFILESIZE, truncates!) $HOME/.bash_history
+-- on exit, so pointing them at the real home would eat the user's
+-- shell history a few lines at a time.
+baseSpawn :: FilePath -> Spawn
+baseSpawn home = Spawn
     { cmd = "/bin/sh"
     , args = []
-    , env = [("PATH", "/run/current-system/sw/bin:/usr/bin:/bin"), ("TERM", "dumb")]
+    , env =
+        [ ("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
+        , ("TERM", "dumb")
+        , ("HOME", home)
+        ]
     , cwd = Nothing
     , size = Size { rows = 24, cols = 80 }
     }
@@ -53,15 +62,29 @@ retryFor n act ok = do
 
 spec :: Spec
 spec = do
+    home <- runIO (mkdtemp "/tmp/hat-pty-home-")
+    let base = baseSpawn home
+    afterAll_ (removePathForcibly home) $ specWith base home
+
+specWith :: Spawn -> FilePath -> Spec
+specWith base home = do
+    it "keeps the test shells' HOME away from the real one" $ do
+        realHome <- getEnv "HOME"
+        pty <- spawn base { args = ["-c", "echo home=$HOME"] }
+        out <- drainPty pty
+        _ <- waitExit pty
+        out `shouldSatisfy` B8.isInfixOf (B8.pack ("home=" <> home))
+        home `shouldNotBe` realHome
+
     it "spawns a shell and captures its output" $ do
-        pty <- spawn baseSpawn { args = ["-c", "echo hat-pty-works"] }
+        pty <- spawn base { args = ["-c", "echo hat-pty-works"] }
         out <- drainPty pty
         status <- waitExit pty
         out `shouldSatisfy` B8.isInfixOf "hat-pty-works"
         status `shouldBe` Exited ExitSuccess
 
     it "sets the initial window size on the pty" $ do
-        pty <- spawn baseSpawn
+        pty <- spawn base
             { args = ["-c", "stty size"]
             , size = Size { rows = 30, cols = 100 }
             }
@@ -70,7 +93,7 @@ spec = do
         out `shouldSatisfy` B8.isInfixOf "30 100"
 
     it "propagates resize to the child" $ do
-        pty <- spawn baseSpawn { args = ["-c", "read _line; stty size"] }
+        pty <- spawn base { args = ["-c", "read _line; stty size"] }
         resize pty Size { rows = 40, cols = 120 }
         writePty pty "\n"
         out <- drainPty pty
@@ -78,14 +101,14 @@ spec = do
         out `shouldSatisfy` B8.isInfixOf "40 120"
 
     it "runs the child in the given working directory" $ do
-        pty <- spawn baseSpawn { args = ["-c", "pwd"], cwd = Just "/tmp" }
+        pty <- spawn base { args = ["-c", "pwd"], cwd = Just "/tmp" }
         out <- drainPty pty
         _ <- waitExit pty
         out `shouldSatisfy` B8.isInfixOf "/tmp"
 
     -- M0 demo: a live shell driven interactively over the pty.
     it "round-trips an interactive shell session" $ do
-        pty <- spawn baseSpawn
+        pty <- spawn base
         writePty pty "echo a$((1+1))b\n"
         out <- readUntil pty "a2b"
         out `shouldSatisfy` B8.isInfixOf "a2b"
@@ -97,7 +120,7 @@ spec = do
     -- the shell itself: 'sleep' owns the terminal's foreground process
     -- group while it runs.
     it "reports the pane's foreground command, not the shell" $ do
-        pty <- spawn baseSpawn
+        pty <- spawn base
         writePty pty "sleep 5\n"
         cmd <- retryFor 100 (foregroundCommand pty) (== Just (T.pack "sleep"))
         cmd `shouldBe` Just (T.pack "sleep")
@@ -120,7 +143,7 @@ spec = do
             -- windows and makes the exec below flake with ETXTBSY.
             let wrapped = dir <> "/.sleepish-wrapped"
             callProcess "cp" ["/bin/sh", wrapped]
-            pty <- spawn baseSpawn
+            pty <- spawn base
             writePty pty (B8.pack
                 ("exec -a sleepish " <> wrapped <> " -c 'sleep 5; :'\n"))
             cmd <- retryFor 100 (foregroundCommand pty)
@@ -129,7 +152,7 @@ spec = do
             closePty pty
 
     it "reports a nonzero exit" $ do
-        pty <- spawn baseSpawn { args = ["-c", "exit 3"] }
+        pty <- spawn base { args = ["-c", "exit 3"] }
         _ <- drainPty pty
         status <- waitExit pty
         status `shouldBe` Exited (ExitFailure 3)
