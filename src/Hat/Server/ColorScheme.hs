@@ -86,15 +86,15 @@ palette SchemeDark = Palette
     { bar          = fgBg 151 22
     , current      = (fgBg 255 28) { Cell.bold = True }
     , bell         = (fgBg 214 22) { Cell.bold = True }
-    , border       = onlyFg 238
-    , activeBorder = onlyFg 2
+    , border       = onlyFg 65
+    , activeBorder = (onlyFg 10) { Cell.bold = True }
     }
 palette SchemeLight = Palette
     { bar          = fgBg 22 151
     , current      = (fgBg 255 28) { Cell.bold = True }
     , bell         = (fgBg 166 151) { Cell.bold = True }
-    , border       = onlyFg 244
-    , activeBorder = onlyFg 28
+    , border       = onlyFg 65
+    , activeBorder = (onlyFg 22) { Cell.bold = True }
     }
 
 fgBg :: Word8 -> Word8 -> Cell.Style

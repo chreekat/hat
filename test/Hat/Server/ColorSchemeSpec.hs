@@ -40,11 +40,16 @@ spec = do
                 light = applyPalette SchemeLight defaultOptions
             dark.statusStyle.bg `shouldBe` Cell.Indexed 22
             dark.windowStatusCurrentStyle.bold `shouldBe` True
-            dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 238
             light.statusStyle.bg `shouldBe` Cell.Indexed 151
             light.statusStyle.fg `shouldBe` Cell.Indexed 22
-            -- separators must not vanish against a light background
-            light.paneBorderStyle.fg `shouldBe` Cell.Indexed 244
+            -- borders stay green and must not vanish against either
+            -- background
+            dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
+            light.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
+            dark.paneActiveBorderStyle.fg `shouldBe` Cell.Indexed 10
+            dark.paneActiveBorderStyle.bold `shouldBe` True
+            light.paneActiveBorderStyle.fg `shouldBe` Cell.Indexed 22
+            light.paneActiveBorderStyle.bold `shouldBe` True
 
         it "never touches an option the user has set" $ do
             opts <- either (fail . T.unpack) pure
@@ -53,4 +58,4 @@ spec = do
             dark.statusStyle `shouldBe` opts.statusStyle
             dark.statusStyle.bg `shouldBe` Cell.Indexed 196
             -- options the user did not set still adapt
-            dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 238
+            dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
