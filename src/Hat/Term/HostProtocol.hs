@@ -63,45 +63,59 @@ data OscTerm = TermBel | TermSt
 
 -- | Scrubber state for DCS tmux passthrough, carried across 'feed' chunks:
 -- outside a wrapper (holding back a partial @ESC Ptmux;@ prefix that ends
--- the chunk), or inside one (discarding until its ST).
+-- the chunk), or inside one (discarding until its ST while accumulating the
+-- un-doubled payload, so a wrapper that spans reads still yields its payload
+-- whole).
 data PassState
-    = Outside ByteString  -- ^ carry: proper prefix of @ESC Ptmux;@ at chunk end
-    | Inside ByteString   -- ^ carry: a trailing @ESC@ that may start the ST
+    = Outside ByteString
+        -- ^ carry: proper prefix of @ESC Ptmux;@ at chunk end
+    | Inside ByteString ByteString
+        -- ^ carry: a trailing @ESC@ that may start the ST, and the un-doubled
+        --   payload accumulated so far
 
--- | Remove DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's
--- output before libvterm parses it. A tmux-aware app (claude) sees $TMUX
--- set and wraps sequences meant for the outer terminal in this DCS;
--- libvterm's parser aborts on the wrapper's doubled inner ESCs and spills
--- the payload onto the screen as text (the \"11;?9;4;0;\" garbage). tmux's
--- default (@allow-passthrough off@) ignores these sequences entirely; do
--- the same. A wrapper can span pty reads, so the state carries across
--- 'feed' chunks.
-scrubPassthrough :: PassState -> ByteString -> (PassState, ByteString)
+-- | Strip DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's output
+-- before libvterm parses it, returning the scrubbed bytes and any desktop
+-- notifications carried inside the wrappers.
+--
+-- A tmux-aware app (claude) sees $TMUX set and wraps sequences meant for the
+-- outer terminal in this DCS; libvterm's parser aborts on the wrapper's
+-- doubled inner ESCs and spills the payload onto the screen as text (the
+-- \"11;?9;4;0;\" garbage). So the wrapper never reaches libvterm. tmux's
+-- default (@allow-passthrough off@) then discards the payload entirely; hat
+-- goes one step further and honours just OSC 9\/777 desktop notifications out
+-- of it (the point of a passthrough the user actually wants delivered),
+-- discarding everything else. A wrapper can span pty reads, so the state —
+-- including the partial payload — carries across 'feed' chunks.
+scrubPassthrough :: PassState -> ByteString -> (PassState, ByteString, [ByteString])
 scrubPassthrough st0 chunk = case st0 of
-    Outside carry -> outside [] (carry <> chunk)
-    Inside carry  -> inside [] (carry <> chunk)
+    Outside carry        -> outside [] [] (carry <> chunk)
+    Inside carry payload -> inside [] [] [payload] (carry <> chunk)
   where
     intro = "\ESCPtmux;"
-    finish acc = B.concat (reverse acc)
-    outside acc bs = case B.breakSubstring intro bs of
+    finish = B.concat . reverse
+    outside oacc notifs bs = case B.breakSubstring intro bs of
         (before, r)
             | B.null r ->
                 -- No wrapper here; hold back a chunk-final partial intro
                 -- (e.g. a trailing bare ESC) until the next read decides.
                 let held = introSuffix before
                     emit = B.take (B.length before - B.length held) before
-                in (Outside held, finish (emit : acc))
-            | otherwise -> inside (before : acc) (B.drop (B.length intro) r)
-    -- Inside the wrapper everything is discarded; only the terminator
-    -- matters. The wrapping doubles inner ESCs, so a doubled pair is
-    -- content and ST is a lone ESC followed by backslash.
-    inside acc bs = case B.elemIndex 0x1b bs of
-        Nothing -> (Inside "", finish acc)
-        Just i -> case B.uncons (B.drop (i + 1) bs) of
-            Nothing           -> (Inside "\ESC", finish acc)
-            Just (0x1b, rest) -> inside acc rest
-            Just (0x5c, rest) -> outside acc rest
-            Just (_, rest)    -> inside acc rest
+                in (Outside held, finish (emit : oacc), reverse notifs)
+            | otherwise -> inside (before : oacc) notifs [] (B.drop (B.length intro) r)
+    -- Inside the wrapper nothing reaches libvterm; the payload is rebuilt
+    -- (un-doubling the ESCs the wrapper doubled) until the ST — a lone ESC
+    -- followed by backslash — closes it and its notifications are harvested.
+    inside oacc notifs pacc bs = case B.elemIndex 0x1b bs of
+        Nothing -> (Inside "" (finish (bs : pacc)), finish oacc, reverse notifs)
+        Just i ->
+            let pacc' = B.take i bs : pacc
+            in case B.uncons (B.drop (i + 1) bs) of
+                Nothing           -> (Inside "\ESC" (finish pacc'), finish oacc, reverse notifs)
+                Just (0x1b, rest) -> inside oacc notifs ("\ESC" : pacc') rest
+                Just (0x5c, rest) ->
+                    let found = extractNotifies (finish pacc')
+                    in outside oacc (reverse found <> notifs) rest
+                Just (c, rest)    -> inside oacc notifs (B.singleton c : pacc') rest
     -- The longest proper prefix of the intro that this chunk ends with.
     introSuffix bs =
         let cap = min (B.length intro - 1) (B.length bs)
@@ -110,6 +124,13 @@ scrubPassthrough st0 chunk = case st0 of
         in case ks of
             (k : _) -> B.drop (B.length bs - k) bs
             []      -> ""
+
+-- | Every OSC 9/777 desktop notification found in a byte string, in order.
+extractNotifies :: ByteString -> [ByteString]
+extractNotifies bs = case nextQuery bs of
+    Just (_, SigNotify raw, more) -> raw : extractNotifies more
+    Just (_, _, more)             -> extractNotifies more
+    Nothing                       -> []
 
 -- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
 -- emulator's replies. Most terminals — ghostty included — ignore
@@ -180,8 +201,12 @@ nextQuery bs = go 0
             <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterIntro
         pure (SigOsc target term, more)
     tryNotify r = do
-        afterCode <- B.stripPrefix "\ESC]9;" r <|> B.stripPrefix "\ESC]777;" r
-        more <- afterTerminator afterCode
+        afterParams <-
+            (do a <- B.stripPrefix "\ESC]9;" r
+                -- @OSC 9 ; 4@ is ConEmu progress, not a desktop notification.
+                if "4;" `B.isPrefixOf` a then Nothing else Just a)
+            <|> B.stripPrefix "\ESC]777;notify;" r
+        more <- afterTerminator afterParams
         pure (SigNotify (B.take (B.length r - B.length more) r), more)
     isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b     -- 0-9 or ';'
     classify params final = case (params, final) of

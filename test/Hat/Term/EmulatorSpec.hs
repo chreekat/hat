@@ -183,6 +183,22 @@ spec = do
         scr <- snapshot e
         rowText scr 0 `shouldBe` "A<>B"
 
+    -- Bug 75f20c8a: a tmux-aware app (claude, with $TMUX set) wraps its
+    -- desktop notification in DCS passthrough. hat un-wraps it and forwards
+    -- the notification, while still discarding other passthrough payloads
+    -- (e.g. ConEmu 9;4 progress) and never rendering any of it.
+    it "forwards a desktop notification wrapped in tmux passthrough" $ do
+        e <- new80x24
+        evs <- feedStr e "A<\ESCPtmux;\ESC\ESC]9;hello\a\ESC\\>B"
+        evs `shouldContain` [DesktopNotification "\ESC]9;hello\a"]
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "A<>B"
+
+    it "does not forward wrapped OSC 9;4 progress as a notification" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESCPtmux;\ESC\ESC]9;4;0;\a\ESC\\"
+        [() | DesktopNotification _ <- evs] `shouldBe` []
+
     -- Bug f: ghostty (like most terminals) ignores DECXCPR (CSI ? 6 n), but
     -- libvterm answers it with a DEC-private cursor report (CSI ? row;col R).
     -- Under a multiplexer that unexpected reply reaches the shell on the app's

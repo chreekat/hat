@@ -307,7 +307,7 @@ newEmulator sz historyLimit = do
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     st0 <- readIORef e.passRef
-    let (st1, scrubbed) = scrubPassthrough st0 bs0
+    let (st1, scrubbed, wrappedNotifs) = scrubPassthrough st0 bs0
     writeIORef e.passRef st1
     writeIORef e.eventsRef []
     writeIORef e.outRef []
@@ -319,7 +319,8 @@ feed e bs0 = withMVar e.lock $ \_ -> do
     applyDamage e
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
-    pure $ interleaved
+    pure $ map DesktopNotification wrappedNotifs
+        <> interleaved
         <> evs
         <> [ScreenChanged | dirty]
 
