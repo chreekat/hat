@@ -141,6 +141,10 @@ data Pane = Pane
         -- its own cursor/selection over the pane's scrollback + screen.
     , pipe     :: TVar (Maybe PipeHandle)
         -- ^ an active @pipe-pane@ subprocess, if any.
+    , readerTid :: TVar (Maybe ThreadId)
+        -- ^ the pane's output-reader thread, once it has stored its own id.
+        -- A teardown interrupts it here so a blocked read releases the pty
+        -- master's lock; 'Nothing' only in the spawn race before it runs.
     }
 
 -- | A @pipe-pane@ subprocess. Pane output is forwarded to 'toStdin'

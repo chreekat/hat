@@ -18,7 +18,7 @@ module Hat.Server
     , StorePin (..)
     ) where
 
-import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
 import Control.Concurrent.Async (race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -54,6 +54,7 @@ import qualified System.Posix.Files as PFiles
 import qualified System.Posix.IO as PIO
 import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
+import System.Timeout (timeout)
 import System.Process
     (CreateProcess (..), StdStream (..), createProcess, proc,
      readCreateProcess, readCreateProcessWithExitCode, shell,
@@ -992,6 +993,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     deadVar <- newTVarIO False
     modeVar <- newTVarIO Nothing
     pipeVar <- newTVarIO Nothing
+    readerVar <- newTVarIO Nothing
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
     pure Pane
@@ -1003,6 +1005,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , startCwd = dir
         , mode = modeVar
         , pipe = pipeVar
+        , readerTid = readerVar
         }
 
 -- | The reader thread owns a pane's lifetime: it pumps pty output into
@@ -1010,7 +1013,9 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
 -- the pane's resources and model entry are released however the loop ends
 -- — clean EOF, a hang-up from a kill command, or an exception.
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
-startPaneReader st sid win pane = void . forkIO $
+startPaneReader st sid win pane = void . forkIO $ do
+    tid <- myThreadId
+    atomically $ writeTVar pane.readerTid (Just tid)
     readLoop `finally` closePane st sid win pane
   where
     readLoop = do
@@ -1074,13 +1079,41 @@ windowArrange eff win = do
         Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
         _ -> arrange (sizeRect eff) lay
 
+-- How long 'closePane' waits for a hung-up child to exit before escalating
+-- to SIGKILL. Long enough for a well-behaved child to die on SIGHUP, short
+-- enough that a shutdown never stalls on a stubborn one.
+paneExitWaitMicros :: Int
+paneExitWaitMicros = 400_000
+
+-- | Tear a pane down from an external command (kill-pane/window/session,
+-- kill-server) without deadlocking. 'closePty' would block closing the
+-- master Handle while the reader still holds it in a read that a
+-- SIGHUP-ignoring child never ends; instead SIGHUP the child, then
+-- interrupt the reader so its blocked read returns and its @finally@ runs
+-- 'closePane' (which releases the master Handle and the rest). Before the
+-- reader has recorded its id (a brief spawn race) fall back to 'closePty'.
+hangupPane :: Pane -> IO ()
+hangupPane pane = do
+    Hat.Term.Pty.signalHangup pane.pty
+    mtid <- readTVarIO pane.readerTid
+    case mtid of
+        Just tid -> killThread tid
+        Nothing  -> Hat.Term.Pty.closePty pane.pty
+
 -- | Release everything a pane owns and remove it from the model. Runs
 -- exactly once, in the reader thread's @finally@, so no teardown path can
 -- forget a resource. (The emulator frees itself via its finalizer.)
 closePane :: ServerState -> SessionId -> Window -> Pane -> IO ()
 closePane st sid win pane = do
     stopPipe pane
-    _ <- Hat.Term.Pty.waitExit pane.pty
+    -- Wait for the child, but bound it: a child that ignores SIGHUP would
+    -- never exit on its own, so on timeout escalate to SIGKILL and wait
+    -- again. The reaper always fills the exit slot, so the second wait is
+    -- guaranteed to complete.
+    reaped <- timeout paneExitWaitMicros (Hat.Term.Pty.waitExit pane.pty)
+    when (reaped == Nothing) $ do
+        Hat.Term.Pty.signalKill pane.pty
+        void $ Hat.Term.Pty.waitExit pane.pty
     Hat.Term.Pty.closePty pane.pty
     logEvent st.logger PaneExited { pane = rawPane pane.id }
     sessionGone <- atomically $ do
@@ -2584,7 +2617,7 @@ cmdKillWindow :: CommandImpl
 cmdKillWindow st mclient _ =
     withCurrentWindow st mclient $ \_ win -> do
         ps <- readTVarIO win.panes
-        forM_ (Map.elems ps) $ \p -> Hat.Term.Pty.closePty p.pty
+        forM_ (Map.elems ps) hangupPane
         pure []
 
 cmdRenameWindow :: CommandImpl
@@ -2741,7 +2774,7 @@ cmdKillPane :: CommandImpl
 cmdKillPane st mclient args = do
     let (opts, _, _) = parseArgs "t" args
     mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane $ \pane -> Hat.Term.Pty.closePty pane.pty
+    forM_ mpane hangupPane
     pure []
 
 -- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
@@ -3768,7 +3801,7 @@ cmdKillSession st mclient args = do
         panes <- atomically $ do
             ws <- readTVar sess.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
-        forM_ panes $ \p -> Hat.Term.Pty.closePty p.pty
+        forM_ panes hangupPane
         pure []
 
 cmdHasSession :: CommandImpl
@@ -3955,7 +3988,7 @@ cmdKillServer st mclient _ = do
         fmap concat . forM (Map.elems sess) $ \s -> do
             ws <- readTVar s.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
-    forM_ panes $ \p -> Hat.Term.Pty.closePty p.pty
+    forM_ panes hangupPane
     atomically $ do
         writeTVar st.sessions Map.empty
         writeTVar st.everAttached True
