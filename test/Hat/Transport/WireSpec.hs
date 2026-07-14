@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-orphans #-}  -- Arbitrary instances for wire types live with the wire tests: the library must not depend on QuickCheck
 
 module Hat.Transport.WireSpec (spec) where
 
