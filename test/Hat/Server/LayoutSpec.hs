@@ -47,6 +47,30 @@ spec = do
             in length allCells === Set.size cellSet  -- no cell covered twice
                 .&&. cellSet === Set.fromList (cellsOf windowRect)
 
+    describe "border junctions" $ do
+        let smallRect = Rect { startRow = 0, endRow = 5, startCol = 0, endCol = 5 }
+            a = PaneId 0; b = PaneId 1; c = PaneId 2; d = PaneId 3
+            glyphAt r co lay =
+                List.lookup (Pos { row = r, col = co }) (snd (arrange smallRect lay))
+
+        it "joins a divider ending against a perpendicular one with a tee" $
+            -- A vertical divider in the top half meets the full-width
+            -- horizontal divider from above: ┴ (up + left + right).
+            glyphAt 2 2
+                (Split TopBottom (1 % 2)
+                    (Split LeftRight (1 % 2) (Leaf a) (Leaf b))
+                    (Leaf c))
+                `shouldBe` Just '\x2534'
+
+        it "joins two dividers crossing with a full cross" $
+            -- Both halves split at the same row, straddling the central
+            -- vertical divider: ┼ (all four arms).
+            glyphAt 2 2
+                (Split LeftRight (1 % 2)
+                    (Split TopBottom (1 % 2) (Leaf a) (Leaf b))
+                    (Split TopBottom (1 % 2) (Leaf c) (Leaf d)))
+                `shouldBe` Just '\x253c'
+
     prop "splitting adds exactly the new pane" $
         forAll (genLayout 3) $ \lay ->
             let pids = layoutPanes lay

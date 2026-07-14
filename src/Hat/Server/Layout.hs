@@ -19,6 +19,7 @@ module Hat.Server.Layout
     ) where
 
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import Data.Ord (clamp)
 import Data.Ratio ((%))
 
@@ -41,7 +42,15 @@ data Layout
 -- | Project the tree onto a rectangle: every pane's rect plus the
 -- border cells between them.
 arrange :: Rect -> Layout -> ([(PaneId, Rect)], [(Pos, Char)])
-arrange rect = \case
+arrange rect lay =
+    let (rects, borders) = arrangeRaw rect lay
+    in (rects, resolveJunctions borders)
+
+-- | The raw projection: dividers as plain @│@\/@─@ runs. Sibling dividers
+-- only abut here; 'resolveJunctions' fuses them into box-drawing junctions
+-- once the whole tree's borders are known.
+arrangeRaw :: Rect -> Layout -> ([(PaneId, Rect)], [(Pos, Char)])
+arrangeRaw rect = \case
     Leaf pid -> ([(pid, rect)], [])
     Split LeftRight ratio a b ->
         let w = rect.endCol - rect.startCol
@@ -55,7 +64,7 @@ arrange rect = \case
                 | borderCol < rect.endCol
                 , r <- [rect.startRow .. rect.endRow - 1]
                 ]
-        in arrange ra a <> arrange rb b <> (mempty, border)
+        in arrangeRaw ra a <> arrangeRaw rb b <> (mempty, border)
     Split TopBottom ratio a b ->
         let h = rect.endRow - rect.startRow
             avail = h - 1
@@ -68,7 +77,46 @@ arrange rect = \case
                 | borderRow < rect.endRow
                 , c <- [rect.startCol .. rect.endCol - 1]
                 ]
-        in arrange ra a <> arrange rb b <> (mempty, border)
+        in arrangeRaw ra a <> arrangeRaw rb b <> (mempty, border)
+
+-- | Fuse abutting divider runs into box-drawing junctions. Each cell keeps
+-- the two arms of its own line (@│@ has up+down, @─@ has left+right) and
+-- gains a perpendicular arm wherever the neighbouring cell carries the
+-- other line — so a @─@ run ending against a @│@ becomes @┤@\/@├@\/@┼@ and
+-- a @│@ tip meeting a @─@ becomes @┬@\/@┴@. Divider ends at the window edge
+-- keep their full line (no neighbour, no spurious stub).
+resolveJunctions :: [(Pos, Char)] -> [(Pos, Char)]
+resolveJunctions cells = [ (p, fuse p ch) | (p, ch) <- cells ]
+  where
+    hasV q = Map.lookup q m == Just '│'
+    hasH q = Map.lookup q m == Just '─'
+    m = Map.fromList cells
+    fuse p ch
+        | ch == '│' = junction True True (hasH (left p)) (hasH (right p))
+        | ch == '─' = junction (hasV (up p)) (hasV (down p)) True True
+        | otherwise = ch
+    up    p = p { row = p.row - 1 }
+    down  p = p { row = p.row + 1 }
+    left  p = p { col = p.col - 1 }
+    right p = p { col = p.col + 1 }
+
+-- | The single-line box-drawing glyph with the requested up\/down\/left\/
+-- right arms. Dividers always carry both arms of their own axis, so only
+-- tees and the cross arise in practice; corners round-trip harmlessly.
+junction :: Bool -> Bool -> Bool -> Bool -> Char
+junction u d l r = case (u, d, l, r) of
+    (True,  True,  False, False) -> '│'
+    (False, False, True,  True ) -> '─'
+    (True,  True,  True,  True ) -> '┼'
+    (True,  True,  True,  False) -> '┤'
+    (True,  True,  False, True ) -> '├'
+    (False, True,  True,  True ) -> '┬'
+    (True,  False, True,  True ) -> '┴'
+    (False, True,  False, True ) -> '┌'
+    (False, True,  True,  False) -> '┐'
+    (True,  False, False, True ) -> '└'
+    (True,  False, True,  False) -> '┘'
+    _                            -> if u || d then '│' else '─'
 
 sizeRect :: Size -> Rect
 sizeRect sz = Rect

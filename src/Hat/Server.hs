@@ -1223,9 +1223,19 @@ mapGlyph bl ch = case bl of
     BorderDouble -> dbl ch
     BorderSimple -> simple ch
   where
-    heavy '\x2502' = '\x2503'; heavy '\x2500' = '\x2501'; heavy c = c
-    dbl '\x2502' = '\x2551'; dbl '\x2500' = '\x2550'; dbl c = c
-    simple '\x2502' = '|'; simple '\x2500' = '-'; simple c = c
+    -- Straight runs and every junction the layout can emit (see
+    -- 'Hat.Server.Layout.junction': │ ─ ┼ ┤ ├ ┬ ┴).
+    heavy '\x2502' = '\x2503'; heavy '\x2500' = '\x2501'
+    heavy '\x253c' = '\x254b'; heavy '\x2524' = '\x252b'
+    heavy '\x251c' = '\x2523'; heavy '\x252c' = '\x2533'
+    heavy '\x2534' = '\x253b'; heavy c = c
+    dbl '\x2502' = '\x2551'; dbl '\x2500' = '\x2550'
+    dbl '\x253c' = '\x256c'; dbl '\x2524' = '\x2563'
+    dbl '\x251c' = '\x2560'; dbl '\x252c' = '\x2566'
+    dbl '\x2534' = '\x2569'; dbl c = c
+    simple '\x2502' = '|'; simple '\x2500' = '-'
+    simple '\x253c' = '+'; simple '\x2524' = '+'; simple '\x251c' = '+'
+    simple '\x252c' = '+'; simple '\x2534' = '+'; simple c = c
 
 -- | The cells a pane contributes to a frame. Normally its live screen;
 -- in copy mode, a viewport over scrollback+screen with the selection
