@@ -8,6 +8,8 @@ module Hat.Server
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
+    , PaneStart (..)  -- ^ exported for the restore-argv test
+    , restoreRun      -- ^ exported for the restore-argv test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -262,9 +264,11 @@ captureWindow eff (wix, w) = do
         activeOrd = fromMaybe 0 (List.elemIndex activeId order)
     psnaps <- fmap catMaybes . forM order $ \pid ->
         forM (Map.lookup pid paneMap) $ \pane -> do
-            dir <- paneCurrentPath pane
-            cmd <- paneCommandName pane
-            pure PaneSnap { cwd = T.pack dir, command = Just cmd }
+            dir  <- paneCurrentPath pane
+            -- The whole argv, so a restore re-opens the same file; the
+            -- whitelist (see 'restoreRun') decides whether it is re-run.
+            argv <- Hat.Pty.foregroundArgv pane.pty
+            pure PaneSnap { cwd = T.pack dir, command = argv }
     pure WindowSnap
         { ix = wix, name = nm
         , layout = emitLayout (sizeRect (windowArea eff)) lay
@@ -423,12 +427,14 @@ restoreWhitelist st = do
         Just v | not (T.null (T.strip v)) -> T.words v
         _                                 -> defaultRestoreCommands
 
--- | Re-run the captured command only when its program is whitelisted;
--- otherwise the pane comes back as a plain shell ('Nothing').
-restoreRun :: [Text] -> Maybe Text -> Maybe Text
-restoreRun whitelist mcmd = do
-    cmd <- mcmd
-    if commandName cmd `elem` whitelist then Just cmd else Nothing
+-- | Re-exec the captured argv only when its program is whitelisted;
+-- otherwise the pane comes back as a plain shell. Exec'ing the argv
+-- directly (never through a shell) is what keeps an argument with spaces —
+-- @vim "Foo Bar.txt"@ — from being re-split on restore.
+restoreRun :: [Text] -> Maybe [Text] -> PaneStart
+restoreRun whitelist mcmd = case mcmd of
+    Just argv@(prog : _) | commandName prog `elem` whitelist -> ExecArgv argv
+    _                                                        -> FreshShell
 
 -- | The program a captured foreground command names: its last path
 -- segment with NixOS's @.<name>-wrapped@ decoration stripped, so a pane
@@ -757,7 +763,7 @@ newWindowWithPane
 newWindowWithPane st sid shellCmd mrun dir environ sz = do
     (wid, pid) <- atomically $
         (,) <$> freshId st.nextWindow <*> freshId st.nextPane
-    pane <- spawnPane st (PaneId pid) sid shellCmd mrun dir environ sz
+    pane <- spawnPane st (PaneId pid) sid shellCmd (shellStart mrun) dir environ sz
     nameVar <- newTVarIO $ case mrun of
         Just cmd -> T.takeWhile (/= ' ') cmd
         Nothing -> T.pack (baseName shellCmd)
@@ -785,8 +791,22 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
   where
     baseName = Prelude.reverse . takeWhile (/= '/') . Prelude.reverse
 
+-- | How a freshly-spawned pane chooses its process.
+data PaneStart
+    = FreshShell         -- ^ the session's login shell, no command
+    | ShellCommand Text  -- ^ a user-supplied command line, run via @sh -c@
+                         --   (@new-window@\/@split-window@ with an argument)
+    | ExecArgv [Text]    -- ^ exec this argv directly, no shell — used by
+                         --   restore so an argument with spaces survives
+    deriving (Eq, Show)
+
+-- | The shell-command spawn semantics for the user-facing @new-window@ and
+-- @split-window@: an argument is a command line for the shell to interpret.
+shellStart :: Maybe Text -> PaneStart
+shellStart = maybe FreshShell ShellCommand
+
 spawnPane
-    :: ServerState -> PaneId -> SessionId -> FilePath -> Maybe Text
+    :: ServerState -> PaneId -> SessionId -> FilePath -> PaneStart
     -> FilePath -> [(Text, Text)] -> Size -> IO Pane
 spawnPane st pid sid shellCmd mrun dir environ sz = do
     serverPid <- getProcessID
@@ -807,8 +827,10 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             , ("HAT_PANE", "%" <> show (rawPane pid))
             ]
         (cmd, args) = case mrun of
-            Nothing -> (shellCmd, [])
-            Just run -> ("/bin/sh", ["-c", T.unpack run])
+            FreshShell        -> (shellCmd, [])
+            ShellCommand run  -> ("/bin/sh", ["-c", T.unpack run])
+            ExecArgv (p:rest) -> (T.unpack p, map T.unpack rest)
+            ExecArgv []       -> (shellCmd, [])
     pty <- Hat.Pty.spawn Hat.Pty.Spawn
         { cmd = cmd
         , args = args
@@ -2346,8 +2368,8 @@ cmdSplitWindow st mclient args = do
                         environ <- readTVarIO sess.environ
                         let shellCmd = maybe "/bin/sh" T.unpack
                                 (List.lookup "SHELL" environ)
-                        pane <- spawnPane st pid sess.id shellCmd mrun dir
-                            environ (windowArea eff)
+                        pane <- spawnPane st pid sess.id shellCmd (shellStart mrun)
+                            dir environ (windowArea eff)
                         atomically $ do
                             modifyTVar' win.panes (Map.insert pane.id pane)
                             modifyTVar' win.layout $ if full

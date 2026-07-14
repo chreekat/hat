@@ -21,7 +21,8 @@ module Hat.Persist
 import Control.Exception (bracket)
 import Control.Monad (unless)
 import Data.Aeson
-    (FromJSON (..), ToJSON (..), decode, encode, object, withObject, (.:?), (.=))
+    ( FromJSON (..), ToJSON (..), Value (String), decode, encode, object
+    , withObject, (.:?), (.=) )
 import qualified Data.ByteString.Lazy as BL
 import Data.String (fromString)
 import Data.Text (Text)
@@ -54,26 +55,38 @@ data WindowSnap = WindowSnap
     deriving (Eq, Show)
 
 data PaneSnap = PaneSnap
-    { cwd     :: Text        -- ^ the pane's working directory at capture
-    , command :: Maybe Text  -- ^ foreground command to re-run on restore,
-                             --   if any; carried in the row's @extra@ JSON
+    { cwd     :: Text          -- ^ the pane's working directory at capture
+    , command :: Maybe [Text]  -- ^ argv of the foreground program to re-exec
+                               --   on restore (argv[0] is the program), or
+                               --   'Nothing' to bring the pane back as a plain
+                               --   shell; carried in the row's @extra@ JSON.
+                               --   Storing argv as a list, not a flattened
+                               --   string, keeps an argument with spaces
+                               --   intact — no shell re-splitting on restore.
     }
     deriving (Eq, Show)
 
 -- | The pane row's @extra@ JSON payload. Evolving, optional fields live
 -- here rather than in core columns, so old and new binaries interoperate.
-newtype PaneExtra = PaneExtra (Maybe Text)
+newtype PaneExtra = PaneExtra (Maybe [Text])
 
 instance ToJSON PaneExtra where
-    toJSON (PaneExtra mc) = object (maybe [] (\c -> ["command" .= c]) mc)
+    toJSON (PaneExtra mc) = object (maybe [] (\argv -> ["command" .= argv]) mc)
 
 instance FromJSON PaneExtra where
-    parseJSON = withObject "pane extra" $ \o -> PaneExtra <$> o .:? "command"
+    parseJSON = withObject "pane extra" $ \o -> do
+        mv <- o .:? "command"
+        PaneExtra <$> traverse parseArgv mv
+      where
+        -- Accept an argv array (current) or a bare string (a store written
+        -- by an older binary that persisted only the program name).
+        parseArgv (String s) = pure [s]
+        parseArgv v          = parseJSON v
 
-encodeExtra :: Maybe Text -> Text
+encodeExtra :: Maybe [Text] -> Text
 encodeExtra mc = TE.decodeUtf8 (BL.toStrict (encode (PaneExtra mc)))
 
-decodeExtra :: Text -> Maybe Text
+decodeExtra :: Text -> Maybe [Text]
 decodeExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
     Just (PaneExtra mc) -> mc
     Nothing             -> Nothing

@@ -67,17 +67,23 @@ instance Arbitrary WindowSnap where
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
 instance Arbitrary PaneSnap where
-    arbitrary = PaneSnap <$> genText <*> genMaybeText
+    arbitrary = PaneSnap <$> genText <*> genMaybeArgv
     shrink p =
         [ p { cwd = c } | c <- shrinkText p.cwd ]
-        ++ [ p { command = mc } | mc <- shrinkMaybeText p.command ]
+        ++ [ p { command = mc } | mc <- shrinkMaybeArgv p.command ]
 
-genMaybeText :: Gen (Maybe Text)
-genMaybeText = oneof [pure Nothing, Just <$> genText]
+-- A captured command is either absent or a non-empty argv (argv[0] is the
+-- program); the empty list is not a value capture ever produces.
+genMaybeArgv :: Gen (Maybe [Text])
+genMaybeArgv = oneof [pure Nothing, Just <$> genArgv]
 
-shrinkMaybeText :: Maybe Text -> [Maybe Text]
-shrinkMaybeText Nothing   = []
-shrinkMaybeText (Just t)  = Nothing : map Just (shrinkText t)
+genArgv :: Gen [Text]
+genArgv = choose (1, 3) >>= \n -> vectorOf n genText
+
+shrinkMaybeArgv :: Maybe [Text] -> [Maybe [Text]]
+shrinkMaybeArgv Nothing     = []
+shrinkMaybeArgv (Just argv)  =
+    Nothing : [ Just a | a <- shrinkList shrinkText argv, not (null a) ]
 
 spec :: Spec
 spec = do
@@ -147,6 +153,34 @@ spec = do
                 execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/w/p', '{}')"
                 loadSnapshot conn
             got `shouldBe` oneSession "nu" "/w" "win" "lay" "/w/p"
+
+        it "reads a legacy string command as a single-element argv" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane \
+                    \VALUES (0, 0, 0, '/h', '{\"command\":\"vim\"}')"
+                loadSnapshot conn
+            paneCommands got `shouldBe` [Just ["vim"]]
+
+    it "round-trips an argv whose argument contains spaces" $ do
+        let snap = Snapshot
+                { sessions =
+                    [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
+                        , windows =
+                            [ WindowSnap { ix = 0, name = "w", layout = "l"
+                                , active = 0
+                                , panes = [ PaneSnap { cwd = "/h"
+                                    , command = Just ["vim", "Foo Bar.txt"] } ] } ] } ] }
+        got <- withStore ":memory:" $ \conn ->
+            saveSnapshot conn snap >> loadSnapshot conn
+        got `shouldBe` snap
+
+-- Every pane's captured command, in load order.
+paneCommands :: Snapshot -> [Maybe [Text]]
+paneCommands snap =
+    [ p.command | s <- snap.sessions, w <- s.windows, p <- w.panes ]
 
 -- Run an action against a fresh in-memory database.
 withRaw :: (Connection -> IO a) -> IO a
