@@ -12,6 +12,8 @@ module Hat.Term.Pty
     , writePty
     , resize
     , waitExit
+    , signalHangup
+    , signalKill
     , closePty
     , pid
     , foregroundCommand
@@ -33,7 +35,6 @@ import Control.Exception (IOException, catch, try)
 import Control.Monad (when)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
-import Data.Foldable (for_)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -45,7 +46,7 @@ import Foreign.C.Types
 import System.IO
 import System.Posix.IO (closeFd, fdToHandle)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
-import System.Posix.Signals (Signal, signalProcess, sigHUP)
+import System.Posix.Signals (Signal, signalProcess, sigHUP, sigKILL)
 import System.Posix.Terminal (getTerminalProcessGroupID, openPseudoTerminal)
 import System.Posix.Types (Fd (..), ProcessID)
 
@@ -63,7 +64,10 @@ data PtyHandle = PtyHandle
     { master :: Fd
     , handle :: Handle
     , child  :: ProcessID
-    , exited :: MVar ProcessStatus
+    , exited :: MVar (Maybe ProcessStatus)
+        -- ^ filled exactly once by the reaper thread; 'Nothing' when the
+        -- reap itself failed (e.g. the child was already reaped elsewhere),
+        -- so 'waitExit' can never block forever on an unfillable slot.
     }
 
 foreign import capi "sys/ioctl.h ioctl"
@@ -135,9 +139,10 @@ spawn s = do
     let childPid = fromIntegral rawPid :: ProcessID
     exitVar <- newEmptyMVar
     _ <- forkIO $ do
-        st <- getProcessStatus True False childPid
-            `catch` \(_ :: IOException) -> pure Nothing
-        for_ st (putMVar exitVar)
+        r <- try (getProcessStatus True False childPid)
+        putMVar exitVar $ case r of
+            Left (_ :: IOException) -> Nothing
+            Right st                -> st
     pure PtyHandle
         { master = masterFd
         , handle = h
@@ -175,8 +180,9 @@ writePty pty bs =
 resize :: PtyHandle -> Size -> IO ()
 resize pty = setWinsize pty.master
 
--- | Wait for the child to exit. Idempotent.
-waitExit :: PtyHandle -> IO ProcessStatus
+-- | Wait for the child to exit. Idempotent. 'Nothing' when the reaper
+-- could not obtain a status (e.g. the child was already reaped).
+waitExit :: PtyHandle -> IO (Maybe ProcessStatus)
 waitExit pty = readMVar pty.exited
 
 pid :: PtyHandle -> ProcessID
@@ -241,8 +247,21 @@ procField pgrp name trim = do
         Right s -> let t = T.strip (trim s) in
             if T.null t then Nothing else Just t
 
+-- | Send SIGHUP to the pane's child, swallowing "process gone" errors.
+-- Unlike 'closePty' this does not touch the master Handle, so it is safe
+-- to call while the reader thread is still blocked inside it.
+signalHangup :: PtyHandle -> IO ()
+signalHangup pty =
+    signalProcess sigHUP pty.child `catch` \(_ :: IOException) -> pure ()
+
+-- | Send SIGKILL to the pane's child, swallowing "process gone" errors.
+-- The escalation for a child that outlives SIGHUP.
+signalKill :: PtyHandle -> IO ()
+signalKill pty =
+    signalProcess sigKILL pty.child `catch` \(_ :: IOException) -> pure ()
+
 -- | Hang up the pane: signal the child and close the master side.
 closePty :: PtyHandle -> IO ()
 closePty pty = do
-    signalProcess sigHUP pty.child `catch` \(_ :: IOException) -> pure ()
+    signalHangup pty
     hClose pty.handle `catch` \(_ :: IOException) -> pure ()

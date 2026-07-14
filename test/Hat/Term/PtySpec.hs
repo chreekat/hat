@@ -98,7 +98,7 @@ specWith base home = do
         out <- drainPty pty
         status <- waitExit pty
         out `shouldSatisfy` B8.isInfixOf "hat-pty-works"
-        status `shouldBe` Exited ExitSuccess
+        status `shouldBe` Just (Exited ExitSuccess)
 
     it "sets the initial window size on the pty" $ do
         pty <- spawn base
@@ -131,7 +131,7 @@ specWith base home = do
         out `shouldSatisfy` B8.isInfixOf "a2b"
         writePty pty "exit\n"
         status <- waitExit pty
-        status `shouldBe` Exited ExitSuccess
+        status `shouldBe` Just (Exited ExitSuccess)
 
     -- The foreground command follows a child running under the shell, not
     -- the shell itself: 'sleep' owns the terminal's foreground process
@@ -190,4 +190,4 @@ specWith base home = do
         pty <- spawn base { args = ["-c", "exit 3"] }
         _ <- drainPty pty
         status <- waitExit pty
-        status `shouldBe` Exited (ExitFailure 3)
+        status `shouldBe` Just (Exited (ExitFailure 3))
