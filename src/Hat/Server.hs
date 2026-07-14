@@ -1229,16 +1229,26 @@ windowCompositeCells st win size = do
                   cells <- paneViewCells st pane
                   pure (overlayGrid acc rect cells)) base rects
 
--- | Preview a session by compositing its current window. Bug 8 replaces
--- this with a stack of per-window thumbnails.
+-- | Preview a session as a vertical stack of its windows: each window's
+-- index\/name on a label row, then a thumbnail of that window's composited
+-- split layout. Windows that do not fit are omitted (the list still names
+-- them).
 sessionPreviewCells
     :: ServerState -> Session -> Size -> IO (V.Vector (V.Vector Cell.Cell))
 sessionPreviewCells st sess size = do
-    mwin <- atomically $ do
-        curIx <- readTVar sess.currentIx
-        ws    <- readTVar sess.windows
-        pure (Map.lookup curIx ws)
-    maybe (pure (blankFrame size)) (\w -> windowCompositeCells st w size) mwin
+    wins <- Map.toAscList <$> readTVarIO sess.windows
+    let slices = Picker.stackThumbnails (fromIntegral size.rows) (length wins)
+    foldM place (blankFrame size) (zip wins slices)
+  where
+    place acc ((ix, win), (labelRow, bodyTop, bodyH)) = do
+        wname <- readTVarIO win.name
+        thumb <- windowCompositeCells st win
+            (Size { rows = fromIntegral bodyH, cols = size.cols })
+        let width = fromIntegral size.cols
+            label = lineCells pickerStyle width (tshow ix <> ":" <> wname)
+            body  = Rect { startRow = bodyTop, endRow = bodyTop + bodyH
+                         , startCol = 0, endCol = width }
+        pure (overlayGrid (acc V.// [(labelRow, label)]) body thumb)
 
 -- | Paint a chooser into @region@: the list on the left and, when wide
 -- enough, a preview of the highlighted node's pane on the right, divided

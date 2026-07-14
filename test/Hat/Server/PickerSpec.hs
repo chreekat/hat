@@ -124,6 +124,24 @@ spec = do
         it "declines to split a narrow overlay" $
             pickerSplit 30 `shouldBe` Nothing
 
+    describe "stackThumbnails" $ do
+        it "splits the height evenly, a label row above each body" $
+            -- two windows in 20 rows: 10 each, 1 label + 9 body.
+            stackThumbnails 20 2 `shouldBe` [(0, 1, 9), (10, 11, 9)]
+
+        it "packs more windows into thinner blocks" $
+            -- eight windows in 20 rows: 2 each, 1 label + 1 body.
+            stackThumbnails 20 8
+                `shouldBe` [ (r, r + 1, 1) | r <- [0, 2 .. 14] ]
+
+        it "drops windows that cannot fit two rows each" $
+            -- five windows but only room for one block.
+            stackThumbnails 3 5 `shouldBe` [(0, 1, 2)]
+
+        it "shows nothing when there is no room or no windows" $ do
+            stackThumbnails 1 4 `shouldBe` []
+            stackThumbnails 20 0 `shouldBe` []
+
     describe "pickerRegion" $ do
         let csize = Size { rows = 24, cols = 80 }
             paneRect = Rect { startRow = 0, endRow = 23, startCol = 41, endCol = 80 }

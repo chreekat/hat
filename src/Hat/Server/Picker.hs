@@ -11,6 +11,7 @@ module Hat.Server.Picker
     , visibleRows
     , selectedPreview
     , pickerSplit
+    , stackThumbnails
     , pickerRegion
     , editPicker
     , pickerLines
@@ -70,6 +71,21 @@ pickerSplit :: Int -> Maybe Int
 pickerSplit total
     | total >= 40 = Just (max 20 (total `div` 3))
     | otherwise   = Nothing
+
+-- | Vertical placement of stacked window thumbnails in a preview @height@
+-- rows tall: each window gets a one-row label then a thumbnail body, and
+-- the bodies divide the available rows evenly. Returns, per shown window
+-- (in order), @(labelRow, bodyTopRow, bodyHeight)@. Windows past what fits
+-- (at least two rows each) are dropped — the list column still names them.
+stackThumbnails :: Int -> Int -> [(Int, Int, Int)]
+stackThumbnails height n
+    | height <= 1 || n <= 0 = []
+    | otherwise =
+        [ (top, top + 1, bodyH) | k <- [0 .. shown - 1], let top = k * perBlock ]
+  where
+    shown    = min n (height `div` 2)   -- ≥2 rows each: label + ≥1 body row
+    perBlock = height `div` shown
+    bodyH    = perBlock - 1
 
 -- | The rectangle the picker paints into: the whole content area (every
 -- row but the status row) when zoomed, otherwise the active pane's
