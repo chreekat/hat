@@ -920,6 +920,24 @@ spec = parallel $ do
                   && "LEFTMARK" `T.isInfixOf` t
                   && "RIGHTMARK" `T.isInfixOf` t)) c1
 
+    it "choose-tree previews a session as a stack of its windows' thumbnails" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "clear; echo ALPHA\r"     -- window 0's marker, pinned top-left
+        awaitScreen c1 "ALPHA"
+        typeInto c1 "\x02\&c"                  -- new window 1
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "clear; echo BETA\r"       -- window 1's marker
+        awaitScreen c1 "BETA"
+        typeInto c1 "\x02w"                    -- open the zoomed tree chooser
+        typeInto c1 "g"                        -- jump to the session row (top)
+        -- The session row stacks a thumbnail per window, so a marker from
+        -- BOTH windows shows — not just the current window's active pane.
+        awaitWith "session preview stacks both windows" (\d -> do
+            t <- screenText d
+            pure ("ALPHA" `T.isInfixOf` t && "BETA" `T.isInfixOf` t)) c1
+
     it "choose-tree without -Z draws in the active pane, sparing the other" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "bind e choose-tree -w\n"
