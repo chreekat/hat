@@ -7,6 +7,7 @@ module Hat.Server
     , send       -- ^ exported for the greeting-ordering test
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
+    , cmdAttachSession  -- ^ exported for the session re-anchor test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -241,12 +242,13 @@ captureSnapshot st = do
 captureSession :: Session -> IO SessionSnap
 captureSession s = do
     nm    <- readTVarIO s.name
+    cwd   <- readTVarIO s.startCwd
     curIx <- readTVarIO s.currentIx
     eff   <- readTVarIO s.lastSize
     ws    <- Map.toAscList <$> readTVarIO s.windows
     wsnaps <- mapM (captureWindow eff) ws
     pure SessionSnap
-        { name = nm, startCwd = T.pack s.startCwd
+        { name = nm, startCwd = T.pack cwd
         , currentIx = curIx, windows = wsnaps }
 
 captureWindow :: Size -> (Int, Window) -> IO WindowSnap
@@ -350,11 +352,12 @@ restoreSession st ssnap = do
         lastVar    <- newTVarIO Nothing
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO env
+        cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
         let sess = Session
                 { id = sid, name = nameVar, windows = windowsVar
                 , currentIx = currentVar, lastIx = lastVar
                 , lastSize = sizeVar, environ = environVar
-                , startCwd = T.unpack ssnap.startCwd }
+                , startCwd = cwdVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
             forM_ panes (startPaneReader st sid win)
@@ -728,6 +731,7 @@ createSession st mname mrun environ dir sz = do
     lastVar <- newTVarIO Nothing
     sizeVar <- newTVarIO sz
     environVar <- newTVarIO environ
+    cwdVar <- newTVarIO dir
     let sess = Session
             { id = SessionId sid
             , name = nameVar
@@ -736,7 +740,7 @@ createSession st mname mrun environ dir sz = do
             , lastIx = lastVar
             , lastSize = sizeVar
             , environ = environVar
-            , startCwd = dir
+            , startCwd = cwdVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -2082,7 +2086,7 @@ cmdNewWindow st mclient args = do
                 [] -> Nothing
                 ws -> Just (T.unwords ws)
         dir <- case lookup "-c" opts of
-            Nothing -> pure sess.startCwd
+            Nothing -> readTVarIO sess.startCwd
             Just d -> do
                 env <- sessionFormatEnv st sess
                 T.unpack <$> expandFormat st env d
@@ -3422,13 +3426,23 @@ switchClientTo st client sess = do
     applySessionSize st old
     applySessionSize st sess.id
 
+-- @-c@ re-anchors the session's default working directory for new
+-- windows, so it is useful (and valid) even without a client to attach.
 cmdAttachSession :: CommandImpl
 cmdAttachSession st mclient args = do
     let (opts, _, _) = parseArgs "tc" args
-    withTargetSession st mclient (lookup "-t" opts) $ \sess ->
+    withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
+        forM_ (lookup "-c" opts) $ \d -> do
+            env <- sessionFormatEnv st sess
+            dir <- T.unpack <$> expandFormat st env d
+            atomically $ do
+                writeTVar sess.startCwd dir
+                bumpDirty st
         case mclient of
             Just client -> switchClientTo st client sess >> pure []
-            Nothing -> pure [RErr "no client to attach"]
+            Nothing
+                | isJust (lookup "-c" opts) -> pure []
+                | otherwise -> pure [RErr "no client to attach"]
 
 cmdKillSession :: CommandImpl
 cmdKillSession st mclient args = do

@@ -96,7 +96,7 @@ data Session = Session
     , lastIx   :: TVar (Maybe Int)
     , lastSize :: TVar Size              -- ^ effective size while no client is attached
     , environ  :: TVar [(Text, Text)]    -- ^ env for new panes; refreshed on attach (update-environment)
-    , startCwd :: FilePath               -- ^ default working directory for new windows
+    , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     }
 
 data Window = Window
