@@ -41,16 +41,24 @@ data SessionSnap = SessionSnap
     { name      :: Text    -- ^ session name
     , startCwd  :: Text    -- ^ default working directory for new windows
     , currentIx :: Int     -- ^ index of the current window
+    , lastIx    :: Maybe Int
+                           -- ^ index of the last-active window (the one
+                           --   @last-window@ returns to), if any; carried in
+                           --   the session row's @extra@ JSON.
     , windows   :: [WindowSnap]
     }
     deriving (Eq, Show)
 
 data WindowSnap = WindowSnap
-    { ix     :: Int        -- ^ window index within the session (sparse)
-    , name   :: Text
-    , layout :: Text       -- ^ tmux @window_layout@ string ('Hat.Server.LayoutString.emitLayout')
-    , active :: Int        -- ^ ordinal (in 'panes' order) of the active pane
-    , panes  :: [PaneSnap] -- ^ in layout order
+    { ix         :: Int    -- ^ window index within the session (sparse)
+    , name       :: Text
+    , layout     :: Text   -- ^ tmux @window_layout@ string ('Hat.Server.LayoutString.emitLayout')
+    , active     :: Int    -- ^ ordinal (in 'panes' order) of the active pane
+    , lastActive :: Maybe Int
+                           -- ^ ordinal (in 'panes' order) of the last-active
+                           --   pane (@last-pane@ returns to it), if any;
+                           --   carried in the window row's @extra@ JSON.
+    , panes      :: [PaneSnap] -- ^ in layout order
     }
     deriving (Eq, Show)
 
@@ -65,6 +73,45 @@ data PaneSnap = PaneSnap
                                --   intact — no shell re-splitting on restore.
     }
     deriving (Eq, Show)
+
+-- | The session row's @extra@ JSON payload. Evolving, optional fields live
+-- here rather than in core columns, so old and new binaries interoperate.
+newtype SessionExtra = SessionExtra (Maybe Int)  -- ^ last-active window index
+
+instance ToJSON SessionExtra where
+    toJSON (SessionExtra ml) = object (maybe [] (\l -> ["last_ix" .= l]) ml)
+
+instance FromJSON SessionExtra where
+    parseJSON = withObject "session extra" $ \o ->
+        SessionExtra <$> o .:? "last_ix"
+
+encodeSessionExtra :: Maybe Int -> Text
+encodeSessionExtra ml =
+    TE.decodeUtf8 (BL.toStrict (encode (SessionExtra ml)))
+
+decodeSessionExtra :: Text -> Maybe Int
+decodeSessionExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
+    Just (SessionExtra ml) -> ml
+    Nothing                -> Nothing
+
+-- | The window row's @extra@ JSON payload.
+newtype WindowExtra = WindowExtra (Maybe Int)  -- ^ last-active pane ordinal
+
+instance ToJSON WindowExtra where
+    toJSON (WindowExtra ml) = object (maybe [] (\l -> ["last_active" .= l]) ml)
+
+instance FromJSON WindowExtra where
+    parseJSON = withObject "window extra" $ \o ->
+        WindowExtra <$> o .:? "last_active"
+
+encodeWindowExtra :: Maybe Int -> Text
+encodeWindowExtra ml =
+    TE.decodeUtf8 (BL.toStrict (encode (WindowExtra ml)))
+
+decodeWindowExtra :: Text -> Maybe Int
+decodeWindowExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
+    Just (WindowExtra ml) -> ml
+    Nothing               -> Nothing
 
 -- | The pane row's @extra@ JSON payload. Evolving, optional fields live
 -- here rather than in core columns, so old and new binaries interoperate.
@@ -162,16 +209,16 @@ saveSnapshot conn snap = withTransaction conn $ do
     insertSession :: (Int, SessionSnap) -> IO ()
     insertSession (sseq, s) = do
         execute conn
-            "INSERT INTO session (seq, name, start_cwd, current_ix) \
-            \VALUES (?, ?, ?, ?)"
-            (sseq, s.name, s.startCwd, s.currentIx)
+            "INSERT INTO session (seq, name, start_cwd, current_ix, extra) \
+            \VALUES (?, ?, ?, ?, ?)"
+            (sseq, s.name, s.startCwd, s.currentIx, encodeSessionExtra s.lastIx)
         mapM_ (insertWindow sseq) s.windows
     insertWindow :: Int -> WindowSnap -> IO ()
     insertWindow sseq w = do
         execute conn
-            "INSERT INTO window (session_seq, ix, name, layout, active) \
-            \VALUES (?, ?, ?, ?, ?)"
-            (sseq, w.ix, w.name, w.layout, w.active)
+            "INSERT INTO window (session_seq, ix, name, layout, active, extra) \
+            \VALUES (?, ?, ?, ?, ?, ?)"
+            (sseq, w.ix, w.name, w.layout, w.active, encodeWindowExtra w.lastActive)
         mapM_ (insertPane sseq w.ix) (zip [0 ..] w.panes)
     insertPane :: Int -> Int -> (Int, PaneSnap) -> IO ()
     insertPane sseq wix (ord, p) =
@@ -184,26 +231,28 @@ saveSnapshot conn snap = withTransaction conn $ do
 loadSnapshot :: Connection -> IO Snapshot
 loadSnapshot conn = do
     srows <- query_ conn
-        "SELECT seq, name, start_cwd, current_ix FROM session ORDER BY seq"
-        :: IO [(Int, Text, Text, Int)]
+        "SELECT seq, name, start_cwd, current_ix, extra FROM session ORDER BY seq"
+        :: IO [(Int, Text, Text, Int, Text)]
     Snapshot <$> mapM loadSession srows
   where
-    loadSession :: (Int, Text, Text, Int) -> IO SessionSnap
-    loadSession (sseq, nm, cwd0, curIx) = do
+    loadSession :: (Int, Text, Text, Int, Text) -> IO SessionSnap
+    loadSession (sseq, nm, cwd0, curIx, sex) = do
         wrows <- query conn
-            "SELECT ix, name, layout, active FROM window \
+            "SELECT ix, name, layout, active, extra FROM window \
             \WHERE session_seq = ? ORDER BY ix"
-            (Only sseq) :: IO [(Int, Text, Text, Int)]
+            (Only sseq) :: IO [(Int, Text, Text, Int, Text)]
         ws <- mapM (loadWindow sseq) wrows
         pure SessionSnap
-            { name = nm, startCwd = cwd0, currentIx = curIx, windows = ws }
-    loadWindow :: Int -> (Int, Text, Text, Int) -> IO WindowSnap
-    loadWindow sseq (wix, nm, lay, act) = do
+            { name = nm, startCwd = cwd0, currentIx = curIx
+            , lastIx = decodeSessionExtra sex, windows = ws }
+    loadWindow :: Int -> (Int, Text, Text, Int, Text) -> IO WindowSnap
+    loadWindow sseq (wix, nm, lay, act, wex) = do
         prows <- query conn
             "SELECT cwd, extra FROM pane \
             \WHERE session_seq = ? AND window_ix = ? ORDER BY ordinal"
             (sseq, wix) :: IO [(Text, Text)]
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
+            , lastActive = decodeWindowExtra wex
             , panes = [ PaneSnap { cwd = c, command = decodeExtra ex }
                       | (c, ex) <- prows ] }

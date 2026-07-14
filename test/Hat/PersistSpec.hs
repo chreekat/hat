@@ -36,7 +36,10 @@ genWindow wix = do
     npane <- choose (1, 3)
     ps    <- vectorOf npane arbitrary
     act   <- choose (0, npane - 1)
-    pure WindowSnap { ix = wix, name = nm, layout = lay, active = act, panes = ps }
+    la    <- oneof [pure Nothing, Just <$> choose (0, npane - 1)]
+    pure WindowSnap
+        { ix = wix, name = nm, layout = lay, active = act
+        , lastActive = la, panes = ps }
 
 instance Arbitrary Snapshot where
     arbitrary = do
@@ -52,10 +55,13 @@ instance Arbitrary SessionSnap where
         ixs   <- distinctAscending nwin
         ws    <- mapM genWindow ixs
         curIx <- elements (map (.ix) ws)
+        lastI <- oneof [pure Nothing, Just <$> elements (map (.ix) ws)]
         pure SessionSnap
-            { name = nm, startCwd = cwd0, currentIx = curIx, windows = ws }
+            { name = nm, startCwd = cwd0, currentIx = curIx
+            , lastIx = lastI, windows = ws }
     shrink s =
         [ s { windows = ws } | ws <- shrinkList shrink s.windows, not (null ws) ]
+        ++ [ s { lastIx = Nothing } | s.lastIx /= Nothing ]
         ++ [ s { startCwd = c } | c <- shrinkText s.startCwd ]
 
 instance Arbitrary WindowSnap where
@@ -64,6 +70,7 @@ instance Arbitrary WindowSnap where
     -- them would preserve, and holding them keeps sibling ix distinct.
     shrink w =
         [ w { panes = ps } | ps <- shrinkList shrink w.panes, not (null ps) ]
+        ++ [ w { lastActive = Nothing } | w.lastActive /= Nothing ]
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
 instance Arbitrary PaneSnap where
@@ -112,9 +119,10 @@ spec = do
                 { sessions =
                     [ SessionSnap
                         { name = nm, startCwd = cwd0, currentIx = 0
+                        , lastIx = Nothing
                         , windows =
                             [ WindowSnap { ix = 0, name = wnm, layout = lay
-                                , active = 0
+                                , active = 0, lastActive = Nothing
                                 , panes = [PaneSnap { cwd = pcwd, command = Nothing }] }
                             ] } ] }
 
@@ -164,13 +172,35 @@ spec = do
                 loadSnapshot conn
             paneCommands got `shouldBe` [Just ["vim"]]
 
+    -- b7: restore must preserve the last-active window and pane, not just
+    -- the current ones. These fields used to be dropped by the codec.
+    it "round-trips the last-active window and pane" $ do
+        let snap = Snapshot
+                { sessions =
+                    [ SessionSnap { name = "s", startCwd = "/h", currentIx = 2
+                        , lastIx = Just 0
+                        , windows =
+                            [ WindowSnap { ix = 0, name = "a", layout = "l0"
+                                , active = 0, lastActive = Nothing
+                                , panes = [PaneSnap { cwd = "/h", command = Nothing }] }
+                            , WindowSnap { ix = 2, name = "b", layout = "l2"
+                                , active = 1, lastActive = Just 0
+                                , panes =
+                                    [ PaneSnap { cwd = "/h", command = Nothing }
+                                    , PaneSnap { cwd = "/h", command = Nothing } ] }
+                            ] } ] }
+        got <- withStore ":memory:" $ \conn ->
+            saveSnapshot conn snap >> loadSnapshot conn
+        got `shouldBe` snap
+
     it "round-trips an argv whose argument contains spaces" $ do
         let snap = Snapshot
                 { sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
+                        , lastIx = Nothing
                         , windows =
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
-                                , active = 0
+                                , active = 0, lastActive = Nothing
                                 , panes = [ PaneSnap { cwd = "/h"
                                     , command = Just ["vim", "Foo Bar.txt"] } ] } ] } ] }
         got <- withStore ":memory:" $ \conn ->
