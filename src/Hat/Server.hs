@@ -28,7 +28,7 @@ import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -243,40 +243,63 @@ captureSnapshot st = do
     sess <- Map.elems <$> readTVarIO st.sessions
     Snapshot <$> mapM captureSession sess
 
+-- | One window's structure read as a single consistent unit. Its layout,
+-- active\/last-active ordinals and live panes are read together in one STM
+-- transaction, so a concurrent split or close cannot leave the saved layout
+-- referring to panes the snapshot dropped. The per-pane cwd and argv are
+-- gathered afterwards in IO ('captureWindow').
+data WindowStruct = WindowStruct
+    { wsIx         :: Int
+    , wsName       :: Text
+    , wsLayout     :: Text
+    , wsActive     :: Int
+    , wsLastActive :: Maybe Int
+    , wsPanes      :: [Pane]
+    }
+
 captureSession :: Session -> IO SessionSnap
 captureSession s = do
-    nm    <- readTVarIO s.name
-    cwd   <- readTVarIO s.startCwd
-    curIx <- readTVarIO s.currentIx
-    lastI <- readTVarIO s.lastIx
-    eff   <- readTVarIO s.lastSize
-    ws    <- Map.toAscList <$> readTVarIO s.windows
-    wsnaps <- mapM (captureWindow eff) ws
+    (nm, cwd, curIx, lastI, wstructs) <- atomically $ do
+        nm    <- readTVar s.name
+        cwd   <- readTVar s.startCwd
+        curIx <- readTVar s.currentIx
+        lastI <- readTVar s.lastIx
+        eff   <- readTVar s.lastSize
+        ws    <- Map.toAscList <$> readTVar s.windows
+        wstructs <- mapM (windowStruct eff) ws
+        pure (nm, cwd, curIx, lastI, wstructs)
+    wsnaps <- mapM captureWindow wstructs
     pure SessionSnap
         { name = nm, startCwd = T.pack cwd
         , currentIx = curIx, lastIx = lastI, windows = wsnaps }
 
-captureWindow :: Size -> (Int, Window) -> IO WindowSnap
-captureWindow eff (wix, w) = do
-    nm       <- readTVarIO w.name
-    lay      <- readTVarIO w.layout
-    activeId <- readTVarIO w.activeId
-    lastAId  <- readTVarIO w.lastActive
-    paneMap  <- readTVarIO w.panes
+windowStruct :: Size -> (Int, Window) -> STM WindowStruct
+windowStruct eff (wix, w) = do
+    nm       <- readTVar w.name
+    lay      <- readTVar w.layout
+    activeId <- readTVar w.activeId
+    lastAId  <- readTVar w.lastActive
+    paneMap  <- readTVar w.panes
     let order = layoutPanes lay
         activeOrd = fromMaybe 0 (List.elemIndex activeId order)
         lastOrd = lastAId >>= \pid -> List.elemIndex pid order
-    psnaps <- fmap catMaybes . forM order $ \pid ->
-        forM (Map.lookup pid paneMap) $ \pane -> do
-            dir  <- paneCurrentPath pane
-            -- The whole argv, so a restore re-opens the same file; the
-            -- whitelist (see 'restoreRun') decides whether it is re-run.
-            argv <- Hat.Pty.foregroundArgv pane.pty
-            pure PaneSnap { cwd = T.pack dir, command = argv }
+    pure WindowStruct
+        { wsIx = wix, wsName = nm
+        , wsLayout = emitLayout (sizeRect (windowArea eff)) lay
+        , wsActive = activeOrd, wsLastActive = lastOrd
+        , wsPanes = mapMaybe (`Map.lookup` paneMap) order }
+
+captureWindow :: WindowStruct -> IO WindowSnap
+captureWindow ws = do
+    psnaps <- forM ws.wsPanes $ \pane -> do
+        dir  <- paneCurrentPath pane
+        -- The whole argv, so a restore re-opens the same file; the
+        -- whitelist (see 'restoreRun') decides whether it is re-run.
+        argv <- Hat.Pty.foregroundArgv pane.pty
+        pure PaneSnap { cwd = T.pack dir, command = argv }
     pure WindowSnap
-        { ix = wix, name = nm
-        , layout = emitLayout (sizeRect (windowArea eff)) lay
-        , active = activeOrd, lastActive = lastOrd, panes = psnaps }
+        { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
+        , active = ws.wsActive, lastActive = ws.wsLastActive, panes = psnaps }
 
 -- Color scheme -----------------------------------------------------------
 
