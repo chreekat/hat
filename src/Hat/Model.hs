@@ -16,6 +16,7 @@ module Hat.Model
     , PromptState (..)
     , PickerState (..)
     , PickerNode (..)
+    , PreviewTarget (..)
     , SelKind (..)
     , newServerState
     , bumpDirty
@@ -211,12 +212,21 @@ data PickerState = PickerState
     }
     deriving (Eq, Show)
 
+-- | What the preview column shows for a node: a single pane's contents, a
+-- whole window composited in its split layout, or a session as a stack of
+-- its windows' thumbnails.
+data PreviewTarget
+    = PreviewPane !PaneId
+    | PreviewWindow !WindowId
+    | PreviewSession !SessionId
+    deriving (Eq, Show)
+
 -- | One node in the chooser tree. Sessions hold window nodes, which hold
 -- pane nodes; a childless node (e.g. @choose-window@) is a plain leaf.
 data PickerNode = PickerNode
     { label    :: !Text  -- ^ shown, and matched against 'query'
     , command  :: !Text  -- ^ command line run when the node is chosen
-    , preview  :: !(Maybe PaneId)  -- ^ pane whose contents preview this node
+    , preview  :: !(Maybe PreviewTarget)  -- ^ what to show beside the list
     , children :: ![PickerNode]
     , expanded :: !Bool  -- ^ whether 'children' are shown
     }

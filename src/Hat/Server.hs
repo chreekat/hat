@@ -1169,8 +1169,14 @@ renderOnce st client = do
     (frame', cursor') <- case mpicker of
         Nothing -> pure (frame, cursor)
         Just pk -> do
-            mPreview <- pickerPreviewCells st pk
             let region = Picker.pickerRegion pk.zoomed csize rowOff mActiveRect
+                width = region.endCol - region.startCol
+                rows = region.endRow - region.startRow
+            mPreview <- case Picker.pickerSplit width of
+                Just listW -> pickerPreviewCells st pk Size
+                    { rows = fromIntegral (max 0 rows)
+                    , cols = fromIntegral (max 0 (width - listW - 1)) }
+                Nothing -> pure Nothing
             pure (overlayPicker region pk mPreview frame, (Pos 0 0, False))
     full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
@@ -1184,15 +1190,55 @@ renderOnce st client = do
   where
     foldM' z xs f = foldM f z xs
 
--- | The rendered cells of the pane previewing the highlighted node, or
--- 'Nothing' when the node has no preview pane (or it no longer exists).
+-- | The rendered cells previewing the highlighted node, sized to the
+-- preview column (@size@): a single pane's contents, a whole window
+-- composited in its split layout, or a session's windows. 'Nothing' when
+-- the node has no preview, or its target no longer exists.
 pickerPreviewCells
-    :: ServerState -> PickerState -> IO (Maybe (V.Vector (V.Vector Cell.Cell)))
-pickerPreviewCells st pk = case Picker.selectedPreview pk of
+    :: ServerState -> PickerState -> Size
+    -> IO (Maybe (V.Vector (V.Vector Cell.Cell)))
+pickerPreviewCells st pk size = case Picker.selectedPreview pk of
     Nothing -> pure Nothing
-    Just pid -> do
+    Just (PreviewPane pid) -> do
         mpane <- atomically (findPaneById st (rawPane pid))
         traverse (paneViewCells st) mpane
+    Just (PreviewWindow wid) -> do
+        mwin <- atomically (findWindowById st wid)
+        traverse (\w -> windowCompositeCells st w size) mwin
+    Just (PreviewSession sid) -> do
+        msess <- atomically (findSessionById st sid)
+        traverse (\s -> sessionPreviewCells st s size) msess
+
+-- | Composite a whole window — every pane painted into its layout rect,
+-- with the borders between them — into a @size@-sized grid. This is what
+-- makes a window preview show its splits, not just the active pane.
+windowCompositeCells
+    :: ServerState -> Window -> Size -> IO (V.Vector (V.Vector Cell.Cell))
+windowCompositeCells st win size = do
+    opts <- readTVarIO st.options
+    (rects, borders, ps, active) <- atomically $ do
+        (r, b) <- windowArrange size win
+        ps     <- readTVar win.panes
+        a      <- readTVar win.activeId
+        pure (r, b, ps, a)
+    let base = applyBorders (blankFrame size)
+            (borderCells opts (List.lookup active rects) 0 borders)
+    foldM (\acc (pid, rect) -> case Map.lookup pid ps of
+              Nothing   -> pure acc
+              Just pane -> do
+                  cells <- paneViewCells st pane
+                  pure (overlayGrid acc rect cells)) base rects
+
+-- | Preview a session by compositing its current window. Bug 8 replaces
+-- this with a stack of per-window thumbnails.
+sessionPreviewCells
+    :: ServerState -> Session -> Size -> IO (V.Vector (V.Vector Cell.Cell))
+sessionPreviewCells st sess size = do
+    mwin <- atomically $ do
+        curIx <- readTVar sess.currentIx
+        ws    <- readTVar sess.windows
+        pure (Map.lookup curIx ws)
+    maybe (pure (blankFrame size)) (\w -> windowCompositeCells st w size) mwin
 
 -- | Paint a chooser into @region@: the list on the left and, when wide
 -- enough, a preview of the highlighted node's pane on the right, divided
@@ -3110,6 +3156,18 @@ findPaneById st n = do
         fmap concat . forM (Map.elems ws) $ windowPanes
     pure (List.find (\p -> rawPane p.id == n) panes)
 
+-- | Find a window by its id across every session.
+findWindowById :: ServerState -> WindowId -> STM (Maybe Window)
+findWindowById st wid = do
+    sessions <- readTVar st.sessions
+    wins <- fmap concat . forM (Map.elems sessions) $ \sess ->
+        Map.elems <$> readTVar sess.windows
+    pure (List.find (\w -> w.id == wid) wins)
+
+-- | Find a session by its id.
+findSessionById :: ServerState -> SessionId -> STM (Maybe Session)
+findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
+
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
     let (opts, flags, _) = parseArgs "st" args
@@ -3220,11 +3278,7 @@ buildTreeNodes st expandWindows expandPanes = do
     sessions <- Map.elems <$> readTVarIO st.sessions
     forM sessions $ \sess -> do
         sname <- readTVarIO sess.name
-        curIx <- readTVarIO sess.currentIx
         ws <- Map.toAscList <$> readTVarIO sess.windows
-        sessPreview <- case lookup curIx ws of
-            Just cur -> Just <$> readTVarIO cur.activeId
-            Nothing  -> pure Nothing
         winNodes <- forM ws $ \(ix, win) -> do
             wname <- readTVarIO win.name
             apid <- readTVarIO win.activeId
@@ -3236,20 +3290,20 @@ buildTreeNodes st expandWindows expandPanes = do
                         { label = "pane " <> tshow pix
                             <> (if pane.id == apid then "*" else "")
                         , command = winCmd <> " ; select-pane -t " <> tshow pix
-                        , preview = Just pane.id
+                        , preview = Just (PreviewPane pane.id)
                         , children = []
                         , expanded = False }
                     | (pix, pane) <- zip [0 :: Int ..] ordered ]
             pure PickerNode
                 { label = tshow ix <> ":" <> wname
                 , command = winCmd
-                , preview = Just apid
+                , preview = Just (PreviewWindow win.id)
                 , children = paneNodes
                 , expanded = expandPanes }
         pure PickerNode
             { label = sname
             , command = "switch-client -t " <> sname
-            , preview = sessPreview
+            , preview = Just (PreviewSession sess.id)
             , children = winNodes
             , expanded = expandWindows }
 

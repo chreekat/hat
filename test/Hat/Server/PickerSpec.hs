@@ -4,7 +4,9 @@ import qualified Data.Text as T
 import Test.Hspec
 
 import Hat.Geometry (Rect (..), Size (..))
-import Hat.Model (PaneId (..), PickerNode (..), PickerState (..))
+import Hat.Model
+    ( PaneId (..), WindowId (..), PickerNode (..), PickerState (..)
+    , PreviewTarget (..) )
 import Hat.Server.Keys (Key, parseKeyName)
 import Hat.Server.Picker
 
@@ -105,11 +107,16 @@ spec = do
         let previewTree = demo
                 { roots =
                     [ (node "work" "switch-client -t work"
-                        [ (leaf "0:editor" "c") { preview = Just (PaneId 7) } ])
-                        { preview = Just (PaneId 3) } ] }
-        it "previews the pane of the row under the cursor" $ do
-            selectedPreview previewTree { cursor = 0 } `shouldBe` Just (PaneId 3)
-            selectedPreview previewTree { cursor = 1 } `shouldBe` Just (PaneId 7)
+                        [ (leaf "0:editor" "c")
+                            { preview = Just (PreviewPane (PaneId 7)) } ])
+                        { preview = Just (PreviewWindow (WindowId 3)) } ] }
+        it "previews the target of the row under the cursor" $ do
+            -- the parent row previews its whole window (splits and all);
+            -- the child row previews just its pane.
+            selectedPreview previewTree { cursor = 0 }
+                `shouldBe` Just (PreviewWindow (WindowId 3))
+            selectedPreview previewTree { cursor = 1 }
+                `shouldBe` Just (PreviewPane (PaneId 7))
 
     describe "pickerSplit" $ do
         it "gives the list a third of a wide overlay" $

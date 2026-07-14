@@ -21,7 +21,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import Hat.Geometry (Rect (..), Size (..))
-import Hat.Model (PaneId, PickerNode (..), PickerState (..))
+import Hat.Model (PickerNode (..), PickerState (..), PreviewTarget)
 import Hat.Server.Keys (Key (..))
 
 -- | What one key does to an open picker.
@@ -57,8 +57,9 @@ visibleRows p = go 0 [] (filterTree p.query p.roots)
           in Row d n here : rest
         | (i, n) <- zip [0 ..] nodes ]
 
--- | The pane whose contents should preview the row under the cursor.
-selectedPreview :: PickerState -> Maybe PaneId
+-- | What should preview the row under the cursor (a pane, window, or
+-- session), if anything.
+selectedPreview :: PickerState -> Maybe PreviewTarget
 selectedPreview p = do
     r <- listToMaybe (drop p.cursor (visibleRows p))
     r.node.preview
