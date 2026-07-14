@@ -897,6 +897,29 @@ spec = parallel $ do
         typeInto c1 "\r"
         awaitScreen c1 "win1-marker"
 
+    it "choose-tree previews a split window with both of its panes" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        -- 'clear' pins each marker at the top-left of its pane, so it shows
+        -- even in the composited (clipped) preview thumbnail.
+        typeInto c1 "clear; echo LEFTMARK\r"
+        awaitScreen c1 "LEFTMARK"
+        typeInto c1 "\x02%"                   -- split -h; the right pane is active
+        awaitScreen c1 "\x2502"
+        typeInto c1 "clear; echo RIGHTMARK\r"
+        awaitScreen c1 "RIGHTMARK"
+        -- prefix w opens the zoomed chooser, hiding the live panes. Its
+        -- preview composites the whole current window, so BOTH panes of the
+        -- split appear beside the list — not just the active one, which is
+        -- all the old single-pane preview could show.
+        typeInto c1 "\x02w"
+        awaitWith "preview shows both panes of the split" (\d -> do
+            t <- screenText d
+            pure ("choose a window" `T.isInfixOf` t
+                  && "LEFTMARK" `T.isInfixOf` t
+                  && "RIGHTMARK" `T.isInfixOf` t)) c1
+
     it "choose-tree without -Z draws in the active pane, sparing the other" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "bind e choose-tree -w\n"
