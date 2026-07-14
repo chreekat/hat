@@ -154,6 +154,15 @@ spec = do
             pickerRegion False csize 1 Nothing
                 `shouldBe` Rect { startRow = 1, endRow = 24, startCol = 0, endCol = 80 }
 
+    describe "windowChildren" $ do
+        it "collapses a single-pane window to no pane rows" $
+            windowChildren [leaf "pane 0*" "select-pane -t 0"] `shouldBe` []
+
+        it "keeps the pane rows of a multi-pane window" $ do
+            let panes = [ leaf "pane 0*" "select-pane -t 0"
+                        , leaf "pane 1" "select-pane -t 1" ]
+            windowChildren panes `shouldBe` panes
+
     describe "pickerLines" $
         it "shows the title, marks the cursor row, and draws arrows" $ do
             let ls = pickerLines 10 demo { cursor = 1 }

@@ -8,6 +8,7 @@ module Hat.Server.Picker
     ( PickerEdit (..)
     , Row (..)
     , leaf
+    , windowChildren
     , visibleRows
     , selectedPreview
     , pickerSplit
@@ -46,6 +47,13 @@ leaf :: Text -> Text -> PickerNode
 leaf lbl cmd = PickerNode
     { label = lbl, command = cmd, preview = Nothing
     , children = [], expanded = False }
+
+-- | A window's pane rows for the tree. A window with a single pane
+-- collapses to just its window row (that lone pane is redundant), so it
+-- gets no pane children; a window with two or more keeps them all.
+windowChildren :: [PickerNode] -> [PickerNode]
+windowChildren [_] = []
+windowChildren panes = panes
 
 -- | The rows to display: the tree filtered by the current query, then
 -- flattened depth-first, descending into a node only when it is expanded.

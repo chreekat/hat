@@ -3362,7 +3362,7 @@ buildTreeNodes st expandWindows expandPanes = do
                 { label = tshow ix <> ":" <> wname
                 , command = winCmd
                 , preview = Just (PreviewWindow win.id)
-                , children = paneNodes
+                , children = Picker.windowChildren paneNodes
                 , expanded = expandPanes }
         pure PickerNode
             { label = sname
