@@ -1,8 +1,8 @@
-module Hat.SocketSpec (spec) where
+module Hat.Transport.SocketSpec (spec) where
 
 import Test.Hspec
 
-import Hat.Socket
+import Hat.Transport.Socket
 
 spec :: Spec
 spec = do

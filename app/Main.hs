@@ -13,7 +13,7 @@ import System.Process
 import Hat.Client
 import Hat.Command.Parser (parseArgv)
 import Hat.Server (runServer)
-import Hat.Socket (connectTo, defaultSocketPath)
+import Hat.Transport.Socket (connectTo, defaultSocketPath)
 
 data Cli = Cli
     { socketName :: String

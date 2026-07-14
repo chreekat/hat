@@ -37,7 +37,7 @@ import qualified Hat.Server.Persist as Persist
 import Hat.Term.Pty (setWinsize)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
-import Hat.Socket (connectTo)
+import Hat.Transport.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Color (..), Style (..))
 import qualified Hat.Term.Emulator as Emu
 

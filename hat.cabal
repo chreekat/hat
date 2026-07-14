@@ -74,12 +74,12 @@ library
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Title
-        Hat.Socket
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.HostProtocol
         Hat.Term.Pty
-        Hat.Wire
+        Hat.Transport.Socket
+        Hat.Transport.Wire
     include-dirs:       cbits
     c-sources:          cbits/hat_shim.c
     pkgconfig-depends:  vterm
@@ -137,7 +137,7 @@ test-suite hat-test
         Hat.IntegrationSpec
         Hat.Server.PersistSpec
         Hat.Term.PtySpec
-        Hat.SocketSpec
+        Hat.Transport.SocketSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
         Hat.Server.CopyModeSpec
@@ -157,7 +157,7 @@ test-suite hat-test
         Hat.Server.SessionSpec
         Hat.Term.EmulatorSpec
         Hat.Term.GoldenSpec
-        Hat.WireSpec
+        Hat.Transport.WireSpec
     ghc-options:        -threaded -with-rtsopts=-N
     build-depends:
         base        ^>= 4.20.2.0,

@@ -18,7 +18,7 @@ import qualified Data.Vector as V
 
 import Hat.Geometry
 import Hat.Term.Cell
-import Hat.Wire (DrawOp (..))
+import Hat.Transport.Wire (DrawOp (..))
 
 type Frame = V.Vector (V.Vector Cell)
 

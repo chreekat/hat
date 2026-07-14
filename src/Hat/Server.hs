@@ -77,10 +77,10 @@ import Hat.Server.Render
 import Hat.Server.Style (parseStyle)
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
 import Hat.Server.Title (TitleParts (..), composeTitle)
-import Hat.Socket (ensureSocketDir, listenOn)
+import Hat.Transport.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
-import Hat.Wire
+import Hat.Transport.Wire
 
 runServer :: FilePath -> Maybe FilePath -> IO ()
 runServer path mconfig = do

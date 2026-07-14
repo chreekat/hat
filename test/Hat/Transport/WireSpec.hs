@@ -1,4 +1,4 @@
-module Hat.WireSpec (spec) where
+module Hat.Transport.WireSpec (spec) where
 
 import qualified Data.ByteString as B
 import qualified Data.Text as T
@@ -8,7 +8,7 @@ import Test.QuickCheck
 
 import Hat.Geometry
 import Hat.Term.Cell
-import Hat.Wire
+import Hat.Transport.Wire
 
 instance Arbitrary Size where
     arbitrary = Size <$> arbitrary <*> arbitrary

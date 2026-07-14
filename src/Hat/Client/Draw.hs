@@ -15,7 +15,7 @@ import qualified Data.Text.Encoding as TE
 
 import Hat.Geometry
 import Hat.Term.Cell
-import Hat.Wire (DrawOp (..))
+import Hat.Transport.Wire (DrawOp (..))
 
 opsToAnsi :: [DrawOp] -> ByteString
 opsToAnsi ops = BL.toStrict . BB.toLazyByteString $

@@ -18,7 +18,7 @@ import Hat.Model
 import Hat.Server (send)
 import Hat.Server.Keys (PrefixState (NoPrefix))
 import Hat.Server.Render (blankFrame)
-import Hat.Wire (ServerToClient (..), recvMessage)
+import Hat.Transport.Wire (ServerToClient (..), recvMessage)
 
 -- A Client wired to one end of a socketpair (returned second), initially
 -- not ready.

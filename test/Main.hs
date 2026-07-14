@@ -21,19 +21,19 @@ import qualified Hat.Server.SendSpec
 import qualified Hat.Server.StyleSpec
 import qualified Hat.Server.TargetSpec
 import qualified Hat.Server.TitleSpec
-import qualified Hat.SocketSpec
+import qualified Hat.Transport.SocketSpec
 import qualified Hat.Term.EmulatorSpec
 import qualified Hat.Term.GoldenSpec
-import qualified Hat.WireSpec
+import qualified Hat.Transport.WireSpec
 
 main :: IO ()
 main = hspec $ do
-    describe "Hat.Socket" Hat.SocketSpec.spec
+    describe "Hat.Transport.Socket" Hat.Transport.SocketSpec.spec
     describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
     describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec
     describe "Hat.Term.Emulator" Hat.Term.EmulatorSpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
-    describe "Hat.Wire" Hat.WireSpec.spec
+    describe "Hat.Transport.Wire" Hat.Transport.WireSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec
     describe "Hat.Server.Session" Hat.Server.SessionSpec.spec

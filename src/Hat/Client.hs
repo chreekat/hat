@@ -26,7 +26,7 @@ import System.Posix.Terminal (queryTerminal)
 import Hat.Client.Draw
 import Hat.Client.Tty
 import Hat.Term.Pty (sigWinch)
-import Hat.Wire
+import Hat.Transport.Wire
 
 data ExitReason
     = Detached

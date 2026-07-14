@@ -1,5 +1,5 @@
 -- | Unix-socket location and listen/connect plumbing.
-module Hat.Socket
+module Hat.Transport.Socket
     ( socketDir
     , socketPath
     , defaultSocketPath

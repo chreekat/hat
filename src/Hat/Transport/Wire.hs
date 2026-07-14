@@ -9,7 +9,7 @@
 -- the server answers 'Welcome' (or 'ServerError' and closes). During
 -- the fleshing-out phase the protocol version is bumped freely and a
 -- mismatch is fatal.
-module Hat.Wire
+module Hat.Transport.Wire
     ( protocolVersion
     , Intent (..)
     , Hello (..)

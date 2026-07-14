@@ -9,7 +9,7 @@ import Test.QuickCheck
 import Hat.Geometry
 import Hat.Server.Render
 import Hat.Term.Cell
-import Hat.Wire (DrawOp (..))
+import Hat.Transport.Wire (DrawOp (..))
 
 -- ASCII-only frames: the reference interpreter below doesn't model
 -- double-width characters (the emulator marks those; diffing keeps
