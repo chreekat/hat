@@ -11,6 +11,7 @@ module Hat.Server
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
+    , pickActivityTarget  -- ^ exported for the activity-jump test
     , pickAttachSession  -- ^ exported for the attach-to-last-active test
     ) where
 
@@ -568,7 +569,8 @@ defaultKeymap = Map.fromList
                  , "send-keys -X search-backward '%%'"]])
         ]
     prefixBindings =
-        [ ("d", ["detach-client"])
+        [ ("a", ["activity-window"])
+        , ("d", ["detach-client"])
         , ("c", ["new-window"])
         , ("w", ["choose-tree", "-Zw"])
         , ("%", ["split-window", "-h"])
@@ -1095,6 +1097,26 @@ chooseCurrentOnClose survivors cur mlast
     | Set.member cur survivors = Nothing
     | Just lastIx <- mlast, Set.member lastIx survivors = Just lastIx
     | otherwise = Set.lookupMin survivors
+
+-- | Where @<leader> a@ should jump. An activity-marked window takes
+-- priority: pick the first one in the same cyclic scan @next-window -a@
+-- uses (indices after the current, then wrapping around to those before
+-- it), so repeated presses walk the flagged windows in order. With no
+-- activity anywhere, fall back to @last-window@ (the last-active index).
+pickActivityTarget
+    :: [Int]        -- ^ window indices in ascending order
+    -> Int          -- ^ the current window index
+    -> Set.Set Int  -- ^ indices carrying an activity flag
+    -> Maybe Int    -- ^ the last-active window index, if any
+    -> Maybe Int
+pickActivityTarget ixs cur flagged mlast =
+    case filter (`Set.member` flagged) scan of
+        (ix : _) -> Just ix
+        []       -> mlast
+  where
+    curPos = fromMaybe (-1) (List.elemIndex cur ixs)
+    (before, after) = splitAt (curPos + 1) ixs
+    scan = after <> before
 
 -- Sizing ----------------------------------------------------------------
 
@@ -1959,6 +1981,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["next-window", "next"], cmdNextWindow)
     , (["previous-window", "prev"], cmdPrevWindow)
     , (["last-window", "last"], cmdLastWindow)
+    , (["activity-window"], cmdActivityWindow)
     , (["kill-window", "killw"], cmdKillWindow)
     , (["rename-window", "renamew"], cmdRenameWindow)
     , (["move-window", "movew"], cmdMoveWindow)
@@ -2437,21 +2460,34 @@ cmdLastWindow st mclient _ =
 -- | @next-window -a@: switch to the next window (cyclically) that has an
 -- activity flag set.
 nextActivityWindow :: ServerState -> Maybe Client -> IO [Reply]
-nextActivityWindow st mclient =
+nextActivityWindow st mclient = jumpToActivity st mclient WithoutLastFallback
+
+-- | The @<leader> a@ jump: prioritize a window carrying an activity flag,
+-- degrading to @last-window@ when none does.
+cmdActivityWindow :: CommandImpl
+cmdActivityWindow st mclient _ = jumpToActivity st mclient WithLastFallback
+
+-- | Whether an activity jump degrades to @last-window@ when nothing is
+-- flagged (@<leader> a@) or simply stays put (@next-window -a@).
+data ActivityFallback = WithLastFallback | WithoutLastFallback
+
+-- | Shared body of the activity jumps: pick 'pickActivityTarget' over the
+-- session's live activity flags and switch there.
+jumpToActivity :: ServerState -> Maybe Client -> ActivityFallback -> IO [Reply]
+jumpToActivity st mclient fallback =
     withTargetSession st mclient Nothing $ \sess -> do
         atomically $ do
             ws <- readTVar sess.windows
             cur <- readTVar sess.currentIx
-            let ixs = Map.keys ws
-                curPos = fromMaybe (-1) (List.elemIndex cur ixs)
-                (before, after) = splitAt (curPos + 1) ixs
-                ordered = after <> before
-            flagged <- forM ordered $ \ix -> do
-                a <- maybe (pure False) (readTVar . (.activity)) (Map.lookup ix ws)
-                pure (ix, a)
-            case [ ix | (ix, True) <- flagged ] of
-                (ix : _) -> switchTo st sess ix
-                []       -> pure ()
+            mfallback <- case fallback of
+                WithLastFallback -> readTVar sess.lastIx
+                WithoutLastFallback -> pure Nothing
+            flagged <- foldM (\acc (ix, win) -> do
+                a <- readTVar win.activity
+                pure (if a then Set.insert ix acc else acc))
+                Set.empty (Map.toList ws)
+            forM_ (pickActivityTarget (Map.keys ws) cur flagged mfallback)
+                (switchTo st sess)
         pure []
 
 cycleWindow :: ServerState -> Maybe Client -> Int -> IO [Reply]

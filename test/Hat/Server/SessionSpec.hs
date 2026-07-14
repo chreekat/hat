@@ -9,7 +9,8 @@ import qualified Data.Set as Set
 import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Server (cmdAttachSession, chooseCurrentOnClose, pickAttachSession)
+import Hat.Server
+    (cmdAttachSession, chooseCurrentOnClose, pickActivityTarget, pickAttachSession)
 
 -- A bare session with a known default working directory, inserted into a
 -- fresh server so 'cmdAttachSession' can target it.
@@ -58,6 +59,34 @@ spec = do
         it "falls back to the lowest survivor when the last-active is also gone" $
             -- last-active pointed at window 5, which no longer exists.
             chooseCurrentOnClose remaining 1 (Just 5) `shouldBe` Just 0
+
+    describe "pickActivityTarget" $ do
+        -- The @<leader> a@ jump: an activity-marked window wins, chosen in
+        -- the same cyclic next-window order used by @next-window -a@; with no
+        -- activity it degrades to @last-window@.
+        let order = [0, 1, 2, 3]
+
+        it "jumps to the next activity window after the current, cyclically" $
+            -- current is 2; activity on 0 and 1; the cyclic scan wraps past
+            -- 3 and lands on 0 (the first flagged one after the current).
+            pickActivityTarget order 2 (Set.fromList [0, 1]) (Just 3)
+                `shouldBe` Just 0
+
+        it "prefers the nearest activity window ahead of the current" $
+            -- current is 0; activity on 2 and 3; 2 comes first in the scan.
+            pickActivityTarget order 0 (Set.fromList [2, 3]) (Just 1)
+                `shouldBe` Just 2
+
+        it "prioritizes activity over the last-active fallback" $
+            -- last-active is 1, but window 3 carries activity, so it wins.
+            pickActivityTarget order 0 (Set.fromList [3]) (Just 1)
+                `shouldBe` Just 3
+
+        it "falls back to last-window when no window has activity" $
+            pickActivityTarget order 2 Set.empty (Just 1) `shouldBe` Just 1
+
+        it "has nothing to do with neither activity nor a last window" $
+            pickActivityTarget order 2 Set.empty Nothing `shouldBe` Nothing
 
     describe "pickAttachSession" $ do
         -- A fresh client attaches to the last-active session (set from the
