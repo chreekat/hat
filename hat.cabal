@@ -78,6 +78,7 @@ library
         Hat.Socket
         Hat.Term.Cell
         Hat.Term.Emulator
+        Hat.Term.HostProtocol
         Hat.Wire
     include-dirs:       cbits
     c-sources:          cbits/hat_shim.c
