@@ -10,6 +10,7 @@ module Hat.Server
     , cmdAttachSession  -- ^ exported for the session re-anchor test
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
+    , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -947,14 +948,30 @@ closePane st sid win pane = do
                                 pure (Just sess)
                             else do
                                 cur <- readTVar sess.currentIx
-                                case Map.lookupMin ws' of
-                                    Just (ix, _) | not (Map.member cur ws') ->
-                                        writeTVar sess.currentIx ix
-                                    _ -> pure ()
+                                mlast <- readTVar sess.lastIx
+                                let survivors = Map.keysSet ws'
+                                forM_ (chooseCurrentOnClose survivors cur mlast) $ \ix -> do
+                                    writeTVar sess.currentIx ix
+                                    writeTVar sess.lastIx Nothing
                                 bumpDirty st
                                 pure Nothing
     forM_ sessionGone $ \_ -> broadcast st sid Exited
     applySessionSize st sid
+
+-- | Pick the window to make current after one is closed. 'Nothing' means
+-- leave the current window as-is (it survived the close). Otherwise, when
+-- the current window is gone, prefer the session's last-active window (as
+-- tmux does), falling back to the lowest-numbered survivor when there is
+-- no last-active window or it too has been closed.
+chooseCurrentOnClose
+    :: Set.Set Int   -- ^ indices of the windows that remain
+    -> Int           -- ^ the current window index
+    -> Maybe Int     -- ^ the last-active window index, if any
+    -> Maybe Int
+chooseCurrentOnClose survivors cur mlast
+    | Set.member cur survivors = Nothing
+    | Just lastIx <- mlast, Set.member lastIx survivors = Just lastIx
+    | otherwise = Set.lookupMin survivors
 
 -- Sizing ----------------------------------------------------------------
 
