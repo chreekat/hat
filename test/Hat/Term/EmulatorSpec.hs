@@ -107,6 +107,19 @@ spec = do
         let outs = [bs | Output bs <- evs]
         B.concat outs `shouldSatisfy` B8.isInfixOf "R"
 
+    -- Bug f: ghostty (like most terminals) ignores DECXCPR (CSI ? 6 n), but
+    -- libvterm answers it with a DEC-private cursor report (CSI ? row;col R).
+    -- Under a multiplexer that unexpected reply reaches the shell on the app's
+    -- exit/resume, where the line editor spills its bare parameters as "9;4;0"
+    -- garbage. Match the real terminal: keep plain CPR, stay silent on DECXCPR.
+    it "answers plain CPR but not DECXCPR (CSI ? 6 n)" $ do
+        e <- new80x24
+        cpr  <- feedStr e "\ESC[6n"
+        xcpr <- feedStr e "\ESC[?6n"
+        let out evs = B.concat [bs | Output bs <- evs]
+        out cpr `shouldSatisfy` B8.isInfixOf "R"   -- CPR still answered
+        out xcpr `shouldBe` ""                      -- DECXCPR suppressed
+
     it "gives wide characters width 2" $ do
         e <- new80x24
         _ <- feedStr e (B8.pack "\xe6\x97\xa5")  -- 日 in utf-8

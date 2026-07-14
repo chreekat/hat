@@ -297,10 +297,30 @@ feed e bs = withMVar e.lock $ \_ -> do
     applyDamage e
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
-    outs <- B.concat . reverse <$> readIORef e.outRef
+    outs <- dropDecxcprReply . B.concat . reverse <$> readIORef e.outRef
     pure $ evs
         <> [Output outs | not (B.null outs)]
         <> [ScreenChanged | dirty]
+
+-- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
+-- emulator's replies. Most terminals — ghostty included — ignore
+-- @CSI ? 6 n@, so libvterm's answer to it arrives unexpected at the shell
+-- when the inner app exits or resumes, and the line editor spills its bare
+-- parameters as visible \"9;4;0\" garbage. Plain CPR (@CSI … R@) and every
+-- other reply pass through untouched.
+dropDecxcprReply :: ByteString -> ByteString
+dropDecxcprReply bs =
+    case B.breakSubstring "\ESC[?" bs of
+        (before, rest)
+            | B.null rest -> bs
+            | otherwise ->
+                let afterIntro = B.drop 3 rest            -- past ESC [ ?
+                    (_params, tailB) = B.span isParam afterIntro
+                in case B.uncons tailB of
+                    Just (0x52, more) -> before <> dropDecxcprReply more
+                    _ -> before <> "\ESC[?" <> dropDecxcprReply afterIntro
+  where
+    isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b   -- 0-9 or ';'
 
 -- | Encode a cursor key the way this pane currently expects it: libvterm
 -- consults its own DECCKM state, so @man@/@less@ (application cursor keys)
