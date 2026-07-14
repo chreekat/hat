@@ -1362,12 +1362,12 @@ spec = parallel $ do
         c1 <- startClientEnv h [("PATH", bin <> ":" <> testPath)] []
         awaitScreen c1 "0:sh*"
         -- No styles configured: the status bar restyles itself to the
-        -- dark palette (grey 235), not tmux's classic green.
+        -- dark palette (deep green 22), not tmux's classic bright green.
         awaitWith "status bar in the dark palette" (\d -> do
             scr <- Emu.snapshot d.screen
             pure $ case scr.cells V.!? 23 of
                 Just row -> any
-                    (\cell -> cell.style.bg == Indexed 235)
+                    (\cell -> cell.style.bg == Indexed 22)
                     (V.toList row)
                 Nothing -> False) c1
 

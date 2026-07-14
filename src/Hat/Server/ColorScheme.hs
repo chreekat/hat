@@ -69,9 +69,10 @@ applyPalette scheme opts0 =
   where
     p = palette scheme
 
--- Scheme palettes: muted grey bars with a bold highlight for the
--- current window, an amber bell, and borders that recede rather than
--- shout. The active border keeps a green accent in both schemes.
+-- Scheme palettes: green status bars (a nod to tmux and screen) with a
+-- bold highlight for the current window, an amber bell, and borders
+-- that recede without vanishing against either background. The active
+-- border keeps a green accent in both schemes.
 data Palette = Palette
     { bar          :: Cell.Style
     , current      :: Cell.Style
@@ -82,17 +83,17 @@ data Palette = Palette
 
 palette :: ColorScheme -> Palette
 palette SchemeDark = Palette
-    { bar          = fgBg 250 235
-    , current      = (fgBg 255 239) { Cell.bold = True }
-    , bell         = (fgBg 214 235) { Cell.bold = True }
+    { bar          = fgBg 151 22
+    , current      = (fgBg 255 28) { Cell.bold = True }
+    , bell         = (fgBg 214 22) { Cell.bold = True }
     , border       = onlyFg 238
     , activeBorder = onlyFg 2
     }
 palette SchemeLight = Palette
-    { bar          = fgBg 236 254
-    , current      = (fgBg 232 250) { Cell.bold = True }
-    , bell         = (fgBg 166 254) { Cell.bold = True }
-    , border       = onlyFg 250
+    { bar          = fgBg 22 151
+    , current      = (fgBg 255 28) { Cell.bold = True }
+    , bell         = (fgBg 166 151) { Cell.bold = True }
+    , border       = onlyFg 244
     , activeBorder = onlyFg 28
     }
 

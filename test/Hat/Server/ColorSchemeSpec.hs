@@ -38,11 +38,13 @@ spec = do
         it "adapts the default chrome to the scheme" $ do
             let dark = applyPalette SchemeDark defaultOptions
                 light = applyPalette SchemeLight defaultOptions
-            dark.statusStyle.bg `shouldBe` Cell.Indexed 235
+            dark.statusStyle.bg `shouldBe` Cell.Indexed 22
             dark.windowStatusCurrentStyle.bold `shouldBe` True
             dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 238
-            light.statusStyle.bg `shouldBe` Cell.Indexed 254
-            light.statusStyle.fg `shouldBe` Cell.Indexed 236
+            light.statusStyle.bg `shouldBe` Cell.Indexed 151
+            light.statusStyle.fg `shouldBe` Cell.Indexed 22
+            -- separators must not vanish against a light background
+            light.paneBorderStyle.fg `shouldBe` Cell.Indexed 244
 
         it "never touches an option the user has set" $ do
             opts <- either (fail . T.unpack) pure
