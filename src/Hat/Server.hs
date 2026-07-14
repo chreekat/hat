@@ -60,7 +60,7 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
-import Hat.Persist
+import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , loadSnapshot, saveSnapshot, withStore)
 import qualified Hat.Term.Pty

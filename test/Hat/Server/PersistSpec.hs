@@ -1,5 +1,5 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
-module Hat.PersistSpec (spec) where
+module Hat.Server.PersistSpec (spec) where
 
 import Control.Exception (finally)
 import Data.Text (Text)
@@ -9,7 +9,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
-import Hat.Persist
+import Hat.Server.Persist
 
 -- Characters SQLite TEXT stores faithfully: anything but embedded NUL
 -- (truncates via the C API) and lone surrogates (not valid UTF-8).

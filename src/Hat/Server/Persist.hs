@@ -6,7 +6,7 @@
 -- is additive only ('bootstrap' uses @CREATE TABLE IF NOT EXISTS@). Reads
 -- select explicit core columns and default anything missing, so a new
 -- binary can read an old store and vice versa.
-module Hat.Persist
+module Hat.Server.Persist
     ( Snapshot (..)
     , SessionSnap (..)
     , WindowSnap (..)

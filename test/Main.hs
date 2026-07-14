@@ -2,7 +2,7 @@ import Test.Hspec
 
 import qualified Hat.Command.ParserSpec
 import qualified Hat.IntegrationSpec
-import qualified Hat.PersistSpec
+import qualified Hat.Server.PersistSpec
 import qualified Hat.Term.PtySpec
 import qualified Hat.Server.ColorSchemeSpec
 import qualified Hat.Server.ConfigSpec
@@ -30,7 +30,7 @@ main :: IO ()
 main = hspec $ do
     describe "Hat.Socket" Hat.SocketSpec.spec
     describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
-    describe "Hat.Persist" Hat.PersistSpec.spec
+    describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec
     describe "Hat.Term.Emulator" Hat.Term.EmulatorSpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Wire" Hat.WireSpec.spec

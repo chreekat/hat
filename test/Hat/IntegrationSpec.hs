@@ -32,8 +32,8 @@ import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
-import Hat.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
-import qualified Hat.Persist as Persist
+import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
+import qualified Hat.Server.Persist as Persist
 import Hat.Term.Pty (setWinsize)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
