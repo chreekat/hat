@@ -2,12 +2,30 @@ module Hat.Server.RestoreSpec (spec) where
 
 import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
 import Control.Exception (ErrorCall (..), throwIO)
+import Data.Text (Text)
 import qualified Data.Map.Strict as Map
 import Test.Hspec
 
 import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
-import Hat.Server (PaneStart (..), finallyClearRestoring, restoreRun)
+import Hat.Server
+    (PaneStart (..), PersistDecision (..), StorePin (..),
+     finallyClearRestoring, persistDecision, restoreRun)
+import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
+
+-- A minimal non-empty tree: one named session with no windows is enough
+-- for the mirror's write decision, which only inspects emptiness and
+-- equality against the previous snapshot.
+sampleSnapshot :: Text -> Snapshot
+sampleSnapshot nm = Snapshot
+    { sessions =
+        [ SessionSnap
+            { name = nm, startCwd = "/tmp"
+            , currentIx = 0, lastIx = Nothing, windows = [] } ]
+    , lastActiveSession = Nothing }
+
+emptySnapshot :: Snapshot
+emptySnapshot = Snapshot { sessions = [], lastActiveSession = Nothing }
 
 -- A bare server-state shell, enough to exercise the restoring gate.
 testState :: IO ServerState
@@ -42,3 +60,31 @@ spec = do
 
         it "drops to a fresh shell when nothing was captured" $
             restoreRun whitelist Nothing `shouldBe` FreshShell
+
+    describe "persistDecision" $ do
+        let one = sampleSnapshot "one"
+            two = sampleSnapshot "two"
+
+        -- The store is pinned once kill-server captured the final tree: the
+        -- mirror must never write again, even when the live tree has since
+        -- changed (a stray fresh session on the dying server must not
+        -- overwrite the saved 25-pane tree).
+        it "never writes when the store is pinned, even on a change" $
+            persistDecision Pinned (Just one) two `shouldBe` PinnedSkip
+
+        it "never writes when pinned, even with no prior snapshot" $
+            persistDecision Pinned Nothing one `shouldBe` PinnedSkip
+
+        -- An empty tree is never mirrored: whether an empty store survives is
+        -- decided at shutdown, not by the background loop.
+        it "skips an empty snapshot" $
+            persistDecision Unpinned Nothing emptySnapshot `shouldBe` EmptySkip
+
+        it "skips when the snapshot is unchanged since the last write" $
+            persistDecision Unpinned (Just one) one `shouldBe` UnchangedSkip
+
+        it "writes a changed, non-empty snapshot when not pinned" $
+            persistDecision Unpinned (Just one) two `shouldBe` WriteSnapshot
+
+        it "writes the first non-empty snapshot when nothing was written yet" $
+            persistDecision Unpinned Nothing one `shouldBe` WriteSnapshot
