@@ -7,6 +7,8 @@
 module Hat.Term.Emulator
     ( Emulator
     , Event (..)
+    , OscColorTarget (..)
+    , OscTerm (..)
     , Screen (..)
     , Modes (..)
     , MouseMode (..)
@@ -28,6 +30,7 @@ module Hat.Term.Emulator
 #include "hat_shim.h"
 
 import Control.Concurrent.MVar
+import Control.Applicative ((<|>))
 import Control.Monad (foldM, forM, forM_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -107,7 +110,20 @@ data Event
     | Bell
     | Output ByteString  -- ^ bytes to write back to the pty
     | ColorSchemeQuery   -- ^ app asked the current light/dark scheme (CSI ? 996 n)
+    | OscColorQuery OscColorTarget OscTerm
+        -- ^ app asked a terminal color (OSC 10/11 @;?@); answer with the
+        --   same terminator the query used
     | ScreenChanged
+    deriving (Eq, Show)
+
+-- | Which color an OSC query asks about: OSC 10 (foreground) or 11
+-- (background).
+data OscColorTarget = Foreground | Background
+    deriving (Eq, Show)
+
+-- | The string terminator an OSC query ended with; replies must echo it
+-- (xterm answers BEL-terminated queries with BEL, ST with ST).
+data OscTerm = TermBel | TermSt
     deriving (Eq, Show)
 
 data MouseMode = MouseOff | MouseClick | MouseDrag | MouseMove
@@ -303,7 +319,8 @@ feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     st0 <- readIORef e.passRef
     let (st1, scrubbed) = scrubPassthrough st0 bs0
-        (bs, csSignals) = extractColorScheme scrubbed
+        (bs1, csSignals) = extractColorScheme scrubbed
+        (bs, oscQueries) = extractOscColorQuery bs1
     writeIORef e.passRef st1
     forM_ csSignals $ \sig -> case sig of
         CsEnable  -> writeIORef e.colorReportRef True
@@ -321,7 +338,8 @@ feed e bs0 = withMVar e.lock $ \_ -> do
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
     outs <- dropDecxcprReply . B.concat . reverse <$> readIORef e.outRef
-    pure $ [ColorSchemeQuery | CsQuery <- csSignals]
+    pure $ [ColorSchemeQuery | s <- csSignals, s == CsQuery || s == CsEnable]
+        <> map (uncurry OscColorQuery) oscQueries
         <> evs
         <> [Output outs | not (B.null outs)]
         <> [ScreenChanged | dirty]
@@ -424,6 +442,33 @@ extractColorScheme bs =
         ("2031", 0x6c) -> Just CsDisable   -- 'l'
         ("996",  0x6e) -> Just CsQuery     -- 'n'
         _              -> Nothing
+
+-- | Pull OSC 10/11 color *queries* (@OSC 1x ; ? BEL@ or @… ESC \\@) out of a
+-- pane's output. Apps (claude) ask their terminal's fg/bg color to decide
+-- light versus dark; libvterm silently drops the query, so hat answers it
+-- instead, the way tmux does. Color *set* sequences (@OSC 11;rgb:…@) are
+-- not queries and pass through untouched.
+extractOscColorQuery
+    :: ByteString -> (ByteString, [(OscColorTarget, OscTerm)])
+extractOscColorQuery bs =
+    case B.breakSubstring "\ESC]1" bs of
+        (before, rest)
+            | B.null rest -> (bs, [])
+            | Just (target, term, more) <- match rest ->
+                let (rest', qs) = extractOscColorQuery more
+                in (before <> rest', (target, term) : qs)
+            | otherwise ->
+                let (rest', qs) = extractOscColorQuery (B.drop 3 rest)
+                in (before <> "\ESC]1" <> rest', qs)
+  where
+    match r = do
+        (target, afterIntro) <-
+            (Foreground,) <$> B.stripPrefix "\ESC]10;?" r
+            <|> (Background,) <$> B.stripPrefix "\ESC]11;?" r
+        (term, more) <-
+            (TermBel,) <$> B.stripPrefix "\a" afterIntro
+            <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterIntro
+        pure (target, term, more)
 
 -- | Encode a cursor key the way this pane currently expects it: libvterm
 -- consults its own DECCKM state, so @man@/@less@ (application cursor keys)

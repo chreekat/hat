@@ -101,6 +101,20 @@ spec = do
         evs <- feedStr e "\ESC[?996n"
         B.concat [bs | Output bs <- evs] `shouldBe` ""
 
+    it "treats subscribing to ?2031 as asking for the current scheme" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESC[?2031h"
+        evs `shouldContain` [ColorSchemeQuery]
+
+    it "surfaces OSC 10/11 color queries as events, stripped from display" $ do
+        e <- new80x24
+        evs10 <- feedStr e "\ESC]10;?\a"
+        evs10 `shouldContain` [OscColorQuery Foreground TermBel]
+        evs11 <- feedStr e "\ESC]11;?\ESC\\"
+        evs11 `shouldContain` [OscColorQuery Background TermSt]
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` ""
+
     it "encodes cursor keys per application-cursor-keys mode" $ do
         e <- new80x24
         normal <- encodeKey e CursorUp

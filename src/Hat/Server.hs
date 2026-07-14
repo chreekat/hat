@@ -376,6 +376,26 @@ notifyColorScheme pane scheme = Hat.Pty.writePty pane.pty $ case scheme of
     SchemeDark  -> "\ESC[?997;1n"
     SchemeLight -> "\ESC[?997;2n"
 
+-- | The reply to an OSC 10/11 color query, echoing the query's terminator
+-- (xterm answers BEL with BEL, ST with ST).
+oscColorReply :: Emu.OscColorTarget -> Emu.OscTerm -> ColorScheme -> B.ByteString
+oscColorReply target term scheme =
+    "\ESC]" <> code <> ";rgb:" <> color <> terminator
+  where
+    code = case target of
+        Emu.Foreground -> "10"
+        Emu.Background -> "11"
+    color = case (scheme, target) of
+        (SchemeDark, Emu.Background)  -> black
+        (SchemeDark, Emu.Foreground)  -> white
+        (SchemeLight, Emu.Background) -> white
+        (SchemeLight, Emu.Foreground) -> black
+    black = "0000/0000/0000"
+    white = "ffff/ffff/ffff"
+    terminator = case term of
+        Emu.TermBel -> "\a"
+        Emu.TermSt  -> "\ESC\\"
+
 -- Persistence restore ----------------------------------------------------
 
 -- | Rebuild any previously-saved session tree. An absent store or a read
@@ -967,6 +987,14 @@ startPaneReader st sid win pane = void . forkIO $
                 Emu.ColorSchemeQuery -> do
                     mscheme <- readTVarIO st.colorScheme
                     forM_ mscheme (notifyColorScheme pane)
+                -- The app asked its terminal's fg/bg color (OSC 10/11 ;?),
+                -- the classic light-versus-dark probe; hat doesn't paint a
+                -- pane background, so answer with the canonical color for
+                -- the OS scheme it tracks (white-on-black when dark).
+                Emu.OscColorQuery target term -> do
+                    mscheme <- readTVarIO st.colorScheme
+                    forM_ mscheme $ \scheme ->
+                        Hat.Pty.writePty pane.pty (oscColorReply target term scheme)
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.
