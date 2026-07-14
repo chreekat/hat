@@ -279,11 +279,12 @@ watchColorScheme :: ServerState -> IO ()
 watchColorScheme st = do
     atomically (readTVar st.configLoading >>= check . not)
     r <- try $ do
-        out <- readCreateProcess (proc "gsettings" ["get", schemaKey, key]) ""
+        out <- readCreateProcess
+            (proc "gsettings" ["get", schemaKey, key]) { close_fds = True } ""
         forM_ (parseSchemeLine (T.strip (T.pack out))) (applyScheme st)
         withCreateProcess
             (proc "gsettings" ["monitor", schemaKey, key])
-                { std_out = CreatePipe } $ \_ mout _ _ ->
+                { std_out = CreatePipe, close_fds = True } $ \_ mout _ _ ->
             forM_ mout $ \h -> forever $ do
                 line <- TIO.hGetLine h
                 forM_ (parseSchemeLine line) (applyScheme st)
@@ -1373,7 +1374,7 @@ resolveShell st cmdText = do
             (Map.insert cmdText (now, oldVal))
         void . forkIO $ do
             r <- try (readCreateProcessWithExitCode
-                (shell (T.unpack cmdText)) "")
+                (shell (T.unpack cmdText)) { close_fds = True } "")
             let val = case r of
                     Right (ExitSuccess, out, _) ->
                         T.strip (T.takeWhile (/= '\n') (T.pack out))
@@ -3651,7 +3652,7 @@ cmdRunShell st mclient args = do
         cmdText = T.unwords pos
     void . forkIO $ do
         (code, out, errOut) <- readCreateProcessWithExitCode
-            (shell (T.unpack cmdText)) ""
+            (shell (T.unpack cmdText)) { close_fds = True } ""
         let firstLine = T.strip . T.takeWhile (/= '\n') . T.pack
         case code of
             ExitSuccess ->
@@ -3678,7 +3679,7 @@ cmdIfShell st mclient args = do
                     expandFormat st env cond0
                 Nothing -> pure cond0
             (code, _, _) <- readCreateProcessWithExitCode
-                (shell (T.unpack cond)) ""
+                (shell (T.unpack cond)) { close_fds = True } ""
             let chosen = case (code, rest) of
                     (ExitSuccess, _) -> Just thenCmd
                     (ExitFailure _, [elseCmd]) -> Just elseCmd
