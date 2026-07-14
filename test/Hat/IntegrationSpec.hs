@@ -34,7 +34,7 @@ import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
 import Hat.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
 import qualified Hat.Persist as Persist
-import Hat.Pty (setWinsize)
+import Hat.Term.Pty (setWinsize)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Socket (connectTo)

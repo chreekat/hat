@@ -1,4 +1,4 @@
-module Hat.PtySpec (spec) where
+module Hat.Term.PtySpec (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (finally)
@@ -14,7 +14,7 @@ import System.Process (callProcess)
 import Test.Hspec
 
 import Hat.Geometry
-import Hat.Pty
+import Hat.Term.Pty
 
 -- The test shells get a throwaway HOME: an interactive bash saves (and,
 -- at its default 500-line HISTFILESIZE, truncates!) $HOME/.bash_history

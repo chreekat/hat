@@ -4,7 +4,7 @@
 --
 -- Reads and writes go through a 'Handle' on the master fd so they are
 -- green-thread friendly; the raw fd is kept only for ioctl.
-module Hat.Pty
+module Hat.Term.Pty
     ( Spawn (..)
     , PtyHandle
     , spawn

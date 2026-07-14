@@ -63,7 +63,7 @@ import Hat.Model.Options
 import Hat.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , loadSnapshot, saveSnapshot, withStore)
-import qualified Hat.Pty
+import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ColorScheme
     (ColorScheme (..), applyPalette, parseSchemeLine, schemeName)
@@ -300,7 +300,7 @@ captureWindow ws = do
         dir  <- paneCurrentPath pane
         -- The whole argv, so a restore re-opens the same file; the
         -- whitelist (see 'restoreRun') decides whether it is re-run.
-        argv <- Hat.Pty.foregroundArgv pane.pty
+        argv <- Hat.Term.Pty.foregroundArgv pane.pty
         pure PaneSnap { cwd = T.pack dir, command = argv }
     pure WindowSnap
         { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
@@ -372,7 +372,7 @@ notifySubscribedPanes st scheme = do
 -- | Write a single DEC-mode-2031 color-scheme report to a pane's pty:
 -- @CSI ? 997 ; 1 n@ for dark, @CSI ? 997 ; 2 n@ for light.
 notifyColorScheme :: Pane -> ColorScheme -> IO ()
-notifyColorScheme pane scheme = Hat.Pty.writePty pane.pty $ case scheme of
+notifyColorScheme pane scheme = Hat.Term.Pty.writePty pane.pty $ case scheme of
     SchemeDark  -> "\ESC[?997;1n"
     SchemeLight -> "\ESC[?997;2n"
 
@@ -942,7 +942,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             ShellCommand run  -> ("/bin/sh", ["-c", T.unpack run])
             ExecArgv (p:rest) -> (T.unpack p, map T.unpack rest)
             ExecArgv []       -> (shellCmd, [])
-    pty <- Hat.Pty.spawn Hat.Pty.Spawn
+    pty <- Hat.Term.Pty.spawn Hat.Term.Pty.Spawn
         { cmd = cmd
         , args = args
         , env = paneEnv
@@ -976,12 +976,12 @@ startPaneReader st sid win pane = void . forkIO $
     readLoop `finally` closePane st sid win pane
   where
     readLoop = do
-        bs <- Hat.Pty.readPty pane.pty
+        bs <- Hat.Term.Pty.readPty pane.pty
         unless (B8.null bs) $ do
             forwardToPipe pane bs
             events <- Emu.feed pane.emulator bs
             forM_ events $ \case
-                Emu.Output out -> Hat.Pty.writePty pane.pty out
+                Emu.Output out -> Hat.Term.Pty.writePty pane.pty out
                 -- The app asked the current light/dark scheme (CSI ? 996 n);
                 -- answer from the OS scheme the server already tracks.
                 Emu.ColorSchemeQuery -> do
@@ -994,7 +994,7 @@ startPaneReader st sid win pane = void . forkIO $
                 Emu.OscColorQuery target term -> do
                     mscheme <- readTVarIO st.colorScheme
                     forM_ mscheme $ \scheme ->
-                        Hat.Pty.writePty pane.pty (oscColorReply target term scheme)
+                        Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.
@@ -1038,8 +1038,8 @@ windowArrange eff win = do
 closePane :: ServerState -> SessionId -> Window -> Pane -> IO ()
 closePane st sid win pane = do
     stopPipe pane
-    _ <- Hat.Pty.waitExit pane.pty
-    Hat.Pty.closePty pane.pty
+    _ <- Hat.Term.Pty.waitExit pane.pty
+    Hat.Term.Pty.closePty pane.pty
     logEvent st.logger PaneExited { pane = rawPane pane.id }
     sessionGone <- atomically $ do
         writeTVar pane.dead True
@@ -1134,7 +1134,7 @@ applySessionSize st sid = do
         old <- readTVarIO pane.size
         when (old /= sz) $ do
             atomically $ writeTVar pane.size sz
-            Hat.Pty.resize pane.pty sz
+            Hat.Term.Pty.resize pane.pty sz
             Emu.resize pane.emulator sz
             atomically (bumpDirty st)
 
@@ -1840,7 +1840,7 @@ handleKeys st client bs = do
                             routeKeys opts.prefix km modeTable kst [k]
                     forM_ actions $ \case
                         Passthrough raw ->
-                            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty raw
+                            forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw
                         RunCommands cmds -> forM_ cmds $ \argv -> do
                             replies <- runArgv st (Just client) argv
                             forM_ replies $ \case
@@ -2509,7 +2509,7 @@ cmdKillWindow :: CommandImpl
 cmdKillWindow st mclient _ =
     withCurrentWindow st mclient $ \_ win -> do
         ps <- readTVarIO win.panes
-        forM_ (Map.elems ps) $ \p -> Hat.Pty.closePty p.pty
+        forM_ (Map.elems ps) $ \p -> Hat.Term.Pty.closePty p.pty
         pure []
 
 cmdRenameWindow :: CommandImpl
@@ -2594,7 +2594,7 @@ cmdSplitWindow st mclient args = do
 paneCurrentPath :: Pane -> IO FilePath
 paneCurrentPath pane = do
     r <- try (PFiles.readSymbolicLink
-        ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/cwd"))
+        ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/cwd"))
     pure $ case r of
         Left (_ :: IOException) -> pane.startCwd
         Right dir -> dir
@@ -2666,7 +2666,7 @@ cmdKillPane :: CommandImpl
 cmdKillPane st mclient args = do
     let (opts, _, _) = parseArgs "t" args
     mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane $ \pane -> Hat.Pty.closePty pane.pty
+    forM_ mpane $ \pane -> Hat.Term.Pty.closePty pane.pty
     pure []
 
 -- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
@@ -2788,11 +2788,11 @@ wrapPaneInWindow st pane = do
 -- tree). Falls back to @sh@.
 paneCommandName :: Pane -> IO Text
 paneCommandName pane = do
-    mfg <- Hat.Pty.foregroundCommand pane.pty
+    mfg <- Hat.Term.Pty.foregroundCommand pane.pty
     raw <- case mfg of
         Just cmd -> pure cmd
         Nothing -> do
-            r <- try (TIO.readFile ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/comm"))
+            r <- try (TIO.readFile ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/comm"))
             pure $ case r of
                 Right s -> let t = T.strip s in if T.null t then "sh" else t
                 Left (_ :: IOException) -> "sh"
@@ -3097,7 +3097,7 @@ cmdSendPrefix st mclient _ = do
         opts <- readTVarIO st.options
         forM_ (parseKeyName opts.prefix) $ \key -> do
             mpane <- clientActivePane st client
-            forM_ mpane $ \pane -> Hat.Pty.writePty pane.pty key.raw
+            forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty key.raw
     pure []
 
 cmdSendKeys :: CommandImpl
@@ -3120,7 +3120,7 @@ cmdSendKeys st mclient args = do
                     then case pos of
                         (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
                         [] -> pure ()
-                    else Hat.Pty.writePty pane.pty
+                    else Hat.Term.Pty.writePty pane.pty
                         (B.concat (map (argBytes literal) pos))
             pure []
   where
@@ -3498,7 +3498,7 @@ cmdPasteBuffer st mclient args = do
                         payload
                             | bracketed = "\ESC[200~" <> body <> "\ESC[201~"
                             | otherwise = body
-                    Hat.Pty.writePty pane.pty (TE.encodeUtf8 payload)
+                    Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 payload)
                     when del $ atomically $ do
                         cur <- readTVar st.buffers
                         writeTVar st.buffers (dropBuffer mname cur)
@@ -3549,7 +3549,7 @@ pumpPipeOutput pane hout = loop `catch` \(_ :: SomeException) -> pure ()
     loop = do
         chunk <- B8.hGetSome hout 4096
         unless (B8.null chunk) $ do
-            Hat.Pty.writePty pane.pty chunk
+            Hat.Term.Pty.writePty pane.pty chunk
             loop
 
 -- Feed a chunk of pane output to the pipe subprocess (@-O@).
@@ -3693,7 +3693,7 @@ cmdKillSession st mclient args = do
         panes <- atomically $ do
             ws <- readTVar sess.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
-        forM_ panes $ \p -> Hat.Pty.closePty p.pty
+        forM_ panes $ \p -> Hat.Term.Pty.closePty p.pty
         pure []
 
 cmdHasSession :: CommandImpl
@@ -3804,7 +3804,7 @@ paneFormatEnv st sess wix win pix pane = do
     pure $ Map.union (Map.fromList
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
-        , ("pane_pid", tshow (Hat.Pty.pid pane.pty))
+        , ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
         , ("pane_current_path", T.pack dir)
         , ("pane_current_command", cmd)
         , ("pane_active", if pane.id == active then "1" else "0")
@@ -3880,7 +3880,7 @@ cmdKillServer st mclient _ = do
         fmap concat . forM (Map.elems sess) $ \s -> do
             ws <- readTVar s.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
-    forM_ panes $ \p -> Hat.Pty.closePty p.pty
+    forM_ panes $ \p -> Hat.Term.Pty.closePty p.pty
     atomically $ do
         writeTVar st.sessions Map.empty
         writeTVar st.everAttached True

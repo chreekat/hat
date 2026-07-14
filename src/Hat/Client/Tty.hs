@@ -10,7 +10,7 @@ import System.Posix.IO (stdInput, stdOutput)
 import System.Posix.Terminal
 
 import Hat.Geometry (Size)
-import Hat.Pty (getWinsize)
+import Hat.Term.Pty (getWinsize)
 
 -- | Run an action with the controlling terminal in raw mode and stdio
 -- unbuffered, restoring the original attributes afterwards no matter what.

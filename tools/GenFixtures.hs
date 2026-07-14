@@ -13,7 +13,7 @@ import qualified Data.Text.IO as TIO
 import System.Environment (getEnvironment)
 
 import Hat.Geometry
-import Hat.Pty
+import Hat.Term.Pty
 import qualified Hat.Term.Emulator as Emu
 
 captureSize :: Size

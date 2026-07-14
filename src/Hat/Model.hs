@@ -44,7 +44,7 @@ import Network.Socket (Socket)
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
-import qualified Hat.Pty
+import qualified Hat.Term.Pty
 import Hat.Model.Options (Keymap, Options, defaultOptions)
 import Hat.Server.ColorScheme (ColorScheme)
 import Hat.Server.Keys (PrefixState)
@@ -125,7 +125,7 @@ data Window = Window
 
 data Pane = Pane
     { id       :: PaneId
-    , pty      :: Hat.Pty.PtyHandle
+    , pty      :: Hat.Term.Pty.PtyHandle
     , emulator :: Emu.Emulator
     , size     :: TVar Size
     , dead     :: TVar Bool

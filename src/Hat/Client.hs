@@ -25,7 +25,7 @@ import System.Posix.Terminal (queryTerminal)
 
 import Hat.Client.Draw
 import Hat.Client.Tty
-import Hat.Pty (sigWinch)
+import Hat.Term.Pty (sigWinch)
 import Hat.Wire
 
 data ExitReason

@@ -61,7 +61,6 @@ library
         Hat.Model.Ids
         Hat.Model.Options
         Hat.Persist
-        Hat.Pty
         Hat.Server
         Hat.Server.ColorScheme
         Hat.Server.CopyMode
@@ -79,6 +78,7 @@ library
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.HostProtocol
+        Hat.Term.Pty
         Hat.Wire
     include-dirs:       cbits
     c-sources:          cbits/hat_shim.c
@@ -136,7 +136,7 @@ test-suite hat-test
         Hat.Command.ParserSpec
         Hat.IntegrationSpec
         Hat.PersistSpec
-        Hat.PtySpec
+        Hat.Term.PtySpec
         Hat.SocketSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
