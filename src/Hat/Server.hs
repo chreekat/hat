@@ -13,6 +13,9 @@ module Hat.Server
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
     , pickActivityTarget  -- ^ exported for the activity-jump test
     , pickAttachSession  -- ^ exported for the attach-to-last-active test
+    , persistDecision  -- ^ exported for the store-pinning test
+    , PersistDecision (..)
+    , StorePin (..)
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -206,26 +209,59 @@ storePathFor sockPath = do
                     pure (home </> ".local" </> "share")
             pure (base </> "hat")
 
+-- | Whether the store is pinned: once @kill-server@ has captured the
+-- final tree, the mirror must never overwrite it (see 'persistDecision').
+data StorePin = Pinned | Unpinned
+    deriving (Eq, Show)
+
+-- | The mirror's per-tick verdict on the freshly captured snapshot.
+data PersistDecision
+    = PinnedSkip     -- ^ store pinned; the last tree is final, never overwrite
+    | EmptySkip      -- ^ an empty tree is never mirrored
+    | UnchangedSkip  -- ^ identical to the last write, nothing to do
+    | WriteSnapshot  -- ^ changed, non-empty, and unpinned: write it
+    deriving (Eq, Show)
+
+-- | Decide whether the mirror should write a captured snapshot. A pin
+-- (set by @kill-server@) wins over everything: the explicit quit already
+-- saved the final tree, so a stray fresh session on the dying server can
+-- never clobber it. Otherwise an empty tree is skipped (shutdown, not the
+-- mirror, decides an empty store's fate) as is a snapshot unchanged since
+-- the last write.
+persistDecision :: StorePin -> Maybe Snapshot -> Snapshot -> PersistDecision
+persistDecision Pinned _ _ = PinnedSkip
+persistDecision Unpinned prev snap
+    | null snap.sessions = EmptySkip
+    | prev == Just snap  = UnchangedSkip
+    | otherwise          = WriteSnapshot
+
 -- | Poll the live tree and write a fresh snapshot whenever it changes.
 -- The tree is tiny, so we rewrite it wholesale rather than diffing, and
 -- skip writes when nothing changed. A change to a pane's working
--- directory (a bare @cd@, which fires no event) is caught here too.
+-- directory (a bare @cd@, which fires no event) is caught here too. Once
+-- the store is pinned by @kill-server@ the loop stops writing for good
+-- (see 'persistDecision'), so a fresh session on the dying server cannot
+-- overwrite the saved tree.
 persistLoop :: ServerState -> FilePath -> IO ()
 persistLoop st path = go Nothing
   where
     go prev = do
         threadDelay 2_000_000
         snap <- captureSnapshot st
-        next <- if not (null snap.sessions) && prev /= Just snap
-            then saveSnapshotNow path snap >> pure (Just snap)
-            else pure prev
+        pinned <- readTVarIO st.preserveStore
+        let pin = if pinned then Pinned else Unpinned
+        next <- case persistDecision pin prev snap of
+            WriteSnapshot -> saveSnapshotNow path snap >> pure (Just snap)
+            _             -> pure prev
         go next
 
 -- | Capture and persist immediately. Called at 'cmdKillServer' so an
--- explicit quit never loses a last-moment change. A no-op when
--- persistence is off. An empty tree is never written here: whether an
--- empty store survives shutdown is decided by 'preserveStore' (kill-server
--- keeps the tree; a natural drain deletes the store, see 'runServer').
+-- explicit quit never loses a last-moment change. This is the pinning
+-- write: it runs after 'preserveStore' is set, directly rather than via
+-- 'persistLoop', so the pin never suppresses it. A no-op when persistence
+-- is off. An empty tree is never written here: whether an empty store
+-- survives shutdown is decided by 'preserveStore' (kill-server keeps the
+-- tree; a natural drain deletes the store, see 'runServer').
 saveNow :: ServerState -> IO ()
 saveNow st = forM_ st.store $ \path -> do
     snap <- captureSnapshot st

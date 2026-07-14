@@ -74,6 +74,12 @@ data ServerState = ServerState
         --   (an explicit quit restores on the next start); a natural drain
         --   (the last window closing) leaves it off, so the store is
         --   dropped and the next start is pristine.
+        --
+        --   Once set it also PINS the store: @kill-server@'s 'saveNow' has
+        --   captured the final tree, so the background mirror ('persistLoop')
+        --   must never write again. This guards the dying server -- a client
+        --   that attaches and makes a fresh session after the kill cannot
+        --   overwrite the saved tree.
     , colorScheme :: TVar (Maybe ColorScheme)
         -- ^ the desktop's light/dark preference, when a watcher could
         --   determine it ('Nothing' outside a desktop session). Drives
