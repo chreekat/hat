@@ -106,6 +106,16 @@ spec = do
         evs <- feedStr e "\ESC[?2031h"
         evs `shouldContain` [ColorSchemeQuery]
 
+    it "answers queries in stream order (reply fences like a real terminal)" $ do
+        -- Apps fence color probes with DA/CPR queries and match replies to
+        -- probes by arrival order; a reply hoisted ahead of the preceding
+        -- fence's answer gets attributed to the wrong probe.
+        e <- new80x24
+        evs <- feedStr e "\ESC[6n\ESC]11;?\a\ESC[6n"
+        let isCpr ev = case ev of Output bs -> "R" `B8.isSuffixOf` bs; _ -> False
+            slots = [ev | ev <- evs, isCpr ev || ev == OscColorQuery Background TermBel]
+        map isCpr slots `shouldBe` [True, False, True]
+
     it "surfaces OSC 10/11 color queries as events, stripped from display" $ do
         e <- new80x24
         evs10 <- feedStr e "\ESC]10;?\a"

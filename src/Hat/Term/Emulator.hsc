@@ -31,7 +31,7 @@ module Hat.Term.Emulator
 
 import Control.Concurrent.MVar
 import Control.Applicative ((<|>))
-import Control.Monad (foldM, forM, forM_)
+import Control.Monad (foldM, forM)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
@@ -314,35 +314,54 @@ newEmulator sz historyLimit = do
     refreshGrid e
     pure e
 
--- | Feed pty output into the emulator; returns what happened.
+-- | Feed pty output into the emulator; returns what happened. Query events
+-- and 'Output' replies are emitted in stream order: apps fence their color
+-- probes with DA/CPR queries and match replies to probes by arrival order,
+-- so hat must answer serially like a real terminal would.
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     st0 <- readIORef e.passRef
     let (st1, scrubbed) = scrubPassthrough st0 bs0
-        (bs1, csSignals) = extractColorScheme scrubbed
-        (bs, oscQueries) = extractOscColorQuery bs1
     writeIORef e.passRef st1
-    forM_ csSignals $ \sig -> case sig of
-        CsEnable  -> writeIORef e.colorReportRef True
-        CsDisable -> writeIORef e.colorReportRef False
-        CsQuery   -> pure ()
     writeIORef e.eventsRef []
     writeIORef e.outRef []
     writeIORef e.damageRef []
     writeIORef e.dirtyRef False
-    withForeignPtr e.vt $ \vtp -> do
-        _ <- BU.unsafeUseAsCStringLen bs $ \(p, n) ->
-            c_vterm_input_write vtp p (fromIntegral n)
-        c_flush_damage e.screen
+    interleaved <- withForeignPtr e.vt $ \vtp -> do
+        ievs <- feedSegments e vtp scrubbed
+        ievs <$ c_flush_damage e.screen
     applyDamage e
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
-    outs <- dropDecxcprReply . B.concat . reverse <$> readIORef e.outRef
-    pure $ [ColorSchemeQuery | s <- csSignals, s == CsQuery || s == CsEnable]
-        <> map (uncurry OscColorQuery) oscQueries
+    pure $ interleaved
         <> evs
-        <> [Output outs | not (B.null outs)]
         <> [ScreenChanged | dirty]
+
+-- | Feed a chunk to libvterm piecewise, splitting at each color query hat
+-- answers itself, so the query's event lands between the 'Output' replies
+-- libvterm generates for the bytes before and after it.
+feedSegments :: Emulator -> Ptr CVTerm -> ByteString -> IO [Event]
+feedSegments e vtp = go
+  where
+    go bs = case nextQuery bs of
+        Nothing -> writeSeg bs
+        Just (before, sig, rest) -> do
+            outEvs <- writeSeg before
+            sigEvs <- applySignal sig
+            ((outEvs <> sigEvs) <>) <$> go rest
+    writeSeg seg
+        | B.null seg = pure []
+        | otherwise = do
+            _ <- BU.unsafeUseAsCStringLen seg $ \(p, n) ->
+                c_vterm_input_write vtp p (fromIntegral n)
+            outs <- dropDecxcprReply . B.concat . reverse <$> readIORef e.outRef
+            writeIORef e.outRef []
+            pure [Output outs | not (B.null outs)]
+    applySignal sig = case sig of
+        SigColor CsEnable  -> [ColorSchemeQuery] <$ writeIORef e.colorReportRef True
+        SigColor CsDisable -> [] <$ writeIORef e.colorReportRef False
+        SigColor CsQuery   -> pure [ColorSchemeQuery]
+        SigOsc target term -> pure [OscColorQuery target term]
 
 -- | Remove DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's
 -- output before libvterm parses it. A tmux-aware app (claude) sees $TMUX
@@ -407,68 +426,55 @@ dropDecxcprReply bs =
   where
     isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b   -- 0-9 or ';'
 
--- | A color-scheme control the inner app sent to its terminal. libvterm
--- knows nothing of DEC mode 2031, so hat recognizes these itself and answers
--- them from the OS scheme it already tracks (see 'Hat.Server.applyScheme').
+-- | A color control the inner app sent to its terminal, which hat answers
+-- itself: neither libvterm nor the outer terminal knows the OS scheme hat
+-- tracks (see 'Hat.Server.applyScheme').
+data QuerySignal
+    = SigColor CsSignal              -- ^ DEC mode 2031 subscribe/query
+    | SigOsc OscColorTarget OscTerm  -- ^ OSC 10/11 color query
+
+-- | DEC-mode-2031 color-scheme controls: @CSI ? 2031 h@/@l@ subscribe or
+-- unsubscribe from light/dark change reports, @CSI ? 996 n@ queries the
+-- current scheme.
 data CsSignal = CsEnable | CsDisable | CsQuery
     deriving (Eq, Show)
 
--- | Pull DEC-mode-2031 color-scheme controls out of a pane's output before
--- libvterm parses it: @CSI ? 2031 h@/@l@ subscribe or unsubscribe from
--- light/dark change reports, and @CSI ? 996 n@ queries the current scheme.
--- The matched sequences are stripped (libvterm would ignore or mishandle
--- them) and returned as signals. Only the standalone forms are recognized;
--- a 2031 folded into a multi-parameter DECSET is left for libvterm.
-extractColorScheme :: ByteString -> (ByteString, [CsSignal])
-extractColorScheme bs =
-    case B.breakSubstring "\ESC[?" bs of
-        (before, rest)
-            | B.null rest -> (bs, [])
-            | otherwise ->
-                let afterIntro = B.drop 3 rest             -- past ESC [ ?
-                    (params, tailB) = B.span isParam afterIntro
-                in case B.uncons tailB of
-                    Just (final, more)
-                        | Just sig <- classify params final ->
-                            let (rest', sigs) = extractColorScheme more
-                            in (before <> rest', sig : sigs)
-                    _ ->
-                        let (rest', sigs) = extractColorScheme afterIntro
-                        in (before <> "\ESC[?" <> rest', sigs)
+-- | Find the first color query in a chunk: a DEC 2031 control (only the
+-- standalone form; one folded into a multi-parameter DECSET is left for
+-- libvterm) or an OSC 10/11 color query (@OSC 1x ; ? BEL@ or @… ESC \\@;
+-- color *set* sequences like @OSC 11;rgb:…@ are not queries and pass
+-- through untouched). Returns the bytes before it, the query, and the
+-- bytes after it, with the query itself stripped.
+nextQuery :: ByteString -> Maybe (ByteString, QuerySignal, ByteString)
+nextQuery bs = go 0
   where
-    isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b     -- 0-9 or ';'
-    classify params final = case (params, final) of
-        ("2031", 0x68) -> Just CsEnable    -- 'h'
-        ("2031", 0x6c) -> Just CsDisable   -- 'l'
-        ("996",  0x6e) -> Just CsQuery     -- 'n'
-        _              -> Nothing
-
--- | Pull OSC 10/11 color *queries* (@OSC 1x ; ? BEL@ or @… ESC \\@) out of a
--- pane's output. Apps (claude) ask their terminal's fg/bg color to decide
--- light versus dark; libvterm silently drops the query, so hat answers it
--- instead, the way tmux does. Color *set* sequences (@OSC 11;rgb:…@) are
--- not queries and pass through untouched.
-extractOscColorQuery
-    :: ByteString -> (ByteString, [(OscColorTarget, OscTerm)])
-extractOscColorQuery bs =
-    case B.breakSubstring "\ESC]1" bs of
-        (before, rest)
-            | B.null rest -> (bs, [])
-            | Just (target, term, more) <- match rest ->
-                let (rest', qs) = extractOscColorQuery more
-                in (before <> rest', (target, term) : qs)
-            | otherwise ->
-                let (rest', qs) = extractOscColorQuery (B.drop 3 rest)
-                in (before <> "\ESC]1" <> rest', qs)
-  where
-    match r = do
+    go i = case B.elemIndex 0x1b (B.drop i bs) of
+        Nothing -> Nothing
+        Just d ->
+            let p = i + d
+            in case tryCsi (B.drop p bs) <|> tryOsc (B.drop p bs) of
+                Just (sig, more) -> Just (B.take p bs, sig, more)
+                Nothing -> go (p + 1)
+    tryCsi r = do
+        afterIntro <- B.stripPrefix "\ESC[?" r
+        let (params, tailB) = B.span isParam afterIntro
+        (final, more) <- B.uncons tailB
+        sig <- classify params final
+        pure (SigColor sig, more)
+    tryOsc r = do
         (target, afterIntro) <-
             (Foreground,) <$> B.stripPrefix "\ESC]10;?" r
             <|> (Background,) <$> B.stripPrefix "\ESC]11;?" r
         (term, more) <-
             (TermBel,) <$> B.stripPrefix "\a" afterIntro
             <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterIntro
-        pure (target, term, more)
+        pure (SigOsc target term, more)
+    isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b     -- 0-9 or ';'
+    classify params final = case (params, final) of
+        ("2031", 0x68) -> Just CsEnable    -- 'h'
+        ("2031", 0x6c) -> Just CsDisable   -- 'l'
+        ("996",  0x6e) -> Just CsQuery     -- 'n'
+        _              -> Nothing
 
 -- | Encode a cursor key the way this pane currently expects it: libvterm
 -- consults its own DECCKM state, so @man@/@less@ (application cursor keys)
