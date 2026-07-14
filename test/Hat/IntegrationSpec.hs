@@ -38,7 +38,7 @@ import Hat.Pty (setWinsize)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Socket (connectTo)
-import Hat.Term.Cell (Cell (..), Color, Style (..))
+import Hat.Term.Cell (Cell (..), Color (..), Style (..))
 import qualified Hat.Term.Emulator as Emu
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
@@ -1334,6 +1334,29 @@ spec = parallel $ do
         awaitScreen c1 "DARKMODE"
         out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
         lines out `shouldBe` ["dark"]
+
+    it "defaults hat's chrome to the dark palette when the desktop is dark" $
+        withHat hatBin $ \h -> do
+        let bin = h.home </> "bin"
+        createDirectoryIfMissing True bin
+        writeExecutable (bin </> "gsettings") $ unlines
+            [ "#!/bin/sh"
+            , "case \"$1\" in"
+            , "get) echo \"'prefer-dark'\" ;;"
+            , "monitor) exec tail -f /dev/null ;;"
+            , "esac"
+            ]
+        c1 <- startClientEnv h [("PATH", bin <> ":" <> testPath)] []
+        awaitScreen c1 "0:sh*"
+        -- No styles configured: the status bar restyles itself to the
+        -- dark palette (grey 235), not tmux's classic green.
+        awaitWith "status bar in the dark palette" (\d -> do
+            scr <- Emu.snapshot d.screen
+            pure $ case scr.cells V.!? 23 of
+                Just row -> any
+                    (\cell -> cell.style.bg == Indexed 235)
+                    (V.toList row)
+                Nothing -> False) c1
 
     it "renames the session via prefix $ (pre-filled prompt)" $
         withHat hatBin $ \h -> do

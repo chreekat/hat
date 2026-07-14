@@ -21,6 +21,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import qualified Data.Set as Set
 import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
@@ -57,7 +58,7 @@ import Hat.Persist
 import qualified Hat.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ColorScheme
-    (ColorScheme (..), parseSchemeLine, schemeName)
+    (ColorScheme (..), applyPalette, parseSchemeLine, schemeName)
 import Hat.Server.Format (FormatEnv, renderFormat)
 import Hat.Server.Keys
 import Hat.Server.Layout
@@ -287,6 +288,9 @@ applyScheme :: ServerState -> ColorScheme -> IO ()
 applyScheme st scheme = do
     old <- atomically $ swapTVar st.colorScheme (Just scheme)
     unless (old == Just scheme) $ do
+        -- Default chrome first (skips user-set options), then the user's
+        -- per-scheme config on top.
+        atomically $ modifyTVar' st.options (applyPalette scheme)
         opts <- readTVarIO st.options
         let optName = case scheme of
                 SchemeDark -> "@color-scheme-dark"
@@ -1941,7 +1945,15 @@ lookupOption opts name = case name of
 -- rejected so a config never looks supported when its behavior is not
 -- yet implemented.
 setOption :: Bool -> Options -> Text -> Text -> Either Text Options
-setOption append opts name value = case name of
+setOption append opts name value =
+    mark <$> setOptionRaw append opts name value
+  where
+    -- Successful sets are remembered so scheme palettes ('applyPalette')
+    -- never override an option the user chose.
+    mark o = o { explicit = Set.insert name o.explicit }
+
+setOptionRaw :: Bool -> Options -> Text -> Text -> Either Text Options
+setOptionRaw append opts name value = case name of
     "prefix" -> case parseKeyName value of
         Just k -> Right opts { prefix = k.name }
         Nothing -> Left ("bad prefix key: " <> value)

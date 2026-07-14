@@ -13,6 +13,8 @@ module Hat.Model.Options
     ) where
 
 import Data.Map.Strict (Map)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 
@@ -68,6 +70,9 @@ data Options = Options
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
     , mainPaneHeight         :: Int
     , user            :: Map Text Text  -- ^ @\@foo@ options
+    , explicit        :: Set Text
+        -- ^ option names the user has actually set ('setOption'); scheme
+        --   palettes ('applyPalette') never touch these.
     }
     deriving (Eq, Show)
 
@@ -112,6 +117,7 @@ defaultOptions = Options
     , mainPaneWidth = 80
     , mainPaneHeight = 24
     , user = Map.empty
+    , explicit = Set.empty
     }
   where
     -- The default status bar: black on green.
