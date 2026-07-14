@@ -7,7 +7,9 @@ import qualified Data.Text as T
 import System.Directory (removeDirectoryRecursive, removePathForcibly)
 import System.Environment (getEnv)
 import System.Exit (ExitCode (..))
+import System.Posix.IO (FdOption (CloseOnExec), closeFd, createPipe, setFdOption)
 import System.Posix.Temp (mkdtemp)
+import System.Posix.Types (Fd (..))
 import System.Process (callProcess)
 import Test.Hspec
 
@@ -150,6 +152,24 @@ specWith base home = do
                 (== Just (T.pack "sleepish"))
             cmd `shouldBe` Just (T.pack "sleepish")
             closePty pty
+
+    -- An orphaned pane that kept hat's listening socket open outlived
+    -- `pkill hat` and made the next start's connect() hang. The child
+    -- must inherit only its stdio: a forced-inheritable fd here must not
+    -- survive into it.
+    it "hands the pane child a clean fd table" $ do
+        (r, w) <- createPipe
+        setFdOption w CloseOnExec False
+        let Fd n = w
+        pty <- spawn base
+            { args = ["-c", "[ -e /proc/self/fd/" ++ show n
+                             ++ " ] && echo LEAK || echo CLEAN"] }
+        out <- drainPty pty
+        _ <- waitExit pty
+        closeFd r
+        closeFd w
+        out `shouldSatisfy` B8.isInfixOf "CLEAN"
+        out `shouldNotSatisfy` B8.isInfixOf "LEAK"
 
     it "reports a nonzero exit" $ do
         pty <- spawn base { args = ["-c", "exit 3"] }
