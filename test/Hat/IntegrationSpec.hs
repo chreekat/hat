@@ -13,10 +13,12 @@ import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hSetBuffering, BufferMode (..))
-import System.Posix.IO (fdToHandle)
+import System.Posix.IO (fdToHandle, handleToFd)
 import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Temp (mkdtemp)
-import System.Posix.Terminal (openPseudoTerminal)
+import System.Posix.Terminal
+    ( TerminalMode (..), TerminalState (Immediately), getTerminalAttributes
+    , openPseudoTerminal, setTerminalAttributes, terminalMode )
 import System.Process (readProcess)
 import qualified System.Process as P
 import System.Timeout (timeout)
@@ -141,6 +143,15 @@ startClientArgs h extra = do
     let size = Size { rows = 24, cols = 80 }
     (masterFd, slaveFd) <- openPseudoTerminal
     setWinsize slaveFd size
+    masterH <- fdToHandle masterFd
+    -- hSetBuffering NoBuffering on the master does a hidden tcsetattr
+    -- (GHC's setRaw clears ICANON) on the pty's one shared termios — the
+    -- very state the hat client is about to inherit as its "original".
+    -- Take that side effect before the client spawns and undo it, so the
+    -- client sees (and must hand back) a cooked terminal.
+    cooked <- getTerminalAttributes slaveFd
+    hSetBuffering masterH NoBuffering
+    setTerminalAttributes slaveFd cooked Immediately
     slaveH <- fdToHandle slaveFd
     (_, _, _, ph) <-
         P.createProcess (P.proc h.bin (["-S", h.sock] <> extra))
@@ -159,8 +170,6 @@ startClientArgs h extra = do
                 <> persistEnv h
                 <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
             }
-    masterH <- fdToHandle masterFd
-    hSetBuffering masterH NoBuffering
     t <- newIORef ""
     emu <- Emu.newEmulator size 1000
     pure Driver
@@ -337,6 +346,22 @@ paneNonCanonicalVia line c = do
 paneIsNonCanonical :: Driver -> IO Bool
 paneIsNonCanonical = paneNonCanonicalVia "stty -a"
 
+-- The cooked-mode flags still missing from the test pty's line discipline,
+-- read after the hat client on its slave side has exited. An empty list
+-- means the client left the terminal the way it found it.
+rawModesLeftBehind :: Driver -> IO [String]
+rawModesLeftBehind d = do
+    fd <- handleToFd d.pty.master
+    attrs <- getTerminalAttributes fd
+    pure [ nm
+         | (nm, mode) <-
+             [ ("icanon", ProcessInput)
+             , ("echo", EnableEcho)
+             , ("opost", ProcessOutput)
+             , ("isig", KeyboardInterrupts)
+             ]
+         , not (terminalMode mode attrs) ]
+
 spec :: Spec
 spec = parallel $ do
     hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
@@ -388,6 +413,24 @@ spec = parallel $ do
 
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not exit"
+
+    it "restores the terminal line discipline when the session ends" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        left <- rawModesLeftBehind c1
+        left `shouldBe` []
+
+    it "restores the terminal line discipline after detach" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "\x02\&d"
+        _ <- awaitExit c1
+        left <- rawModesLeftBehind c1
+        left `shouldBe` []
 
     it "new-session creates and attaches to a fresh session" $
         withHat hatBin $ \h -> do
