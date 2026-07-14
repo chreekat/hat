@@ -110,12 +110,20 @@ runServer path mconfig = do
             refreshAutoNames st
         -- Continuously mirror the session tree into the SQLite store so a
         -- restart can rebuild it (see 'persistLoop').
-        forM_ mstore $ \p -> forkIO (persistLoop st p)
+        mpersist <- forM mstore $ \p -> forkIO (persistLoop st p)
         r <- race (acceptLoop st lsock) (waitIdle st)
         case r of
             Left () -> pure ()
             Right () -> do
                 logEvent lg ServerStopping { reason = "no sessions left" }
+                -- Stop the mirror first so no in-flight write can recreate
+                -- the store after we drop it. The tree drained (every
+                -- window closed), so the next start must be pristine —
+                -- unless kill-server asked to keep the tree for a restore.
+                forM_ mpersist killThread
+                preserve <- readTVarIO st.preserveStore
+                unless preserve $ forM_ mstore $ \p ->
+                    removeFile p `catch` \(_ :: IOException) -> pure ()
                 removeFile path `catch` \(_ :: IOException) -> pure ()
 
 -- flock-style: O_CREAT + posix write lock, held for the server's life.
@@ -182,9 +190,9 @@ persistLoop st path = go Nothing
 
 -- | Capture and persist immediately. Called at 'cmdKillServer' so an
 -- explicit quit never loses a last-moment change. A no-op when
--- persistence is off. An empty tree is never written: closing every pane
--- leaves the last non-empty arrangement in the store, so the next start
--- restores it.
+-- persistence is off. An empty tree is never written here: whether an
+-- empty store survives shutdown is decided by 'preserveStore' (kill-server
+-- keeps the tree; a natural drain deletes the store, see 'runServer').
 saveNow :: ServerState -> IO ()
 saveNow st = forM_ st.store $ \path -> do
     snap <- captureSnapshot st
@@ -3462,6 +3470,10 @@ cmdSwitchClient st mclient args = do
 
 cmdKillServer :: CommandImpl
 cmdKillServer st mclient _ = do
+    -- Flag first: pane readers race us into closePane once the ptys go,
+    -- and the shutdown path must know this drain is a kill, not the last
+    -- window closing (which drops the store instead).
+    atomically $ writeTVar st.preserveStore True
     saveNow st  -- capture the tree before we tear it down
     sessions <- readTVarIO st.sessions
     forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited

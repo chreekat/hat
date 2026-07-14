@@ -605,6 +605,44 @@ spec = parallel $ do
         pl <- ctlOut h ["list-panes", "-a"]
         length (lines pl) `shouldBe` 3
 
+    it "forgets the saved tree when the last window exits (pristine restart)" $
+        withHatPersist hatBin $ \h -> do
+        -- Seed a saved tree so the autostarted server restores it.
+        let rect = sizeRect (Size { rows = 24, cols = 80 })
+            lay = emitLayout rect (Leaf (PaneId 0))
+            snap = Snapshot
+                { sessions =
+                    [ SessionSnap
+                        { name = "stale", startCwd = "/tmp", currentIx = 0
+                        , windows =
+                            [ WindowSnap
+                                { ix = 0, name = "one", layout = lay
+                                , active = 0
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
+                            ] } ] }
+        createDirectoryIfMissing True (takeDirectory (storeOf h))
+        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
+
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        names1 <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        names1 `shouldSatisfy` List.isInfixOf "stale"
+
+        -- Exiting the last shell closes the last window, the session and
+        -- the server. Unlike kill-server, this must drop the saved tree:
+        -- the next start comes up pristine instead of resurrecting it.
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "server did not exit"
+
+        c2 <- startClient h
+        awaitScreen c2 "$"
+        names2 <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        names2 `shouldNotSatisfy` List.isInfixOf "stale"
+        wl <- ctlOut h ["list-windows", "-a", "-F", "#{window_name}"]
+        length (lines wl) `shouldBe` 1
+
     it "restores a whitelisted running command (vim), not a bare shell" $
         withHatPersist hatBin $ \h -> do
         c1 <- startClient h

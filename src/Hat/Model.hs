@@ -63,6 +63,11 @@ data ServerState = ServerState
     , configLoading :: TVar Bool  -- ^ suppress waitIdle exit while config runs
     , restoring   :: TVar Bool  -- ^ a bare attach waits on this so it joins the
                                 --   restored tree instead of making a fresh session
+    , preserveStore :: TVar Bool
+        -- ^ keep the persisted tree past shutdown. Set by @kill-server@
+        --   (an explicit quit restores on the next start); a natural drain
+        --   (the last window closing) leaves it off, so the store is
+        --   dropped and the next start is pristine.
     , options     :: TVar Options
     , keymap      :: TVar Keymap
     , buffers     :: TVar (Seq (Text, Text))
@@ -233,6 +238,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
+    <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO False
