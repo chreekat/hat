@@ -9,7 +9,7 @@ import qualified Data.Set as Set
 import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Server (cmdAttachSession, chooseCurrentOnClose)
+import Hat.Server (cmdAttachSession, chooseCurrentOnClose, pickAttachSession)
 
 -- A bare session with a known default working directory, inserted into a
 -- fresh server so 'cmdAttachSession' can target it.
@@ -58,3 +58,23 @@ spec = do
         it "falls back to the lowest survivor when the last-active is also gone" $
             -- last-active pointed at window 5, which no longer exists.
             chooseCurrentOnClose remaining 1 (Just 5) `shouldBe` Just 0
+
+    describe "pickAttachSession" $ do
+        -- A fresh client attaches to the last-active session (set from the
+        -- snapshot on restore), not just the lowest-id one, so a reboot
+        -- returns to the session that was focused.
+        let sessions = Map.fromList [(1, "a"), (2, "b"), (3, "c")]
+                :: Map.Map Int String
+
+        it "attaches to the last-active session when it still exists" $
+            pickAttachSession (Just 2) sessions `shouldBe` Just (2, "b")
+
+        it "falls back to the lowest-id session when none is marked" $
+            pickAttachSession Nothing sessions `shouldBe` Just (1, "a")
+
+        it "falls back to the lowest-id session when the marked one is gone" $
+            pickAttachSession (Just 9) sessions `shouldBe` Just (1, "a")
+
+        it "has nothing to attach to when there are no sessions" $
+            pickAttachSession (Just 2) (Map.empty :: Map.Map Int String)
+                `shouldBe` Nothing

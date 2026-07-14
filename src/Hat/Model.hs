@@ -85,6 +85,10 @@ data ServerState = ServerState
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
+    , lastActiveSession :: TVar (Maybe SessionId)
+        -- ^ the session most recently focused by any client. Captured into
+        --   the snapshot (by name) so the first attach after a restore
+        --   returns to it, not just the lowest-id session.
     , logger      :: Logger
     , sockPath    :: FilePath
     , store       :: Maybe FilePath
@@ -259,7 +263,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Seq.empty
     <*> newTVarIO Map.empty
     <*> newTVarIO []
-    <*> newTVarIO Nothing
+    <*> newTVarIO Nothing  -- markedPane
+    <*> newTVarIO Nothing  -- lastActiveSession
     <*> pure lg
     <*> pure path
     <*> pure storePath

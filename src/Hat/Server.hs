@@ -11,6 +11,7 @@ module Hat.Server
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
+    , pickAttachSession  -- ^ exported for the attach-to-last-active test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -19,7 +20,7 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, finally, try)
-import Control.Monad (foldM, forM, forM_, forever, unless, void, when)
+import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
@@ -240,8 +241,12 @@ saveSnapshotNow path snap =
 -- order, windows by index, panes in layout order with their live cwd.
 captureSnapshot :: ServerState -> IO Snapshot
 captureSnapshot st = do
-    sess <- Map.elems <$> readTVarIO st.sessions
-    Snapshot <$> mapM captureSession sess <*> pure Nothing
+    (sess, laName) <- atomically $ do
+        sessMap <- readTVar st.sessions
+        laId    <- readTVar st.lastActiveSession
+        laName  <- traverse (readTVar . (.name)) (laId >>= (`Map.lookup` sessMap))
+        pure (Map.elems sessMap, laName)
+    Snapshot <$> mapM captureSession sess <*> pure laName
 
 -- | One window's structure read as a single consistent unit. Its layout,
 -- active\/last-active ordinals and live panes are read together in one STM
@@ -362,7 +367,15 @@ restoreSaved st path = do
 -- | Recreate every session in the snapshot, spawning a fresh shell in
 -- each pane's saved working directory and reapplying the saved layout.
 restoreSnapshot :: ServerState -> Snapshot -> IO ()
-restoreSnapshot st snap = forM_ snap.sessions (restoreSession st)
+restoreSnapshot st snap = do
+    forM_ snap.sessions (restoreSession st)
+    -- Point the next attach at the session that was focused before the
+    -- restart. Names are the stable key across restart (ids are fresh).
+    forM_ snap.lastActiveSession $ \nm -> do
+        sessMap <- readTVarIO st.sessions
+        hits <- filterM (fmap (== nm) . readTVarIO . (.name)) (Map.elems sessMap)
+        forM_ (listToMaybe hits) $ \s ->
+            atomically (writeTVar st.lastActiveSession (Just s.id))
 
 restoreSession :: ServerState -> SessionSnap -> IO ()
 restoreSession st ssnap = do
@@ -673,7 +686,9 @@ welcome st conn h = do
 attachSetup :: ServerState -> Client -> [[Text]] -> IO (Maybe Text)
 attachSetup st client [] = do
     sess <- ensureSession st client
-    atomically $ writeTVar client.session sess.id
+    atomically $ do
+        writeTVar client.session sess.id
+        writeTVar st.lastActiveSession (Just sess.id)
     pure Nothing
 attachSetup st client cmds = do
     replies <- runCommands st (Just client) cmds
@@ -762,11 +777,23 @@ ensureSession st client = do
     -- Let any restore finish first, so we attach to the restored tree
     -- rather than racing it and creating a redundant fresh session.
     atomically $ readTVar st.restoring >>= \r -> when r retry
-    existing <- readTVarIO st.sessions
-    case Map.lookupMin existing of
+    (existing, laId) <- atomically $
+        (,) <$> readTVar st.sessions <*> readTVar st.lastActiveSession
+    case pickAttachSession laId existing of
         Just (_, sess) -> pure sess
         Nothing -> createSession st Nothing Nothing client.env
             (T.unpack client.cwd) =<< readTVarIO client.size
+
+-- | Which existing session a fresh client attaches to: the last-active one
+-- if it still exists, else the first-created (lowest-id) session. After a
+-- restore 'lastActiveSession' names the session that was focused, so a reboot
+-- returns there rather than always landing on @$1@.
+pickAttachSession
+    :: Ord k => Maybe k -> Map.Map k v -> Maybe (k, v)
+pickAttachSession lastActive m =
+    case lastActive >>= \k -> (,) k <$> Map.lookup k m of
+        Just kv -> Just kv
+        Nothing -> Map.lookupMin m
 
 createSession
     :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
@@ -3515,6 +3542,7 @@ switchClientTo st client sess = do
         when (old /= sess.id) $ do
             writeTVar client.lastSession (Just old)
             writeTVar client.session sess.id
+        writeTVar st.lastActiveSession (Just sess.id)
         writeTVar client.needsFull True
         bumpDirty st
     applySessionSize st old
