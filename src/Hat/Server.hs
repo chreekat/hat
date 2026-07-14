@@ -241,7 +241,7 @@ saveSnapshotNow path snap =
 captureSnapshot :: ServerState -> IO Snapshot
 captureSnapshot st = do
     sess <- Map.elems <$> readTVarIO st.sessions
-    Snapshot <$> mapM captureSession sess
+    Snapshot <$> mapM captureSession sess <*> pure Nothing
 
 -- | One window's structure read as a single consistent unit. Its layout,
 -- active\/last-active ordinals and live panes are read together in one STM
@@ -355,7 +355,8 @@ applyScheme st scheme = do
 restoreSaved :: ServerState -> FilePath -> IO ()
 restoreSaved st path = do
     snap <- withStore path loadSnapshot
-        `catch` \(_ :: SomeException) -> pure (Snapshot { sessions = [] })
+        `catch` \(_ :: SomeException) ->
+            pure (Snapshot { sessions = [], lastActiveSession = Nothing })
     restoreSnapshot st snap
 
 -- | Recreate every session in the snapshot, spawning a fresh shell in

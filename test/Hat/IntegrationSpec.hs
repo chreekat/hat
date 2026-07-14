@@ -616,7 +616,7 @@ spec = parallel $ do
             lay2 = emitLayout rect
                 (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
             snap = Snapshot
-                { sessions =
+                { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
                         { name = "restored", startCwd = "/tmp", currentIx = 0
                         , lastIx = Nothing
@@ -648,7 +648,7 @@ spec = parallel $ do
         let rect = sizeRect (Size { rows = 24, cols = 80 })
             lay = emitLayout rect (Leaf (PaneId 0))
             snap = Snapshot
-                { sessions =
+                { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
                         { name = "stale", startCwd = "/tmp", currentIx = 0
                         , lastIx = Nothing

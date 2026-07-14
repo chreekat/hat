@@ -45,8 +45,20 @@ genWindow wix = do
 instance Arbitrary Snapshot where
     arbitrary = do
         n <- choose (0, 4)
-        Snapshot <$> vectorOf n arbitrary
-    shrink s = Snapshot <$> shrinkList shrink s.sessions
+        Snapshot <$> vectorOf n arbitrary <*> genMaybeName
+    shrink s =
+        [ Snapshot ss s.lastActiveSession | ss <- shrinkList shrink s.sessions ]
+        ++ [ Snapshot s.sessions la | la <- shrinkMaybeName s.lastActiveSession ]
+
+-- The last-active session name, if any. The codec treats the empty string
+-- as \"none\", so a present name is always non-empty (it round-trips as
+-- 'Just'; \"\" would come back 'Nothing').
+genMaybeName :: Gen (Maybe Text)
+genMaybeName = oneof [pure Nothing, Just . T.cons 's' <$> genText]
+
+shrinkMaybeName :: Maybe Text -> [Maybe Text]
+shrinkMaybeName Nothing  = []
+shrinkMaybeName (Just t) = Nothing : [ Just t' | t' <- shrinkText t, not (T.null t') ]
 
 instance Arbitrary SessionSnap where
     arbitrary = do
@@ -96,7 +108,7 @@ shrinkMaybeArgv (Just argv)  =
 spec :: Spec
 spec = do
     it "a fresh store loads an empty snapshot" $
-        withStore ":memory:" loadSnapshot `shouldReturn` Snapshot { sessions = [] }
+        withStore ":memory:" loadSnapshot `shouldReturn` Snapshot { sessions = [], lastActiveSession = Nothing }
 
     prop "a snapshot round-trips through the store" $ \snap ->
         ioProperty $ do
@@ -117,7 +129,7 @@ spec = do
     -- only, so it reads a store from an older or newer binary.
     describe "schema compatibility" $ do
         let oneSession nm cwd0 wnm lay pcwd = Snapshot
-                { sessions =
+                { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
                         { name = nm, startCwd = cwd0, currentIx = 0
                         , lastIx = Nothing
@@ -177,7 +189,7 @@ spec = do
     -- the current ones. These fields used to be dropped by the codec.
     it "round-trips the last-active window and pane" $ do
         let snap = Snapshot
-                { sessions =
+                { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 2
                         , lastIx = Just 0
                         , windows =
@@ -196,7 +208,7 @@ spec = do
 
     it "round-trips an argv whose argument contains spaces" $ do
         let snap = Snapshot
-                { sessions =
+                { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
                         , lastIx = Nothing
                         , windows =

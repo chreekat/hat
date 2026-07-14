@@ -24,6 +24,7 @@ import Data.Aeson
     ( FromJSON (..), ToJSON (..), Value (String), decode, encode, object
     , withObject, (.:?), (.=) )
 import qualified Data.ByteString.Lazy as BL
+import Data.Maybe (fromMaybe)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -33,8 +34,15 @@ import Database.SQLite.Simple
 -- | A point-in-time capture of the whole tree, in restore order:
 -- sessions in creation order, each window by its index, each pane in its
 -- layout-string order.
-newtype Snapshot = Snapshot
-    { sessions :: [SessionSnap] }
+data Snapshot = Snapshot
+    { sessions   :: [SessionSnap]
+    , lastActiveSession :: Maybe Text
+                           -- ^ name of the session focused at capture time.
+                           --   The first client to attach after a restore is
+                           --   steered to it, so a reboot returns to the same
+                           --   session, not just the first-created one. Stored
+                           --   in the @meta@ table.
+    }
     deriving (Eq, Show)
 
 data SessionSnap = SessionSnap
@@ -204,6 +212,10 @@ saveSnapshot conn snap = withTransaction conn $ do
         "INSERT INTO meta (key, value) VALUES ('schema_version', ?) \
         \ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         (Only (T.pack (show schemaVersion)))
+    execute conn
+        "INSERT INTO meta (key, value) VALUES ('last_active_session', ?) \
+        \ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        (Only (fromMaybe "" snap.lastActiveSession))
     mapM_ insertSession (zip [0 ..] snap.sessions)
   where
     insertSession :: (Int, SessionSnap) -> IO ()
@@ -233,7 +245,13 @@ loadSnapshot conn = do
     srows <- query_ conn
         "SELECT seq, name, start_cwd, current_ix, extra FROM session ORDER BY seq"
         :: IO [(Int, Text, Text, Int, Text)]
-    Snapshot <$> mapM loadSession srows
+    metaRows <- query conn
+        "SELECT value FROM meta WHERE key = ?" (Only ("last_active_session" :: Text))
+        :: IO [Only Text]
+    let la = case metaRows of
+            (Only v : _) | not (T.null v) -> Just v
+            _                             -> Nothing
+    Snapshot <$> mapM loadSession srows <*> pure la
   where
     loadSession :: (Int, Text, Text, Int, Text) -> IO SessionSnap
     loadSession (sseq, nm, cwd0, curIx, sex) = do
