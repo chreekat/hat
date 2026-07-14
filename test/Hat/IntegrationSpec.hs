@@ -1213,6 +1213,39 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "names an automatic-rename window after the Nix wrapper, not .name-wrapped" $
+        withHat hatBin $ \h -> do
+        -- A NixOS-style wrapper pair: public `vimish` execs the real
+        -- binary `.vimish-wrapped`, passing the public name along in
+        -- argv[0]. The real binary is a copy of bash (the coreutils
+        -- multi-call binary would dispatch on the renamed argv[0]) that
+        -- blocks on stdin like an editor would.
+        -- Both files are created by subprocesses (cp / sh), never by
+        -- writeFile/copyFile in this process: a write fd held here leaks
+        -- into other tests' fork→exec windows, and the pane's exec of a
+        -- still-write-open file flakes with ETXTBSY (scripts included —
+        -- the kernel write-denies the exec'd file before the shebang is
+        -- ever read).
+        let bin = h.home </> "bin"
+            wrapped = bin </> ".vimish-wrapped"
+            script = bin </> "vimish"
+        createDirectoryIfMissing True bin
+        P.callProcess "cp" ["/bin/sh", wrapped]
+        _ <- P.readProcess "/bin/sh"
+            ["-c", "cat > " <> script <> " && chmod 755 " <> script]
+            (unlines
+                [ "#!/bin/sh"
+                , "exec -a \"$0\" " <> wrapped <> " -c 'read line'"
+                ])
+        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 (B8.pack ("$HOME/bin/vimish\r"))
+        -- The window takes the wrapper's public name, like tmux would.
+        awaitScreen c1 "0:vimish*"
+        typeInto c1 "\x04"                   -- Ctrl-D ends the read
+        awaitScreen c1 "0:sh*"
+
     it "an explicit rename-window pins the name and stops auto-rename" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"

@@ -178,9 +178,13 @@ waitExit pty = readMVar pty.exited
 pid :: PtyHandle -> ProcessID
 pid pty = pty.child
 
--- | The command name (@/proc/<pid>/comm@) of the process group that
--- currently owns the pty's terminal — i.e. the foreground program, which
--- is a child running under the shell rather than the shell itself.
+-- | The command of the process group that currently owns the pty's
+-- terminal — i.e. the foreground program, which is a child running under
+-- the shell rather than the shell itself. Prefers argv[0] (the first
+-- field of @/proc/<pgrp>/cmdline@), which is what tmux reports: NixOS
+-- wrappers exec the real binary as @.<name>-wrapped@ but pass the public
+-- name along in argv[0]. Falls back to @/proc/<pgrp>/comm@ (the
+-- executable's name, truncated to 15 bytes) when cmdline is empty.
 -- 'Nothing' if the terminal has no foreground group or @/proc@ can't be
 -- read (e.g. the process just exited).
 foregroundCommand :: PtyHandle -> IO (Maybe Text)
@@ -189,10 +193,20 @@ foregroundCommand pty = do
     case r of
         Left (_ :: IOException) -> pure Nothing
         Right pgrp -> do
-            c <- try (TIO.readFile ("/proc/" <> show pgrp <> "/comm"))
-            pure $ case c of
-                Left (_ :: IOException) -> Nothing
-                Right s -> let t = T.strip s in if T.null t then Nothing else Just t
+            argv0 <- procField pgrp "cmdline" (T.takeWhile (/= '\NUL'))
+            case argv0 of
+                Just _ -> pure argv0
+                Nothing -> procField pgrp "comm" T.strip
+
+-- One trimmed field of a @/proc/<pid>@ file; 'Nothing' when unreadable
+-- (process gone) or empty (e.g. a cmdline the process has zeroed out).
+procField :: (Show p) => p -> String -> (Text -> Text) -> IO (Maybe Text)
+procField pgrp name trim = do
+    c <- try (TIO.readFile ("/proc/" <> show pgrp <> "/" <> name))
+    pure $ case c of
+        Left (_ :: IOException) -> Nothing
+        Right s -> let t = T.strip (trim s) in
+            if T.null t then Nothing else Just t
 
 -- | Hang up the pane: signal the child and close the master side.
 closePty :: PtyHandle -> IO ()

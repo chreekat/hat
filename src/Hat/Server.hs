@@ -235,7 +235,7 @@ captureWindow eff (wix, w) = do
         forM (Map.lookup pid paneMap) $ \pane -> do
             dir <- paneCurrentPath pane
             cmd <- paneCommandName pane
-            pure PaneSnap { cwd = T.pack dir, command = Just (commandName cmd) }
+            pure PaneSnap { cwd = T.pack dir, command = Just cmd }
     pure WindowSnap
         { ix = wix, name = nm
         , layout = emitLayout (sizeRect (windowArea eff)) lay
@@ -2451,18 +2451,21 @@ wrapPaneInWindow st pane = do
         , autoRename = autoRenameVar
         }
 
--- | A pane's foreground command name (from @/proc@), for naming a window
--- broken out around it; falls back to @sh@.
+-- | A pane's foreground program (from @/proc@) as a display name:
+-- normalized by 'commandName', so a NixOS-wrapped @vim@ shows as @vim@
+-- everywhere (window titles, @#{pane_current_command}@, the persisted
+-- tree). Falls back to @sh@.
 paneCommandName :: Pane -> IO Text
 paneCommandName pane = do
     mfg <- Hat.Pty.foregroundCommand pane.pty
-    case mfg of
+    raw <- case mfg of
         Just cmd -> pure cmd
         Nothing -> do
             r <- try (TIO.readFile ("/proc/" <> show (Hat.Pty.pid pane.pty) <> "/comm"))
             pure $ case r of
                 Right s -> let t = T.strip s in if T.null t then "sh" else t
                 Left (_ :: IOException) -> "sh"
+    pure (commandName raw)
 
 -- | Recompute the names of every @automatic-rename@ window from its
 -- active pane's foreground command, bumping the render generation on any

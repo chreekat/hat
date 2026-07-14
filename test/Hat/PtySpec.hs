@@ -1,9 +1,13 @@
 module Hat.PtySpec (spec) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (finally)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
+import System.Directory (removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
+import System.Posix.Temp (mkdtemp)
+import System.Process (callProcess)
 import Test.Hspec
 
 import Hat.Geometry
@@ -98,6 +102,31 @@ spec = do
         cmd <- retryFor 100 (foregroundCommand pty) (== Just (T.pack "sleep"))
         cmd `shouldBe` Just (T.pack "sleep")
         closePty pty
+
+    -- NixOS wrappers exec the real binary as @.<name>-wrapped@ but keep
+    -- the public name in argv[0] (bash's @exec -a@). The foreground
+    -- command must be argv[0] — what tmux reports — not the executable's
+    -- comm, which leaks the wrapper decoration (and truncates at 15
+    -- bytes besides).
+    it "reports a wrapped foreground command by argv[0], not its comm" $ do
+        dir <- mkdtemp "/tmp/hat-pty-"
+        flip finally (removeDirectoryRecursive dir) $ do
+            -- A copy of bash stands in for the real binary: unlike the
+            -- coreutils multi-call binary, it does not dispatch on
+            -- argv[0]. The trailing `:` stops bash exec'ing the sleep,
+            -- keeping the wrapped process the foreground group leader.
+            -- Copied by a cp subprocess, not copyFile: a write fd held in
+            -- this (forking, parallel) test process leaks into fork→exec
+            -- windows and makes the exec below flake with ETXTBSY.
+            let wrapped = dir <> "/.sleepish-wrapped"
+            callProcess "cp" ["/bin/sh", wrapped]
+            pty <- spawn baseSpawn
+            writePty pty (B8.pack
+                ("exec -a sleepish " <> wrapped <> " -c 'sleep 5; :'\n"))
+            cmd <- retryFor 100 (foregroundCommand pty)
+                (== Just (T.pack "sleepish"))
+            cmd `shouldBe` Just (T.pack "sleepish")
+            closePty pty
 
     it "reports a nonzero exit" $ do
         pty <- spawn baseSpawn { args = ["-c", "exit 3"] }
