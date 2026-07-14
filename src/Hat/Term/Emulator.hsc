@@ -153,9 +153,17 @@ data Emulator = Emulator
     , damageRef :: IORef [Rect]
     , eventsRef :: IORef [Event]       -- reversed
     , outRef    :: IORef [ByteString]  -- reversed
+    , passRef   :: IORef PassState     -- ^ tmux-passthrough scrubber state
     , sbRef     :: IORef (Seq [Cell])
     , sbLimit   :: Int
     }
+
+-- | Scrubber state for DCS tmux passthrough, carried across 'feed' chunks:
+-- outside a wrapper (holding back a partial @ESC Ptmux;@ prefix that ends
+-- the chunk), or inside one (discarding until its ST).
+data PassState
+    = Outside ByteString  -- ^ carry: proper prefix of @ESC Ptmux;@ at chunk end
+    | Inside ByteString   -- ^ carry: a trailing @ESC@ that may start the ST
 
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz historyLimit = do
@@ -179,6 +187,7 @@ newEmulator sz historyLimit = do
     damageR <- newIORef []
     eventsR <- newIORef []
     outR <- newIORef []
+    passR <- newIORef (Outside "")
     sbR <- newIORef Seq.empty
 
     damageW <- wrapDamage $ \sr er sc ec -> do
@@ -277,6 +286,7 @@ newEmulator sz historyLimit = do
             , damageRef = damageR
             , eventsRef = eventsR
             , outRef = outR
+            , passRef = passR
             , sbRef = sbR
             , sbLimit = historyLimit
             }
@@ -285,7 +295,10 @@ newEmulator sz historyLimit = do
 
 -- | Feed pty output into the emulator; returns what happened.
 feed :: Emulator -> ByteString -> IO [Event]
-feed e bs = withMVar e.lock $ \_ -> do
+feed e bs0 = withMVar e.lock $ \_ -> do
+    st0 <- readIORef e.passRef
+    let (st1, bs) = scrubPassthrough st0 bs0
+    writeIORef e.passRef st1
     writeIORef e.eventsRef []
     writeIORef e.outRef []
     writeIORef e.damageRef []
@@ -301,6 +314,49 @@ feed e bs = withMVar e.lock $ \_ -> do
     pure $ evs
         <> [Output outs | not (B.null outs)]
         <> [ScreenChanged | dirty]
+
+-- | Remove DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's
+-- output before libvterm parses it. A tmux-aware app (claude) sees $TMUX
+-- set and wraps sequences meant for the outer terminal in this DCS;
+-- libvterm's parser aborts on the wrapper's doubled inner ESCs and spills
+-- the payload onto the screen as text (the \"11;?9;4;0;\" garbage). tmux's
+-- default (@allow-passthrough off@) ignores these sequences entirely; do
+-- the same. A wrapper can span pty reads, so the state carries across
+-- 'feed' chunks.
+scrubPassthrough :: PassState -> ByteString -> (PassState, ByteString)
+scrubPassthrough st0 chunk = case st0 of
+    Outside carry -> outside [] (carry <> chunk)
+    Inside carry  -> inside [] (carry <> chunk)
+  where
+    intro = "\ESCPtmux;"
+    finish acc = B.concat (reverse acc)
+    outside acc bs = case B.breakSubstring intro bs of
+        (before, r)
+            | B.null r ->
+                -- No wrapper here; hold back a chunk-final partial intro
+                -- (e.g. a trailing bare ESC) until the next read decides.
+                let held = introSuffix before
+                    emit = B.take (B.length before - B.length held) before
+                in (Outside held, finish (emit : acc))
+            | otherwise -> inside (before : acc) (B.drop (B.length intro) r)
+    -- Inside the wrapper everything is discarded; only the terminator
+    -- matters. The wrapping doubles inner ESCs, so a doubled pair is
+    -- content and ST is a lone ESC followed by backslash.
+    inside acc bs = case B.elemIndex 0x1b bs of
+        Nothing -> (Inside "", finish acc)
+        Just i -> case B.uncons (B.drop (i + 1) bs) of
+            Nothing           -> (Inside "\ESC", finish acc)
+            Just (0x1b, rest) -> inside acc rest
+            Just (0x5c, rest) -> outside acc rest
+            Just (_, rest)    -> inside acc rest
+    -- The longest proper prefix of the intro that this chunk ends with.
+    introSuffix bs =
+        let cap = min (B.length intro - 1) (B.length bs)
+            ks = [ k | k <- [cap, cap - 1 .. 1]
+                 , B.take k intro `B.isSuffixOf` bs ]
+        in case ks of
+            (k : _) -> B.drop (B.length bs - k) bs
+            []      -> ""
 
 -- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
 -- emulator's replies. Most terminals — ghostty included — ignore

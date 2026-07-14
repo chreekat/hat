@@ -107,6 +107,25 @@ spec = do
         let outs = [bs | Output bs <- evs]
         B.concat outs `shouldSatisfy` B8.isInfixOf "R"
 
+    -- Bug b9: a tmux-aware app (claude) sees $TMUX set and wraps its OSC
+    -- sequences in DCS tmux passthrough (ESC Ptmux; <ESC-doubled seq> ST).
+    -- libvterm mis-parses the wrapper and spills the payload ("11;?",
+    -- "9;4;0;") onto the screen as text. Match tmux's default
+    -- (allow-passthrough off): consume the whole DCS silently.
+    it "consumes DCS tmux passthrough instead of rendering its payload" $ do
+        e <- new80x24
+        _ <- feedStr e "A<\ESCPtmux;\ESC\ESC]11;?\a\ESC\\>B"
+        _ <- feedStr e "C<\ESCPtmux;\ESC\ESC]9;4;0;\a\ESC\\>D"
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "A<>BC<>D"
+
+    it "consumes a DCS passthrough split across feeds" $ do
+        e <- new80x24
+        _ <- feedStr e "A<\ESCPtmux;\ESC\ESC]9;4;"
+        _ <- feedStr e "0;\a\ESC\\>B"
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "A<>B"
+
     -- Bug f: ghostty (like most terminals) ignores DECXCPR (CSI ? 6 n), but
     -- libvterm answers it with a DEC-private cursor report (CSI ? row;col R).
     -- Under a multiplexer that unexpected reply reaches the shell on the app's
