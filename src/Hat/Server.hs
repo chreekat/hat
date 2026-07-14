@@ -42,8 +42,9 @@ import qualified System.Posix.IO as PIO
 import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
 import System.Process
-    (CreateProcess (..), StdStream (..), createProcess,
-     readCreateProcessWithExitCode, shell, terminateProcess, waitForProcess)
+    (CreateProcess (..), StdStream (..), createProcess, proc,
+     readCreateProcess, readCreateProcessWithExitCode, shell,
+     terminateProcess, waitForProcess, withCreateProcess)
 
 import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Geometry
@@ -55,6 +56,8 @@ import Hat.Persist
     , loadSnapshot, saveSnapshot, withStore)
 import qualified Hat.Pty
 import qualified Hat.Server.CopyMode as CopyMode
+import Hat.Server.ColorScheme
+    (ColorScheme (..), parseSchemeLine, schemeName)
 import Hat.Server.Format (FormatEnv, renderFormat)
 import Hat.Server.Keys
 import Hat.Server.Layout
@@ -111,7 +114,12 @@ runServer path mconfig = do
         -- Continuously mirror the session tree into the SQLite store so a
         -- restart can rebuild it (see 'persistLoop').
         mpersist <- forM mstore $ \p -> forkIO (persistLoop st p)
+        -- Follow the desktop light/dark preference (waits out the config
+        -- load internally). Killed below so its monitor subprocess dies
+        -- with the server rather than lingering as an orphan.
+        schemeTid <- forkIO (watchColorScheme st)
         r <- race (acceptLoop st lsock) (waitIdle st)
+        killThread schemeTid
         case r of
             Left () -> pure ()
             Right () -> do
@@ -240,6 +248,51 @@ captureWindow eff (wix, w) = do
         { ix = wix, name = nm
         , layout = emitLayout (sizeRect (windowArea eff)) lay
         , active = activeOrd, panes = psnaps }
+
+-- Color scheme -----------------------------------------------------------
+
+-- | Follow the desktop's light\/dark preference: read it once, then tail
+-- @gsettings monitor@ for changes. Runs after the config has loaded so
+-- the @\@color-scheme-*@ options are set before the initial apply. On a
+-- host without gsettings (or outside a desktop session) the first call
+-- fails and the feature stays inert. Killed at server shutdown, which
+-- also terminates the monitor subprocess (withCreateProcess's cleanup).
+watchColorScheme :: ServerState -> IO ()
+watchColorScheme st = do
+    atomically (readTVar st.configLoading >>= check . not)
+    r <- try $ do
+        out <- readCreateProcess (proc "gsettings" ["get", schemaKey, key]) ""
+        forM_ (parseSchemeLine (T.strip (T.pack out))) (applyScheme st)
+        withCreateProcess
+            (proc "gsettings" ["monitor", schemaKey, key])
+                { std_out = CreatePipe } $ \_ mout _ _ ->
+            forM_ mout $ \h -> forever $ do
+                line <- TIO.hGetLine h
+                forM_ (parseSchemeLine line) (applyScheme st)
+    case r of
+        Left (_ :: SomeException) -> pure ()
+        Right () -> pure ()
+  where
+    schemaKey = "org.gnome.desktop.interface"
+    key = "color-scheme"
+
+-- | Record a (possibly unchanged) scheme; on a change, source the
+-- config file the user pointed at it (@set -g \@color-scheme-dark
+-- \<file\>@, likewise @-light@) and redraw.
+applyScheme :: ServerState -> ColorScheme -> IO ()
+applyScheme st scheme = do
+    old <- atomically $ swapTVar st.colorScheme (Just scheme)
+    unless (old == Just scheme) $ do
+        opts <- readTVarIO st.options
+        let optName = case scheme of
+                SchemeDark -> "@color-scheme-dark"
+                SchemeLight -> "@color-scheme-light"
+        forM_ (Map.lookup optName opts.user) $ \path ->
+            unless (T.null (T.strip path)) $
+                void $ runArgv st Nothing ["source-file", T.strip path]
+        atomically (bumpDirty st)
+
+-- Persistence restore ----------------------------------------------------
 
 -- | Rebuild any previously-saved session tree. An absent store or a read
 -- failure yields an empty snapshot, i.e. a normal fresh start.
@@ -1244,12 +1297,14 @@ sessionFormatEnv st sess = do
     -- @-options are readable as #{@foo}, so if-shell theme conditionals
     -- (@#{@pane-theme}@) resolve.
     userOpts <- (.user) <$> readTVarIO st.options
+    msch <- readTVarIO st.colorScheme
     pure . Map.union userOpts . Map.fromList $
         [ ("session_name", sname)
         , ("host", T.pack hostname)
         , ("window_active_clients", tshow nclients)
         , ("window_width", tshow sz.cols)
         , ("window_height", tshow sz.rows)
+        , ("color_scheme", maybe "" schemeName msch)
         ]
         <> wEnv <> pEnv
 

@@ -45,6 +45,7 @@ import Hat.Log (Logger)
 import Hat.Model.Ids
 import qualified Hat.Pty
 import Hat.Model.Options (Keymap, Options, defaultOptions)
+import Hat.Server.ColorScheme (ColorScheme)
 import Hat.Server.Keys (PrefixState)
 import Hat.Server.Layout (Layout)
 import Hat.Server.Render (Frame)
@@ -68,6 +69,11 @@ data ServerState = ServerState
         --   (an explicit quit restores on the next start); a natural drain
         --   (the last window closing) leaves it off, so the store is
         --   dropped and the next start is pristine.
+    , colorScheme :: TVar (Maybe ColorScheme)
+        -- ^ the desktop's light/dark preference, when a watcher could
+        --   determine it ('Nothing' outside a desktop session). Drives
+        --   @#{color_scheme}@ and sourcing of the @\@color-scheme-dark@ /
+        --   @\@color-scheme-light@ config files.
     , options     :: TVar Options
     , keymap      :: TVar Keymap
     , buffers     :: TVar (Seq (Text, Text))
@@ -242,6 +248,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO False
     <*> newTVarIO False
     <*> newTVarIO False
+    <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
     <*> newTVarIO defaultKeymap
     <*> newTVarIO Seq.empty

@@ -116,6 +116,17 @@ ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
 storeOf :: Hat -> FilePath
 storeOf h = storeDir h </> (takeFileName h.sock <> ".db")
 
+-- | Write an executable file via subprocesses (sh + chmod), never via
+-- writeFile: a write fd held in this forking, parallel test process
+-- leaks into other spawns' fork→exec windows, and exec'ing a
+-- still-write-open file flakes with ETXTBSY (scripts included — the
+-- kernel write-denies the exec'd file before the shebang is ever read).
+writeExecutable :: FilePath -> String -> IO ()
+writeExecutable path content = do
+    _ <- P.readProcess "/bin/sh"
+        ["-c", "cat > " <> path <> " && chmod 755 " <> path] content
+    pure ()
+
 -- A hat client running inside a test-owned pty. The raw transcript
 -- catches out-of-band messages ("[detached]"); the emulator models
 -- what a human would see on the screen.
@@ -137,7 +148,13 @@ startClient :: Hat -> IO Driver
 startClient h = startClientArgs h []
 
 startClientArgs :: Hat -> [String] -> IO Driver
-startClientArgs h extra = do
+startClientArgs h = startClientEnv h []
+
+-- | 'startClientArgs' plus extra environment entries; an entry whose key
+-- collides with a default (e.g. @PATH@) replaces it. The server the
+-- first client autostarts inherits this environment too.
+startClientEnv :: Hat -> [(String, String)] -> [String] -> IO Driver
+startClientEnv h extraEnv extra = do
     -- Pane children need terminfo for TERM=tmux-256color on NixOS.
     terminfo <- lookupEnv "TERMINFO_DIRS"
     let size = Size { rows = 24, cols = 80 }
@@ -161,14 +178,18 @@ startClientArgs h extra = do
             , P.new_session = True
             , P.cwd = Just "/tmp"
             , P.env = Just $
-                [ ("PATH", testPath)
-                , ("TERM", "xterm-256color")
-                , ("SHELL", "/bin/sh")
-                , ("HOME", h.home)
-                , ("PS1", "$ ")
-                ]
-                <> persistEnv h
-                <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
+                let defaults =
+                        [ ("PATH", testPath)
+                        , ("TERM", "xterm-256color")
+                        , ("SHELL", "/bin/sh")
+                        , ("HOME", h.home)
+                        , ("PS1", "$ ")
+                        ]
+                        <> persistEnv h
+                        <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
+                in extraEnv
+                   <> [kv | kv@(k, _) <- defaults
+                          , k `notElem` map fst extraEnv]
             }
     t <- newIORef ""
     emu <- Emu.newEmulator size 1000
@@ -1220,23 +1241,16 @@ spec = parallel $ do
         -- argv[0]. The real binary is a copy of bash (the coreutils
         -- multi-call binary would dispatch on the renamed argv[0]) that
         -- blocks on stdin like an editor would.
-        -- Both files are created by subprocesses (cp / sh), never by
-        -- writeFile/copyFile in this process: a write fd held here leaks
-        -- into other tests' fork→exec windows, and the pane's exec of a
-        -- still-write-open file flakes with ETXTBSY (scripts included —
-        -- the kernel write-denies the exec'd file before the shebang is
-        -- ever read).
+        -- cp, not copyFile, for the same ETXTBSY reason as
+        -- 'writeExecutable'.
         let bin = h.home </> "bin"
             wrapped = bin </> ".vimish-wrapped"
-            script = bin </> "vimish"
         createDirectoryIfMissing True bin
         P.callProcess "cp" ["/bin/sh", wrapped]
-        _ <- P.readProcess "/bin/sh"
-            ["-c", "cat > " <> script <> " && chmod 755 " <> script]
-            (unlines
-                [ "#!/bin/sh"
-                , "exec -a \"$0\" " <> wrapped <> " -c 'read line'"
-                ])
+        writeExecutable (bin </> "vimish") $ unlines
+            [ "#!/bin/sh"
+            , "exec -a \"$0\" " <> wrapped <> " -c 'read line'"
+            ]
         writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "0:sh*"
@@ -1266,6 +1280,45 @@ spec = parallel $ do
         nm <- T.pack <$> ctlOut h ["list-windows", "-F", "#{window_index}:#{window_name}"]
         nm `shouldSatisfy`
             (\t -> "0:pinned" `T.isInfixOf` t && not ("0:cat" `T.isInfixOf` t))
+
+    it "follows the desktop color scheme (gsettings) and sources the dark config" $
+        withHat hatBin $ \h -> do
+        -- A fake gsettings on the server's PATH: `get` reports light,
+        -- `monitor` tails a feed file this test appends flips to.
+        let bin = h.home </> "bin"
+            feed = h.home </> "scheme-feed"
+        createDirectoryIfMissing True bin
+        writeFile feed ""
+        writeExecutable (bin </> "gsettings") $ unlines
+            [ "#!/bin/sh"
+            , "case \"$1\" in"
+            , "get) echo \"'prefer-light'\" ;;"
+            , "monitor) exec tail -f \"$HOME/scheme-feed\" ;;"
+            , "esac"
+            ]
+        writeFile (h.home </> "dark.conf") "set -g status-left 'DARKMODE '\n"
+        writeFile (h.home </> "hat.conf") $
+            "set -g @color-scheme-dark " <> (h.home </> "dark.conf") <> "\n"
+        c1 <- startClientEnv h [("PATH", bin <> ":" <> testPath)]
+            ["-f", h.home </> "hat.conf"]
+        awaitScreen c1 "0:sh*"
+
+        -- The initial preference lands as #{color_scheme} once the
+        -- watcher has run gsettings get (it waits out the config load,
+        -- so poll — there is no render to sync on for "light").
+        let waitScheme n = do
+                out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
+                if lines out == ["light"] || n <= (0 :: Int)
+                    then lines out `shouldBe` ["light"]
+                    else threadDelay 10000 >> waitScheme (n - 1)
+        waitScheme 500
+
+        -- The desktop flips to dark: the watcher sources dark.conf and
+        -- the status line shows it.
+        appendFile feed "color-scheme: 'prefer-dark'\n"
+        awaitScreen c1 "DARKMODE"
+        out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
+        lines out `shouldBe` ["dark"]
 
     it "renames the session via prefix $ (pre-filled prompt)" $
         withHat hatBin $ \h -> do
