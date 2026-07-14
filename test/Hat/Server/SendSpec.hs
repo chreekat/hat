@@ -18,7 +18,7 @@ import Hat.Model
 import Hat.Server (send)
 import Hat.Server.Keys (PrefixState (NoPrefix))
 import Hat.Server.Render (blankFrame)
-import Hat.Transport.Wire (ServerToClient (..), recvMessage)
+import Hat.Transport.Wire (Inbound (..), ServerToClient (..), recvMessage)
 
 -- A Client wired to one end of a socketpair (returned second), initially
 -- not ready.
@@ -46,7 +46,7 @@ mkClient = do
             , picker = pickV, env = [], cwd = "" }
     pure (client, b)
 
-recv :: Socket -> IO (Maybe (Either String ServerToClient))
+recv :: Socket -> IO (Maybe (Inbound ServerToClient))
 recv peer = do
     r <- timeout 250_000 (recvMessage peer)
     -- collapse "timed out" and "socket closed" into Nothing
@@ -65,6 +65,6 @@ spec = describe "send" $ do
         (client, peer) <- mkClient
         atomically $ writeTVar client.ready True
         send client (SetTitle "after")
-        recv peer `shouldReturn` Just (Right (SetTitle "after"))
+        recv peer `shouldReturn` Just (Known (SetTitle "after"))
         close peer
         close client.sock
