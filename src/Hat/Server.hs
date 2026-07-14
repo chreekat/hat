@@ -484,7 +484,7 @@ defaultKeymap = Map.fromList
         , ("x", ["kill-pane"])
         , ("&", ["kill-window"])
         , (",", ["command-prompt", "-I", "#W", "rename-window '%%'"])
-        , (".", ["command-prompt", "-p", "index", "move-window -t '%%'"])
+        , (".", ["command-prompt", "-p", "(index)", "move-window -t '%%'"])
         , ("$", ["command-prompt", "-I", "#S", "rename-session '%%'"])
         , ("z", ["resize-pane", "-Z"])
         , ("n", ["next-window"])
