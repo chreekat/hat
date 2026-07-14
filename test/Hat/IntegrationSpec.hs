@@ -450,6 +450,25 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not exit"
 
+    -- A pane whose shell ignores SIGHUP (and keeps the pty slave open) gives
+    -- the reader thread no EOF, so a teardown that closes the master Handle
+    -- while the reader still blocks in it deadlocks. kill-server must instead
+    -- interrupt the reader and complete within a bounded deadline.
+    it "kill-server completes even when a pane ignores SIGHUP" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "trap '' HUP; sleep 300\r"
+        awaitForeground h "sleep"
+
+        killed <- timeout 5_000_000 (hatCtl h ["kill-server"])
+        case killed of
+            Nothing -> expectationFailure "kill-server did not return within 5s"
+            Just _ -> do
+                gone <- pollServerGone h.sock 50
+                unless gone $
+                    expectationFailure "server did not exit after kill-server"
+
     it "restores the terminal line discipline when the session ends" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
