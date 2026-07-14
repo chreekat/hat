@@ -248,21 +248,24 @@ captureSession s = do
     nm    <- readTVarIO s.name
     cwd   <- readTVarIO s.startCwd
     curIx <- readTVarIO s.currentIx
+    lastI <- readTVarIO s.lastIx
     eff   <- readTVarIO s.lastSize
     ws    <- Map.toAscList <$> readTVarIO s.windows
     wsnaps <- mapM (captureWindow eff) ws
     pure SessionSnap
         { name = nm, startCwd = T.pack cwd
-        , currentIx = curIx, windows = wsnaps }
+        , currentIx = curIx, lastIx = lastI, windows = wsnaps }
 
 captureWindow :: Size -> (Int, Window) -> IO WindowSnap
 captureWindow eff (wix, w) = do
     nm       <- readTVarIO w.name
     lay      <- readTVarIO w.layout
     activeId <- readTVarIO w.activeId
+    lastAId  <- readTVarIO w.lastActive
     paneMap  <- readTVarIO w.panes
     let order = layoutPanes lay
         activeOrd = fromMaybe 0 (List.elemIndex activeId order)
+        lastOrd = lastAId >>= \pid -> List.elemIndex pid order
     psnaps <- fmap catMaybes . forM order $ \pid ->
         forM (Map.lookup pid paneMap) $ \pane -> do
             dir  <- paneCurrentPath pane
@@ -273,7 +276,7 @@ captureWindow eff (wix, w) = do
     pure WindowSnap
         { ix = wix, name = nm
         , layout = emitLayout (sizeRect (windowArea eff)) lay
-        , active = activeOrd, panes = psnaps }
+        , active = activeOrd, lastActive = lastOrd, panes = psnaps }
 
 -- Color scheme -----------------------------------------------------------
 
@@ -352,10 +355,14 @@ restoreSession st ssnap = do
         let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
             curIx | Map.member ssnap.currentIx winMap = ssnap.currentIx
                   | otherwise = maybe ssnap.currentIx fst (Map.lookupMin winMap)
+            -- Keep the last-active window only if it survived and isn't the
+            -- current one; otherwise there is no meaningful "last" to return to.
+            lastI = ssnap.lastIx >>= \l ->
+                if l /= curIx && Map.member l winMap then Just l else Nothing
         nameVar    <- newTVarIO ssnap.name
         windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
-        lastVar    <- newTVarIO Nothing
+        lastVar    <- newTVarIO lastI
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO env
         cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
@@ -381,11 +388,16 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
         lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
                         (layoutFromString wsnap.layout pids)
         activePid = pids !! max 0 (min (length pids - 1) wsnap.active)
+        -- Keep the last-active pane only if its ordinal is in range and it
+        -- isn't the active pane (nothing to return to otherwise).
+        lastActivePid = wsnap.lastActive >>= \o ->
+            if o >= 0 && o < length pids && pids !! o /= activePid
+                then Just (pids !! o) else Nothing
     nameVar       <- newTVarIO wsnap.name
     layoutVar     <- newTVarIO lay
     panesVar      <- newTVarIO paneMap
     activeVar     <- newTVarIO activePid
-    lastActiveVar <- newTVarIO Nothing
+    lastActiveVar <- newTVarIO lastActivePid
     bellVar       <- newTVarIO False
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing

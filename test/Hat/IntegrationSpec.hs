@@ -619,12 +619,13 @@ spec = parallel $ do
                 { sessions =
                     [ SessionSnap
                         { name = "restored", startCwd = "/tmp", currentIx = 0
+                        , lastIx = Nothing
                         , windows =
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
-                                , active = 0
+                                , active = 0, lastActive = Nothing
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
-                                , active = 0
+                                , active = 0, lastActive = Nothing
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing }
                                           , PaneSnap { cwd = "/tmp", command = Nothing }] }
                             ] } ] }
@@ -650,10 +651,11 @@ spec = parallel $ do
                 { sessions =
                     [ SessionSnap
                         { name = "stale", startCwd = "/tmp", currentIx = 0
+                        , lastIx = Nothing
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
-                                , active = 0
+                                , active = 0, lastActive = Nothing
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
