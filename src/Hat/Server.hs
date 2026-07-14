@@ -1939,8 +1939,6 @@ runCommands st mclient cmds = concat <$> mapM (runArgv st mclient) cmds
 runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
 runArgv _ _ [] = pure []
 runArgv st mclient (name : args) = do
-    forM_ mclient $ \c -> logEvent st.logger CommandRun
-        { client = rawClient c.id, command = T.unwords (name : args) }
     case Map.lookup name commandTable of
         Nothing -> pure [RErr ("unknown command: " <> name)]
         Just impl -> impl st mclient args
