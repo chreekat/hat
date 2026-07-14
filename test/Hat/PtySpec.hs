@@ -70,6 +70,21 @@ spec = do
 
 specWith :: Spawn -> FilePath -> Spec
 specWith base home = do
+    describe "parseCmdline" $ do
+        it "splits NUL-separated argv, preserving spaces within an argument" $
+            parseCmdline "vim\NULFoo Bar.txt\NUL"
+                `shouldBe` Just ["vim", "Foo Bar.txt"]
+
+        it "is Nothing for an empty cmdline" $
+            parseCmdline "" `shouldBe` Nothing
+
+    it "reads a live pane's foreground argv from /proc" $ do
+        pty <- spawn base { args = ["-c", "exec sleep 30"] }
+        argv <- retryFor 50 (foregroundArgv pty) (== Just ["sleep", "30"])
+        closePty pty
+        _ <- waitExit pty
+        argv `shouldBe` Just ["sleep", "30"]
+
     it "keeps the test shells' HOME away from the real one" $ do
         realHome <- getEnv "HOME"
         pty <- spawn base { args = ["-c", "echo home=$HOME"] }

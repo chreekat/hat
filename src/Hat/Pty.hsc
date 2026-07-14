@@ -15,6 +15,8 @@ module Hat.Pty
     , closePty
     , pid
     , foregroundCommand
+    , foregroundArgv
+    , parseCmdline
     , getWinsize
     , setWinsize
     , sigWinch
@@ -34,6 +36,8 @@ import qualified Data.ByteString as B
 import Data.Foldable (for_)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
 import Foreign
 import Foreign.C.String (CString, withCString)
@@ -197,6 +201,35 @@ foregroundCommand pty = do
             case argv0 of
                 Just _ -> pure argv0
                 Nothing -> procField pgrp "comm" T.strip
+
+-- | The full argument vector of the pty's foreground process group, read
+-- from @\/proc\/\<pgrp\>\/cmdline@ (the kernel stores argv there, one
+-- element per NUL-terminated field). Unlike 'foregroundCommand', which keeps
+-- only argv[0] for display, this preserves every argument — including a
+-- filename with spaces — so a restore can re-exec @vim@ on the same file.
+-- 'Nothing' when there is no foreground group or @\/proc@ can't be read; the
+-- shell's own argv when no child is running (callers filter that out).
+foregroundArgv :: PtyHandle -> IO (Maybe [Text])
+foregroundArgv pty = do
+    r <- try (getTerminalProcessGroupID pty.master)
+    case r of
+        Left (_ :: IOException) -> pure Nothing
+        Right pgrp -> do
+            c <- try (B.readFile ("/proc/" <> show pgrp <> "/cmdline"))
+            pure $ case c of
+                Left (_ :: IOException) -> Nothing
+                Right bs -> parseCmdline bs
+
+-- | Split a @\/proc\/\<pid\>\/cmdline@ payload into argv. Fields are
+-- NUL-separated (with a trailing NUL), and each is decoded leniently: a
+-- filename can hold bytes that are not valid UTF-8, and the server may run
+-- under a non-UTF-8 locale, so strict decoding would lose the argv entirely.
+-- 'Nothing' for an empty cmdline (a kernel thread, or a zeroed argv).
+parseCmdline :: ByteString -> Maybe [Text]
+parseCmdline bs =
+    case filter (not . B.null) (B.split 0 bs) of
+        []   -> Nothing
+        args -> Just (map (TE.decodeUtf8With TEE.lenientDecode) args)
 
 -- One trimmed field of a @/proc/<pid>@ file; 'Nothing' when unreadable
 -- (process gone) or empty (e.g. a cmdline the process has zeroed out).
