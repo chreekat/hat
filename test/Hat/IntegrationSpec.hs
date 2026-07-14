@@ -1260,20 +1260,33 @@ spec = parallel $ do
         typeInto c1 "\x04"                   -- Ctrl-D ends the read
         awaitScreen c1 "0:sh*"
 
-    it "set-titles composes hat: window: path: program, skipping numeric names" $
+    it "set-titles composes hat: [window:] path: program, most specific kept" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g set-titles on\n"
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "0:sh*"
-        -- The default session name ("0") is numeric noise and is skipped;
-        -- window name, pane cwd and foreground program remain.
+        -- The default session name ("0") is numeric noise and the
+        -- auto-renamed window would just repeat the program: both are
+        -- skipped, leaving cwd and foreground program.
         awaitWith "initial composed title" (\d -> do
             t <- readIORef d.transcript
-            pure ("\ESC]0;hat: sh: /tmp: sh\BEL" `B8.isInfixOf` t)) c1
+            pure ("\ESC]0;hat: /tmp: sh\BEL" `B8.isInfixOf` t)) c1
         typeInto c1 "cat\r"
         awaitWith "title follows the foreground program" (\d -> do
             t <- readIORef d.transcript
-            pure ("\ESC]0;hat: cat: /tmp: cat\BEL" `B8.isInfixOf` t)) c1
+            pure ("\ESC]0;hat: /tmp: cat\BEL" `B8.isInfixOf` t)) c1
+        typeInto c1 "\x04"                   -- end cat
+        -- A program-set (OSC) title is the most specific component and
+        -- replaces the bare program name.
+        typeInto c1 "printf '\\033]2;MYAPP\\007'\r"
+        awaitWith "pane's own title replaces the program" (\d -> do
+            t <- readIORef d.transcript
+            pure ("\ESC]0;hat: /tmp: MYAPP\BEL" `B8.isInfixOf` t)) c1
+        -- A pinned (explicit) window name is signal again.
+        _ <- ctlOut h ["rename-window", "pinned"]
+        awaitWith "pinned window name reappears" (\d -> do
+            t <- readIORef d.transcript
+            pure ("\ESC]0;hat: pinned: /tmp: MYAPP\BEL" `B8.isInfixOf` t)) c1
 
     it "an explicit rename-window pins the name and stops auto-rename" $
         withHat hatBin $ \h -> do

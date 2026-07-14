@@ -2575,16 +2575,22 @@ refreshTitles st ref = do
                 (,) <$> readTVar sess.name <*> currentWindow sess
             forM_ mwin $ \win -> do
                 wname <- readTVarIO win.name
+                auto <- readTVarIO win.autoRename
                 mpane <- atomically (activePane win)
                 forM_ mpane $ \pane -> do
                     dir <- paneCurrentPath pane
                     prog <- paneCommandName pane
+                    ptitle <- Emu.title pane.emulator
                     let t = composeTitle titleBudget TitleParts
                             { session = sname
-                            , window = wname
+                            -- An auto-renamed window just repeats the
+                            -- program; only a pinned name adds signal.
+                            , window = if auto then "" else wname
                             , path = T.pack dir
                             , home = homeDir
-                            , program = prog
+                            -- A title the program set itself (OSC) is
+                            -- the most specific component we have.
+                            , program = if T.null ptitle then prog else ptitle
                             }
                     prev <- Map.lookup sid <$> readIORef ref
                     unless (prev == Just t) $ do
