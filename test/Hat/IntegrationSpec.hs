@@ -346,6 +346,21 @@ paneNonCanonicalVia line c = do
 paneIsNonCanonical :: Driver -> IO Bool
 paneIsNonCanonical = paneNonCanonicalVia "stty -a"
 
+-- Print a line of digits and wait until BOTH the output row and the next
+-- prompt below it have rendered. A bare @awaitScreen "0123456789"@ would
+-- match the echoed printf command itself, letting the test race ahead
+-- (e.g. into copy mode) while the cursor is still rows away from where
+-- the digit line will land.
+printDigitLine :: Driver -> IO ()
+printDigitLine c = do
+    typeInto c "printf '0123456789\\n'\r"
+    awaitWith "digit line printed and prompt back" (\d -> do
+        scr <- Emu.snapshot d.screen
+        let row r = T.strip (Emu.screenRowText scr r)
+        pure $ case List.findIndex (\r -> row r == "0123456789") [0 .. 23] of
+            Just r -> "$" `T.isPrefixOf` row (r + 1)
+            Nothing -> False) c
+
 -- The cooked-mode flags still missing from the test pty's line discipline,
 -- read after the hat client on its slave side has exited. An empty list
 -- means the client left the terminal the way it found it.
@@ -1358,8 +1373,7 @@ spec = parallel $ do
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "$"
         -- A line of digits as output; the prompt sits directly below it.
-        typeInto c1 "printf '0123456789\\n'\r"
-        awaitScreen c1 "0123456789"
+        printDigitLine c1
         baseline <- reverseCellCount c1        -- no highlight yet
         -- k: up onto the digit line. 0: start-of-line. v: begin selection.
         -- 4l: cursor-right x4 (the [count]). The selection then covers five
@@ -1399,16 +1413,24 @@ spec = parallel $ do
         writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "$"
-        typeInto c1 "printf '0123456789\\n'\r"
-        awaitScreen c1 "0123456789"
+        printDigitLine c1
         baseline <- reverseCellCount c1
         -- k: onto the digit line. 0: start-of-line. v: begin selection.
         -- f5: arm char-search, then '5' is captured as the target, moving the
         -- cursor to column 5. The selection then spans 0..5 = six cells; if the
         -- capture were broken, '5' would fall through and only one cell selects.
         typeInto c1 "\x02[k0vf5"
+        lastCount <- newIORef (-1 :: Int)
         awaitWith "f jumped through the 5 (six cells)"
-            (\d -> (== baseline + 6) <$> reverseCellCount d) c1
+            (\d -> do
+                n <- reverseCellCount d
+                writeIORef lastCount n
+                pure (n == baseline + 6)) c1
+            `catch` \(e :: SomeException) -> do
+                n <- readIORef lastCount
+                expectationFailure $
+                    "selection count: baseline " <> show baseline
+                    <> ", last seen " <> show n <> "\n" <> show e
 
     it "vi copy-mode: V selects the whole line" $
         withHat hatBin $ \h -> do
