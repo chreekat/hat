@@ -125,6 +125,16 @@ spec = do
         scr <- snapshot e
         rowText scr 0 `shouldBe` ""
 
+    -- Bug 75f20c8a: an inner app's desktop notification (OSC 9 notify or
+    -- OSC 777 notify) hits libvterm's unrecognised-OSC fallback and spills
+    -- onto the screen as text. Match tmux's default: consume it silently.
+    it "consumes OSC 9 and OSC 777 desktop notifications" $ do
+        e <- new80x24
+        _ <- feedStr e "A<\ESC]9;build finished\a>B"
+        _ <- feedStr e "C<\ESC]777;notify;Title;Body\ESC\\>D"
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "A<>BC<>D"
+
     it "encodes cursor keys per application-cursor-keys mode" $ do
         e <- new80x24
         normal <- encodeKey e CursorUp

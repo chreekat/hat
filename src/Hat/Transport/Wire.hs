@@ -89,6 +89,8 @@ data ServerToClient
     | Draw [DrawOp]
     | SetTitle Text
     | RingBell
+    | Notify ByteString     -- ^ a pane's OSC 9/777 desktop notification, to
+                            --   write verbatim to the outer terminal
     | Message Text          -- ^ toast (display-message)
     | DetachOk
     | CommandDone           -- ^ all replies for one Command were sent

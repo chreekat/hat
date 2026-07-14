@@ -74,6 +74,7 @@ instance Arbitrary ServerToClient where
         , Draw <$> listOf arbitrary
         , SetTitle <$> genText
         , pure RingBell
+        , Notify . B.pack <$> arbitrary
         , Message <$> genText
         , pure DetachOk
         , pure CommandDone

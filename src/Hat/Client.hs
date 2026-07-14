@@ -100,6 +100,7 @@ shuttle sock = do
                     B.hPut stdout ("\ESC]0;" <> TE.encodeUtf8 t <> "\BEL")
                     receiver
                 RingBell -> B.hPut stdout "\BEL" >> receiver
+                Notify raw -> B.hPut stdout raw >> receiver
                 Message _ -> receiver  -- server renders toasts into frames
                 DetachOk -> pure Detached
                 CommandDone -> receiver
