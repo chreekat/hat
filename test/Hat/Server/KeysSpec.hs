@@ -34,6 +34,14 @@ spec = do
         it "reads meta arrows" $
             map (.name) (tokenizeKeys "\ESC\ESC[A") `shouldBe` ["M-Up"]
 
+        it "reads ctrl arrows (CSI modifier 5)" $
+            map (.name) (tokenizeKeys "\ESC[1;5A\ESC[1;5B\ESC[1;5C\ESC[1;5D")
+                `shouldBe` ["C-Up", "C-Down", "C-Right", "C-Left"]
+
+        it "keeps raw bytes for ctrl arrows" $
+            map (.raw) (tokenizeKeys "\ESC[1;5B")
+                `shouldBe` ["\ESC[1;5B"]
+
         it "treats a lone trailing escape as Escape" $
             map (.name) (tokenizeKeys "a\ESC") `shouldBe` ["a", "Escape"]
 
@@ -108,6 +116,14 @@ spec = do
             (.raw) <$> parseKeyName "C-b" `shouldBe` Just "\x02"
         it "parses C-Space" $
             (.raw) <$> parseKeyName "C-Space" `shouldBe` Just "\x00"
+        it "parses ctrl arrows" $ do
+            (.name) <$> parseKeyName "C-Down" `shouldBe` Just "C-Down"
+            (.raw) <$> parseKeyName "C-Down" `shouldBe` Just "\ESC[1;5B"
+            (.raw) <$> parseKeyName "C-Up" `shouldBe` Just "\ESC[1;5A"
+            (.raw) <$> parseKeyName "C-Right" `shouldBe` Just "\ESC[1;5C"
+            (.raw) <$> parseKeyName "C-Left" `shouldBe` Just "\ESC[1;5D"
+        it "parses ctrl arrows case-insensitively" $
+            (.name) <$> parseKeyName "C-down" `shouldBe` Just "C-Down"
         it "parses meta keys" $
             (.raw) <$> parseKeyName "M-n" `shouldBe` Just "\ESCn"
         it "parses named keys" $ do
@@ -115,7 +131,8 @@ spec = do
             (.raw) <$> parseKeyName "Enter" `shouldBe` Just "\r"
         it "roundtrips through tokenization" $ do
             let names = ["C-b", "C-Space", "M-x", "Up", "Down", "Space",
-                         "Enter", "Tab", "BSpace", "x", "%", "\"", "M-Up"]
+                         "Enter", "Tab", "BSpace", "x", "%", "\"", "M-Up",
+                         "C-Up", "C-Down", "C-Left", "C-Right"]
             [k.name | Just k0 <- map parseKeyName names
                     , k <- tokenizeKeys k0.raw]
                 `shouldBe` names

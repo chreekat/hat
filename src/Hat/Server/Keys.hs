@@ -64,6 +64,8 @@ csiNames =
     , ("[5~", "PgUp"), ("[6~", "PgDn"), ("[3~", "Delete")
     , ("[1~", "Home"), ("[4~", "End")
     , ("[I", "FocusIn"), ("[O", "FocusOut")
+    , ("[1;5A", "C-Up"), ("[1;5B", "C-Down")
+    , ("[1;5C", "C-Right"), ("[1;5D", "C-Left")
     ]
 
 tokenizeKeys :: ByteString -> [Key]
@@ -200,6 +202,7 @@ parseKeyName t
   where
     ctrl rest
         | T.toLower rest == "space" = Just (mkKey "C-Space" "\NUL")
+        | Just (nm, r) <- lookupCtrlArrow rest = Just (mkKey nm r)
         | T.length rest == 1
         , c <- toLowerAscii (T.head rest)
         , c >= 'a' && c <= 'z' =
@@ -209,6 +212,21 @@ parseKeyName t
     toLowerAscii c
         | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
         | otherwise = c
+
+-- Ctrl+arrow keys as xterm CSI sequences with modifier 5. The names
+-- match the @csiNames@ finals so name/raw round-trip between parse and
+-- decode. The argument is the text after the @C-@ prefix (e.g. @Down@).
+lookupCtrlArrow :: Text -> Maybe (Text, ByteString)
+lookupCtrlArrow rest =
+    case [ pair | pair@(nm, _) <- ctrlArrows
+                , T.toLower nm == T.toLower ("C-" <> rest) ] of
+        (pair : _) -> Just pair
+        [] -> Nothing
+  where
+    ctrlArrows =
+        [ ("C-Up", "\ESC[1;5A"), ("C-Down", "\ESC[1;5B")
+        , ("C-Right", "\ESC[1;5C"), ("C-Left", "\ESC[1;5D")
+        ]
 
 -- Case-insensitive lookup of a multi-character named key, returning its
 -- canonical name and bytes.

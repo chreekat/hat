@@ -499,6 +499,10 @@ defaultKeymap = Map.fromList
         , ("Right", ["select-pane", "-R"])
         , ("Up", ["select-pane", "-U"])
         , ("Down", ["select-pane", "-D"])
+        , ("C-Left", ["resize-pane", "-L"])
+        , ("C-Right", ["resize-pane", "-R"])
+        , ("C-Up", ["resize-pane", "-U"])
+        , ("C-Down", ["resize-pane", "-D"])
         ]
         <> [ (tshow i, ["select-window", "-t", tshow (i :: Int)])
            | i <- [0 .. 9]
