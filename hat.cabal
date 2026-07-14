@@ -63,6 +63,7 @@ library
         Hat.Persist
         Hat.Pty
         Hat.Server
+        Hat.Server.ColorScheme
         Hat.Server.CopyMode
         Hat.Server.Format
         Hat.Server.Keys
@@ -135,6 +136,7 @@ test-suite hat-test
         Hat.PersistSpec
         Hat.PtySpec
         Hat.SocketSpec
+        Hat.Server.ColorSchemeSpec
         Hat.Server.CopyModeSpec
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec
