@@ -5,6 +5,7 @@ module Hat.Server
     ( runServer
     , setOption  -- ^ exported for the config-load burn-down test
     , send       -- ^ exported for the greeting-ordering test
+    , finallyClearRestoring  -- ^ exported for the restore-gate test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -98,9 +99,11 @@ runServer path mconfig = do
             -- (see 'ensureSession') and joins the restored tree.
             when persistOn (writeTVar st.restoring True)
         _ <- forkIO $ do
-            loadConfig st mconfig
-            forM_ mstore (restoreSaved st)
-            atomically (writeTVar st.restoring False)
+            finallyClearRestoring st $
+                (loadConfig st mconfig >> forM_ mstore (restoreSaved st))
+                    `catch` \(e :: SomeException) ->
+                        logEvent lg ServerCrash
+                            { err = "startup restore failed: " <> T.pack (show e) }
             -- Grace period so a `hat -f<conf> start` client whose fork
             -- lost the race with a fast config still finds us listening.
             threadDelay 500_000
@@ -138,6 +141,14 @@ runServer path mconfig = do
                 unless preserve $ forM_ mstore $ \p ->
                     removeFile p `catch` \(_ :: IOException) -> pure ()
                 removeFile path `catch` \(_ :: IOException) -> pure ()
+
+-- | Run a startup action (config load + restore), then clear the
+-- @restoring@ gate — always, even if it throws. A gate left set parks
+-- every attach forever on 'ensureSession'\'s retry, so the clear must be
+-- structural (a @finally@), never a line a crash can skip.
+finallyClearRestoring :: ServerState -> IO a -> IO a
+finallyClearRestoring st act =
+    act `finally` atomically (writeTVar st.restoring False)
 
 -- flock-style: O_CREAT + posix write lock, held for the server's life.
 acquireLock :: FilePath -> IO Bool

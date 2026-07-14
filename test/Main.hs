@@ -14,6 +14,7 @@ import qualified Hat.Server.OptionsSpec
 import qualified Hat.Server.PickerSpec
 import qualified Hat.Server.PromptSpec
 import qualified Hat.Server.RenderSpec
+import qualified Hat.Server.RestoreSpec
 import qualified Hat.Server.SendSpec
 import qualified Hat.Server.StyleSpec
 import qualified Hat.Server.TargetSpec
@@ -32,6 +33,7 @@ main = hspec $ do
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Wire" Hat.WireSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
+    describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
     describe "Hat.Server.LayoutString" Hat.Server.LayoutStringSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec

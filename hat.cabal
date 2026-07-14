@@ -151,6 +151,7 @@ test-suite hat-test
         Hat.Server.TargetSpec
         Hat.Server.TitleSpec
         Hat.Server.RenderSpec
+        Hat.Server.RestoreSpec
         Hat.Term.EmulatorSpec
         Hat.Term.GoldenSpec
         Hat.WireSpec
