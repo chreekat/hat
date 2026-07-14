@@ -151,7 +151,11 @@ editPicker p key
         "/"      -> PickerStay p { searching = True }
         _        -> PickerStay p
     searchKey = case key.name of
-        "Enter"  -> runSel
+        -- Commit the filter and drop back to menu mode with the cursor on
+        -- the first match; a second Enter there activates it. This keeps a
+        -- pre-typed search (@choose-tree ... ; send-keys /@) from firing the
+        -- first hit the instant you finish typing.
+        "Enter"  -> PickerStay p { searching = False }
         "Escape" -> PickerStay p { searching = False, query = "", cursor = 0 }
         "Up"     -> up
         "C-p"    -> up

@@ -86,9 +86,19 @@ spec = do
             p.query `shouldBe` "shell"
             labels p `shouldBe` ["work", "1:shell"]
 
-        it "puts the cursor on the match so Enter runs the matched leaf" $ do
+        -- Enter while typing a search commits the filter (leaves search mode
+        -- with the cursor on the first match) rather than immediately
+        -- activating it; activation takes a deliberate second Enter.
+        it "commits the search on Enter: leaves search mode, keeps the cursor" $ do
             let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
-            editPicker p (key "Enter")
+                committed = stay p (key "Enter")
+            committed.searching `shouldBe` False
+            committed.cursor `shouldBe` p.cursor
+
+        it "runs the match only on a second Enter, now in menu mode" $ do
+            let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
+                committed = stay p (key "Enter")
+            editPicker committed (key "Enter")
                 `shouldBe` PickerRun "select-window -t work:1"
 
     describe "selectedPreview" $ do
