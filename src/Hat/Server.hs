@@ -6,6 +6,7 @@ module Hat.Server
     , setOption  -- ^ exported for the config-load burn-down test
     , send       -- ^ exported for the greeting-ordering test
     , finallyClearRestoring  -- ^ exported for the restore-gate test
+    , readConfigUtf8  -- ^ exported for the config-encoding test
     ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
@@ -28,6 +29,7 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Read as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
@@ -528,12 +530,20 @@ defaultKeymap = Map.fromList
         , ("Up", "cursor-up"), ("Down", "cursor-down")
         ]
 
+-- | Read a config file as UTF-8, independent of the process locale and
+-- tolerant of malformed bytes. 'TIO.readFile' decodes with the locale
+-- encoding, so under a non-UTF-8 locale a config with any non-ASCII byte
+-- (a @·@ separator, a @👀@ marker) threw mid-read and aborted the whole
+-- startup — read the bytes and decode UTF-8 leniently instead.
+readConfigUtf8 :: FilePath -> IO Text
+readConfigUtf8 p = TE.decodeUtf8With TEE.lenientDecode <$> B.readFile p
+
 loadConfig :: ServerState -> Maybe FilePath -> IO ()
 loadConfig st mconfig =
     forM_ mconfig $ \p -> do
         exists <- doesFileExist p
         when exists $ do
-            contents <- TIO.readFile p
+            contents <- readConfigUtf8 p
             case parseConfig contents of
                 Left err -> logEvent st.logger ConfigError
                     { file = p, err = err }
@@ -2047,7 +2057,7 @@ cmdSourceFile st mclient args = case pos of
                 then pure []
                 else pure [RErr ("no such file: " <> path)]
             else do
-                contents <- TIO.readFile p
+                contents <- readConfigUtf8 p
                 case parseConfig contents of
                     Left err -> pure [RErr err]
                     Right cmds

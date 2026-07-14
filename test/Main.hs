@@ -5,6 +5,7 @@ import qualified Hat.IntegrationSpec
 import qualified Hat.PersistSpec
 import qualified Hat.PtySpec
 import qualified Hat.Server.ColorSchemeSpec
+import qualified Hat.Server.ConfigSpec
 import qualified Hat.Server.CopyModeSpec
 import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
@@ -43,6 +44,7 @@ main = hspec $ do
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Server.ColorScheme" Hat.Server.ColorSchemeSpec.spec
+    describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec

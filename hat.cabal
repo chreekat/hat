@@ -138,6 +138,7 @@ test-suite hat-test
         Hat.PtySpec
         Hat.SocketSpec
         Hat.Server.ColorSchemeSpec
+        Hat.Server.ConfigSpec
         Hat.Server.CopyModeSpec
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec
