@@ -35,6 +35,9 @@ data ExitReason
     | Rejected Text
     deriving (Eq, Show)
 
+versionMismatch :: Text
+versionMismatch = "unexpected greeting — mismatched hat versions?"
+
 hello :: Intent -> IO ClientToServer
 hello intent = do
     term <- maybe "xterm" T.pack <$> lookupEnv "TERM"
@@ -65,15 +68,16 @@ attachClient sock setup = do
     sendMessage sock =<< hello (AttachIntent setup)
     greeting <- recvMessage sock
     case greeting of
-        Just (Right (Welcome _)) ->
+        Just (Known (Welcome _)) ->
             -- withRawMode also owns the stdio buffering switch; see the
             -- ordering note there.
             withRawMode $
                 (B.hPut stdout enterAltScreen >> shuttle sock)
                     `finally` B.hPut stdout leaveAltScreen
-        Just (Right (ServerError e)) -> pure (Rejected e)
-        Just (Right _) -> pure (Rejected "unexpected greeting")
-        Just (Left e) -> pure (Rejected (T.pack e))
+        Just (Known (ServerError e)) -> pure (Rejected e)
+        Just (Known _) -> pure (Rejected "unexpected greeting")
+        Just (UnknownTag _) -> pure (Rejected versionMismatch)
+        Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
 
 shuttle :: Socket -> IO ExitReason
@@ -93,8 +97,9 @@ shuttle sock = do
         m <- recvMessage sock
         case m of
             Nothing -> pure ServerDied
-            Just (Left _) -> pure ServerDied
-            Just (Right msg) -> case msg of
+            Just (Malformed _) -> pure ServerDied
+            Just (UnknownTag _) -> receiver
+            Just (Known msg) -> case msg of
                 Draw ops -> B.hPut stdout (opsToAnsi ops) >> receiver
                 SetTitle t -> do
                     B.hPut stdout ("\ESC]0;" <> TE.encodeUtf8 t <> "\BEL")
@@ -123,18 +128,25 @@ runControl sock cmds = do
     sendMessage sock =<< hello ControlIntent
     greeting <- recvMessage sock
     case greeting of
-        Just (Right (Welcome _)) -> do
+        Just (Known (Welcome _)) -> do
             sendMessage sock (Command cmds)
             drain
-        Just (Right (ServerError e)) -> pure (Rejected e)
-        _ -> pure ServerDied
+        Just (Known (ServerError e)) -> pure (Rejected e)
+        Just (Known _) -> pure (Rejected "unexpected greeting")
+        Just (UnknownTag _) -> pure (Rejected versionMismatch)
+        Just (Malformed _) -> pure (Rejected versionMismatch)
+        Nothing -> pure ServerDied
   where
     drain = do
         m <- recvMessage sock
         case m of
             Nothing -> pure SessionEnded
-            Just (Right (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain
-            Just (Right (ServerError e)) -> pure (Rejected e)
-            Just (Right CommandDone) -> pure SessionEnded
-            Just (Right Exited) -> pure SessionEnded
-            _ -> drain
+            Just (Known (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain
+            Just (Known (ServerError e)) -> pure (Rejected e)
+            Just (Known CommandDone) -> pure SessionEnded
+            Just (Known Exited) -> pure SessionEnded
+            Just (Known _) -> drain
+            Just (UnknownTag _) -> drain
+            Just (Malformed err) ->
+                pure (Rejected ("wire protocol error: " <> T.pack err
+                    <> " — mismatched hat versions?"))

@@ -681,7 +681,7 @@ handleConn :: ServerState -> N.Socket -> IO ()
 handleConn st conn = do
     m <- recvMessage conn
     case m of
-        Just (Right (ClientHello h))
+        Just (Known (ClientHello h))
             | h.protoVersion == protocolVersion -> welcome st conn h
             | otherwise -> sendMessage conn $ ServerError $
                 "protocol mismatch: server " <> tshow protocolVersion
@@ -1748,9 +1748,10 @@ inputLoop st client = loop
         m <- recvMessage client.sock
         case m of
             Nothing -> pure ()
-            Just (Left err) -> logEvent st.logger ProtocolError
+            Just (Malformed err) -> logEvent st.logger ProtocolError
                 { client = rawClient client.id, err = T.pack err }
-            Just (Right msg) -> case msg of
+            Just (UnknownTag _) -> loop
+            Just (Known msg) -> case msg of
                 Input bs -> do
                     handleInput st client bs
                     loop
@@ -3989,14 +3990,15 @@ controlLoop :: ServerState -> Client -> IO ()
 controlLoop st client = do
     m <- recvMessage client.sock
     case m of
-        Just (Right (Command cmds)) -> do
+        Just (Known (Command cmds)) -> do
             replies <- runCommands st (Just client) cmds
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
                 RErr e -> send client (ServerError e)
             send client CommandDone
             controlLoop st client
-        Just (Right Detach) -> pure ()
+        Just (Known Detach) -> pure ()
+        Just (Malformed _) -> pure ()
         Nothing -> pure ()
         _ -> controlLoop st client
 
