@@ -107,9 +107,9 @@ runServer path mconfig = do
                     `catch` \(e :: SomeException) ->
                         logEvent lg ServerCrash
                             { err = "startup restore failed: " <> T.pack (show e) }
-            -- Grace period so a `hat -f<conf> start` client whose fork
-            -- lost the race with a fast config still finds us listening.
-            threadDelay 500_000
+            -- No fixed grace: the idle-exit now waits on 'served' (a real
+            -- connection), so the autostarting client is always counted
+            -- before we can drain, whatever the config-load timing.
             atomically (writeTVar st.configLoading False)
         -- Keep status-line clocks fresh.
         _ <- forkIO $ forever $ do
@@ -167,10 +167,11 @@ acquireLock lockPath = do
 waitIdle :: ServerState -> IO ()
 waitIdle st = atomically $ do
     armed <- readTVar st.everAttached
+    served <- readTVar st.served
     loading <- readTVar st.configLoading
     sess <- readTVar st.sessions
     cs <- readTVar st.clients
-    check (armed && not loading && Map.null sess && Map.null cs)
+    check (armed && served && not loading && Map.null sess && Map.null cs)
 
 -- Persistence ----------------------------------------------------------
 
@@ -561,6 +562,10 @@ loadConfig st mconfig =
 acceptLoop :: ServerState -> N.Socket -> IO ()
 acceptLoop st lsock = forever $ do
     (conn, _) <- N.accept lsock
+    -- The autostarting client has now reached us; the idle-exit may
+    -- consider draining (see 'waitIdle'). This is what lets us drop the
+    -- old fixed-delay grace period without racing that client.
+    atomically $ writeTVar st.served True
     void . forkIO $
         handleConn st conn
             `catch` (\(e :: SomeException) ->

@@ -61,6 +61,10 @@ data ServerState = ServerState
     , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
+    , served      :: TVar Bool  -- ^ a client connection has been accepted; the
+                                --   idle-exit waits on this so the autostarting
+                                --   client is always counted before the server
+                                --   can drain (no timing window to lose)
     , configLoading :: TVar Bool  -- ^ suppress waitIdle exit while config runs
     , restoring   :: TVar Bool  -- ^ a bare attach waits on this so it joins the
                                 --   restored tree instead of making a fresh session
@@ -244,10 +248,11 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
-    <*> newTVarIO False
-    <*> newTVarIO False
-    <*> newTVarIO False
-    <*> newTVarIO False
+    <*> newTVarIO False  -- everAttached
+    <*> newTVarIO False  -- served
+    <*> newTVarIO False  -- configLoading
+    <*> newTVarIO False  -- restoring
+    <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
     <*> newTVarIO defaultKeymap
