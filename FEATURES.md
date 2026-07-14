@@ -207,6 +207,12 @@ Tmux-resurrect-equivalent save/restore — and a future native `hat save` /
 - **OSC 52 clipboard** for the SSH case. xclip on my local terminal covers
   ~99% of my copy/paste; OSC 52 is the only clean path for remote apps to
   reach my clipboard.
+- **Follow the desktop light/dark preference**: watch GNOME's
+  `/org/gnome/desktop/interface/color-scheme` (`gsettings monitor` or the
+  D-Bus `org.freedesktop.portal.Settings` `SettingChanged` signal — the
+  portal form works outside GNOME too) and swap the status-line/border
+  palette live when it flips. tmux has no equivalent; needs a notion of a
+  named pair of style sets to toggle between.
 
 ## P3 — Eventually, or only if cheap
 
