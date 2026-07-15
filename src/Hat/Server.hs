@@ -11,6 +11,7 @@ module Hat.Server
     , cmdAttachSession  -- ^ exported for the session re-anchor test
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
+    , defaultRestoreCommands  -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
     , pickActivityTarget  -- ^ exported for the activity-jump test
     , pickAttachSession  -- ^ exported for the attach-to-last-active test
@@ -557,7 +558,8 @@ defaultRestoreCommands :: [Text]
 defaultRestoreCommands =
     [ "vim", "nvim", "vi", "view", "emacs", "nano"
     , "less", "man", "tail", "watch"
-    , "top", "htop", "atop", "btop" ]
+    , "top", "htop", "atop", "btop"
+    , "claude" ]
 
 restoreWhitelist :: ServerState -> IO [Text]
 restoreWhitelist st = do
@@ -572,8 +574,19 @@ restoreWhitelist st = do
 -- @vim "Foo Bar.txt"@ — from being re-split on restore.
 restoreRun :: [Text] -> Maybe [Text] -> PaneStart
 restoreRun whitelist mcmd = case mcmd of
-    Just argv@(prog : _) | commandName prog `elem` whitelist -> ExecArgv argv
-    _                                                        -> FreshShell
+    Just argv@(prog : _) | commandName prog `elem` whitelist ->
+        ExecArgv (resumeArgv (commandName prog) argv)
+    _ -> FreshShell
+
+-- | The argv a whitelisted program is re-exec'd with. Most programs get
+-- their captured argv back verbatim, but claude's saved arguments name a
+-- past invocation, not the running conversation — only @claude --continue@
+-- resumes it, so the arguments are rewritten to that regardless of what
+-- was saved. The captured program path (argv[0]) is kept, so the exact
+-- binary re-execs.
+resumeArgv :: Text -> [Text] -> [Text]
+resumeArgv "claude" (prog : _) = [prog, "--continue"]
+resumeArgv _        argv       = argv
 
 -- | The program a captured foreground command names: its last path
 -- segment with NixOS's @.<name>-wrapped@ decoration stripped, so a pane

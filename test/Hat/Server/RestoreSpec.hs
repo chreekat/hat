@@ -10,7 +10,8 @@ import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Hat.Server
     (PaneStart (..), PersistDecision (..), StorePin (..),
-     finallyClearRestoring, persistDecision, restoreRun)
+     defaultRestoreCommands, finallyClearRestoring, persistDecision,
+     restoreRun)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 
 -- A minimal non-empty tree: one named session with no windows is enough
@@ -60,6 +61,19 @@ spec = do
 
         it "drops to a fresh shell when nothing was captured" $
             restoreRun whitelist Nothing `shouldBe` FreshShell
+
+        -- df: a restored claude pane must resume the same conversation, so
+        -- whatever argv was saved (claude, claude -r foo, …), it comes back
+        -- as @claude --continue@ — never the original arguments.
+        it "restores claude as claude --continue regardless of saved args" $
+            restoreRun defaultRestoreCommands (Just ["claude", "-r", "foo"])
+                `shouldBe` ExecArgv ["claude", "--continue"]
+
+        it "keeps the saved claude binary path when rewriting to --continue" $
+            restoreRun defaultRestoreCommands
+                (Just ["/nix/store/abc/bin/.claude-wrapped", "-r", "foo"])
+                `shouldBe`
+                    ExecArgv ["/nix/store/abc/bin/.claude-wrapped", "--continue"]
 
     describe "persistDecision" $ do
         let one = sampleSnapshot "one"
