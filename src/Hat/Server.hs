@@ -3545,6 +3545,7 @@ openPicker st client titleText fill picked = atomically $ do
         , roots = picked
         , cursor = 0
         , query = ""
+        , search = ""
         , mode = Browsing
         , fill = fill
         }

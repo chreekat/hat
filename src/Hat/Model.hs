@@ -232,6 +232,7 @@ data PickerState = PickerState
     , roots     :: ![PickerNode]
     , cursor    :: !Int    -- ^ index into the /visible/ (flattened) rows
     , query     :: !Text
+    , search    :: !Text  -- ^ committed search term; see 'Hat.Server.Picker.editPicker'
     , mode      :: !PickerMode
     , fill      :: !PickerFill
     }

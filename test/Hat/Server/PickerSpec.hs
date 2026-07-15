@@ -30,6 +30,7 @@ demo = PickerState
         ]
     , cursor = 0
     , query = ""
+    , search = ""
     , mode = Browsing
     , fill = PaneRegion
     }
@@ -121,24 +122,47 @@ spec = do
             labels committed `shouldBe` labels demo
             committed.cursor `shouldBe` 0
 
-        -- With a search active over several matches, n/b step the cursor
-        -- between the matching rows only (skipping ancestor context rows),
-        -- wrapping around the ends. The query "0:" matches "0:editor" (row
-        -- 1) and "0:game" (row 3); reQuery lands the cursor on the first.
-        it "steps to the next search match with n, wrapping" $ do
-            let p = foldl stay searching (map key ["0", ":"])
-            labels p `shouldBe` ["work", "0:editor", "play", "0:game"]
-            p.cursor `shouldBe` 1
-            let next = stay p (key "n")
-            next.cursor `shouldBe` 3
-            (stay next (key "n")).cursor `shouldBe` 1  -- wraps to the first match
+        it "types n and b into the query instead of navigating" $ do
+            let p = foldl stay searching (map key ["n", "b"])
+            p.query `shouldBe` "nb"
+            p.mode `shouldBe` Searching
 
-        it "steps to the previous search match with b, wrapping" $ do
-            let p = foldl stay searching (map key ["0", ":"])
-            p.cursor `shouldBe` 1
-            let prev = stay p (key "b")
-            prev.cursor `shouldBe` 3  -- wraps back to the last match
+    describe "menu-mode search stepping (n/b after committing a search)" $ do
+        -- Committing a search remembers its term; back in menu mode n/b then
+        -- step the cursor between the whole tree's matching rows, revealing
+        -- collapsed subtrees and wrapping. "0:" matches "0:editor" (row 1)
+        -- and "0:game" (row 4); Enter lands on the first, n advances.
+        let committedOn q =
+                let typed = foldl stay (stay demo (key "/")) (map key q)
+                in stay typed (key "Enter")
+
+        it "steps to the next match with n after the search is committed" $ do
+            let committed = committedOn ["0", ":"]
+            committed.mode `shouldBe` Browsing
+            committed.cursor `shouldBe` 1        -- 0:editor
+            let next = stay committed (key "n")
+            next.cursor `shouldBe` 4             -- 0:game
+            (stay next (key "n")).cursor `shouldBe` 1  -- wraps to the first
+
+        it "steps to the previous match with b, wrapping" $ do
+            let committed = committedOn ["0", ":"]
+            let prev = stay committed (key "b")
+            prev.cursor `shouldBe` 4             -- wraps back to the last match
             (stay prev (key "b")).cursor `shouldBe` 1
+
+        it "reveals a match hidden in a collapsed subtree when stepping" $ do
+            let collapsed = stay demo { cursor = 3 } (key "h")   -- collapse "play"
+                typed = foldl stay (stay collapsed (key "/")) (map key ["0", ":"])
+                committed = stay typed (key "Enter")
+            committed.cursor `shouldBe` 1
+            labels committed `shouldBe` ["work", "0:editor", "1:shell", "play"]
+            let next = stay committed (key "n")
+            labels next `shouldBe` ["work", "0:editor", "1:shell", "play", "0:game"]
+            next.cursor `shouldBe` 4
+
+        it "does nothing on n/b with no committed search" $ do
+            (stay demo (key "n")).cursor `shouldBe` demo.cursor
+            (stay demo (key "b")).cursor `shouldBe` demo.cursor
 
     describe "selectedPreview" $ do
         let previewTree = demo

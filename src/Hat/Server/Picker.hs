@@ -181,6 +181,8 @@ editPicker p key = case p.mode of
         "g"      -> PickerStay p { cursor = 0 }
         "G"      -> PickerStay p { cursor = max 0 (n - 1) }
         "/"      -> PickerStay p { mode = Searching }
+        "n"      -> nextMatch
+        "b"      -> prevMatch
         _        -> PickerStay p
     searchKey = case key.name of
         -- Commit the search: drop back to menu mode with the filter cleared
@@ -190,37 +192,41 @@ editPicker p key = case p.mode of
         -- send-keys /@) from firing the first hit the instant you finish
         -- typing.
         "Enter"  -> PickerStay commitSearch
-        "Escape" -> PickerStay p { mode = Browsing, query = "", cursor = 0 }
+        "Escape" -> PickerStay p { mode = Browsing, query = "", search = "", cursor = 0 }
         "Up"     -> up
         "C-p"    -> up
         "Down"   -> down
         "C-n"    -> down
-        "n"      -> nextMatch
-        "b"      -> prevMatch
         "BSpace" -> PickerStay (reQuery (T.dropEnd 1 p.query))
         _        -> case insertText key of
             Just t  -> PickerStay (reQuery (p.query <> t))
             Nothing -> PickerStay p
-    -- Jump the cursor to the next/previous row whose label actually matches
-    -- the query, skipping the ancestor rows kept only for context and
-    -- wrapping around the ends; with no matches the cursor stays put.
-    matchRows = [ i | (i, r) <- zip [0 ..] rows
-                    , not (T.null p.query)
-                    , T.toLower p.query `T.isInfixOf` T.toLower r.node.label ]
-    stepMatch pick = case pick matchRows of
-        Just i  -> PickerStay p { cursor = i }
-        Nothing -> PickerStay p
-    nextMatch = stepMatch (\ms -> listToMaybe (filter (> p.cursor) ms <> ms))
-    prevMatch = stepMatch (\ms -> listToMaybe (reverse (ms <> filter (< p.cursor) ms)))
+    -- In menu mode, jump the cursor to the next/previous node matching the
+    -- committed search (over the whole tree, not just the visible rows),
+    -- revealing any collapsed ancestors and wrapping around the ends; with
+    -- no active search or no match the cursor stays put. Depth-first order
+    -- coincides with the paths' lexicographic order, so a match is "next"
+    -- when its path sorts after the cursor's.
+    curPath = maybe [] (.path) cur
+    menuMatches = allMatchPaths p.search p.roots
+    jumpTo mp =
+        let p' = p { roots = revealPath mp p.roots }
+        in PickerStay p' { cursor = fromMaybe p.cursor (findIndex ((== mp) . (.path)) (visibleRows p')) }
+    nextMatch = case filter (> curPath) menuMatches <> menuMatches of
+        (mp : _) -> jumpTo mp
+        []       -> PickerStay p
+    prevMatch = case reverse (filter (< curPath) menuMatches) <> reverse menuMatches of
+        (mp : _) -> jumpTo mp
+        []       -> PickerStay p
     commitSearch
-        | T.null p.query = p { mode = Browsing }
+        | T.null p.query = p { mode = Browsing, search = "" }
         | otherwise = case firstMatchPath p.query p.roots of
             Nothing -> cleared { cursor = min p.cursor (max 0 (length (visibleRows cleared) - 1)) }
             Just mp ->
                 let p' = cleared { roots = revealPath mp p.roots }
                 in p' { cursor = fromMaybe 0 (findIndex ((== mp) . (.path)) (visibleRows p')) }
       where
-        cleared = p { mode = Browsing, query = "" }
+        cleared = p { mode = Browsing, query = "", search = p.query }
     -- After editing the query, land the cursor on the first row that
     -- actually matches (a leaf), not on an ancestor kept only for context.
     reQuery q =
@@ -242,6 +248,22 @@ firstMatchPath q = listToMaybe . go
               then [[i]]
               else map (i :) (go n.children)
         | (i, n) <- zip [0 ..] nodes ]
+
+-- | The index paths of every node, depth-first, whose label matches the
+-- query (case-insensitive substring), descending into matches too so a
+-- matching child of a matching parent is its own stop; empty for an empty
+-- query.
+allMatchPaths :: Text -> [PickerNode] -> [[Int]]
+allMatchPaths q nodes
+    | T.null q  = []
+    | otherwise = go [] nodes
+  where
+    ql = T.toLower q
+    go prefix ns = concat
+        [ let here = prefix <> [i]
+              this = [ here | ql `T.isInfixOf` T.toLower n.label ]
+          in this <> go here n.children
+        | (i, n) <- zip [0 ..] ns ]
 
 -- | Expand every ancestor along the index path (not the node itself), so
 -- the node at the path is visible.
