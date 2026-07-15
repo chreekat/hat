@@ -2665,7 +2665,7 @@ cmdSplitWindow st mclient args = do
         orient
             | "-h" `elem` flags = LeftRight
             | otherwise = TopBottom
-        before = "-b" `elem` flags
+        placement = if "-b" `elem` flags then Before else After
         -- @-f@: split spans the whole window, not just the active pane.
         full = "-f" `elem` flags
         mrun = case pos of
@@ -2702,8 +2702,8 @@ cmdSplitWindow st mclient args = do
                         atomically $ do
                             modifyTVar' win.panes (Map.insert pane.id pane)
                             modifyTVar' win.layout $ if full
-                                then splitFull orient before pane.id
-                                else splitLeaf active.id orient before pane.id
+                                then splitFull orient placement pane.id
+                                else splitLeaf active.id orient placement pane.id
                             lastA <- readTVar win.activeId
                             writeTVar win.lastActive (Just lastA)
                             writeTVar win.activeId pane.id
@@ -3033,7 +3033,7 @@ cmdJoinPane st mclient args = do
     let (opts, flags, _) = parseArgs "st" args
         orient | "-h" `elem` flags = LeftRight
                | otherwise = TopBottom
-        before = "-b" `elem` flags
+        placement = if "-b" `elem` flags then Before else After
     msrc <- targetPane st mclient (lookup "-s" opts)
     withCurrentWindow st mclient $ \sess dstWin -> do
         dstPanes <- readTVarIO dstWin.panes
@@ -3044,7 +3044,7 @@ cmdJoinPane st mclient args = do
                     removePaneFromTree st src.id
                     modifyTVar' dstWin.panes (Map.insert src.id src)
                     modifyTVar' dstWin.layout
-                        (splitLeaf dstActive orient before src.id)
+                        (splitLeaf dstActive orient placement src.id)
                     writeTVar dstWin.lastActive (Just dstActive)
                     writeTVar dstWin.activeId src.id
                     writeTVar dstWin.zoomed Nothing

@@ -78,7 +78,7 @@ spec = do
             in case pids of
                 [] -> property Discard
                 (target : _) ->
-                    let lay' = splitLeaf target LeftRight False newPid lay
+                    let lay' = splitLeaf target LeftRight After newPid lay
                     in Set.fromList (layoutPanes lay')
                         === Set.insert newPid (Set.fromList pids)
 
@@ -87,7 +87,7 @@ spec = do
             let pids = layoutPanes lay
                 target = last pids
                 newPid = PaneId 999
-                lay' = splitLeaf target TopBottom True newPid lay
+                lay' = splitLeaf target TopBottom Before newPid lay
             in fmap (Set.fromList . layoutPanes) (removeLeaf newPid lay')
                 === Just (Set.fromList pids)
 
@@ -99,14 +99,14 @@ spec = do
             -- Two stacked panes; a full -h split adds a full-height column
             -- on the right, so its rect spans the entire window height.
             let stacked = Split TopBottom 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
-                lay' = splitFull LeftRight False (PaneId 9) stacked
+                lay' = splitFull LeftRight After (PaneId 9) stacked
                 (rects, _) = arrange windowRect lay'
             case List.lookup (PaneId 9) rects of
                 Nothing -> expectationFailure "new pane has no rect"
                 Just r -> (r.startRow, r.endRow) `shouldBe` (0, 40)
         it "adds exactly the new pane to the set" $
             forAll (genLayout 3) $ \lay ->
-                Set.fromList (layoutPanes (splitFull TopBottom True (PaneId 999) lay))
+                Set.fromList (layoutPanes (splitFull TopBottom Before (PaneId 999) lay))
                     === Set.insert (PaneId 999) (Set.fromList (layoutPanes lay))
 
     describe "swapLeaves" $ do

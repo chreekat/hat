@@ -3,6 +3,7 @@
 module Hat.Server.Layout
     ( Layout (..)
     , Orientation (..)
+    , Placement (..)
     , Direction (..)
     , LayoutName (..)
     , arrange
@@ -30,6 +31,12 @@ data Orientation = LeftRight | TopBottom
     deriving (Eq, Show)
 
 data Direction = DirLeft | DirRight | DirUp | DirDown
+    deriving (Eq, Show)
+
+-- | @-b@: which side of the target a new pane lands on.
+data Placement
+    = Before  -- ^ the new pane takes the left\/top slot
+    | After   -- ^ the new pane takes the right\/bottom slot
     deriving (Eq, Show)
 
 -- | The ratio is the first (left/top) child's share of the available
@@ -131,27 +138,26 @@ layoutPanes = \case
     Leaf pid -> [pid]
     Split _ _ a b -> layoutPanes a <> layoutPanes b
 
--- | Split the target leaf in two; the new pane takes half. @before@
+-- | Split the target leaf in two; the new pane takes half. 'Before'
 -- puts the new pane on the left/top.
-splitLeaf :: PaneId -> Orientation -> Bool -> PaneId -> Layout -> Layout
-splitLeaf target orient before newPid = go
+splitLeaf :: PaneId -> Orientation -> Placement -> PaneId -> Layout -> Layout
+splitLeaf target orient placement newPid = go
   where
     go = \case
         Leaf p
-            | p == target ->
-                if before
-                    then Split orient (1 % 2) (Leaf newPid) (Leaf p)
-                    else Split orient (1 % 2) (Leaf p) (Leaf newPid)
+            | p == target -> case placement of
+                Before -> Split orient (1 % 2) (Leaf newPid) (Leaf p)
+                After  -> Split orient (1 % 2) (Leaf p) (Leaf newPid)
             | otherwise -> Leaf p
         Split o r a b -> Split o r (go a) (go b)
 
 -- | A full-window split: the new pane becomes a sibling of the /entire/
 -- existing layout, spanning the full window height (@LeftRight@) or width
--- (@TopBottom@). @before@ puts it on the left/top. Backs @split-window -f@.
-splitFull :: Orientation -> Bool -> PaneId -> Layout -> Layout
-splitFull orient before newPid old
-    | before    = Split orient (1 % 2) (Leaf newPid) old
-    | otherwise = Split orient (1 % 2) old (Leaf newPid)
+-- (@TopBottom@). 'Before' puts it on the left/top. Backs @split-window -f@.
+splitFull :: Orientation -> Placement -> PaneId -> Layout -> Layout
+splitFull orient placement newPid old = case placement of
+    Before -> Split orient (1 % 2) (Leaf newPid) old
+    After  -> Split orient (1 % 2) old (Leaf newPid)
 
 -- | Exchange two panes' positions in the tree, moving their content
 -- between screen locations. Backs @swap-pane@.
