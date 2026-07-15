@@ -946,8 +946,8 @@ data PaneStart
     = FreshShell         -- ^ the session's login shell, no command
     | ShellCommand Text  -- ^ a user-supplied command line, run via @sh -c@
                          --   (@new-window@\/@split-window@ with an argument)
-    | ExecArgv [Text]    -- ^ exec this argv directly, no shell — used by
-                         --   restore so an argument with spaces survives
+    | ExecArgv [Text]    -- ^ exec this argv directly, no shell. See
+                         --   'restoreRun'.
     deriving (Eq, Show)
 
 -- | The shell-command spawn semantics for the user-facing @new-window@ and
