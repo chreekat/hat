@@ -141,6 +141,24 @@ spec = do
                 widths = [ r.endCol - r.startCol | (_, r) <- rects ]
             maximum widths - minimum widths `shouldSatisfy` (<= 1)
 
+    describe "nextLayoutName" $ do
+        it "starts the cycle at even-horizontal when none is set" $
+            nextLayoutName Nothing `shouldBe` EvenHorizontal
+        it "advances through tmux's layout order" $
+            map (nextLayoutName . Just)
+                [EvenHorizontal, EvenVertical, MainHorizontal, MainVertical]
+                `shouldBe` [EvenVertical, MainHorizontal, MainVertical, Tiled]
+        it "wraps from the last layout back to the first" $
+            nextLayoutName (Just Tiled) `shouldBe` EvenHorizontal
+
+    describe "previousLayoutName" $ do
+        it "starts at the last layout when none is set" $
+            previousLayoutName Nothing `shouldBe` Tiled
+        it "steps backward through the cycle" $
+            previousLayoutName (Just EvenVertical) `shouldBe` EvenHorizontal
+        it "wraps from the first layout back to the last" $
+            previousLayoutName (Just EvenHorizontal) `shouldBe` Tiled
+
     describe "neighbor" $ do
         -- +-------+-------+
         -- |   0   |   1   |

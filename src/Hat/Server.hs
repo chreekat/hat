@@ -522,6 +522,7 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
                 then Just (pids !! o) else Nothing
     nameVar       <- newTVarIO wsnap.name
     layoutVar     <- newTVarIO lay
+    layoutNameVar <- newTVarIO Nothing
     panesVar      <- newTVarIO paneMap
     activeVar     <- newTVarIO activePid
     lastActiveVar <- newTVarIO lastActivePid
@@ -532,6 +533,7 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
     autoRenameVar <- newTVarIO False
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
+            , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
             , lastActive = lastActiveVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
@@ -639,6 +641,12 @@ defaultKeymap = Map.fromList
         , (".", ["command-prompt", "-p", "(index)", "move-window -t '%%'"])
         , ("$", ["command-prompt", "-I", "#S", "rename-session '%%'"])
         , ("z", ["resize-pane", "-Z"])
+        , ("Space", ["next-layout"])
+        , ("M-1", ["select-layout", "even-horizontal"])
+        , ("M-2", ["select-layout", "even-vertical"])
+        , ("M-3", ["select-layout", "main-horizontal"])
+        , ("M-4", ["select-layout", "main-vertical"])
+        , ("M-5", ["select-layout", "tiled"])
         , ("n", ["next-window"])
         , ("p", ["previous-window"])
         , ("l", ["last-window"])
@@ -946,10 +954,12 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
+    layoutNameVar <- newTVarIO Nothing
     let win = Window
             { id = WindowId wid
             , name = nameVar
             , layout = layoutVar
+            , layoutName = layoutNameVar
             , panes = panesVar
             , activeId = activeVar
             , lastActive = lastActiveVar
@@ -2090,6 +2100,8 @@ commandTable = Map.fromList $ concatMap expand
     , (["break-pane", "breakp"], cmdBreakPane)
     , (["join-pane", "joinp"], cmdJoinPane)
     , (["select-layout", "selectl"], cmdSelectLayout)
+    , (["next-layout", "nextl"], cmdNextLayout)
+    , (["previous-layout", "prevl"], cmdPreviousLayout)
     , (["resize-pane", "resizep"], cmdResizePane)
     , (["last-pane", "lastp"], cmdLastPane)
     , (["detach-client", "detach"], cmdDetachClient)
@@ -2907,10 +2919,12 @@ wrapPaneInWindow st pane = do
     activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
+    layoutNameVar <- newTVarIO Nothing
     pure Window
         { id = WindowId wid
         , name = nameVar
         , layout = layoutVar
+        , layoutName = layoutNameVar
         , panes = panesVar
         , activeId = activeVar
         , lastActive = lastActiveVar
@@ -3090,6 +3104,7 @@ applyLayoutString st mclient str =
             case layoutFromString str pids of
                 Just lay -> do
                     writeTVar win.layout lay
+                    writeTVar win.layoutName Nothing
                     writeTVar win.zoomed Nothing
                     bumpDirty st
                     pure True
@@ -3109,23 +3124,46 @@ parseLayoutName = \case
 
 applyNamedLayout :: ServerState -> Maybe Client -> LayoutName -> IO [Reply]
 applyNamedLayout st mclient lname =
+    withCurrentWindow st mclient $ \sess win ->
+        arrangeNamed st sess win lname >> pure []
+
+-- | Rearrange one window into a named layout, sizing the @main-*@ pane
+-- from @main-pane-width@/@-height@, and remember the name so
+-- @next-layout@ can cycle onward from it.
+arrangeNamed :: ServerState -> Session -> Window -> LayoutName -> IO ()
+arrangeNamed st sess win lname = do
+    eff <- readTVarIO sess.lastSize
+    opts <- readTVarIO st.options
+    let area = windowArea eff
+        clampR r = max (1 % 10) (min (9 % 10) r) :: Rational
+        ratioOf num den = clampR (toInteger num % max 1 (toInteger den))
+        mainRatio = case lname of
+            MainVertical   -> ratioOf opts.mainPaneWidth area.cols
+            MainHorizontal -> ratioOf opts.mainPaneHeight area.rows
+            _              -> 1 % 2
+    atomically $ do
+        pids <- layoutPanes <$> readTVar win.layout
+        unless (null pids) $ do
+            writeTVar win.layout (namedLayout lname mainRatio pids)
+            writeTVar win.layoutName (Just lname)
+            writeTVar win.zoomed Nothing
+            bumpDirty st
+    applySessionSize st sess.id
+
+-- | @next-layout@ (default @<prefix> Space@): rearrange the current
+-- window into the next of tmux's five named layouts, cycling from the
+-- last one applied. @previous-layout@ walks the cycle the other way.
+cmdNextLayout :: CommandImpl
+cmdNextLayout = cycleLayout nextLayoutName
+
+cmdPreviousLayout :: CommandImpl
+cmdPreviousLayout = cycleLayout previousLayoutName
+
+cycleLayout :: (Maybe LayoutName -> LayoutName) -> CommandImpl
+cycleLayout step st mclient _ =
     withCurrentWindow st mclient $ \sess win -> do
-        eff <- readTVarIO sess.lastSize
-        opts <- readTVarIO st.options
-        let area = windowArea eff
-            clampR r = max (1 % 10) (min (9 % 10) r) :: Rational
-            ratioOf num den = clampR (toInteger num % max 1 (toInteger den))
-            mainRatio = case lname of
-                MainVertical   -> ratioOf opts.mainPaneWidth area.cols
-                MainHorizontal -> ratioOf opts.mainPaneHeight area.rows
-                _              -> 1 % 2
-        atomically $ do
-            pids <- layoutPanes <$> readTVar win.layout
-            unless (null pids) $ do
-                writeTVar win.layout (namedLayout lname mainRatio pids)
-                writeTVar win.zoomed Nothing
-                bumpDirty st
-        applySessionSize st sess.id
+        cur <- readTVarIO win.layoutName
+        arrangeNamed st sess win (step cur)
         pure []
 
 -- | @move-window -s src -t dst@: renumber (or relocate) a window to the

@@ -54,7 +54,7 @@ import qualified Hat.Term.Pty
 import Hat.Model.Options (Keymap, Options, defaultOptions)
 import Hat.Server.ColorScheme (ColorScheme)
 import Hat.Server.Keys (PrefixState)
-import Hat.Server.Layout (Layout)
+import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
 import qualified Hat.Term.Emulator as Emu
 
@@ -116,6 +116,8 @@ data Window = Window
     { id         :: WindowId
     , name       :: TVar Text
     , layout     :: TVar Layout
+    , layoutName :: TVar (Maybe LayoutName)
+        -- ^ the last named layout applied, if any; see 'cmdNextLayout'.
     , panes      :: TVar (Map PaneId Pane)
     , activeId   :: TVar PaneId
     , lastActive :: TVar (Maybe PaneId)

@@ -6,6 +6,8 @@ module Hat.Server.Layout
     , Placement (..)
     , Direction (..)
     , LayoutName (..)
+    , nextLayoutName
+    , previousLayoutName
     , arrange
     , sizeRect
     , layoutPanes
@@ -186,6 +188,28 @@ removeLeaf target = \case
 data LayoutName
     = EvenHorizontal | EvenVertical | MainVertical | MainHorizontal | Tiled
     deriving (Eq, Show)
+
+-- tmux's fixed layout cycle order, walked by @next-layout@.
+layoutOrder :: [LayoutName]
+layoutOrder = [EvenHorizontal, EvenVertical, MainHorizontal, MainVertical, Tiled]
+
+-- | The next layout in tmux's cycle for @next-layout@; @Nothing@ (no
+-- named layout applied yet) starts at the head, and the tail wraps back
+-- to the head.
+nextLayoutName :: Maybe LayoutName -> LayoutName
+nextLayoutName = stepLayout layoutOrder
+
+-- | The previous layout for @previous-layout@; @Nothing@ starts at the
+-- tail, and the head wraps back to the tail.
+previousLayoutName :: Maybe LayoutName -> LayoutName
+previousLayoutName = stepLayout (reverse layoutOrder)
+
+stepLayout :: [LayoutName] -> Maybe LayoutName -> LayoutName
+stepLayout order mcur = case mcur >>= (`List.elemIndex` order) of
+    Just i  -> order !! ((i + 1) `mod` length order)
+    Nothing -> case order of
+        (first : _) -> first
+        []          -> error "stepLayout: empty layout order"
 
 -- | Arrange @pids@ into a named layout. @mainRatio@ is the main pane's
 -- share of the window (from @main-pane-width@/@-height@), used only by the
