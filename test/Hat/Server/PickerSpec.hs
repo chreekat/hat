@@ -121,6 +121,25 @@ spec = do
             labels committed `shouldBe` labels demo
             committed.cursor `shouldBe` 0
 
+        -- With a search active over several matches, n/b step the cursor
+        -- between the matching rows only (skipping ancestor context rows),
+        -- wrapping around the ends. The query "0:" matches "0:editor" (row
+        -- 1) and "0:game" (row 3); reQuery lands the cursor on the first.
+        it "steps to the next search match with n, wrapping" $ do
+            let p = foldl stay searching (map key ["0", ":"])
+            labels p `shouldBe` ["work", "0:editor", "play", "0:game"]
+            p.cursor `shouldBe` 1
+            let next = stay p (key "n")
+            next.cursor `shouldBe` 3
+            (stay next (key "n")).cursor `shouldBe` 1  -- wraps to the first match
+
+        it "steps to the previous search match with b, wrapping" $ do
+            let p = foldl stay searching (map key ["0", ":"])
+            p.cursor `shouldBe` 1
+            let prev = stay p (key "b")
+            prev.cursor `shouldBe` 3  -- wraps back to the last match
+            (stay prev (key "b")).cursor `shouldBe` 1
+
     describe "selectedPreview" $ do
         let previewTree = demo
                 { roots =

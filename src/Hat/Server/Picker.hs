@@ -195,10 +195,23 @@ editPicker p key = case p.mode of
         "C-p"    -> up
         "Down"   -> down
         "C-n"    -> down
+        "n"      -> nextMatch
+        "b"      -> prevMatch
         "BSpace" -> PickerStay (reQuery (T.dropEnd 1 p.query))
         _        -> case insertText key of
             Just t  -> PickerStay (reQuery (p.query <> t))
             Nothing -> PickerStay p
+    -- Jump the cursor to the next/previous row whose label actually matches
+    -- the query, skipping the ancestor rows kept only for context and
+    -- wrapping around the ends; with no matches the cursor stays put.
+    matchRows = [ i | (i, r) <- zip [0 ..] rows
+                    , not (T.null p.query)
+                    , T.toLower p.query `T.isInfixOf` T.toLower r.node.label ]
+    stepMatch pick = case pick matchRows of
+        Just i  -> PickerStay p { cursor = i }
+        Nothing -> PickerStay p
+    nextMatch = stepMatch (\ms -> listToMaybe (filter (> p.cursor) ms <> ms))
+    prevMatch = stepMatch (\ms -> listToMaybe (reverse (ms <> filter (< p.cursor) ms)))
     commitSearch
         | T.null p.query = p { mode = Browsing }
         | otherwise = case firstMatchPath p.query p.roots of
