@@ -326,7 +326,13 @@ The milestone-driven build-out is complete:
   `@restore-commands`) are re-run; the schema is forward/backward
   compatible; `HAT_PERSIST=0` disables it.
 
-From here, work proceeds one feature at a time as gaps are noticed in daily
-use. Each is a self-contained slice: a failing test, the implementation, and
-a scripted regression that lands in the suite, with the write-up in git
-history.
+HAT is now in **alpha testing** — daily-driver usable. Everything tagged
+P0 and P1 above is implemented, including the six workflows; copy mode,
+paste buffers, the command prompt, and choose-tree all landed. Still
+missing: mouse, hooks, and popups.
+
+From here, priorities are, in order: (1) add missing tmux features as gaps
+surface in daily use, (2) performance and benchmarking, (3) fix bugs found
+in alpha. Each feature is a self-contained slice — a failing test, the
+implementation, and a scripted regression that lands in the suite, with the
+write-up in git history.
