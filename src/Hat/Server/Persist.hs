@@ -37,11 +37,9 @@ import Database.SQLite.Simple
 data Snapshot = Snapshot
     { sessions   :: [SessionSnap]
     , lastActiveSession :: Maybe Text
-                           -- ^ name of the session focused at capture time.
-                           --   The first client to attach after a restore is
-                           --   steered to it, so a reboot returns to the same
-                           --   session, not just the first-created one. Stored
-                           --   in the @meta@ table.
+                           -- ^ name of the session focused at capture time,
+                           --   stored in the @meta@ table. See
+                           --   'Hat.Server.pickAttachSession'.
     }
     deriving (Eq, Show)
 

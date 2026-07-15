@@ -134,7 +134,7 @@ data ServerToClient
     | DetachOk
     | CommandDone           -- ^ all replies for one Command were sent
     | ServerError Text
-    | Exited                -- ^ session is gone; client should quit
+    | Exited                -- ^ the client's session is gone
     deriving (Eq, Show, Generic)
 
 data DrawOp

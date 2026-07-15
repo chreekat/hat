@@ -61,14 +61,13 @@ data ServerState = ServerState
     , nextClient  :: TVar Int
     , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
-    , everAttached :: TVar Bool  -- ^ exit-when-empty arms only after first session
-    , served      :: TVar Bool  -- ^ a client connection has been accepted; the
-                                --   idle-exit waits on this so the autostarting
-                                --   client is always counted before the server
-                                --   can drain (no timing window to lose)
-    , configLoading :: TVar Bool  -- ^ suppress waitIdle exit while config runs
-    , restoring   :: TVar Bool  -- ^ a bare attach waits on this so it joins the
-                                --   restored tree instead of making a fresh session
+    , everAttached :: TVar Bool  -- ^ a session has existed at some point.
+                                --   See 'waitIdle'.
+    , served      :: TVar Bool  -- ^ a client connection has been accepted.
+                                --   See 'waitIdle'.
+    , configLoading :: TVar Bool  -- ^ config sourcing is in progress. See 'waitIdle'.
+    , restoring   :: TVar Bool  -- ^ a persisted tree is being restored. See
+                                --   'ensureSession'.
     , preserveStore :: TVar Bool
         -- ^ the store holds an explicitly saved final tree that must
         --   survive shutdown. Set by @kill-server@; off across a natural
@@ -87,9 +86,8 @@ data ServerState = ServerState
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
     , lastActiveSession :: TVar (Maybe SessionId)
-        -- ^ the session most recently focused by any client. Captured into
-        --   the snapshot (by name) so the first attach after a restore
-        --   returns to it, not just the lowest-id session.
+        -- ^ the session most recently focused by any client; captured into
+        --   the snapshot by name. See 'pickAttachSession'.
     , logger      :: Logger
     , sockPath    :: FilePath
     , store       :: Maybe FilePath
@@ -242,8 +240,8 @@ data Client = Client
     , size      :: TVar Size
     , session   :: TVar SessionId
     , lastSession :: TVar (Maybe SessionId)
-    , ready     :: TVar Bool  -- ^ set once Welcome is sent; suppresses any
-                             --   broadcast to this client before the greeting
+    , ready     :: TVar Bool  -- ^ the client's Welcome greeting has been sent.
+                             --   See 'send'.
     , keyState  :: IORef PrefixState  -- input thread only
     , lastFrame :: IORef Frame        -- render thread only
     , lastCursor :: IORef (Pos, Bool)

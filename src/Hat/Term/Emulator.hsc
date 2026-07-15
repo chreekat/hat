@@ -146,9 +146,8 @@ data Screen = Screen
 
 data Emulator = Emulator
     { vt        :: ForeignPtr CVTerm
-        -- ^ owns the libvterm object: a finalizer frees it, the callback
-        --   struct and the callback FunPtrs when the emulator is GC'd, so
-        --   a dead pane's C resources are released without a manual call.
+        -- ^ owns the libvterm object; a finalizer frees it along with the
+        --   callback struct and the callback FunPtrs (see 'newEmulator').
     , screen    :: Ptr CVTermScreen  -- ^ borrowed from 'vt', valid while it lives
     , lock      :: MVar ()
     , sizeRef   :: IORef Size
