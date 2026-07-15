@@ -18,6 +18,8 @@ module Hat.Server
     , persistDecision  -- ^ exported for the store-pinning test
     , PersistDecision (..)
     , StorePin (..)
+    , windowFlags  -- ^ exported for the window-flags test
+    , WindowFlagState (..)
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -1789,6 +1791,27 @@ expandFormat st env fmt = do
                 | c == ')' -> go (depth - 1) (acc <> T.singleton c) rest
                 | otherwise -> go depth (acc <> T.singleton c) rest
 
+-- | The conditions that produce a window's @#{window_flags}@ string.
+data WindowFlagState = WindowFlagState
+    { flagCurrent  :: Bool
+    , flagLast     :: Bool
+    , flagBell     :: Bool
+    , flagActivity :: Bool
+    , flagZoomed   :: Bool
+    }
+
+-- | Render the window-status flags in tmux's order: current (@*@) or
+-- last (@-@), then bell (@!@) and activity (@#@), and finally zoom
+-- (@Z@) when the window has a pane zoomed to fill it.
+windowFlags :: WindowFlagState -> Text
+windowFlags s = T.concat
+    [ if s.flagCurrent then "*"
+      else if s.flagLast then "-" else ""
+    , if s.flagBell then "!" else ""
+    , if s.flagActivity then "#" else ""
+    , if s.flagZoomed then "Z" else ""
+    ]
+
 statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
 statusCells st sess width = do
     opts <- readTVarIO st.options
@@ -1803,15 +1826,16 @@ statusCells st sess width = do
         mlast <- readTVarIO sess.lastIx
         clientCount <- length <$> atomically (sessionClients st sess.id)
         forM (Map.toAscList ws) $ \(ix, win) -> do
-            (wname, bell, act) <- atomically $ (,,)
+            (wname, bell, act, zoom) <- atomically $ (,,,)
                 <$> readTVar win.name <*> readTVar win.bellFlag
-                <*> readTVar win.activity
-            let flags = T.concat
-                    [ if ix == cur then "*"
-                      else if Just ix == mlast then "-" else ""
-                    , if bell then "!" else ""
-                    , if act then "#" else ""
-                    ]
+                <*> readTVar win.activity <*> readTVar win.zoomed
+            let flags = windowFlags WindowFlagState
+                    { flagCurrent = ix == cur
+                    , flagLast = Just ix == mlast
+                    , flagBell = bell
+                    , flagActivity = act
+                    , flagZoomed = isJust zoom
+                    }
                 -- A session's clients all view its current window, so only
                 -- that window has active clients; the rest have none.
                 activeClients = if ix == cur then clientCount else 0
@@ -3988,14 +4012,19 @@ windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = do
     base <- sessionFormatEnv st sess
     eff <- readTVarIO sess.lastSize
-    (wname, lay, cur, bell, act, auto) <- atomically $ (,,,,,)
+    (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
-        <*> readTVar sess.currentIx <*> readTVar win.bellFlag
-        <*> readTVar win.activity <*> readTVar win.autoRename
+        <*> readTVar sess.currentIx <*> readTVar sess.lastIx
+        <*> readTVar win.bellFlag <*> readTVar win.activity
+        <*> readTVar win.autoRename <*> readTVar win.zoomed
     ps <- readTVarIO win.panes
-    let flags = T.concat
-            [ if ix == cur then "*" else ""
-            , if bell then "!" else "", if act then "#" else "" ]
+    let flags = windowFlags WindowFlagState
+            { flagCurrent = ix == cur
+            , flagLast = Just ix == mlast
+            , flagBell = bell
+            , flagActivity = act
+            , flagZoomed = isJust zoom
+            }
     pure $ Map.union (Map.fromList
         [ ("window_index", tshow ix)
         , ("window_name", wname)

@@ -8,6 +8,7 @@ import qualified Hat.Term.PtySpec
 import qualified Hat.Server.ColorSchemeSpec
 import qualified Hat.Server.ConfigSpec
 import qualified Hat.Server.CopyModeSpec
+import qualified Hat.Server.FlagsSpec
 import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
 import qualified Hat.Server.LayoutSpec
@@ -54,4 +55,5 @@ main = hspec $ do
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec
     describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
+    describe "Hat.Server.Flags" Hat.Server.FlagsSpec.spec
     describe "integration" Hat.IntegrationSpec.spec

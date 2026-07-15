@@ -143,6 +143,7 @@ test-suite hat-test
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
         Hat.Server.CopyModeSpec
+        Hat.Server.FlagsSpec
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
