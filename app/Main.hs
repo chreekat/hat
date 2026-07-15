@@ -141,8 +141,10 @@ control path mconfig cmds = do
         Just sock -> do
             reason <- runControl sock cmds
             case reason of
+                -- Bare, like tmux: scripts match on the exact error text
+                -- (e.g. @duplicate session: NAME@), so no @hat: @ prefix.
                 Rejected e -> do
-                    hPutStrLn stderr ("hat: " <> T.unpack e)
+                    hPutStrLn stderr (T.unpack e)
                     exitFailure
                 _ -> pure ()
 

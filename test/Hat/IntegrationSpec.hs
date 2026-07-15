@@ -540,6 +540,21 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    -- tmux prints command errors bare; scripts (tmuxed-alacritty-new)
+    -- match on the exact text, e.g. `duplicate session: NAME`. A `hat: `
+    -- prefix would break that match, so control errors stay unbranded.
+    it "prints control-command errors bare, like tmux" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
+        (code, _, err) <- hatCtl h ["new-session", "-d", "-s", "work"]
+        code `shouldBe` ExitFailure 1
+        err `shouldBe` "duplicate session: work\n"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "refuses to nest: attaching from inside a pane errors out" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
