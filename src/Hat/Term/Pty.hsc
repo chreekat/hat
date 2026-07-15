@@ -66,8 +66,7 @@ data PtyHandle = PtyHandle
     , child  :: ProcessID
     , exited :: MVar (Maybe ProcessStatus)
         -- ^ filled exactly once by the reaper thread; 'Nothing' when the
-        -- reap itself failed (e.g. the child was already reaped elsewhere),
-        -- so 'waitExit' can never block forever on an unfillable slot.
+        -- reap itself failed (e.g. the child was already reaped elsewhere).
     }
 
 foreign import capi "sys/ioctl.h ioctl"
@@ -140,6 +139,8 @@ spawn s = do
     exitVar <- newEmptyMVar
     _ <- forkIO $ do
         r <- try (getProcessStatus True False childPid)
+        -- The put is unconditional: an unfillable slot would park
+        -- 'waitExit' forever.
         putMVar exitVar $ case r of
             Left (_ :: IOException) -> Nothing
             Right st                -> st

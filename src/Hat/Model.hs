@@ -70,16 +70,10 @@ data ServerState = ServerState
     , restoring   :: TVar Bool  -- ^ a bare attach waits on this so it joins the
                                 --   restored tree instead of making a fresh session
     , preserveStore :: TVar Bool
-        -- ^ keep the persisted tree past shutdown. Set by @kill-server@
-        --   (an explicit quit restores on the next start); a natural drain
-        --   (the last window closing) leaves it off, so the store is
-        --   dropped and the next start is pristine.
-        --
-        --   Once set it also PINS the store: @kill-server@'s 'saveNow' has
-        --   captured the final tree, so the background mirror ('persistLoop')
-        --   must never write again. This guards the dying server -- a client
-        --   that attaches and makes a fresh session after the kill cannot
-        --   overwrite the saved tree.
+        -- ^ the store holds an explicitly saved final tree that must
+        --   survive shutdown. Set by @kill-server@; off across a natural
+        --   drain. See 'runServer' (keep vs drop at drain) and
+        --   'persistDecision' (the pin against mirror writes).
     , colorScheme :: TVar (Maybe ColorScheme)
         -- ^ the desktop's light/dark preference, when a watcher could
         --   determine it ('Nothing' outside a desktop session). Drives
@@ -142,9 +136,8 @@ data Pane = Pane
     , pipe     :: TVar (Maybe PipeHandle)
         -- ^ an active @pipe-pane@ subprocess, if any.
     , readerTid :: TVar (Maybe ThreadId)
-        -- ^ the pane's output-reader thread, once it has stored its own id.
-        -- A teardown interrupts it here so a blocked read releases the pty
-        -- master's lock; 'Nothing' only in the spawn race before it runs.
+        -- ^ the pane's output-reader thread, stored by the thread itself;
+        -- 'Nothing' only in the spawn race before it runs. See 'hangupPane'.
     }
 
 -- | A @pipe-pane@ subprocess. Pane output is forwarded to 'toStdin'
