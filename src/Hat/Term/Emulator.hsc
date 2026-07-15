@@ -165,6 +165,7 @@ data Emulator = Emulator
     , eventsRef :: IORef [Event]       -- reversed
     , outRef    :: IORef [ByteString]  -- reversed
     , passRef   :: IORef PassState     -- ^ tmux-passthrough scrubber state
+    , stitleRef :: IORef StitleState   -- ^ screen/tmux title scrubber state
     , sbRef     :: IORef (Seq [Cell])
     , sbLimit   :: Int
     }
@@ -193,6 +194,7 @@ newEmulator sz historyLimit = do
     eventsR <- newIORef []
     outR <- newIORef []
     passR <- newIORef (Outside "")
+    stitleR <- newIORef (StOutside "")
     sbR <- newIORef Seq.empty
 
     damageW <- wrapDamage $ \sr er sc ec -> do
@@ -293,6 +295,7 @@ newEmulator sz historyLimit = do
             , eventsRef = eventsR
             , outRef = outR
             , passRef = passR
+            , stitleRef = stitleR
             , sbRef = sbR
             , sbLimit = historyLimit
             }
@@ -306,8 +309,13 @@ newEmulator sz historyLimit = do
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     st0 <- readIORef e.passRef
-    let (st1, scrubbed, wrappedNotifs) = scrubPassthrough st0 bs0
+    let (st1, depassed, wrappedNotifs) = scrubPassthrough st0 bs0
     writeIORef e.passRef st1
+    sst0 <- readIORef e.stitleRef
+    let (sst1, scrubbed, stitles) = scrubStitle sst0 depassed
+    writeIORef e.stitleRef sst1
+    let screenTitles = map TE.decodeUtf8Lenient stitles
+    mapM_ (writeIORef e.titleRef) (drop (length screenTitles - 1) screenTitles)
     writeIORef e.eventsRef []
     writeIORef e.outRef []
     writeIORef e.damageRef []
@@ -319,6 +327,7 @@ feed e bs0 = withMVar e.lock $ \_ -> do
     dirty <- readIORef e.dirtyRef
     evs <- reverse <$> readIORef e.eventsRef
     pure $ map DesktopNotification wrappedNotifs
+        <> map TitleChanged screenTitles
         <> interleaved
         <> evs
         <> [ScreenChanged | dirty]

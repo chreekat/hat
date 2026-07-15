@@ -1,5 +1,6 @@
 module Hat.Term.EmulatorSpec (spec) where
 
+import Control.Monad (forM_)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
@@ -241,6 +242,106 @@ spec = do
         resize e Size { rows = 50, cols = 200 }
         scr <- snapshot e
         scr.size `shouldBe` Size { rows = 50, cols = 200 }
+
+    describe "OSC title sequences (zsh preexec announcing the command)" $ do
+        -- zsh/oh-my-zsh retitle the terminal on every command: the bare
+        -- command word via OSC 1 (icon/tab title) and the whole line via
+        -- OSC 2 (window title). None of that payload may reach the grid.
+        let allText scr = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
+            titles evs = [ t | TitleChanged t <- evs ]
+            noEcho scr = allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
+
+        it "swallows an OSC 2 window title (BEL-terminated)" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]2;echo foo\afoo"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "foo"
+            noEcho scr
+            titles evs `shouldBe` ["echo foo"]
+
+        it "swallows an OSC 2 window title (ST-terminated)" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]2;echo foo\ESC\\foo"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "foo"
+            noEcho scr
+            titles evs `shouldBe` ["echo foo"]
+
+        it "swallows an OSC 1 icon/tab title, the bare command word (BEL)" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC]1;echo\afoo"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "foo"
+            noEcho scr
+
+        it "swallows an OSC 1 icon/tab title (ST)" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC]1;echo\ESC\\foo"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "foo"
+            noEcho scr
+
+        it "swallows an OSC 0 icon+title (BEL)" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]0;echo foo\afoo"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "foo"
+            noEcho scr
+            titles evs `shouldBe` ["echo foo"]
+
+        it "swallows the oh-my-zsh preexec pair before command output" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC]1;echo\a\ESC]2;echo foo\afoo"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "foo"
+            noEcho scr
+
+        -- The pty tears output at arbitrary byte boundaries, so the title
+        -- may split right after the ESC, mid-payload, or before the
+        -- terminator; the scrubber's cross-chunk state must still swallow it.
+        it "swallows an OSC 1 title torn at every split point" $ do
+            let full = "\ESC]1;echo\afoo" :: B8.ByteString
+            forM_ [1 .. B.length full - 1] $ \k -> do
+                e <- new80x24
+                _ <- feedStr e (B.take k full)
+                _ <- feedStr e (B.drop k full)
+                scr <- snapshot e
+                allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
+
+    describe "screen/tmux ESC k title (hat advertises TERM=tmux-256color)" $ do
+        -- Under a tmux/screen TERM, oh-my-zsh sets the title with the screen
+        -- escape @ESC k <name> ST@ (name = the running command word) instead
+        -- of an OSC. libvterm doesn't know it, so hat swallows it here and
+        -- treats it as the pane title, exactly as it does OSC 0/2.
+        let allText scr = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
+
+        it "swallows ESC k and records it as the pane title" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESCkecho\ESC\\lol"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "lol"
+            allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
+            t <- title e
+            t `shouldBe` "echo"
+            [ x | TitleChanged x <- evs ] `shouldBe` ["echo"]
+
+        it "swallows a BEL-terminated ESC k title" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESCkecho\alol"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "lol"
+            allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
+
+        it "swallows an ESC k title torn at every split point" $ do
+            let full = "\ESCkecho\ESC\\lol" :: B8.ByteString
+            forM_ [1 .. B.length full - 1] $ \k -> do
+                e <- new80x24
+                _ <- feedStr e (B.take k full)
+                _ <- feedStr e (B.drop k full)
+                scr <- snapshot e
+                allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
+                t <- title e
+                t `shouldBe` "echo"
 
     prop "plain ascii lands verbatim on row 0" $ \(PlainLine s) -> ioProperty $ do
         e <- new80x24

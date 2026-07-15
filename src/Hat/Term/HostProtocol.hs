@@ -39,6 +39,9 @@ module Hat.Term.HostProtocol
       -- * DCS tmux passthrough
     , PassState (..)
     , scrubPassthrough
+      -- * screen/tmux window title
+    , StitleState (..)
+    , scrubStitle
       -- * DEC private-mode cursor reports
     , dropDecxcprReply
       -- * Color queries answered by the host
@@ -124,6 +127,51 @@ scrubPassthrough st0 chunk = case st0 of
         in case ks of
             (k : _) -> B.drop (B.length bs - k) bs
             []      -> ""
+
+-- | Scrubber state for the screen/tmux window-title escape, carried across
+-- 'feed' chunks: outside a title (holding back a chunk-final bare @ESC@ that
+-- might begin @ESC k@) or inside one (accumulating the name until its
+-- terminator, holding back a trailing @ESC@ that might begin the ST).
+data StitleState
+    = StOutside ByteString
+        -- ^ carry: a trailing bare @ESC@ at chunk end
+    | StInside ByteString ByteString
+        -- ^ carry: a trailing @ESC@ that may start the ST, and the name so far
+
+-- | Strip the screen/tmux window-title escape @ESC k <name> ST@ (also
+-- accepting a BEL terminator) before libvterm parses it. hat advertises
+-- @TERM=tmux-256color@, so tmux-aware apps set the title with this escape
+-- instead of an OSC; libvterm does not know it and would spill the name onto
+-- the screen as text. Returns the scrubbed bytes and every completed name, in
+-- order. A title can span pty reads, so the state carries across 'feed' chunks.
+scrubStitle :: StitleState -> ByteString -> (StitleState, ByteString, [ByteString])
+scrubStitle st0 chunk = case st0 of
+    StOutside carry     -> outside [] [] (carry <> chunk)
+    StInside carry name -> inside [] [] [name] (carry <> chunk)
+  where
+    intro = "\ESCk"
+    finish = B.concat . reverse
+    outside oacc titles bs = case B.breakSubstring intro bs of
+        (before, r)
+            | B.null r ->
+                let held = if "\ESC" `B.isSuffixOf` before then "\ESC" else ""
+                    emit = B.take (B.length before - B.length held) before
+                in (StOutside held, finish (emit : oacc), reverse titles)
+            | otherwise -> inside (before : oacc) titles [] (B.drop (B.length intro) r)
+    -- Inside the wrapper nothing reaches libvterm; the name accumulates until
+    -- a BEL or an ST (a lone @ESC@ then backslash) closes it. An @ESC@ that is
+    -- not the ST ends the name and is left for libvterm from the ESC onward.
+    inside oacc titles nacc bs = case B.elemIndex 0x07 bs of
+        Just j | maybe True (j <) (B.elemIndex 0x1b bs) ->
+            outside oacc (finish (B.take j bs : nacc) : titles) (B.drop (j + 1) bs)
+        _ -> case B.elemIndex 0x1b bs of
+            Nothing -> (StInside "" (finish (bs : nacc)), finish oacc, reverse titles)
+            Just i  ->
+                let nacc' = B.take i bs : nacc
+                in case B.uncons (B.drop (i + 1) bs) of
+                    Nothing           -> (StInside "\ESC" (finish nacc'), finish oacc, reverse titles)
+                    Just (0x5c, rest) -> outside oacc (finish nacc' : titles) rest
+                    Just (_, _)       -> outside oacc (finish nacc' : titles) (B.drop i bs)
 
 -- | Every OSC 9/777 desktop notification found in a byte string, in order.
 extractNotifies :: ByteString -> [ByteString]
