@@ -159,6 +159,19 @@ spec = do
         it "wraps from the first layout back to the last" $
             previousLayoutName (Just EvenHorizontal) `shouldBe` Tiled
 
+    describe "cyclePane" $ do
+        let three = map PaneId [0, 1, 2]
+        it "moves to the next pane in order" $
+            cyclePane PaneNext three (PaneId 0) `shouldBe` Just (PaneId 1)
+        it "wraps forward past the last pane" $
+            cyclePane PaneNext three (PaneId 2) `shouldBe` Just (PaneId 0)
+        it "wraps backward before the first pane" $
+            cyclePane PanePrev three (PaneId 0) `shouldBe` Just (PaneId 2)
+        it "stays put with a single pane" $
+            cyclePane PaneNext [PaneId 7] (PaneId 7) `shouldBe` Just (PaneId 7)
+        it "has nowhere to go when the pane is absent" $
+            cyclePane PaneNext three (PaneId 9) `shouldBe` Nothing
+
     describe "neighbor" $ do
         -- +-------+-------+
         -- |   0   |   1   |

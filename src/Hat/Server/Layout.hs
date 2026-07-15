@@ -6,8 +6,10 @@ module Hat.Server.Layout
     , Placement (..)
     , Direction (..)
     , LayoutName (..)
+    , PaneCycle (..)
     , nextLayoutName
     , previousLayoutName
+    , cyclePane
     , arrange
     , sizeRect
     , layoutPanes
@@ -189,6 +191,11 @@ data LayoutName
     = EvenHorizontal | EvenVertical | MainVertical | MainHorizontal | Tiled
     deriving (Eq, Show)
 
+-- | @select-pane@'s cyclic direction: the pane after or before the
+-- active one in window order. See 'cyclePane'.
+data PaneCycle = PaneNext | PanePrev
+    deriving (Eq, Show)
+
 -- tmux's fixed layout cycle order, walked by @next-layout@.
 layoutOrder :: [LayoutName]
 layoutOrder = [EvenHorizontal, EvenVertical, MainHorizontal, MainVertical, Tiled]
@@ -210,6 +217,16 @@ stepLayout order mcur = case mcur >>= (`List.elemIndex` order) of
     Nothing -> case order of
         (first : _) -> first
         []          -> error "stepLayout: empty layout order"
+
+-- | The pane @select-pane -t :.+@ / @:.-@ lands on: the one after
+-- ('PaneNext') or before ('PanePrev') the active pane in @pids@ order,
+-- wrapping at the ends. 'Nothing' when the active pane is not in the
+-- list; a single-pane window stays put.
+cyclePane :: PaneCycle -> [PaneId] -> PaneId -> Maybe PaneId
+cyclePane dir pids active = do
+    i <- List.elemIndex active pids
+    let step = case dir of PaneNext -> 1; PanePrev -> -1
+    pure (pids !! ((i + step) `mod` length pids))
 
 -- | Arrange @pids@ into a named layout. @mainRatio@ is the main pane's
 -- share of the window (from @main-pane-width@/@-height@), used only by the

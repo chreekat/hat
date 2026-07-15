@@ -647,6 +647,8 @@ defaultKeymap = Map.fromList
         , ("M-3", ["select-layout", "main-horizontal"])
         , ("M-4", ["select-layout", "main-vertical"])
         , ("M-5", ["select-layout", "tiled"])
+        , ("o", ["select-pane", "-t", ":.+"])
+        , ("O", ["select-pane", "-t", ":.-"])
         , ("n", ["next-window"])
         , ("p", ["previous-window"])
         , ("l", ["last-window"])
@@ -2763,6 +2765,13 @@ cmdSelectPane st mclient args = do
             _ -> Nothing
         -- Bare @-t N@ picks the Nth pane in the current window (0-based).
         mIndex = lookup "-t" opts >>= parseNum
+        -- @-t :.+@ / @:.-@ (and the bare @+@ / @-@ forms) cycle to the
+        -- next\/previous pane in window order.
+        parseCycle t
+            | t `elem` [":.+", "+"] = Just PaneNext
+            | t `elem` [":.-", "-"] = Just PanePrev
+            | otherwise             = Nothing
+        mCycle = lookup "-t" opts >>= parseCycle
     case mdir of
         Nothing
             | "-M" `elem` flags -> do
@@ -2774,6 +2783,17 @@ cmdSelectPane st mclient args = do
                     writeTVar st.markedPane (Just pane.id) >> bumpDirty st
                 pure []
             | "-l" `elem` flags -> cmdLastPane st mclient []
+            | Just cyc <- mCycle ->
+                withCurrentWindow st mclient $ \_ win -> do
+                    atomically $ do
+                        order <- layoutPanes <$> readTVar win.layout
+                        active <- readTVar win.activeId
+                        forM_ (cyclePane cyc order active) $ \next ->
+                            when (next /= active) $ do
+                                writeTVar win.lastActive (Just active)
+                                writeTVar win.activeId next
+                                bumpDirty st
+                    pure []
             | Just n <- mIndex ->
                 withCurrentWindow st mclient $ \_ win -> do
                     atomically $ do
@@ -2787,7 +2807,7 @@ cmdSelectPane st mclient args = do
                                 bumpDirty st
                             [] -> pure ()
                     pure []
-            | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l|-t index"]
+            | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l|-t index|:.+|:.-"]
         Just dir -> withCurrentWindow st mclient $ \sess win -> do
             atomically $ do
                 eff <- readTVar sess.lastSize
