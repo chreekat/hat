@@ -177,17 +177,31 @@ skipRun g p = go
                 c <- charAtR g s'
                 if p c then go s' { rc = s'.rc + 1 } else pure s'
 
+-- | Whether 'cursorRight' wraps onto the next line at the right bound.
+data Wrap = Wrap | NoWrap
+    deriving (Eq, Show)
+
+-- | The column bound 'cursorRight' respects: 'AllColumns' allows the full
+-- grid width; 'ContentColumns' stops at the line's content length.
+data ColumnBound = AllColumns | ContentColumns
+    deriving (Eq, Show)
+
+-- | Whether 'cursorRight' may rest one column past the last character
+-- ('OneMore', as copy mode does) or must stop on it ('Inclusive').
+data PastEnd = OneMore | Inclusive
+    deriving (Eq, Show)
+
 -- | @grid_reader_cursor_right@ with (wrap, all, onemore) flags.
-cursorRight :: Monad m => Grid m -> Bool -> Bool -> Bool -> Rdr -> m Rdr
-cursorRight g wrap allCols onemore s = do
-    px <- if allCols
-        then pure g.gSx
-        else if onemore
-            then g.gLineLen s.rr
-            else do
+cursorRight :: Monad m => Grid m -> Wrap -> ColumnBound -> PastEnd -> Rdr -> m Rdr
+cursorRight g wrap columnBound pastEnd s = do
+    px <- case columnBound of
+        AllColumns -> pure g.gSx
+        ContentColumns -> case pastEnd of
+            OneMore -> g.gLineLen s.rr
+            Inclusive -> do
                 l <- g.gLineLen s.rr
                 pure (if l /= 0 then l - 1 else 0)
-    if wrap && s.rc >= px && s.rr < gBottom g
+    if wrap == Wrap && s.rc >= px && s.rr < gBottom g
         then pure s { rc = 0, rr = s.rr + 1 }
         else if s.rc < px
             then pure s { rc = s.rc + 1 }
@@ -237,11 +251,23 @@ nextWordEnd g seps = loop
                         then skipStepping g (\x -> inSet seps x && not (whitespace x)) s'
                         else skipStepping g (\x -> not (inSet seps x || whitespace x)) s'
 
+-- | Whether 'previousWord' begins by stepping back off the current cell
+-- ('BackStep', tmux's @already@) or only steps back when already on
+-- whitespace ('NoBackStep').
+data BackStep = BackStep | NoBackStep
+    deriving (Eq, Show)
+
+-- | Whether 'previousWord' stops at the start of a line when scanning back
+-- ('StopAtEol', emacs) or crosses the boundary onto the previous line
+-- ('CrossEol').
+data EolStop = StopAtEol | CrossEol
+    deriving (Eq, Show)
+
 -- | @grid_reader_cursor_previous_word@ with @already@ and @stop_at_eol@.
-previousWord :: Monad m => Grid m -> Text -> Bool -> Bool -> Rdr -> m Rdr
-previousWord g seps already stopAtEol s0 = do
+previousWord :: Monad m => Grid m -> Text -> BackStep -> EolStop -> Rdr -> m Rdr
+previousWord g seps backStep eolStop s0 = do
     c0 <- charAtR g s0
-    step1 <- if already || whitespace c0
+    step1 <- if backStep == BackStep || whitespace c0
         then phase1 s0
         else pure (Right (s0, not (inSet seps c0)))
     case step1 of
@@ -260,7 +286,7 @@ previousWord g seps already stopAtEol s0 = do
         | otherwise = do
             l <- g.gLineLen (s.rr - 1)
             let s1 = s { rr = s.rr - 1, rc = l }
-            if stopAtEol && s1.rc > 0
+            if eolStop == StopAtEol && s1.rc > 0
                 then do
                     c <- charAtR g s1 { rc = s1.rc - 1 }
                     if whitespace c
@@ -304,13 +330,14 @@ mNextWordEnd :: Monad m => Text -> Motion m
 mNextWordEnd seps g keys _ s = case keys of
     KeysVi -> do
         c <- charAtR g s
-        s1 <- if not (whitespace c) then cursorRight g False False False s else pure s
+        s1 <- if not (whitespace c) then cursorRight g NoWrap ContentColumns Inclusive s else pure s
         s2 <- nextWordEnd g seps s1
         cursorLeft g True s2
     KeysEmacs -> nextWordEnd g seps s
 
 mPreviousWord :: Monad m => Text -> Motion m
-mPreviousWord seps g keys _ = previousWord g seps True (keys == KeysEmacs)
+mPreviousWord seps g keys _ =
+    previousWord g seps BackStep (if keys == KeysEmacs then StopAtEol else CrossEol)
 
 -- | Move one cell left, staying on the line (or onto the previous line
 -- when it wrapped).
@@ -320,7 +347,7 @@ mCursorLeft g _ _ = cursorLeft g False
 -- | Move one cell right, allowing one column past the last character
 -- (@onemore@) as copy mode does.
 mCursorRight :: Monad m => Motion m
-mCursorRight g _ _ = cursorRight g False False True
+mCursorRight g _ _ = cursorRight g NoWrap ContentColumns OneMore
 
 -- | Move the cursor @d@ rows (negative = up), clamped to the grid, and
 -- clamp the column to the destination line's length.
