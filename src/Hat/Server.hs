@@ -3636,7 +3636,9 @@ cmdPipePane st mclient args = do
     let (opts, flags, pos) = parseArgs "t" args
         hasI = "-I" `elem` flags
         hasO = "-O" `elem` flags
-        wantO = hasO || not hasI   -- default direction is -O
+        outputTap = if hasO || not hasI  -- default direction is -O
+            then OutputTapped else OutputUntapped
+        stdinFeed = if hasI then StdinFed else StdinUnfed
         toggle = "-o" `elem` flags
         cmd = T.strip (T.unwords pos)
     mpane <- targetPane st mclient (lookup "-t" opts)
@@ -3647,23 +3649,34 @@ cmdPipePane st mclient args = do
             stopPipe pane
             if T.null cmd || (toggle && wasPiping)
                 then pure []
-                else startPipe pane (T.unpack cmd) wantO hasI >> pure []
+                else startPipe pane (T.unpack cmd) outputTap stdinFeed >> pure []
+
+-- | @-O@: whether pane output is tapped into the process's stdin.
+data OutputTap = OutputTapped | OutputUntapped
+    deriving (Eq)
+
+-- | @-I@: whether the process's stdout is fed back into the pane.
+data StdinFeed = StdinFed | StdinUnfed
+    deriving (Eq)
 
 -- Spawn the pipe subprocess and record it on the pane.
-startPipe :: Pane -> String -> Bool -> Bool -> IO ()
-startPipe pane cmd wantO wantI = do
+startPipe :: Pane -> String -> OutputTap -> StdinFeed -> IO ()
+startPipe pane cmd outputTap stdinFeed = do
     (mIn, mOut, _, ph) <- createProcess (shell cmd)
-        { std_in  = if wantO then CreatePipe else Inherit
-        , std_out = if wantI then CreatePipe else Inherit
+        { std_in  = if tapOn then CreatePipe else Inherit
+        , std_out = if feedOn then CreatePipe else Inherit
         }
-    rtid <- case (wantI, mOut) of
+    rtid <- case (feedOn, mOut) of
         (True, Just hout) -> Just <$> forkIO (pumpPipeOutput pane hout)
         _ -> pure Nothing
     atomically $ writeTVar pane.pipe $ Just PipeHandle
         { process = ph
-        , toStdin = if wantO then mIn else Nothing
+        , toStdin = if tapOn then mIn else Nothing
         , reader = rtid
         }
+  where
+    tapOn = outputTap == OutputTapped
+    feedOn = stdinFeed == StdinFed
 
 -- Read the process's stdout and write it into the pane's pty (@-I@).
 pumpPipeOutput :: Pane -> Handle -> IO ()
