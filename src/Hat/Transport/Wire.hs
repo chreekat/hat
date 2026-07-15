@@ -144,15 +144,13 @@ data DrawOp
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
 
--- | The outcome of decoding a message frame.
---
--- 'UnknownTag' is a forward-compatible skip; 'Malformed' is fatal (the
--- envelope itself is unintelligible).
+-- | The outcome of decoding a message frame. Receiver policy per case
+-- is set by the evolution charter above.
 type role Inbound representational
 data Inbound a
-    = Known a
-    | UnknownTag Word
-    | Malformed String
+    = Known a           -- ^ a message this build knows
+    | UnknownTag Word   -- ^ a newer peer's message this build doesn't know
+    | Malformed String  -- ^ a frame that didn't decode
     deriving (Eq, Show)
 
 -- | Explicit, tag-stable CBOR for the two top-level message types.
