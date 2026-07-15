@@ -1328,7 +1328,7 @@ renderOnce st client = do
     (frame', cursor') <- case mpicker of
         Nothing -> pure (frame, cursor)
         Just pk -> do
-            let region = Picker.pickerRegion pk.zoomed csize rowOff mActiveRect
+            let region = Picker.pickerRegion pk.fill csize rowOff mActiveRect
                 width = region.endCol - region.startCol
                 rows = region.endRow - region.startRow
             mPreview <- case Picker.pickerSplit width of
@@ -1421,7 +1421,7 @@ overlayPicker region pk mPreview frame = overlayGrid frame region grid
     rows = region.endRow - region.startRow
     width = region.endCol - region.startCol
     rendered = Picker.pickerLines rows pk
-    padded = take rows (rendered <> repeat (False, ""))
+    padded = take rows (rendered <> repeat (Picker.UnselectedRow, ""))
     -- Split only when a preview pane exists and the width allows it.
     split = case (mPreview, Picker.pickerSplit width) of
         (Just previewCells, Just listW) -> Just (listW, previewCells)
@@ -1429,7 +1429,9 @@ overlayPicker region pk mPreview frame = overlayGrid frame region grid
     grid = V.fromList [ rowCells k | k <- [0 .. rows - 1] ]
     rowCells k =
         let (sel, txt) = padded !! k
-            sty = if sel then pickerSelStyle else pickerStyle
+            sty = case sel of
+                Picker.SelectedRow   -> pickerSelStyle
+                Picker.UnselectedRow -> pickerStyle
         in case split of
             Nothing -> lineCells sty width txt
             Just (listW, previewCells) ->
@@ -3432,15 +3434,15 @@ clientPromptEnv st client = do
             windowFormatEnv st sess ix win
 
 -- | Open a chooser overlay on the invoking client.
-openPicker :: ServerState -> Client -> Text -> Bool -> [PickerNode] -> IO ()
-openPicker st client titleText isZoomed picked = atomically $ do
+openPicker :: ServerState -> Client -> Text -> PickerFill -> [PickerNode] -> IO ()
+openPicker st client titleText fill picked = atomically $ do
     writeTVar client.picker $ Just PickerState
         { title = titleText
         , roots = picked
         , cursor = 0
         , query = ""
-        , searching = False
-        , zoomed = isZoomed
+        , mode = Browsing
+        , fill = fill
         }
     bumpDirty st
 
@@ -3454,16 +3456,16 @@ cmdChooseTree st mclient args = do
     let (_, flags, _) = parseArgs "" args
         sessionsOnly = "-s" `elem` flags
         windowsOnly  = "-w" `elem` flags
-        expandWindows = not sessionsOnly
-        expandPanes   = not sessionsOnly && not windowsOnly
-        isZoomed      = "-Z" `elem` flags
+        windowsExp = if sessionsOnly then Collapsed else Expanded
+        panesExp   = if sessionsOnly || windowsOnly then Collapsed else Expanded
+        fill = if "-Z" `elem` flags then FillWindow else PaneRegion
     forM_ mclient $ \client -> do
-        picked <- buildTreeNodes st expandWindows expandPanes
-        openPicker st client "choose a window" isZoomed picked
+        picked <- buildTreeNodes st windowsExp panesExp
+        openPicker st client "choose a window" fill picked
     pure []
 
-buildTreeNodes :: ServerState -> Bool -> Bool -> IO [PickerNode]
-buildTreeNodes st expandWindows expandPanes = do
+buildTreeNodes :: ServerState -> Expansion -> Expansion -> IO [PickerNode]
+buildTreeNodes st windowsExp panesExp = do
     sessions <- Map.elems <$> readTVarIO st.sessions
     forM sessions $ \sess -> do
         sname <- readTVarIO sess.name
@@ -3481,20 +3483,20 @@ buildTreeNodes st expandWindows expandPanes = do
                         , command = winCmd <> " ; select-pane -t " <> tshow pix
                         , preview = Just (PreviewPane pane.id)
                         , children = []
-                        , expanded = False }
+                        , expanded = Collapsed }
                     | (pix, pane) <- zip [0 :: Int ..] ordered ]
             pure PickerNode
                 { label = tshow ix <> ":" <> wname
                 , command = winCmd
                 , preview = Just (PreviewWindow win.id)
                 , children = Picker.windowChildren paneNodes
-                , expanded = expandPanes }
+                , expanded = panesExp }
         pure PickerNode
             { label = sname
             , command = "switch-client -t " <> sname
             , preview = Just (PreviewSession sess.id)
             , children = winNodes
-            , expanded = expandWindows }
+            , expanded = windowsExp }
 
 -- | @choose-window <template>@: a list of the current session's windows;
 -- selecting one runs @template@ with each @%%@ replaced by that window's
@@ -3505,7 +3507,7 @@ cmdChooseWindow st mclient args = do
     case (mclient, pos) of
         (Just client, template : _) -> do
             picked <- buildWindowItems st client template
-            openPicker st client "choose a window" False picked
+            openPicker st client "choose a window" PaneRegion picked
             pure []
         _ -> pure [RErr "usage: choose-window template"]
 

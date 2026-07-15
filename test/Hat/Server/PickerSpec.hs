@@ -5,8 +5,8 @@ import Test.Hspec
 
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model
-    ( PaneId (..), WindowId (..), PickerNode (..), PickerState (..)
-    , PreviewTarget (..) )
+    ( PaneId (..), WindowId (..), Expansion (..), PickerFill (..)
+    , PickerMode (..), PickerNode (..), PickerState (..), PreviewTarget (..) )
 import Hat.Server.Keys (Key, parseKeyName)
 import Hat.Server.Picker
 
@@ -16,7 +16,7 @@ key n = maybe (error ("bad key: " <> T.unpack n)) id (parseKeyName n)
 
 -- A collapsible parent node, initially expanded.
 node :: T.Text -> T.Text -> [PickerNode] -> PickerNode
-node lbl cmd kids = PickerNode lbl cmd Nothing kids True
+node lbl cmd kids = PickerNode lbl cmd Nothing kids Expanded
 
 demo :: PickerState
 demo = PickerState
@@ -30,8 +30,8 @@ demo = PickerState
         ]
     , cursor = 0
     , query = ""
-    , searching = False
-    , zoomed = False
+    , mode = Browsing
+    , fill = PaneRegion
     }
 
 stay :: PickerState -> Key -> PickerState
@@ -79,10 +79,10 @@ spec = do
             editPicker demo (key "Escape") `shouldBe` PickerCancel
 
         it "enters search mode on /" $
-            (stay demo (key "/")).searching `shouldBe` True
+            (stay demo (key "/")).mode `shouldBe` Searching
 
     describe "search mode" $ do
-        let searching = demo { searching = True }
+        let searching = demo { mode = Searching }
         it "filters to matches and keeps their ancestors" $ do
             let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
             p.query `shouldBe` "shell"
@@ -94,7 +94,7 @@ spec = do
         it "commits the search on Enter: leaves search mode, keeps the cursor" $ do
             let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
                 committed = stay p (key "Enter")
-            committed.searching `shouldBe` False
+            committed.mode `shouldBe` Browsing
             committed.cursor `shouldBe` p.cursor
 
         it "runs the match only on a second Enter, now in menu mode" $ do
@@ -146,12 +146,12 @@ spec = do
         let csize = Size { rows = 24, cols = 80 }
             paneRect = Rect { startRow = 0, endRow = 23, startCol = 41, endCol = 80 }
         it "uses the active pane's rect when not zoomed" $
-            pickerRegion False csize 0 (Just paneRect) `shouldBe` paneRect
+            pickerRegion PaneRegion csize 0 (Just paneRect) `shouldBe` paneRect
         it "fills the content area (minus the status row) when zoomed" $
-            pickerRegion True csize 0 (Just paneRect)
+            pickerRegion FillWindow csize 0 (Just paneRect)
                 `shouldBe` Rect { startRow = 0, endRow = 23, startCol = 0, endCol = 80 }
         it "falls back to the content area with no active pane" $
-            pickerRegion False csize 1 Nothing
+            pickerRegion PaneRegion csize 1 Nothing
                 `shouldBe` Rect { startRow = 1, endRow = 24, startCol = 0, endCol = 80 }
 
     describe "windowChildren" $ do
@@ -167,5 +167,5 @@ spec = do
         it "shows the title, marks the cursor row, and draws arrows" $ do
             let ls = pickerLines 10 demo { cursor = 1 }
             map snd (take 1 ls) `shouldBe` ["tree"]
-            [ t | (selected, t) <- ls, selected ] `shouldBe` ["    0:editor"]
+            [ t | (SelectedRow, t) <- ls ] `shouldBe` ["    0:editor"]
             [ t | (_, t) <- ls, "\x25be" `T.isInfixOf` t ] `shouldBe` ["\x25be work", "\x25be play"]

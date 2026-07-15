@@ -6,6 +6,7 @@
 -- command.
 module Hat.Server.Picker
     ( PickerEdit (..)
+    , RowSelected (..)
     , Row (..)
     , leaf
     , windowChildren
@@ -23,7 +24,9 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import Hat.Geometry (Rect (..), Size (..))
-import Hat.Model (PickerNode (..), PickerState (..), PreviewTarget)
+import Hat.Model
+    ( Expansion (..), PickerFill (..), PickerMode (..), PickerNode (..)
+    , PickerState (..), PreviewTarget )
 import Hat.Server.Keys (Key (..))
 
 -- | What one key does to an open picker.
@@ -46,7 +49,7 @@ data Row = Row
 leaf :: Text -> Text -> PickerNode
 leaf lbl cmd = PickerNode
     { label = lbl, command = cmd, preview = Nothing
-    , children = [], expanded = False }
+    , children = [], expanded = Collapsed }
 
 -- | A window's pane rows for the tree. A window with a single pane
 -- collapses to just its window row (that lone pane is redundant), so it
@@ -62,7 +65,9 @@ visibleRows p = go 0 [] (filterTree p.query p.roots)
   where
     go d prefix nodes = concat
         [ let here = prefix <> [i]
-              rest = if n.expanded then go (d + 1) here n.children else []
+              rest = case n.expanded of
+                  Expanded  -> go (d + 1) here n.children
+                  Collapsed -> []
           in Row d n here : rest
         | (i, n) <- zip [0 ..] nodes ]
 
@@ -99,10 +104,10 @@ stackThumbnails height n
 -- row but the status row) when zoomed, otherwise the active pane's
 -- rectangle, falling back to the content area when there is no active
 -- pane. @rowOff@ is where content starts (1 under a top status line).
-pickerRegion :: Bool -> Size -> Int -> Maybe Rect -> Rect
-pickerRegion isZoomed csize rowOff mActive
-    | isZoomed  = full
-    | otherwise = fromMaybe full mActive
+pickerRegion :: PickerFill -> Size -> Int -> Maybe Rect -> Rect
+pickerRegion fill csize rowOff mActive = case fill of
+    FillWindow -> full
+    PaneRegion -> fromMaybe full mActive
   where
     full = Rect
         { startRow = rowOff
@@ -120,18 +125,18 @@ filterTree q nodes
     ql = T.toLower q
     keep n
         | ql `T.isInfixOf` T.toLower n.label =
-            [ n { expanded = not (null n.children) } ]
+            [ n { expanded = if null n.children then Collapsed else Expanded } ]
         | otherwise = case filterTree q n.children of
             []   -> []
-            kids -> [ n { children = kids, expanded = True } ]
+            kids -> [ n { children = kids, expanded = Expanded } ]
 
 -- | Apply one key. In menu mode @j@/@k@ navigate, @l@/@h@ expand/collapse
 -- and @/@ enters search; in search mode keys type into the query. Enter
 -- runs the node under the cursor.
 editPicker :: PickerState -> Key -> PickerEdit
-editPicker p key
-    | p.searching = searchKey
-    | otherwise   = menuKey
+editPicker p key = case p.mode of
+    Searching -> searchKey
+    Browsing  -> menuKey
   where
     rows = visibleRows p
     n = length rows
@@ -144,15 +149,16 @@ editPicker p key
         Nothing -> PickerCancel
     -- Expansion edits address the node by its path; they are only allowed
     -- with no active query, where the path indexes 'roots' directly.
-    setExp b r = PickerStay p { roots = modifyAt r.path (\nd -> nd { expanded = b }) p.roots }
+    setExp e r = PickerStay p { roots = modifyAt r.path (\nd -> nd { expanded = e }) p.roots }
+    flipExp e = case e of Expanded -> Collapsed; Collapsed -> Expanded
     expand = case cur of
-        Just r | T.null p.query, not (null r.node.children), not r.node.expanded -> setExp True r
+        Just r | T.null p.query, not (null r.node.children), r.node.expanded == Collapsed -> setExp Expanded r
         _ -> PickerStay p
     collapse = case cur of
-        Just r | T.null p.query, r.node.expanded -> setExp False r
+        Just r | T.null p.query, r.node.expanded == Expanded -> setExp Collapsed r
         _ -> up
     toggle = case cur of
-        Just r | T.null p.query, not (null r.node.children) -> setExp (not r.node.expanded) r
+        Just r | T.null p.query, not (null r.node.children) -> setExp (flipExp r.node.expanded) r
         _ -> PickerStay p
     menuKey = case key.name of
         "Enter"  -> runSel
@@ -173,15 +179,15 @@ editPicker p key
         "Space"  -> toggle
         "g"      -> PickerStay p { cursor = 0 }
         "G"      -> PickerStay p { cursor = max 0 (n - 1) }
-        "/"      -> PickerStay p { searching = True }
+        "/"      -> PickerStay p { mode = Searching }
         _        -> PickerStay p
     searchKey = case key.name of
         -- Commit the filter and drop back to menu mode with the cursor on
         -- the first match; a second Enter there activates it. This keeps a
         -- pre-typed search (@choose-tree ... ; send-keys /@) from firing the
         -- first hit the instant you finish typing.
-        "Enter"  -> PickerStay p { searching = False }
-        "Escape" -> PickerStay p { searching = False, query = "", cursor = 0 }
+        "Enter"  -> PickerStay p { mode = Browsing }
+        "Escape" -> PickerStay p { mode = Browsing, query = "", cursor = 0 }
         "Up"     -> up
         "C-p"    -> up
         "Down"   -> down
@@ -216,21 +222,28 @@ insertText key
     | T.length key.name == 1, c <- T.head key.name, c >= ' ' = Just key.name
     | otherwise = Nothing
 
+-- | Whether a rendered picker row is the one under the cursor, so the
+-- caller can highlight it.
+data RowSelected = SelectedRow | UnselectedRow
+    deriving (Eq, Show)
+
 -- | Render the picker into at most @height@ lines: a title/search line
 -- then the visible rows, scrolled to keep the cursor in view. Each row is
--- indented by depth and prefixed with an expansion arrow; the returned
--- 'Bool' flags the cursor row so the caller can highlight it.
-pickerLines :: Int -> PickerState -> [(Bool, Text)]
-pickerLines height p = take height ((False, titleLine) : itemLines)
+-- indented by depth and prefixed with an expansion arrow; the flag marks
+-- the cursor row.
+pickerLines :: Int -> PickerState -> [(RowSelected, Text)]
+pickerLines height p = take height ((UnselectedRow, titleLine) : itemLines)
   where
     rows = visibleRows p
-    titleLine = p.title <> (if p.searching then "  /" <> p.query else "")
+    titleLine = p.title <> (case p.mode of Searching -> "  /" <> p.query; Browsing -> "")
     bodyH = max 1 (height - 1)
     start = max 0 (min (length rows - bodyH) (p.cursor - bodyH `div` 2))
     windowed = take bodyH (drop start rows)
-    itemLines = [ (i == p.cursor, rowText r) | (i, r) <- zip [start ..] windowed ]
+    itemLines =
+        [ (if i == p.cursor then SelectedRow else UnselectedRow, rowText r)
+        | (i, r) <- zip [start ..] windowed ]
     rowText r = T.replicate (2 * r.depth) " " <> arrow r <> " " <> r.node.label
-    arrow r
-        | null r.node.children = " "
-        | r.node.expanded      = "\x25be"   -- ▾
-        | otherwise            = "\x25b8"    -- ▸
+    arrow r = case r.node.expanded of
+        _ | null r.node.children -> " "
+        Expanded                 -> "\x25be"   -- ▾
+        Collapsed                -> "\x25b8"    -- ▸

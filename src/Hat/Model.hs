@@ -19,6 +19,9 @@ module Hat.Model
     , PromptState (..)
     , PickerState (..)
     , PickerNode (..)
+    , Expansion (..)
+    , PickerMode (..)
+    , PickerFill (..)
     , PreviewTarget (..)
     , SelKind (..)
     , newServerState
@@ -220,16 +223,28 @@ data PromptState = PromptState
 
 -- | A modal chooser overlay (@choose-tree@ / @choose-window@): a
 -- filterable tree of sessions, windows and panes where each node carries
--- the command to run when selected. Opens in menu mode; @/@ switches to
--- search, where keys type into 'query' instead of navigating.
+-- the command to run when selected. Opens in 'Browsing' mode; @/@ switches
+-- to 'Searching', where keys type into 'query' instead of navigating.
 data PickerState = PickerState
     { title     :: !Text
     , roots     :: ![PickerNode]
     , cursor    :: !Int    -- ^ index into the /visible/ (flattened) rows
     , query     :: !Text
-    , searching :: !Bool
-    , zoomed    :: !Bool   -- ^ @-Z@: fill the window, not just the pane
+    , mode      :: !PickerMode
+    , fill      :: !PickerFill
     }
+    deriving (Eq, Show)
+
+-- | Whether the picker is navigating its menu or typing a search query.
+data PickerMode
+    = Browsing   -- ^ keys navigate and expand\/collapse the tree
+    | Searching  -- ^ keys type into 'query'
+    deriving (Eq, Show)
+
+-- | @-Z@: how much of the screen the overlay paints over.
+data PickerFill
+    = FillWindow  -- ^ the whole content area, not just the active pane
+    | PaneRegion  -- ^ only the active pane's rectangle
     deriving (Eq, Show)
 
 -- | What the preview column shows for a node: a single pane's contents, a
@@ -248,8 +263,14 @@ data PickerNode = PickerNode
     , command  :: !Text  -- ^ command line run when the node is chosen
     , preview  :: !(Maybe PreviewTarget)  -- ^ what to show beside the list
     , children :: ![PickerNode]
-    , expanded :: !Bool  -- ^ whether 'children' are shown
+    , expanded :: !Expansion  -- ^ whether 'children' are shown
     }
+    deriving (Eq, Show)
+
+-- | Whether a tree node's children are revealed.
+data Expansion
+    = Expanded
+    | Collapsed
     deriving (Eq, Show)
 
 data Client = Client
