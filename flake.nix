@@ -44,6 +44,9 @@
             pkgs.gnugrep
             pkgs.gnused
             pkgs.procps
+
+            # System-independent PERF benchmarks: instruction counts.
+            pkgs.perf
           ];
         };
       });
