@@ -43,8 +43,9 @@ module Hat.Server.CopyMode
     , scrollToCursor
     ) where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, catch)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
@@ -52,7 +53,14 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Process (readCreateProcess, shell)
+import System.IO (IOMode (WriteMode), hClose, hPutStr, openFile)
+import System.Process
+    ( CreateProcess (..)
+    , StdStream (CreatePipe, UseHandle)
+    , createProcess
+    , shell
+    , waitForProcess
+    )
 import qualified Data.Vector as V
 
 import Hat.Geometry (Pos (..), Size (..))
@@ -821,11 +829,34 @@ handlers = Map.fromList
         g <- paneGrid pane
         mtext <- extractSelection g opts.modeKeys s
         forM_ mtext $ \body -> do
-            unless (T.null cmd) . void $
-                (try (readCreateProcess (shell (T.unpack cmd)) (T.unpack body))
-                    :: IO (Either SomeException String))
+            unless (T.null cmd) $ runPipeCommand (T.unpack cmd) body
             pushBuffer sst body
         pure (if cancelAfter then Nothing else Just s { selection = Nothing })
+
+-- | Feed a copy-mode selection to @sh -c cmd@ on stdin and return without
+-- waiting for the command to finish. The command's stdout and stderr are
+-- discarded and the child is reaped on its own thread: xclip forks a
+-- selection-owner daemon that inherits stdout and never closes it, so
+-- reading that stream to EOF (as 'readCreateProcess' does) would block the
+-- caller — here the client's input loop — indefinitely. @close_fds@ keeps
+-- that daemon from also inheriting the pane's pty master.
+runPipeCommand :: String -> Text -> IO ()
+runPipeCommand cmd body = act `catch` \(_ :: SomeException) -> pure ()
+  where
+    act = do
+        devnull <- openFile "/dev/null" WriteMode
+        (mIn, _, _, ph) <- createProcess (shell cmd)
+            { std_in   = CreatePipe
+            , std_out  = UseHandle devnull
+            , std_err  = UseHandle devnull
+            , close_fds = True
+            }
+        forM_ mIn $ \hIn ->
+            (hPutStr hIn (T.unpack body) >> hClose hIn)
+                `catch` \(_ :: SomeException) -> pure ()
+        void . forkIO $
+            void (waitForProcess ph)
+                `catch` \(_ :: SomeException) -> pure ()
 
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s

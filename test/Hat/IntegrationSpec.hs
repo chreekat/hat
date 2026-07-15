@@ -1707,12 +1707,35 @@ spec = parallel $ do
         awaitWith "selection highlighted" (\d ->
             (> baseline) <$> reverseCellCount d) c1
 
-        -- copy-pipe runs the shell command synchronously (readCreateProcess),
-        -- so the file is fully written by the time this control call returns.
+        -- copy-pipe reaps the command off-thread, so poll for the written
+        -- file rather than assuming it exists once the control call returns.
         let outPath = h.home <> "/piped.txt"
         _ <- ctlOut h ["send-keys", "-X", "copy-pipe", "cat > " <> outPath]
-        contents <- readFile outPath
+        contents <- awaitFile outPath (List.isInfixOf "PIPEDWORD")
         contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
+
+    it "copy-pipe does not freeze the client when the command leaves a child holding stdout" $
+        withHat hatBin $ \h -> do
+        -- xclip forks a selection-owner daemon that inherits and never closes
+        -- the command's stdout. If copy-pipe reads that stdout to EOF on the
+        -- client's input thread, the thread blocks forever and the client
+        -- goes dead. 'sleep' backgrounded in a subshell reproduces the leak.
+        writeFile (h.home <> "/hat.conf")
+            "bind-key -T copy-mode p send-keys -X copy-pipe 'sleep 30 &'\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "$"
+        typeInto c1 "echo PIPEDWORD"
+        awaitScreen c1 "PIPEDWORD"
+        baseline <- reverseCellCount c1
+        typeInto c1 "\x02[\x01 \x05"     -- enter copy mode; C-a, Space, C-e
+        awaitWith "selection highlighted" (\d ->
+            (> baseline) <$> reverseCellCount d) c1
+        typeInto c1 "p"                  -- copy-pipe with the leaking command
+        -- The input thread must keep processing keys. If it blocked in the
+        -- pipe, none of these land and the screen never shows the marker.
+        typeInto c1 "q"                  -- leave copy mode
+        typeInto c1 "echo STILLALIVE\r"
+        awaitScreen c1 "STILLALIVE"
 
     it "shows the [scroll/history] position indicator on entering copy mode" $
         withHat hatBin $ \h -> do
