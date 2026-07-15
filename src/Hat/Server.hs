@@ -210,8 +210,8 @@ storePathFor sockPath = do
                     pure (home </> ".local" </> "share")
             pure (base </> "hat")
 
--- | Whether the store is pinned: once @kill-server@ has captured the
--- final tree, the mirror must never overwrite it (see 'persistDecision').
+-- | Whether the store already holds an explicitly saved final tree.
+-- See 'persistDecision'.
 data StorePin = Pinned | Unpinned
     deriving (Eq, Show)
 
@@ -1079,9 +1079,9 @@ windowArrange eff win = do
         Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
         _ -> arrange (sizeRect eff) lay
 
--- How long 'closePane' waits for a hung-up child to exit before escalating
--- to SIGKILL. Long enough for a well-behaved child to die on SIGHUP, short
--- enough that a shutdown never stalls on a stubborn one.
+-- The grace a hung-up child gets before SIGKILL: long enough for a
+-- well-behaved child to die on SIGHUP, short enough that a shutdown never
+-- stalls on a stubborn one. See 'closePane'.
 paneExitWaitMicros :: Int
 paneExitWaitMicros = 400_000
 
