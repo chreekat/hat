@@ -12,6 +12,9 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , CopyModeState (..)
+    , SearchDirection (..)
+    , flipDirection
+    , CharStop (..)
     , CharSearch (..)
     , PromptState (..)
     , PickerState (..)
@@ -163,9 +166,9 @@ data CopyModeState = CopyModeState
         -- ^ an @f@/@F@/@t@/@T@ awaiting its target character.
     , lastSearch    :: !(Maybe (CharSearch, Char))
         -- ^ the most recent char search, for @;@ (repeat) and @,@ (reverse).
-    , lastQuery     :: !(Maybe (Text, Bool))
-        -- ^ the most recent string search (@/@ @?@): query + forward flag,
-        -- for @n@ (repeat) and @N@ (reverse).
+    , lastQuery     :: !(Maybe (Text, SearchDirection))
+        -- ^ the most recent string search (@/@ @?@): query + direction, for
+        -- @n@ (repeat) and @N@ (reverse).
     }
     deriving (Eq, Show)
 
@@ -174,11 +177,27 @@ data CopyModeState = CopyModeState
 data SelKind = SelChar | SelWord | SelLine | SelRect
     deriving (Eq, Show)
 
--- | A vi character search on the current line: @f@\/@t@ go forward, @F@\/@T@
--- backward; @t@\/@T@ ('till') stop one cell short of the target.
+-- | The direction a search runs: @/@ and @f@\/@t@ go 'Forward' (toward the
+-- end of the line / bottom of the grid); @?@ and @F@\/@T@ go 'Backward'.
+data SearchDirection = Forward | Backward
+    deriving (Eq, Show)
+
+-- | Reverse a search direction, for @;@\/@,@ and @n@\/@N@ repeats.
+flipDirection :: SearchDirection -> SearchDirection
+flipDirection Forward  = Backward
+flipDirection Backward = Forward
+
+-- | Where a vi @f@\/@F@\/@t@\/@T@ search lands: 'OnTarget' is @f@\/@F@;
+-- 'ShortOfTarget' is @t@\/@T@ ('till'), one cell short of the target.
+data CharStop = OnTarget | ShortOfTarget
+    deriving (Eq, Show)
+
+-- | A vi character search on the current line: 'direction' selects
+-- @f@\/@t@ (forward) from @F@\/@T@ (backward); 'stop' selects @t@\/@T@
+-- (short) from @f@\/@F@ (on target).
 data CharSearch = CharSearch
-    { searchForward :: !Bool
-    , searchTill    :: !Bool
+    { direction :: !SearchDirection
+    , stop      :: !CharStop
     }
     deriving (Eq, Show)
 

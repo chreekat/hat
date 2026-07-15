@@ -7,7 +7,9 @@ import qualified Data.Vector as V
 import Test.Hspec
 
 import Hat.Geometry (Pos (..))
-import Hat.Model (CharSearch (..), CopyModeState (..), SelKind (SelChar, SelLine))
+import Hat.Model
+    ( CharSearch (..), CharStop (..), CopyModeState (..)
+    , SearchDirection (..), SelKind (SelChar, SelLine) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.CopyMode
 import Hat.Term.Cell (Cell (..), Style (..), defaultStyle)
@@ -230,38 +232,38 @@ spec = do
     describe "char search (f/F/t/T)" $ do
         -- Row 0 is "A line of words"; 'o' is at columns 7 and 11.
         let row0 col = (start.sState) { cursorRow = 0, cursorCol = col }
-            search fwd till c st =
-                runIdentity (charSearch grid (CharSearch fwd till) c st)
+            search dir stp c st =
+                runIdentity (charSearch grid (CharSearch dir stp) c st)
         it "f moves onto the next occurrence" $
-            (search True False 'o' (row0 0)).cursorCol `shouldBe` 7
+            (search Forward OnTarget 'o' (row0 0)).cursorCol `shouldBe` 7
         it "t stops one cell before the next occurrence" $
-            (search True True 'o' (row0 0)).cursorCol `shouldBe` 6
+            (search Forward ShortOfTarget 'o' (row0 0)).cursorCol `shouldBe` 6
         it "F moves onto the previous occurrence" $
-            (search False False 'o' (row0 10)).cursorCol `shouldBe` 7
+            (search Backward OnTarget 'o' (row0 10)).cursorCol `shouldBe` 7
         it "T stops one cell after the previous occurrence" $
-            (search False True 'o' (row0 10)).cursorCol `shouldBe` 8
+            (search Backward ShortOfTarget 'o' (row0 10)).cursorCol `shouldBe` 8
         it "repeating f (via ;) finds the following occurrence" $
-            (search True False 'o' (row0 7)).cursorCol `shouldBe` 11
+            (search Forward OnTarget 'o' (row0 7)).cursorCol `shouldBe` 11
         it "does not move when the target is absent" $
-            (search True False 'z' (row0 0)).cursorCol `shouldBe` 0
+            (search Forward OnTarget 'z' (row0 0)).cursorCol `shouldBe` 0
 
     describe "string search (/ ? n N)" $ do
         -- "line" occurs at (0,2), (1,17) and (2,8) in the shared grid.
         let from r c = (start.sState) { cursorRow = r, cursorCol = c }
-            find fwd q st =
-                runIdentity (findMatch grid fwd q (st.cursorRow, st.cursorCol))
+            find dir q st =
+                runIdentity (findMatch grid dir q (st.cursorRow, st.cursorCol))
         it "/ finds the next match" $
-            find True "line" (from 0 0) `shouldBe` Just (0, 2)
+            find Forward "line" (from 0 0) `shouldBe` Just (0, 2)
         it "n advances to the following match" $
-            find True "line" (from 0 2) `shouldBe` Just (1, 17)
+            find Forward "line" (from 0 2) `shouldBe` Just (1, 17)
         it "forward search wraps to the first match" $
-            find True "line" (from 2 8) `shouldBe` Just (0, 2)
+            find Forward "line" (from 2 8) `shouldBe` Just (0, 2)
         it "? / N find the previous match" $
-            find False "line" (from 2 8) `shouldBe` Just (1, 17)
+            find Backward "line" (from 2 8) `shouldBe` Just (1, 17)
         it "backward search wraps to the last match" $
-            find False "line" (from 0 2) `shouldBe` Just (2, 8)
+            find Backward "line" (from 0 2) `shouldBe` Just (2, 8)
         it "no match returns Nothing" $
-            find True "zzz" (from 0 0) `shouldBe` Nothing
+            find Forward "zzz" (from 0 0) `shouldBe` Nothing
 
     describe "paragraph motions" $ do
         -- Shared grid: rows 0..4 hold text, rows 5..9 are blank.

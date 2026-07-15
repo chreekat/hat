@@ -447,18 +447,18 @@ charSearch
     :: Monad m => Grid m -> CharSearch -> Char -> CopyModeState -> m CopyModeState
 charSearch g cs target st = do
     len <- g.gLineLen st.cursorRow
-    mcol <- if cs.searchForward
-        then findFrom (st.cursorCol + 1) (\i -> i < len) (+ 1)
-        else findFrom (st.cursorCol - 1) (>= 0) (subtract 1)
+    mcol <- case cs.direction of
+        Forward  -> findFrom (st.cursorCol + 1) (\i -> i < len) (+ 1)
+        Backward -> findFrom (st.cursorCol - 1) (>= 0) (subtract 1)
     pure $ case mcol of
         Nothing -> st
         Just j -> st { cursorCol = landing j }
   where
     row = st.cursorRow
-    landing j
-        | not cs.searchTill = j
-        | cs.searchForward  = j - 1
-        | otherwise         = j + 1
+    landing j = case (cs.stop, cs.direction) of
+        (OnTarget, _)             -> j
+        (ShortOfTarget, Forward)  -> j - 1
+        (ShortOfTarget, Backward) -> j + 1
     findFrom i inBounds step
         | not (inBounds i) = pure Nothing
         | otherwise = do
@@ -494,13 +494,14 @@ gridMatches g query =
 -- | The next match of @query@ from @(row, col)@ in the given direction,
 -- wrapping around the grid. 'Nothing' when there are no matches at all.
 findMatch
-    :: Monad m => Grid m -> Bool -> Text -> (Int, Int) -> m (Maybe (Int, Int))
-findMatch g forward query (row, col) = do
+    :: Monad m
+    => Grid m -> SearchDirection -> Text -> (Int, Int) -> m (Maybe (Int, Int))
+findMatch g dir query (row, col) = do
     ms <- gridMatches g query
     pure $ case ms of
         [] -> Nothing
         (first : _)
-            | forward ->
+            | Forward <- dir ->
                 -- first match after the cursor, else wrap to the very first
                 case filter (\(r, c) -> r > row || (r == row && c > col)) ms of
                     (m : _) -> Just m
@@ -746,19 +747,19 @@ handlers = Map.fromList
     , ("previous-paragraph", gridH paragraphUp)
     -- Char search: f/F/t/T arm a pending search; the next key (captured in
     -- handleKeys) runs @apply-search@; ; and , repeat it.
-    , ("jump-forward",      pureH (armSearch True False))
-    , ("jump-backward",     pureH (armSearch False False))
-    , ("jump-to-forward",   pureH (armSearch True True))
-    , ("jump-to-backward",  pureH (armSearch False True))
+    , ("jump-forward",      pureH (armSearch Forward OnTarget))
+    , ("jump-backward",     pureH (armSearch Backward OnTarget))
+    , ("jump-to-forward",   pureH (armSearch Forward ShortOfTarget))
+    , ("jump-to-backward",  pureH (armSearch Backward ShortOfTarget))
     , ("jump-again",        gridH (jumpRepeat id))
     , ("jump-reverse",      gridH (jumpRepeat flipDir))
     , ("apply-search",      applySearchH)
     , ("cancel-search",     pureH (\s -> s { pendingSearch = Nothing }))
     -- String search: / and ? submit a query via command-prompt; n/N repeat.
-    , ("search-forward",    searchStringH True)
-    , ("search-backward",   searchStringH False)
+    , ("search-forward",    searchStringH Forward)
+    , ("search-backward",   searchStringH Backward)
     , ("search-again",      searchRepeatH id)
-    , ("search-reverse",    searchRepeatH not)
+    , ("search-reverse",    searchRepeatH flipDirection)
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s
@@ -783,8 +784,8 @@ handlers = Map.fromList
         opts <- readTVarIO sst.options
         g <- paneGrid pane
         Just <$> endOfLine opts.modeKeys g st
-    armSearch fwd till s = s { pendingSearch = Just (CharSearch fwd till) }
-    flipDir cs = cs { searchForward = not cs.searchForward }
+    armSearch dir stop' s = s { pendingSearch = Just (CharSearch dir stop') }
+    flipDir cs = cs { direction = flipDirection cs.direction }
     jumpRepeat modify g st = case st.lastSearch of
         Nothing -> pure st
         Just (cs, c) -> charSearch g (modify cs) c st
@@ -796,20 +797,20 @@ handlers = Map.fromList
             pure (Just st' { pendingSearch = Nothing, lastSearch = Just (cs, c) })
         _ -> pure (Just st { pendingSearch = Nothing })
     -- / and ? submit their query as the command args.
-    searchStringH forward _ pane st args = do
+    searchStringH dir _ pane st args = do
         let query = T.unwords args
         if T.null query then pure (Just st) else do
             g <- paneGrid pane
-            m <- findMatch g forward query (st.cursorRow, st.cursorCol)
-            let st' = st { lastQuery = Just (query, forward) }
+            m <- findMatch g dir query (st.cursorRow, st.cursorCol)
+            let st' = st { lastQuery = Just (query, dir) }
             pure . Just $ maybe st'
                 (\(r, c) -> st' { cursorRow = r, cursorCol = c }) m
-    -- n repeats in the stored direction; N (flip = not) reverses it.
-    searchRepeatH flipDir' _ pane st _ = case st.lastQuery of
+    -- n repeats in the stored direction; N (flipDirection) reverses it.
+    searchRepeatH reverseDir _ pane st _ = case st.lastQuery of
         Nothing -> pure (Just st)
-        Just (query, forward) -> do
+        Just (query, dir) -> do
             g <- paneGrid pane
-            m <- findMatch g (flipDir' forward) query (st.cursorRow, st.cursorCol)
+            m <- findMatch g (reverseDir dir) query (st.cursorRow, st.cursorCol)
             pure . Just $ maybe st
                 (\(r, c) -> st { cursorRow = r, cursorCol = c }) m
     -- copy-pipe [-flags] <shell command>: yank the selection into a
