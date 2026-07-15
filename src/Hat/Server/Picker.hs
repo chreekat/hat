@@ -19,6 +19,7 @@ module Hat.Server.Picker
     , pickerLines
     ) where
 
+import Data.List (findIndex)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -182,11 +183,13 @@ editPicker p key = case p.mode of
         "/"      -> PickerStay p { mode = Searching }
         _        -> PickerStay p
     searchKey = case key.name of
-        -- Commit the filter and drop back to menu mode with the cursor on
-        -- the first match; a second Enter there activates it. This keeps a
-        -- pre-typed search (@choose-tree ... ; send-keys /@) from firing the
-        -- first hit the instant you finish typing.
-        "Enter"  -> PickerStay p { mode = Browsing }
+        -- Commit the search: drop back to menu mode with the filter cleared
+        -- so the full tree shows again, the cursor on the first match (its
+        -- collapsed ancestors expanded to reveal it). A second Enter there
+        -- activates it, which keeps a pre-typed search (@choose-tree ... ;
+        -- send-keys /@) from firing the first hit the instant you finish
+        -- typing.
+        "Enter"  -> PickerStay commitSearch
         "Escape" -> PickerStay p { mode = Browsing, query = "", cursor = 0 }
         "Up"     -> up
         "C-p"    -> up
@@ -196,6 +199,15 @@ editPicker p key = case p.mode of
         _        -> case insertText key of
             Just t  -> PickerStay (reQuery (p.query <> t))
             Nothing -> PickerStay p
+    commitSearch
+        | T.null p.query = p { mode = Browsing }
+        | otherwise = case firstMatchPath p.query p.roots of
+            Nothing -> cleared { cursor = min p.cursor (max 0 (length (visibleRows cleared) - 1)) }
+            Just mp ->
+                let p' = cleared { roots = revealPath mp p.roots }
+                in p' { cursor = fromMaybe 0 (findIndex ((== mp) . (.path)) (visibleRows p')) }
+      where
+        cleared = p { mode = Browsing, query = "" }
     -- After editing the query, land the cursor on the first row that
     -- actually matches (a leaf), not on an ancestor kept only for context.
     reQuery q =
@@ -204,6 +216,29 @@ editPicker p key = case p.mode of
         in p' { cursor = case [ i | (i, r) <- zip [0 ..] (visibleRows p'), matches r ] of
                     (i : _) -> i
                     []      -> 0 }
+
+-- | The index path of the first node, depth-first, whose label matches
+-- the query (case-insensitive substring) — the same node the filtered
+-- view puts first, since filtering preserves depth-first order.
+firstMatchPath :: Text -> [PickerNode] -> Maybe [Int]
+firstMatchPath q = listToMaybe . go
+  where
+    ql = T.toLower q
+    go nodes = concat
+        [ if ql `T.isInfixOf` T.toLower n.label
+              then [[i]]
+              else map (i :) (go n.children)
+        | (i, n) <- zip [0 ..] nodes ]
+
+-- | Expand every ancestor along the index path (not the node itself), so
+-- the node at the path is visible.
+revealPath :: [Int] -> [PickerNode] -> [PickerNode]
+revealPath (i : is@(_ : _)) nodes =
+    [ if j == i
+          then nd { expanded = Expanded, children = revealPath is nd.children }
+          else nd
+    | (j, nd) <- zip [0 ..] nodes ]
+revealPath _ nodes = nodes
 
 -- | Apply @f@ to the node at the given index path within a forest.
 modifyAt :: [Int] -> (PickerNode -> PickerNode) -> [PickerNode] -> [PickerNode]

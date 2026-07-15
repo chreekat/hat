@@ -88,20 +88,38 @@ spec = do
             p.query `shouldBe` "shell"
             labels p `shouldBe` ["work", "1:shell"]
 
-        -- Enter while typing a search commits the filter (leaves search mode
-        -- with the cursor on the first match) rather than immediately
-        -- activating it; activation takes a deliberate second Enter.
-        it "commits the search on Enter: leaves search mode, keeps the cursor" $ do
+        -- Enter while typing a search commits it: the filter clears so the
+        -- full tree shows again, with the cursor on the first match, rather
+        -- than immediately activating it; activation takes a deliberate
+        -- second Enter.
+        it "commits the search on Enter: clears the filter, cursor on the first match" $ do
             let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
                 committed = stay p (key "Enter")
             committed.mode `shouldBe` Browsing
-            committed.cursor `shouldBe` p.cursor
+            committed.query `shouldBe` ""
+            labels committed `shouldBe` labels demo
+            committed.cursor `shouldBe` 2
 
         it "runs the match only on a second Enter, now in menu mode" $ do
             let p = foldl stay searching (map key ["s", "h", "e", "l", "l"])
                 committed = stay p (key "Enter")
             editPicker committed (key "Enter")
                 `shouldBe` PickerRun "select-window -t work:1"
+
+        it "reveals a first match hidden inside a collapsed subtree" $ do
+            let collapsed = stay demo { cursor = 3 } (key "h")  -- collapse "play"
+                p = foldl stay (stay collapsed (key "/")) (map key ["g", "a", "m", "e"])
+                committed = stay p (key "Enter")
+            labels committed `shouldBe` labels demo
+            committed.cursor `shouldBe` 4
+
+        it "clears the filter on Enter even with no matches" $ do
+            let p = foldl stay searching (map key ["z", "z"])
+                committed = stay p (key "Enter")
+            committed.mode `shouldBe` Browsing
+            committed.query `shouldBe` ""
+            labels committed `shouldBe` labels demo
+            committed.cursor `shouldBe` 0
 
     describe "selectedPreview" $ do
         let previewTree = demo
