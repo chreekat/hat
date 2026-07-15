@@ -4,7 +4,7 @@ import qualified Data.Text as T
 import Test.Hspec
 
 import Hat.Model.Options (Options (..), defaultOptions)
-import Hat.Server (setOption)
+import Hat.Server (SetMode (..), setOption)
 import Hat.Server.ColorScheme
 import qualified Hat.Term.Cell as Cell
 
@@ -67,7 +67,7 @@ spec = do
 
         it "never touches an option the user has set" $ do
             opts <- either (fail . T.unpack) pure
-                (setOption False defaultOptions "status-style" "bg=colour196")
+                (setOption Assign defaultOptions "status-style" "bg=colour196")
             let dark = applyPalette SchemeDark opts
             dark.statusStyle `shouldBe` opts.statusStyle
             dark.statusStyle.bg `shouldBe` Cell.Indexed 196

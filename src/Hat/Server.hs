@@ -4,6 +4,7 @@
 module Hat.Server
     ( runServer
     , setOption  -- ^ exported for the config-load burn-down test
+    , SetMode (..)  -- ^ exported for the config-load burn-down test
     , send       -- ^ exported for the greeting-ordering test
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
@@ -2245,13 +2246,13 @@ cmdUnbind st _ args = do
 cmdSet :: CommandImpl
 cmdSet st _ args = do
     let (_, flags, pos) = parseArgs "t" args
-        append = "-a" `elem` flags
+        mode = if "-a" `elem` flags then Append else Assign
     case pos of
         (nameT : rest) -> do
             let value = T.unwords rest
             r <- atomically $ do
                 opts <- readTVar st.options
-                case setOption append opts nameT value of
+                case setOption mode opts nameT value of
                     Left err -> pure (Just err)
                     Right opts' -> do
                         writeTVar st.options opts'
@@ -2300,21 +2301,26 @@ lookupOption opts name = case name of
         | "@" `T.isPrefixOf` name -> Map.lookup name opts.user
         | otherwise -> Nothing
 
--- | Apply a @set-option@. @append@ is tmux's @-a@: for string-valued
--- options it concatenates onto the current value (used to build up
--- @status-right@ across several lines). Unknown non-@\@@ options are
--- rejected so a config never looks supported when its behavior is not
--- yet implemented.
-setOption :: Bool -> Options -> Text -> Text -> Either Text Options
-setOption append opts name value =
-    mark <$> setOptionRaw append opts name value
+-- | Whether a @set-option@ replaces the option or concatenates onto it.
+data SetMode
+    = Assign  -- ^ replace the current value outright
+    | Append  -- ^ tmux's @-a@: append onto a string option's current value
+    deriving (Eq)
+
+-- | Apply a @set-option@. For string-valued options 'Append' concatenates
+-- onto the current value (used to build up @status-right@ across several
+-- lines). Unknown non-@\@@ options are rejected so a config never looks
+-- supported when its behavior is not yet implemented.
+setOption :: SetMode -> Options -> Text -> Text -> Either Text Options
+setOption mode opts name value =
+    mark <$> setOptionRaw mode opts name value
   where
     -- Successful sets are remembered so scheme palettes ('applyPalette')
     -- never override an option the user chose.
     mark o = o { explicit = Set.insert name o.explicit }
 
-setOptionRaw :: Bool -> Options -> Text -> Text -> Either Text Options
-setOptionRaw append opts name value = case name of
+setOptionRaw :: SetMode -> Options -> Text -> Text -> Either Text Options
+setOptionRaw mode opts name value = case name of
     "prefix" -> case parseKeyName value of
         Just k -> Right opts { prefix = k.name }
         Nothing -> Left ("bad prefix key: " <> value)
@@ -2385,7 +2391,9 @@ setOptionRaw append opts name value = case name of
         "on"  -> Right (f True)
         "off" -> Right (f False)
         _ -> Left (name <> ": on or off")
-    withAppend old = if append then old <> value else value
+    withAppend old = case mode of
+        Append -> old <> value
+        Assign -> value
 
 cmdSourceFile :: CommandImpl
 cmdSourceFile st mclient args = case pos of

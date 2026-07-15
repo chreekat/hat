@@ -15,7 +15,7 @@ import Test.Hspec
 
 import Hat.Command.Parser (parseConfig)
 import Hat.Model.Options (Options (..), defaultOptions)
-import Hat.Server (setOption)
+import Hat.Server (SetMode (..), setOption)
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
 loadSetErrors :: [[Text]] -> [Text]
@@ -23,37 +23,38 @@ loadSetErrors cmds = lefts (snd (List.foldl' step (defaultOptions, []) cmds))
   where
     step (opts, errs) argv = case argvSet argv of
         Nothing -> (opts, errs)
-        Just (append, name, value) -> case setOption append opts name value of
+        Just (mode, name, value) -> case setOption mode opts name value of
             Right opts' -> (opts', errs)
             Left err    -> (opts, Left err : errs)
 
--- Parse a @set-option@ argv into (append, name, value); 'Nothing' if the
+-- Parse a @set-option@ argv into (mode, name, value); 'Nothing' if the
 -- command is not a set. Leading @-flags@ are options; @-a@ means append.
-argvSet :: [Text] -> Maybe (Bool, Text, Text)
+argvSet :: [Text] -> Maybe (SetMode, Text, Text)
 argvSet (cmd : rest)
     | cmd `elem` ["set-option", "set", "set-window-option", "setw"]
     , let (flags, pos) = span ("-" `T.isPrefixOf`) rest
     , (name : valueWords) <- pos =
-        Just (any (T.isInfixOf "a") flags, name, T.unwords valueWords)
+        Just ( if any (T.isInfixOf "a") flags then Append else Assign
+             , name, T.unwords valueWords )
 argvSet _ = Nothing
 
 spec :: Spec
 spec = do
     describe "setOption" $ do
         it "rejects an unknown option instead of silently storing it" $
-            setOption False defaultOptions "no-such-option" "x"
+            setOption Assign defaultOptions "no-such-option" "x"
                 `shouldBe` Left "unimplemented option: no-such-option"
 
         it "stores @-options in the user map" $
             fmap (Map.lookup "@foo" . (.user))
-                (setOption False defaultOptions "@foo" "bar")
+                (setOption Assign defaultOptions "@foo" "bar")
                 `shouldBe` Right (Just "bar")
 
         it "appends to a string option with -a" $ do
-            let set app opts name v =
-                    either (const opts) id (setOption app opts name v)
-                opts0 = set False defaultOptions "status-right" "a"
-                opts1 = set True opts0 "status-right" "b" :: Options
+            let set mode opts name v =
+                    either (const opts) id (setOption mode opts name v)
+                opts0 = set Assign defaultOptions "status-right" "a"
+                opts1 = set Append opts0 "status-right" "b" :: Options
             (opts1.statusRight :: Text) `shouldBe` "ab"
 
     describe "config-load burn-down (real ~/.tmux.conf)" $
