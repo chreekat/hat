@@ -306,6 +306,7 @@ data WindowStruct = WindowStruct
     , wsLayout     :: Text
     , wsActive     :: Int
     , wsLastActive :: Maybe Int
+    , wsAutoRename :: Bool
     , wsPanes      :: [Pane]
     }
 
@@ -331,6 +332,7 @@ windowStruct eff (wix, w) = do
     lay      <- readTVar w.layout
     activeId <- readTVar w.activeId
     lastAId  <- readTVar w.lastActive
+    auto     <- readTVar w.autoRename
     paneMap  <- readTVar w.panes
     let order = layoutPanes lay
         activeOrd = fromMaybe 0 (List.elemIndex activeId order)
@@ -339,6 +341,7 @@ windowStruct eff (wix, w) = do
         { wsIx = wix, wsName = nm
         , wsLayout = emitLayout (sizeRect (windowArea eff)) lay
         , wsActive = activeOrd, wsLastActive = lastOrd
+        , wsAutoRename = auto
         , wsPanes = mapMaybe (`Map.lookup` paneMap) order }
 
 captureWindow :: WindowStruct -> IO WindowSnap
@@ -351,7 +354,8 @@ captureWindow ws = do
         pure PaneSnap { cwd = T.pack dir, command = argv }
     pure WindowSnap
         { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
-        , active = ws.wsActive, lastActive = ws.wsLastActive, panes = psnaps }
+        , active = ws.wsActive, lastActive = ws.wsLastActive
+        , autoRename = ws.wsAutoRename, panes = psnaps }
 
 -- Color scheme -----------------------------------------------------------
 
@@ -529,8 +533,10 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
     bellVar       <- newTVarIO False
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing
-    -- The restored name is explicit; don't let auto-rename clobber it.
-    autoRenameVar <- newTVarIO False
+    -- Auto-rename status survives the round-trip: a window renaming
+    -- automatically keeps tracking its active pane, a manually-named one
+    -- keeps its pinned name.
+    autoRenameVar <- newTVarIO wsnap.autoRename
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar

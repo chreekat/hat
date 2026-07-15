@@ -681,9 +681,11 @@ spec = parallel $ do
                         , windows =
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, lastActive = Nothing
+                                , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0, lastActive = Nothing
+                                , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing }
                                           , PaneSnap { cwd = "/tmp", command = Nothing }] }
                             ] } ] }
@@ -714,6 +716,7 @@ spec = parallel $ do
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, lastActive = Nothing
+                                , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
@@ -1233,6 +1236,33 @@ spec = parallel $ do
         c2 <- startClient h
         awaitScreen c2 "0:built0"
         awaitScreen c2 "1:editor"
+
+    -- b7: a window's automatic-rename status must survive save/restore, in
+    -- both directions -- an auto-renaming window keeps tracking its pane, a
+    -- manually-named window stays pinned.
+    it "restores each window's automatic-rename status" $
+        withHatPersist hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
+        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c1 "0:sh*"
+        -- Window 0 stays automatic; window 1 is pinned by rename-window,
+        -- which disables its automatic-rename.
+        _ <- ctlOut h ["new-window", "-d", "-t", "1"]
+        awaitScreen c1 "1:sh"
+        _ <- ctlOut h ["rename-window", "-t", "1", "pinned"]
+        awaitScreen c1 "1:pinned"
+        flags1 <- ctlOut h ["list-windows", "-F", "#{automatic_rename}"]
+        lines flags1 `shouldBe` ["1", "0"]
+
+        _ <- ctlOut h ["kill-server"]
+        _ <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "server did not die"
+
+        c2 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c2 "1:pinned"
+        flags2 <- ctlOut h ["list-windows", "-F", "#{automatic_rename}"]
+        lines flags2 `shouldBe` ["1", "0"]
 
     it "opens the command prompt (:) and runs the typed command" $
         withHat hatBin $ \h -> do

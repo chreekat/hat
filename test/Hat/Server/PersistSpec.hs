@@ -38,9 +38,10 @@ genWindow wix = do
     ps    <- vectorOf npane arbitrary
     act   <- choose (0, npane - 1)
     la    <- oneof [pure Nothing, Just <$> choose (0, npane - 1)]
+    auto  <- arbitrary
     pure WindowSnap
         { ix = wix, name = nm, layout = lay, active = act
-        , lastActive = la, panes = ps }
+        , lastActive = la, autoRename = auto, panes = ps }
 
 instance Arbitrary Snapshot where
     arbitrary = do
@@ -84,6 +85,7 @@ instance Arbitrary WindowSnap where
     shrink w =
         [ w { panes = ps } | ps <- shrinkList shrink w.panes, not (null ps) ]
         ++ [ w { lastActive = Nothing } | w.lastActive /= Nothing ]
+        ++ [ w { autoRename = False } | w.autoRename ]
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
 instance Arbitrary PaneSnap where
@@ -136,6 +138,7 @@ spec = do
                         , windows =
                             [ WindowSnap { ix = 0, name = wnm, layout = lay
                                 , active = 0, lastActive = Nothing
+                                , autoRename = False
                                 , panes = [PaneSnap { cwd = pcwd, command = Nothing }] }
                             ] } ] }
 
@@ -195,9 +198,11 @@ spec = do
                         , windows =
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, lastActive = Nothing
+                                , autoRename = False
                                 , panes = [PaneSnap { cwd = "/h", command = Nothing }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
                                 , active = 1, lastActive = Just 0
+                                , autoRename = False
                                 , panes =
                                     [ PaneSnap { cwd = "/h", command = Nothing }
                                     , PaneSnap { cwd = "/h", command = Nothing } ] }
@@ -205,6 +210,23 @@ spec = do
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         got `shouldBe` snap
+
+    -- b7: restore must preserve each window's automatic-rename status, so an
+    -- auto-renaming window keeps tracking its active pane and a manually-named
+    -- window keeps its pinned name. The codec used to drop this flag.
+    it "round-trips each window's automatic-rename status" $ do
+        let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
+                , active = 0, lastActive = Nothing, autoRename = auto
+                , panes = [PaneSnap { cwd = "/h", command = Nothing }] }
+            snap = Snapshot
+                { lastActiveSession = Nothing, sessions =
+                    [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
+                        , lastIx = Nothing
+                        , windows = [win 0 True, win 1 False] } ] }
+        got <- withStore ":memory:" $ \conn ->
+            saveSnapshot conn snap >> loadSnapshot conn
+        [ w.autoRename | s <- got.sessions, w <- s.windows ]
+            `shouldBe` [True, False]
 
     it "round-trips an argv whose argument contains spaces" $ do
         let snap = Snapshot
@@ -214,6 +236,7 @@ spec = do
                         , windows =
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
                                 , active = 0, lastActive = Nothing
+                                , autoRename = False
                                 , panes = [ PaneSnap { cwd = "/h"
                                     , command = Just ["vim", "Foo Bar.txt"] } ] } ] } ] }
         got <- withStore ":memory:" $ \conn ->

@@ -64,6 +64,10 @@ data WindowSnap = WindowSnap
                            -- ^ ordinal (in 'panes' order) of the last-active
                            --   pane (@last-pane@ returns to it), if any;
                            --   carried in the window row's @extra@ JSON.
+    , autoRename :: Bool   -- ^ whether the window is in automatic-rename
+                           --   state (its name tracks the active pane) rather
+                           --   than manually named; carried in the window
+                           --   row's @extra@ JSON.
     , panes      :: [PaneSnap] -- ^ in layout order
     }
     deriving (Eq, Show)
@@ -100,24 +104,29 @@ decodeSessionExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
     Just (SessionExtra ml) -> ml
     Nothing                -> Nothing
 
--- | The window row's @extra@ JSON payload.
-newtype WindowExtra = WindowExtra (Maybe Int)  -- ^ last-active pane ordinal
+-- | The window row's @extra@ JSON payload: the last-active pane ordinal and
+-- the automatic-rename flag. A store written before @auto_rename@ existed
+-- omits the key; it defaults to 'False', matching the old restore behavior
+-- of pinning a restored window's name.
+data WindowExtra = WindowExtra (Maybe Int) Bool
 
 instance ToJSON WindowExtra where
-    toJSON (WindowExtra ml) = object (maybe [] (\l -> ["last_active" .= l]) ml)
+    toJSON (WindowExtra ml auto) =
+        object (maybe [] (\l -> ["last_active" .= l]) ml
+                ++ ["auto_rename" .= auto | auto])
 
 instance FromJSON WindowExtra where
     parseJSON = withObject "window extra" $ \o ->
-        WindowExtra <$> o .:? "last_active"
+        WindowExtra <$> o .:? "last_active" <*> (fromMaybe False <$> o .:? "auto_rename")
 
-encodeWindowExtra :: Maybe Int -> Text
-encodeWindowExtra ml =
-    TE.decodeUtf8 (BL.toStrict (encode (WindowExtra ml)))
+encodeWindowExtra :: Maybe Int -> Bool -> Text
+encodeWindowExtra ml auto =
+    TE.decodeUtf8 (BL.toStrict (encode (WindowExtra ml auto)))
 
-decodeWindowExtra :: Text -> Maybe Int
+decodeWindowExtra :: Text -> (Maybe Int, Bool)
 decodeWindowExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
-    Just (WindowExtra ml) -> ml
-    Nothing               -> Nothing
+    Just (WindowExtra ml auto) -> (ml, auto)
+    Nothing                    -> (Nothing, False)
 
 -- | The pane row's @extra@ JSON payload. Evolving, optional fields live
 -- here rather than in core columns, so old and new binaries interoperate.
@@ -228,7 +237,7 @@ saveSnapshot conn snap = withTransaction conn $ do
         execute conn
             "INSERT INTO window (session_seq, ix, name, layout, active, extra) \
             \VALUES (?, ?, ?, ?, ?, ?)"
-            (sseq, w.ix, w.name, w.layout, w.active, encodeWindowExtra w.lastActive)
+            (sseq, w.ix, w.name, w.layout, w.active, encodeWindowExtra w.lastActive w.autoRename)
         mapM_ (insertPane sseq w.ix) (zip [0 ..] w.panes)
     insertPane :: Int -> Int -> (Int, PaneSnap) -> IO ()
     insertPane sseq wix (ord, p) =
@@ -267,8 +276,9 @@ loadSnapshot conn = do
             "SELECT cwd, extra FROM pane \
             \WHERE session_seq = ? AND window_ix = ? ORDER BY ordinal"
             (sseq, wix) :: IO [(Text, Text)]
+        let (lastAct, auto) = decodeWindowExtra wex
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
-            , lastActive = decodeWindowExtra wex
+            , lastActive = lastAct, autoRename = auto
             , panes = [ PaneSnap { cwd = c, command = decodeExtra ex }
                       | (c, ex) <- prows ] }
