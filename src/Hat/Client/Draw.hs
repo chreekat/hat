@@ -1,6 +1,5 @@
 -- | Turn 'DrawOp's into the escape-sequence bytes the client blits to
--- its tty. Pure; the client wraps each batch in hide-cursor /
--- restore-cursor so partial redraws never flicker.
+-- its tty. Pure; see 'opsToAnsi'.
 module Hat.Client.Draw
     ( opsToAnsi
     , sgr
@@ -17,11 +16,16 @@ import Hat.Geometry
 import Hat.Term.Cell
 import Hat.Transport.Wire (DrawOp (..))
 
+-- | Each batch is bracketed in DEC 2026 synchronized output (BSU/ESU),
+-- so the terminal presents the whole frame at once — a full redraw's
+-- clear-then-repaint would otherwise flicker — and in hide-cursor /
+-- restore-cursor so the cursor never trails the paint.
 opsToAnsi :: [DrawOp] -> ByteString
 opsToAnsi ops = BL.toStrict . BB.toLazyByteString $
-    BB.byteString "\ESC[?25l"  -- hide cursor while painting
+    BB.byteString "\ESC[?2026h\ESC[?25l"
     <> foldMap opBuilder ops
     <> restoreCursor
+    <> BB.byteString "\ESC[?2026l"
   where
     -- The renderer puts CursorAt last; if a batch lacks one (pure
     -- content update), leave the cursor hidden state to the final op

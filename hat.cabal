@@ -134,6 +134,7 @@ test-suite hat-test
     main-is:            Main.hs
     build-tool-depends: hat:hat
     other-modules:
+        Hat.Client.DrawSpec
         Hat.Command.ParserSpec
         Hat.IntegrationSpec
         Hat.Server.PersistSpec
