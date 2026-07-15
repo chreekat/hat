@@ -1667,10 +1667,11 @@ promptCursorCol pr = T.length pr.promptLabel + pr.cursor
 sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
 sessionFormatEnv st sess = do
     hostname <- nodeName <$> getSystemID
-    (sname, wEnv, mactive, nclients) <- atomically $ do
+    (sname, wEnv, mactive, nclients, nwindows) <- atomically $ do
         sname <- readTVar sess.name
         mwin <- currentWindow sess
         cur <- readTVar sess.currentIx
+        nwindows <- Map.size <$> readTVar sess.windows
         wEnv <- case mwin of
             Nothing -> pure []
             Just win -> do
@@ -1680,7 +1681,7 @@ sessionFormatEnv st sess = do
                      ]
         mactive <- maybe (pure Nothing) activePane mwin
         cs <- sessionClients st sess.id
-        pure (sname, wEnv, mactive, length cs)
+        pure (sname, wEnv, mactive, length cs, nwindows)
     pEnv <- case mactive of
         Nothing -> pure []
         Just pane -> do
@@ -1698,6 +1699,8 @@ sessionFormatEnv st sess = do
     msch <- readTVarIO st.colorScheme
     pure . Map.union userOpts . Map.fromList $
         [ ("session_name", sname)
+        , ("session_attached", tshow nclients)
+        , ("session_windows", tshow nwindows)
         , ("host", T.pack hostname)
         , ("window_active_clients", tshow nclients)
         , ("window_width", tshow sz.cols)

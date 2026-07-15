@@ -516,6 +516,30 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    -- The tmuxed-alacritty attach/nuke scripts pick a session from
+    -- `list-sessions -F` with this line template, so #{session_attached}
+    -- and #{session_windows} must resolve to their counts and drive the
+    -- #{?...} attached-marker conditional.
+    it "list-sessions -F reports session_attached and session_windows" $
+        withHat hatBin $ \h -> do
+        -- One attached client: its session has 1 client and 1 window.
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        -- A detached session grown to two windows: 0 clients, 2 windows.
+        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
+        _ <- hatCtl h ["new-window", "-t", "work"]
+        out <- T.pack <$> ctlOut h
+            [ "list-sessions", "-F"
+            , "#{session_name}\t#{session_attached}\t#{session_windows}"
+                <> "\t#{?session_attached,ATT,DET}" ]
+        -- Detached session: 0 attached, 2 windows, false branch.
+        out `shouldSatisfy` T.isInfixOf "work\t0\t2\tDET"
+        -- Attached session: 1 attached, 1 window, true branch.
+        out `shouldSatisfy` T.isInfixOf "\t1\t1\tATT"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "refuses to nest: attaching from inside a pane errors out" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
