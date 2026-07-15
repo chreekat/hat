@@ -76,18 +76,25 @@ clientMain cli = do
         [] -> attach path cli.configFile []
         ["attach"] -> attach path cli.configFile []
         ["attach-session"] -> attach path cli.configFile []
-        _ | attachesTerminal cmds -> attach path cli.configFile cmds
-          | otherwise -> control path cli.configFile cmds
+        _ -> case terminalMode cmds of
+            GrabsTerminal -> attach path cli.configFile cmds
+            FireAndForget -> control path cli.configFile cmds
 
--- | Verbs that should grab this terminal and render, running server-side
--- first to establish the session: @new-session@/@new@ (unless detached
--- with @-d@) and @attach-session@/@attach@ with an explicit target. A
--- bare @new@ still attaches; a @new -d@ stays a fire-and-exit command.
-attachesTerminal :: [[T.Text]] -> Bool
-attachesTerminal [cmd@(verb : _)]
-    | verb `elem` ["new-session", "new"] = "-d" `notElem` cmd
-    | verb `elem` ["attach-session", "attach"] = True
-attachesTerminal _ = False
+-- | Whether a command line grabs this terminal to render, or runs and exits.
+data TerminalMode
+    = GrabsTerminal  -- ^ establish the session server-side, then attach and render
+    | FireAndForget  -- ^ run as a control command and exit
+
+-- | Verbs that grab this terminal and render, running server-side first to
+-- establish the session: @new-session@/@new@ (unless detached with @-d@)
+-- and @attach-session@/@attach@ with an explicit target. A bare @new@ still
+-- attaches; a @new -d@ stays fire-and-forget.
+terminalMode :: [[T.Text]] -> TerminalMode
+terminalMode [cmd@(verb : _)]
+    | verb `elem` ["new-session", "new"] =
+        if "-d" `notElem` cmd then GrabsTerminal else FireAndForget
+    | verb `elem` ["attach-session", "attach"] = GrabsTerminal
+terminalMode _ = FireAndForget
 
 attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
 attach path mconfig setup = do
