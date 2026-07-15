@@ -145,17 +145,21 @@ Haskell's strength here. The shape:
 - **Each pane has its own writer fd** — when the input router decides a
   keystroke goes to a pane, it writes to that PTY directly. No queue
   needed; the OS pipe is the queue.
-- **Each client connection has two threads:** a *socket reader* that
-  parses incoming messages (keys, resize, command requests) and
-  dispatches them onto the command queue, and a *renderer* that subscribes
-  to a broadcast TChan of dirty events and re-renders the visible panes
-  + status line + overlays into output bytes.
-- **One command-queue worker per client.** Tmux has per-client command
-  queues (`cmd-queue.c`); we follow suit. Some commands block on
-  external state (`run-shell`, `if-shell`) so per-client serialization
-  is the natural model.
-- **`async` library** for thread lifetimes; `withAsync` everywhere so
-  cancellation propagates. **(inferred — standard practice.)**
+- **Each attached client runs two threads:** a *socket reader*
+  (`inputLoop`) that parses incoming messages (keys, resize, command
+  requests) and executes any commands synchronously, and a *renderer*
+  (`renderLoop`) that wakes on a single global `dirty` generation `TVar`
+  (STM `retry`, not a per-client broadcast `TChan`) and re-renders the
+  visible panes + status line + overlays into output bytes.
+- **No separate command-queue worker.** Tmux has per-client command
+  queues (`cmd-queue.c`); HAT runs commands inline in the socket-reader
+  thread instead — `if-shell` / `run-shell` shell out, but the command
+  set stayed small enough that inline execution never needed a queue.
+  **(the per-client `TQueue` worker first sketched below was dropped as
+  premature.)**
+- **`async`** ties the renderer's lifetime to the client's:
+  `withAsync (renderLoop …) (\_ -> inputLoop …)`, so detach cancels the
+  renderer. **(shipped.)**
 
 ### Green threads vs. OS threads
 
@@ -204,73 +208,87 @@ mutable array under STM.)**
 - The renderer's last-frame cache (per client — for delta encoding).
 - Logs.
 
-## Layered module map
+## Module map
 
-This is a logical layering, not necessarily the literal `src/` tree.
-Modules at lower layers don't import higher ones.
+The layering below is what shipped. The sketch this section first held
+predicted many small server modules (`CommandEngine`, `Input`, `Status`,
+`Hooks`) and one model module per entity (`Session`, `Window`, `Pane`).
+Reality consolidated: the server is one large `Hat.Server` with pure
+feature helpers factored out beside it, and the whole model lives in
+`Hat.Model`. The *layering discipline* held — pure lower layers, an `IO`
+server on top, the emulator and wire behind narrow seams — but the module
+boundaries landed coarser than drawn. Modules at lower layers don't import
+higher ones.
 
 ```
-  Hat.Main                                  -- CLI entry, server vs client mode
+  Main (app/Main.hs)                        -- CLI entry, server vs client mode
   +---------------------------------------+
-  |  Hat.Server.CommandEngine             |
-  |  Hat.Server.Hooks                     |
-  |  Hat.Server.Status                    | -- status bar composition
+  |  Hat.Server                           | -- state tree, command engine, dispatch,
+  |                                       |    status, render orchestration, persistence
   +---------------------------------------+
-  |  Hat.Server.Render                    | -- panes + status -> screen ops
-  |  Hat.Server.Input                     | -- keys -> commands
-  |  Hat.Server.Layout                    | -- pane geometry
+  |  Hat.Server.Render                    | -- panes + status -> DrawOps
   |  Hat.Server.Format                    | -- #{...} #(...) engine
+  |  Hat.Server.Layout / .LayoutString    | -- pane geometry + layout-string codec
+  |  Hat.Server.CopyMode / .Picker        | -- copy mode; choose-tree overlay
+  |  Hat.Server.Prompt / .Keys / .Target  | -- command prompt; key names; target lookup
+  |  Hat.Server.Style / .ColorScheme      | -- style strings; light/dark palette
+  |  Hat.Server.Persist / .Title          | -- SQLite snapshot; title formatting
   +---------------------------------------+
-  |  Hat.Model.Session                    |
-  |  Hat.Model.Window                     |
-  |  Hat.Model.Pane                       |
-  |  Hat.Model.Options                    |
-  |  Hat.Model.Keymap                     |
+  |  Hat.Model / .Ids / .Options          | -- sessions/windows/panes, IDs, options
   +---------------------------------------+
-  |  Hat.Term.Emulator                    | -- VT100/xterm parser + grid
-  |  Hat.Term.Grid                        |
-  |  Hat.Term.Style                       |
+  |  Hat.Term.Emulator (.hsc)             | -- libvterm FFI: parser + grid
+  |  Hat.Term.Cell                        | -- grid cell + style
+  |  Hat.Term.HostProtocol               | -- host-aware sequences libvterm can't answer
+  |  Hat.Term.Pty (.hsc)                  | -- forkpty, signals, resize
   +---------------------------------------+
-  |  Hat.Pty                              | -- forkpty, signals, resize
-  |  Hat.Wire                             | -- protocol types + framing
-  |  Hat.Socket                           | -- Unix socket open/listen/accept
-  |  Hat.Client.Tty                       | -- raw mode, read/write
+  |  Hat.Transport.Wire                   | -- protocol types + CBOR framing
+  |  Hat.Transport.Socket                 | -- Unix socket open/listen/accept
+  |  Hat.Client / .Draw / .Tty            | -- client loop; DrawOps -> escapes; raw mode
   +---------------------------------------+
-  |  Hat.Config.Lexer / Parser            | -- pure
-  |  Hat.Command.Parser                   | -- pure
-  |  Hat.Util                             |
+  |  Hat.Command.Parser                   | -- pure (megaparsec)
+  |  Hat.Geometry                         | -- Size, Pos
+  |  Hat.Log                              | -- structured JSON events
 ```
 
 Notable interface boundaries — these are where flexibility lives:
 
-- **`Hat.Term.Emulator`** exposes only `feedBytes :: Emulator -> ByteString -> STM Emulator` (or similar). The internal state machine is opaque. If we get it wrong, we replace one module. **(speculative — the API may need cursor/grid query methods; grow on demand.)**
-- **`Hat.Pty`** exposes `openPty`, `spawnIn`, `resize`, `readPty`, `writePty`, `closePty`. The Unix detail is hidden so the rest of the server doesn't care about `ioctl` numbers.
-- **`Hat.Wire`** owns the on-wire format. Server and client both depend on it; nobody else does. Changing the wire = changing this module + a version bump on the socket greeting.
-- **`Hat.Server.Format`** is a pure `evaluate :: FormatEnv -> FormatString -> Text`. The cache for `#(shell)` lives one layer up and is wired in by the renderer.
+- **`Hat.Term.Emulator`** hides libvterm behind `newEmulator` / `feed` /
+  `resize` plus read-only snapshot accessors. The state machine is opaque;
+  getting it wrong means replacing one module. **(the seam held — see the
+  emulator section.)**
+- **`Hat.Term.HostProtocol`** owns the sequences libvterm *can't* answer
+  because they need host knowledge (OSC 10/11 colors, mode 2031, tmux
+  passthrough). Keeping them out of the emulator seam is what lets the
+  emulator stay a pure wrap.
+- **`Hat.Term.Pty`** hides `forkpty` / `ioctl` resize / read / write so
+  the rest of the server never sees an `ioctl` number.
+- **`Hat.Transport.Wire`** owns the on-wire format. Server and client both
+  depend on it; nobody else does. Changing the wire = changing this module
+  (its tag registries) + the greeting version.
+- **`Hat.Server.Format`** is a pure evaluator over a format env. The cache
+  for `#(shell)` lives one layer up, wired in by the renderer.
 
 ### Mapping back to tmux source for sanity
 
-Just so we can cross-reference when we get stuck:
+Handy when cross-referencing behavior against upstream:
 
-| HAT module                  | tmux file(s)                                  |
-| --------------------------- | --------------------------------------------- |
-| `Hat.Main`                  | `tmux.c`, `client.c`                          |
-| `Hat.Server.CommandEngine`  | `cmd.c`, `cmd-queue.c`, all `cmd-*.c`         |
-| `Hat.Server.Format`         | `format.c`, `format-draw.c`                   |
-| `Hat.Server.Render`         | `screen-redraw.c`, `tty-draw.c`               |
-| `Hat.Server.Input`          | `input-keys.c`, `key-bindings.c`              |
-| `Hat.Server.Layout`         | `layout.c`, `layout-set.c`                    |
-| `Hat.Server.Status`         | `status.c`                                    |
-| `Hat.Server.Hooks`          | `notify.c`, `alerts.c`                        |
-| `Hat.Model.*`               | `session.c`, `window.c`, `options.c`          |
-| `Hat.Model.Keymap`          | `key-bindings.c`, `key-string.c`              |
-| `Hat.Term.Emulator`         | `input.c`                                     |
-| `Hat.Term.Grid`             | `grid.c`, `grid-view.c`, `grid-reader.c`      |
-| `Hat.Term.Style`            | `style.c`, `attributes.c`, `colour.c`         |
-| `Hat.Pty`                   | `spawn.c`, `osdep-linux.c`                    |
-| `Hat.Wire`                  | `tmux-protocol.h`, `proc.c`                   |
-| `Hat.Client.Tty`            | `tty.c`, `tty-keys.c`, `tty-term.c`           |
-| `Hat.Config.Parser`         | `cfg.c`, `cmd-parse.y`                        |
+| HAT module                         | tmux file(s)                                  |
+| ---------------------------------- | --------------------------------------------- |
+| `Main` / `Hat.Client`              | `tmux.c`, `client.c`                          |
+| `Hat.Server` (command engine)      | `cmd.c`, `cmd-queue.c`, all `cmd-*.c`         |
+| `Hat.Server.Format`                | `format.c`, `format-draw.c`                   |
+| `Hat.Server.Render`                | `screen-redraw.c`, `tty-draw.c`               |
+| `Hat.Server.Keys` (+ `Hat.Server`) | `input-keys.c`, `key-bindings.c`, `key-string.c` |
+| `Hat.Server.Layout` / `.LayoutString` | `layout.c`, `layout-set.c`, `layout-custom.c` |
+| `Hat.Server` (status)              | `status.c`                                    |
+| `Hat.Server.Persist`               | (no tmux analogue — native, vs. resurrect)    |
+| `Hat.Model` / `.Options`           | `session.c`, `window.c`, `options.c`          |
+| `Hat.Term.Emulator`                | `input.c`, `grid.c`, `grid-view.c`            |
+| `Hat.Term.Cell` / `Hat.Server.Style` | `style.c`, `attributes.c`, `colour.c`      |
+| `Hat.Term.Pty`                     | `spawn.c`, `osdep-linux.c`                    |
+| `Hat.Transport.Wire`               | `tmux-protocol.h`, `proc.c`                   |
+| `Hat.Client.Tty`                   | `tty.c`, `tty-keys.c`, `tty-term.c`           |
+| `Hat.Command.Parser` (config too) | `cfg.c`, `cmd-parse.y`                        |
 
 ## Data types (sketched, grow on demand)
 
@@ -366,36 +384,42 @@ Why CBOR over alternatives:
 `serialise` is well-maintained (used by Cardano, among others) and
 generates `Serialise` instances via Generic.
 
-Message space (initial sketch):
+Message space (as it shipped — the sketch firmed up but kept its shape):
 
 ```haskell
 data ClientToServer
-  = Hello { protoVersion :: Word16, term :: Text, env :: [(Text, Text)] }
-  | KeyInput ByteString          -- raw bytes from the TTY
-  | Resize Rows Cols
-  | Command Text                 -- "command line" form, parsed server-side
+  = ClientHello Hello            -- greeting record: version, term, env, size, cwd, intent
+  | Input ByteString             -- raw bytes from the TTY
+  | Resize Size
+  | Command [[Text]]             -- pre-tokenised, one inner list per ';'-separated command
   | Detach
-  | Ping
 
 data ServerToClient
-  = Welcome { sessionId :: SessionId, paneId :: PaneId }
+  = Welcome Text                 -- attached session's name
   | Draw [DrawOp]                -- screen update for this client
   | SetTitle Text
-  | Bell
+  | RingBell
+  | Notify ByteString            -- pass a pane's OSC 9/777 notification to the outer terminal
   | Message Text                 -- toast (display-message)
   | DetachOk
-  | Error Text
-  | Pong
+  | CommandDone                  -- all replies for one Command were sent
+  | ServerError Text
+  | Exited                       -- the client's session is gone
 ```
 
-Explicit non-goals:
-- No streaming JSON. Binary. Latency matters and structure is fixed.
-- No version negotiation beyond a single integer in `Hello`. If client
-  and server disagree, the client exits with an error.
-- No back-compat. We rev both.
+Explicit non-goals — and where reality went further:
+- No streaming JSON. Binary CBOR. Latency matters and the message set is
+  fixed. **(held.)**
+- The `Hello` greeting carries a single protocol version, as planned. But
+  the codecs went past "rev both ends": each top-level message type has an
+  append-only tag registry and decodes into
+  `Inbound a = Known a | UnknownTag Word | Malformed String`, so a build
+  tolerates a newer peer's unknown messages instead of dying on them. The
+  forward/backward-compat substrate promised under "Stability and
+  compatibility" is in the wire from day one, not deferred.
 
-`DrawOp` is the deepest interface decision in this layer and is *not*
-fixed yet. Options:
+`DrawOp` was the deepest interface decision in this layer. The options
+weighed:
 
 1. **Full-screen pixel-grid diff.** Server computes a diff between last
    frame and current frame; sends only changed cells. Simple semantics,
@@ -405,10 +429,14 @@ fixed yet. Options:
 3. **Just send terminal escape sequences.** Server pre-renders to the
    wire format the client's TTY expects, client blits it.
 
-Lean toward **(1)** for the first cut — it's the simplest invariant to
-test (frame in, frame out) and the bandwidth cost over a Unix socket
-is negligible. **(speculative — revisit when we add real terminals over
-SSH-forwarded sockets.)**
+**Shipped: (2), a small higher-level op set** —
+`Put Pos Style Text` (a styled run at a position), `ClearAll`, and
+`CursorAt Pos Bool` (final cursor position + visibility). The server
+diffs the previous frame against the current one and emits ops only for
+what changed; the client turns them into terminal escapes. **(the "(1) is
+simplest to test" bet didn't hold — a Put/Clear/Cursor op set proved just
+as testable frame-in/ops-out, and lighter on the wire and on client
+redraw.)**
 
 ## The terminal emulator (strangler-pattern wrap)
 
@@ -579,13 +607,15 @@ Architecture:
    and the command prompt. Megaparsec also drives the format-string
    parser in `Hat.Server.Format` — one parsing toolkit across the
    project.
-2. **`Hat.Server.CommandEngine`** — `runCommand :: Server -> ClientId
-   -> ParsedCommand -> IO CommandResult`. Each command is a function;
-   we register them in a `Map Text CommandImpl`. No giant case
-   statement. **(inferred from how tmux registers commands.)**
-3. **Command queue**: per-client. A `TQueue ParsedCommand`. A worker
-   thread pops, executes, repeats. Commands like `if-shell` push more
-   commands onto the front of the queue.
+2. **The command engine** lives in `Hat.Server` (`runCommands` over a
+   `commandTable` that maps each name — and its aliases — to an impl
+   function). No giant case statement; a name lookup dispatches. **(shipped
+   as a lookup table, close to how tmux registers commands.)**
+3. **Execution is inline, not queued.** The socket-reader thread calls
+   `runCommands` and blocks until they finish; `if-shell` runs its chosen
+   branch in the same call. The per-client `TQueue` worker sketched in the
+   concurrency section was never built — the command set never grew a case
+   that needed it.
 4. **Format strings** — `Hat.Server.Format` is a pure parser + pure
    evaluator over a `FormatEnv` record. The renderer constructs
    `FormatEnv` from current state and calls `evaluate`. `#(shell)`
@@ -600,7 +630,13 @@ substitution. Start with the subset your status line uses
 `#{e|>:a,b}`, `#{=N:s}`, `#{pane_current_path}`,
 `#{window_active_clients}`, `#{host}`, plus date `%V %a %d %b %Y %H:%M`).
 
-## Hooks (resolved)
+## Hooks (designed, not yet built)
+
+The design below is settled, but as of alpha there is no `Hat.Server.Hooks`
+and no `set-hook` command — hooks are still on the "not there yet" list.
+Native persistence (see "Save and restore") removed the one hard
+dependency: resurrect needed hooks to autosave, and HAT autosaves without
+them. The model to build when a real use appears:
 
 Tmux's hook model (from `notify.c`):
 
@@ -683,7 +719,12 @@ start. **HAT: same.** No SQLite, no JSON dump. The architecture-defaults
 "prefer SQL where it does the work" rule doesn't apply — there's no SQL
 to do here.
 
-## Clipboard policy (OSC 52, resolved)
+## Clipboard policy (OSC 52, designed — not yet built)
+
+No OSC 52 path exists in the alpha: local `xclip` (via `copy-pipe` and
+`pipe-pane -I`) covers ~99% of the copy/paste use, and FEATURES.md tags
+OSC 52 as P2, for the rare remote case. When it is built, this is the
+shape:
 
 OSC 52 is the escape sequence apps use to write (and optionally read)
 the system clipboard. It is a known footgun: any program that can write
@@ -721,28 +762,33 @@ Hackage options surveyed:
   `monad-logger`; tied to the persistent ecosystem we won't otherwise
   use.
 
-**Committed:** `katip` for JSON output and file scribe, **wrapped** so
-the rest of HAT only sees:
+**Shipped: none of them.** The seam turned out to want so little that a
+hand-rolled **`aeson` + `TQueue` + handle** writer was the whole
+implementation — a `LogEvent` sum with a `Generic ToJSON`, a dedicated
+drain thread so callers never block on disk, one JSON object per line
+with a `time` field. `Hat.Log` exposes only:
 
 ```haskell
 -- Hat.Log
 data LogEvent
-  = CommandExecuted   { client :: ClientId, name :: Text, durationMs :: Int }
-  | ClientConnected   { client :: ClientId, term :: Text }
-  | ClientDetached    { client :: ClientId, reason :: Text }
-  | PaneSpawned       { pane :: PaneId, cmd :: Text }
-  | PaneExited        { pane :: PaneId, status :: ExitCode }
-  | HookFired         { hook :: Text, scope :: Text }
-  | ConfigParseError  { file :: FilePath, line :: Int, msg :: Text }
-  | EmulatorWarning   { pane :: PaneId, what :: Text }
+  = ServerStarted   { socket :: FilePath }
+  | ServerStopping  { reason :: Text }
+  | ClientConnected { client :: Int, term :: Text }
+  | ClientDetached  { client :: Int, reason :: Text }
+  | PaneSpawned     { pane :: Int, cmd :: Text }
+  | PaneExited      { pane :: Int }
+  | CommandRun      { client :: Int, command :: Text }
+  | ConfigError     { file :: FilePath, err :: Text }
+  | ProtocolError   { client :: Int, err :: Text }
+  | ServerCrash     { err :: Text }
   -- ... grow on demand
 
 logEvent :: Logger -> LogEvent -> IO ()
 ```
 
-The wrapper is the seam: katip can be swapped for `co-log` or a
-hand-rolled `aeson + TQueue + handle` writer without touching any
-caller.
+That module *is* the seam the survey was for: `katip` (or `co-log`) can
+replace the hand-rolled writer without touching a single caller. Pulling
+in a logging framework never paid for itself at HAT's volume.
 
 ## Configuration loading
 
