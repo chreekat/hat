@@ -92,8 +92,10 @@ runServer path mconfig = do
     -- The lock and log files live next to the socket; the directory
     -- must exist before any of them are touched.
     ensureSocketDir path
-    locked <- acquireLock (path <> ".lock")
-    unless locked exitSuccess  -- another server won the race
+    lockResult <- acquireLock (path <> ".lock")
+    case lockResult of
+        LockHeldElsewhere -> exitSuccess  -- another server won the race
+        LockWon -> pure ()
     lg <- newLogger (takeDirectory path <> "/server.log")
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
@@ -162,14 +164,19 @@ finallyClearRestoring :: ServerState -> IO a -> IO a
 finallyClearRestoring st act =
     act `finally` atomically (writeTVar st.restoring False)
 
+-- | The outcome of racing for the server's lock file.
+data LockResult
+    = LockWon            -- ^ this process now holds the lock
+    | LockHeldElsewhere  -- ^ another server already holds it
+
 -- flock-style: O_CREAT + posix write lock, held for the server's life.
-acquireLock :: FilePath -> IO Bool
+acquireLock :: FilePath -> IO LockResult
 acquireLock lockPath = do
     fd <- PIO.createFile lockPath 0o600
     r <- try $ PIO.setLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0)
     pure $ case r of
-        Left (_ :: IOException) -> False
-        Right () -> True
+        Left (_ :: IOException) -> LockHeldElsewhere
+        Right () -> LockWon
 
 -- Exit once every session is gone AND every attached client has
 -- drained and disconnected, so nobody's final Exited message is cut off.
