@@ -170,6 +170,11 @@ data Emulator = Emulator
     , sbLimit   :: Int
     }
 
+-- | Build a fresh emulator for a pane: a libvterm instance sized to 'Size'
+-- with UTF-8 input and the alternate screen enabled, its screen callbacks
+-- wired into this module's IORefs, and a finalizer that frees every C
+-- resource once the emulator becomes unreachable. The 'Int' caps how many
+-- scrollback lines are retained.
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz historyLimit = do
     vtp <- c_vterm_new (fromIntegral sz.rows) (fromIntegral sz.cols)
@@ -377,6 +382,8 @@ encodeKey e key = withMVar e.lock $ \_ -> do
         CursorHome  -> #{const VTERM_KEY_HOME}
         CursorEnd   -> #{const VTERM_KEY_END}
 
+-- | Resize the terminal, flushing the damage libvterm reports as it reflows
+-- and rebuilding the cached grid at the new size.
 resize :: Emulator -> Size -> IO ()
 resize e sz = withMVar e.lock $ \_ -> do
     withForeignPtr e.vt $ \vtp -> do
@@ -386,6 +393,8 @@ resize e sz = withMVar e.lock $ \_ -> do
     writeIORef e.damageRef []
     refreshGrid e
 
+-- | Take an immutable 'Screen' of the visible grid, cursor position, and
+-- cursor visibility as they stand now.
 snapshot :: Emulator -> IO Screen
 snapshot e = withMVar e.lock $ \_ -> do
     sz <- readIORef e.sizeRef
@@ -394,13 +403,18 @@ snapshot e = withMVar e.lock $ \_ -> do
     vis <- readIORef e.curVisRef
     pure Screen { size = sz, cells = grid, cursor = cur, cursorVisible = vis }
 
+-- | The mode flags apps have toggled: alternate screen, mouse tracking,
+-- focus reporting, and color-scheme reporting.
 modes :: Emulator -> IO Modes
 modes e = Modes <$> readIORef e.altRef <*> readIORef e.mouseRef
     <*> readIORef e.focusRef <*> readIORef e.colorReportRef
 
+-- | The current window title, as last set by an OSC 0\/2 or the screen\/tmux
+-- @ESC k@ escape.
 title :: Emulator -> IO Text
 title e = readIORef e.titleRef
 
+-- | How many scrollback lines are currently retained.
 scrollbackLength :: Emulator -> IO Int
 scrollbackLength e = Seq.length <$> readIORef e.sbRef
 
@@ -413,11 +427,14 @@ scrollbackLine e i = Seq.lookup i <$> readIORef e.sbRef
 clearScrollback :: Emulator -> IO ()
 clearScrollback e = writeIORef e.sbRef Seq.empty
 
+-- | Concatenate the text of every cell in a screen row; @\"\"@ for a row
+-- index past the bottom of the grid.
 screenRowText :: Screen -> Int -> Text
 screenRowText scr r = case scr.cells V.!? r of
     Nothing -> ""
     Just row -> T.concat [c.text | c <- V.toList row]
 
+-- | The cell at a position, or 'blankCell' when the position is off-screen.
 screenCell :: Screen -> Pos -> Cell
 screenCell scr p = fromMaybe blankCell $ do
     row <- scr.cells V.!? p.row
@@ -425,11 +442,12 @@ screenCell scr p = fromMaybe blankCell $ do
 
 -- internal --
 
+-- | A grid of the given size filled entirely with 'blankCell'.
 blankGrid :: Size -> V.Vector (V.Vector Cell)
 blankGrid sz = V.replicate (fromIntegral sz.rows)
     (V.replicate (fromIntegral sz.cols) blankCell)
 
--- Re-read every cell touched by accumulated damage into the grid cache.
+-- | Re-read every cell touched by accumulated damage into the grid cache.
 applyDamage :: Emulator -> IO ()
 applyDamage e = do
     rects <- readIORef e.damageRef
@@ -442,6 +460,8 @@ applyDamage e = do
             grid' <- foldM (applyRect e sz) grid rects
             writeIORef e.gridRef grid'
 
+-- | Refresh the grid cache over one damaged rectangle, clamped to the
+-- current screen size, by re-reading each covered cell from libvterm.
 applyRect :: Emulator -> Size
           -> V.Vector (V.Vector Cell) -> Rect -> IO (V.Vector (V.Vector Cell))
 applyRect e sz grid rect = do
@@ -456,6 +476,8 @@ applyRect e sz grid rect = do
         pure (r, old V.// zip [c0 .. c1] newCells)
     pure (grid V.// updated)
 
+-- | Rebuild the whole grid cache from libvterm's current screen, used after
+-- a resize where per-cell damage can't be relied on.
 refreshGrid :: Emulator -> IO ()
 refreshGrid e = do
     sz <- readIORef e.sizeRef
@@ -463,12 +485,18 @@ refreshGrid e = do
         V.generateM (fromIntegral sz.cols) $ \c -> readCell e r c
     writeIORef e.gridRef grid
 
+-- | Read the single cell at (row, col) from libvterm's screen into a 'Cell'.
 readCell :: Emulator -> Int -> Int -> IO Cell
 readCell e r c = withForeignPtr e.vt $ \_ ->
     allocaBytes #{size HatCell} $ \hc -> do
         _ <- c_hat_get_cell e.screen (fromIntegral r) (fromIntegral c) hc
         peekHatCell hc
 
+-- | Marshal one 'CHatCell' the shim just filled into a 'Cell': decode the
+-- code-point array -- honoring the wide-char continuation sentinel and the
+-- blank-as-space case -- the cell width, the foreground and background
+-- colors by kind (indexed, RGB, or terminal default), and the attribute
+-- bitmask.
 peekHatCell :: Ptr CHatCell -> IO Cell
 peekHatCell p = do
     chars <- peekArray #{const VTERM_MAX_CHARS_PER_CELL}
