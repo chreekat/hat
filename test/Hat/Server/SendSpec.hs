@@ -15,7 +15,7 @@ import Test.Hspec
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
-import Hat.Server (send)
+import Hat.Server.ClientIO (send)
 import Hat.Server.Keys (PrefixState (NoPrefix))
 import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire (Inbound (..), ServerToClient (..), recvMessage)

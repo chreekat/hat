@@ -72,6 +72,7 @@ library
         Hat.Model.Ids
         Hat.Model.Options
         Hat.Server
+        Hat.Server.ClientIO
         Hat.Server.ColorScheme
         Hat.Server.CopyMode
         Hat.Server.Format

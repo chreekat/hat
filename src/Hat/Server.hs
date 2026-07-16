@@ -5,7 +5,6 @@ module Hat.Server
     ( runServer
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
-    , send       -- ^ exported for the greeting-ordering test
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
@@ -74,6 +73,7 @@ import Hat.Server.Persist
     , loadSnapshot, saveSnapshot, withStore)
 import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
+import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
     (ColorScheme (..), applyPalette, parseSchemeLine, schemeName)
 import Hat.Server.Format (FormatEnv, renderFormat)
@@ -862,23 +862,6 @@ removeClient st client = do
     applySessionSize st sid
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
-
--- Every server-initiated message except the Welcome/ServerError handshake
--- (sent raw on the socket) goes through here — both broadcasts and a
--- client's own render frames. Dropping anything before the client is
--- 'ready' guarantees Welcome is the first byte it sees, even when it is
--- attaching to an already-busy (e.g. restored) session.
-send :: Client -> ServerToClient -> IO ()
-send client msg = do
-    isReady <- readTVarIO client.ready
-    when isReady $
-        withMVar client.sendLock (\_ -> sendMessage client.sock msg)
-            `catch` \(_ :: SomeException) -> pure ()
-
-broadcast :: ServerState -> SessionId -> ServerToClient -> IO ()
-broadcast st sid msg = do
-    cs <- atomically (sessionClients st sid)
-    forM_ cs $ \c -> send c msg
 
 -- Sessions --------------------------------------------------------------
 
