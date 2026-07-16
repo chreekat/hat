@@ -5,7 +5,8 @@
 -- Each pane owns one 'Emulator' and is touched by one thread at a time;
 -- an internal lock also makes 'feed' / 'snapshot' / 'resize' safe to call
 -- concurrently. libvterm's callbacks fire synchronously inside
--- @vterm_input_write@ and land in IORefs owned by this module.
+-- @vterm_input_write@ and land in the 'EmulatorState' held behind a single
+-- IORef in this module.
 module Hat.Term.Emulator
     ( Emulator
     , Event (..)
@@ -147,36 +148,37 @@ data Screen = Screen
     }
 
 data Emulator = Emulator
-    { vt        :: ForeignPtr CVTerm
+    { vt              :: ForeignPtr CVTerm
         -- ^ owns the libvterm object; a finalizer frees it along with the
         --   callback struct and the callback FunPtrs (see 'newEmulator').
-    , screen    :: Ptr CVTermScreen  -- ^ borrowed from 'vt', valid while it lives
-    , lock      :: MVar ()
-    , sizeRef   :: IORef Size
-    , gridRef   :: IORef (V.Vector (V.Vector Cell))
-    , cursorRef :: IORef Pos
-    , curVisRef :: IORef Bool
-    , titleRef  :: IORef Text
-    , titleAcc  :: IORef ByteString
-    , altRef    :: IORef Bool
-    , mouseRef  :: IORef MouseMode
-    , focusRef  :: IORef Bool
-    , colorReportRef :: IORef Bool
-    , dirtyRef  :: IORef Bool
-    , damageRef :: IORef [Rect]
-    , eventsRef :: IORef [Event]       -- reversed
-    , outRef    :: IORef [ByteString]  -- reversed
-    , passRef   :: IORef PassState     -- ^ tmux-passthrough scrubber state
-    , stitleRef :: IORef StitleState   -- ^ screen/tmux title scrubber state
-    , sbRef     :: IORef (Seq [Cell])
-    , sbLimit   :: Int
+    , screen          :: Ptr CVTermScreen  -- ^ borrowed from 'vt', valid while it lives
+    , lock            :: MVar ()
+    , scrollbackLimit :: Int
+    , state           :: IORef EmulatorState
+    }
+
+-- | An emulator's mutable state, held behind the single IORef in 'Emulator'.
+-- It embeds the very 'Screen' and 'Modes' that 'snapshot' and 'modes' hand
+-- back (see 'newEmulator').
+data EmulatorState = EmulatorState
+    { view         :: Screen         -- the live grid, size, and cursor
+    , modeFlags    :: Modes
+    , title        :: Text
+    , pendingTitle :: ByteString     -- title fragments awaiting their final chunk
+    , dirty        :: Bool
+    , damage       :: [Rect]         -- reversed
+    , events       :: [Event]        -- reversed
+    , output       :: [ByteString]   -- reversed
+    , passthrough  :: PassState      -- tmux-passthrough scrubber state
+    , screenTitle  :: StitleState    -- screen/tmux title scrubber state
+    , scrollback   :: Seq [Cell]
     }
 
 -- | Build a fresh emulator for a pane: a libvterm instance sized to 'Size'
 -- with UTF-8 input and the alternate screen enabled, its screen callbacks
--- wired into this module's IORefs, and a finalizer that frees every C
--- resource once the emulator becomes unreachable. The 'Int' caps how many
--- scrollback lines are retained.
+-- wired to update the single 'EmulatorState' ref, and a finalizer that frees
+-- every C resource once the emulator becomes unreachable. The 'Int' caps how
+-- many scrollback lines are retained.
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz historyLimit = do
     vtp <- c_vterm_new (fromIntegral sz.rows) (fromIntegral sz.cols)
@@ -186,77 +188,91 @@ newEmulator sz historyLimit = do
     c_set_damage_merge scr #{const VTERM_DAMAGE_SCROLL}
 
     lockVar <- newMVar ()
-    sizeR <- newIORef sz
-    gridR <- newIORef (blankGrid sz)
-    cursorR <- newIORef Pos { row = 0, col = 0 }
-    curVisR <- newIORef True
-    titleR <- newIORef ""
-    titleA <- newIORef ""
-    altR <- newIORef False
-    mouseR <- newIORef MouseOff
-    focusR <- newIORef False
-    colorReportR <- newIORef False
-    dirtyR <- newIORef False
-    damageR <- newIORef []
-    eventsR <- newIORef []
-    outR <- newIORef []
-    passR <- newIORef (Outside "")
-    stitleR <- newIORef (StOutside "")
-    sbR <- newIORef Seq.empty
+    stateR <- newIORef EmulatorState
+        { view = Screen
+            { size = sz
+            , cells = blankGrid sz
+            , cursor = Pos { row = 0, col = 0 }
+            , cursorVisible = True
+            }
+        , modeFlags = Modes
+            { altScreen = False
+            , mouse = MouseOff
+            , focusReport = False
+            , colorReport = False
+            }
+        , title = ""
+        , pendingTitle = ""
+        , dirty = False
+        , damage = []
+        , events = []
+        , output = []
+        , passthrough = Outside ""
+        , screenTitle = StOutside ""
+        , scrollback = Seq.empty
+        }
 
-    damageW <- wrapDamage $ \sr er sc ec -> do
-        modifyIORef' damageR (Rect
-            { startRow = fromIntegral sr
-            , endRow = fromIntegral er
-            , startCol = fromIntegral sc
-            , endCol = fromIntegral ec
-            } :)
-        writeIORef dirtyR True
-    moveW <- wrapMoveCursor $ \r c vis -> do
-        writeIORef cursorR Pos { row = fromIntegral r, col = fromIntegral c }
-        writeIORef curVisR (vis /= 0)
-        writeIORef dirtyR True
+    damageW <- wrapDamage $ \sr er sc ec ->
+        modifyIORef' stateR $ \s -> s
+            { damage = Rect
+                { startRow = fromIntegral sr
+                , endRow = fromIntegral er
+                , startCol = fromIntegral sc
+                , endCol = fromIntegral ec
+                } : s.damage
+            , dirty = True
+            }
+    moveW <- wrapMoveCursor $ \r c vis ->
+        modifyIORef' stateR $ \s -> s
+            { view = s.view
+                { cursor = Pos { row = fromIntegral r, col = fromIntegral c }
+                , cursorVisible = vis /= 0
+                }
+            , dirty = True
+            }
     propBoolW <- wrapPropBool $ \prop val -> case prop of
-        #{const VTERM_PROP_CURSORVISIBLE} -> do
-            writeIORef curVisR (val /= 0)
-            writeIORef dirtyR True
-        #{const VTERM_PROP_ALTSCREEN} -> do
-            writeIORef altR (val /= 0)
-            writeIORef dirtyR True
-        #{const VTERM_PROP_FOCUSREPORT} -> writeIORef focusR (val /= 0)
+        #{const VTERM_PROP_CURSORVISIBLE} ->
+            modifyIORef' stateR $ \s ->
+                s { view = s.view { cursorVisible = val /= 0 }, dirty = True }
+        #{const VTERM_PROP_ALTSCREEN} ->
+            modifyIORef' stateR $ \s ->
+                s { modeFlags = s.modeFlags { altScreen = val /= 0 }, dirty = True }
+        #{const VTERM_PROP_FOCUSREPORT} ->
+            modifyIORef' stateR $ \s ->
+                s { modeFlags = s.modeFlags { focusReport = val /= 0 } }
         _ -> pure ()
     propIntW <- wrapPropInt $ \prop val -> case prop of
-        #{const VTERM_PROP_MOUSE} -> writeIORef mouseR $ case val of
-            1 -> MouseClick
-            2 -> MouseDrag
-            3 -> MouseMove
-            _ -> MouseOff
+        #{const VTERM_PROP_MOUSE} ->
+            let m = case val of
+                    1 -> MouseClick
+                    2 -> MouseDrag
+                    3 -> MouseMove
+                    _ -> MouseOff
+            in modifyIORef' stateR $ \s -> s { modeFlags = s.modeFlags { mouse = m } }
         _ -> pure ()
     propStrW <- wrapPropStr $ \prop str len final -> case prop of
         #{const VTERM_PROP_TITLE} -> do
             frag <- B.packCStringLen (str, fromIntegral len)
-            modifyIORef' titleA (<> frag)
             if final /= 0
-                then do
-                    full <- readIORef titleA
-                    writeIORef titleA ""
-                    let t = TE.decodeUtf8Lenient full
-                    writeIORef titleR t
-                    modifyIORef' eventsR (TitleChanged t :)
-                else pure ()
+                then modifyIORef' stateR $ \s ->
+                    let t = TE.decodeUtf8Lenient (s.pendingTitle <> frag)
+                    in s { pendingTitle = "", title = t
+                         , events = TitleChanged t : s.events }
+                else modifyIORef' stateR $ \s ->
+                    s { pendingTitle = s.pendingTitle <> frag }
         _ -> pure ()
-    bellW <- wrapBell $ modifyIORef' eventsR (Bell :)
+    bellW <- wrapBell $ modifyIORef' stateR $ \s -> s { events = Bell : s.events }
     pushW <- wrapPushline $ \ncols cellsPtr -> do
         line <- forM [0 .. fromIntegral ncols - 1 :: Int] $ \i ->
             allocaBytes #{size HatCell} $ \hc -> do
                 c_flatten_cell_at cellsPtr (fromIntegral i) hc
                 peekHatCell hc
-        modifyIORef' sbR $ \sb ->
-            let sb' = sb Seq.|> line
-            in Seq.drop (Seq.length sb' - historyLimit) sb'
+        modifyIORef' stateR $ \s ->
+            let sb' = s.scrollback Seq.|> line
+            in s { scrollback = Seq.drop (Seq.length sb' - historyLimit) sb' }
     outputW <- wrapOutput $ \str len -> do
         bs <- B.packCStringLen (str, fromIntegral len)
-        modifyIORef' outR (bs :)
+        modifyIORef' stateR $ \s -> s { output = bs : s.output }
 
     cbs <- mallocBytes #{size HatCallbacks}
     #{poke HatCallbacks, damage} cbs damageW
@@ -287,24 +303,8 @@ newEmulator sz historyLimit = do
             { vt = vtFP
             , screen = scr
             , lock = lockVar
-            , sizeRef = sizeR
-            , gridRef = gridR
-            , cursorRef = cursorR
-            , curVisRef = curVisR
-            , titleRef = titleR
-            , titleAcc = titleA
-            , altRef = altR
-            , mouseRef = mouseR
-            , focusRef = focusR
-            , colorReportRef = colorReportR
-            , dirtyRef = dirtyR
-            , damageRef = damageR
-            , eventsRef = eventsR
-            , outRef = outR
-            , passRef = passR
-            , stitleRef = stitleR
-            , sbRef = sbR
-            , sbLimit = historyLimit
+            , scrollbackLimit = historyLimit
+            , state = stateR
             }
     refreshGrid e
     pure e
@@ -315,29 +315,34 @@ newEmulator sz historyLimit = do
 -- so hat must answer serially like a real terminal would.
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
-    st0 <- readIORef e.passRef
-    let (st1, depassed, wrappedNotifs) = scrubPassthrough st0 bs0
-    writeIORef e.passRef st1
-    sst0 <- readIORef e.stitleRef
-    let (sst1, scrubbed, stitles) = scrubStitle sst0 depassed
-    writeIORef e.stitleRef sst1
-    let screenTitles = map TE.decodeUtf8Lenient stitles
-    mapM_ (writeIORef e.titleRef) (drop (length screenTitles - 1) screenTitles)
-    writeIORef e.eventsRef []
-    writeIORef e.outRef []
-    writeIORef e.damageRef []
-    writeIORef e.dirtyRef False
+    s0 <- readIORef e.state
+    let (pass1, depassed, wrappedNotifs) = scrubPassthrough s0.passthrough bs0
+        (stitle1, scrubbed, stitles) = scrubStitle s0.screenTitle depassed
+        screenTitles = map TE.decodeUtf8Lenient stitles
+        latestTitle = case screenTitles of
+            [] -> s0.title
+            ts -> last ts
+    -- Store the scrubber states and the newest screen title, and clear the
+    -- accumulators the callbacks are about to fill.
+    modifyIORef' e.state $ \s -> s
+        { passthrough = pass1
+        , screenTitle = stitle1
+        , title = latestTitle
+        , events = []
+        , output = []
+        , damage = []
+        , dirty = False
+        }
     interleaved <- withForeignPtr e.vt $ \vtp -> do
         ievs <- feedSegments e vtp scrubbed
         ievs <$ c_flush_damage e.screen
     applyDamage e
-    dirty <- readIORef e.dirtyRef
-    evs <- reverse <$> readIORef e.eventsRef
+    s1 <- readIORef e.state
     pure $ map DesktopNotification wrappedNotifs
         <> map TitleChanged screenTitles
         <> interleaved
-        <> evs
-        <> [ScreenChanged | dirty]
+        <> reverse s1.events
+        <> [ScreenChanged | s1.dirty]
 
 -- | Feed a chunk to libvterm piecewise, splitting at each color query hat
 -- answers itself, so the query's event lands between the 'Output' replies
@@ -356,12 +361,15 @@ feedSegments e vtp = go
         | otherwise = do
             _ <- BU.unsafeUseAsCStringLen seg $ \(p, n) ->
                 c_vterm_input_write vtp p (fromIntegral n)
-            outs <- dropDecxcprReply . B.concat . reverse <$> readIORef e.outRef
-            writeIORef e.outRef []
+            s <- readIORef e.state
+            writeIORef e.state (s { output = [] })
+            let outs = dropDecxcprReply (B.concat (reverse s.output))
             pure [Output outs | not (B.null outs)]
     applySignal sig = case sig of
-        SigColor CsEnable  -> [ColorSchemeQuery] <$ writeIORef e.colorReportRef True
-        SigColor CsDisable -> [] <$ writeIORef e.colorReportRef False
+        SigColor CsEnable  -> [ColorSchemeQuery]
+            <$ modifyIORef' e.state (\s -> s { modeFlags = s.modeFlags { colorReport = True } })
+        SigColor CsDisable -> []
+            <$ modifyIORef' e.state (\s -> s { modeFlags = s.modeFlags { colorReport = False } })
         SigColor CsQuery   -> pure [ColorSchemeQuery]
         SigOsc target term -> pure [OscColorQuery target term]
         SigNotify raw      -> pure [DesktopNotification raw]
@@ -371,10 +379,10 @@ feedSegments e vtp = go
 -- get @\\ESC O A@ while normal mode gets @\\ESC [ A@.
 encodeKey :: Emulator -> CursorKey -> IO ByteString
 encodeKey e key = withMVar e.lock $ \_ -> do
-    writeIORef e.outRef []
+    modifyIORef' e.state (\s -> s { output = [] })
     withForeignPtr e.vt $ \vtp ->
         c_vterm_keyboard_key vtp (keyCode key) #{const VTERM_MOD_NONE}
-    B.concat . reverse <$> readIORef e.outRef
+    B.concat . reverse . (.output) <$> readIORef e.state
   where
     keyCode k = case k of
         CursorUp    -> #{const VTERM_KEY_UP}
@@ -391,43 +399,36 @@ resize e sz = withMVar e.lock $ \_ -> do
     withForeignPtr e.vt $ \vtp -> do
         c_vterm_set_size vtp (fromIntegral sz.rows) (fromIntegral sz.cols)
         c_flush_damage e.screen
-    writeIORef e.sizeRef sz
-    writeIORef e.damageRef []
+    modifyIORef' e.state $ \s -> s { view = s.view { size = sz }, damage = [] }
     refreshGrid e
 
 -- | Take an immutable 'Screen' of the visible grid, cursor position, and
 -- cursor visibility as they stand now.
 snapshot :: Emulator -> IO Screen
-snapshot e = withMVar e.lock $ \_ -> do
-    sz <- readIORef e.sizeRef
-    grid <- readIORef e.gridRef
-    cur <- readIORef e.cursorRef
-    vis <- readIORef e.curVisRef
-    pure Screen { size = sz, cells = grid, cursor = cur, cursorVisible = vis }
+snapshot e = withMVar e.lock $ \_ -> (.view) <$> readIORef e.state
 
 -- | The mode flags apps have toggled: alternate screen, mouse tracking,
 -- focus reporting, and color-scheme reporting.
 modes :: Emulator -> IO Modes
-modes e = Modes <$> readIORef e.altRef <*> readIORef e.mouseRef
-    <*> readIORef e.focusRef <*> readIORef e.colorReportRef
+modes e = (.modeFlags) <$> readIORef e.state
 
 -- | The current window title, as last set by an OSC 0\/2 or the screen\/tmux
 -- @ESC k@ escape.
 title :: Emulator -> IO Text
-title e = readIORef e.titleRef
+title e = (.title) <$> readIORef e.state
 
 -- | How many scrollback lines are currently retained.
 scrollbackLength :: Emulator -> IO Int
-scrollbackLength e = Seq.length <$> readIORef e.sbRef
+scrollbackLength e = Seq.length . (.scrollback) <$> readIORef e.state
 
 -- | Scrollback line by age: 0 is the oldest.
 scrollbackLine :: Emulator -> Int -> IO (Maybe [Cell])
-scrollbackLine e i = Seq.lookup i <$> readIORef e.sbRef
+scrollbackLine e i = Seq.lookup i . (.scrollback) <$> readIORef e.state
 
 -- | Drop all scrollback (the live screen is untouched). Backs
 -- @clear-history@.
 clearScrollback :: Emulator -> IO ()
-clearScrollback e = writeIORef e.sbRef Seq.empty
+clearScrollback e = modifyIORef' e.state $ \s -> s { scrollback = Seq.empty }
 
 -- | Concatenate the text of every cell in a screen row; @\"\"@ for a row
 -- index past the bottom of the grid.
@@ -452,15 +453,13 @@ blankGrid sz = V.replicate (fromIntegral sz.rows)
 -- | Re-read every cell touched by accumulated damage into the grid cache.
 applyDamage :: Emulator -> IO ()
 applyDamage e = do
-    rects <- readIORef e.damageRef
-    writeIORef e.damageRef []
-    case rects of
+    s <- readIORef e.state
+    case s.damage of
         [] -> pure ()
-        _ -> do
-            sz <- readIORef e.sizeRef
-            grid <- readIORef e.gridRef
-            grid' <- foldM (applyRect e sz) grid rects
-            writeIORef e.gridRef grid'
+        rects -> do
+            grid' <- foldM (applyRect e s.view.size) s.view.cells rects
+            modifyIORef' e.state $ \s' ->
+                s' { view = s'.view { cells = grid' }, damage = [] }
 
 -- | Refresh the grid cache over one damaged rectangle, clamped to the
 -- current screen size, by re-reading each covered cell from libvterm.
@@ -482,10 +481,10 @@ applyRect e sz grid rect = do
 -- a resize where per-cell damage can't be relied on.
 refreshGrid :: Emulator -> IO ()
 refreshGrid e = do
-    sz <- readIORef e.sizeRef
-    grid <- V.generateM (fromIntegral sz.rows) $ \r ->
-        V.generateM (fromIntegral sz.cols) $ \c -> readCell e r c
-    writeIORef e.gridRef grid
+    s <- readIORef e.state
+    grid <- V.generateM (fromIntegral s.view.size.rows) $ \r ->
+        V.generateM (fromIntegral s.view.size.cols) $ \c -> readCell e r c
+    modifyIORef' e.state $ \s' -> s' { view = s'.view { cells = grid } }
 
 -- | Read the single cell at (row, col) from libvterm's screen into a 'Cell'.
 readCell :: Emulator -> Int -> Int -> IO Cell
