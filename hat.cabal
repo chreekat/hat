@@ -9,6 +9,13 @@ maintainer:         b@chreekat.net
 build-type:         Simple
 tested-with:        GHC == 9.10.3
 
+flag profiling
+    description: Build in profiling mode. For now this just enables
+                 -finfo-table-map so heap/stack samples carry source
+                 provenance.
+    default:     False
+    manual:      True
+
 common defaults
     default-language:   GHC2021
     default-extensions:
@@ -47,8 +54,12 @@ common pedantry
         -Wno-implicit-prelude
         -Wno-prepositive-qualified-module
 
+common profiled
+    if flag(profiling)
+        ghc-options: -finfo-table-map
+
 library
-    import:             defaults, pedantry
+    import:             defaults, pedantry, profiled
     hs-source-dirs:     src
     exposed-modules:
         Hat.Client
@@ -104,7 +115,7 @@ library
         vector      ^>= 0.13.2.0
 
 executable hat
-    import:             defaults, pedantry
+    import:             defaults, pedantry, profiled
     hs-source-dirs:     app
     main-is:            Main.hs
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
