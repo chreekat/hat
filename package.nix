@@ -28,4 +28,6 @@ haskell.lib.overrideCabal
     postInstall = (drv.postInstall or "") + ''
       rm -f $out/bin/gen-fixtures
     '';
+    # Let `nix run <flakeref>` resolve the binary without guessing.
+    mainProgram = "hat";
   })
