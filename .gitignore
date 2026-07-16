@@ -5,3 +5,5 @@ result-*
 *.hi
 *.o
 .direnv/
+*.eventlog
+*.eventlog.html
