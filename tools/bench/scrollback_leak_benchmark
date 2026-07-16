@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+path=$(dirname "$0")
+cabal build -fprofiling hat:exe:hat
+BIN=$(cabal list-bin hat)
+SOCK=/tmp/hat-1000/profiled
+
+# The main important thing: run with "+RTS -hi -l" to get eventlog and info
+# table-based heap profiling.
+"$BIN" --server "$SOCK" /home/b/.config/hat/hat.conf +RTS -hi -l -olhat-server.eventlog &
+srv=$!
+
+until [ -S "$SOCK" ]; do sleep 0.05; done
+
+# Attach a client; use up some scrollback buffer.
+hat -L profiled new-session -d ${path}/print_dots.sh
+
+# Let the eventlog do its writing
+sleep 3
+
+hat -L profiled kill-server
+wait "$srv" 2>/dev/null || true
+
+eventlog2html hat-server.eventlog
