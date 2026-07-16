@@ -153,8 +153,13 @@ data Emulator = Emulator
         --   callback struct and the callback FunPtrs (see 'newEmulator').
     , screen          :: Ptr CVTermScreen  -- ^ borrowed from 'vt', valid while it lives
     , lock            :: MVar ()
+        -- ^ serializes whole operations, so other threads observe the grid
+        --   only between them, never mid-update.
     , scrollbackLimit :: Int
     , state           :: IORef EmulatorState
+        -- ^ a bare IORef, not data guarded by 'lock': the libvterm callbacks
+        --   write it synchronously from within a 'feed' that already holds
+        --   'lock', so they must reach it without taking a lock themselves.
     }
 
 -- | An emulator's mutable state, held behind the single IORef in 'Emulator'.
