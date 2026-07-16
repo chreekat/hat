@@ -243,6 +243,23 @@ spec = do
         scr <- snapshot e
         scr.size `shouldBe` Size { rows = 50, cols = 200 }
 
+    it "reflows history back onto the screen as it grows taller" $ do
+        e <- newEmulator Size { rows = 3, cols = 20 } 1000
+        _ <- feedStr e (B8.intercalate "\r\n" ["line" <> B8.pack (show i) | i <- [1 :: Int .. 6]])
+        -- lines 1..3 have scrolled into scrollback; 4..6 are on screen
+        resize e Size { rows = 6, cols = 20 }
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "line1"
+        scrollbackLength e `shouldReturn` 0
+
+    it "rewraps a long line instead of erasing it as it narrows" $ do
+        e <- newEmulator Size { rows = 3, cols = 40 } 1000
+        _ <- feedStr e (B8.pack (replicate 30 'x'))
+        resize e Size { rows = 3, cols = 20 }
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` T.replicate 20 "x"
+        rowText scr 1 `shouldBe` T.replicate 10 "x"
+
     describe "OSC title sequences (zsh preexec announcing the command)" $ do
         -- zsh/oh-my-zsh retitle the terminal on every command: the bare
         -- command word via OSC 1 (icon/tab title) and the whole line via

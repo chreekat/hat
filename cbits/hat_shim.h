@@ -26,12 +26,14 @@ typedef struct {
     void (*settermprop_str)(int prop, const char *str, size_t len, int final);
     void (*bell)(void);
     void (*sb_pushline)(int cols, const VTermScreenCell *cells);
+    int (*sb_popline)(int cols, VTermScreenCell *cells);
     void (*output)(const char *bytes, size_t len);
 } HatCallbacks;
 
 void hat_setup(VTerm *vt, HatCallbacks *cbs);
 int hat_get_cell(VTermScreen *screen, int row, int col, HatCell *out);
 void hat_flatten_cell_at(const VTermScreenCell *cells, int i, HatCell *out);
+void hat_unflatten_cell_at(VTermScreenCell *cells, int i, const HatCell *in);
 
 /* fork() a child that becomes the session leader of the given pty slave,
  * redirects stdio to it, normalizes the line discipline to canonical mode

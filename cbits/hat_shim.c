@@ -2,6 +2,7 @@
 #include "hat_shim.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
@@ -55,6 +56,37 @@ void hat_flatten_cell_at(const VTermScreenCell *cells, int i, HatCell *out) {
     flatten_cell(cells + i, out);
 }
 
+static void unflatten_color(VTermColor *c, int kind, int idx,
+                            int r, int g, int b, uint8_t default_flag) {
+    if (kind == 1)
+        vterm_color_indexed(c, idx);
+    else if (kind == 2)
+        vterm_color_rgb(c, r, g, b);
+    else
+        c->type = default_flag;
+}
+
+static void unflatten_cell(const HatCell *in, VTermScreenCell *out) {
+    memset(out, 0, sizeof *out);
+    for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL; i++)
+        out->chars[i] = in->chars[i];
+    out->width = in->width;
+    out->attrs.bold      = (in->flags & 1u)  ? 1 : 0;
+    out->attrs.underline = (in->flags & 2u)  ? 1 : 0;
+    out->attrs.italic    = (in->flags & 4u)  ? 1 : 0;
+    out->attrs.reverse   = (in->flags & 8u)  ? 1 : 0;
+    out->attrs.strike    = (in->flags & 16u) ? 1 : 0;
+    out->attrs.blink     = (in->flags & 32u) ? 1 : 0;
+    unflatten_color(&out->fg, in->fg_kind, in->fg_idx,
+                    in->fg_r, in->fg_g, in->fg_b, VTERM_COLOR_DEFAULT_FG);
+    unflatten_color(&out->bg, in->bg_kind, in->bg_idx,
+                    in->bg_r, in->bg_g, in->bg_b, VTERM_COLOR_DEFAULT_BG);
+}
+
+void hat_unflatten_cell_at(VTermScreenCell *cells, int i, const HatCell *in) {
+    unflatten_cell(in, cells + i);
+}
+
 /* --- trampolines: vterm calls these with structs by value; we forward
  * scalars to the Haskell function pointers stashed in the cbdata. --- */
 
@@ -105,6 +137,12 @@ static int tramp_sb_pushline(int cols, const VTermScreenCell *cells, void *user)
     return 1;
 }
 
+static int tramp_sb_popline(int cols, VTermScreenCell *cells, void *user) {
+    HatCallbacks *h = user;
+    if (h->sb_popline) return h->sb_popline(cols, cells);
+    return 0;
+}
+
 static void tramp_output(const char *bytes, size_t len, void *user) {
     HatCallbacks *h = user;
     if (h->output) h->output(bytes, len);
@@ -118,13 +156,14 @@ static const VTermScreenCallbacks screen_callbacks = {
     .bell = tramp_bell,
     .resize = NULL,
     .sb_pushline = tramp_sb_pushline,
-    .sb_popline = NULL,
+    .sb_popline = tramp_sb_popline,
     .sb_clear = NULL,
 };
 
 void hat_setup(VTerm *vt, HatCallbacks *cbs) {
     VTermScreen *screen = vterm_obtain_screen(vt);
     vterm_screen_set_callbacks(screen, &screen_callbacks, cbs);
+    vterm_screen_enable_reflow(screen, true);
     vterm_output_set_callback(vt, tramp_output, cbs);
 }
 

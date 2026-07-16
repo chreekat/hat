@@ -33,11 +33,11 @@ module Hat.Term.Emulator
 #include "hat_shim.h"
 
 import Control.Concurrent.MVar
-import Control.Monad (foldM, forM)
+import Control.Monad (foldM, forM, forM_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
-import Data.Char (chr)
+import Data.Char (chr, ord)
 import Data.IORef
 import Data.Maybe (fromMaybe)
 import Data.Sequence (Seq)
@@ -89,6 +89,8 @@ foreign import ccall unsafe "hat_get_cell"
     c_hat_get_cell :: Ptr CVTermScreen -> CInt -> CInt -> Ptr CHatCell -> IO CInt
 foreign import ccall unsafe "hat_flatten_cell_at"
     c_flatten_cell_at :: Ptr CVTermCells -> CInt -> Ptr CHatCell -> IO ()
+foreign import ccall unsafe "hat_unflatten_cell_at"
+    c_unflatten_cell_at :: Ptr CVTermCells -> CInt -> Ptr CHatCell -> IO ()
 
 type DamageFn = CInt -> CInt -> CInt -> CInt -> IO ()
 type MoveCursorFn = CInt -> CInt -> CInt -> IO ()
@@ -97,6 +99,7 @@ type PropIntFn = CInt -> CInt -> IO ()
 type PropStrFn = CInt -> CString -> CSize -> CInt -> IO ()
 type BellFn = IO ()
 type PushlineFn = CInt -> Ptr CVTermCells -> IO ()
+type PoplineFn = CInt -> Ptr CVTermCells -> IO CInt
 type OutputFn = CString -> CSize -> IO ()
 
 foreign import ccall "wrapper" wrapDamage :: DamageFn -> IO (FunPtr DamageFn)
@@ -106,6 +109,7 @@ foreign import ccall "wrapper" wrapPropInt :: PropIntFn -> IO (FunPtr PropIntFn)
 foreign import ccall "wrapper" wrapPropStr :: PropStrFn -> IO (FunPtr PropStrFn)
 foreign import ccall "wrapper" wrapBell :: BellFn -> IO (FunPtr BellFn)
 foreign import ccall "wrapper" wrapPushline :: PushlineFn -> IO (FunPtr PushlineFn)
+foreign import ccall "wrapper" wrapPopline :: PoplineFn -> IO (FunPtr PoplineFn)
 foreign import ccall "wrapper" wrapOutput :: OutputFn -> IO (FunPtr OutputFn)
 
 data Event
@@ -275,6 +279,18 @@ newEmulator sz historyLimit = do
         modifyIORef' stateR $ \s ->
             let sb' = s.scrollback Seq.|> line
             in s { scrollback = Seq.drop (Seq.length sb' - historyLimit) sb' }
+    popW <- wrapPopline $ \ncols cellsPtr -> do
+        s <- readIORef stateR
+        case Seq.viewr s.scrollback of
+            Seq.EmptyR -> pure 0
+            rest Seq.:> line -> do
+                writeIORef stateR s { scrollback = rest }
+                let padded = take (fromIntegral ncols) (line ++ repeat blankCell)
+                allocaBytes #{size HatCell} $ \hc ->
+                    forM_ (zip [0 ..] padded) $ \(i, cell) -> do
+                        pokeHatCell hc cell
+                        c_unflatten_cell_at cellsPtr i hc
+                pure 1
     outputW <- wrapOutput $ \str len -> do
         bs <- B.packCStringLen (str, fromIntegral len)
         modifyIORef' stateR $ \s -> s { output = bs : s.output }
@@ -287,6 +303,7 @@ newEmulator sz historyLimit = do
     #{poke HatCallbacks, settermprop_str} cbs propStrW
     #{poke HatCallbacks, bell} cbs bellW
     #{poke HatCallbacks, sb_pushline} cbs pushW
+    #{poke HatCallbacks, sb_popline} cbs popW
     #{poke HatCallbacks, output} cbs outputW
     c_hat_setup vtp cbs
     c_screen_reset scr 1
@@ -297,7 +314,7 @@ newEmulator sz historyLimit = do
     let funptrs =
             [ castFunPtr damageW, castFunPtr moveW, castFunPtr propBoolW
             , castFunPtr propIntW, castFunPtr propStrW, castFunPtr bellW
-            , castFunPtr pushW, castFunPtr outputW
+            , castFunPtr pushW, castFunPtr popW, castFunPtr outputW
             ]
     vtFP <- FC.newForeignPtr vtp $ do
         c_vterm_free vtp
@@ -546,3 +563,41 @@ peekHatCell p = do
             , blink = has 32
             }
         }
+
+-- | Marshal a 'Cell' into a 'CHatCell' buffer, the inverse of 'peekHatCell',
+-- so a stored scrollback line can be handed back to libvterm as it reflows on
+-- resize. A zero-width cell is re-encoded with the 0xFFFFFFFF wide-char
+-- continuation sentinel 'peekHatCell' recognizes.
+pokeHatCell :: Ptr CHatCell -> Cell -> IO ()
+pokeHatCell p cell = do
+    let cps
+            | cell.width == 0 = [0xFFFFFFFF]
+            | otherwise = map (fromIntegral . ord) (T.unpack cell.text)
+    pokeArray (#{ptr HatCell, chars} p)
+        (take #{const VTERM_MAX_CHARS_PER_CELL} (cps ++ repeat 0) :: [Word32])
+    #{poke HatCell, width} p (fromIntegral cell.width :: CInt)
+    let s = cell.style
+        onFlag b m = if b then m else 0
+        flags = onFlag s.bold 1 .|. onFlag s.underline 2 .|. onFlag s.italic 4
+            .|. onFlag s.reverse 8 .|. onFlag s.strike 16 .|. onFlag s.blink 32
+    #{poke HatCell, flags} p (flags :: CUInt)
+    let (fgK, fgI, fgR, fgG, fgB) = colorFields s.fg
+        (bgK, bgI, bgR, bgG, bgB) = colorFields s.bg
+    #{poke HatCell, fg_kind} p fgK
+    #{poke HatCell, fg_idx} p fgI
+    #{poke HatCell, fg_r} p fgR
+    #{poke HatCell, fg_g} p fgG
+    #{poke HatCell, fg_b} p fgB
+    #{poke HatCell, bg_kind} p bgK
+    #{poke HatCell, bg_idx} p bgI
+    #{poke HatCell, bg_r} p bgR
+    #{poke HatCell, bg_g} p bgG
+    #{poke HatCell, bg_b} p bgB
+
+-- | A 'Color' split into the @(kind, idx, r, g, b)@ fields of a 'CHatCell',
+-- matching the encoding 'peekHatCell' decodes: kind 0 default, 1 indexed, 2
+-- rgb.
+colorFields :: Color -> (CInt, CInt, CInt, CInt, CInt)
+colorFields DefaultColor = (0, 0, 0, 0, 0)
+colorFields (Indexed i)  = (1, fromIntegral i, 0, 0, 0)
+colorFields (RGB r g b)  = (2, 0, fromIntegral r, fromIntegral g, fromIntegral b)
