@@ -53,7 +53,6 @@ import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
-import qualified System.Posix.Files as PFiles
 import qualified System.Posix.IO as PIO
 import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
@@ -1216,10 +1215,6 @@ pickActivityTarget ixs cur flagged mlast =
     scan = after <> before
 
 -- Sizing ----------------------------------------------------------------
-
--- | The pane area of the screen: everything except the status line.
-windowArea :: Size -> Size
-windowArea sz = sz { rows = max 1 (sz.rows - 1) }
 
 -- Effective session size = smallest attached client; panes follow.
 applySessionSize :: ServerState -> SessionId -> IO ()
@@ -2758,15 +2753,6 @@ cmdSplitWindow st mclient args = do
                         applySessionSize st sess.id
                         pure []
 
--- | Where is a pane's child process now? /proc, with a fallback.
-paneCurrentPath :: Pane -> IO FilePath
-paneCurrentPath pane = do
-    r <- try (PFiles.readSymbolicLink
-        ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/cwd"))
-    pure $ case r of
-        Left (_ :: IOException) -> pane.startCwd
-        Right dir -> dir
-
 cmdSelectPane :: CommandImpl
 cmdSelectPane st mclient args = do
     let (opts, flags, _) = parseArgs "tT" args
@@ -3424,27 +3410,6 @@ currentWindowOf st mclient = do
             case msess of
                 Nothing -> pure Nothing
                 Just sess -> atomically (currentWindow sess)
-
--- | Find a pane by its numeric id across every session and window.
-findPaneById :: ServerState -> Int -> STM (Maybe Pane)
-findPaneById st n = do
-    sessions <- readTVar st.sessions
-    panes <- fmap concat . forM (Map.elems sessions) $ \sess -> do
-        ws <- readTVar sess.windows
-        fmap concat . forM (Map.elems ws) $ windowPanes
-    pure (List.find (\p -> rawPane p.id == n) panes)
-
--- | Find a window by its id across every session.
-findWindowById :: ServerState -> WindowId -> STM (Maybe Window)
-findWindowById st wid = do
-    sessions <- readTVar st.sessions
-    wins <- fmap concat . forM (Map.elems sessions) $ \sess ->
-        Map.elems <$> readTVar sess.windows
-    pure (List.find (\w -> w.id == wid) wins)
-
--- | Find a session by its id.
-findSessionById :: ServerState -> SessionId -> STM (Maybe Session)
-findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
 
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
@@ -4194,16 +4159,3 @@ controlLoop st client = do
         Nothing -> pure ()
         _ -> controlLoop st client
 
--- Helpers ------------------------------------------------------------
-
-rawClient :: ClientId -> Int
-rawClient (ClientId n) = n
-
-rawPane :: PaneId -> Int
-rawPane (PaneId n) = n
-
-rawSession :: SessionId -> Int
-rawSession (SessionId n) = n
-
-tshow :: Show a => a -> Text
-tshow = T.pack . show

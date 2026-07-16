@@ -31,12 +31,24 @@ module Hat.Model
     , currentWindow
     , activePane
     , windowPanes
+    , windowArea
+    , paneCurrentPath
+    , findPaneById
+    , findWindowById
+    , findSessionById
+    , rawClient
+    , rawPane
+    , rawSession
+    , tshow
     ) where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
+import Control.Exception (IOException, try)
+import Control.Monad (forM)
 import Data.IORef (IORef)
+import qualified Data.List as List
 import System.IO (Handle)
 import System.Process (ProcessHandle)
 import Data.Map.Strict (Map)
@@ -44,8 +56,10 @@ import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
 import Network.Socket (Socket)
+import qualified System.Posix.Files as PFiles
 
 import Hat.Geometry
 import Hat.Log (Logger)
@@ -357,3 +371,49 @@ activePane win = do
 
 windowPanes :: Window -> STM [Pane]
 windowPanes win = Map.elems <$> readTVar win.panes
+
+-- | The pane area of the screen: everything except the status line.
+windowArea :: Size -> Size
+windowArea sz = sz { rows = max 1 (sz.rows - 1) }
+
+-- | Where is a pane's child process now? /proc, with a fallback.
+paneCurrentPath :: Pane -> IO FilePath
+paneCurrentPath pane = do
+    r <- try (PFiles.readSymbolicLink
+        ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/cwd"))
+    pure $ case r of
+        Left (_ :: IOException) -> pane.startCwd
+        Right dir -> dir
+
+-- | Find a pane by its numeric id across every session and window.
+findPaneById :: ServerState -> Int -> STM (Maybe Pane)
+findPaneById st n = do
+    sessions <- readTVar st.sessions
+    panes <- fmap concat . forM (Map.elems sessions) $ \sess -> do
+        ws <- readTVar sess.windows
+        fmap concat . forM (Map.elems ws) $ windowPanes
+    pure (List.find (\p -> rawPane p.id == n) panes)
+
+-- | Find a window by its id across every session.
+findWindowById :: ServerState -> WindowId -> STM (Maybe Window)
+findWindowById st wid = do
+    sessions <- readTVar st.sessions
+    wins <- fmap concat . forM (Map.elems sessions) $ \sess ->
+        Map.elems <$> readTVar sess.windows
+    pure (List.find (\w -> w.id == wid) wins)
+
+-- | Find a session by its id.
+findSessionById :: ServerState -> SessionId -> STM (Maybe Session)
+findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
+
+rawClient :: ClientId -> Int
+rawClient (ClientId n) = n
+
+rawPane :: PaneId -> Int
+rawPane (PaneId n) = n
+
+rawSession :: SessionId -> Int
+rawSession (SessionId n) = n
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
