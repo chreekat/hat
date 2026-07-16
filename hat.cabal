@@ -86,6 +86,7 @@ library
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Title
+        Hat.Server.View
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.HostProtocol
