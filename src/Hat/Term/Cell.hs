@@ -1,5 +1,8 @@
 -- | Cell, style, and color types shared by the emulator, renderer, and
 -- wire protocol.
+
+-- Everything here has no business being lazy.
+{-# LANGUAGE StrictData #-}
 module Hat.Term.Cell
     ( Color (..)
     , Style (..)
@@ -13,8 +16,8 @@ import Data.Word (Word8)
 
 data Color
     = DefaultColor
-    | Indexed !Word8
-    | RGB !Word8 !Word8 !Word8
+    | Indexed Word8
+    | RGB Word8 Word8 Word8
     deriving (Eq, Show)
 
 data Style = Style

@@ -1,3 +1,5 @@
+{-# LANGUAGE StrictData #-}
+
 -- | The terminal emulator: libvterm wrapped behind a narrow interface.
 --
 -- Each pane owns one 'Emulator' and is touched by one thread at a time;
@@ -526,7 +528,7 @@ peekHatCell p = do
             | kind == 2 = RGB (fromIntegral rr) (fromIntegral gg) (fromIntegral bb)
             | otherwise = DefaultColor
         has mask = flags .&. mask /= 0
-    pure Cell
+    pure $! Cell
         { text = txt
         , width = if continuation then 0 else fromIntegral (max 1 w)
         , style = Style
