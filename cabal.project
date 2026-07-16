@@ -4,3 +4,8 @@ packages: .
 active-repositories: none
 
 tests: True
+
+-- Share one job pool across components and GHC's intra-component module
+-- compilation, so a single big library builds its modules in parallel
+-- without oversubscribing.
+semaphore: True
