@@ -10,9 +10,9 @@ build-type:         Simple
 tested-with:        GHC == 9.10.3
 
 flag profiling
-    description: Build in profiling mode. For now this just enables
-                 -finfo-table-map so heap/stack samples carry source
-                 provenance.
+    description: Build for info-table heap profiling: -finfo-table-map and
+                 -fdistinct-constructor-tables give samples source provenance.
+                 Run with +RTS -hi -l and feed the .eventlog to eventlog2html.
     default:     False
     manual:      True
 
@@ -56,7 +56,7 @@ common pedantry
 
 common profiled
     if flag(profiling)
-        ghc-options: -finfo-table-map
+        ghc-options: -finfo-table-map -fdistinct-constructor-tables
 
 library
     import:             defaults, pedantry, profiled
