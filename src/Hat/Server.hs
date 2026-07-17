@@ -55,6 +55,7 @@ import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
 import qualified System.Posix.IO as PIO
 import System.Posix.Process (executeFile, getProcessID)
+import System.Posix.Signals (sigHUP, signalProcess)
 import System.Posix.Types (Fd (..))
 import System.Timeout (timeout)
 import System.Process
@@ -71,8 +72,8 @@ import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , loadSnapshot, saveSnapshot, withStore)
 import Hat.Server.Reload
-    (ReloadPane (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
-    , decodeReload, encodeReload)
+    (Handover (..), ReloadCleanup (..), ReloadPane (..), ReloadSession (..)
+    , ReloadState (..), ReloadWindow (..), decodeHandover, encodeHandover)
 import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -124,13 +125,25 @@ runServerWith path mconfig mhandover = do
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
-    -- On a reload, read the handover the outgoing image left; the socket is
-    -- adopted from the fd it names rather than bound anew.
-    mreload <- case mhandover of
+    -- On a reload, read the handover the outgoing image left. An era match
+    -- yields the tree to adopt (and the socket fd to reuse); an incompatible
+    -- or corrupt payload yields only the cleanup core, so we hang the
+    -- inherited processes up and start fresh rather than orphan them.
+    mhand <- case mhandover of
         Just hp -> readReload lg hp
         Nothing -> pure Nothing
+    mreload <- case mhand of
+        Just h | Just rs <- h.tree -> pure (Just (h.cleanup.listenFd, rs))
+        Just h -> do
+            logEvent lg ServerCrash
+                { err = "reload: incompatible handover; hanging up "
+                    <> tshow (length h.cleanup.live) <> " inherited pane(s)"
+                    <> " and starting fresh" }
+            cleanupInherited h.cleanup
+            pure Nothing
+        Nothing -> pure Nothing
     let openListen = case mreload of
-            Just rs -> N.mkSocket (fromIntegral rs.listenFd)
+            Just (sockFd, _) -> N.mkSocket (fromIntegral sockFd)
             Nothing -> listenOn path
     bracket openListen N.close $ \lsock -> do
         lfd <- N.unsafeFdSocket lsock
@@ -154,7 +167,7 @@ runServerWith path mconfig mhandover = do
                 (loadConfig st mconfig >> case mreload of
                     -- Reload: re-adopt the still-running tree the outgoing
                     -- image handed over, rather than respawning from disk.
-                    Just rs -> rebuildReload st rs
+                    Just (_, rs) -> rebuildReload st rs
                     Nothing -> forM_ mstore (restoreSaved st))
                     `catch` \(e :: SomeException) ->
                         logEvent lg ServerCrash
@@ -596,10 +609,13 @@ restorePane st sid shellCmd env sz whitelist psnap = do
 -- Reload: capture the live tree with its inherited handles, and rebuild it
 -- in the re-exec'd image by adopting them ------------------------------------
 
--- | Capture the running tree into a 'ReloadState': the same structure
--- 'captureSnapshot' records, plus each pane's live pty master fd and child
--- pid and the listening socket fd, so the re-exec'd image can adopt them.
-captureReload :: ServerState -> IO ReloadState
+-- | Capture the running tree into the two halves of a handover: the evolving
+-- 'ReloadState' (the same structure 'captureSnapshot' records, plus each
+-- pane's live pty master fd and child pid), and the version-independent
+-- 'ReloadCleanup' core (the listening socket fd and the flat list of every
+-- pane's (master fd, child pid), so a version-mismatched reload can hang the
+-- inherited processes up cleanly rather than orphan them).
+captureReload :: ServerState -> IO (ReloadCleanup, ReloadState)
 captureReload st = do
     (sess, laName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
@@ -608,7 +624,13 @@ captureReload st = do
         mfd     <- readTVar st.listenFd
         pure (Map.elems sessMap, laName, mfd)
     rsessions <- mapM captureReloadSession sess
-    pure (ReloadState rsessions laName (fromMaybe (-1) mfd))
+    let tree = ReloadState rsessions laName
+        liveHandles =
+            [ (p.masterFd, p.childPid)
+            | s <- rsessions, w <- s.windows, p <- w.panes ]
+        cleanup = ReloadCleanup
+            { listenFd = fromMaybe (-1) mfd, live = liveHandles }
+    pure (cleanup, tree)
 
 captureReloadSession :: Session -> IO ReloadSession
 captureReloadSession s = do
@@ -634,10 +656,11 @@ captureReloadWindow ws = do
     pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
             ws.wsLastActive ws.wsAutoRename rpanes)
 
--- Read and consume the handover file the outgoing image wrote. A missing or
--- malformed blob is logged and treated as no handover, so the reload degrades
--- to a normal (respawning) start rather than crashing.
-readReload :: Logger -> FilePath -> IO (Maybe ReloadState)
+-- Read and consume the handover file the outgoing image wrote. The frozen
+-- envelope yields the cleanup core even for an incompatible version; 'Nothing'
+-- only when even that is unreadable (a corrupt or foreign file), where there
+-- are no inherited fds to reclaim.
+readReload :: Logger -> FilePath -> IO (Maybe Handover)
 readReload lg hp = do
     r <- try (B.readFile hp)
     removeFile hp `catch` \(_ :: IOException) -> pure ()
@@ -646,11 +669,11 @@ readReload lg hp = do
             logEvent lg ServerCrash
                 { err = "reload: unreadable handover: " <> T.pack (show e) }
             pure Nothing
-        Right bs -> case decodeReload bs of
+        Right bs -> case decodeHandover bs of
             Left derr -> do
                 logEvent lg ServerCrash { err = "reload: bad handover: " <> derr }
                 pure Nothing
-            Right rs -> pure (Just rs)
+            Right h -> pure (Just h)
 
 -- | Rebuild the tree from a reload handover, adopting each pane's inherited
 -- pty and child rather than spawning. Emulators come up blank; the programs
@@ -3677,10 +3700,10 @@ cmdKillServer st mclient _ = do
 -- sockets are close-on-exec, so they drop and the users reattach.
 cmdRestartServer :: CommandImpl
 cmdRestartServer st mclient _ = do
-    rs <- captureReload st
+    (cleanup, tree) <- captureReload st
     let blobPath = st.sockPath <> ".reload"
-    B.writeFile blobPath (encodeReload rs)
-    keepOpenAcrossExec rs
+    B.writeFile blobPath (encodeHandover cleanup tree)
+    keepOpenAcrossExec cleanup
     sessions <- readTVarIO st.sessions
     forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
     forM_ mclient $ \client -> send client Exited
@@ -3696,14 +3719,26 @@ cmdRestartServer st mclient _ = do
 -- the listening socket and every pane's pty master. They are not marked
 -- close-on-exec today, but a libc that set the flag would otherwise slam them
 -- shut on the exec and hang up every program.
-keepOpenAcrossExec :: ReloadState -> IO ()
-keepOpenAcrossExec rs = do
-    clear rs.listenFd
-    forM_ rs.sessions $ \s ->
-        forM_ s.windows $ \w ->
-            forM_ w.panes $ \p -> clear p.masterFd
+keepOpenAcrossExec :: ReloadCleanup -> IO ()
+keepOpenAcrossExec cleanup = do
+    clear cleanup.listenFd
+    forM_ cleanup.live $ \(fd, _pid) -> clear fd
   where
     clear fd = PIO.setFdOption (Fd (fromIntegral fd)) PIO.CloseOnExec False
+        `catch` \(_ :: IOException) -> pure ()
+
+-- Release fds a reload inherited but cannot use — an incompatible or corrupt
+-- payload. Closing a pane master hangs its child up (and SIGHUP makes sure),
+-- so the incoming image starts fresh without orphaning the old processes or
+-- leaking the old socket.
+cleanupInherited :: ReloadCleanup -> IO ()
+cleanupInherited cleanup = do
+    forM_ cleanup.live $ \(fd, pid) -> do
+        signalProcess sigHUP (fromIntegral pid)
+            `catch` \(_ :: IOException) -> pure ()
+        PIO.closeFd (Fd (fromIntegral fd))
+            `catch` \(_ :: IOException) -> pure ()
+    PIO.closeFd (Fd (fromIntegral cleanup.listenFd))
         `catch` \(_ :: IOException) -> pure ()
 
 cmdDisplayMessage :: CommandImpl

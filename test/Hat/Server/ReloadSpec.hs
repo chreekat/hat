@@ -2,6 +2,13 @@
 
 module Hat.Server.ReloadSpec (spec) where
 
+import Codec.Serialise (encode, serialise)
+import Codec.Serialise.Encoding (encodeListLen, encodeWord)
+import Codec.CBOR.Write (toStrictByteString)
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
+import Data.Either (isLeft)
+import Data.Word (Word8)
 import qualified Data.Text as T
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
@@ -23,12 +30,16 @@ shortList = sized $ \n -> do
     k <- choose (0, min 3 n)
     vectorOf k arbitrary
 
+instance Arbitrary ReloadCleanup where
+    arbitrary = ReloadCleanup <$> arbitrary <*> shortList
+    shrink c =
+        [ ReloadCleanup fd lv | (fd, lv) <- shrink (c.listenFd, c.live) ]
+
 instance Arbitrary ReloadState where
-    arbitrary = ReloadState <$> shortList <*> genMaybeText <*> arbitrary
+    arbitrary = ReloadState <$> shortList <*> genMaybeText
     shrink rs =
-        [ ReloadState ss (T.pack <$> cs) fd
-        | (ss, cs, fd) <-
-            shrink (rs.sessions, T.unpack <$> rs.currentSession, rs.listenFd) ]
+        [ ReloadState ss (T.pack <$> cs)
+        | (ss, cs) <- shrink (rs.sessions, T.unpack <$> rs.currentSession) ]
 
 instance Arbitrary ReloadSession where
     arbitrary = ReloadSession
@@ -54,8 +65,61 @@ instance Arbitrary ReloadPane where
         [ ReloadPane (T.pack c) m pid
         | (c, m, pid) <- shrink (T.unpack p.cwd, p.masterFd, p.childPid) ]
 
+-- Re-encode a handover at an arbitrary era, to exercise the era gate. Mirrors
+-- 'encodeHandover' exactly except for the era field; the golden-byte test
+-- below pins the real encoder, so a format change surfaces there.
+encodeAtEra :: Int -> ReloadCleanup -> ReloadState -> B.ByteString
+encodeAtEra era c t = toStrictByteString $
+       encodeListLen 5
+    <> encodeWord 0x48415452
+    <> encode era
+    <> encode c.listenFd
+    <> encode c.live
+    <> encode (BL.toStrict (serialise t))
+
+hexOf :: B.ByteString -> String
+hexOf = concatMap byte . B.unpack
+  where
+    byte w = [d (w `div` 16), d (w `mod` 16)]
+    d n = "0123456789abcdef" !! fromIntegral (n :: Word8)
+
+fixedCleanup :: ReloadCleanup
+fixedCleanup = ReloadCleanup { listenFd = 3, live = [(7, 100)] }
+
+fixedTree :: ReloadState
+fixedTree = ReloadState
+    { sessions =
+        [ ReloadSession
+            { name = "work", startCwd = "/home", currentIx = 0, lastIx = Nothing
+            , windows =
+                [ ReloadWindow
+                    { ix = 0, name = "w", layout = "L", active = 0
+                    , lastActive = Nothing, autoRename = True
+                    , panes = [ ReloadPane { cwd = "/tmp", masterFd = 7, childPid = 100 } ] } ] } ]
+    , currentSession = Just "work" }
+
 spec :: Spec
-spec =
-    describe "reload handover codec" $
-        prop "round-trips a ReloadState through CBOR" $ \rs ->
-            decodeReload (encodeReload rs) === Right (rs :: ReloadState)
+spec = describe "reload handover" $ do
+    prop "round-trips a matching-era handover" $ \c t ->
+        decodeHandover (encodeHandover c t)
+            === Right (Handover c (Just (t :: ReloadState)))
+
+    -- The safety contract: an incompatible payload is NOT decoded, but the
+    -- version-independent cleanup core is still recovered, so the incoming
+    -- image can hang up the inherited processes instead of orphaning them.
+    it "gates a stale-era payload yet still recovers the cleanup core" $
+        decodeHandover (encodeAtEra (reloadEra + 1) fixedCleanup fixedTree)
+            `shouldBe` Right (Handover fixedCleanup Nothing)
+
+    it "rejects a foreign or corrupt blob outright" $
+        decodeHandover (B.pack [0, 1, 2, 3]) `shouldSatisfy` isLeft
+
+    -- Golden bytes are the format contract. If this fails from an intended
+    -- change to ReloadState's shape, bump 'reloadEra' and update the golden;
+    -- if you didn't mean to change the shape, you have a compat bug.
+    it "encodes a fixed handover to stable bytes" $
+        hexOf (encodeHandover fixedCleanup fixedTree) `shouldBe` golden
+  where
+    golden = "851a4841545201039f82071864ff583183009f860064776f726b\
+             \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
+             \071864ffffff8164776f726b"
