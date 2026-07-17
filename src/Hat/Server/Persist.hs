@@ -153,8 +153,11 @@ decodeExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
     Just (PaneExtra mc) -> mc
     Nothing             -> Nothing
 
--- | Schema version stamped into the @meta@ table. Bump only when a change
--- cannot be expressed additively.
+-- | Schema version stamped into the @meta@ table. A forward-looking breadcrumb,
+-- NOT a read-time gate: 'loadSnapshot' reads leniently (core columns, defaulting
+-- anything absent, ignoring the unknown), so an old or new store loads without
+-- consulting this. Bump it only when a change genuinely cannot be expressed
+-- additively — that is the day a reader would finally branch on it to migrate.
 schemaVersion :: Int
 schemaVersion = 1
 

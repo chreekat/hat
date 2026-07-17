@@ -128,7 +128,10 @@ spec = do
             pure (got === (s2 :: Snapshot))
 
     -- Forward/backward compatibility: the reader keys off core columns
-    -- only, so it reads a store from an older or newer binary.
+    -- only, so it reads a store from an older or newer binary. This block is
+    -- the store's version corpus (cf. the reload handover's corpus): each case
+    -- pins that current code still reads a shape an older or newer binary
+    -- wrote. Extend it — never relax it — when the schema evolves.
     describe "schema compatibility" $ do
         let oneSession nm cwd0 wnm lay pcwd = Snapshot
                 { lastActiveSession = Nothing, sessions =

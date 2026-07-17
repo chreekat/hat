@@ -32,30 +32,45 @@ running program or corrupt a store on the next upgrade.
 The cross-version boundaries that exist today — treat this as the list to
 check, and **add a row whenever you introduce a new one**:
 
-| Boundary | Module | Evolution rule |
-|---|---|---|
-| Client ↔ server wire | `Hat.Transport.Wire` | Explicit append-only CBOR tags `[tag, …]`, **never** Generic-derived constructor/field numbering. Unknown tag → skip; `Malformed` → fatal. Pinned by golden-byte tests in `WireSpec`. |
-| Persistence store | `Hat.Server.Persist` (SQLite) | Core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent. |
-| Reload handover | `Hat.Server.Reload` | Carries a version/era envelope and a stable, version-independent core — enough that a version mismatch can be cleaned up safely rather than orphaning the inherited processes. |
+| Boundary | Module | Evolution rule | Corpus |
+|---|---|---|---|
+| Client ↔ server wire | `Hat.Transport.Wire` | Explicit append-only CBOR tags `[tag, …]`, **never** Generic-derived constructor/field numbering. Unknown tag → skip; `Malformed` → fatal. | golden-byte tests in `WireSpec` |
+| Persistence store | `Hat.Server.Persist` (SQLite) | Additive schema: core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent and ignore the unknown (never gate on `schema_version`). | `PersistSpec` "schema compatibility" |
+| Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload; a build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. | `ReloadSpec` corpus |
 
-When you add or change any such format, the rule is:
+Two valid mechanisms, both delivering the same guarantee (a new build reads old
+data): **additive schema** — one lenient reader handles old *and* new, both
+directions (the wire tags, the store's columns); and **versioned migration** — a
+version stamp plus a decoder + forward migration per older version, so era X
+reads `1..X` (the reload handover). Prefer additive; reach for migration only
+when a change genuinely can't be additive.
 
-1. **Stamp a version/era.** Put an explicit version at the head so a reader can
-   distinguish "older version" from "corrupt bytes." Mirror `protocolVersion`.
-2. **Evolve additively.** Append tagged fields or add defaulting columns —
-   never renumber, reorder, or repurpose an existing field. Do **not** lean on
-   Generic-derived record/constructor layout for anything cross-version: that
-   is exactly what caused the era-4 wire incident.
-3. **Degrade safely on the unknown.** A newer field a reader doesn't recognize
-   is skipped, not fatal. A version it genuinely can't handle fails *safe* — it
-   must never corrupt a store, orphan a process, or silently do the wrong
-   thing. Prefer a stable, version-independent core (e.g. the fds/pids to hang
-   up) so even an unreadable payload can be cleaned up.
-4. **Pin it with a golden-byte test**, like `WireSpec`. The bytes are the
-   contract — don't "fix" a golden, evolve the format and add a new case.
+When you add or change any such format, the rules are:
 
-If you can't tell whether a change is compatible, it isn't: add the envelope
-and the golden test.
+1. **Stamp a version/era** at the head, so a reader tells "older version" from
+   "corrupt bytes." Mirror `protocolVersion`.
+2. **Evolve additively by default.** Append tagged fields or add defaulting
+   columns — never renumber, reorder, or repurpose an existing field. Do **not**
+   lean on Generic-derived record/constructor layout for anything cross-version:
+   that caused the era-4 wire incident. (The reload payload is Generic but
+   era-*gated* — only decoded at an exact era match — which is why a shape
+   change there MUST bump `reloadEra`.)
+3. **When additive won't do, migrate — never lose state.** Bump the version and
+   keep a decoder + forward migration for each older version; a clean restart /
+   data loss is the floor, not the goal.
+4. **Degrade safely on the unknown.** A newer field a reader doesn't recognize
+   is skipped, not fatal. A version it genuinely can't handle fails *safe* —
+   never corrupt a store, orphan a process, or silently do the wrong thing.
+   Prefer a stable, version-independent core (e.g. the fds/pids to hang up) so
+   even an unreadable payload can be cleaned up.
+5. **Keep a build-checked version corpus.** Commit one serialized vector per
+   version; a test decodes every one into the current shape (armor-style — see
+   the `ReloadSpec`/`PersistSpec` corpora). This is what actually *prevents* a
+   backward-incompatible change — prose doesn't. Never edit an existing vector;
+   append a new one.
+
+If you can't tell whether a change is compatible, it isn't: add the version, the
+migration, and a corpus vector.
 
 ## Fail loud, never silently accept
 
