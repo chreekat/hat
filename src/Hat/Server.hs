@@ -3700,6 +3700,8 @@ cmdKillServer st mclient _ = do
 -- sockets are close-on-exec, so they drop and the users reattach.
 cmdRestartServer :: CommandImpl
 cmdRestartServer st mclient _ = do
+    target <- resolveReloadTarget
+    logEvent st.logger ServerReloading { target = target }
     (cleanup, tree) <- captureReload st
     let blobPath = st.sockPath <> ".reload"
     B.writeFile blobPath (encodeHandover cleanup tree)
@@ -3708,12 +3710,25 @@ cmdRestartServer st mclient _ = do
     forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
     forM_ mclient $ \client -> send client Exited
     mconfig <- readTVarIO st.serverConfig
-    self <- getExecutablePath
     let argv = ["--server", st.sockPath]
             <> maybe [] (: []) mconfig
             <> ["--reload-handover", blobPath]
-    _ <- executeFile self False argv Nothing
+    _ <- executeFile target False argv Nothing
     pure []  -- unreachable: executeFile replaces this image
+
+-- | The binary an in-place reload re-execs: this process's own image, always.
+-- Deliberately NOT @hat@ as resolved on @PATH@. Resolving by name would pick up
+-- an upgrade installed since launch, but it can just as easily resolve to a
+-- DIFFERENT @hat@ than the one running — a system build with no reload support,
+-- which would ignore the handover and orphan every pane. And the gain is
+-- hollow: 'restart-server' exists to keep pane programs alive, which only
+-- survives a SAME-version reload (an era match); a cross-version reload hangs
+-- the programs up either way (see 'cleanupInherited'), so it buys nothing over
+-- @kill-server@ + reattach. On Nix, 'getExecutablePath' resolves
+-- @\/proc\/self\/exe@ to the immutable store path this process launched from,
+-- so the reload is guaranteed to re-exec the very same, reload-aware binary.
+resolveReloadTarget :: IO FilePath
+resolveReloadTarget = getExecutablePath
 
 -- Clear close-on-exec on the fds the reload must carry into the new image:
 -- the listening socket and every pane's pty master. They are not marked

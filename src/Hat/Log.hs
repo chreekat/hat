@@ -32,6 +32,7 @@ import System.IO
 data LogEvent
     = ServerStarted   { socket :: FilePath }
     | ServerStopping  { reason :: Text }
+    | ServerReloading { target :: FilePath }  -- ^ the binary an in-place reload re-execs
     | ClientConnected { client :: Int, term :: Text }
     | ClientDetached  { client :: Int, reason :: Text }
     | PaneSpawned     { pane :: Int, cmd :: Text }
