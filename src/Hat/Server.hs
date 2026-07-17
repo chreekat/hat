@@ -6,6 +6,9 @@ module Hat.Server
     , resumeServer  -- ^ the reload re-exec re-enters here with a handover file
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
+    , chooseScope  -- ^ exported for the scope-routing test
+    , SetScope (..)
+    , SetDefault (..)
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
@@ -1712,7 +1715,8 @@ commandTable :: Map.Map Text CommandImpl
 commandTable = Map.fromList $ concatMap expand
     [ (["bind-key", "bind"], cmdBind)
     , (["unbind-key", "unbind"], cmdUnbind)
-    , (["set-option", "set", "set-window-option", "setw"], cmdSet)
+    , (["set-option", "set"], cmdSet DefaultSession)
+    , (["set-window-option", "setw"], cmdSet DefaultWindow)
     , (["show-options", "show", "show-option"], cmdShow)
     , (["source-file", "source"], cmdSourceFile)
     , (["new-window", "neww"], cmdNewWindow)
@@ -1903,27 +1907,115 @@ cmdUnbind st _ args = do
             pure []
         _ -> pure [RErr "usage: unbind [-n] [-T table] key"]
 
-cmdSet :: CommandImpl
-cmdSet st _ args = do
-    let (_, flags, pos) = parseArgs "t" args
+-- | Whether @set@\/@set-option@ (session) or @setw@\/@set-window-option@
+-- (window) invoked the set: the default scope when no @-g@\/@-s@\/@-w@ picks
+-- one. See 'cmdSet'.
+data SetDefault = DefaultSession | DefaultWindow
+    deriving (Eq, Show)
+
+-- | The overlay table a @set-option@ writes into. See 'chooseScope'.
+data SetScope
+    = SetServer
+    | SetGlobalSession
+    | SetGlobalWindow
+    | SetLocalSession
+    | SetLocalWindow
+    deriving (Eq, Show)
+
+-- | Route a set to its scope from the command's default, its flags, and the
+-- option's class. @-g@ is lenient (it picks the session- or window-global
+-- table by the option's class, never erroring, so a real @~/.tmux.conf@'s
+-- @set -g mode-keys@ / @set -gw display-time@ both load). An /explicit/ local
+-- window scope (@setw@ or @-w@ without @-g@) or @-s@ that contradicts the
+-- option's class fails loud, matching tmux's @setw prefix@ rejection.
+chooseScope :: SetDefault -> [Text] -> OptionName -> Either Text SetScope
+chooseScope def flags name
+    | hasS = SetServer <$ validateScope ServerOption name
+    | hasG = Right $ case cls of
+        WindowOption -> SetGlobalWindow
+        ServerOption -> SetServer
+        SessionOption -> SetGlobalSession
+    | wantWindow = SetLocalWindow <$ validateScope WindowOption name
+    | otherwise = Right $ case cls of
+        WindowOption -> SetLocalWindow
+        ServerOption -> SetServer
+        SessionOption -> SetLocalSession
+  where
+    cls = optionScopeClass name
+    hasS = "-s" `elem` flags
+    hasG = "-g" `elem` flags
+    wantWindow = "-w" `elem` flags || def == DefaultWindow
+
+cmdSet :: SetDefault -> CommandImpl
+cmdSet def st mclient args = do
+    let (opts, flags, pos) = parseArgs "t" args
         mode = if "-a" `elem` flags then Append else Assign
+        mtarget = lookup "-t" opts
     case pos of
         (nameT : rest) -> do
-            let value = T.unwords rest
-            r <- atomically $ do
-                opts <- readTVar st.options
-                case setOption mode opts nameT value of
-                    Left err -> pure (Left err)
-                    Right opts' -> do
-                        writeTVar st.options opts'
-                        bumpDirty st
-                        pure (Right (opts.historyLimit, opts'.historyLimit))
-            case r of
+            curOpts <- currentResolved st mclient mtarget
+            case setOptionEntry mode curOpts nameT (T.unwords rest) of
                 Left err -> pure [RErr err]
-                Right (old, new) -> do
-                    when (new /= old) (applyHistoryLimit st new)
-                    pure []
-        [] -> pure [RErr "usage: set [-g] option value"]
+                Right (n, v) -> case chooseScope def flags n of
+                    Left err -> pure [RErr err]
+                    Right scope -> do
+                        etv <- scopeTargetVar st mclient mtarget scope
+                        case etv of
+                            Left err -> pure [RErr err]
+                            Right deltaVar -> writeScoped st deltaVar n v nameT
+        [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
+
+-- | Insert a resolved entry into its scope's overlay, mirror it into the
+-- legacy global 'ServerState.options' (so reads unchanged pending migration),
+-- and push a changed @history-limit@ into open panes.
+writeScoped
+    :: ServerState -> TVar OptionsDelta -> OptionName -> OptionValue -> Text
+    -> IO [Reply]
+writeScoped st deltaVar n v nameT = do
+    (old, new) <- atomically $ do
+        old <- (.historyLimit) <$> readTVar st.options
+        modifyTVar' deltaVar (insertDelta n v)
+        modifyTVar' st.options mirror
+        new <- (.historyLimit) <$> readTVar st.options
+        bumpDirty st
+        pure (old, new)
+    when (new /= old) (applyHistoryLimit st new)
+    pure []
+  where
+    mirror o = let o' = applyEntry n v o
+               in o' { explicit = Set.insert nameT o'.explicit }
+
+-- | The options in effect for the target session (or the global chain when
+-- there is none): the base an @-a@ append concatenates onto.
+currentResolved :: ServerState -> Maybe Client -> Maybe Text -> IO Options
+currentResolved st mclient mtarget = do
+    msess <- targetSession st mclient mtarget
+    atomically $ maybe (resolveGlobal st) (resolveForSession st) msess
+
+-- | The overlay table a scope writes into, resolving the target session or
+-- its current window; a missing target fails loud.
+scopeTargetVar
+    :: ServerState -> Maybe Client -> Maybe Text -> SetScope
+    -> IO (Either Text (TVar OptionsDelta))
+scopeTargetVar st mclient mtarget = \case
+    SetServer -> pure (Right st.serverOptions)
+    SetGlobalSession -> pure (Right st.globalSessionOptions)
+    SetGlobalWindow -> pure (Right st.globalWindowOptions)
+    SetLocalSession -> do
+        msess <- targetSession st mclient mtarget
+        pure (maybe (Left "no such session") (Right . (.options)) msess)
+    SetLocalWindow -> do
+        mwin <- targetCurrentWindow st mclient mtarget
+        pure (maybe (Left "no current window") (Right . (.options)) mwin)
+
+-- | The current window of the target session (or the client's).
+targetCurrentWindow
+    :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Window)
+targetCurrentWindow st mclient mtarget = do
+    msess <- targetSession st mclient mtarget
+    case msess of
+        Nothing -> pure Nothing
+        Just sess -> atomically (currentWindow sess)
 
 -- | Push a changed @history-limit@ into every open pane's emulator so the new
 -- cap governs existing panes' scrollback immediately, not just panes created

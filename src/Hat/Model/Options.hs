@@ -16,6 +16,8 @@ module Hat.Model.Options
     , ScopeClass (..)
     , emptyDelta
     , singletonDelta
+    , insertDelta
+    , deltaMember
     , mergeDeltas
     , applyEntry
     , applyDelta
@@ -204,6 +206,14 @@ emptyDelta = OptionsDelta Map.empty
 
 singletonDelta :: OptionName -> OptionValue -> OptionsDelta
 singletonDelta name val = OptionsDelta (Map.singleton name val)
+
+insertDelta :: OptionName -> OptionValue -> OptionsDelta -> OptionsDelta
+insertDelta name val (OptionsDelta m) = OptionsDelta (Map.insert name val m)
+
+-- | Whether an option was set in this delta (used to tell a user's set apart
+-- from a color-scheme default). See 'Hat.Server.ColorScheme.applyPalette'.
+deltaMember :: OptionName -> OptionsDelta -> Bool
+deltaMember name (OptionsDelta m) = Map.member name m
 
 -- | Collapse overlapping deltas into one, most-specific first: when two deltas
 -- set the same option the earlier (more specific) one wins.

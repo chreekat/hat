@@ -20,7 +20,8 @@ import Hat.Model.Options
     , emptyDelta, singletonDelta, mergeDeltas, resolveOptions
     , optionScopeClass, validateScope
     )
-import Hat.Server (SetMode (..), setOption)
+import Hat.Server
+    (SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..))
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
 loadSetErrors :: [[Text]] -> [Text]
@@ -113,6 +114,38 @@ spec = do
 
         it "rejects a window option set at session scope" $
             validateScope SessionOption OptMonitorActivity `shouldSatisfy` isLeft
+
+    describe "set-option scope routing" $ do
+        it "bare set scopes a session option to the current session" $
+            chooseScope DefaultSession [] OptPrefix
+                `shouldBe` Right SetLocalSession
+
+        it "set -g scopes a session option to the global session table" $
+            chooseScope DefaultSession ["-g"] OptPrefix
+                `shouldBe` Right SetGlobalSession
+
+        it "set -g routes a window option to the global window table by class" $
+            chooseScope DefaultSession ["-g"] OptModeKeys
+                `shouldBe` Right SetGlobalWindow
+
+        it "set -gw on a session option stays global-session (real-config case)" $
+            -- the author's ~/.tmux.conf has `set -gw display-time 1500`
+            chooseScope DefaultSession ["-g", "-w"] OptDisplayTime
+                `shouldBe` Right SetGlobalSession
+
+        it "setw routes a window option to the current window" $
+            chooseScope DefaultWindow [] OptModeKeys
+                `shouldBe` Right SetLocalWindow
+
+        it "setw on a session option fails loud (like tmux's setw prefix)" $
+            chooseScope DefaultWindow [] OptPrefix `shouldSatisfy` isLeft
+
+        it "set -s scopes a server option to the server table" $
+            chooseScope DefaultSession ["-s"] OptDefaultTerminal
+                `shouldBe` Right SetServer
+
+        it "set -s on a session option fails loud" $
+            chooseScope DefaultSession ["-s"] OptPrefix `shouldSatisfy` isLeft
 
     describe "config-load burn-down (real ~/.tmux.conf)" $
         it "rejects exactly the not-yet-implemented options" $ do
