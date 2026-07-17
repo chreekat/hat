@@ -134,10 +134,11 @@ runServerWith path mconfig mhandover = do
         Just hp -> readReload lg hp
         Nothing -> pure Nothing
     mreload <- case mhand of
-        Just h | Just rs <- h.tree -> pure (Just (h.cleanup.listenFd, rs))
+        Just h | Right rs <- h.tree -> pure (Just (h.cleanup.listenFd, rs))
         Just h -> do
+            let reason = either id (const "handover unusable") h.tree
             logEvent lg ServerCrash
-                { err = "reload: incompatible handover; hanging up "
+                { err = "reload: " <> reason <> "; hanging up "
                     <> tshow (length h.cleanup.live) <> " inherited pane(s)"
                     <> " and starting fresh" }
             cleanupInherited h.cleanup

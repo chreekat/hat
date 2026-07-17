@@ -90,10 +90,12 @@ data ReloadCleanup = ReloadCleanup
     deriving (Eq, Show)
 
 -- | The outcome of reading a handover: the always-recoverable cleanup core,
--- and the tree only when the blob's era matched this build.
+-- and either the tree to adopt or the reason it cannot be used (a newer era,
+-- an unmigratable old era, or a corrupt payload — the caller then falls back
+-- to a clean restart driven by 'cleanup').
 data Handover = Handover
     { cleanup :: ReloadCleanup
-    , tree    :: Maybe ReloadState
+    , tree    :: Either Text ReloadState
     }
     deriving (Eq, Show)
 
@@ -144,8 +146,28 @@ decodeHandover bs =
         liveH   <- decode
         payload <- decode
         let cl = ReloadCleanup { listenFd = lfd, live = liveH }
-            mt | era == reloadEra =
-                     either (const Nothing) Just
-                            (deserialiseOrFail (BL.fromStrict payload))
-               | otherwise = Nothing
-        pure Handover { cleanup = cl, tree = mt }
+        pure Handover { cleanup = cl, tree = decodeReloadTree era payload }
+
+-- | Decode a handover payload written at era @e@ into the CURRENT
+-- 'ReloadState', migrating it forward. This is where backward compatibility
+-- lives: a build at era X must read every era @1..X@ (enforced by a committed
+-- vector per era in the reload corpus test). A payload from a newer era, or one
+-- too old to migrate, is a 'Left' — the caller then cleanly restarts rather
+-- than adopting a tree it can't trust.
+--
+-- To introduce era X+1: freeze the current payload types as @…V\<X\>@, keep
+-- their decoder, add a @migrate@ from them to the new shape, and add an @e ==
+-- X@ arm below that decodes-then-migrates. Add a corpus vector for the new era.
+decodeReloadTree :: Int -> ByteString -> Either Text ReloadState
+decodeReloadTree e payload
+    | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
+        Right t  -> Right t
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    | e > reloadEra =
+        Left ("reload handover from a newer hat (era " <> T.pack (show e)
+              <> "); this build is era " <> T.pack (show reloadEra))
+    | otherwise =
+        -- Unreachable while reloadEra == 1 (eras start at 1). Becomes the
+        -- migration slot once the payload shape first changes; see the note
+        -- above.
+        Left ("no migration for reload era " <> T.pack (show e))

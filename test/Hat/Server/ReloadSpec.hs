@@ -83,6 +83,15 @@ hexOf = concatMap byte . B.unpack
     byte w = [d (w `div` 16), d (w `mod` 16)]
     d n = "0123456789abcdef" !! fromIntegral (n :: Word8)
 
+unHex :: String -> B.ByteString
+unHex = B.pack . go
+  where
+    go :: String -> [Word8]
+    go (h : l : rest) = fromIntegral (v h * 16 + v l) : go rest
+    go _              = []
+    v :: Char -> Int
+    v c = maybe 0 id (lookup c (zip "0123456789abcdef" [0 ..]))
+
 fixedCleanup :: ReloadCleanup
 fixedCleanup = ReloadCleanup { listenFd = 3, live = [(7, 100)] }
 
@@ -98,28 +107,53 @@ fixedTree = ReloadState
                     , panes = [ ReloadPane { cwd = "/tmp", masterFd = 7, childPid = 100 } ] } ] } ]
     , currentSession = Just "work" }
 
+-- The reload corpus: one committed encoding per era. A build MUST decode every
+-- vector here into the current tree (armor-style backward-compat enforcement).
+-- When 'reloadEra' is bumped, DO NOT edit an existing row — append a new one
+-- with the new era's bytes and the tree they should migrate to.
+corpus :: [(Int, String, ReloadCleanup, ReloadState)]
+corpus =
+    [ ( 1
+      , "851a4841545201039f82071864ff583183009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
+        \071864ffffff8164776f726b"
+      , fixedCleanup, fixedTree )
+    ]
+
 spec :: Spec
 spec = describe "reload handover" $ do
     prop "round-trips a matching-era handover" $ \c t ->
         decodeHandover (encodeHandover c t)
-            === Right (Handover c (Just (t :: ReloadState)))
+            === Right (Handover c (Right (t :: ReloadState)))
 
-    -- The safety contract: an incompatible payload is NOT decoded, but the
+    -- The safety contract: an incompatible payload is NOT adopted, but the
     -- version-independent cleanup core is still recovered, so the incoming
     -- image can hang up the inherited processes instead of orphaning them.
-    it "gates a stale-era payload yet still recovers the cleanup core" $
-        decodeHandover (encodeAtEra (reloadEra + 1) fixedCleanup fixedTree)
-            `shouldBe` Right (Handover fixedCleanup Nothing)
+    it "gates a newer-era payload yet still recovers the cleanup core" $
+        case decodeHandover (encodeAtEra (reloadEra + 1) fixedCleanup fixedTree) of
+            Right h -> do
+                h.cleanup `shouldBe` fixedCleanup
+                h.tree `shouldSatisfy` isLeft
+            Left e -> expectationFailure ("envelope should decode: " <> show e)
 
     it "rejects a foreign or corrupt blob outright" $
         decodeHandover (B.pack [0, 1, 2, 3]) `shouldSatisfy` isLeft
 
-    -- Golden bytes are the format contract. If this fails from an intended
-    -- change to ReloadState's shape, bump 'reloadEra' and update the golden;
-    -- if you didn't mean to change the shape, you have a compat bug.
-    it "encodes a fixed handover to stable bytes" $
-        hexOf (encodeHandover fixedCleanup fixedTree) `shouldBe` golden
+    -- Backward compatibility: this build decodes every historical era's bytes.
+    -- Failure means a payload change broke an old format — migrate it, don't
+    -- edit the vector.
+    it "decodes every era in the corpus" $
+        mapM_ decodesToTree corpus
+
+    -- Golden bytes are the format contract for the CURRENT era. An intended
+    -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
+    -- one is a compat bug.
+    it "encodes the current era to stable bytes" $
+        hexOf (encodeHandover fixedCleanup fixedTree)
+            `shouldBe` currentGolden
   where
-    golden = "851a4841545201039f82071864ff583183009f860064776f726b\
-             \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
-             \071864ffffff8164776f726b"
+    decodesToTree (_, hex, cl, t) =
+        decodeHandover (unHex hex) `shouldBe` Right (Handover cl (Right t))
+    currentGolden = case corpus of
+        ((_, hex, _, _) : _) -> hex
+        _                    -> ""
