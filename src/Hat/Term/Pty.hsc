@@ -68,6 +68,13 @@ data Spawn = Spawn
     , size :: Size
     }
 
+-- | A pane's pty and the child running on it. Exported abstractly (no field
+-- access, only 'masterFd'\/'pid'\/'waitExit') because its parts hold an
+-- invariant an arbitrary record construction would break: 'master' and
+-- 'handle' are two views of ONE fd (raw for ioctl, buffered for I\/O — close
+-- it only through 'closePty'), and 'exited' is a slot a reaper thread bound to
+-- 'child' fills exactly once. A valid value can only come from 'spawn' or
+-- 'adopt', which wrap the fd and start the reaper together.
 data PtyHandle = PtyHandle
     { master :: Fd
     , handle :: Handle
