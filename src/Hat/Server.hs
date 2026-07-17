@@ -1905,15 +1905,30 @@ cmdSet st _ args = do
             r <- atomically $ do
                 opts <- readTVar st.options
                 case setOption mode opts nameT value of
-                    Left err -> pure (Just err)
+                    Left err -> pure (Left err)
                     Right opts' -> do
                         writeTVar st.options opts'
                         bumpDirty st
-                        pure Nothing
-            pure $ case r of
-                Just err -> [RErr err]
-                Nothing -> []
+                        pure (Right (opts.historyLimit, opts'.historyLimit))
+            case r of
+                Left err -> pure [RErr err]
+                Right (old, new) -> do
+                    when (new /= old) (applyHistoryLimit st new)
+                    pure []
         [] -> pure [RErr "usage: set [-g] option value"]
+
+-- | Push a changed @history-limit@ into every open pane's emulator so the new
+-- cap governs existing panes' scrollback immediately, not just panes created
+-- afterward.
+applyHistoryLimit :: ServerState -> Int -> IO ()
+applyHistoryLimit st limit = do
+    sessMap <- readTVarIO st.sessions
+    forM_ (Map.elems sessMap) $ \sess -> do
+        winMap <- readTVarIO sess.windows
+        forM_ (Map.elems winMap) $ \win -> do
+            paneMap <- readTVarIO win.panes
+            forM_ (Map.elems paneMap) $ \pane ->
+                Emu.setScrollbackLimit pane.emulator limit
 
 cmdShow :: CommandImpl
 cmdShow st _ args = do

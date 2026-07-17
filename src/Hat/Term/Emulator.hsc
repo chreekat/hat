@@ -25,6 +25,7 @@ module Hat.Term.Emulator
     , title
     , scrollbackLength
     , scrollbackLine
+    , setScrollbackLimit
     , clearScrollback
     , screenRowText
     , screenCell
@@ -159,7 +160,9 @@ data Emulator = Emulator
     , lock            :: MVar ()
         -- ^ serializes whole operations, so other threads observe the grid
         --   only between them, never mid-update.
-    , scrollbackLimit :: Int
+    , scrollbackLimit :: IORef Int
+        -- ^ the live scrollback cap; 'setScrollbackLimit' updates it so an
+        --   already-open pane honors a changed @history-limit@.
     , state           :: IORef EmulatorState
         -- ^ a bare IORef, not data guarded by 'lock': the libvterm callbacks
         --   write it synchronously from within a 'feed' that already holds
@@ -197,6 +200,7 @@ newEmulator sz historyLimit = do
     c_set_damage_merge scr #{const VTERM_DAMAGE_SCROLL}
 
     lockVar <- newMVar ()
+    limitR <- newIORef historyLimit
     stateR <- newIORef EmulatorState
         { view = Screen
             { size = sz
@@ -276,9 +280,10 @@ newEmulator sz historyLimit = do
             allocaBytes #{size HatCell} $ \hc -> do
                 c_flatten_cell_at cellsPtr (fromIntegral i) hc
                 peekHatCell hc
+        limit <- readIORef limitR
         modifyIORef' stateR $ \s ->
             let sb' = s.scrollback Seq.|> line
-            in s { scrollback = Seq.drop (Seq.length sb' - historyLimit) sb' }
+            in s { scrollback = Seq.drop (Seq.length sb' - limit) sb' }
     popW <- wrapPopline $ \ncols cellsPtr -> do
         s <- readIORef stateR
         case Seq.viewr s.scrollback of
@@ -325,7 +330,7 @@ newEmulator sz historyLimit = do
             { vt = vtFP
             , screen = scr
             , lock = lockVar
-            , scrollbackLimit = historyLimit
+            , scrollbackLimit = limitR
             , state = stateR
             }
     refreshGrid e
@@ -446,6 +451,15 @@ scrollbackLength e = Seq.length . (.scrollback) <$> readIORef e.state
 -- | Scrollback line by age: 0 is the oldest.
 scrollbackLine :: Emulator -> Int -> IO (Maybe [Cell])
 scrollbackLine e i = Seq.lookup i . (.scrollback) <$> readIORef e.state
+
+-- | Change the scrollback cap of an already-open emulator, trimming any
+-- lines already over the new limit. Future scrolled-off lines are capped at
+-- the new value too. Backs a live @history-limit@ change for open panes.
+setScrollbackLimit :: Emulator -> Int -> IO ()
+setScrollbackLimit e limit = do
+    writeIORef e.scrollbackLimit limit
+    modifyIORef' e.state $ \s ->
+        s { scrollback = Seq.drop (Seq.length s.scrollback - limit) s.scrollback }
 
 -- | Drop all scrollback (the live screen is untouched). Backs
 -- @clear-history@.

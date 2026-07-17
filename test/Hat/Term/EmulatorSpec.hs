@@ -235,6 +235,24 @@ spec = do
         n <- scrollbackLength e
         n `shouldBe` 3
 
+    it "trims existing scrollback when the limit is lowered live" $ do
+        e <- newEmulator Size { rows = 5, cols = 20 } 1000
+        _ <- feedStr e (B8.intercalate "\r\n" ["line" <> B8.pack (show i) | i <- [1 :: Int .. 20]])
+        scrollbackLength e `shouldReturn` 15
+        setScrollbackLimit e 3
+        scrollbackLength e `shouldReturn` 3
+        -- the newest scrolled-off lines are kept
+        Just line <- scrollbackLine e 0
+        cellsText line `shouldBe` "line13"
+
+    it "honors a raised limit for future scrollback growth" $ do
+        e <- newEmulator Size { rows = 5, cols = 20 } 3
+        _ <- feedStr e (B8.intercalate "\r\n" ["a" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
+        scrollbackLength e `shouldReturn` 3
+        setScrollbackLimit e 100
+        _ <- feedStr e (B8.intercalate "\r\n" ["b" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
+        scrollbackLength e `shouldReturn` 12
+
     it "survives resize both ways" $ do
         e <- new80x24
         _ <- feedStr e "stay"
