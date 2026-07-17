@@ -1954,6 +1954,31 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    -- Milestone A: `restart-server` reloads the server binary in place by
+    -- re-exec'ing itself and re-adopting the still-running pane programs
+    -- rather than respawning them. The shell's pid is the identity that must
+    -- survive the swap; the client is dropped and the user reattaches.
+    it "restart-server reloads in place, keeping the pane's program alive" $
+        withHat hatBin $ \h -> do
+        let digits = filter (\ch -> ch >= '0' && ch <= '9')
+        c <- startClient h
+        awaitScreen c "$"
+        typeInto c "echo before-reload\r"
+        awaitScreen c "before-reload"
+        pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        pidBefore `shouldNotBe` ""
+        -- Reload in place; the re-exec drops our client.
+        _ <- hatCtl h ["restart-server"]
+        _ <- awaitExit c
+        -- Reattach: the rebuilt session waits out the reload's restoring gate.
+        c2 <- startClient h
+        pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        -- Same process — the shell never died across the binary swap.
+        pidAfter `shouldBe` pidBefore
+        -- And it still runs our input.
+        typeInto c2 "echo after-reload\r"
+        awaitScreen c2 "after-reload"
+
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
 pollServerGone path n = do

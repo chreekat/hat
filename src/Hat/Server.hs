@@ -3,6 +3,7 @@
 -- that configs, bindings, and @hat <command>@ all share.
 module Hat.Server
     ( runServer
+    , resumeServer  -- ^ the reload re-exec re-enters here with a handover file
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
     , finallyClearRestoring  -- ^ exported for the restore-gate test
@@ -48,12 +49,13 @@ import qualified Data.Text.Read as TR
 import qualified Data.Vector as V
 import qualified Network.Socket as N
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
-import System.Environment (getEnvironment, lookupEnv)
+import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
 import qualified System.Posix.IO as PIO
-import System.Posix.Process (getProcessID)
+import System.Posix.Process (executeFile, getProcessID)
+import System.Posix.Types (Fd (..))
 import System.Timeout (timeout)
 import System.Process
     (CreateProcess (..), StdStream (..), createProcess, proc,
@@ -68,6 +70,9 @@ import Hat.Model.Options
 import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , loadSnapshot, saveSnapshot, withStore)
+import Hat.Server.Reload
+    (ReloadPane (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
+    , decodeReload, encodeReload)
 import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -92,19 +97,46 @@ import qualified Hat.Term.Emulator as Emu
 import Hat.Transport.Wire
 
 runServer :: FilePath -> Maybe FilePath -> IO ()
-runServer path mconfig = do
+runServer path mconfig = runServerWith path mconfig Nothing
+
+-- | Re-enter the server after a self-exec reload, reading the handover file
+-- an outgoing image left behind ('cmdRestartServer'): adopt the inherited
+-- listening socket and pane ptys instead of binding and spawning afresh.
+resumeServer :: FilePath -> Maybe FilePath -> FilePath -> IO ()
+resumeServer path mconfig handover = runServerWith path mconfig (Just handover)
+
+runServerWith :: FilePath -> Maybe FilePath -> Maybe FilePath -> IO ()
+runServerWith path mconfig mhandover = do
     -- The lock and log files live next to the socket; the directory
     -- must exist before any of them are touched.
     ensureSocketDir path
-    lockResult <- acquireLock (path <> ".lock")
-    case lockResult of
-        LockHeldElsewhere -> exitSuccess  -- another server won the race
-        LockWon -> pure ()
+    -- A reload continues the same process (same PID via execve), which
+    -- already holds the lock through the inherited fd, so re-acquiring it
+    -- here would deadlock against ourselves.
+    case mhandover of
+        Just _ -> pure ()
+        Nothing -> do
+            lockResult <- acquireLock (path <> ".lock")
+            case lockResult of
+                LockHeldElsewhere -> exitSuccess  -- another server won the race
+                LockWon -> pure ()
     lg <- newLogger (takeDirectory path <> "/server.log")
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
-    bracket (listenOn path) N.close $ \lsock -> do
+    -- On a reload, read the handover the outgoing image left; the socket is
+    -- adopted from the fd it names rather than bound anew.
+    mreload <- case mhandover of
+        Just hp -> readReload lg hp
+        Nothing -> pure Nothing
+    let openListen = case mreload of
+            Just rs -> N.mkSocket (fromIntegral rs.listenFd)
+            Nothing -> listenOn path
+    bracket openListen N.close $ \lsock -> do
+        lfd <- N.unsafeFdSocket lsock
+        atomically $ do
+            writeTVar st.listenFd (Just (fromIntegral lfd))
+            writeTVar st.serverConfig mconfig
         logEvent lg ServerStarted { socket = path }
         -- Load the config in a background thread so shell conditions
         -- like `if '$TMUX run ...' ...` can reach the accept loop while
@@ -114,11 +146,16 @@ runServer path mconfig = do
             writeTVar st.configLoading True
             -- Armed before the accept loop can serve, so a client that
             -- autostarts us and attaches waits for the restore to finish
-            -- (see 'ensureSession') and joins the restored tree.
-            when persistOn (writeTVar st.restoring True)
+            -- (see 'ensureSession') and joins the restored tree. A reload
+            -- rebuilds the tree too, so the same gate applies.
+            when (persistOn || isJust mreload) (writeTVar st.restoring True)
         _ <- forkIO $ do
             finallyClearRestoring st $
-                (loadConfig st mconfig >> forM_ mstore (restoreSaved st))
+                (loadConfig st mconfig >> case mreload of
+                    -- Reload: re-adopt the still-running tree the outgoing
+                    -- image handed over, rather than respawning from disk.
+                    Just rs -> rebuildReload st rs
+                    Nothing -> forM_ mstore (restoreSaved st))
                     `catch` \(e :: SomeException) ->
                         logEvent lg ServerCrash
                             { err = "startup restore failed: " <> T.pack (show e) }
@@ -555,6 +592,160 @@ restorePane st sid shellCmd env sz whitelist psnap = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
     spawnPane st pid sid shellCmd (restoreRun whitelist psnap.command)
         (T.unpack psnap.cwd) env sz
+
+-- Reload: capture the live tree with its inherited handles, and rebuild it
+-- in the re-exec'd image by adopting them ------------------------------------
+
+-- | Capture the running tree into a 'ReloadState': the same structure
+-- 'captureSnapshot' records, plus each pane's live pty master fd and child
+-- pid and the listening socket fd, so the re-exec'd image can adopt them.
+captureReload :: ServerState -> IO ReloadState
+captureReload st = do
+    (sess, laName, mfd) <- atomically $ do
+        sessMap <- readTVar st.sessions
+        laId    <- readTVar st.lastActiveSession
+        laName  <- traverse (readTVar . (.name)) (laId >>= (`Map.lookup` sessMap))
+        mfd     <- readTVar st.listenFd
+        pure (Map.elems sessMap, laName, mfd)
+    rsessions <- mapM captureReloadSession sess
+    pure (ReloadState rsessions laName (fromMaybe (-1) mfd))
+
+captureReloadSession :: Session -> IO ReloadSession
+captureReloadSession s = do
+    (nm, cwd, curIx, lastI, wstructs) <- atomically $ do
+        nm    <- readTVar s.name
+        cwd   <- readTVar s.startCwd
+        curIx <- readTVar s.currentIx
+        lastI <- readTVar s.lastIx
+        eff   <- readTVar s.lastSize
+        ws    <- Map.toAscList <$> readTVar s.windows
+        wstructs <- mapM (windowStruct eff) ws
+        pure (nm, cwd, curIx, lastI, wstructs)
+    rwins <- mapM captureReloadWindow wstructs
+    pure (ReloadSession nm (T.pack cwd) curIx lastI rwins)
+
+captureReloadWindow :: WindowStruct -> IO ReloadWindow
+captureReloadWindow ws = do
+    rpanes <- forM ws.wsPanes $ \pane -> do
+        dir <- paneCurrentPath pane
+        let Fd fd = Hat.Term.Pty.masterFd pane.pty
+        pure (ReloadPane (T.pack dir) (fromIntegral fd)
+                (fromIntegral (Hat.Term.Pty.pid pane.pty)))
+    pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
+            ws.wsLastActive ws.wsAutoRename rpanes)
+
+-- Read and consume the handover file the outgoing image wrote. A missing or
+-- malformed blob is logged and treated as no handover, so the reload degrades
+-- to a normal (respawning) start rather than crashing.
+readReload :: Logger -> FilePath -> IO (Maybe ReloadState)
+readReload lg hp = do
+    r <- try (B.readFile hp)
+    removeFile hp `catch` \(_ :: IOException) -> pure ()
+    case r of
+        Left (e :: IOException) -> do
+            logEvent lg ServerCrash
+                { err = "reload: unreadable handover: " <> T.pack (show e) }
+            pure Nothing
+        Right bs -> case decodeReload bs of
+            Left derr -> do
+                logEvent lg ServerCrash { err = "reload: bad handover: " <> derr }
+                pure Nothing
+            Right rs -> pure (Just rs)
+
+-- | Rebuild the tree from a reload handover, adopting each pane's inherited
+-- pty and child rather than spawning. Emulators come up blank; the programs
+-- repaint on their next output (a client attach resizes the panes, delivering
+-- SIGWINCH, which prompts full-screen apps to redraw).
+rebuildReload :: ServerState -> ReloadState -> IO ()
+rebuildReload st rs = do
+    forM_ rs.sessions (rebuildReloadSession st)
+    forM_ rs.currentSession $ \nm -> do
+        sessMap <- readTVarIO st.sessions
+        hits <- filterM (fmap (== nm) . readTVarIO . (.name)) (Map.elems sessMap)
+        forM_ (listToMaybe hits) $ \s ->
+            atomically (writeTVar st.lastActiveSession (Just s.id))
+
+rebuildReloadSession :: ServerState -> ReloadSession -> IO ()
+rebuildReloadSession st rsess = do
+    let wins = filter (not . null . (.panes)) rsess.windows
+    unless (null wins) $ do
+        sid <- SessionId <$> atomically (freshId st.nextSession)
+        env <- restoreEnv
+        let sz = Size { rows = 24, cols = 80 }  -- resized on client attach
+        built <- forM wins $ \rwin -> do
+            (win, panes) <- rebuildReloadWindow st sz rwin
+            pure (rwin.ix, win, panes)
+        let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
+            curIx | Map.member rsess.currentIx winMap = rsess.currentIx
+                  | otherwise = maybe rsess.currentIx fst (Map.lookupMin winMap)
+            lastI = rsess.lastIx >>= \l ->
+                if l /= curIx && Map.member l winMap then Just l else Nothing
+        nameVar    <- newTVarIO rsess.name
+        windowsVar <- newTVarIO winMap
+        currentVar <- newTVarIO curIx
+        lastVar    <- newTVarIO lastI
+        sizeVar    <- newTVarIO sz
+        environVar <- newTVarIO env
+        cwdVar     <- newTVarIO (T.unpack rsess.startCwd)
+        let sess = Session
+                { id = sid, name = nameVar, windows = windowsVar
+                , currentIx = currentVar, lastIx = lastVar
+                , lastSize = sizeVar, environ = environVar
+                , startCwd = cwdVar }
+        atomically $ modifyTVar' st.sessions (Map.insert sid sess)
+        forM_ built $ \(_, win, panes) ->
+            forM_ panes (startPaneReader st sid win)
+
+rebuildReloadWindow :: ServerState -> Size -> ReloadWindow -> IO (Window, [Pane])
+rebuildReloadWindow st sz rwin = do
+    wid <- WindowId <$> atomically (freshId st.nextWindow)
+    histLimit <- (.historyLimit) <$> readTVarIO st.options
+    panes <- forM rwin.panes (adoptPane st sz histLimit)
+    let pids = map (.id) panes
+        paneMap = Map.fromList [(p.id, p) | p <- panes]
+        lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
+                        (layoutFromString rwin.layout pids)
+        activePid = pids !! max 0 (min (length pids - 1) rwin.active)
+        lastActivePid = rwin.lastActive >>= \o ->
+            if o >= 0 && o < length pids && pids !! o /= activePid
+                then Just (pids !! o) else Nothing
+    nameVar       <- newTVarIO rwin.name
+    layoutVar     <- newTVarIO lay
+    layoutNameVar <- newTVarIO Nothing
+    panesVar      <- newTVarIO paneMap
+    activeVar     <- newTVarIO activePid
+    lastActiveVar <- newTVarIO lastActivePid
+    bellVar       <- newTVarIO False
+    activityVar   <- newTVarIO False
+    zoomVar       <- newTVarIO Nothing
+    autoRenameVar <- newTVarIO rwin.autoRename
+    let win = Window
+            { id = wid, name = nameVar, layout = layoutVar
+            , layoutName = layoutNameVar
+            , panes = panesVar, activeId = activeVar
+            , lastActive = lastActiveVar, bellFlag = bellVar
+            , activity = activityVar, zoomed = zoomVar
+            , autoRename = autoRenameVar }
+    pure (win, panes)
+
+-- | Build a pane around an inherited pty ('Hat.Term.Pty.adopt') and a blank
+-- emulator, for the reload path — the analogue of 'spawnPane' that re-adopts
+-- a running child instead of forking a new one.
+adoptPane :: ServerState -> Size -> Int -> ReloadPane -> IO Pane
+adoptPane st sz histLimit rp = do
+    pid <- PaneId <$> atomically (freshId st.nextPane)
+    pty <- Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
+                              (fromIntegral rp.childPid)
+    emu <- Emu.newEmulator sz histLimit
+    sizeVar   <- newTVarIO sz
+    deadVar   <- newTVarIO False
+    modeVar   <- newTVarIO Nothing
+    pipeVar   <- newTVarIO Nothing
+    readerVar <- newTVarIO Nothing
+    pure Pane
+        { id = pid, pty = pty, emulator = emu, size = sizeVar
+        , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
+        , pipe = pipeVar, readerTid = readerVar }
 
 -- The server's own environment seeds restored panes; spawnPane strips and
 -- re-adds the hat-specific vars (TERM, TMUX, HAT, …).
@@ -1539,6 +1730,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["resize-window", "resizew"], cmdResizeWindow)
     , (["switch-client", "switchc"], cmdSwitchClient)
     , (["kill-server"], cmdKillServer)
+    , (["restart-server"], cmdRestartServer)
     , (["display-message", "display"], cmdDisplayMessage)
     , (["run-shell", "run"], cmdRunShell)
     , (["if-shell", "if"], cmdIfShell)
@@ -3476,6 +3668,43 @@ cmdKillServer st mclient _ = do
         writeTVar st.sessions Map.empty
         writeTVar st.everAttached True
     pure []
+
+-- | @restart-server@: reload the server binary in place while every pane's
+-- program keeps running. Serializes the live tree and its inherited fds to a
+-- handover file, drops the clients (they reconnect with @hat@), then re-execs
+-- this binary, which re-adopts the tree ('resumeServer'). The pane pty
+-- masters and the listening socket survive the exec; clients' accepted
+-- sockets are close-on-exec, so they drop and the users reattach.
+cmdRestartServer :: CommandImpl
+cmdRestartServer st mclient _ = do
+    rs <- captureReload st
+    let blobPath = st.sockPath <> ".reload"
+    B.writeFile blobPath (encodeReload rs)
+    keepOpenAcrossExec rs
+    sessions <- readTVarIO st.sessions
+    forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
+    forM_ mclient $ \client -> send client Exited
+    mconfig <- readTVarIO st.serverConfig
+    self <- getExecutablePath
+    let argv = ["--server", st.sockPath]
+            <> maybe [] (: []) mconfig
+            <> ["--reload-handover", blobPath]
+    _ <- executeFile self False argv Nothing
+    pure []  -- unreachable: executeFile replaces this image
+
+-- Clear close-on-exec on the fds the reload must carry into the new image:
+-- the listening socket and every pane's pty master. They are not marked
+-- close-on-exec today, but a libc that set the flag would otherwise slam them
+-- shut on the exec and hang up every program.
+keepOpenAcrossExec :: ReloadState -> IO ()
+keepOpenAcrossExec rs = do
+    clear rs.listenFd
+    forM_ rs.sessions $ \s ->
+        forM_ s.windows $ \w ->
+            forM_ w.panes $ \p -> clear p.masterFd
+  where
+    clear fd = PIO.setFdOption (Fd (fromIntegral fd)) PIO.CloseOnExec False
+        `catch` \(_ :: IOException) -> pure ()
 
 cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do

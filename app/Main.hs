@@ -12,7 +12,7 @@ import System.Process
 
 import Hat.Client
 import Hat.Command.Parser (parseArgv)
-import Hat.Server (runServer)
+import Hat.Server (resumeServer, runServer)
 import Hat.Transport.Socket (connectTo, defaultSocketPath)
 
 data Cli = Cli
@@ -40,10 +40,25 @@ main = do
     args <- getArgs
     case args of
         ("--server" : path : rest) ->
-            runServer path (case rest of
-                [cfg] -> Just cfg
-                _ -> Nothing)
+            let (mhandover, cfgArgs) = takeReloadHandover rest
+                mconfig = case cfgArgs of
+                    (cfg : _) -> Just cfg
+                    _ -> Nothing
+            in case mhandover of
+                Just h -> resumeServer path mconfig h
+                Nothing -> runServer path mconfig
         _ -> clientMain =<< resolveConfig (parseCli args)
+
+-- | Pull @--reload-handover PATH@ (the in-place reload marker
+-- 'Hat.Server.cmdRestartServer' passes to its re-exec) out of the server
+-- args, returning it and the remaining args (a leading config path, if any).
+takeReloadHandover :: [String] -> (Maybe FilePath, [String])
+takeReloadHandover = go (Nothing, [])
+  where
+    go (mh, keep) = \case
+        ("--reload-handover" : h : rest) -> go (Just h, keep) rest
+        (a : rest) -> go (mh, keep <> [a]) rest
+        [] -> (mh, keep)
 
 parseCli :: [String] -> Cli
 parseCli = go Cli

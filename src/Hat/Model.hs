@@ -113,6 +113,13 @@ data ServerState = ServerState
     , store       :: Maybe FilePath
         -- ^ SQLite persistence file for this socket; 'Nothing' disables
         --   persistence entirely (used by tests via @HAT_PERSIST=0@).
+    , listenFd    :: TVar (Maybe Int)
+        -- ^ the listening socket's fd, published once it is bound. An
+        --   in-place reload hands this fd to its re-exec'd image; see
+        --   'Hat.Server.cmdRestartServer'.
+    , serverConfig :: TVar (Maybe FilePath)
+        -- ^ the config file this server was started with, replayed into the
+        --   reload re-exec argv. See 'Hat.Server.cmdRestartServer'.
     }
 
 data Session = Session
@@ -336,6 +343,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> pure lg
     <*> pure path
     <*> pure storePath
+    <*> newTVarIO Nothing  -- listenFd
+    <*> newTVarIO Nothing  -- serverConfig
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
