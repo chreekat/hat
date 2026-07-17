@@ -7,7 +7,7 @@ import qualified Data.Text as T
 import System.Directory (removeDirectoryRecursive, removePathForcibly)
 import System.Environment (getEnv)
 import System.Exit (ExitCode (..))
-import System.Posix.IO (FdOption (CloseOnExec), closeFd, createPipe, setFdOption)
+import System.Posix.IO (FdOption (CloseOnExec), closeFd, createPipe, dup, setFdOption)
 import System.Posix.Temp (mkdtemp)
 import System.Posix.Types (Fd (..))
 import System.Process (callProcess)
@@ -198,7 +198,12 @@ specWith base home = do
     -- write the same live child.
     it "adopts an inherited pty fd and child, and drives it" $ do
         pty <- spawn base
-        pty2 <- adopt (masterFd pty) (pid pty)
+        -- Production adopts a master fd inherited across exec, with no other
+        -- Handle on it. Duplicate the fd here so the adopted handle owns a
+        -- distinct one rather than a second GHC Handle racing the original
+        -- over the same fd's IO-manager registration.
+        dupd <- dup (masterFd pty)
+        pty2 <- adopt dupd (pid pty)
         writePty pty2 "echo a$((3+4))b\n"
         out <- readUntil pty2 "a7b"
         writePty pty2 "exit\n"
