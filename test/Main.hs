@@ -16,6 +16,7 @@ import qualified Hat.Server.LayoutStringSpec
 import qualified Hat.Server.OptionsSpec
 import qualified Hat.Server.PickerSpec
 import qualified Hat.Server.PromptSpec
+import qualified Hat.Server.ReloadSpec
 import qualified Hat.Server.RenderSpec
 import qualified Hat.Server.RestoreSpec
 import qualified Hat.Server.SessionSpec
@@ -37,6 +38,7 @@ main = hspec $ do
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Transport.Wire" Hat.Transport.WireSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
+    describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
     describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec
     describe "Hat.Server.Session" Hat.Server.SessionSpec.spec

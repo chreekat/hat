@@ -82,6 +82,7 @@ library
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt
+        Hat.Server.Reload
         Hat.Server.Render
         Hat.Server.Style
         Hat.Server.Target
@@ -164,6 +165,7 @@ test-suite hat-test
         Hat.Server.OptionsSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
+        Hat.Server.ReloadSpec
         Hat.Server.SendSpec
         Hat.Server.StyleSpec
         Hat.Server.TargetSpec
