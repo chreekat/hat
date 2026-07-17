@@ -116,18 +116,43 @@ pickerRegion fill csize rowOff mActive = case fill of
         , startCol = 0
         , endCol = fromIntegral csize.cols }
 
--- | Keep nodes matching the query (case-insensitive substring) along with
--- every ancestor of a match, force-expanding so matches are revealed.
+-- | A fuzzy match: is the query a subsequence of the target (its characters
+-- appearing in order, not necessarily contiguously)? Both are compared
+-- lower-cased by the callers. This is what lets @projhat@ match the @hat@
+-- window under the @projects@ session, matched against the joined path.
+fuzzySubsequence :: Text -> Text -> Bool
+fuzzySubsequence query target = go (T.unpack query) (T.unpack target)
+  where
+    go [] _ = True
+    go _ [] = False
+    go (c : cs) (d : ds)
+        | c == d    = go cs ds
+        | otherwise = go (c : cs) ds
+
+-- | Whether a node matches the query: the query is a fuzzy subsequence of the
+-- node's path — its ancestor labels joined with its own label. So a query can
+-- span the session\/window\/pane levels (@projhat@ → @projects hat@).
+nodeMatches :: Text -> Text -> PickerNode -> Bool
+nodeMatches ql prefix n = fuzzySubsequence ql (prefix <> T.toLower n.label)
+
+-- | The path prefix a node hands its children: its own path plus a separator.
+childPrefix :: Text -> PickerNode -> Text
+childPrefix prefix n = prefix <> T.toLower n.label <> " "
+
+-- | Keep nodes matching the query (a fuzzy subsequence of the node's path)
+-- along with every ancestor of a match, force-expanding so matches are
+-- revealed.
 filterTree :: Text -> [PickerNode] -> [PickerNode]
-filterTree q nodes
-    | T.null q = nodes
-    | otherwise = concatMap keep nodes
+filterTree q = go ""
   where
     ql = T.toLower q
-    keep n
-        | ql `T.isInfixOf` T.toLower n.label =
+    go prefix nodes
+        | T.null q = nodes
+        | otherwise = concatMap (keep prefix) nodes
+    keep prefix n
+        | nodeMatches ql prefix n =
             [ n { expanded = if null n.children then Collapsed else Expanded } ]
-        | otherwise = case filterTree q n.children of
+        | otherwise = case go (childPrefix prefix n) n.children of
             []   -> []
             kids -> [ n { children = kids, expanded = Expanded } ]
 
@@ -228,41 +253,39 @@ editPicker p key = case p.mode of
       where
         cleared = p { mode = Browsing, query = "", search = p.query }
     -- After editing the query, land the cursor on the first row that
-    -- actually matches (a leaf), not on an ancestor kept only for context.
+    -- actually matches, not on an ancestor kept only for context.
     reQuery q =
         let p' = p { query = q }
-            matches r = T.toLower q `T.isInfixOf` T.toLower r.node.label
-        in p' { cursor = case [ i | (i, r) <- zip [0 ..] (visibleRows p'), matches r ] of
-                    (i : _) -> i
-                    []      -> 0 }
+        in p' { cursor = case firstMatchPath q p'.roots of
+                    Just mp -> fromMaybe 0 (findIndex ((== mp) . (.path)) (visibleRows p'))
+                    Nothing -> 0 }
 
--- | The index path of the first node, depth-first, whose label matches
--- the query (case-insensitive substring) — the same node the filtered
--- view puts first, since filtering preserves depth-first order.
+-- | The index path of the first node, depth-first, that matches the query
+-- (a fuzzy subsequence of its path) — the same node the filtered view puts
+-- first, since filtering preserves depth-first order.
 firstMatchPath :: Text -> [PickerNode] -> Maybe [Int]
-firstMatchPath q = listToMaybe . go
+firstMatchPath q = listToMaybe . go ""
   where
     ql = T.toLower q
-    go nodes = concat
-        [ if ql `T.isInfixOf` T.toLower n.label
+    go prefix nodes = concat
+        [ if nodeMatches ql prefix n
               then [[i]]
-              else map (i :) (go n.children)
+              else map (i :) (go (childPrefix prefix n) n.children)
         | (i, n) <- zip [0 ..] nodes ]
 
--- | The index paths of every node, depth-first, whose label matches the
--- query (case-insensitive substring), descending into matches too so a
--- matching child of a matching parent is its own stop; empty for an empty
--- query.
+-- | The index paths of every node, depth-first, that matches the query (a
+-- fuzzy subsequence of its path), descending into matches too so a matching
+-- child of a matching parent is its own stop; empty for an empty query.
 allMatchPaths :: Text -> [PickerNode] -> [[Int]]
 allMatchPaths q nodes
     | T.null q  = []
-    | otherwise = go [] nodes
+    | otherwise = go "" [] nodes
   where
     ql = T.toLower q
-    go prefix ns = concat
-        [ let here = prefix <> [i]
-              this = [ here | ql `T.isInfixOf` T.toLower n.label ]
-          in this <> go here n.children
+    go lprefix iprefix ns = concat
+        [ let here = iprefix <> [i]
+              this = [ here | nodeMatches ql lprefix n ]
+          in this <> go (childPrefix lprefix n) here n.children
         | (i, n) <- zip [0 ..] ns ]
 
 -- | Expand every ancestor along the index path (not the node itself), so

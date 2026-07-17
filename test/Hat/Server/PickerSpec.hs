@@ -164,6 +164,26 @@ spec = do
             (stay demo (key "n")).cursor `shouldBe` demo.cursor
             (stay demo (key "b")).cursor `shouldBe` demo.cursor
 
+    describe "fuzzy path search" $ do
+        -- A query can span the session and window names: "projhat" reaches
+        -- the "hat" window inside the "projects" session (bug ef).
+        let tree = demo
+                { roots =
+                    [ node "projects" "switch-client -t projects"
+                        [ leaf "hat" "select-window -t projects:0"
+                        , leaf "editor" "select-window -t projects:1" ]
+                    , node "misc" "switch-client -t misc"
+                        [ leaf "notes" "select-window -t misc:0" ] ]
+                , query = "projhat" }
+        it "matches a window by a query spanning its session and window names" $
+            labels tree `shouldBe` ["projects", "hat"]
+
+        it "still matches a plain contiguous substring within a label" $
+            labels (tree { query = "edit" }) `shouldBe` ["projects", "editor"]
+
+        it "matches non-contiguous characters in order within a label" $
+            labels (tree { query = "etr" }) `shouldBe` ["projects", "editor"]
+
     describe "selectedPreview" $ do
         let previewTree = demo
                 { roots =
