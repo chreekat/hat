@@ -191,3 +191,17 @@ specWith base home = do
         _ <- drainPty pty
         status <- waitExit pty
         status `shouldBe` Just (Exited (ExitFailure 3))
+
+    -- Milestone A: the post-exec image re-adopts a pane it inherited across
+    -- a self-exec reload — an already-open master fd and its running child —
+    -- rather than spawning a fresh one. The adopted handle must read and
+    -- write the same live child.
+    it "adopts an inherited pty fd and child, and drives it" $ do
+        pty <- spawn base
+        pty2 <- adopt (masterFd pty) (pid pty)
+        writePty pty2 "echo a$((3+4))b\n"
+        out <- readUntil pty2 "a7b"
+        writePty pty2 "exit\n"
+        _ <- drainPty pty2
+        _ <- waitExit pty
+        out `shouldSatisfy` B8.isInfixOf "a7b"

@@ -8,10 +8,12 @@ module Hat.Term.Pty
     ( Spawn (..)
     , PtyHandle
     , spawn
+    , adopt
     , readPty
     , writePty
     , resize
     , waitExit
+    , masterFd
     , signalHangup
     , signalKill
     , closePty
@@ -47,7 +49,13 @@ import System.IO
 import System.Posix.IO (closeFd, fdToHandle)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
 import System.Posix.Signals (Signal, signalProcess, sigHUP, sigKILL)
-import System.Posix.Terminal (getTerminalProcessGroupID, openPseudoTerminal)
+import System.Posix.Terminal
+    ( TerminalState (Immediately)
+    , getTerminalAttributes
+    , getTerminalProcessGroupID
+    , openPseudoTerminal
+    , setTerminalAttributes
+    )
 import System.Posix.Types (Fd (..), ProcessID)
 
 import Hat.Geometry
@@ -113,7 +121,7 @@ getWinsize (Fd fd) =
 
 spawn :: Spawn -> IO PtyHandle
 spawn s = do
-    (masterFd, slaveFd) <- openPseudoTerminal
+    (mFd, slaveFd) <- openPseudoTerminal
     setWinsize slaveFd s.size
     -- Wrap the master fd FIRST: hSetBuffering NoBuffering on a terminal
     -- handle does a hidden tcsetattr (GHC's setRaw clears ICANON, sets
@@ -121,9 +129,9 @@ spawn s = do
     -- the pane's line discipline. Doing it before the spawn makes the
     -- child's own tcsetattr (hat_spawn_pty) strictly last; racing it was
     -- the source of panes coming up non-canonical under load.
-    h <- fdToHandle masterFd
+    h <- fdToHandle mFd
     hSetBuffering h NoBuffering
-    let Fd m = masterFd
+    let Fd m = mFd
         Fd sl = slaveFd
         cmd = s.cmd
         argv = s.cmd : s.args
@@ -136,16 +144,45 @@ spawn s = do
     closeFd slaveFd
     when (rawPid < 0) $ ioError (userError "hat: fork failed")
     let childPid = fromIntegral rawPid :: ProcessID
+    exitVar <- startReaper childPid
+    pure PtyHandle
+        { master = mFd
+        , handle = h
+        , child = childPid
+        , exited = exitVar
+        }
+
+-- Fills the returned slot exactly once with the child's exit status. The put
+-- is unconditional (Nothing when the reap itself fails, e.g. the child was
+-- already reaped): an unfillable slot would park 'waitExit' forever.
+startReaper :: ProcessID -> IO (MVar (Maybe ProcessStatus))
+startReaper childPid = do
     exitVar <- newEmptyMVar
     _ <- forkIO $ do
         r <- try (getProcessStatus True False childPid)
-        -- The put is unconditional: an unfillable slot would park
-        -- 'waitExit' forever.
         putMVar exitVar $ case r of
             Left (_ :: IOException) -> Nothing
             Right st                -> st
+    pure exitVar
+
+-- | Rebuild a 'PtyHandle' around an already-open master fd and its running
+-- child, the way the post-exec image re-adopts a pane it inherited across a
+-- self-exec reload rather than spawning a fresh one. The fd and child pid are
+-- carried across the exec (the master is not close-on-exec, so it survives);
+-- 'adopt' re-wraps the fd and starts a fresh reaper for the child.
+adopt :: Fd -> ProcessID -> IO PtyHandle
+adopt mFd childPid = do
+    -- The running program owns this pty's line discipline. hSetBuffering
+    -- NoBuffering runs GHC's setRaw (a tcsetattr clearing ICANON) on the
+    -- shared termios, so snapshot it first and restore it after — otherwise
+    -- adoption would silently flip the live pane to raw mode.
+    saved <- getTerminalAttributes mFd
+    h <- fdToHandle mFd
+    hSetBuffering h NoBuffering
+    setTerminalAttributes mFd saved Immediately
+    exitVar <- startReaper childPid
     pure PtyHandle
-        { master = masterFd
+        { master = mFd
         , handle = h
         , child = childPid
         , exited = exitVar
@@ -188,6 +225,12 @@ waitExit pty = readMVar pty.exited
 
 pid :: PtyHandle -> ProcessID
 pid pty = pty.child
+
+-- | The raw master fd. Kept for a self-exec reload, which serializes the fd
+-- number across the exec and re-wraps it in the new image (the fd is not
+-- close-on-exec, so it survives).
+masterFd :: PtyHandle -> Fd
+masterFd pty = pty.master
 
 -- | The command of the process group that currently owns the pty's
 -- terminal — i.e. the foreground program, which is a child running under
