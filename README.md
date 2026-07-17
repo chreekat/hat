@@ -56,3 +56,12 @@ The integration tests drive the real binary through a pty: detach and
 reattach, two clients on one session running vim, htop, splits, and a
 config with a custom prefix. `cabal run gen-fixtures` regenerates the
 emulator golden files.
+
+## Contributing
+
+See [CLAUDE.md](CLAUDE.md) for the build/test norms and — importantly — the
+forward/backward-compatibility rules that any change to a serialized format
+(client↔server wire, persistence store, reload handover) must follow. In short:
+everything runs through `cabal` inside `nix develop`, the suite stays fast and
+green, and any format crossing a version boundary carries a version envelope,
+evolves additively, and is pinned by a golden-byte test.

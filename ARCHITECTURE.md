@@ -85,6 +85,25 @@ For the fleshing-out phase we'll cheerfully break the wire on every
 release. The point of these primitives is that *when* we declare 1.0,
 we have the substrate already.
 
+**The substrate is not optional per format, though.** "We break the wire
+freely pre-1.0" means we change the *payloads*, not that a new serialized
+format may ship *without* the versioning-and-tolerance substrate. Every
+boundary where one binary version's bytes are read by another gets the same
+treatment from the day it is introduced:
+
+- **Client↔server wire** (`Hat.Transport.Wire`): append-only CBOR tags,
+  unknown-tag tolerance, golden-byte tests as the contract.
+- **Persistence store** (`Hat.Server.Persist`): additive columns, per-row
+  `extra` JSON, reads default anything absent — see "Compatibility is the
+  schema" below.
+- **In-place reload handover** (`Hat.Server.Reload`): a version envelope plus a
+  stable, version-independent core, so a version mismatch can hang up the
+  inherited processes cleanly instead of orphaning them.
+
+A format that skips the substrate can orphan a running program or corrupt a
+store on the next upgrade — the exact failure the substrate exists to prevent.
+Contributor-facing checklist for adding one lives in `CLAUDE.md`.
+
 Everything else (file layout, command set order, persistence strategy)
 is deferred until the code wants it.
 
