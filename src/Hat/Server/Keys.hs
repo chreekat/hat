@@ -174,7 +174,12 @@ routeKeys prefixName keymap modeTable = go
         | Just table <- modeTable =
             case Map.lookup k.name (Map.findWithDefault Map.empty table keymap) of
                 Just cmds -> emit (RunCommands cmds) (go NoPrefix ks)
-                Nothing -> go NoPrefix ks  -- unbound in copy mode: swallowed
+                Nothing
+                    -- The prefix key still arms in copy mode (unless the mode
+                    -- table bound it above), so prefix-table commands remain
+                    -- reachable without leaving the mode.
+                    | k.name == prefixName -> go PrefixArmed ks
+                    | otherwise -> go NoPrefix ks  -- unbound in copy mode: swallowed
         | k.name == prefixName = go PrefixArmed ks
         | Just cmds <- Map.lookup k.name rootTable =
             emit (RunCommands cmds) (go NoPrefix ks)

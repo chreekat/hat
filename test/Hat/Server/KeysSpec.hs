@@ -96,8 +96,15 @@ spec = do
                 (NoPrefix, [RunCommands [["send-keys", "-X", "cursor-left"]]])
         it "swallows keys not bound in the copy-mode table" $
             run NoPrefix "xyz" `shouldBe` (NoPrefix, [])
-        it "does not arm the prefix while in mode; the mode table owns keys" $
-            run NoPrefix "\x00]" `shouldBe` (NoPrefix, [])
+        it "arms the prefix in copy mode so prefix-table commands still run" $
+            -- bug 83: prefix ] pastes even while in copy mode, rather than
+            -- being swallowed by the mode.
+            run NoPrefix "\x00]" `shouldBe`
+                (NoPrefix, [RunCommands [["paste-buffer"]]])
+        it "holds the armed state across chunks while in copy mode" $ do
+            run NoPrefix "\x00" `shouldBe` (PrefixArmed, [])
+            run PrefixArmed "]" `shouldBe`
+                (NoPrefix, [RunCommands [["paste-buffer"]]])
         it "runs a copy-mode binding on the prefix key rather than arming" $ do
             let kmp = Map.insert "copy-mode-vi"
                     (Map.fromList [("C-Space", [["send-keys", "-X", "top-line"]])])
