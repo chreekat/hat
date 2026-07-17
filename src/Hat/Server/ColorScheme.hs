@@ -10,12 +10,13 @@ module Hat.Server.ColorScheme
     , applyPalette
     ) where
 
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
 
-import Hat.Model.Options (Options (..))
+import Hat.Model.Options
+    ( OptionName (..), OptionValue (..), OptionsDelta
+    , emptyDelta, insertDelta )
 import qualified Hat.Term.Cell as Cell
 
 data ColorScheme = SchemeLight | SchemeDark
@@ -43,29 +44,19 @@ schemeName :: ColorScheme -> Text
 schemeName SchemeDark = "dark"
 schemeName SchemeLight = "light"
 
--- | Restyle hat's chrome (status bar, pane borders) to defaults that
--- suit the scheme. Options the user has ever set explicitly
--- ('Options.explicit') are left alone — config always wins over a
--- palette; without a detected scheme nothing is touched, so the classic
--- defaults stand.
-applyPalette :: ColorScheme -> Options -> Options
-applyPalette scheme opts0 =
-    foldl (\o (name, put) ->
-            if Set.member name o.explicit then o else put o)
-        opts0
-        [ ("status-style",
-            \o -> o { statusStyle = p.bar })
-        , ("window-status-style",
-            \o -> o { windowStatusStyle = p.bar })
-        , ("window-status-current-style",
-            \o -> o { windowStatusCurrentStyle = p.current })
-        , ("window-status-bell-style",
-            \o -> o { windowStatusBellStyle = p.bell })
-        , ("pane-border-style",
-            \o -> o { paneBorderStyle = p.border })
-        , ("pane-active-border-style",
-            \o -> o { paneActiveBorderStyle = p.activeBorder })
-        ]
+-- | The scheme's chrome (status bar, pane borders) as an option overlay. It
+-- is applied as the lowest-priority layer under every user scope (see
+-- 'Hat.Server.applyScheme'), so a user's own @set@ always wins; without a
+-- detected scheme nothing is applied, so the classic defaults stand.
+applyPalette :: ColorScheme -> OptionsDelta
+applyPalette scheme = foldr (uncurry insertDelta) emptyDelta
+    [ (OptStatusStyle, OVStyle p.bar)
+    , (OptWindowStatusStyle, OVStyle p.bar)
+    , (OptWindowStatusCurrentStyle, OVStyle p.current)
+    , (OptWindowStatusBellStyle, OVStyle p.bell)
+    , (OptPaneBorderStyle, OVStyle p.border)
+    , (OptPaneActiveBorderStyle, OVStyle p.activeBorder)
+    ]
   where
     p = palette scheme
 

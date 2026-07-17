@@ -1,10 +1,10 @@
 module Hat.Server.ColorSchemeSpec (spec) where
 
-import qualified Data.Text as T
 import Test.Hspec
 
-import Hat.Model.Options (Options (..), defaultOptions)
-import Hat.Server (SetMode (..), setOption)
+import Hat.Model.Options
+    ( Options (..), OptionName (..), OptionValue (..)
+    , resolveOptions, singletonDelta )
 import Hat.Server.ColorScheme
 import qualified Hat.Term.Cell as Cell
 
@@ -36,8 +36,8 @@ spec = do
 
     describe "applyPalette" $ do
         it "adapts the default chrome to the scheme" $ do
-            let dark = applyPalette SchemeDark defaultOptions
-                light = applyPalette SchemeLight defaultOptions
+            let dark = resolveOptions [applyPalette SchemeDark]
+                light = resolveOptions [applyPalette SchemeLight]
             dark.statusStyle.bg `shouldBe` Cell.Indexed 22
             dark.windowStatusCurrentStyle.bold `shouldBe` True
             light.statusStyle.bg `shouldBe` Cell.Indexed 151
@@ -55,7 +55,7 @@ spec = do
             light.paneActiveBorderStyle.bold `shouldBe` True
 
         it "keeps light-mode inactive borders lighter than the active one" $ do
-            let light = applyPalette SchemeLight defaultOptions
+            let light = resolveOptions [applyPalette SchemeLight]
                 idx c = case c of
                     Cell.Indexed n -> Just n
                     _ -> Nothing
@@ -65,11 +65,13 @@ spec = do
                 `shouldBe` True
             light.paneBorderStyle.bold `shouldBe` False
 
-        it "never touches an option the user has set" $ do
-            opts <- either (fail . T.unpack) pure
-                (setOption Assign defaultOptions "status-style" "bg=colour196")
-            let dark = applyPalette SchemeDark opts
-            dark.statusStyle `shouldBe` opts.statusStyle
+        it "never overrides an option the user has set" $ do
+            -- the scheme is the lowest layer, so a user's set-option (here a
+            -- session overlay) always wins on resolution.
+            let userStyle = Cell.defaultStyle { Cell.bg = Cell.Indexed 196 }
+                userDelta = singletonDelta OptStatusStyle (OVStyle userStyle)
+                dark = resolveOptions [userDelta, applyPalette SchemeDark]
+            dark.statusStyle `shouldBe` userStyle
             dark.statusStyle.bg `shouldBe` Cell.Indexed 196
             -- options the user did not set still adapt
             dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65

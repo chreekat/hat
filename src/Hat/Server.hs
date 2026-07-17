@@ -449,9 +449,11 @@ applyScheme :: ServerState -> ColorScheme -> IO ()
 applyScheme st scheme = do
     old <- atomically $ swapTVar st.colorScheme (Just scheme)
     unless (old == Just scheme) $ do
-        -- Default chrome first (skips user-set options), then the user's
-        -- per-scheme config on top.
-        atomically $ modifyTVar' st.options (applyPalette scheme)
+        -- The scheme is a base layer under every user scope, so a user's
+        -- own set always wins; then the user's per-scheme config on top.
+        atomically $ do
+            writeTVar st.schemeOptions (applyPalette scheme)
+            refreshGlobalOptions st
         opts <- readTVarIO st.options
         let optName = case scheme of
                 SchemeDark -> "@color-scheme-dark"
@@ -1311,10 +1313,10 @@ startPaneReader st sid win pane = void . forkIO $ do
 -- is on. The current window is exempt — you are already watching it.
 markActivity :: ServerState -> SessionId -> Window -> STM ()
 markActivity st sid win = do
-    opts <- readTVar st.options
-    when opts.monitorActivity $ do
-        msess <- Map.lookup sid <$> readTVar st.sessions
-        forM_ msess $ \sess -> do
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    forM_ msess $ \sess -> do
+        opts <- resolveForWindow st sess win
+        when opts.monitorActivity $ do
             cur <- readTVar sess.currentIx
             ws <- readTVar sess.windows
             let isCurrent = maybe False (\w -> w.id == win.id) (Map.lookup cur ws)
@@ -1583,7 +1585,7 @@ handlePromptInput st client pr0 bs = do
 -- motions to the shell (and vice versa on exit).
 handleKeys :: ServerState -> Client -> B.ByteString -> IO ()
 handleKeys st client bs = do
-    opts <- readTVarIO st.options
+    opts <- clientOptions st client
     km <- readTVarIO st.keymap
     let loop kst [] = writeIORef client.keyState kst
         loop kst (k0 : rest) = do
@@ -1661,7 +1663,7 @@ showToast st client t = do
     atomically $ do
         writeTVar client.toast (Just t)
         bumpDirty st
-    displayMs <- (.displayTime) <$> readTVarIO st.options
+    displayMs <- (.displayTime) <$> clientOptions st client
     void . forkIO $ do
         threadDelay (displayMs * 1000)
         atomically $ do
@@ -1962,28 +1964,22 @@ cmdSet def st mclient args = do
                         etv <- scopeTargetVar st mclient mtarget scope
                         case etv of
                             Left err -> pure [RErr err]
-                            Right deltaVar -> writeScoped st deltaVar n v nameT
+                            Right deltaVar -> writeScoped st deltaVar n v
         [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
 
--- | Insert a resolved entry into its scope's overlay, mirror it into the
--- legacy global 'ServerState.options' (so reads unchanged pending migration),
--- and push a changed @history-limit@ into open panes.
+-- | Insert a resolved entry into its scope's overlay, refresh the cached
+-- global resolution ('ServerState.options'), and push a changed
+-- @history-limit@ into each session's open panes.
 writeScoped
-    :: ServerState -> TVar OptionsDelta -> OptionName -> OptionValue -> Text
+    :: ServerState -> TVar OptionsDelta -> OptionName -> OptionValue
     -> IO [Reply]
-writeScoped st deltaVar n v nameT = do
-    (old, new) <- atomically $ do
-        old <- (.historyLimit) <$> readTVar st.options
+writeScoped st deltaVar n v = do
+    atomically $ do
         modifyTVar' deltaVar (insertDelta n v)
-        modifyTVar' st.options mirror
-        new <- (.historyLimit) <$> readTVar st.options
+        refreshGlobalOptions st
         bumpDirty st
-        pure (old, new)
-    when (new /= old) (applyHistoryLimit st new)
+    when (n == OptHistoryLimit) (applyHistoryLimit st)
     pure []
-  where
-    mirror o = let o' = applyEntry n v o
-               in o' { explicit = Set.insert nameT o'.explicit }
 
 -- | The options in effect for the target session (or the global chain when
 -- there is none): the base an @-a@ append concatenates onto.
@@ -1991,6 +1987,14 @@ currentResolved :: ServerState -> Maybe Client -> Maybe Text -> IO Options
 currentResolved st mclient mtarget = do
     msess <- targetSession st mclient mtarget
     atomically $ maybe (resolveGlobal st) (resolveForSession st) msess
+
+-- | The options in effect for a client's current session, so a bare @set@
+-- there is honored.
+clientOptions :: ServerState -> Client -> IO Options
+clientOptions st client = atomically $ do
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    maybe (resolveGlobal st) (resolveForSession st) msess
 
 -- | The overlay table a scope writes into, resolving the target session or
 -- its current window; a missing target fails loud.
@@ -2017,13 +2021,20 @@ targetCurrentWindow st mclient mtarget = do
         Nothing -> pure Nothing
         Just sess -> atomically (currentWindow sess)
 
+-- | Recompute the cached global option resolution. Runs in the same
+-- transaction as every global-scope delta write so the cache never drifts.
+refreshGlobalOptions :: ServerState -> STM ()
+refreshGlobalOptions st = writeTVar st.options =<< resolveGlobal st
+
 -- | Push a changed @history-limit@ into every open pane's emulator so the new
 -- cap governs existing panes' scrollback immediately, not just panes created
--- afterward.
-applyHistoryLimit :: ServerState -> Int -> IO ()
-applyHistoryLimit st limit = do
+-- afterward. Each session resolves its own limit, so a session-scoped set
+-- reaches only that session's panes.
+applyHistoryLimit :: ServerState -> IO ()
+applyHistoryLimit st = do
     sessMap <- readTVarIO st.sessions
     forM_ (Map.elems sessMap) $ \sess -> do
+        limit <- (.historyLimit) <$> atomically (resolveForSession st sess)
         winMap <- readTVarIO sess.windows
         forM_ (Map.elems winMap) $ \win -> do
             paneMap <- readTVarIO win.panes
@@ -2081,10 +2092,7 @@ data SetMode
 setOption :: SetMode -> Options -> Text -> Text -> Either Text Options
 setOption mode opts name value = do
     (n, v) <- setOptionEntry mode opts name value
-    let opts' = applyEntry n v opts
-    -- Successful sets are remembered so scheme palettes ('applyPalette')
-    -- never override an option the user chose.
-    pure opts' { explicit = Set.insert name opts'.explicit }
+    pure (applyEntry n v opts)
 
 -- | Parse and validate a @set-option@ into the single scoped entry it writes.
 -- For string-valued options 'Append' concatenates onto the current value (used
