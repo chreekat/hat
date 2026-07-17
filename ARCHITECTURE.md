@@ -738,6 +738,19 @@ start. **HAT: same.** No SQLite, no JSON dump. The architecture-defaults
 "prefer SQL where it does the work" rule doesn't apply — there's no SQL
 to do here.
 
+Options resolve through a scope chain (`resolveForWindow` /
+`resolveForSession` / `resolveGlobal` in `Hat.Model`): a window overlay
+shadows its session's, which shadows the global-window / global-session /
+server tables, which shadow the color scheme's base layer, all folded onto
+the built-in defaults. Each scope is a partial `OptionsDelta`
+(`Hat.Model.Options`); `set-option` routes an entry to one scope's table
+(`chooseScope`), and a color scheme is just the lowest-priority overlay, so
+a user's own set always wins. The overlays live only in `TVar`s — they
+cross no persistence, reload, or wire boundary, so they need no version
+corpus; a reload reconstructs them by re-sourcing the config through the
+same `set-option` path. `ServerState.options` is a cache of the *global*
+resolution, refreshed in the same transaction as every global-scope write.
+
 ## Clipboard policy (OSC 52, designed — not yet built)
 
 No OSC 52 path exists in the alpha: local `xclip` (via `copy-pipe` and
