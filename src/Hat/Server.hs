@@ -1979,84 +1979,96 @@ data SetMode
 -- lines). Unknown non-@\@@ options are rejected so a config never looks
 -- supported when its behavior is not yet implemented.
 setOption :: SetMode -> Options -> Text -> Text -> Either Text Options
-setOption mode opts name value =
-    mark <$> setOptionRaw mode opts name value
-  where
+setOption mode opts name value = do
+    (n, v) <- setOptionEntry mode opts name value
+    let opts' = applyEntry n v opts
     -- Successful sets are remembered so scheme palettes ('applyPalette')
     -- never override an option the user chose.
-    mark o = o { explicit = Set.insert name o.explicit }
+    pure opts' { explicit = Set.insert name opts'.explicit }
 
-setOptionRaw :: SetMode -> Options -> Text -> Text -> Either Text Options
-setOptionRaw mode opts name value = case name of
+-- | Parse and validate a @set-option@ into the single scoped entry it writes.
+-- For string-valued options 'Append' concatenates onto the current value (used
+-- to build up @status-right@ across several lines). Unknown non-@\@@ options
+-- are rejected so a config never looks supported when its behavior is not yet
+-- implemented.
+setOptionEntry
+    :: SetMode -> Options -> Text -> Text
+    -> Either Text (OptionName, OptionValue)
+setOptionEntry mode opts name value = case name of
     "prefix" -> case parseKeyName value of
-        Just k -> Right opts { prefix = k.name }
+        Just k -> Right (OptPrefix, OVText k.name)
         Nothing -> Left ("bad prefix key: " <> value)
-    "base-index" -> withInt $ \n -> opts { baseIndex = n }
-    "pane-base-index" -> withInt $ \n -> opts { paneBaseIndex = n }
-    "history-limit" -> withInt $ \n -> opts { historyLimit = n }
-    "default-terminal" -> Right opts { defaultTerminal = value }
-    "word-separators" -> Right opts { wordSeparators = value }
+    "base-index" -> withInt OptBaseIndex
+    "pane-base-index" -> withInt OptPaneBaseIndex
+    "history-limit" -> withInt OptHistoryLimit
+    "default-terminal" -> Right (OptDefaultTerminal, OVText value)
+    "word-separators" -> Right (OptWordSeparators, OVText value)
     "status-position" -> case value of
-        "top" -> Right opts { statusPosition = StatusTop }
-        "bottom" -> Right opts { statusPosition = StatusBottom }
+        "top" -> Right (OptStatusPosition, OVStatusPosition StatusTop)
+        "bottom" -> Right (OptStatusPosition, OVStatusPosition StatusBottom)
         _ -> Left "status-position: top or bottom"
     "mode-keys" -> case value of
-        "vi" -> Right opts { modeKeys = KeysVi }
-        "emacs" -> Right opts { modeKeys = KeysEmacs }
+        "vi" -> Right (OptModeKeys, OVModeKeys KeysVi)
+        "emacs" -> Right (OptModeKeys, OVModeKeys KeysEmacs)
         _ -> Left "mode-keys: vi or emacs"
-    "status-left" -> Right opts { statusLeft = withAppend opts.statusLeft }
-    "status-left-length" -> withInt $ \n -> opts { statusLeftLength = n }
-    "status-right" -> Right opts { statusRight = withAppend opts.statusRight }
-    "status-right-length" -> withInt $ \n -> opts { statusRightLength = n }
+    "status-left" ->
+        Right (OptStatusLeft, OVText (withAppend opts.statusLeft))
+    "status-left-length" -> withInt OptStatusLeftLength
+    "status-right" ->
+        Right (OptStatusRight, OVText (withAppend opts.statusRight))
+    "status-right-length" -> withInt OptStatusRightLength
     "window-status-format" ->
-        Right opts { windowStatusFormat = withAppend opts.windowStatusFormat }
+        Right (OptWindowStatusFormat,
+            OVText (withAppend opts.windowStatusFormat))
     "window-status-current-format" ->
-        Right opts { windowStatusCurrentFormat =
-            withAppend opts.windowStatusCurrentFormat }
-    "status-style" -> Right opts { statusStyle = parseStyle value }
-    "window-status-style" -> Right opts { windowStatusStyle = parseStyle value }
+        Right (OptWindowStatusCurrentFormat,
+            OVText (withAppend opts.windowStatusCurrentFormat))
+    "status-style" -> Right (OptStatusStyle, OVStyle (parseStyle value))
+    "window-status-style" ->
+        Right (OptWindowStatusStyle, OVStyle (parseStyle value))
     "window-status-current-style" ->
-        Right opts { windowStatusCurrentStyle = parseStyle value }
+        Right (OptWindowStatusCurrentStyle, OVStyle (parseStyle value))
     "window-status-bell-style" ->
-        Right opts { windowStatusBellStyle = parseStyle value }
-    "pane-border-style" -> Right opts { paneBorderStyle = parseStyle value }
+        Right (OptWindowStatusBellStyle, OVStyle (parseStyle value))
+    "pane-border-style" ->
+        Right (OptPaneBorderStyle, OVStyle (parseStyle value))
     "pane-active-border-style" ->
-        Right opts { paneActiveBorderStyle = parseStyle value }
+        Right (OptPaneActiveBorderStyle, OVStyle (parseStyle value))
     "pane-border-lines" -> case value of
-        "single" -> Right opts { paneBorderLines = BorderSingle }
-        "heavy"  -> Right opts { paneBorderLines = BorderHeavy }
-        "double" -> Right opts { paneBorderLines = BorderDouble }
-        "simple" -> Right opts { paneBorderLines = BorderSimple }
+        "single" -> Right (OptPaneBorderLines, OVBorderLines BorderSingle)
+        "heavy"  -> Right (OptPaneBorderLines, OVBorderLines BorderHeavy)
+        "double" -> Right (OptPaneBorderLines, OVBorderLines BorderDouble)
+        "simple" -> Right (OptPaneBorderLines, OVBorderLines BorderSimple)
         _ -> Left "pane-border-lines: single, heavy, double, or simple"
     "pane-border-indicators" -> case value of
-        "off"     -> Right opts { paneBorderIndicators = IndicatorsOff }
-        "colour"  -> Right opts { paneBorderIndicators = IndicatorsColour }
-        "color"   -> Right opts { paneBorderIndicators = IndicatorsColour }
-        "arrows"  -> Right opts { paneBorderIndicators = IndicatorsArrows }
-        "both"    -> Right opts { paneBorderIndicators = IndicatorsBoth }
+        "off"    -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsOff)
+        "colour" -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsColour)
+        "color"  -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsColour)
+        "arrows" -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsArrows)
+        "both"   -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsBoth)
         _ -> Left "pane-border-indicators: off, colour, arrows, or both"
-    "set-titles" -> withOnOff $ \b -> opts { setTitles = b }
-    "escape-time" -> withInt $ \n -> opts { escapeTime = n }
-    "display-time" -> withInt $ \n -> opts { displayTime = n }
-    "focus-events" -> withOnOff $ \b -> opts { focusEvents = b }
-    "aggressive-resize" -> withOnOff $ \b -> opts { aggressiveResize = b }
-    "monitor-activity" -> withOnOff $ \b -> opts { monitorActivity = b }
-    "automatic-rename" -> withOnOff $ \b -> opts { automaticRename = b }
-    "automatic-rename-format" -> Right opts { automaticRenameFormat = value }
-    "update-environment" -> Right opts { updateEnvironment = T.words value }
-    "main-pane-width" -> withInt $ \n -> opts { mainPaneWidth = n }
-    "main-pane-height" -> withInt $ \n -> opts { mainPaneHeight = n }
+    "set-titles" -> withOnOff OptSetTitles
+    "escape-time" -> withInt OptEscapeTime
+    "display-time" -> withInt OptDisplayTime
+    "focus-events" -> withOnOff OptFocusEvents
+    "aggressive-resize" -> withOnOff OptAggressiveResize
+    "monitor-activity" -> withOnOff OptMonitorActivity
+    "automatic-rename" -> withOnOff OptAutomaticRename
+    "automatic-rename-format" -> Right (OptAutomaticRenameFormat, OVText value)
+    "update-environment" ->
+        Right (OptUpdateEnvironment, OVTextList (T.words value))
+    "main-pane-width" -> withInt OptMainPaneWidth
+    "main-pane-height" -> withInt OptMainPaneHeight
     _
-        | "@" `T.isPrefixOf` name ->
-            Right opts { user = Map.insert name value opts.user }
+        | "@" `T.isPrefixOf` name -> Right (OptUser name, OVText value)
         | otherwise -> Left ("unimplemented option: " <> name)
   where
-    withInt f = case TR.decimal value of
-        Right (n, restT) | T.null restT -> Right (f n)
+    withInt n = case TR.decimal value of
+        Right (m, restT) | T.null restT -> Right (n, OVInt m)
         _ -> Left (name <> ": not a number: " <> value)
-    withOnOff f = case value of
-        "on"  -> Right (f True)
-        "off" -> Right (f False)
+    withOnOff n = case value of
+        "on"  -> Right (n, OVBool True)
+        "off" -> Right (n, OVBool False)
         _ -> Left (name <> ": on or off")
     withAppend old = case mode of
         Append -> old <> value

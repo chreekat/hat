@@ -5,7 +5,7 @@
 -- shrinks toward empty.
 module Hat.Server.OptionsSpec (spec) where
 
-import Data.Either (lefts)
+import Data.Either (isLeft, lefts)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -14,7 +14,12 @@ import qualified Data.Text.IO as TIO
 import Test.Hspec
 
 import Hat.Command.Parser (parseConfig)
-import Hat.Model.Options (Options (..), defaultOptions)
+import Hat.Model.Options
+    ( Options (..), defaultOptions
+    , OptionName (..), OptionValue (..), ScopeClass (..)
+    , emptyDelta, singletonDelta, mergeDeltas, resolveOptions
+    , optionScopeClass, validateScope
+    )
 import Hat.Server (SetMode (..), setOption)
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
@@ -56,6 +61,58 @@ spec = do
                 opts0 = set Assign defaultOptions "status-right" "a"
                 opts1 = set Append opts0 "status-right" "b" :: Options
             (opts1.statusRight :: Text) `shouldBe` "ab"
+
+    describe "option-scope overlays" $ do
+        it "resolves an empty chain to the defaults" $
+            resolveOptions [] `shouldBe` defaultOptions
+
+        it "an empty delta changes nothing" $
+            resolveOptions [emptyDelta] `shouldBe` defaultOptions
+
+        it "a single delta overrides only its own field" $ do
+            let opts = resolveOptions [singletonDelta OptPrefix (OVText "C-a")]
+            opts.prefix `shouldBe` "C-a"
+            opts.baseIndex `shouldBe` defaultOptions.baseIndex
+
+        it "a more-specific delta wins field-by-field" $ do
+            let global = mergeDeltas
+                    [ singletonDelta OptPrefix (OVText "C-a")
+                    , singletonDelta OptBaseIndex (OVInt 0) ]
+                session = singletonDelta OptBaseIndex (OVInt 1)
+                -- most-specific first: session shadows global
+                opts = resolveOptions [session, global]
+            opts.prefix `shouldBe` "C-a"      -- only set globally
+            opts.baseIndex `shouldBe` 1       -- session overrides global
+
+        it "window scope beats session beats global" $ do
+            let g = singletonDelta OptHistoryLimit (OVInt 1)
+                s = singletonDelta OptHistoryLimit (OVInt 2)
+                w = singletonDelta OptHistoryLimit (OVInt 3)
+            (resolveOptions [w, s, g]).historyLimit `shouldBe` 3
+            (resolveOptions [s, g]).historyLimit `shouldBe` 2
+            (resolveOptions [g]).historyLimit `shouldBe` 1
+
+    describe "option-scope classification" $ do
+        it "classifies prefix as a session option" $
+            optionScopeClass OptPrefix `shouldBe` SessionOption
+
+        it "classifies history-limit as a session option" $
+            optionScopeClass OptHistoryLimit `shouldBe` SessionOption
+
+        it "classifies mode-keys as a window option" $
+            optionScopeClass OptModeKeys `shouldBe` WindowOption
+
+        it "classifies monitor-activity as a window option" $
+            optionScopeClass OptMonitorActivity `shouldBe` WindowOption
+
+        it "accepts a session option at session scope" $
+            validateScope SessionOption OptPrefix `shouldBe` Right ()
+
+        it "rejects a session option set at window scope (setw prefix)" $
+            validateScope WindowOption OptPrefix `shouldSatisfy` isLeft
+
+        it "rejects a window option set at session scope" $
+            validateScope SessionOption OptMonitorActivity `shouldSatisfy` isLeft
 
     describe "config-load burn-down (real ~/.tmux.conf)" $
         it "rejects exactly the not-yet-implemented options" $ do
