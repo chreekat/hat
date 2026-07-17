@@ -1967,8 +1967,11 @@ spec = parallel $ do
         awaitScreen c "before-reload"
         pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
         pidBefore `shouldNotBe` ""
-        -- Reload in place; the re-exec drops our client.
-        _ <- hatCtl h ["restart-server"]
+        -- Reload in place; the re-exec drops our client. Pass this build's
+        -- path explicitly so the reload is deterministic — a bare
+        -- restart-server would resolve `hat` on PATH and hijack the system
+        -- install (a different, reload-unaware binary).
+        _ <- hatCtl h ["restart-server", h.bin]
         _ <- awaitExit c
         -- Reattach: the rebuilt session waits out the reload's restoring gate.
         c2 <- startClient h
@@ -1978,6 +1981,18 @@ spec = parallel $ do
         -- And it still runs our input.
         typeInto c2 "echo after-reload\r"
         awaitScreen c2 "after-reload"
+
+    -- A typo'd binary path must be caught before anything is torn down, so the
+    -- running session is untouched rather than half-dropped.
+    it "restart-server rejects a missing binary without dropping the session" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        (_, out, err) <- hatCtl h ["restart-server", "/no/such/hat"]
+        (out <> err) `shouldSatisfy` List.isInfixOf "no such binary"
+        -- the shell is still live: it runs our input as if nothing happened.
+        typeInto c "echo survived-bad-reload\r"
+        awaitScreen c "survived-bad-reload"
 
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False

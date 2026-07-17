@@ -48,7 +48,8 @@ import qualified Data.Text.IO as TIO
 import qualified Data.Text.Read as TR
 import qualified Data.Vector as V
 import qualified Network.Socket as N
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Directory
+    (createDirectoryIfMissing, doesFileExist, findExecutable, removeFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory, takeFileName, (</>))
@@ -3692,43 +3693,55 @@ cmdKillServer st mclient _ = do
         writeTVar st.everAttached True
     pure []
 
--- | @restart-server@: reload the server binary in place while every pane's
--- program keeps running. Serializes the live tree and its inherited fds to a
--- handover file, drops the clients (they reconnect with @hat@), then re-execs
--- this binary, which re-adopts the tree ('resumeServer'). The pane pty
--- masters and the listening socket survive the exec; clients' accepted
--- sockets are close-on-exec, so they drop and the users reattach.
+-- | @restart-server [path]@: reload the server binary in place while every
+-- pane's program keeps running. Serializes the live tree and its inherited fds
+-- to a handover file, drops the clients (they reconnect with @hat@), then
+-- re-execs @path@ (default: the on-PATH @hat@, see 'resolveReloadTarget'),
+-- which re-adopts the tree ('resumeServer'). The pane pty masters and the
+-- listening socket survive the exec; clients' accepted sockets are
+-- close-on-exec, so they drop and the users reattach. A missing target is
+-- reported before anything is torn down, so a typo'd path is a harmless error
+-- rather than a half-dropped server.
 cmdRestartServer :: CommandImpl
-cmdRestartServer st mclient _ = do
-    target <- resolveReloadTarget
-    logEvent st.logger ServerReloading { target = target }
-    (cleanup, tree) <- captureReload st
-    let blobPath = st.sockPath <> ".reload"
-    B.writeFile blobPath (encodeHandover cleanup tree)
-    keepOpenAcrossExec cleanup
-    sessions <- readTVarIO st.sessions
-    forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
-    forM_ mclient $ \client -> send client Exited
-    mconfig <- readTVarIO st.serverConfig
-    let argv = ["--server", st.sockPath]
-            <> maybe [] (: []) mconfig
-            <> ["--reload-handover", blobPath]
-    _ <- executeFile target False argv Nothing
-    pure []  -- unreachable: executeFile replaces this image
+cmdRestartServer st mclient args = do
+    let (_, _, pos) = parseArgs "" args
+    target <- case pos of
+        (p : _) -> pure (T.unpack p)    -- explicit binary path (deterministic)
+        []      -> resolveReloadTarget  -- default: the on-PATH hat
+    exists <- doesFileExist target
+    if not exists
+        then pure [RErr ("restart-server: no such binary: " <> T.pack target)]
+        else do
+            logEvent st.logger ServerReloading { target = target }
+            (cleanup, tree) <- captureReload st
+            let blobPath = st.sockPath <> ".reload"
+            B.writeFile blobPath (encodeHandover cleanup tree)
+            keepOpenAcrossExec cleanup
+            sessions <- readTVarIO st.sessions
+            forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
+            forM_ mclient $ \client -> send client Exited
+            mconfig <- readTVarIO st.serverConfig
+            let argv = ["--server", st.sockPath]
+                    <> maybe [] (: []) mconfig
+                    <> ["--reload-handover", blobPath]
+            _ <- executeFile target False argv Nothing
+            pure []  -- unreachable: executeFile replaces this image
 
--- | The binary an in-place reload re-execs: this process's own image, always.
--- Deliberately NOT @hat@ as resolved on @PATH@. Resolving by name would pick up
--- an upgrade installed since launch, but it can just as easily resolve to a
--- DIFFERENT @hat@ than the one running — a system build with no reload support,
--- which would ignore the handover and orphan every pane. And the gain is
--- hollow: 'restart-server' exists to keep pane programs alive, which only
--- survives a SAME-version reload (an era match); a cross-version reload hangs
--- the programs up either way (see 'cleanupInherited'), so it buys nothing over
--- @kill-server@ + reattach. On Nix, 'getExecutablePath' resolves
--- @\/proc\/self\/exe@ to the immutable store path this process launched from,
--- so the reload is guaranteed to re-exec the very same, reload-aware binary.
+-- | The binary a no-argument @restart-server@ re-execs: @hat@ as resolved on
+-- @PATH@. That is a stable profile\/system symlink the kernel follows at exec
+-- time, so after an upgrade @hat restart-server@ picks up the newly-installed
+-- version while keeping the pane programs alive — the point of the feature. The
+-- handover's era gate keeps that safe across versions: a matching era adopts
+-- the tree, a changed one falls back to a clean restart ('cleanupInherited').
+-- 'getExecutablePath' would not do: it resolves @\/proc\/self\/exe@ to the
+-- immutable Nix store path this process launched from — the OLD build — so it
+-- can never see an upgrade. It is only the last-resort fallback when @hat@ is
+-- not on @PATH@. A caller that needs determinism (tests) or a specific build
+-- passes the path as @restart-server@'s argument, bypassing this entirely.
 resolveReloadTarget :: IO FilePath
-resolveReloadTarget = getExecutablePath
+resolveReloadTarget = do
+    onPath <- findExecutable "hat"
+    maybe getExecutablePath pure onPath
 
 -- Clear close-on-exec on the fds the reload must carry into the new image:
 -- the listening socket and every pane's pty master. They are not marked
