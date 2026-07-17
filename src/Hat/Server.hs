@@ -2560,11 +2560,13 @@ cmdSelectPane st mclient args = do
         Just dir -> withCurrentWindow st mclient $ \sess win -> do
             atomically $ do
                 eff <- readTVar sess.lastSize
-                (rects, _) <- windowArrange (windowArea eff) win
+                lay <- readTVar win.layout
                 active <- readTVar win.activeId
-                forM_ (neighbor rects active dir) $ \next -> do
+                forM_ (directionalTarget (windowArea eff) lay active dir) $ \next -> do
                     writeTVar win.lastActive (Just active)
                     writeTVar win.activeId next
+                    -- Leaving a zoomed pane cancels the zoom (bug 5).
+                    writeTVar win.zoomed Nothing
                     bumpDirty st
             pure []
 

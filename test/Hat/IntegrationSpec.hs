@@ -785,8 +785,11 @@ spec = parallel $ do
             t <- screenText d
             pure (not ("\x2502" `T.isInfixOf` t)
                   && "left-pane-here" `T.isInfixOf` t)) c1
-        -- Unzoom brings it back.
-        typeInto c1 "\x02z"
+        -- Bug 5: navigating away from a zoomed pane cancels the zoom and
+        -- moves to the neighbor. Previously select-pane did nothing while
+        -- zoomed (the collapsed arrangement hid every other pane), so the
+        -- border stayed gone; now the border returns as the zoom is undone.
+        typeInto c1 "\x02\ESC[D"   -- prefix + Left = select-pane -L
         awaitScreen c1 "\x2502"
 
         -- Horizontal split below, then kill it.

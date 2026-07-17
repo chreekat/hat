@@ -18,6 +18,7 @@ module Hat.Server.Layout
     , swapLeaves
     , removeLeaf
     , neighbor
+    , directionalTarget
     , resizeSplit
     , namedLayout
     , childRects
@@ -265,6 +266,14 @@ tiled pids =
 -- largest shared edge. At the window edge the search wraps around to the
 -- opposite side, landing on the pane there with the largest perpendicular
 -- overlap — so @select-pane -R@ from the rightmost pane reaches the leftmost.
+-- | The pane a directional @select-pane@ moves to, resolved against the full
+-- split layout rather than a zoom-collapsed arrangement, so navigation still
+-- finds a neighbor (and can then cancel zoom) while a pane is zoomed. See
+-- 'Hat.Server.cmdSelectPane'.
+directionalTarget :: Size -> Layout -> PaneId -> Direction -> Maybe PaneId
+directionalTarget sz lay active dir =
+    neighbor (fst (arrange (sizeRect sz) lay)) active dir
+
 neighbor :: [(PaneId, Rect)] -> PaneId -> Direction -> Maybe PaneId
 neighbor rects from dir = do
     fromRect <- List.lookup from rects

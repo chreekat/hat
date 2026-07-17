@@ -201,6 +201,14 @@ spec = do
         it "stays put with a single pane" $
             neighbor [(PaneId 5, windowRect)] (PaneId 5) DirLeft `shouldBe` Nothing
 
+    describe "directionalTarget" $ do
+        -- Resolving against the full layout (not a zoom-collapsed one) is
+        -- what lets prefix+hjkl move away from a zoomed pane. See bug 5.
+        let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
+            sz = Size { rows = 24, cols = 80 }
+        it "moves to the neighbor computed from the full split layout" $
+            directionalTarget sz two (PaneId 0) DirRight `shouldBe` Just (PaneId 1)
+
     describe "resizeSplit" $ do
         let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
         it "grows the active pane toward the divider" $ do
