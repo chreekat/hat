@@ -190,8 +190,16 @@ spec = do
             neighbor rects (PaneId 3) DirLeft `shouldBe` Just (PaneId 2)
         it "finds the up neighbor" $
             neighbor rects (PaneId 2) DirUp `shouldBe` Just (PaneId 0)
-        it "returns Nothing at the edge" $
-            neighbor rects (PaneId 0) DirLeft `shouldBe` Nothing
+        it "wraps around at the left edge to the rightmost pane in the row" $
+            neighbor rects (PaneId 0) DirLeft `shouldBe` Just (PaneId 1)
+        it "wraps around at the right edge to the leftmost pane in the row" $
+            neighbor rects (PaneId 1) DirRight `shouldBe` Just (PaneId 0)
+        it "wraps around at the top edge to the bottommost pane in the column" $
+            neighbor rects (PaneId 0) DirUp `shouldBe` Just (PaneId 2)
+        it "wraps around at the bottom edge to the topmost pane in the column" $
+            neighbor rects (PaneId 2) DirDown `shouldBe` Just (PaneId 0)
+        it "stays put with a single pane" $
+            neighbor [(PaneId 5, windowRect)] (PaneId 5) DirLeft `shouldBe` Nothing
 
     describe "resizeSplit" $ do
         let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))

@@ -261,27 +261,55 @@ tiled pids =
     chunksOf _ [] = []
     chunksOf k xs = let (a, b) = splitAt k xs in a : chunksOf k b
 
--- | Geometric pane navigation: the adjacent pane in a direction with
--- the largest shared edge.
+-- | Geometric pane navigation: the adjacent pane in a direction with the
+-- largest shared edge. At the window edge the search wraps around to the
+-- opposite side, landing on the pane there with the largest perpendicular
+-- overlap — so @select-pane -R@ from the rightmost pane reaches the leftmost.
 neighbor :: [(PaneId, Rect)] -> PaneId -> Direction -> Maybe PaneId
 neighbor rects from dir = do
     fromRect <- List.lookup from rects
-    let candidates =
-            [ (overlap fromRect r, pid)
+    let adjacents =
+            [ ((overlap fromRect r, 0), pid)
             | (pid, r) <- rects
             , pid /= from
             , adjacent fromRect r
             , overlap fromRect r > 0
             ]
-    case candidates of
-        [] -> Nothing
-        _ -> Just (snd (maximum candidates))
+        -- On a tie in overlap the farthest wrapped pane wins, so a wrap
+        -- lands on the pane at the very opposite edge.
+        wraps =
+            [ ((overlap fromRect r, farness fromRect r), pid)
+            | (pid, r) <- rects
+            , pid /= from
+            , wrapped fromRect r
+            , overlap fromRect r > 0
+            ]
+    case adjacents of
+        [] -> best wraps
+        cs -> best cs
   where
+    best = \case
+        [] -> Nothing
+        cs -> Just (snd (maximum cs))
     adjacent a b = case dir of
         DirLeft -> b.endCol + 1 == a.startCol || b.endCol == a.startCol
         DirRight -> a.endCol + 1 == b.startCol || a.endCol == b.startCol
         DirUp -> b.endRow + 1 == a.startRow || b.endRow == a.startRow
         DirDown -> a.endRow + 1 == b.startRow || a.endRow == b.startRow
+    -- The far pane the search rolls onto: for a leftward move it lies to the
+    -- right of the source (and vice versa), so wrapping crosses the window.
+    wrapped a b = case dir of
+        DirLeft -> b.startCol > a.startCol
+        DirRight -> b.startCol < a.startCol
+        DirUp -> b.startRow > a.startRow
+        DirDown -> b.startRow < a.startRow
+    -- How far past the source the wrapped pane sits, in the wrap direction;
+    -- the larger, the closer to the opposite edge.
+    farness a b = case dir of
+        DirLeft -> b.startCol - a.startCol
+        DirRight -> a.startCol - b.startCol
+        DirUp -> b.startRow - a.startRow
+        DirDown -> a.startRow - b.startRow
     overlap a b = case dir of
         DirLeft -> rowOverlap a b
         DirRight -> rowOverlap a b
