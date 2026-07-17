@@ -551,11 +551,12 @@ restoreSession st ssnap = do
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO env
         cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
+        optionsVar <- newTVarIO emptyDelta
         let sess = Session
                 { id = sid, name = nameVar, windows = windowsVar
                 , currentIx = currentVar, lastIx = lastVar
                 , lastSize = sizeVar, environ = environVar
-                , startCwd = cwdVar }
+                , startCwd = cwdVar, options = optionsVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
             forM_ panes (startPaneReader st sid win)
@@ -591,13 +592,14 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
     -- automatically keeps tracking its active pane, a manually-named one
     -- keeps its pinned name.
     autoRenameVar <- newTVarIO wsnap.autoRename
+    optionsVar    <- newTVarIO emptyDelta
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
             , lastActive = lastActiveVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
-            , autoRename = autoRenameVar }
+            , autoRename = autoRenameVar, options = optionsVar }
     pure (win, panes)
 
 restorePane
@@ -712,11 +714,12 @@ rebuildReloadSession st rsess = do
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO env
         cwdVar     <- newTVarIO (T.unpack rsess.startCwd)
+        optionsVar <- newTVarIO emptyDelta
         let sess = Session
                 { id = sid, name = nameVar, windows = windowsVar
                 , currentIx = currentVar, lastIx = lastVar
                 , lastSize = sizeVar, environ = environVar
-                , startCwd = cwdVar }
+                , startCwd = cwdVar, options = optionsVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
             forM_ panes (startPaneReader st sid win)
@@ -744,13 +747,14 @@ rebuildReloadWindow st sz rwin = do
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing
     autoRenameVar <- newTVarIO rwin.autoRename
+    optionsVar    <- newTVarIO emptyDelta
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
             , lastActive = lastActiveVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
-            , autoRename = autoRenameVar }
+            , autoRename = autoRenameVar, options = optionsVar }
     pure (win, panes)
 
 -- | Build a pane around an inherited pty ('Hat.Term.Pty.adopt') and a blank
@@ -1131,6 +1135,7 @@ createSession st mname mrun environ dir sz = do
     sizeVar <- newTVarIO sz
     environVar <- newTVarIO environ
     cwdVar <- newTVarIO dir
+    optionsVar <- newTVarIO emptyDelta
     let sess = Session
             { id = SessionId sid
             , name = nameVar
@@ -1140,6 +1145,7 @@ createSession st mname mrun environ dir sz = do
             , lastSize = sizeVar
             , environ = environVar
             , startCwd = cwdVar
+            , options = optionsVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -1164,6 +1170,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     zoomVar <- newTVarIO Nothing
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     layoutNameVar <- newTVarIO Nothing
+    optionsVar    <- newTVarIO emptyDelta
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -1176,6 +1183,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , activity = activityVar
             , zoomed = zoomVar
             , autoRename = autoRenameVar
+            , options = optionsVar
             }
     pure (win, pane)
   where
@@ -2581,6 +2589,7 @@ wrapPaneInWindow st pane = do
     zoomVar <- newTVarIO Nothing
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     layoutNameVar <- newTVarIO Nothing
+    optionsVar <- newTVarIO emptyDelta
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -2593,6 +2602,7 @@ wrapPaneInWindow st pane = do
         , activity = activityVar
         , zoomed = zoomVar
         , autoRename = autoRenameVar
+        , options = optionsVar
         }
 
 -- | A pane's foreground program (from @/proc@) as a display name:

@@ -9,8 +9,26 @@ import qualified Data.Set as Set
 import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
+import Hat.Model.Options
+    (Options (..), OptionName (..), OptionValue (..)
+    , emptyDelta, singletonDelta)
 import Hat.Server
     (cmdAttachSession, chooseCurrentOnClose, pickActivityTarget, pickAttachSession)
+
+-- A bare session with the given id inserted into an existing server.
+addSession :: ServerState -> Int -> IO Session
+addSession st n = do
+    sess <- Session (SessionId n)
+        <$> newTVarIO "s"
+        <*> newTVarIO Map.empty
+        <*> newTVarIO 0
+        <*> newTVarIO Nothing
+        <*> newTVarIO (Size { rows = 24, cols = 80 })
+        <*> newTVarIO []
+        <*> newTVarIO "/"
+        <*> newTVarIO emptyDelta
+    atomically $ modifyTVar' st.sessions (Map.insert (SessionId n) sess)
+    pure sess
 
 -- A bare session with a known default working directory, inserted into a
 -- fresh server so 'cmdAttachSession' can target it.
@@ -26,6 +44,7 @@ seedSession start = do
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO []
         <*> newTVarIO start
+        <*> newTVarIO emptyDelta
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 
@@ -39,6 +58,21 @@ spec = do
             (st, sess) <- seedSession "/start"
             _ <- cmdAttachSession st Nothing ["-c", "/re/anchored"]
             readTVarIO sess.startCwd `shouldReturn` "/re/anchored"
+
+    describe "scoped option resolution" $ do
+        it "a session overlay shadows the global chain for that session only" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-scopespec.sock" Nothing
+            atomically $ writeTVar st.globalSessionOptions
+                (singletonDelta OptPrefix (OVText "C-b"))
+            sessA <- addSession st 0
+            sessB <- addSession st 1
+            atomically $ writeTVar sessA.options
+                (singletonDelta OptPrefix (OVText "C-a"))
+            a <- atomically (resolveForSession st sessA)
+            b <- atomically (resolveForSession st sessB)
+            a.prefix `shouldBe` "C-a"   -- session A's own set
+            b.prefix `shouldBe` "C-b"   -- B falls through to the global
 
     describe "chooseCurrentOnClose" $ do
         -- Closing the current window should jump to the last-active window,

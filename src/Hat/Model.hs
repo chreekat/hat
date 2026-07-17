@@ -27,6 +27,9 @@ module Hat.Model
     , newServerState
     , bumpDirty
     , freshId
+    , resolveGlobal
+    , resolveForSession
+    , resolveForWindow
     , sessionClients
     , currentWindow
     , activePane
@@ -65,7 +68,8 @@ import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
 import qualified Hat.Term.Pty
-import Hat.Model.Options (Keymap, Options, defaultOptions)
+import Hat.Model.Options
+    (Keymap, Options, OptionsDelta, defaultOptions, emptyDelta, resolveOptions)
 import Hat.Server.ColorScheme (ColorScheme)
 import Hat.Server.Keys (PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
@@ -99,6 +103,10 @@ data ServerState = ServerState
         --   @#{color_scheme}@ and sourcing of the @\@color-scheme-dark@ /
         --   @\@color-scheme-light@ config files.
     , options     :: TVar Options
+    , serverOptions :: TVar OptionsDelta          -- ^ see 'resolveGlobal'
+    , globalSessionOptions :: TVar OptionsDelta   -- ^ see 'resolveForSession'
+    , globalWindowOptions :: TVar OptionsDelta     -- ^ see 'resolveForWindow'
+    , schemeOptions :: TVar OptionsDelta            -- ^ see 'resolveGlobal'
     , keymap      :: TVar Keymap
     , buffers     :: TVar (Seq (Text, Text))
         -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
@@ -131,6 +139,7 @@ data Session = Session
     , lastSize :: TVar Size              -- ^ effective size while no client is attached
     , environ  :: TVar [(Text, Text)]    -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
+    , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
     }
 
 data Window = Window
@@ -148,6 +157,7 @@ data Window = Window
     , autoRename :: TVar Bool
         -- ^ when set, the name tracks the active pane's foreground command
         -- (@automatic-rename@); an explicit @rename-window@ clears it.
+    , options    :: TVar OptionsDelta  -- ^ window-scoped set-option; see 'resolveForWindow'
     }
 
 data Pane = Pane
@@ -334,6 +344,10 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
+    <*> newTVarIO emptyDelta  -- serverOptions
+    <*> newTVarIO emptyDelta  -- globalSessionOptions
+    <*> newTVarIO emptyDelta  -- globalWindowOptions
+    <*> newTVarIO emptyDelta  -- schemeOptions
     <*> newTVarIO defaultKeymap
     <*> newTVarIO Seq.empty
     <*> newTVarIO Map.empty
@@ -348,6 +362,41 @@ newServerState defaultKeymap lg path storePath = ServerState
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
+
+-- | Resolve the effective options with no session or window in context: the
+-- server-wide chain (global-window, global-session, server, then the color
+-- scheme's base layer) folded onto the defaults.
+resolveGlobal :: ServerState -> STM Options
+resolveGlobal st = do
+    gw <- readTVar st.globalWindowOptions
+    gs <- readTVar st.globalSessionOptions
+    sv <- readTVar st.serverOptions
+    sc <- readTVar st.schemeOptions
+    pure (resolveOptions [gw, gs, sv, sc])
+
+-- | Resolve the effective options for a session: its own set-option overlay
+-- shadows the global chain, so a bare @set@ affects only that session.
+resolveForSession :: ServerState -> Session -> STM Options
+resolveForSession st sess = do
+    s <- readTVar sess.options
+    gw <- readTVar st.globalWindowOptions
+    gs <- readTVar st.globalSessionOptions
+    sv <- readTVar st.serverOptions
+    sc <- readTVar st.schemeOptions
+    pure (resolveOptions [s, gw, gs, sv, sc])
+
+-- | Resolve the effective options for a window: its window overlay and its
+-- session's overlay shadow the global chain (window options and session
+-- options occupy disjoint names, so layering both is safe).
+resolveForWindow :: ServerState -> Session -> Window -> STM Options
+resolveForWindow st sess win = do
+    w <- readTVar win.options
+    s <- readTVar sess.options
+    gw <- readTVar st.globalWindowOptions
+    gs <- readTVar st.globalSessionOptions
+    sv <- readTVar st.serverOptions
+    sc <- readTVar st.schemeOptions
+    pure (resolveOptions [w, s, gw, gs, sv, sc])
 
 freshId :: TVar Int -> STM Int
 freshId counter = do
