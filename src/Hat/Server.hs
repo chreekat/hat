@@ -8,6 +8,7 @@ module Hat.Server
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
+    , cmdSourceFile  -- ^ exported for the reload tilde-expansion test
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
@@ -1832,7 +1833,7 @@ setOptionRaw mode opts name value = case name of
 cmdSourceFile :: CommandImpl
 cmdSourceFile st mclient args = case pos of
     [path] -> do
-        let p = T.unpack path
+        p <- expandTilde (T.unpack path)
         exists <- doesFileExist p
         if not exists
             then if "-q" `elem` flags

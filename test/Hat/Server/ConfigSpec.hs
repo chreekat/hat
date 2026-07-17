@@ -1,16 +1,30 @@
 module Hat.Server.ConfigSpec (spec) where
 
-import Control.Exception (finally)
+import Control.Concurrent.STM (readTVarIO)
+import Control.Exception (bracket, finally)
 import qualified Data.ByteString as B
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import System.Directory (removeDirectoryRecursive)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Posix.Temp (mkdtemp)
 import Test.Hspec
 
-import Hat.Server (readConfigUtf8)
+import Hat.Log (newLogger)
+import Hat.Model (ServerState (..), newServerState)
+import Hat.Model.Options (Options (..))
+import Hat.Server (cmdSourceFile, readConfigUtf8)
+
+-- Run an action with @HOME@ pointed at @dir@, restoring the prior value.
+withHome :: FilePath -> IO a -> IO a
+withHome dir act = do
+    old <- lookupEnv "HOME"
+    bracket (setEnv "HOME" dir) (const (restore old)) (const act)
+  where
+    restore = maybe (unsetEnv "HOME") (setEnv "HOME")
 
 spec :: Spec
-spec =
+spec = do
     -- The user's config threw mid-read under a non-UTF-8 locale because
     -- TIO.readFile decodes with the locale; a config with a `·` (U+00B7,
     -- bytes C2 B7) aborted startup. readConfigUtf8 must decode UTF-8
@@ -27,3 +41,19 @@ spec =
                 t `shouldSatisfy` T.isInfixOf (T.singleton '\x00b7')
                 -- … and the invalid byte is replaced, not thrown on.
                 t `shouldSatisfy` T.isInfixOf (T.singleton '\xfffd')
+
+    -- The reload binding `bind r source-file ~/.tmux.conf` looked like it
+    -- worked (the paired display-message toast fired) but the status-bar
+    -- change never took effect: source-file passed the literal `~/…` to
+    -- doesFileExist, which is always False, so the file was never read.
+    describe "source-file" $
+        it "expands a ~/ path so a reload actually re-reads the file" $ do
+            dir <- mkdtemp "/tmp/hat-source-"
+            flip finally (removeDirectoryRecursive dir) $ withHome dir $ do
+                writeFile (dir <> "/reload.conf")
+                    "set -g status-left RELOADED\n"
+                lg <- newLogger "/dev/null"
+                st <- newServerState Map.empty lg (dir <> "/s.sock") Nothing
+                _ <- cmdSourceFile st Nothing ["~/reload.conf"]
+                opts <- readTVarIO st.options
+                opts.statusLeft `shouldBe` "RELOADED"
