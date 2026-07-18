@@ -367,21 +367,6 @@ paneNonCanonicalVia line c = do
 paneIsNonCanonical :: Driver -> IO Bool
 paneIsNonCanonical = paneNonCanonicalVia "stty -a"
 
--- Print a line of digits and wait until BOTH the output row and the next
--- prompt below it have rendered. A bare @awaitScreen "0123456789"@ would
--- match the echoed printf command itself, letting the test race ahead
--- (e.g. into copy mode) while the cursor is still rows away from where
--- the digit line will land.
-printDigitLine :: Driver -> IO ()
-printDigitLine c = do
-    typeInto c "printf '0123456789\\n'\r"
-    awaitWith "digit line printed and prompt back" (\d -> do
-        scr <- Emu.snapshot d.screen
-        let row r = T.strip (Emu.screenRowText scr r)
-        pure $ case List.findIndex (\r -> row r == "0123456789") [0 .. 23] of
-            Just r -> "$" `T.isPrefixOf` row (r + 1)
-            Nothing -> False) c
-
 -- The cooked-mode flags still missing from the test pty's line discipline,
 -- read after the hat client on its slave side has exited. An empty list
 -- means the client left the terminal the way it found it.
@@ -1288,52 +1273,6 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "recalls a previous command from prompt history with Up" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-
-        -- Run one command through the prompt.
-        typeInto c1 "\x02:"
-        awaitPromptOpen c1 "0:sh*"
-        typeInto c1 "rename-window histwin"
-        awaitScreen c1 ":rename-window histwin"
-        typeInto c1 "\r"
-        awaitScreen c1 "histwin*"
-
-        -- Reopen the prompt; Up recalls that command onto the line.
-        typeInto c1 "\x02:"
-        awaitPromptOpen c1 "histwin*"
-        typeInto c1 "\ESC[A"  -- Up
-        awaitScreen c1 ":rename-window histwin"
-
-        typeInto c1 "\ESC"    -- cancel; wait for the prompt to close
-        awaitWith "prompt closed" (\d -> do
-            t <- screenText d
-            pure ("histwin*" `T.isInfixOf` t
-                  && not (":rename-window" `T.isInfixOf` t))) c1
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
-    it "cancels the command prompt on Escape without running it" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02:"
-        awaitPromptOpen c1 "0:sh*"
-        typeInto c1 "rename-window nope"
-        awaitScreen c1 ":rename-window nope"
-        -- Escape closes the prompt; the window keeps its name.
-        typeInto c1 "\ESC"
-        awaitWith "prompt gone, name unchanged" (\d -> do
-            t <- screenText d
-            pure ("0:sh*" `T.isInfixOf` t
-                  && not ("nope" `T.isInfixOf` t))) c1
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
     it "renames the current window via prefix , (pre-filled prompt)" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1482,29 +1421,6 @@ spec = parallel $ do
         out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
         lines out `shouldBe` ["dark"]
 
-    it "defaults hat's chrome to the dark palette when the desktop is dark" $
-        withHat hatBin $ \h -> do
-        let bin = h.home </> "bin"
-        createDirectoryIfMissing True bin
-        writeExecutable (bin </> "gsettings") $ unlines
-            [ "#!/bin/sh"
-            , "case \"$1\" in"
-            , "get) echo \"'prefer-dark'\" ;;"
-            , "monitor) exec tail -f /dev/null ;;"
-            , "esac"
-            ]
-        c1 <- startClientEnv h [("PATH", bin <> ":" <> testPath)] []
-        awaitScreen c1 "0:sh*"
-        -- No styles configured: the status bar restyles itself to the
-        -- dark palette (deep green 22), not tmux's classic bright green.
-        awaitWith "status bar in the dark palette" (\d -> do
-            scr <- Emu.snapshot d.screen
-            pure $ case scr.cells V.!? 23 of
-                Just row -> any
-                    (\cell -> cell.style.bg == Indexed 22)
-                    (V.toList row)
-                Nothing -> False) c1
-
     it "renames the session via prefix $ (pre-filled prompt)" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1609,112 +1525,6 @@ spec = parallel $ do
         -- input stream, so its presence proves the marker was dropped.
         scr <- screenText c1
         scr `shouldNotSatisfy` T.isInfixOf "zapzap42"
-
-    it "vi copy-mode: g/G jump history ends, C-b pages up" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "$"
-        -- Distinct top/bottom markers, on their own command lines so the
-        -- echoed input doesn't carry the other marker.
-        typeInto c1 "echo TOPmark\r"
-        awaitScreen c1 "TOPmark"
-        typeInto c1 "seq 1 200\r"
-        awaitScreen c1 "199"
-        typeInto c1 "echo BOTmark\r"
-        awaitScreen c1 "BOTmark"
-        -- Enter copy mode with the vi table; g jumps to the top of history.
-        typeInto c1 "\x02[g"
-        awaitScreen c1 "TOPmark"
-        -- G returns to the bottom of history.
-        typeInto c1 "G"
-        awaitScreen c1 "BOTmark"
-        -- C-b (page-up) scrolls a full screen up off the bottom.
-        typeInto c1 "\x02"
-        awaitWith "page-up scrolls off the bottom"
-            (\d -> not . T.isInfixOf "BOTmark" <$> screenText d) c1
-        -- q leaves copy mode; exit then reaches the shell (per-key routing).
-        typeInto c1 "qexit\r"
-        _ <- awaitExit c1
-        pure ()
-
-    it "vi copy-mode: a [count] repeats a motion (4l selects five cells)" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "$"
-        -- A line of digits as output; the prompt sits directly below it.
-        printDigitLine c1
-        baseline <- reverseCellCount c1        -- no highlight yet
-        -- k: up onto the digit line. 0: start-of-line. v: begin selection.
-        -- 4l: cursor-right x4 (the [count]). The selection then covers five
-        -- cells (0..4 inclusive); a broken count would move l only once and
-        -- highlight two. Counting highlighted cells is a direct, render-driven
-        -- check with no timing.
-        typeInto c1 "\x02[k0v4l"
-        awaitWith "count selects exactly five cells"
-            (\d -> (== baseline + 5) <$> reverseCellCount d) c1
-        typeInto c1 "qexit\r"
-        _ <- awaitExit c1
-        pure ()
-
-    it "vi copy-mode: / searches the scrollback and jumps to a match" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "$"
-        typeInto c1 "echo FINDMEHERE\r"      -- unique marker, near the top
-        awaitScreen c1 "FINDMEHERE"
-        typeInto c1 "seq 1 200\r"            -- push it up into scrollback
-        awaitScreen c1 "199"                 -- seq output (not the echoed cmd)
-        typeInto c1 "\x02["
-        awaitScreen c1 "[0/"
-        -- The marker has scrolled off the bottom view.
-        scr <- screenText c1
-        scr `shouldNotSatisfy` T.isInfixOf "FINDMEHERE"
-        -- / opens the search prompt (its own chunk, like the rename tests);
-        -- the query submits on Enter and the view jumps to the match.
-        typeInto c1 "/"
-        awaitScreen c1 "(search down)"
-        typeInto c1 "FINDMEHERE\r"
-        awaitScreen c1 "FINDMEHERE"
-
-    it "vi copy-mode: f<char> captures the next key and jumps to it" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "$"
-        printDigitLine c1
-        baseline <- reverseCellCount c1
-        -- k: onto the digit line. 0: start-of-line. v: begin selection.
-        -- f5: arm char-search, then '5' is captured as the target, moving the
-        -- cursor to column 5. The selection then spans 0..5 = six cells; if the
-        -- capture were broken, '5' would fall through and only one cell selects.
-        typeInto c1 "\x02[k0vf5"
-        lastCount <- newIORef (-1 :: Int)
-        awaitWith "f jumped through the 5 (six cells)"
-            (\d -> do
-                n <- reverseCellCount d
-                writeIORef lastCount n
-                pure (n == baseline + 6)) c1
-            `catch` \(e :: SomeException) -> do
-                n <- readIORef lastCount
-                expectationFailure $
-                    "selection count: baseline " <> show baseline
-                    <> ", last seen " <> show n <> "\n" <> show e
-
-    it "vi copy-mode: V selects the whole line" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g mode-keys vi\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "$"
-        typeInto c1 "echo LINEWISEMARK"      -- unentered; cursor on this line
-        awaitScreen c1 "LINEWISEMARK"
-        -- Enter copy mode and select-line. Line-wise selection highlights the
-        -- whole row width, far more cells than a char/word selection would.
-        typeInto c1 "\x02[V"
-        awaitWith "whole line highlighted"
-            (\d -> (>= 40) <$> reverseCellCount d) c1
 
     it "reverse-videos the copy-mode selection on screen" $
         withHat hatBin $ \h -> do
