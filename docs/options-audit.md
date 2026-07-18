@@ -1,0 +1,108 @@
+# Options behavior audit
+
+A living catalog of every option HAT accepts, tracking whether the stored value
+*actually drives the behavior tmux gives it* — not merely that it parses and
+lands in an `Options` field. Built so we never re-derive "which option is
+unimplemented / easiest to pick off next": read this table, pick a row, fix it.
+
+## What the verdicts mean
+
+- **implemented** — a consumer reads the field and produces the tmux behavior
+  the value controls. Only rows with a ✅ *test* column are behavior-verified;
+  the rest are consumer-verified (a real consumer exists and looks right) but
+  not yet pinned by a behavior test, so a subtle read-but-partial bug could
+  still hide there.
+- **defect: no consumer** — the field is stored and read by nothing. Setting it
+  does nothing.
+- **defect: wrong semantics** — a consumer reads it, but not the way tmux means
+  it, so the observable effect is wrong.
+
+The **seam** column is what a real effect-test needs: `pure` = an exported pure
+function already takes the value (testable today, prefix-style); `needs seam` =
+the consumer is an IO function over `ServerState`, so a pure core must be
+extracted first (the `deliversKey` pattern).
+
+## Method
+
+Each `Options` field (`src/Hat/Model/Options.hs`) was traced to its read-sites
+across `src/` and `app/`. The `Hat.Server` `show-options` echo block and the
+`set -a` append block are *not* behavior — they only reflect or re-parse the
+value — so they are excluded. Verdicts below are from that consumer trace plus a
+spot-read of each suspect consumer.
+
+## Catalog
+
+| Option | Consumer | Verdict | Seam |
+|---|---|---|---|
+| `prefix` | `routeKeys` (Server.hs:1693), `parseKeyName` (3124) | implemented ✅ tested | pure |
+| `base-index` | initial + next-free window index (Server.hs:1146,2337) | implemented | needs seam |
+| `pane-base-index` | pane numbering (Server.hs:2878) | implemented | needs seam |
+| `status-position` | `View.hs:76,79` (bar row) | implemented | needs seam |
+| `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented | pure |
+| `history-limit` | emulator scrollback cap (Server.hs:1253,741) | implemented | needs seam |
+| `default-terminal` | `$TERM` for new panes (Server.hs:1233) | implemented | needs seam |
+| `word-separators` | `CopyMode.runMotion` (830,831) | implemented | pure |
+| `status-left` | `View.hs:589` | implemented | needs seam |
+| `status-left-length` | `View.hs:624` (`T.take`) | implemented | needs seam |
+| `status-right` | `View.hs:590` | implemented | needs seam |
+| `status-right-length` | `View.hs:625` (`T.take`) | implemented | needs seam |
+| `window-status-format` | `View.hs:591` | implemented | needs seam |
+| `window-status-current-format` | `View.hs:592` | implemented | needs seam |
+| `status-style` | `View.hs:626` | implemented | needs seam |
+| `window-status-style` | `View.hs:621` | implemented | needs seam |
+| `window-status-current-style` | `View.hs:619` | implemented | needs seam |
+| `window-status-bell-style` | `View.hs:620` | implemented | needs seam |
+| `pane-border-style` | `View.hs:291` | implemented | needs seam |
+| `pane-active-border-style` | `View.hs:290` | implemented | needs seam |
+| `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented | pure |
+| `pane-border-lines` | `mapGlyph` (View.hs:294) | implemented | needs seam |
+| `pane-border-indicators` | `View.hs:281` | implemented | needs seam |
+| `set-titles` | `refreshTitles` gate (Server.hs:2831) | implemented | needs seam |
+| `escape-time` | — | **defect: no consumer** | — |
+| `display-time` | toast duration (Server.hs:1752) | implemented | needs seam |
+| `focus-events` | `deliversKey` (Server.hs:1595) | implemented | pure |
+| `aggressive-resize` | `resizeModeFor` (Server.hs:1487) | implemented | needs seam |
+| `monitor-activity` | activity-flag gate (Server.hs:1337) | implemented | needs seam |
+| `automatic-rename` | auto-rename gate (Server.hs:1185,2769) | implemented | needs seam |
+| `automatic-rename-format` | `refreshAutoNames` (Server.hs:2809) | implemented | needs seam |
+| `update-environment` | `refreshSessionEnv` (Server.hs:1107) | implemented | needs seam |
+| `main-pane-width` | `ratioOf` (Server.hs:2991) | **defect: wrong semantics** | needs seam |
+| `main-pane-height` | `ratioOf` (Server.hs:2992) | **defect: wrong semantics** | needs seam |
+
+## Defects (the backlog)
+
+1. **`escape-time` — no consumer.** ESC disambiguation in
+   `Hat.Server.Keys.tokenizeKeys` is hardcoded to `escape-time 0` semantics (a
+   lone trailing ESC is the Escape key). A non-zero value is stored and ignored.
+   A real fix buffers a trailing lone ESC and arms an `escape-time`-ms timer in
+   the input path: coalesce with the next bytes if they arrive first, else emit
+   Escape. Needs event-loop timing.
+
+2. **`main-pane-width` — wrong semantics.** `arrangeNamed` computes
+   `ratioOf opts.mainPaneWidth area.cols`, treating the value as a *proportion
+   of window width* (clamped 1/10–9/10). tmux `main-pane-width` is an
+   **absolute cell count** (default 80), optionally a `%` percentage. So
+   `main-pane-width 80` on an 80-column window clamps to 90% instead of taking
+   80 cells.
+
+3. **`main-pane-height` — wrong semantics.** Same, for `main-horizontal`
+   (Server.hs:2992).
+
+## Turning consumer-verified into behavior-verified: the sweep
+
+The catalog above is a consumer trace; only `prefix` is pinned by a behavior
+test. The durable way to close the gap — and to catch any remaining
+read-but-partial bug — is a prefix-style **effect test per option**: set a
+non-default value, drive the consumer, assert the *observable* result.
+
+- Options with a `pure` seam (`prefix`, `mode-keys`, `word-separators`,
+  `mode-style`, `focus-events`) can get that test today.
+- Every `needs seam` option first needs a pure core extracted from its
+  `ServerState`-IO consumer (e.g. `statusCells` → a pure
+  `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;
+  the resulting effect test is the permanent regression guard *and* flips the
+  row to behavior-verified.
+
+This sweep is the milestone that makes the audit self-maintaining: once every
+row has a passing effect test, a future silent no-op (or wrong-semantics) option
+fails a test instead of needing another manual audit.
