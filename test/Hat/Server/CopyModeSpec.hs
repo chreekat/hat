@@ -11,8 +11,11 @@ import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..)
     , SearchDirection (..), SelKind (SelChar, SelLine) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
+import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
 import Hat.Term.Cell (Cell (..), Style (..), defaultStyle)
+
+import qualified Data.Map.Strict as Map
 
 -- | The pane grid the upstream copy-mode tests build (40x10). The
 -- source file's leading TAB on row 1 reaches hat's grid as spaces
@@ -103,6 +106,17 @@ emacs = run KeysEmacs ""
 
 spec :: Spec
 spec = do
+    describe "default copy-mode key bindings" $ do
+        let bound table key =
+                Map.lookup key =<< Map.lookup table defaultKeymap
+            beginSel = Just [["send-keys", "-X", "begin-selection"]]
+        it "vi mode: Space begins a selection (tmux parity)" $
+            bound "copy-mode-vi" "Space" `shouldBe` beginSel
+        it "vi mode: v begins a selection" $
+            bound "copy-mode-vi" "v" `shouldBe` beginSel
+        it "emacs mode: Space begins a selection" $
+            bound "copy-mode" "Space" `shouldBe` beginSel
+
     describe "vi copy-mode motions (upstream copy-mode-test-vi)" $ do
         it "reproduces every yanked buffer in order" $
             vi

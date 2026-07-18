@@ -24,6 +24,7 @@ module Hat.Server
     , StorePin (..)
     , windowFlags  -- ^ exported for the window-flags test
     , WindowFlagState (..)
+    , defaultKeymap  -- ^ exported for the copy-mode binding test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -919,7 +920,8 @@ defaultKeymap = Map.fromList
         , ("C-f", "page-down"), ("PgDn", "page-down")
         , ("C-b", "page-up"), ("PgUp", "page-up")
         , ("C-d", "halfpage-down"), ("C-u", "halfpage-up")
-        , ("v", "begin-selection"), ("V", "select-line")
+        , ("v", "begin-selection"), ("Space", "begin-selection")
+        , ("V", "select-line")
         , ("o", "other-end"), ("Escape", "clear-selection")
         , ("y", "copy-selection-and-cancel")
         , ("Enter", "copy-selection-and-cancel")
