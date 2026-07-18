@@ -37,7 +37,7 @@ spot-read of each suspect consumer.
 | `prefix` | `routeKeys` (Server.hs:1693), `parseKeyName` (3124) | implemented ✅ tested | pure |
 | `base-index` | initial + next-free window index (Server.hs:1146,2337) | implemented | needs seam |
 | `pane-base-index` | pane numbering (Server.hs:2878) | implemented | needs seam |
-| `status-position` | `View.hs:76,79` (bar row) | implemented | needs seam |
+| `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
 | `history-limit` | emulator scrollback cap (Server.hs:1253,741) | implemented | needs seam |
 | `default-terminal` | `$TERM` for new panes (Server.hs:1233) | implemented | needs seam |

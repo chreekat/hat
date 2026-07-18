@@ -13,6 +13,7 @@ module Hat.Server.View
     , statusCells
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
+    , statusLayout  -- ^ exported for the status-position effect test
     ) where
 
 import Control.Concurrent (forkIO)
@@ -71,16 +72,20 @@ renderLoop st client = loop (-1)
         renderOnce st client
         loop gen
 
+-- | @status-position@'s placement in a client of @rows@ rows: the row the
+-- status bar occupies, and the vertical offset the window content takes below
+-- a top bar. See 'renderOnce'.
+statusLayout :: StatusPosition -> Int -> (Int, Int)
+statusLayout pos rows = case pos of
+    StatusTop    -> (1, 0)
+    StatusBottom -> (0, rows - 1)
+
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
     csize <- readTVarIO client.size
     opts <- readTVarIO st.options
-    let rowOff = case opts.statusPosition of
-            StatusTop -> 1
-            StatusBottom -> 0
-        statusRowIx = case opts.statusPosition of
-            StatusTop -> 0
-            StatusBottom -> fromIntegral csize.rows - 1
+    let (rowOff, statusRowIx) =
+            statusLayout opts.statusPosition (fromIntegral csize.rows)
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions

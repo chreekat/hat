@@ -14,11 +14,12 @@ import Data.Ratio ((%))
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model.Options
-    (BorderIndicators (..), BorderLines (..), Options (..), defaultOptions)
+    ( BorderIndicators (..), BorderLines (..), Options (..)
+    , StatusPosition (..), defaultOptions )
 import Hat.Server (deliversKey, mainPaneRatio, resizeModeOf)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
-import Hat.Server.View (borderCells, mapGlyph)
+import Hat.Server.View (borderCells, mapGlyph, statusLayout)
 import qualified Hat.Term.Cell as Cell
 
 spec :: Spec
@@ -92,6 +93,14 @@ spec = do
                 glyphWith IndicatorsArrows `shouldBe` Just "\x25b6"  -- ▶
             it "off: the active edge keeps the plain line" $
                 glyphWith IndicatorsOff `shouldBe` Just "\x2502"  -- │
+
+        -- status-position: bottom puts the bar on the last row with no
+        -- content offset; top puts it on row 0 and pushes content down one.
+        describe "status-position places the status bar" $ do
+            it "bottom (default): last row, no content offset" $
+                statusLayout StatusBottom 24 `shouldBe` (0, 23)
+            it "top: row 0, content offset by one" $
+                statusLayout StatusTop 24 `shouldBe` (1, 0)
 
         -- aggressive-resize: on follows the active client, off fits the
         -- smallest.
