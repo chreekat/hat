@@ -15,9 +15,9 @@ import Data.Ratio ((%))
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model.Options
     (BorderIndicators (..), BorderLines (..), Options (..), defaultOptions)
-import Hat.Server (deliversKey, mainPaneRatio)
+import Hat.Server (deliversKey, mainPaneRatio, resizeModeOf)
 import Hat.Server.Keys (Key (..))
-import Hat.Server.Layout (LayoutName (..))
+import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
 import Hat.Server.View (borderCells, mapGlyph)
 import qualified Hat.Term.Cell as Cell
 
@@ -92,6 +92,15 @@ spec = do
                 glyphWith IndicatorsArrows `shouldBe` Just "\x25b6"  -- ▶
             it "off: the active edge keeps the plain line" $
                 glyphWith IndicatorsOff `shouldBe` Just "\x2502"  -- │
+
+        -- aggressive-resize: on follows the active client, off fits the
+        -- smallest.
+        describe "aggressive-resize picks the resize mode" $ do
+            it "off (default): fit the smallest client" $
+                resizeModeOf defaultOptions `shouldBe` SmallestClient
+            it "on: follow the active client" $
+                resizeModeOf (defaultOptions { aggressiveResize = True })
+                    `shouldBe` ActiveClient
 
         -- Defects catalogued in docs/options-audit.md, pinned here as the
         -- executable backlog. Each flips to a real assertion when fixed.

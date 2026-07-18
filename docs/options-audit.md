@@ -61,7 +61,7 @@ spot-read of each suspect consumer.
 | `escape-time` | — | **defect: no consumer** | — |
 | `display-time` | toast duration (Server.hs:1752) | implemented | needs seam |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented | pure |
-| `aggressive-resize` | `resizeModeFor` (Server.hs:1487) | implemented | needs seam |
+| `aggressive-resize` | `resizeModeOf` (Server.hs) | implemented ✅ tested | pure |
 | `monitor-activity` | activity-flag gate (Server.hs:1337) | implemented | needs seam |
 | `automatic-rename` | auto-rename gate (Server.hs:1185,2769) | implemented | needs seam |
 | `automatic-rename-format` | `refreshAutoNames` (Server.hs:2809) | implemented | needs seam |

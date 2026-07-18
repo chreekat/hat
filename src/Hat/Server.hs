@@ -30,6 +30,7 @@ module Hat.Server
     , markBell  -- ^ exported for the current-window bell test
     , deliversKey  -- ^ exported for the focus-event gating test
     , mainPaneRatio  -- ^ exported for the main-pane-size test
+    , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -1483,9 +1484,13 @@ pickActivityTarget ixs cur flagged mlast =
 -- session has no window). 'ActiveClient' follows the most-recently-active
 -- client; 'SmallestClient' fits every client.
 resizeModeFor :: ServerState -> Session -> Maybe Window -> STM ResizeMode
-resizeModeFor st sess mwin = do
-    opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
-    pure (if opts.aggressiveResize then ActiveClient else SmallestClient)
+resizeModeFor st sess mwin =
+    resizeModeOf <$> maybe (resolveGlobal st) (resolveForWindow st sess) mwin
+
+-- | The resize mode @aggressive-resize@ selects: on, follow the active
+-- client; off, fit the smallest. See 'resizeModeFor'.
+resizeModeOf :: Options -> ResizeMode
+resizeModeOf opts = if opts.aggressiveResize then ActiveClient else SmallestClient
 
 -- Effective session size follows the current window's resize mode; panes
 -- follow. See 'resizeModeFor' and 'effectiveWindowSize'.
