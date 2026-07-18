@@ -1669,6 +1669,20 @@ spec = parallel $ do
         out <- ctlOut h ["list-panes", "-F", "#{pane_index}"]
         List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
 
+    it "history-limit caps a pane's scrollback" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "set -g history-limit 3\n"
+        c1 <- startClientArgs h ["-f", confPath]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "for i in $(seq 1 40); do echo line$i; done\r"
+        awaitScreen c1 "line40"
+        out <- ctlOut h ["list-panes", "-F", "#{history_size}"]
+        -- ~40 lines scrolled off, but history-limit 3 keeps at most 3
+        let sizes = map read (filter (not . null) (lines out)) :: [Int]
+        sizes `shouldSatisfy` (not . null)
+        sizes `shouldSatisfy` all (\n -> n >= 1 && n <= 3)
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"

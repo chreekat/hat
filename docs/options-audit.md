@@ -43,7 +43,7 @@ spot-read of each suspect consumer.
 | `pane-base-index` | `cmdListPanes` pane numbering (Server.hs) | implemented ✅ tested | integration |
 | `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
-| `history-limit` | emulator scrollback cap (Server.hs) | implemented | plumbed |
+| `history-limit` | emulator scrollback cap (Server.hs) | implemented ✅ tested | integration |
 | `default-terminal` | `$TERM` for new panes (Server.hs) | implemented ✅ tested | integration |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `status-left` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
@@ -108,8 +108,8 @@ non-default value, drive the consumer, assert the *observable* result.
 - Behavior-verified so far are the ✅ rows in the table above (via
   `OptionEffectSpec`, `CopyModeSpec`, `KeysSpec`, `FormatSpec`, or
   `IntegrationSpec`). The only rows without a behavior test are the four
-  `plumbed` options (`history-limit`, `display-time`) and the `escape-time`
-  defect.
+  `plumbed` option `display-time` (its effect is a timed toast dismissal, not
+  synchronously observable without a sleep) and the `escape-time` defect.
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
   `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;
