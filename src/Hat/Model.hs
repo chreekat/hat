@@ -26,6 +26,7 @@ module Hat.Model
     , SelKind (..)
     , newServerState
     , bumpDirty
+    , markActive
     , freshId
     , resolveGlobal
     , resolveForSession
@@ -85,6 +86,7 @@ data ServerState = ServerState
     , nextClient  :: TVar Int
     , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
+    , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
     , everAttached :: TVar Bool  -- ^ a session has existed at some point.
                                 --   See 'waitIdle'.
     , served      :: TVar Bool  -- ^ a client connection has been accepted.
@@ -312,6 +314,7 @@ data Client = Client
     , sock      :: Socket
     , sendLock  :: MVar ()
     , size      :: TVar Size
+    , lastActive :: TVar Int  -- ^ activity stamp; see 'markActive'
     , session   :: TVar SessionId
     , lastSession :: TVar (Maybe SessionId)
     , ready     :: TVar Bool  -- ^ the client's Welcome greeting has been sent.
@@ -336,7 +339,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
-    <*> newTVarIO 0
+    <*> newTVarIO 0      -- dirty
+    <*> newTVarIO 0      -- activityClock
     <*> newTVarIO False  -- everAttached
     <*> newTVarIO False  -- served
     <*> newTVarIO False  -- configLoading
@@ -362,6 +366,16 @@ newServerState defaultKeymap lg path storePath = ServerState
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
+
+-- | Stamp a client as the most-recently-active on its session: advance the
+-- server's activity clock and record the new value on the client, so
+-- 'effectiveWindowSize' in @ActiveClient@ mode (aggressive-resize) sizes a
+-- window to whichever client most recently drove it.
+markActive :: ServerState -> Client -> STM ()
+markActive st client = do
+    n <- (+ 1) <$> readTVar st.activityClock
+    writeTVar st.activityClock n
+    writeTVar client.lastActive n
 
 -- | Resolve the effective options with no session or window in context: the
 -- server-wide chain (global-window, global-session, server, then the color

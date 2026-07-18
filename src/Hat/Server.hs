@@ -25,6 +25,7 @@ module Hat.Server
     , windowFlags  -- ^ exported for the window-flags test
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
+    , applySessionSize  -- ^ exported for the aggressive-resize test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -1053,6 +1054,7 @@ newClient st conn h = do
     cid <- atomically (freshId st.nextClient)
     sendLock <- newMVar ()
     sizeVar <- newTVarIO h.size
+    activeVar <- newTVarIO 0
     sessVar <- newTVarIO (SessionId (-1))
     lastSessVar <- newTVarIO Nothing
     keyVar <- newIORef NoPrefix
@@ -1068,6 +1070,7 @@ newClient st conn h = do
         , sock = conn
         , sendLock = sendLock
         , size = sizeVar
+        , lastActive = activeVar
         , session = sessVar
         , lastSession = lastSessVar
         , ready = readyVar
@@ -1438,7 +1441,17 @@ pickActivityTarget ixs cur flagged mlast =
 
 -- Sizing ----------------------------------------------------------------
 
--- Effective session size = smallest attached client; panes follow.
+-- | The resize mode in force for a session's displayed size: the current
+-- window's resolved @aggressive-resize@ (or the global setting when the
+-- session has no window). 'ActiveClient' follows the most-recently-active
+-- client; 'SmallestClient' fits every client.
+resizeModeFor :: ServerState -> Session -> Maybe Window -> STM ResizeMode
+resizeModeFor st sess mwin = do
+    opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
+    pure (if opts.aggressiveResize then ActiveClient else SmallestClient)
+
+-- Effective session size follows the current window's resize mode; panes
+-- follow. See 'resizeModeFor' and 'effectiveWindowSize'.
 applySessionSize :: ServerState -> SessionId -> IO ()
 applySessionSize st sid = do
     work <- atomically $ do
@@ -1447,13 +1460,12 @@ applySessionSize st sid = do
             Nothing -> pure Nothing
             Just sess -> do
                 cs <- sessionClients st sid
-                sizes <- mapM (\c -> readTVar c.size) cs
-                eff <- case sizes of
-                    [] -> readTVar sess.lastSize
-                    _ -> pure Size
-                        { rows = minimum (map (.rows) sizes)
-                        , cols = minimum (map (.cols) sizes)
-                        }
+                stamps <- mapM (\c -> (,) <$> readTVar c.lastActive
+                                           <*> readTVar c.size) cs
+                lastSz <- readTVar sess.lastSize
+                mwin <- currentWindow sess
+                mode <- resizeModeFor st sess mwin
+                let eff = effectiveWindowSize mode lastSz stamps
                 writeTVar sess.lastSize eff
                 ws <- readTVar sess.windows
                 resizes <- forM (Map.elems ws) $ \win -> do
@@ -1510,8 +1522,35 @@ inputLoop st client = loop
                     loop
                 ClientHello {} -> pure ()
 
+-- | Whether @client@ already holds the largest activity stamp among the
+-- clients attached to its session (so it is the one an aggressive-resize
+-- window currently follows).
+isMostActive :: ServerState -> Client -> STM Bool
+isMostActive st client = do
+    sid <- readTVar client.session
+    cs <- sessionClients st sid
+    mine <- readTVar client.lastActive
+    others <- mapM (\c -> readTVar c.lastActive)
+        (filter (\c -> c.id /= client.id) cs)
+    pure (all (< mine) others)
+
+-- | Record activity from a client and, when it becomes the newly
+-- most-recently-active one on its session, re-apply the session size so an
+-- aggressive-resize window follows it. A no-op resize when nothing aggressive
+-- is in play (the smallest-client size is independent of who is active).
+noteClientActivity :: ServerState -> Client -> IO ()
+noteClientActivity st client = do
+    becameActive <- atomically $ do
+        already <- isMostActive st client
+        markActive st client
+        pure (not already)
+    when becameActive $ do
+        sid <- readTVarIO client.session
+        applySessionSize st sid
+
 handleInput :: ServerState -> Client -> B.ByteString -> IO ()
 handleInput st client bs = do
+    noteClientActivity st client
     mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
     case (mpicker, mprompt) of
@@ -3611,6 +3650,7 @@ switchClientTo st client sess = do
             writeTVar client.lastSession (Just old)
             writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
+        markActive st client
         writeTVar client.needsFull True
         bumpDirty st
     applySessionSize st old

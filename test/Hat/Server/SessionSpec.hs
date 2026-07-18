@@ -1,19 +1,26 @@
 module Hat.Server.SessionSpec (spec) where
 
+import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
+import Data.IORef (newIORef)
 import qualified Data.Map.Strict as Map
+import Network.Socket
+    (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
 import Test.Hspec
 
 import qualified Data.Set as Set
 
-import Hat.Geometry (Size (..))
+import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , emptyDelta, singletonDelta)
 import Hat.Server
-    (cmdAttachSession, chooseCurrentOnClose, pickActivityTarget, pickAttachSession)
+    ( applySessionSize, cmdAttachSession, chooseCurrentOnClose
+    , pickActivityTarget, pickAttachSession )
+import Hat.Server.Keys (PrefixState (NoPrefix))
+import Hat.Server.Render (blankFrame)
 
 -- A bare session with the given id inserted into an existing server.
 addSession :: ServerState -> Int -> IO Session
@@ -48,8 +55,52 @@ seedSession start = do
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 
+-- A client attached to the given session with a fixed size and activity
+-- stamp (larger stamp = more recently active). 'applySessionSize' only reads
+-- a client's size/lastActive/session and writes needsFull, so the socket is a
+-- bare fd that is never driven.
+addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
+addClient st sid sz stamp = do
+    sock <- socket AF_UNIX Stream defaultProtocol
+    lock <- newMVar ()
+    client <- Client (ClientId stamp) sock lock
+        <$> newTVarIO sz
+        <*> newTVarIO stamp
+        <*> newTVarIO sid
+        <*> newTVarIO Nothing
+        <*> newTVarIO True
+        <*> newIORef NoPrefix
+        <*> newIORef (blankFrame sz)
+        <*> newIORef (Pos 0 0, True)
+        <*> newTVarIO True
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
+        <*> pure []
+        <*> pure ""
+    atomically $ modifyTVar' st.clients (Map.insert client.id client)
+    pure client
+
 spec :: Spec
 spec = do
+    describe "aggressive-resize sizing" $ do
+        let big = Size { rows = 50, cols = 200 }
+            small = Size { rows = 24, cols = 80 }
+        it "sizes the session to the smallest client by default" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addClient st (SessionId 0) big 1
+            _ <- addClient st (SessionId 0) small 2   -- smaller client is newer
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` small
+        it "follows the most-recently-active client under aggressive-resize" $ do
+            (st, sess) <- seedSession "/"
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta OptAggressiveResize (OVBool True))
+            _ <- addClient st (SessionId 0) big 2      -- bigger client is newer
+            _ <- addClient st (SessionId 0) small 1
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` big
+
     describe "attach-session -c" $
         -- The feature behind the author's @M-c@ binding: re-anchor where
         -- new windows start. Pure server state — set by the command, read

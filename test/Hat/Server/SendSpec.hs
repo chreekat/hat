@@ -28,6 +28,7 @@ mkClient = do
     let sz = Size { rows = 24, cols = 80 }
     lock    <- newMVar ()
     sizeV   <- newTVarIO sz
+    activeV <- newTVarIO 0
     sessV   <- newTVarIO (SessionId 0)
     lastV   <- newTVarIO Nothing
     readyV  <- newTVarIO False
@@ -40,6 +41,7 @@ mkClient = do
     pickV   <- newTVarIO Nothing
     let client = Client
             { id = ClientId 0, sock = a, sendLock = lock, size = sizeV
+            , lastActive = activeV
             , session = sessV, lastSession = lastV, ready = readyV
             , keyState = keyV, lastFrame = frameV, lastCursor = curV
             , needsFull = fullV, toast = toastV, prompt = promptV
