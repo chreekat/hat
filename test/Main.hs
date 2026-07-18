@@ -4,6 +4,7 @@ import qualified Hat.Client.DrawSpec
 import qualified Hat.Command.ParserSpec
 import qualified Hat.FuzzyMatchSpec
 import qualified Hat.IntegrationSpec
+import qualified Hat.PathSpec
 import qualified Hat.Server.PersistSpec
 import qualified Hat.Term.PtySpec
 import qualified Hat.Server.ColorSchemeSpec
@@ -32,6 +33,7 @@ import qualified Hat.Transport.WireSpec
 
 main :: IO ()
 main = hspec $ do
+    describe "Hat.Path" Hat.PathSpec.spec
     describe "Hat.Transport.Socket" Hat.Transport.SocketSpec.spec
     describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
     describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec

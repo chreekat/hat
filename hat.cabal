@@ -72,6 +72,7 @@ library
         Hat.Model
         Hat.Model.Ids
         Hat.Model.Options
+        Hat.Path
         Hat.Server
         Hat.Server.ClientIO
         Hat.Server.ColorScheme
@@ -154,6 +155,7 @@ test-suite hat-test
         Hat.Command.ParserSpec
         Hat.FuzzyMatchSpec
         Hat.IntegrationSpec
+        Hat.PathSpec
         Hat.Server.PersistSpec
         Hat.Term.PtySpec
         Hat.Transport.SocketSpec
