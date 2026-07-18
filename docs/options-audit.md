@@ -44,7 +44,7 @@ spot-read of each suspect consumer.
 | `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
 | `history-limit` | emulator scrollback cap (Server.hs) | implemented | plumbed |
-| `default-terminal` | `$TERM` for new panes (Server.hs) | implemented | plumbed |
+| `default-terminal` | `$TERM` for new panes (Server.hs) | implemented ✅ tested | integration |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `status-left` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `status-left-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
@@ -101,8 +101,8 @@ non-default value, drive the consumer, assert the *observable* result.
 - Behavior-verified so far are the ✅ rows in the table above (via
   `OptionEffectSpec`, `CopyModeSpec`, `KeysSpec`, `FormatSpec`, or
   `IntegrationSpec`). The only rows without a behavior test are the four
-  `plumbed` options (`pane-base-index`, `history-limit`, `default-terminal`,
-  `display-time`) and the `escape-time` defect.
+  `plumbed` options (`pane-base-index`, `history-limit`, `display-time`) and the
+  `escape-time` defect.
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
   `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;

@@ -1650,6 +1650,15 @@ spec = parallel $ do
         awaitScreen c1 "AFTERSTOPMARKER"
         readFile logPath >>= (`shouldNotSatisfy` List.isInfixOf "AFTERSTOPMARKER")
 
+    it "default-terminal sets $TERM for a pane's program" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "set -g default-terminal xterm-256color\n"
+        c1 <- startClientArgs h ["-f", confPath]
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "echo term=$TERM\r"
+        awaitScreen c1 "term=xterm-256color"
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
