@@ -12,11 +12,14 @@ import Test.Hspec
 
 import Data.Ratio ((%))
 
-import Hat.Geometry (Size (..))
-import Hat.Model.Options (Options (..), defaultOptions)
+import Hat.Geometry (Pos (..), Rect (..), Size (..))
+import Hat.Model.Options
+    (BorderIndicators (..), BorderLines (..), Options (..), defaultOptions)
 import Hat.Server (deliversKey, mainPaneRatio)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Layout (LayoutName (..))
+import Hat.Server.View (borderCells, mapGlyph)
+import qualified Hat.Term.Cell as Cell
 
 spec :: Spec
 spec = do
@@ -48,6 +51,47 @@ spec = do
                 mainPaneRatio MainHorizontal
                     (defaultOptions { mainPaneHeight = 10 })
                     (Size { rows = 40, cols = 200 }) `shouldBe` 1 % 4
+
+        -- pane-border-lines picks the box-drawing glyph set the borders draw.
+        describe "pane-border-lines maps the border glyph set" $ do
+            let horiz = '\x2500'  -- ─
+            it "single leaves the glyph, heavy/double/simple remap it" $ do
+                mapGlyph BorderSingle horiz `shouldBe` '\x2500'  -- ─
+                mapGlyph BorderHeavy  horiz `shouldBe` '\x2501'  -- ━
+                mapGlyph BorderDouble horiz `shouldBe` '\x2550'  -- ═
+                mapGlyph BorderSimple horiz `shouldBe` '-'
+
+        -- pane-border-style / -active-border-style: the active pane's
+        -- perimeter takes the active style, every other border the plain one.
+        describe "pane-border styles mark the active pane" $ do
+            let borderSty = Cell.defaultStyle { Cell.fg = Cell.Indexed 5 }
+                activeSty = Cell.defaultStyle { Cell.fg = Cell.Indexed 9 }
+                opts = defaultOptions
+                    { paneBorderStyle = borderSty
+                    , paneActiveBorderStyle = activeSty
+                    , paneBorderIndicators = IndicatorsColour }
+                rect = Rect { startRow = 0, endRow = 2, startCol = 1, endCol = 3 }
+                cells = borderCells opts (Just rect) 0
+                    [ (Pos { row = 0, col = 0 }, '\x2502')    -- on the perimeter
+                    , (Pos { row = 5, col = 5 }, '\x2502') ]  -- off it
+                styleAt p = (.style) <$> lookup p cells
+            it "an active-perimeter cell takes pane-active-border-style" $
+                styleAt (Pos { row = 0, col = 0 }) `shouldBe` Just activeSty
+            it "a non-perimeter cell takes pane-border-style" $
+                styleAt (Pos { row = 5, col = 5 }) `shouldBe` Just borderSty
+
+        -- pane-border-indicators: arrows draws an inward arrow on the active
+        -- edge; off leaves the plain line glyph.
+        describe "pane-border-indicators toggles the active-edge arrow" $ do
+            let rect = Rect { startRow = 0, endRow = 2, startCol = 1, endCol = 3 }
+                arrowPos = Pos { row = 1, col = 0 }  -- midpoint of the left edge
+                glyphWith ind = (.text) <$> lookup arrowPos
+                    (borderCells (defaultOptions { paneBorderIndicators = ind })
+                        (Just rect) 0 [ (arrowPos, '\x2502') ])
+            it "arrows: the active edge shows an arrow" $
+                glyphWith IndicatorsArrows `shouldBe` Just "\x25b6"  -- ▶
+            it "off: the active edge keeps the plain line" $
+                glyphWith IndicatorsOff `shouldBe` Just "\x2502"  -- │
 
         -- Defects catalogued in docs/options-audit.md, pinned here as the
         -- executable backlog. Each flips to a real assertion when fixed.

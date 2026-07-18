@@ -11,6 +11,8 @@ module Hat.Server.View
     , WindowFlagState (..)
     , windowFlags
     , statusCells
+    , borderCells  -- ^ exported for the pane-border option-effect tests
+    , mapGlyph  -- ^ exported for the pane-border-lines effect test
     ) where
 
 import Control.Concurrent (forkIO)

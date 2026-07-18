@@ -52,11 +52,11 @@ spot-read of each suspect consumer.
 | `window-status-style` | `View.hs:621` | implemented | needs seam |
 | `window-status-current-style` | `View.hs:619` | implemented | needs seam |
 | `window-status-bell-style` | `View.hs:620` | implemented | needs seam |
-| `pane-border-style` | `View.hs:291` | implemented | needs seam |
-| `pane-active-border-style` | `View.hs:290` | implemented | needs seam |
+| `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
+| `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented | pure |
-| `pane-border-lines` | `mapGlyph` (View.hs:294) | implemented | needs seam |
-| `pane-border-indicators` | `View.hs:281` | implemented | needs seam |
+| `pane-border-lines` | `mapGlyph`/`borderCells` (View.hs) | implemented ✅ tested | pure |
+| `pane-border-indicators` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `set-titles` | `refreshTitles` gate (Server.hs:2831) | implemented | needs seam |
 | `escape-time` | — | **defect: no consumer** | — |
 | `display-time` | toast duration (Server.hs:1752) | implemented | needs seam |
