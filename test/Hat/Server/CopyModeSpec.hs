@@ -1,12 +1,13 @@
 module Hat.Server.CopyModeSpec (spec) where
 
+import Control.Monad (forM)
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Test.Hspec
 
-import Hat.Geometry (Pos (..))
+import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..)
     , SearchDirection (..), SelKind (SelChar, SelLine) )
@@ -14,6 +15,7 @@ import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
 import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle)
+import qualified Hat.Term.Emulator as Emu
 
 import qualified Data.Map.Strict as Map
 
@@ -398,3 +400,26 @@ spec = do
             (scrollToCursor 5 3 (st 0 0)).viewportOffY `shouldBe` 5
         it "scrolls back down when the cursor drops below the viewport" $
             (scrollToCursor 5 3 (st 7 5)).viewportOffY `shouldBe` 0
+
+    describe "frozen snapshot (freezeGrid)" $ do
+        -- Copy mode browses a frozen snapshot of the pane: output the
+        -- program produces after entering copy mode must NOT leak into the
+        -- captured grid.
+        let rowText g r = runIdentity $
+                T.pack <$> forM [0 .. g.gSx - 1] (g.gChar r)
+        it "keeps the captured screen unchanged when the program emits more" $ do
+            e <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            _ <- Emu.feed e "before"
+            frozen <- freezeGrid e
+            _ <- Emu.feed e "\r\nafter"
+            let g = frozenGrid frozen :: Grid Identity
+            T.stripEnd (rowText g 0) `shouldBe` "before"
+            all (T.null . T.strip . rowText g) [1 .. g.gSy - 1]
+                `shouldBe` True
+        it "reads live only via a fresh capture" $ do
+            e <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            _ <- Emu.feed e "before"
+            _ <- freezeGrid e
+            _ <- Emu.feed e "\r\nafter"
+            g <- frozenGrid <$> freezeGrid e
+            T.stripEnd (rowText (g :: Grid Identity) 1) `shouldBe` "after"

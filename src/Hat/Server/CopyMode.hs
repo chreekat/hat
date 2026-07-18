@@ -14,6 +14,8 @@ module Hat.Server.CopyMode
     , Grid (..)
     , Motion
     , listGrid
+    , freezeGrid
+    , frozenGrid
     , runMotion
     , mNextWord
     , mNextWordEnd
@@ -50,6 +52,7 @@ import Control.Monad (forM, forM_, unless, void)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -108,6 +111,50 @@ listGrid sx rows = Grid
         [] -> 0
     , gWrapped = \_ -> pure False
     }
+
+-- | Capture a pane's absolute grid — every scrollback line, then the
+-- live screen — into an immutable 'FrozenGrid'. Copy mode reads this
+-- snapshot for the whole session so the program's later output stays
+-- invisible until the mode exits.
+freezeGrid :: Emu.Emulator -> IO FrozenGrid
+freezeGrid e = do
+    hsize <- Emu.scrollbackLength e
+    scr <- Emu.snapshot e
+    let sy = V.length scr.cells
+        sx = fromIntegral scr.size.cols
+    sb <- forM [0 .. hsize - 1] $ \i ->
+        maybe V.empty V.fromList <$> Emu.scrollbackLine e i
+    pure FrozenGrid
+        { fgHsize = hsize
+        , fgSy = sy
+        , fgSx = sx
+        , fgRows = V.fromList sb <> scr.cells
+        }
+
+-- | A read-only 'Grid' over a frozen snapshot. Blank / out-of-bounds
+-- cells read as spaces; line length trims trailing blanks; rows never
+-- wrap in this model.
+frozenGrid :: Monad m => FrozenGrid -> Grid m
+frozenGrid fg = Grid
+    { gHsize = fg.fgHsize
+    , gSy = fg.fgSy
+    , gSx = fg.fgSx
+    , gChar = \row col -> pure $ case rowAt row V.!? col of
+        Just c -> case T.uncons c.text of
+            Just (ch, _) -> ch
+            Nothing -> ' '
+        Nothing -> ' '
+    , gLineLen = \row ->
+        let cs = rowAt row
+            lastFilled = V.ifoldr keep (-1) cs
+            keep i c acc
+                | T.strip c.text == "" = acc
+                | otherwise = max acc i
+        in pure (min fg.fgSx (lastFilled + 1))
+    , gWrapped = \_ -> pure False
+    }
+  where
+    rowAt row = fromMaybe V.empty (fg.fgRows V.!? row)
 
 -- ---------------------------------------------------------------------
 -- Character classes (tmux WHITESPACE is "\t ")
@@ -688,40 +735,19 @@ scrollToCursor hsize sy st =
 -- ---------------------------------------------------------------------
 -- Wiring to the live pane
 
--- | Build a 'Grid' backed by a pane's emulator.
+-- | The 'Grid' copy mode reads: the frozen snapshot captured when the
+-- pane entered copy mode, so program output after entry stays invisible.
+-- An empty grid when the pane is not in copy mode (handlers only reach
+-- this while a mode is active).
 paneGrid :: Pane -> IO (Grid IO)
 paneGrid pane = do
-    hsize <- Emu.scrollbackLength pane.emulator
-    scr <- Emu.snapshot pane.emulator
-    let sz = scr.size
-        sy = fromIntegral sz.rows :: Int
-        sx = fromIntegral sz.cols :: Int
-        rowCells row
-            | row < 0 = pure []
-            | row < hsize = maybe [] id <$> Emu.scrollbackLine pane.emulator row
-            | otherwise = pure $ case scr.cells V.!? (row - hsize) of
-                Nothing -> []
-                Just v -> V.toList v
-    pure Grid
-        { gHsize = hsize
-        , gSy = sy
-        , gSx = sx
-        , gChar = \row col -> do
-            cs <- rowCells row
-            pure $ case drop col cs of
-                (c : _) -> case T.uncons c.text of
-                    Just (ch, _) -> ch
-                    Nothing -> ' '
-                [] -> ' '
-        , gLineLen = \row -> do
-            cs <- rowCells row
-            let lastFilled = foldr keep (-1) (zip [0 ..] cs)
-                keep (i, c) acc
-                    | T.strip c.text == "" = acc
-                    | otherwise = max acc i
-            pure (min sx (lastFilled + 1))
-        , gWrapped = \_ -> pure False
-        }
+    mmode <- readTVarIO pane.mode
+    pure $ case mmode of
+        Just pm -> frozenGrid pm.frozen
+        Nothing -> frozenGrid emptyFrozen
+  where
+    emptyFrozen = FrozenGrid
+        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty }
 
 -- | Run a reader motion against a pane grid, updating the cursor.
 runMotion

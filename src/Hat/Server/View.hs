@@ -351,30 +351,24 @@ mapGlyph bl ch = case bl of
 -- reverse-videoed.
 paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
 paneViewCells st pane = do
-    scr <- Emu.snapshot pane.emulator
     mmode <- readTVarIO pane.mode
     case mmode of
-        Nothing -> pure scr.cells
-        Just s -> do
-            hsize <- Emu.scrollbackLength pane.emulator
+        Nothing -> (.cells) <$> Emu.snapshot pane.emulator
+        Just pm -> do
             opts <- readTVarIO st.options
-            let sy = V.length scr.cells
-                sx = fromIntegral scr.size.cols
+            let s = pm.copyState
+                fg = pm.frozen
+                hsize = fg.fgHsize
                 top = hsize - s.viewportOffY
-            rows <- mapM (viewportRow pane scr hsize sx top) [0 .. sy - 1]
-            let overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
+                rows = [ viewportRow fg (top + i) | i <- [0 .. fg.fgSy - 1] ]
+                overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
                     (V.fromList rows)
                 label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
             pure (stampTopRight label copyIndicatorStyle overlaid)
   where
-    padTo sx v = V.generate sx (\c -> fromMaybe Cell.blankCell (v V.!? c))
-    viewportRow pane' scr hsize sx top i =
-        let a = top + i
-        in if a >= hsize
-            then pure (padTo sx (fromMaybe V.empty (scr.cells V.!? (a - hsize))))
-            else do
-                mline <- Emu.scrollbackLine pane'.emulator a
-                pure (padTo sx (maybe V.empty V.fromList mline))
+    viewportRow fg a =
+        let row = fromMaybe V.empty (fg.fgRows V.!? a)
+        in V.generate fg.fgSx (\c -> fromMaybe Cell.blankCell (row V.!? c))
 
 -- | tmux's copy-mode position indicator: black on yellow, like the
 -- default @mode-style@.
@@ -403,14 +397,15 @@ stampTopRight label sty grid
 -- in copy mode (hidden when scrolled off the viewport).
 paneCursor :: Pane -> Pos -> Int -> IO (Pos, Bool)
 paneCursor pane origin rowOff = do
-    scr <- Emu.snapshot pane.emulator
     mmode <- readTVarIO pane.mode
     case mmode of
-        Nothing -> pure (place scr.cursor, scr.cursorVisible)
-        Just s -> do
-            hsize <- Emu.scrollbackLength pane.emulator
-            let top = hsize - s.viewportOffY
-            case CopyMode.copyCursorPos top (V.length scr.cells) s of
+        Nothing -> do
+            scr <- Emu.snapshot pane.emulator
+            pure (place scr.cursor, scr.cursorVisible)
+        Just pm -> do
+            let s = pm.copyState
+                top = pm.frozen.fgHsize - s.viewportOffY
+            case CopyMode.copyCursorPos top pm.frozen.fgSy s of
                 Just p -> pure (place p, True)
                 Nothing -> pure (Pos 0 0, False)
   where
@@ -499,9 +494,9 @@ paneModeEnv pane = do
     mmode <- readTVarIO pane.mode
     case mmode of
         Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
-        Just s -> do
-            hsize <- Emu.scrollbackLength pane.emulator
-            let top = hsize - s.viewportOffY
+        Just pm -> do
+            let s = pm.copyState
+                top = pm.frozen.fgHsize - s.viewportOffY
             pure [ ("pane_in_mode", "1")
                  , ("pane_mode", "copy-mode")
                  , ("copy_cursor_x", tshow s.cursorCol)

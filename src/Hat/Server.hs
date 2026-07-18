@@ -1682,7 +1682,7 @@ handleKeys st client bs = do
             searchFed <- maybe (pure False) (feedPendingSearch k0) mpane
             if searchFed then loop kst rest else do
               modeTable <- case mpane of
-                Just pane -> fmap (fmap (.keyTable)) (readTVarIO pane.mode)
+                Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
               k <- reencodeCursor mpane k0
               keep <- keepKey opts mpane k
@@ -1718,7 +1718,7 @@ handleKeys st client bs = do
     feedPendingSearch key pane = do
         mmode <- readTVarIO pane.mode
         case mmode of
-            Just s | Just _ <- s.pendingSearch -> do
+            Just s | Just _ <- s.copyState.pendingSearch -> do
                 if T.length key.name == 1
                     then runCopyModeCommand st pane "apply-search" [key.name]
                     else runCopyModeCommand st pane "cancel-search" []
@@ -3160,12 +3160,13 @@ runCopyModeCommand st pane name cmdArgs = do
     mmode <- readTVarIO pane.mode
     case mmode of
         Nothing -> pure ()  -- not in copy mode; -X is a no-op
-        Just state
+        Just pm
             -- A digit key builds the @[count]@ prefix rather than running
             -- a motion; @0@ with no count pending is @start-of-line@.
             | name == "digit", Just d <- readDigit cmdArgs ->
                 atomically $ do
-                    writeTVar pane.mode (Just (CopyMode.pushDigit d state))
+                    writeTVar pane.mode
+                        (Just (reMode (CopyMode.pushDigit d state)))
                     bumpDirty st
             | otherwise -> case Map.lookup name CopyMode.handlers of
                 Nothing -> pure ()
@@ -3178,8 +3179,11 @@ runCopyModeCommand st pane name cmdArgs = do
                     result <- applyN h (state { numPrefix = Nothing }) count
                     result' <- traverse (scrollPaneToCursor pane) result
                     atomically $ do
-                        writeTVar pane.mode result'
+                        writeTVar pane.mode (reMode <$> result')
                         bumpDirty st
+          where
+            state = pm.copyState
+            reMode s = pm { copyState = s }
   where
     readDigit (a : _) = case TR.decimal a of
         Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
@@ -3194,12 +3198,14 @@ runCopyModeCommand st pane name cmdArgs = do
             Nothing -> pure Nothing
             Just s' -> applyN h s' (n - 1)
 
--- | Re-center a pane's copy-mode viewport on its cursor after a motion.
+-- | Re-center a pane's copy-mode viewport on its cursor after a motion,
+-- over the pane's frozen snapshot (a no-op when not in copy mode).
 scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
 scrollPaneToCursor pane s = do
-    hsize <- Emu.scrollbackLength pane.emulator
-    scr <- Emu.snapshot pane.emulator
-    pure (CopyMode.scrollToCursor hsize (V.length scr.cells) s)
+    mmode <- readTVarIO pane.mode
+    pure $ case mmode of
+        Just pm -> CopyMode.scrollToCursor pm.frozen.fgHsize pm.frozen.fgSy s
+        Nothing -> s
 
 -- | Resolve the pane a command should act on from its @-t target@.
 -- @!@ is the current window's last-active pane, @~@/@{marked}@ the
@@ -3254,12 +3260,12 @@ cmdCopyMode st mclient args = do
                 pure []
             | otherwise -> do
                 scr <- Emu.snapshot pane.emulator
-                hsize <- Emu.scrollbackLength pane.emulator
+                frozen <- CopyMode.freezeGrid pane.emulator
                 srvOpts <- readTVarIO st.options
                 let table = case srvOpts.modeKeys of
                         KeysVi -> "copy-mode-vi"
                         KeysEmacs -> "copy-mode"
-                    startRow = hsize + scr.cursor.row
+                    startRow = frozen.fgHsize + scr.cursor.row
                     startCol = scr.cursor.col
                     state = CopyModeState
                         { cursorRow = startRow
@@ -3273,7 +3279,8 @@ cmdCopyMode st mclient args = do
                         , lastQuery = Nothing
                         }
                 atomically $ do
-                    writeTVar pane.mode (Just state)
+                    writeTVar pane.mode (Just PaneMode
+                        { frozen = frozen, copyState = state })
                     bumpDirty st
                 pure []
 

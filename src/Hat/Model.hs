@@ -12,6 +12,8 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , CopyModeState (..)
+    , FrozenGrid (..)
+    , PaneMode (..)
     , SearchDirection (..)
     , flipDirection
     , CharStop (..)
@@ -62,6 +64,7 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
+import qualified Data.Vector as V
 import Network.Socket (Socket)
 import qualified System.Posix.Files as PFiles
 
@@ -75,6 +78,7 @@ import Hat.Server.ColorScheme (ColorScheme)
 import Hat.Server.Keys (PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
+import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 
 data ServerState = ServerState
@@ -169,9 +173,10 @@ data Pane = Pane
     , size     :: TVar Size
     , dead     :: TVar Bool
     , startCwd :: FilePath
-    , mode     :: TVar (Maybe CopyModeState)
+    , mode     :: TVar (Maybe PaneMode)
         -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
-        -- its own cursor/selection over the pane's scrollback + screen.
+        -- its own cursor/selection over a frozen snapshot of the pane's
+        -- scrollback + screen.
     , pipe     :: TVar (Maybe PipeHandle)
         -- ^ an active @pipe-pane@ subprocess, if any.
     , readerTid :: TVar (Maybe ThreadId)
@@ -207,6 +212,28 @@ data CopyModeState = CopyModeState
     , lastQuery     :: !(Maybe (Text, SearchDirection))
         -- ^ the most recent string search (@/@ @?@): query + direction, for
         -- @n@ (repeat) and @N@ (reverse).
+    }
+    deriving (Eq, Show)
+
+-- | A pane's active copy mode: a frozen snapshot of the pane's grid
+-- captured on entry, plus the navigation state ('CopyModeState') that
+-- browses it. The snapshot never changes while the mode is open, so
+-- program output produced during copy mode stays invisible until exit.
+data PaneMode = PaneMode
+    { frozen    :: !FrozenGrid
+    , copyState :: !CopyModeState
+    }
+    deriving (Eq, Show)
+
+-- | An immutable capture of a pane's absolute grid (oldest scrollback
+-- line first, then the live screen) taken when copy mode is entered.
+-- 'fgRows' holds every absolute row; 'fgHsize' is the scrollback line
+-- count, so rows @fgHsize .. fgHsize+fgSy-1@ are the screen.
+data FrozenGrid = FrozenGrid
+    { fgHsize :: !Int
+    , fgSy    :: !Int
+    , fgSx    :: !Int
+    , fgRows  :: !(V.Vector (V.Vector Cell.Cell))
     }
     deriving (Eq, Show)
 
