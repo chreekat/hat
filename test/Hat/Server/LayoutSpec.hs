@@ -222,3 +222,27 @@ spec = do
                 (rects, _) = arrange windowRect lay'
             [r.endCol - r.startCol | (_, r) <- rects]
                 `shouldSatisfy` all (>= 1)
+
+    describe "effectiveWindowSize (aggressive-resize)" $ do
+        let big = Size { rows = 50, cols = 200 }
+            small = Size { rows = 24, cols = 80 }
+            fallback = Size { rows = 30, cols = 100 }
+        it "shrinks to the smallest client without aggressive resize" $
+            effectiveWindowSize SmallestClient fallback [(1, big), (2, small)]
+                `shouldBe` small
+        it "intersects each dimension independently" $
+            effectiveWindowSize SmallestClient fallback
+                [ (1, Size { rows = 24, cols = 200 })
+                , (2, Size { rows = 50, cols = 80 }) ]
+                `shouldBe` Size { rows = 24, cols = 80 }
+        it "follows the most-recently-active client when aggressive" $
+            -- stamp 2 (big) is newer than stamp 1 (small): take big and let
+            -- the smaller client clip. Hence "aggressive".
+            effectiveWindowSize ActiveClient fallback [(1, small), (2, big)]
+                `shouldBe` big
+        it "follows the active client even when it is the smaller one" $
+            effectiveWindowSize ActiveClient fallback [(2, big), (5, small)]
+                `shouldBe` small
+        it "keeps the fallback size when no client is attached" $ do
+            effectiveWindowSize SmallestClient fallback [] `shouldBe` fallback
+            effectiveWindowSize ActiveClient fallback [] `shouldBe` fallback

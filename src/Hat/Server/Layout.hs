@@ -7,6 +7,8 @@ module Hat.Server.Layout
     , Direction (..)
     , LayoutName (..)
     , PaneCycle (..)
+    , ResizeMode (..)
+    , effectiveWindowSize
     , nextLayoutName
     , previousLayoutName
     , cyclePane
@@ -26,7 +28,7 @@ module Hat.Server.Layout
 
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Ord (clamp)
+import Data.Ord (clamp, comparing)
 import Data.Ratio ((%))
 
 import Hat.Geometry
@@ -34,6 +36,28 @@ import Hat.Model.Ids (PaneId)
 
 data Orientation = LeftRight | TopBottom
     deriving (Eq, Show)
+
+-- | How a window chooses its size among the clients attached to its session.
+-- See 'effectiveWindowSize'.
+data ResizeMode
+    = SmallestClient  -- ^ shrink to fit every attached client
+    | ActiveClient    -- ^ track the most-recently-active client (aggressive-resize)
+    deriving (Eq, Show)
+
+-- | The size a window takes for the sizes of the clients attached to its
+-- session. 'SmallestClient' intersects every client so the window fits them
+-- all (the tmux default). 'ActiveClient' (@aggressive-resize on@) follows the
+-- most-recently-active client — the one with the largest activity stamp —
+-- letting smaller clients clip. With no clients attached the window keeps its
+-- @fallback@ (its last size).
+effectiveWindowSize :: ResizeMode -> Size -> [(Int, Size)] -> Size
+effectiveWindowSize _ fallback [] = fallback
+effectiveWindowSize SmallestClient _ clients = Size
+    { rows = minimum (map (\(_, s) -> s.rows) clients)
+    , cols = minimum (map (\(_, s) -> s.cols) clients)
+    }
+effectiveWindowSize ActiveClient _ clients =
+    snd (List.maximumBy (comparing fst) clients)
 
 data Direction = DirLeft | DirRight | DirUp | DirDown
     deriving (Eq, Show)
