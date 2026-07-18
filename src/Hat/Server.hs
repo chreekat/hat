@@ -58,7 +58,7 @@ import System.Directory
     (createDirectoryIfMissing, doesFileExist, findExecutable, removeFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
-import System.FilePath (takeDirectory, takeFileName, (</>))
+import System.FilePath (takeDirectory, takeFileName)
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
 import qualified System.Posix.IO as PIO
 import System.Posix.Process (executeFile, getProcessID)
@@ -75,6 +75,7 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
+import Hat.Path (expandTilde, hatPath, render, (</:>))
 import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , loadSnapshot, saveSnapshot, withStore)
@@ -128,7 +129,7 @@ runServerWith path mconfig mhandover = do
             case lockResult of
                 LockHeldElsewhere -> exitSuccess  -- another server won the race
                 LockWon -> pure ()
-    lg <- newLogger (takeDirectory path <> "/server.log")
+    lg <- newLogger (render (hatPath (takeDirectory path) </:> "server.log"))
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
@@ -266,18 +267,18 @@ persistEnabled = (/= Just "0") <$> lookupEnv "HAT_PERSIST"
 storePathFor :: FilePath -> IO FilePath
 storePathFor sockPath = do
     dir <- storeDir
-    createDirectoryIfMissing True dir
-    pure (dir </> (takeFileName sockPath <> ".db"))
+    createDirectoryIfMissing True (render dir)
+    pure (render (dir </:> (takeFileName sockPath <> ".db")))
   where
     storeDir = lookupEnv "HAT_STORE_DIR" >>= \case
-        Just d | not (null d) -> pure d
+        Just d | not (null d) -> pure (hatPath d)
         _ -> do
             base <- lookupEnv "XDG_DATA_HOME" >>= \case
-                Just d | not (null d) -> pure d
+                Just d | not (null d) -> pure (hatPath d)
                 _ -> do
                     home <- fromMaybe "/tmp" <$> lookupEnv "HOME"
-                    pure (home </> ".local" </> "share")
-            pure (base </> "hat")
+                    pure (hatPath home </:> ".local" </:> "share")
+            pure (base </:> "hat")
 
 -- | Whether the store already holds an explicitly saved final tree.
 -- See 'persistDecision'.
@@ -3563,13 +3564,6 @@ stopPipe pane = do
         void . forkIO $
             void (waitForProcess ph.process)
                 `catch` \(_ :: SomeException) -> pure ()
-
--- | @HOME@-relative @~/@ prefix expansion for buffer paths.
-expandTilde :: FilePath -> IO FilePath
-expandTilde ('~' : '/' : rest) = do
-    env <- getEnvironment
-    pure $ maybe ('~' : '/' : rest) (\h -> h <> "/" <> rest) (lookup "HOME" env)
-expandTilde p = pure p
 
 -- | The top buffer, or a named one.
 bufferBody :: Maybe Text -> Seq (Text, Text) -> Maybe Text

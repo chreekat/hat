@@ -19,15 +19,17 @@ import System.Posix.Files (setFileMode)
 import System.Posix.Types (CUid)
 import System.Posix.User (getRealUserID)
 
+import Hat.Path (render, hatPath, (</:>))
+
 -- | Directory holding hat sockets: @$TMUX_TMPDIR/hat-$UID@, or
 -- @/tmp/hat-$UID@ when the variable is unset.
 socketDir :: Maybe FilePath -> CUid -> FilePath
 socketDir tmpdir uid =
-    maybe "/tmp" id tmpdir <> "/hat-" <> show (toInteger uid)
+    render (hatPath (maybe "/tmp" id tmpdir) </:> ("hat-" <> show (toInteger uid)))
 
 -- | Full path of a named socket inside 'socketDir'.
 socketPath :: Maybe FilePath -> CUid -> String -> FilePath
-socketPath tmpdir uid name = socketDir tmpdir uid <> "/" <> name
+socketPath tmpdir uid name = render (hatPath (socketDir tmpdir uid) </:> name)
 
 -- | The socket the current process should use for the given @-L@ name.
 defaultSocketPath :: String -> IO FilePath

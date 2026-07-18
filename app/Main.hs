@@ -12,6 +12,7 @@ import System.Process
 
 import Hat.Client
 import Hat.Command.Parser (parseArgv)
+import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
 import Hat.Transport.Socket (connectTo, defaultSocketPath)
 
@@ -31,7 +32,7 @@ resolveConfig cli = case cli.configFile of
         case mhome of
             Nothing -> pure cli
             Just home -> do
-                let p = home <> "/.config/hat/hat.conf"
+                let p = render (hatPath home </:> ".config" </:> "hat" </:> "hat.conf")
                 exists <- doesFileExist p
                 pure cli { configFile = if exists then Just p else Nothing }
 
