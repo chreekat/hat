@@ -42,12 +42,12 @@ spot-read of each suspect consumer.
 | `history-limit` | emulator scrollback cap (Server.hs:1253,741) | implemented | needs seam |
 | `default-terminal` | `$TERM` for new panes (Server.hs:1233) | implemented | needs seam |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
-| `status-left` | `View.hs:589` | implemented | needs seam |
+| `status-left` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `status-left-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
-| `status-right` | `View.hs:590` | implemented | needs seam |
+| `status-right` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `status-right-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
-| `window-status-format` | `View.hs:591` | implemented | needs seam |
-| `window-status-current-format` | `View.hs:592` | implemented | needs seam |
+| `window-status-format` | `windowEntryFormat` (View.hs) | implemented ✅ tested | pure |
+| `window-status-current-format` | `windowEntryFormat` (View.hs) | implemented ✅ tested | pure |
 | `status-style` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
 | `window-status-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
 | `window-status-current-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |

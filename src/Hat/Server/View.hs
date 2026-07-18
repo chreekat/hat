@@ -15,6 +15,7 @@ module Hat.Server.View
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
     , windowEntryStyle  -- ^ exported for the window-status-style effect test
+    , windowEntryFormat  -- ^ exported for the window-status-format effect test
     , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
@@ -597,8 +598,6 @@ statusCells st sess width = do
     env <- sessionFormatEnv st sess
     let leftFmt = opts.statusLeft
         rightFmt = opts.statusRight
-        winFmt = opts.windowStatusFormat
-        winCurFmt = opts.windowStatusCurrentFormat
     entries <- do
         ws <- readTVarIO sess.windows
         cur <- readTVarIO sess.currentIx
@@ -624,7 +623,7 @@ statusCells st sess width = do
                     , ("window_flags", flags)
                     , ("window_active_clients", tshow activeClients)
                     ]) env
-                fmt = if ix == cur then winCurFmt else winFmt
+                fmt = windowEntryFormat opts (ix == cur)
                 style = windowEntryStyle opts (ix == cur) bell
             txt <- expandFormat st wenv fmt
             pure (txt, style)
@@ -641,6 +640,14 @@ windowEntryStyle opts isCurrent bell
     | isCurrent = opts.windowStatusCurrentStyle
     | bell      = opts.windowStatusBellStyle
     | otherwise = opts.windowStatusStyle
+
+-- | The format a window's status entry renders through: the current window
+-- uses @window-status-current-format@, every other @window-status-format@.
+-- See 'statusCells'.
+windowEntryFormat :: Options -> Bool -> Text
+windowEntryFormat opts isCurrent
+    | isCurrent = opts.windowStatusCurrentFormat
+    | otherwise = opts.windowStatusFormat
 
 -- | Lay a status bar of @width@ cells: @status-left@ (capped at
 -- @status-left-length@) and the window entries flush left, @status-right@

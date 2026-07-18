@@ -22,7 +22,8 @@ import Hat.Server (deliversKey, mainPaneRatio, resizeModeOf)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
 import Hat.Server.View
-    (assembleStatusRow, borderCells, mapGlyph, statusLayout, windowEntryStyle)
+    ( assembleStatusRow, borderCells, mapGlyph, statusLayout
+    , windowEntryFormat, windowEntryStyle )
 import qualified Hat.Term.Cell as Cell
 
 spec :: Spec
@@ -114,6 +115,17 @@ spec = do
                 windowEntryStyle opts False True `shouldBe` bellS
             it "any other window takes window-status-style" $
                 windowEntryStyle opts False False `shouldBe` normal
+
+        -- window-status-format / -current-format: which format string a
+        -- window's entry renders through (the rendering itself is FormatSpec).
+        describe "window-status-format picks the per-window entry format" $ do
+            let opts = defaultOptions
+                    { windowStatusCurrentFormat = "CUR #W"
+                    , windowStatusFormat = "OTH #W" }
+            it "the current window renders window-status-current-format" $
+                windowEntryFormat opts True `shouldBe` "CUR #W"
+            it "any other window renders window-status-format" $
+                windowEntryFormat opts False `shouldBe` "OTH #W"
 
         -- status-left-length / status-right-length / status-style: the bar caps
         -- each side's text and pads with the status style.
