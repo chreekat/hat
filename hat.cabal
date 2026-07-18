@@ -167,6 +167,7 @@ test-suite hat-test
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec
+        Hat.Server.OptionEffectSpec
         Hat.Server.OptionsSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
