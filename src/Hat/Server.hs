@@ -2243,7 +2243,14 @@ setOptionEntry mode opts name value = case name of
         "both"   -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsBoth)
         _ -> Left "pane-border-indicators: off, colour, arrows, or both"
     "set-titles" -> withOnOff OptSetTitles
-    "escape-time" -> withInt OptEscapeTime
+    -- Only escape-time 0 is implemented: ESC disambiguation in
+    -- 'Hat.Server.Keys.tokenizeKeys' is hardcoded to escape-time-0 semantics
+    -- (a lone ESC ends the key). A non-zero timeout has no effect, so accepting
+    -- it would silently store a no-op; reject it loud instead.
+    "escape-time" -> case withInt OptEscapeTime of
+        Right (_, OVInt 0) -> Right (OptEscapeTime, OVInt 0)
+        Right _ -> Left "escape-time: only 0 is implemented"
+        left -> left
     "display-time" -> withInt OptDisplayTime
     "focus-events" -> withOnOff OptFocusEvents
     "aggressive-resize" -> withOnOff OptAggressiveResize
