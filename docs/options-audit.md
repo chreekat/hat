@@ -17,10 +17,14 @@ unimplemented / easiest to pick off next": read this table, pick a row, fix it.
 - **defect: wrong semantics** — a consumer reads it, but not the way tmux means
   it, so the observable effect is wrong.
 
-The **seam** column is what a real effect-test needs: `pure` = an exported pure
-function already takes the value (testable today, prefix-style); `needs seam` =
-the consumer is an IO function over `ServerState`, so a pure core must be
-extracted first (the `deliversKey` pattern).
+The **seam** column is how a row is (or would be) behavior-verified: `pure` = an
+exported pure function takes the value, tested prefix-style in `OptionEffectSpec`;
+`integration` = exercised end-to-end in `IntegrationSpec`; `rendered` = a format
+string the FormatSpec-verified `renderFormat` expands; `plumbed` = handed
+straight to a sink with no branching logic, so there is nothing to unit-test —
+verified by inspection, **not yet pinned by a behavior test**; `needs seam` = the
+consumer is an IO function over `ServerState` whose pure core is not yet
+extracted (the `deliversKey` pattern).
 
 ## Method
 
@@ -35,12 +39,12 @@ spot-read of each suspect consumer.
 | Option | Consumer | Verdict | Seam |
 |---|---|---|---|
 | `prefix` | `routeKeys` (Server.hs:1693), `parseKeyName` (3124) | implemented ✅ tested | pure |
-| `base-index` | initial + next-free window index (Server.hs:1146,2337) | implemented | needs seam |
-| `pane-base-index` | pane numbering (Server.hs:2878) | implemented | needs seam |
+| `base-index` | initial + next-free window index (Server.hs) | implemented ✅ tested | integration |
+| `pane-base-index` | pane numbering (Server.hs) | implemented | plumbed |
 | `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
-| `history-limit` | emulator scrollback cap (Server.hs:1253,741) | implemented | needs seam |
-| `default-terminal` | `$TERM` for new panes (Server.hs:1233) | implemented | needs seam |
+| `history-limit` | emulator scrollback cap (Server.hs) | implemented | plumbed |
+| `default-terminal` | `$TERM` for new panes (Server.hs) | implemented | plumbed |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `status-left` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `status-left-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
@@ -57,14 +61,14 @@ spot-read of each suspect consumer.
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
 | `pane-border-lines` | `mapGlyph`/`borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-border-indicators` | `borderCells` (View.hs) | implemented ✅ tested | pure |
-| `set-titles` | `refreshTitles` gate (Server.hs:2831) | implemented | needs seam |
+| `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
 | `escape-time` | — | **defect: no consumer** | — |
-| `display-time` | toast duration (Server.hs:1752) | implemented | needs seam |
+| `display-time` | toast duration (Server.hs) | implemented | plumbed |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented | pure |
 | `aggressive-resize` | `resizeModeOf` (Server.hs) | implemented ✅ tested | pure |
-| `monitor-activity` | activity-flag gate (Server.hs:1337) | implemented | needs seam |
-| `automatic-rename` | auto-rename gate (Server.hs:1185,2769) | implemented | needs seam |
-| `automatic-rename-format` | `refreshAutoNames` (Server.hs:2809) | implemented | needs seam |
+| `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
+| `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
+| `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
@@ -94,10 +98,11 @@ test. The durable way to close the gap — and to catch any remaining
 read-but-partial bug — is a prefix-style **effect test per option**: set a
 non-default value, drive the consumer, assert the *observable* result.
 
-- Behavior-verified so far (the ✅ rows): `prefix` (KeysSpec), the copy-mode
-  trio `mode-keys`/`word-separators`/`mode-style` (CopyModeSpec), and
-  `focus-events`, `main-pane-width`/`-height`, and the four `pane-border-*` in
-  `OptionEffectSpec`.
+- Behavior-verified so far are the ✅ rows in the table above (via
+  `OptionEffectSpec`, `CopyModeSpec`, `KeysSpec`, `FormatSpec`, or
+  `IntegrationSpec`). The only rows without a behavior test are the four
+  `plumbed` options (`pane-base-index`, `history-limit`, `default-terminal`,
+  `display-time`) and the `escape-time` defect.
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
   `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;
