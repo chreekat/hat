@@ -5,7 +5,7 @@ import Test.Hspec
 
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model
-    ( PaneId (..), WindowId (..), Expansion (..), PickerFill (..)
+    ( PaneId (..), WindowId (..), SessionId (..), Expansion (..), PickerFill (..)
     , PickerMode (..), PickerNode (..), PickerState (..), PreviewTarget (..) )
 import Hat.Server.Keys (Key, parseKeyName)
 import Hat.Server.Picker
@@ -126,6 +126,34 @@ spec = do
             let p = foldl stay searching (map key ["n", "b"])
             p.query `shouldBe` "nb"
             p.mode `shouldBe` Searching
+
+        it "keeps the cursor on the best match while typing, not at the top" $ do
+            -- "game" drops the whole "work" subtree, so the match sits under
+            -- "play"; the highlight must follow it, not stick to the top row.
+            let p = foldl stay searching (map key ["g", "a", "m", "e"])
+            labels p `shouldBe` ["play", "0:game"]
+            p.cursor `shouldBe` 1
+
+        it "shows a matched session's windows, never collapsing past them" $ do
+            -- matching a session by name reveals its windows (the tree never
+            -- collapses shallower than the window level).
+            let p = foldl stay searching (map key ["w", "o", "r", "k"])
+            labels p `shouldBe` ["work", "0:editor", "1:shell"]
+
+        it "shows panes for context but never matches them" $ do
+            -- panes display under a matched window, yet a query aimed at a
+            -- pane's generic label finds nothing (they are not targets).
+            let paneRow lbl = PickerNode lbl "c"
+                    (Just (PreviewPane (PaneId 0))) [] Collapsed
+                win = PickerNode "1:hat" "c" (Just (PreviewWindow (WindowId 0)))
+                    [ paneRow "pane 0", paneRow "pane 1" ] Expanded
+                sess = PickerNode "projects" "c"
+                    (Just (PreviewSession (SessionId 0))) [win] Expanded
+                tree = demo { mode = Searching, roots = [sess] }
+                onHat = foldl stay tree (map key ["h", "a", "t"])
+                onPane = foldl stay tree (map key ["p", "a", "n", "e"])
+            labels onHat `shouldBe` ["projects", "1:hat", "pane 0", "pane 1"]
+            labels onPane `shouldBe` []
 
     describe "menu-mode search stepping (n/b after committing a search)" $ do
         -- Committing a search remembers its term; back in menu mode n/b then

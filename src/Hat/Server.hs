@@ -3268,6 +3268,9 @@ cmdChooseTree st mclient args = do
         openPicker st client "choose a window" fill picked
     pure []
 
+-- Panes are shown under their window for visual context, but tmux can't name
+-- them, so they carry no meaningful search text; the picker marks them
+-- (via 'PreviewPane') as non-matching so search never targets them.
 buildTreeNodes :: ServerState -> Expansion -> Expansion -> IO [PickerNode]
 buildTreeNodes st windowsExp panesExp = do
     sessions <- Map.elems <$> readTVarIO st.sessions

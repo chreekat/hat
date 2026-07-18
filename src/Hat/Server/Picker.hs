@@ -29,7 +29,7 @@ import Hat.FuzzyMatch (score)
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model
     ( Expansion (..), PickerFill (..), PickerMode (..), PickerNode (..)
-    , PickerState (..), PreviewTarget )
+    , PickerState (..), PreviewTarget (..) )
 import Hat.Server.Keys (Key (..))
 
 -- | What one key does to an open picker.
@@ -54,9 +54,9 @@ leaf lbl cmd = PickerNode
     { label = lbl, command = cmd, preview = Nothing
     , children = [], expanded = Collapsed }
 
--- | A window's pane rows for the tree. A window with a single pane
--- collapses to just its window row (that lone pane is redundant), so it
--- gets no pane children; a window with two or more keeps them all.
+-- | A window's pane rows for the tree. A window with a single pane collapses
+-- to just its window row (that lone pane is redundant), so it gets no pane
+-- children; a window with two or more keeps them all.
 windowChildren :: [PickerNode] -> [PickerNode]
 windowChildren [_] = []
 windowChildren panes = panes
@@ -118,13 +118,23 @@ pickerRegion fill csize rowOff mActive = case fill of
         , startCol = 0
         , endCol = fromIntegral csize.cols }
 
+-- | Whether search can target a node. Panes (identified by their
+-- 'PreviewPane') carry no user-chosen name, so they are shown for context but
+-- never matched — otherwise the stray letters of a @pane N@ label would let a
+-- query fuzzily hit almost any window.
+searchable :: PickerNode -> Bool
+searchable n = case n.preview of
+    Just (PreviewPane _) -> False
+    _                    -> True
+
 -- | Whether a node matches the query, via the fzf-style 'score' (a
 -- case-insensitive fuzzy match that rewards word-boundary and CamelCase hits).
 -- The query is matched against the node's path — its ancestor labels joined
--- with its own label — so a query can span the session\/window\/pane levels
+-- with its own label — so a query can span the session\/window levels
 -- (@projhat@ → @projects hat@).
 nodeMatches :: Text -> Text -> PickerNode -> Bool
-nodeMatches query prefix n = isJust (score query (prefix <> n.label))
+nodeMatches query prefix n =
+    searchable n && isJust (score query (prefix <> n.label))
 
 -- | The path prefix a node hands its children: its own path plus a separator.
 childPrefix :: Text -> PickerNode -> Text
@@ -243,10 +253,12 @@ editPicker p key = case p.mode of
       where
         cleared = p { mode = Browsing, query = "", search = p.query }
     -- After editing the query, land the cursor on the best-scoring match, not
-    -- on an ancestor kept only for context.
+    -- on an ancestor kept only for context. The match is resolved against the
+    -- /filtered/ forest so its index path lines up with the visible rows'
+    -- (which are numbered within the filtered tree, not the original).
     reQuery q =
         let p' = p { query = q }
-        in p' { cursor = case bestMatchPath q p'.roots of
+        in p' { cursor = case bestMatchPath q (filterTree q p'.roots) of
                     Just mp -> fromMaybe 0 (findIndex ((== mp) . (.path)) (visibleRows p'))
                     Nothing -> 0 }
 
@@ -278,8 +290,8 @@ scoredPaths q = go "" []
     go lprefix iprefix ns = concat
         [ let here = iprefix <> [i]
               this = case score q (lprefix <> n.label) of
-                  Just sc -> [(here, sc)]
-                  Nothing -> []
+                  Just sc | searchable n -> [(here, sc)]
+                  _                      -> []
           in this <> go (childPrefix lprefix n) here n.children
         | (i, n) <- zip [0 ..] ns ]
 
