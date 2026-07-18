@@ -2144,6 +2144,7 @@ setOptionEntry mode opts name value = case name of
         Right (OptPaneBorderStyle, OVStyle (parseStyle value))
     "pane-active-border-style" ->
         Right (OptPaneActiveBorderStyle, OVStyle (parseStyle value))
+    "mode-style" -> Right (OptModeStyle, OVStyle (parseStyle value))
     "pane-border-lines" -> case value of
         "single" -> Right (OptPaneBorderLines, OVBorderLines BorderSingle)
         "heavy"  -> Right (OptPaneBorderLines, OVBorderLines BorderHeavy)

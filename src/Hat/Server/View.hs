@@ -362,7 +362,7 @@ paneViewCells st pane = do
                 sx = fromIntegral scr.size.cols
                 top = hsize - s.viewportOffY
             rows <- mapM (viewportRow pane scr hsize sx top) [0 .. sy - 1]
-            let overlaid = CopyMode.overlaySelection opts.modeKeys top s
+            let overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
                     (V.fromList rows)
                 label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
             pure (stampTopRight label copyIndicatorStyle overlaid)

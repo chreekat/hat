@@ -13,7 +13,7 @@ import Hat.Model
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
-import Hat.Term.Cell (Cell (..), Style (..), defaultStyle)
+import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle)
 
 import qualified Data.Map.Strict as Map
 
@@ -319,8 +319,10 @@ spec = do
                 [ Cell { text = T.singleton c, width = 1, style = defaultStyle }
                 | c <- take 5 (T.unpack txt <> repeat ' ') ]
             gridOf = V.fromList . map cellsOf
-            -- All board cells start from defaultStyle, so a highlighted
-            -- cell is exactly defaultStyle with reverse flipped on.
+            -- The default mode style is reverse-only, so on a defaultStyle
+            -- board a highlighted cell is exactly defaultStyle with reverse
+            -- flipped on.
+            dfltMode = defaultOptions.modeStyle
             revAt g r c = (g V.! r V.! c).style == defaultStyle { reverse = True }
             sel row col anchor keys = CopyModeState
                 { cursorRow = row, cursorCol = col
@@ -331,23 +333,23 @@ spec = do
             board = gridOf ["abcde", "fghij", "klmno"]
 
         it "reverse-videos a one-line span through the cursor cell (vi)" $ do
-            let g = overlaySelection KeysVi 0 (sel 0 3 (0, 1) "copy-mode-vi") board
+            let g = overlaySelection dfltMode KeysVi 0 (sel 0 3 (0, 1) "copy-mode-vi") board
             map (revAt g 0) [0 .. 4] `shouldBe` [False, True, True, True, False]
             map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 False
 
         it "ends the span before the cursor cell for emacs" $ do
-            let g = overlaySelection KeysEmacs 0 (sel 0 3 (0, 1) "copy-mode") board
+            let g = overlaySelection dfltMode KeysEmacs 0 (sel 0 3 (0, 1) "copy-mode") board
             map (revAt g 0) [0 .. 4] `shouldBe` [False, True, True, False, False]
 
         it "spans rows, filling the middle line to full width" $ do
-            let g = overlaySelection KeysVi 0 (sel 2 1 (0, 2) "copy-mode-vi") board
+            let g = overlaySelection dfltMode KeysVi 0 (sel 2 1 (0, 2) "copy-mode-vi") board
             map (revAt g 0) [0 .. 4] `shouldBe` [False, False, True, True, True]
             map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 True
             map (revAt g 2) [0 .. 4] `shouldBe` [True, True, False, False, False]
 
         it "leaves the grid untouched with no selection" $ do
             let noSel = (sel 0 0 (0, 0) "copy-mode-vi") { selection = Nothing }
-                g = overlaySelection KeysVi 0 noSel board
+                g = overlaySelection dfltMode KeysVi 0 noSel board
             any (revAt g 0) [0 .. 4] `shouldBe` False
 
         it "line selection reverse-videos whole rows between the ends" $ do
@@ -355,10 +357,21 @@ spec = do
             -- row 2 untouched, regardless of columns.
             let lineSel = (sel 1 2 (0, 3) "copy-mode-vi")
                     { selection = Just ((0, 3), SelLine) }
-                g = overlaySelection KeysVi 0 lineSel board
+                g = overlaySelection dfltMode KeysVi 0 lineSel board
             map (revAt g 0) [0 .. 4] `shouldBe` replicate 5 True
             map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 True
             map (revAt g 2) [0 .. 4] `shouldBe` replicate 5 False
+
+        it "paints a themed mode-style's colours over selected cells" $ do
+            -- A concrete bg/fg mode style overrides the cell's own colours
+            -- (not reverse-video); unselected cells keep defaultStyle.
+            let themed = defaultStyle
+                    { fg = Indexed 0, bg = Indexed 108 }
+                g = overlaySelection themed KeysVi 0
+                        (sel 0 3 (0, 1) "copy-mode-vi") board
+                styleAt r c = (g V.! r V.! c).style
+            map (styleAt 0) [0 .. 4] `shouldBe`
+                [ defaultStyle, themed, themed, themed, defaultStyle ]
 
     describe "copy cursor placement" $ do
         let st row = CopyModeState

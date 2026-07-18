@@ -630,19 +630,38 @@ cellSelected keys st sx row col = case st.selection of
   where
     before (a, b) (x, y) = a < x || (a == x && b < y)
 
--- | Reverse-video the selected cells of an assembled viewport grid.
--- @topRow@ is the absolute grid row shown at visible row 0.
+-- | Paint @mode-style@ over the selected cells of an assembled viewport
+-- grid. @topRow@ is the absolute grid row shown at visible row 0.
 overlaySelection
-    :: ModeKeys -> Int -> CopyModeState
+    :: Cell.Style -> ModeKeys -> Int -> CopyModeState
     -> V.Vector (V.Vector Cell.Cell) -> V.Vector (V.Vector Cell.Cell)
-overlaySelection keys topRow st = V.imap overRow
+overlaySelection modeStyle keys topRow st = V.imap overRow
   where
     overRow i row = V.imap (overCell (topRow + i) (V.length row)) row
     overCell a sx col cell
         | cellSelected keys st sx a col =
-            cell { Cell.style =
-                (cell.style) { Cell.reverse = not cell.style.reverse } }
+            cell { Cell.style = applyModeStyle modeStyle cell.style }
         | otherwise = cell
+
+-- | Lay the @mode-style@ over a cell's own style: a concrete colour in the
+-- mode style replaces the cell's, a set attribute is added, and @reverse@
+-- toggles. So the default @reverse@-only mode style keeps flipping the
+-- cell's own colours (classic reverse-video selection), while a themed
+-- @bg=…,fg=…@ overrides them with the highlight colour.
+applyModeStyle :: Cell.Style -> Cell.Style -> Cell.Style
+applyModeStyle ms s = s
+    { Cell.fg        = pick ms.fg s.fg
+    , Cell.bg        = pick ms.bg s.bg
+    , Cell.bold      = s.bold || ms.bold
+    , Cell.underline = s.underline || ms.underline
+    , Cell.italic    = s.italic || ms.italic
+    , Cell.reverse   = s.reverse /= ms.reverse
+    , Cell.strike    = s.strike || ms.strike
+    , Cell.blink     = s.blink || ms.blink
+    }
+  where
+    pick Cell.DefaultColor old = old
+    pick new              _   = new
 
 -- | Where the copy cursor sits within a viewport of @sy@ rows whose top
 -- line is absolute row @topRow@; 'Nothing' when it is scrolled off.

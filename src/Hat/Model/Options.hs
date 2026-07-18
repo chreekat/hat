@@ -68,6 +68,7 @@ data Options = Options
     , windowStatusBellStyle  :: Cell.Style
     , paneBorderStyle        :: Cell.Style
     , paneActiveBorderStyle  :: Cell.Style
+    , modeStyle              :: Cell.Style  -- ^ copy-mode selection highlight
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
     , setTitles              :: Bool
@@ -110,6 +111,7 @@ defaultOptions = Options
     , windowStatusBellStyle = barStyle
     , paneBorderStyle = Cell.defaultStyle
     , paneActiveBorderStyle = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
+    , modeStyle = Cell.defaultStyle { Cell.reverse = True }
     , paneBorderLines = BorderSingle
     , paneBorderIndicators = IndicatorsColour
     , setTitles = False
@@ -154,6 +156,7 @@ data OptionName
     | OptWindowStatusBellStyle
     | OptPaneBorderStyle
     | OptPaneActiveBorderStyle
+    | OptModeStyle
     | OptPaneBorderLines
     | OptPaneBorderIndicators
     | OptSetTitles
@@ -239,6 +242,7 @@ applyEntry name val o = case (name, val) of
     (OptWindowStatusBellStyle, OVStyle s) -> o { windowStatusBellStyle = s }
     (OptPaneBorderStyle, OVStyle s) -> o { paneBorderStyle = s }
     (OptPaneActiveBorderStyle, OVStyle s) -> o { paneActiveBorderStyle = s }
+    (OptModeStyle, OVStyle s) -> o { modeStyle = s }
     (OptPaneBorderLines, OVBorderLines l) -> o { paneBorderLines = l }
     (OptPaneBorderIndicators, OVBorderIndicators i) ->
         o { paneBorderIndicators = i }
@@ -285,6 +289,7 @@ optionScopeClass = \case
     OptWindowStatusBellStyle -> WindowOption
     OptPaneBorderStyle -> WindowOption
     OptPaneActiveBorderStyle -> WindowOption
+    OptModeStyle -> WindowOption
     OptPaneBorderLines -> WindowOption
     OptPaneBorderIndicators -> WindowOption
     OptUser _ -> SessionOption
@@ -329,6 +334,7 @@ optionNameText = \case
     OptWindowStatusBellStyle -> "window-status-bell-style"
     OptPaneBorderStyle -> "pane-border-style"
     OptPaneActiveBorderStyle -> "pane-active-border-style"
+    OptModeStyle -> "mode-style"
     OptPaneBorderLines -> "pane-border-lines"
     OptPaneBorderIndicators -> "pane-border-indicators"
     OptSetTitles -> "set-titles"
