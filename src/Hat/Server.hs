@@ -27,6 +27,7 @@ module Hat.Server
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
     , markBell  -- ^ exported for the current-window bell test
+    , deliversKey  -- ^ exported for the focus-event gating test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -1567,6 +1568,16 @@ noteClientActivity st client = do
         sid <- readTVarIO client.session
         applySessionSize st sid
 
+-- | Whether a key event is delivered to the focused pane's program. Focus
+-- in/out reports reach the pane only when @focus-events@ is on and the pane's
+-- app enabled focus reporting (?1004); a bare shell never asks, so its focus
+-- report is dropped rather than echoed as a stray "^[[I". Every other key is
+-- always delivered.
+deliversKey :: Options -> Bool -> Key -> Bool
+deliversKey opts paneFocusReport k
+    | k.name `notElem` ["FocusIn", "FocusOut"] = True
+    | otherwise = opts.focusEvents && paneFocusReport
+
 handleInput :: ServerState -> Client -> B.ByteString -> IO ()
 handleInput st client bs = do
     noteClientActivity st client
@@ -1676,15 +1687,14 @@ handleKeys st client bs = do
     st0 <- readIORef client.keyState
     loop st0 (tokenizeKeys bs)
   where
-    -- Focus in/out reach the pane only when focus-events is on AND the
-    -- pane's app has requested focus reporting (?1004). A bare shell never
-    -- asks, so the report is dropped rather than echoed as a stray "^[[I".
+    -- Reads the pane's live focus-reporting mode, then defers the actual
+    -- keep/drop decision to the pure 'deliversKey'.
     keepKey opts mpane k
         | k.name `notElem` ["FocusIn", "FocusOut"] = pure True
-        | not opts.focusEvents = pure False
-        | otherwise = case mpane of
-            Just pane -> (.focusReport) <$> Emu.modes pane.emulator
-            Nothing -> pure False
+        | otherwise = do
+            report <- maybe (pure False)
+                (\pane -> (.focusReport) <$> Emu.modes pane.emulator) mpane
+            pure (deliversKey opts report k)
     -- When the pane's copy mode is waiting for a char-search target, this
     -- key IS the target: a single printable char runs the search, anything
     -- else (Escape, Enter, an arrow) cancels it. Returns whether it was

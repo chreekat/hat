@@ -15,11 +15,11 @@ import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
-    , emptyDelta, singletonDelta)
+    , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
     ( applySessionSize, cmdAttachSession, chooseCurrentOnClose
-    , markBell, pickActivityTarget, pickAttachSession )
-import Hat.Server.Keys (PrefixState (NoPrefix))
+    , deliversKey, markBell, pickActivityTarget, pickAttachSession )
+import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout (Leaf))
 import Hat.Server.Render (blankFrame)
 
@@ -232,3 +232,21 @@ spec = do
         it "has nothing to attach to when there are no sessions" $
             pickAttachSession (Just 2) (Map.empty :: Map.Map Int String)
                 `shouldBe` Nothing
+
+    describe "deliversKey (focus-event gating)" $ do
+        let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }
+            typed   = Key { name = "a", raw = "a" }
+            withFocus on = defaultOptions { focusEvents = on }
+
+        it "always delivers non-focus keys, whatever the gating" $ do
+            deliversKey (withFocus False) False typed `shouldBe` True
+            deliversKey (withFocus True)  True  typed `shouldBe` True
+
+        it "drops a focus report when focus-events is off" $
+            deliversKey (withFocus False) True focusIn `shouldBe` False
+
+        it "drops a focus report when the pane never enabled ?1004" $
+            deliversKey (withFocus True) False focusIn `shouldBe` False
+
+        it "delivers a focus report only when focus-events is on and ?1004 set" $
+            deliversKey (withFocus True) True focusIn `shouldBe` True
