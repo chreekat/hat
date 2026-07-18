@@ -194,6 +194,9 @@ runServerWith path mconfig mhandover = do
         _ <- forkIO $ forever $ do
             threadDelay 15_000_000
             atomically (bumpDirty st)
+        -- Keep pane pty/emulator sizes in step with the layout (see
+        -- 'reconcileLoop').
+        _ <- forkIO (reconcileLoop st)
         -- Track foreground commands for automatic-rename windows and the
         -- clients' desktop titles.
         titlesRef <- newIORef Map.empty
@@ -1503,41 +1506,72 @@ resizeModeFor st sess mwin =
 resizeModeOf :: Options -> ResizeMode
 resizeModeOf opts = if opts.aggressiveResize then ActiveClient else SmallestClient
 
--- Effective session size follows the current window's resize mode; panes
--- follow. See 'resizeModeFor' and 'effectiveWindowSize'.
+-- | Recompute a session's effective window size from its clients (honoring
+-- @aggressive-resize@) and mark the clients for a full redraw. Pane pty and
+-- emulator sizes are not touched here: 'reconcileLoop' pulls them into
+-- agreement with the layout off the same dirty tick this bumps, so a session
+-- resized here — or a layout changed anywhere else — reconciles uniformly.
 applySessionSize :: ServerState -> SessionId -> IO ()
-applySessionSize st sid = do
-    work <- atomically $ do
-        msess <- Map.lookup sid <$> readTVar st.sessions
-        case msess of
-            Nothing -> pure Nothing
-            Just sess -> do
-                cs <- sessionClients st sid
-                stamps <- mapM (\c -> (,) <$> readTVar c.lastActive
-                                           <*> readTVar c.size) cs
-                lastSz <- readTVar sess.lastSize
-                mwin <- currentWindow sess
-                mode <- resizeModeFor st sess mwin
-                let eff = effectiveWindowSize mode lastSz stamps
-                writeTVar sess.lastSize eff
-                ws <- readTVar sess.windows
-                resizes <- forM (Map.elems ws) $ \win -> do
-                    (rects, _) <- windowArrange (windowArea eff) win
-                    ps <- readTVar win.panes
-                    pure [ (p, rectSize rect)
-                         | (pidL, rect) <- rects
-                         , Just p <- [Map.lookup pidL ps]
-                         ]
-                forM_ cs $ \c -> writeTVar c.needsFull True
-                bumpDirty st
-                pure (Just (concat resizes))
-    forM_ (fromMaybe [] work) $ \(pane, sz) -> do
+applySessionSize st sid = atomically $ do
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    forM_ msess $ \sess -> do
+        cs <- sessionClients st sid
+        stamps <- mapM (\c -> (,) <$> readTVar c.lastActive
+                                   <*> readTVar c.size) cs
+        lastSz <- readTVar sess.lastSize
+        mwin <- currentWindow sess
+        mode <- resizeModeFor st sess mwin
+        let eff = effectiveWindowSize mode lastSz stamps
+        writeTVar sess.lastSize eff
+        forM_ cs $ \c -> writeTVar c.needsFull True
+        bumpDirty st
+
+-- | A single server-wide task that pulls every pane's pty and emulator size
+-- into agreement with the current layout whenever the screen is marked
+-- dirty. Because the same 'bumpDirty' that schedules a repaint also wakes
+-- this loop, no state change can update the picture without resizing the
+-- panes behind it — a zoom cancelled by 'cmdSelectPane', a split, or a
+-- client resize all reconcile here. Sole writer of 'pane.size' and sole
+-- caller of the resize primitives, so no per-client 'renderLoop' races it.
+reconcileLoop :: ServerState -> IO ()
+reconcileLoop st = loop (-1)
+  where
+    loop lastGen = do
+        gen <- atomically $ do
+            g <- readTVar st.dirty
+            check (g /= lastGen)
+            pure g
+        reconcilePaneSizes st
+        loop gen
+
+-- | Resize the pty and emulator of every pane whose stored size lags the
+-- layout, waking renderers once the child has been told (see 'reconcileLoop').
+reconcilePaneSizes :: ServerState -> IO ()
+reconcilePaneSizes st = do
+    targets <- atomically (paneSizeTargets st)
+    forM_ targets $ \(pane, sz) -> do
         old <- readTVarIO pane.size
         when (old /= sz) $ do
-            atomically $ writeTVar pane.size sz
+            atomically (writeTVar pane.size sz)
             Hat.Term.Pty.resize pane.pty sz
             Emu.resize pane.emulator sz
             atomically (bumpDirty st)
+
+-- | The size the current layout assigns to every live pane across all
+-- sessions. See 'reconcilePaneSizes'.
+paneSizeTargets :: ServerState -> STM [(Pane, Size)]
+paneSizeTargets st = do
+    sessions <- Map.elems <$> readTVar st.sessions
+    fmap concat $ forM sessions $ \sess -> do
+        eff <- readTVar sess.lastSize
+        ws <- Map.elems <$> readTVar sess.windows
+        fmap concat $ forM ws $ \win -> do
+            (rects, _) <- windowArrange (windowArea eff) win
+            ps <- readTVar win.panes
+            pure [ (p, rectSize rect)
+                 | (pidL, rect) <- rects
+                 , Just p <- [Map.lookup pidL ps]
+                 ]
 
 rectSize :: Rect -> Size
 rectSize r = Size

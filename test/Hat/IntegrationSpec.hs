@@ -794,6 +794,29 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    it "notifies a formerly-zoomed pane's child that it shrank on select-pane away" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+
+        -- Split side by side; the new active (right) pane is 39 cols wide.
+        typeInto c1 "\x02%"
+        awaitScreen c1 "\x2502"  -- │
+
+        -- Zoom the active pane: its child now sees the full 80 cols.
+        typeInto c1 "\x02z"
+        typeInto c1 "stty size\r"
+        awaitScreen c1 "23 80"
+
+        -- Move away, cancelling the zoom, then back to the formerly-zoomed
+        -- pane. Its child must have been told it shrank back to 39 cols
+        -- (TIOCSWINSZ -> SIGWINCH); without that it still believes it is 80.
+        _ <- ctlOut h ["select-pane", "-L"]   -- to the left pane, unzoom
+        awaitScreen c1 "\x2502"
+        _ <- ctlOut h ["select-pane", "-R"]   -- back to the ex-zoomed pane
+        typeInto c1 "stty size\r"
+        awaitScreen c1 "23 39"
+
     it "resize-pane -t ! -Z zooms the alternate pane, not the active one" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
