@@ -3883,9 +3883,10 @@ cmdListPanes st mclient args = do
                     cur <- readTVarIO sess.currentIx
                     mwin <- atomically (currentWindow sess)
                     pure [ (sess, cur, win) | win <- maybe [] pure mwin ]
+    pbase <- (.paneBaseIndex) <$> readTVarIO st.options
     fmap (map ROutput . concat) . forM targets $ \(sess, wix, win) -> do
         ps <- Map.elems <$> readTVarIO win.panes
-        forM (zip [0 ..] ps) $ \(pix, pane) -> case mfmt of
+        forM (zip [pbase ..] ps) $ \(pix, pane) -> case mfmt of
             Just fmt -> do
                 env <- paneFormatEnv st sess wix win pix pane
                 expandFormat st env fmt

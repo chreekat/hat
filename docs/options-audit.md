@@ -40,7 +40,7 @@ spot-read of each suspect consumer.
 |---|---|---|---|
 | `prefix` | `routeKeys` (Server.hs:1693), `parseKeyName` (3124) | implemented ✅ tested | pure |
 | `base-index` | initial + next-free window index (Server.hs) | implemented ✅ tested | integration |
-| `pane-base-index` | pane numbering (Server.hs) | implemented | plumbed |
+| `pane-base-index` | `cmdListPanes` pane numbering (Server.hs) | implemented ✅ tested | integration |
 | `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
 | `history-limit` | emulator scrollback cap (Server.hs) | implemented | plumbed |
@@ -82,6 +82,13 @@ spot-read of each suspect consumer.
    the input path: coalesce with the next bytes if they arrive first, else emit
    Escape. Needs event-loop timing.
 
+## Fixed during the audit
+
+- **`pane-base-index`** was a partial no-op: honored in the `autoName` path but
+  not in `cmdListPanes`, so `#{pane_index}` (and `list-panes`,
+  `display-panes`) numbered panes from 0 regardless. Now `cmdListPanes` numbers
+  from `pane-base-index`; pinned by an integration test.
+
 ## Minor divergences (not defects)
 
 - **`main-pane-width`/`-height`** correctly implement tmux's *absolute cell
@@ -101,8 +108,8 @@ non-default value, drive the consumer, assert the *observable* result.
 - Behavior-verified so far are the ✅ rows in the table above (via
   `OptionEffectSpec`, `CopyModeSpec`, `KeysSpec`, `FormatSpec`, or
   `IntegrationSpec`). The only rows without a behavior test are the four
-  `plumbed` options (`pane-base-index`, `history-limit`, `display-time`) and the
-  `escape-time` defect.
+  `plumbed` options (`history-limit`, `display-time`) and the `escape-time`
+  defect.
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
   `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;

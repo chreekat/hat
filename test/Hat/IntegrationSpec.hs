@@ -1659,6 +1659,16 @@ spec = parallel $ do
         typeInto c1 "echo term=$TERM\r"
         awaitScreen c1 "term=xterm-256color"
 
+    it "pane-base-index numbers panes from the configured base" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "set -g pane-base-index 1\n"
+        c1 <- startClientArgs h ["-f", confPath]
+        awaitScreen c1 "0:sh*"
+        _ <- ctlOut h ["split-window", "-v"]
+        out <- ctlOut h ["list-panes", "-F", "#{pane_index}"]
+        List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
+
     it "loads a user config: C-Space prefix, vim keys, base-index 1" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
