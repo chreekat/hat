@@ -7,6 +7,9 @@ module Hat.Server.Layout
     , Direction (..)
     , LayoutName (..)
     , PaneCycle (..)
+    , PaneIndex (..)
+    , parsePaneIndex
+    , resolvePaneIndex
     , ResizeMode (..)
     , effectiveWindowSize
     , nextLayoutName
@@ -30,6 +33,9 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Ord (clamp, comparing)
 import Data.Ratio ((%))
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Read as TR
 
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)
@@ -248,10 +254,53 @@ stepLayout order mcur = case mcur >>= (`List.elemIndex` order) of
 -- wrapping at the ends. 'Nothing' when the active pane is not in the
 -- list; a single-pane window stays put.
 cyclePane :: PaneCycle -> [PaneId] -> PaneId -> Maybe PaneId
-cyclePane dir pids active = do
-    i <- List.elemIndex active pids
-    let step = case dir of PaneNext -> 1; PanePrev -> -1
-    pure (pids !! ((i + step) `mod` length pids))
+cyclePane dir pids active = resolvePaneIndex (IndexRelative dir 1) pids active
+
+-- | A @select-pane -t@ pane-index: the @.[+-][N]@ tail of a tmux target.
+-- See 'parsePaneIndex' (grammar) and 'resolvePaneIndex' (meaning against a
+-- window's pane order).
+data PaneIndex
+    = IndexAbsolute Int           -- ^ @.N@ — the pane at positional index N
+    | IndexRelative PaneCycle Int -- ^ @.+N@ / @.-N@ — cycle N panes forward\/back
+    deriving (Eq, Show)
+
+-- | Parse the pane-index tail of a @select-pane -t@ target. tmux's target
+-- grammar ends in an optional @.[+-][N]@; this recognises that tail after
+-- an optional window prefix. @.+@\/@.-@ (or a bare @+@\/@-@) cycle by one;
+-- @.+N@\/@.-N@ cycle by N; @.N@ (or a bare number) selects absolute index
+-- N. A missing count means N=1. Anything else is 'Nothing'.
+parsePaneIndex :: Text -> Maybe PaneIndex
+parsePaneIndex t = parseIndex paneIndexPart
+  where
+    -- The pane index is the part after the last dot; without a dot the
+    -- whole target is the index (a bare @+@\/@-@\/number).
+    paneIndexPart = snd (T.breakOnEnd "." t)
+    parseIndex part = case T.uncons part of
+        Just ('+', rest) -> IndexRelative PaneNext <$> count rest
+        Just ('-', rest) -> IndexRelative PanePrev <$> count rest
+        _                -> IndexAbsolute <$> wholeNum part
+    -- A relative count defaults to 1 when omitted.
+    count rest
+        | T.null rest = Just 1
+        | otherwise   = wholeNum rest
+    wholeNum s = case TR.decimal s of
+        Right (n, rest) | T.null rest -> Just n
+        _                             -> Nothing
+
+-- | The pane @select-pane -t@ lands on for a 'PaneIndex', against a
+-- window's @pids@ order and its @active@ pane. 'IndexRelative' cycles by
+-- the count (wrapping, like 'cyclePane' stepped N times); 'IndexAbsolute'
+-- picks the pane at that positional index, or 'Nothing' when out of range
+-- or the active pane is absent.
+resolvePaneIndex :: PaneIndex -> [PaneId] -> PaneId -> Maybe PaneId
+resolvePaneIndex idx pids active = case idx of
+    IndexAbsolute n -> case drop n pids of
+        (p : _) -> Just p
+        []      -> Nothing
+    IndexRelative dir n -> do
+        i <- List.elemIndex active pids
+        let step = case dir of PaneNext -> n; PanePrev -> negate n
+        pure (pids !! ((i + step) `mod` length pids))
 
 -- | Arrange @pids@ into a named layout. @mainRatio@ is the main pane's
 -- share of the window (from @main-pane-width@/@-height@), used only by the

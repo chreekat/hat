@@ -1,8 +1,11 @@
+{-# OPTIONS_GHC -Wno-orphans #-}  -- Arbitrary PaneCycle lives with its test: the library must not depend on QuickCheck
+
 module Hat.Server.LayoutSpec (spec) where
 
 import qualified Data.List as List
 import Data.Ratio ((%))
 import qualified Data.Set as Set
+import qualified Data.Text as T
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
@@ -27,6 +30,13 @@ genLayout depth = go depth 0 >>= pure . fst
                 (b, n2) <- go (d - 1) n1
                 pure (Split o (toRational r) a b, n2))
             ]
+
+-- Shrink toward 'PaneNext' so a failing 'PanePrev' case also reports as
+-- 'PaneNext' if that simpler case reproduces it.
+instance Arbitrary PaneCycle where
+    arbitrary = elements [PaneNext, PanePrev]
+    shrink PaneNext = []
+    shrink PanePrev = [PaneNext]
 
 windowRect :: Rect
 windowRect = Rect { startRow = 0, endRow = 40, startCol = 0, endCol = 120 }
@@ -171,6 +181,57 @@ spec = do
             cyclePane PaneNext [PaneId 7] (PaneId 7) `shouldBe` Just (PaneId 7)
         it "has nowhere to go when the pane is absent" $
             cyclePane PaneNext three (PaneId 9) `shouldBe` Nothing
+
+    describe "parsePaneIndex" $ do
+        it "parses the bare next form" $
+            parsePaneIndex ":.+" `shouldBe` Just (IndexRelative PaneNext 1)
+        it "parses the bare previous form" $
+            parsePaneIndex ":.-" `shouldBe` Just (IndexRelative PanePrev 1)
+        it "parses a forward count" $
+            parsePaneIndex ":.+2" `shouldBe` Just (IndexRelative PaneNext 2)
+        it "parses a backward count" $
+            parsePaneIndex ":.-2" `shouldBe` Just (IndexRelative PanePrev 2)
+        it "parses the dotless next form" $
+            parsePaneIndex "+" `shouldBe` Just (IndexRelative PaneNext 1)
+        it "parses the dotless previous form" $
+            parsePaneIndex "-" `shouldBe` Just (IndexRelative PanePrev 1)
+        it "parses a dotless forward count" $
+            parsePaneIndex "+3" `shouldBe` Just (IndexRelative PaneNext 3)
+        it "parses the dot-prefixed absolute form" $
+            parsePaneIndex ":.3" `shouldBe` Just (IndexAbsolute 3)
+        it "parses a dotless absolute form" $
+            parsePaneIndex "3" `shouldBe` Just (IndexAbsolute 3)
+        it "parses a window-and-pane dotted absolute form" $
+            parsePaneIndex "mywin.2" `shouldBe` Just (IndexAbsolute 2)
+        it "parses a window-and-pane dotted relative form" $
+            parsePaneIndex "mywin.+2" `shouldBe` Just (IndexRelative PaneNext 2)
+        it "rejects a trailing non-number" $
+            parsePaneIndex ":.+x" `shouldBe` Nothing
+        it "rejects an empty target" $
+            parsePaneIndex "" `shouldBe` Nothing
+        prop "round-trips a rendered relative target with an explicit count" $
+            \(Positive n) dir ->
+                let t = case dir of PaneNext -> "+"; PanePrev -> "-"
+                in parsePaneIndex (":." <> t <> T.pack (show (n :: Int)))
+                    === Just (IndexRelative dir n)
+
+    describe "resolvePaneIndex" $ do
+        let three = map PaneId [0, 1, 2]
+        it "cycles forward by one for the next form" $
+            resolvePaneIndex (IndexRelative PaneNext 1) three (PaneId 0)
+                `shouldBe` Just (PaneId 1)
+        it "cycles forward by a count, wrapping" $
+            resolvePaneIndex (IndexRelative PaneNext 2) three (PaneId 2)
+                `shouldBe` Just (PaneId 1)
+        it "cycles backward by a count, wrapping" $
+            resolvePaneIndex (IndexRelative PanePrev 2) three (PaneId 0)
+                `shouldBe` Just (PaneId 1)
+        it "selects an absolute positional index" $
+            resolvePaneIndex (IndexAbsolute 2) three (PaneId 0)
+                `shouldBe` Just (PaneId 2)
+        it "has nowhere to go for an out-of-range absolute index" $
+            resolvePaneIndex (IndexAbsolute 5) three (PaneId 0)
+                `shouldBe` Nothing
 
     describe "neighbor" $ do
         -- +-------+-------+
