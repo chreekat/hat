@@ -2,6 +2,7 @@ import Test.Hspec
 
 import qualified Hat.Client.DrawSpec
 import qualified Hat.Command.ParserSpec
+import qualified Hat.FuzzyMatchSpec
 import qualified Hat.IntegrationSpec
 import qualified Hat.Server.PersistSpec
 import qualified Hat.Term.PtySpec
@@ -50,6 +51,7 @@ main = hspec $ do
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
+    describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
     describe "Hat.Server.ColorScheme" Hat.Server.ColorSchemeSpec.spec
     describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec

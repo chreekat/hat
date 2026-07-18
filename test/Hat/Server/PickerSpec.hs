@@ -184,6 +184,14 @@ spec = do
         it "matches non-contiguous characters in order within a label" $
             labels (tree { query = "etr" }) `shouldBe` ["projects", "editor"]
 
+        it "lands the cursor on the highest-scoring match, not the first" $ do
+            -- both leaves contain "b"; "x back" matches at a word boundary and
+            -- so outscores the mid-word "xback", even though it comes second.
+            let flat = demo { roots = [ leaf "xback" "c1", leaf "x back" "c2" ] }
+                typed = foldl stay (stay flat (key "/")) [key "b"]
+                committed = stay typed (key "Enter")
+            committed.cursor `shouldBe` 1
+
     describe "selectedPreview" $ do
         let previewTree = demo
                 { roots =

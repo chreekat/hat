@@ -66,6 +66,7 @@ library
         Hat.Client.Draw
         Hat.Command.Parser
         Hat.Client.Tty
+        Hat.FuzzyMatch
         Hat.Geometry
         Hat.Log
         Hat.Model
@@ -99,6 +100,7 @@ library
     pkgconfig-depends:  vterm
     build-depends:
         aeson       ^>= 2.2.3.0,
+        array       ^>= 0.5.8.0,
         async       ^>= 2.2.6,
         base        ^>= 4.20.2.0,
         bytestring  ^>= 0.12.2.0,
@@ -150,6 +152,7 @@ test-suite hat-test
     other-modules:
         Hat.Client.DrawSpec
         Hat.Command.ParserSpec
+        Hat.FuzzyMatchSpec
         Hat.IntegrationSpec
         Hat.Server.PersistSpec
         Hat.Term.PtySpec

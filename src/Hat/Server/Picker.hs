@@ -19,11 +19,13 @@ module Hat.Server.Picker
     , pickerLines
     ) where
 
-import Data.List (findIndex)
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.List (findIndex, sortOn)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 
+import Hat.FuzzyMatch (score)
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model
     ( Expansion (..), PickerFill (..), PickerMode (..), PickerNode (..)
@@ -116,28 +118,17 @@ pickerRegion fill csize rowOff mActive = case fill of
         , startCol = 0
         , endCol = fromIntegral csize.cols }
 
--- | A fuzzy match: is the query a subsequence of the target (its characters
--- appearing in order, not necessarily contiguously)? Both are compared
--- lower-cased by the callers. This is what lets @projhat@ match the @hat@
--- window under the @projects@ session, matched against the joined path.
-fuzzySubsequence :: Text -> Text -> Bool
-fuzzySubsequence query target = go (T.unpack query) (T.unpack target)
-  where
-    go [] _ = True
-    go _ [] = False
-    go (c : cs) (d : ds)
-        | c == d    = go cs ds
-        | otherwise = go (c : cs) ds
-
--- | Whether a node matches the query: the query is a fuzzy subsequence of the
--- node's path — its ancestor labels joined with its own label. So a query can
--- span the session\/window\/pane levels (@projhat@ → @projects hat@).
+-- | Whether a node matches the query, via the fzf-style 'score' (a
+-- case-insensitive fuzzy match that rewards word-boundary and CamelCase hits).
+-- The query is matched against the node's path — its ancestor labels joined
+-- with its own label — so a query can span the session\/window\/pane levels
+-- (@projhat@ → @projects hat@).
 nodeMatches :: Text -> Text -> PickerNode -> Bool
-nodeMatches ql prefix n = fuzzySubsequence ql (prefix <> T.toLower n.label)
+nodeMatches query prefix n = isJust (score query (prefix <> n.label))
 
 -- | The path prefix a node hands its children: its own path plus a separator.
 childPrefix :: Text -> PickerNode -> Text
-childPrefix prefix n = prefix <> T.toLower n.label <> " "
+childPrefix prefix n = prefix <> n.label <> " "
 
 -- | Keep nodes matching the query (a fuzzy subsequence of the node's path)
 -- along with every ancestor of a match, force-expanding so matches are
@@ -145,12 +136,11 @@ childPrefix prefix n = prefix <> T.toLower n.label <> " "
 filterTree :: Text -> [PickerNode] -> [PickerNode]
 filterTree q = go ""
   where
-    ql = T.toLower q
     go prefix nodes
         | T.null q = nodes
         | otherwise = concatMap (keep prefix) nodes
     keep prefix n
-        | nodeMatches ql prefix n =
+        | nodeMatches q prefix n =
             [ n { expanded = if null n.children then Collapsed else Expanded } ]
         | otherwise = case go (childPrefix prefix n) n.children of
             []   -> []
@@ -245,46 +235,51 @@ editPicker p key = case p.mode of
         []       -> PickerStay p
     commitSearch
         | T.null p.query = p { mode = Browsing, search = "" }
-        | otherwise = case firstMatchPath p.query p.roots of
+        | otherwise = case bestMatchPath p.query p.roots of
             Nothing -> cleared { cursor = min p.cursor (max 0 (length (visibleRows cleared) - 1)) }
             Just mp ->
                 let p' = cleared { roots = revealPath mp p.roots }
                 in p' { cursor = fromMaybe 0 (findIndex ((== mp) . (.path)) (visibleRows p')) }
       where
         cleared = p { mode = Browsing, query = "", search = p.query }
-    -- After editing the query, land the cursor on the first row that
-    -- actually matches, not on an ancestor kept only for context.
+    -- After editing the query, land the cursor on the best-scoring match, not
+    -- on an ancestor kept only for context.
     reQuery q =
         let p' = p { query = q }
-        in p' { cursor = case firstMatchPath q p'.roots of
+        in p' { cursor = case bestMatchPath q p'.roots of
                     Just mp -> fromMaybe 0 (findIndex ((== mp) . (.path)) (visibleRows p'))
                     Nothing -> 0 }
 
--- | The index path of the first node, depth-first, that matches the query
--- (a fuzzy subsequence of its path) — the same node the filtered view puts
--- first, since filtering preserves depth-first order.
-firstMatchPath :: Text -> [PickerNode] -> Maybe [Int]
-firstMatchPath q = listToMaybe . go ""
+-- | The index path of the highest-scoring matching node, ties broken by
+-- depth-first order — so the cursor lands on the best fuzzy match, not merely
+-- the first one in the tree.
+bestMatchPath :: Text -> [PickerNode] -> Maybe [Int]
+bestMatchPath q nodes
+    | T.null q  = Nothing
+    | otherwise = case sortOn rank (scoredPaths q nodes) of
+        []             -> Nothing
+        ((path, _) : _) -> Just path
   where
-    ql = T.toLower q
-    go prefix nodes = concat
-        [ if nodeMatches ql prefix n
-              then [[i]]
-              else map (i :) (go (childPrefix prefix n) n.children)
-        | (i, n) <- zip [0 ..] nodes ]
+    rank (path, sc) = (Down sc, path)
 
--- | The index paths of every node, depth-first, that matches the query (a
--- fuzzy subsequence of its path), descending into matches too so a matching
--- child of a matching parent is its own stop; empty for an empty query.
+-- | The index paths of every node, depth-first, that matches the query,
+-- descending into matches too so a matching child of a matching parent is its
+-- own stop; empty for an empty query.
 allMatchPaths :: Text -> [PickerNode] -> [[Int]]
 allMatchPaths q nodes
     | T.null q  = []
-    | otherwise = go "" [] nodes
+    | otherwise = map fst (scoredPaths q nodes)
+
+-- | Every matching node's index path paired with its fuzzy 'score', in
+-- depth-first order (descending into matches too).
+scoredPaths :: Text -> [PickerNode] -> [([Int], Int)]
+scoredPaths q = go "" []
   where
-    ql = T.toLower q
     go lprefix iprefix ns = concat
         [ let here = iprefix <> [i]
-              this = [ here | nodeMatches ql lprefix n ]
+              this = case score q (lprefix <> n.label) of
+                  Just sc -> [(here, sc)]
+                  Nothing -> []
           in this <> go (childPrefix lprefix n) here n.children
         | (i, n) <- zip [0 ..] ns ]
 
