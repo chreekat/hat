@@ -14,6 +14,8 @@ module Hat.Server.View
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
+    , windowEntryStyle  -- ^ exported for the window-status-style effect test
+    , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
 import Control.Concurrent (forkIO)
@@ -623,26 +625,46 @@ statusCells st sess width = do
                     , ("window_active_clients", tshow activeClients)
                     ]) env
                 fmt = if ix == cur then winCurFmt else winFmt
-                style | ix == cur = opts.windowStatusCurrentStyle
-                      | bell      = opts.windowStatusBellStyle
-                      | otherwise = opts.windowStatusStyle
+                style = windowEntryStyle opts (ix == cur) bell
             txt <- expandFormat st wenv fmt
             pure (txt, style)
-    left <- T.take opts.statusLeftLength <$> expandFormat st env leftFmt
-    right <- T.take opts.statusRightLength <$> expandFormat st env rightFmt
-    let sty = opts.statusStyle
-        blank = blankOf sty
-        sep = styledCells sty " "
-        leftCells = styledCells sty left
-        rightCells = styledCells sty right
-        entryCells =
-            List.intercalate sep [ styledCells est etxt | (etxt, est) <- entries ]
-        body = leftCells <> entryCells
-        pad = width - length body - length rightCells
-        cells
-            | pad >= 0 = body <> replicate pad blank <> rightCells
-            | otherwise = take width (body <> sep <> rightCells)
-    pure (V.fromList (take width (cells <> repeat blank)))
+    left <- expandFormat st env leftFmt
+    right <- expandFormat st env rightFmt
+    pure (assembleStatusRow opts width left right entries)
+
+-- | The style a window's status entry takes: the current window uses
+-- @window-status-current-style@, one with a pending bell
+-- @window-status-bell-style@, otherwise @window-status-style@. See
+-- 'statusCells'.
+windowEntryStyle :: Options -> Bool -> Bool -> Cell.Style
+windowEntryStyle opts isCurrent bell
+    | isCurrent = opts.windowStatusCurrentStyle
+    | bell      = opts.windowStatusBellStyle
+    | otherwise = opts.windowStatusStyle
+
+-- | Lay a status bar of @width@ cells: @status-left@ (capped at
+-- @status-left-length@) and the window entries flush left, @status-right@
+-- (capped at @status-right-length@) flush right, all padded with
+-- @status-style@; when they overflow, right-truncate the whole row. See
+-- 'statusCells'.
+assembleStatusRow
+    :: Options -> Int -> Text -> Text -> [(Text, Cell.Style)]
+    -> V.Vector Cell.Cell
+assembleStatusRow opts width left right entries =
+    V.fromList (take width (cells <> repeat blank))
+  where
+    sty = opts.statusStyle
+    blank = blankOf sty
+    sep = styledCells sty " "
+    leftCells = styledCells sty (T.take opts.statusLeftLength left)
+    rightCells = styledCells sty (T.take opts.statusRightLength right)
+    entryCells =
+        List.intercalate sep [ styledCells est etxt | (etxt, est) <- entries ]
+    body = leftCells <> entryCells
+    pad = width - length body - length rightCells
+    cells
+        | pad >= 0  = body <> replicate pad blank <> rightCells
+        | otherwise = take width (body <> sep <> rightCells)
 
 -- | One cell per character, all in the given style.
 styledCells :: Cell.Style -> Text -> [Cell.Cell]

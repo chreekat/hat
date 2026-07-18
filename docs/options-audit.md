@@ -43,15 +43,15 @@ spot-read of each suspect consumer.
 | `default-terminal` | `$TERM` for new panes (Server.hs:1233) | implemented | needs seam |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `status-left` | `View.hs:589` | implemented | needs seam |
-| `status-left-length` | `View.hs:624` (`T.take`) | implemented | needs seam |
+| `status-left-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
 | `status-right` | `View.hs:590` | implemented | needs seam |
-| `status-right-length` | `View.hs:625` (`T.take`) | implemented | needs seam |
+| `status-right-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
 | `window-status-format` | `View.hs:591` | implemented | needs seam |
 | `window-status-current-format` | `View.hs:592` | implemented | needs seam |
-| `status-style` | `View.hs:626` | implemented | needs seam |
-| `window-status-style` | `View.hs:621` | implemented | needs seam |
-| `window-status-current-style` | `View.hs:619` | implemented | needs seam |
-| `window-status-bell-style` | `View.hs:620` | implemented | needs seam |
+| `status-style` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
+| `window-status-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
+| `window-status-current-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
+| `window-status-bell-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
 | `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |

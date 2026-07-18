@@ -11,6 +11,8 @@ module Hat.Server.OptionEffectSpec (spec) where
 import Test.Hspec
 
 import Data.Ratio ((%))
+import qualified Data.Text as T
+import qualified Data.Vector as V
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model.Options
@@ -19,7 +21,8 @@ import Hat.Model.Options
 import Hat.Server (deliversKey, mainPaneRatio, resizeModeOf)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
-import Hat.Server.View (borderCells, mapGlyph, statusLayout)
+import Hat.Server.View
+    (assembleStatusRow, borderCells, mapGlyph, statusLayout, windowEntryStyle)
 import qualified Hat.Term.Cell as Cell
 
 spec :: Spec
@@ -93,6 +96,41 @@ spec = do
                 glyphWith IndicatorsArrows `shouldBe` Just "\x25b6"  -- ▶
             it "off: the active edge keeps the plain line" $
                 glyphWith IndicatorsOff `shouldBe` Just "\x2502"  -- │
+
+        -- window-status-style / -current-style / -bell-style: which style a
+        -- window's entry in the status bar takes.
+        describe "window-status styles pick the per-window entry style" $ do
+            let cur    = Cell.defaultStyle { Cell.fg = Cell.Indexed 1 }
+                bellS  = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
+                normal = Cell.defaultStyle { Cell.fg = Cell.Indexed 3 }
+                opts = defaultOptions
+                    { windowStatusCurrentStyle = cur
+                    , windowStatusBellStyle = bellS
+                    , windowStatusStyle = normal }
+            it "the current window takes -current-style (even with a bell)" $ do
+                windowEntryStyle opts True False `shouldBe` cur
+                windowEntryStyle opts True True `shouldBe` cur
+            it "a non-current window with a bell takes -bell-style" $
+                windowEntryStyle opts False True `shouldBe` bellS
+            it "any other window takes window-status-style" $
+                windowEntryStyle opts False False `shouldBe` normal
+
+        -- status-left-length / status-right-length / status-style: the bar caps
+        -- each side's text and pads with the status style.
+        describe "status-*-length cap the bar text and status-style pads it" $ do
+            let barSty = Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
+                opts = defaultOptions
+                    { statusStyle = barSty
+                    , statusLeftLength = 3
+                    , statusRightLength = 2 }
+                row = assembleStatusRow opts 10 "HELLO" "WORLD" []
+                rowText = T.concat (map (.text) (V.toList row))
+            it "status-left-length caps the left text" $
+                T.take 3 rowText `shouldBe` "HEL"
+            it "status-right-length caps the right text" $
+                T.takeEnd 2 rowText `shouldBe` "WO"
+            it "status-style paints the padding" $
+                (.style) (row V.! 5) `shouldBe` barSty
 
         -- status-position: bottom puts the bar on the last row with no
         -- content offset; top puts it on row 0 and pushes content down one.
