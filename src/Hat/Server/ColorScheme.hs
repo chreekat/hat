@@ -56,6 +56,7 @@ applyPalette scheme = foldr (uncurry insertDelta) emptyDelta
     , (OptWindowStatusBellStyle, OVStyle p.bell)
     , (OptPaneBorderStyle, OVStyle p.border)
     , (OptPaneActiveBorderStyle, OVStyle p.activeBorder)
+    , (OptModeStyle, OVStyle p.mode)
     ]
   where
     p = palette scheme
@@ -65,13 +66,16 @@ applyPalette scheme = foldr (uncurry insertDelta) emptyDelta
 -- borders that recede without vanishing against their background — a
 -- receding gray on dark, a lighter gray on light so they stay clearly
 -- distinct from the active border. The active border keeps a green
--- accent in both schemes.
+-- accent in both schemes. The copy-mode selection is a warm amber
+-- highlight (black text on gold) that stands apart from the green chrome
+-- while tracking the scheme — deeper gold on dark, lighter amber on light.
 data Palette = Palette
     { bar          :: Cell.Style
     , current      :: Cell.Style
     , bell         :: Cell.Style
     , border       :: Cell.Style
     , activeBorder :: Cell.Style
+    , mode         :: Cell.Style
     }
 
 palette :: ColorScheme -> Palette
@@ -81,6 +85,7 @@ palette SchemeDark = Palette
     , bell         = (fgBg 214 22) { Cell.bold = True }
     , border       = onlyFg 65
     , activeBorder = (onlyFg 10) { Cell.bold = True }
+    , mode         = fgBg 0 179
     }
 palette SchemeLight = Palette
     { bar          = fgBg 22 151
@@ -88,6 +93,7 @@ palette SchemeLight = Palette
     , bell         = (fgBg 166 151) { Cell.bold = True }
     , border       = onlyFg 250
     , activeBorder = (onlyFg 22) { Cell.bold = True }
+    , mode         = fgBg 0 222
     }
 
 fgBg :: Word8 -> Word8 -> Cell.Style

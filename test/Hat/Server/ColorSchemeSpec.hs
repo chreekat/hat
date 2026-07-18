@@ -54,6 +54,16 @@ spec = do
             light.paneActiveBorderStyle.fg `shouldBe` Cell.Indexed 22
             light.paneActiveBorderStyle.bold `shouldBe` True
 
+        it "gives copy-mode selection a themed amber highlight per scheme" $ do
+            let dark = resolveOptions [applyPalette SchemeDark]
+                light = resolveOptions [applyPalette SchemeLight]
+            -- black text on amber, a warm accent against the green chrome;
+            -- deeper gold on dark, lighter amber on light.
+            dark.modeStyle.fg `shouldBe` Cell.Indexed 0
+            dark.modeStyle.bg `shouldBe` Cell.Indexed 179
+            light.modeStyle.fg `shouldBe` Cell.Indexed 0
+            light.modeStyle.bg `shouldBe` Cell.Indexed 222
+
         it "keeps light-mode inactive borders lighter than the active one" $ do
             let light = resolveOptions [applyPalette SchemeLight]
                 idx c = case c of
