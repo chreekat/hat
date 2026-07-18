@@ -72,7 +72,7 @@ data Options = Options
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
     , setTitles              :: Bool
-    , escapeTime             :: Int   -- ^ ms; only 0 is implemented
+    , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
     , displayTime            :: Int   -- ^ toast duration, ms
     , focusEvents            :: Bool
     , aggressiveResize       :: Bool
