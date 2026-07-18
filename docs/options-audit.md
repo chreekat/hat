@@ -38,10 +38,10 @@ spot-read of each suspect consumer.
 | `base-index` | initial + next-free window index (Server.hs:1146,2337) | implemented | needs seam |
 | `pane-base-index` | pane numbering (Server.hs:2878) | implemented | needs seam |
 | `status-position` | `View.hs:76,79` (bar row) | implemented | needs seam |
-| `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented | pure |
+| `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
 | `history-limit` | emulator scrollback cap (Server.hs:1253,741) | implemented | needs seam |
 | `default-terminal` | `$TERM` for new panes (Server.hs:1233) | implemented | needs seam |
-| `word-separators` | `CopyMode.runMotion` (830,831) | implemented | pure |
+| `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `status-left` | `View.hs:589` | implemented | needs seam |
 | `status-left-length` | `View.hs:624` (`T.take`) | implemented | needs seam |
 | `status-right` | `View.hs:590` | implemented | needs seam |
@@ -54,7 +54,7 @@ spot-read of each suspect consumer.
 | `window-status-bell-style` | `View.hs:620` | implemented | needs seam |
 | `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
-| `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented | pure |
+| `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
 | `pane-border-lines` | `mapGlyph`/`borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-border-indicators` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `set-titles` | `refreshTitles` gate (Server.hs:2831) | implemented | needs seam |
@@ -94,9 +94,9 @@ test. The durable way to close the gap — and to catch any remaining
 read-but-partial bug — is a prefix-style **effect test per option**: set a
 non-default value, drive the consumer, assert the *observable* result.
 
-- Options with a `pure` seam (`prefix`, `mode-keys`, `word-separators`,
-  `mode-style`, `focus-events`, `main-pane-width`/`-height`) can get that test
-  today; `focus-events` and `main-pane-*` already have theirs in
+- Behavior-verified so far (the ✅ rows): `prefix` (KeysSpec), the copy-mode
+  trio `mode-keys`/`word-separators`/`mode-style` (CopyModeSpec), and
+  `focus-events`, `main-pane-width`/`-height`, and the four `pane-border-*` in
   `OptionEffectSpec`.
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
