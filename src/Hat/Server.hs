@@ -26,6 +26,7 @@ module Hat.Server
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
+    , markBell  -- ^ exported for the current-window bell test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -1306,7 +1307,7 @@ startPaneReader st sid win pane = void . forkIO $ do
                 Emu.TitleChanged _ -> pure ()
                 Emu.Bell -> do
                     atomically $ do
-                        writeTVar win.bellFlag True
+                        markBell st sid win
                         bumpDirty st
                     broadcast st sid RingBell
                 Emu.ScreenChanged -> atomically $ do
@@ -1314,18 +1315,35 @@ startPaneReader st sid win pane = void . forkIO $ do
                     bumpDirty st
             readLoop
 
+-- | Whether @win@ is the session's current (foreground) window.
+isCurrentWindow :: Session -> Window -> STM Bool
+isCurrentWindow sess win = do
+    cur <- readTVar sess.currentIx
+    ws <- readTVar sess.windows
+    pure $ maybe False (\w -> w.id == win.id) (Map.lookup cur ws)
+
 -- | Flag a background window as having activity, when @monitor-activity@
--- is on. The current window is exempt — you are already watching it.
+-- is on. The current window is exempt — you are already watching it, so no
+-- attention marker belongs there (mirrors 'markBell', which exempts the
+-- current window the same way).
 markActivity :: ServerState -> SessionId -> Window -> STM ()
 markActivity st sid win = do
     msess <- Map.lookup sid <$> readTVar st.sessions
     forM_ msess $ \sess -> do
         opts <- resolveForWindow st sess win
         when opts.monitorActivity $ do
-            cur <- readTVar sess.currentIx
-            ws <- readTVar sess.windows
-            let isCurrent = maybe False (\w -> w.id == win.id) (Map.lookup cur ws)
-            unless isCurrent $ writeTVar win.activity True
+            current <- isCurrentWindow sess win
+            unless current $ writeTVar win.activity True
+
+-- | Raise a window's bell marker. The current window is exempt — you are
+-- already watching it — so only a background bell leaves a visible marker;
+-- the audible bell rings regardless (see the 'Emu.Bell' handler).
+markBell :: ServerState -> SessionId -> Window -> STM ()
+markBell st sid win = do
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    forM_ msess $ \sess -> do
+        current <- isCurrentWindow sess win
+        unless current $ writeTVar win.bellFlag True
 
 -- The grace a hung-up child gets before SIGKILL: long enough for a
 -- well-behaved child to die on SIGHUP, short enough that a shutdown never

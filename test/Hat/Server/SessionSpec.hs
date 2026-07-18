@@ -18,8 +18,9 @@ import Hat.Model.Options
     , emptyDelta, singletonDelta)
 import Hat.Server
     ( applySessionSize, cmdAttachSession, chooseCurrentOnClose
-    , pickActivityTarget, pickAttachSession )
+    , markBell, pickActivityTarget, pickAttachSession )
 import Hat.Server.Keys (PrefixState (NoPrefix))
+import Hat.Server.Layout (Layout (Leaf))
 import Hat.Server.Render (blankFrame)
 
 -- A bare session with the given id inserted into an existing server.
@@ -54,6 +55,25 @@ seedSession start = do
         <*> newTVarIO emptyDelta
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
+
+-- A bare window inserted into a session at the given index, so bell/activity
+-- flagging can be exercised against a real session tree.
+addWindow :: Session -> Int -> IO Window
+addWindow sess n = do
+    win <- Window (WindowId n)
+        <$> newTVarIO "w"
+        <*> newTVarIO (Leaf (PaneId n))
+        <*> newTVarIO Nothing
+        <*> newTVarIO Map.empty
+        <*> newTVarIO (PaneId n)
+        <*> newTVarIO Nothing
+        <*> newTVarIO False
+        <*> newTVarIO False
+        <*> newTVarIO Nothing
+        <*> newTVarIO True
+        <*> newTVarIO emptyDelta
+    atomically $ modifyTVar' sess.windows (Map.insert n win)
+    pure win
 
 -- A client attached to the given session with a fixed size and activity
 -- stamp (larger stamp = more recently active). 'applySessionSize' only reads
@@ -124,6 +144,26 @@ spec = do
             b <- atomically (resolveForSession st sessB)
             a.prefix `shouldBe` "C-a"   -- session A's own set
             b.prefix `shouldBe` "C-b"   -- B falls through to the global
+
+    describe "current-window attention flags" $ do
+        -- tmux shows no bell/activity marker on the window you are looking
+        -- at. A bell in the current window must leave no marker — the sticky
+        -- marker that only cleared on switch-away-and-back was the bug.
+        it "leaves no bell marker on the current window" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            _  <- addWindow sess 1
+            atomically $ writeTVar sess.currentIx 0
+            atomically $ markBell st sess.id w0
+            readTVarIO w0.bellFlag `shouldReturn` False
+
+        it "raises the bell marker on a background window" $ do
+            (st, sess) <- seedSession "/"
+            _  <- addWindow sess 0
+            w1 <- addWindow sess 1
+            atomically $ writeTVar sess.currentIx 0
+            atomically $ markBell st sess.id w1
+            readTVarIO w1.bellFlag `shouldReturn` True
 
     describe "chooseCurrentOnClose" $ do
         -- Closing the current window should jump to the last-active window,
