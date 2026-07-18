@@ -10,9 +10,13 @@ module Hat.Server.OptionEffectSpec (spec) where
 
 import Test.Hspec
 
+import Data.Ratio ((%))
+
+import Hat.Geometry (Size (..))
 import Hat.Model.Options (Options (..), defaultOptions)
-import Hat.Server (deliversKey)
+import Hat.Server (deliversKey, mainPaneRatio)
 import Hat.Server.Keys (Key (..))
+import Hat.Server.Layout (LayoutName (..))
 
 spec :: Spec
 spec = do
@@ -30,18 +34,25 @@ spec = do
                 deliversKey (defaultOptions { focusEvents = True }) False focusIn
                     `shouldBe` False
 
+        -- main-pane-width/-height: an absolute cell count, realised as that
+        -- many cells out of the window along the layout's axis.
+        describe "main-pane-width/-height give the main pane an absolute cell count" $ do
+            let area = Size { rows = 50, cols = 200 }
+            it "main-vertical: main-pane-width cells is that fraction of the cols" $
+                mainPaneRatio MainVertical
+                    (defaultOptions { mainPaneWidth = 100 }) area `shouldBe` 1 % 2
+            it "a wider main-pane-width takes proportionally more (absolute cells)" $
+                mainPaneRatio MainVertical
+                    (defaultOptions { mainPaneWidth = 160 }) area `shouldBe` 4 % 5
+            it "main-horizontal: main-pane-height cells is that fraction of the rows" $
+                mainPaneRatio MainHorizontal
+                    (defaultOptions { mainPaneHeight = 10 })
+                    (Size { rows = 40, cols = 200 }) `shouldBe` 1 % 4
+
         -- Defects catalogued in docs/options-audit.md, pinned here as the
         -- executable backlog. Each flips to a real assertion when fixed.
-        describe "defects (pending until fixed)" $ do
+        describe "defects (pending until fixed)" $
             it "escape-time delays a lone trailing ESC by escape-time ms" $
                 pendingWith
                     "no consumer: ESC disambiguation is hardcoded to \
                     \escape-time 0 (see audit defect 1)"
-            it "main-pane-width sizes the main pane to an absolute cell count" $
-                pendingWith
-                    "wrong semantics: treated as a proportion of window width, \
-                    \not absolute cells (see audit defect 2)"
-            it "main-pane-height sizes the main pane to an absolute cell count" $
-                pendingWith
-                    "wrong semantics: treated as a proportion of window height, \
-                    \not absolute cells (see audit defect 3)"

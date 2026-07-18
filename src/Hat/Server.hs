@@ -29,6 +29,7 @@ module Hat.Server
     , applySessionSize  -- ^ exported for the aggressive-resize test
     , markBell  -- ^ exported for the current-window bell test
     , deliversKey  -- ^ exported for the focus-event gating test
+    , mainPaneRatio  -- ^ exported for the main-pane-size test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -2970,6 +2971,19 @@ applyNamedLayout st mclient lname =
     withCurrentWindow st mclient $ \sess win ->
         arrangeNamed st sess win lname >> pure []
 
+-- | The split ratio a named layout gives its main pane. @main-pane-width@ and
+-- @main-pane-height@ are absolute cell counts (tmux semantics); expressed here
+-- as a fraction of the window along the layout's axis, clamped so both the main
+-- pane and the rest keep room. Non-main layouts split evenly.
+mainPaneRatio :: LayoutName -> Options -> Size -> Rational
+mainPaneRatio lname opts area = case lname of
+    MainVertical   -> ratioOf opts.mainPaneWidth area.cols
+    MainHorizontal -> ratioOf opts.mainPaneHeight area.rows
+    _              -> 1 % 2
+  where
+    clampR r = max (1 % 10) (min (9 % 10) r) :: Rational
+    ratioOf num den = clampR (toInteger num % max 1 (toInteger den))
+
 -- | Rearrange one window into a named layout, sizing the @main-*@ pane
 -- from @main-pane-width@/@-height@, and remember the name so
 -- @next-layout@ can cycle onward from it.
@@ -2977,13 +2991,7 @@ arrangeNamed :: ServerState -> Session -> Window -> LayoutName -> IO ()
 arrangeNamed st sess win lname = do
     eff <- readTVarIO sess.lastSize
     opts <- readTVarIO st.options
-    let area = windowArea eff
-        clampR r = max (1 % 10) (min (9 % 10) r) :: Rational
-        ratioOf num den = clampR (toInteger num % max 1 (toInteger den))
-        mainRatio = case lname of
-            MainVertical   -> ratioOf opts.mainPaneWidth area.cols
-            MainHorizontal -> ratioOf opts.mainPaneHeight area.rows
-            _              -> 1 % 2
+    let mainRatio = mainPaneRatio lname opts (windowArea eff)
     atomically $ do
         pids <- layoutPanes <$> readTVar win.layout
         unless (null pids) $ do

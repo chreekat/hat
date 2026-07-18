@@ -66,8 +66,8 @@ spot-read of each suspect consumer.
 | `automatic-rename` | auto-rename gate (Server.hs:1185,2769) | implemented | needs seam |
 | `automatic-rename-format` | `refreshAutoNames` (Server.hs:2809) | implemented | needs seam |
 | `update-environment` | `refreshSessionEnv` (Server.hs:1107) | implemented | needs seam |
-| `main-pane-width` | `ratioOf` (Server.hs:2991) | **defect: wrong semantics** | needs seam |
-| `main-pane-height` | `ratioOf` (Server.hs:2992) | **defect: wrong semantics** | needs seam |
+| `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
+| `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 
 ## Defects (the backlog)
 
@@ -78,15 +78,14 @@ spot-read of each suspect consumer.
    the input path: coalesce with the next bytes if they arrive first, else emit
    Escape. Needs event-loop timing.
 
-2. **`main-pane-width` — wrong semantics.** `arrangeNamed` computes
-   `ratioOf opts.mainPaneWidth area.cols`, treating the value as a *proportion
-   of window width* (clamped 1/10–9/10). tmux `main-pane-width` is an
-   **absolute cell count** (default 80), optionally a `%` percentage. So
-   `main-pane-width 80` on an 80-column window clamps to 90% instead of taking
-   80 cells.
+## Minor divergences (not defects)
 
-3. **`main-pane-height` — wrong semantics.** Same, for `main-horizontal`
-   (Server.hs:2992).
+- **`main-pane-width`/`-height`** correctly implement tmux's *absolute cell
+  count* (the ratio `mainPaneWidth / cols` yields `mainPaneWidth` cells), pinned
+  by `mainPaneRatio` effect tests. Two small divergences remain as follow-ups,
+  not silent no-ops: the main pane is clamped to 10–90% of the window (tmux
+  clamps only to leave the other panes room), and a `%`-suffixed percentage
+  value isn't parsed.
 
 ## Turning consumer-verified into behavior-verified: the sweep
 
@@ -96,7 +95,9 @@ read-but-partial bug — is a prefix-style **effect test per option**: set a
 non-default value, drive the consumer, assert the *observable* result.
 
 - Options with a `pure` seam (`prefix`, `mode-keys`, `word-separators`,
-  `mode-style`, `focus-events`) can get that test today.
+  `mode-style`, `focus-events`, `main-pane-width`/`-height`) can get that test
+  today; `focus-events` and `main-pane-*` already have theirs in
+  `OptionEffectSpec`.
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
   `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;
