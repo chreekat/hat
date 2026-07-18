@@ -17,8 +17,9 @@ import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
-    ( applySessionSize, cmdAttachSession, chooseCurrentOnClose
-    , deliversKey, markBell, pickActivityTarget, pickAttachSession )
+    ( applySessionSize, chooseActivePaneOnClose, cmdAttachSession
+    , chooseCurrentOnClose, deliversKey, markBell, pickActivityTarget
+    , pickAttachSession )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout (Leaf))
 import Hat.Server.Render (blankFrame)
@@ -184,6 +185,28 @@ spec = do
         it "falls back to the lowest survivor when the last-active is also gone" $
             -- last-active pointed at window 5, which no longer exists.
             chooseCurrentOnClose remaining 1 (Just 5) `shouldBe` Just 0
+
+    describe "chooseActivePaneOnClose" $ do
+        -- Closing the active pane should reactivate the window's last-active
+        -- pane, mirroring tmux, not an arbitrary surviving neighbour.
+        let survivors = map PaneId [2, 5, 7]
+
+        it "reactivates the last-active pane when it survives the close" $
+            -- active pane 5 was closed; last-active was 7, still alive.
+            chooseActivePaneOnClose survivors (Just (PaneId 7))
+                `shouldBe` Just (PaneId 7)
+
+        it "falls back to the first surviving pane when there is no last-active" $
+            chooseActivePaneOnClose survivors Nothing
+                `shouldBe` Just (PaneId 2)
+
+        it "falls back to the first survivor when the last-active is also gone" $
+            -- last-active pointed at pane 9, which no longer exists.
+            chooseActivePaneOnClose survivors (Just (PaneId 9))
+                `shouldBe` Just (PaneId 2)
+
+        it "has no choice when no panes remain" $
+            chooseActivePaneOnClose [] (Just (PaneId 7)) `shouldBe` Nothing
 
     describe "pickActivityTarget" $ do
         -- The @<leader> a@ jump: an activity-marked window wins, chosen in

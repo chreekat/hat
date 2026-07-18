@@ -17,6 +17,7 @@ module Hat.Server
     , restoreRun      -- ^ exported for the restore-argv test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
+    , chooseActivePaneOnClose  -- ^ exported for the close-to-last-pane test
     , pickActivityTarget  -- ^ exported for the activity-jump test
     , pickAttachSession  -- ^ exported for the attach-to-last-active test
     , persistDecision  -- ^ exported for the store-pinning test
@@ -1394,10 +1395,11 @@ closePane st sid win pane = do
             Just lay' -> do
                 writeTVar win.layout lay'
                 active <- readTVar win.activeId
-                when (active == pane.id) $
-                    case layoutPanes lay' of
-                        (next : _) -> writeTVar win.activeId next
-                        [] -> pure ()
+                when (active == pane.id) $ do
+                    mlast <- readTVar win.lastActive
+                    forM_ (chooseActivePaneOnClose (layoutPanes lay') mlast) $ \next -> do
+                        writeTVar win.activeId next
+                        writeTVar win.lastActive Nothing
                 bumpDirty st
                 pure Nothing
             Nothing -> do
@@ -1438,6 +1440,20 @@ chooseCurrentOnClose survivors cur mlast
     | Set.member cur survivors = Nothing
     | Just lastIx <- mlast, Set.member lastIx survivors = Just lastIx
     | otherwise = Set.lookupMin survivors
+
+-- | Pick the pane to make active after the active one is closed. Prefer the
+-- window's last-active pane (as tmux does), falling back to the first
+-- surviving pane in layout order when there is no last-active pane or it too
+-- has been closed. 'Nothing' means no panes remain.
+chooseActivePaneOnClose
+    :: [PaneId]        -- ^ surviving panes, in layout order
+    -> Maybe PaneId    -- ^ the last-active pane, if any
+    -> Maybe PaneId
+chooseActivePaneOnClose survivors mlast
+    | Just lastP <- mlast, lastP `elem` survivors = Just lastP
+    | otherwise = case survivors of
+        (next : _) -> Just next
+        []         -> Nothing
 
 -- | Where @<leader> a@ should jump. An activity-marked window takes
 -- priority: pick the first one in the same cyclic scan @next-window -a@
