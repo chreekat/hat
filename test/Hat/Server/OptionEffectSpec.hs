@@ -18,7 +18,8 @@ import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), Options (..)
     , StatusPosition (..), defaultOptions )
-import Hat.Server (deliversKey, mainPaneRatio, resizeModeOf)
+import Hat.Server
+    (applyUpdateEnvironment, deliversKey, mainPaneRatio, resizeModeOf)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
 import Hat.Server.View
@@ -160,6 +161,21 @@ spec = do
             it "on: follow the active client" $
                 resizeModeOf (defaultOptions { aggressiveResize = True })
                     `shouldBe` ActiveClient
+
+        -- update-environment: on attach, the listed vars are pulled from the
+        -- client's env into the session; others are left alone.
+        describe "update-environment refreshes only the listed vars" $ do
+            let clientEnv = [("DISPLAY", ":1"), ("FOO", "bar")]
+                sessEnv = [("DISPLAY", ":0"), ("KEEP", "yes")]
+            it "a listed var the client has replaces the session's" $
+                lookup "DISPLAY" (applyUpdateEnvironment ["DISPLAY"] clientEnv sessEnv)
+                    `shouldBe` Just ":1"
+            it "an unlisted var is left untouched" $
+                lookup "KEEP" (applyUpdateEnvironment ["DISPLAY"] clientEnv sessEnv)
+                    `shouldBe` Just "yes"
+            it "a listed var the client lacks leaves the session as-is" $
+                lookup "DISPLAY" (applyUpdateEnvironment ["MISSING"] clientEnv sessEnv)
+                    `shouldBe` Just ":0"
 
         -- Defects catalogued in docs/options-audit.md, pinned here as the
         -- executable backlog. Each flips to a real assertion when fixed.

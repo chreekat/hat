@@ -31,6 +31,7 @@ module Hat.Server
     , deliversKey  -- ^ exported for the focus-event gating test
     , mainPaneRatio  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
+    , applyUpdateEnvironment  -- ^ exported for the update-environment effect test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -1107,10 +1108,20 @@ removeClient st client = do
 refreshSessionEnv :: ServerState -> Session -> Client -> IO ()
 refreshSessionEnv st sess client = do
     vars <- (.updateEnvironment) <$> readTVarIO st.options
-    atomically $ modifyTVar' sess.environ $ \env0 ->
-        List.foldl' (\env v -> case List.lookup v client.env of
-            Just val -> (v, val) : filter ((/= v) . fst) env
-            Nothing  -> env) env0 vars
+    atomically $ modifyTVar' sess.environ
+        (applyUpdateEnvironment vars client.env)
+
+-- | Fold the @update-environment@ vars from a client's env into a session's:
+-- each listed var the client has replaces the session's entry; unlisted vars,
+-- and listed vars the client lacks, are left as they were. See
+-- 'refreshSessionEnv'.
+applyUpdateEnvironment
+    :: [Text] -> [(Text, Text)] -> [(Text, Text)] -> [(Text, Text)]
+applyUpdateEnvironment vars clientEnv = \env0 -> List.foldl' step env0 vars
+  where
+    step env v = case List.lookup v clientEnv of
+        Just val -> (v, val) : filter ((/= v) . fst) env
+        Nothing  -> env
 
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do

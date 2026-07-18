@@ -65,7 +65,7 @@ spot-read of each suspect consumer.
 | `monitor-activity` | activity-flag gate (Server.hs:1337) | implemented | needs seam |
 | `automatic-rename` | auto-rename gate (Server.hs:1185,2769) | implemented | needs seam |
 | `automatic-rename-format` | `refreshAutoNames` (Server.hs:2809) | implemented | needs seam |
-| `update-environment` | `refreshSessionEnv` (Server.hs:1107) | implemented | needs seam |
+| `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 
