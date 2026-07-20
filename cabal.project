@@ -1,7 +1,7 @@
 packages: .
 
 -- Build against the GHC global package db only; no Hackage fetches.
-active-repositories: none
+active-repositories: :none
 
 tests: True
 

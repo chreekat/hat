@@ -29,11 +29,17 @@
       });
 
       devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
+        # shellFor gives cabal a GHC whose global db already holds hat's
+        # dependency closure, derived from the .cabal file. That is what
+        # `active-repositories: :none` requires: cabal fetches nothing, so
+        # every dep must already be in the global db. A bare
+        # haskellPackages.ghc carries only boot libraries, so vector and the
+        # other non-boot deps would be absent.
+        default = pkgs.haskellPackages.shellFor {
+          packages = p: [ (pkgs.callPackage ./package.nix { }).withTests ];
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [
             pkgs.cabal-install
-            pkgs.haskellPackages.ghc
             pkgs.libvterm-neovim
             pkgs.haskellPackages.weeder
 

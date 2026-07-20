@@ -12,14 +12,17 @@
 { haskell, haskellPackages, libvterm-neovim, nix-gitignore }:
 
 let
+  # Checks stay enabled here so the package's test dependencies (hspec, …)
+  # are part of its build-input closure; the flake devShell derives its GHC
+  # from this via shellFor and needs them to run `cabal test`.
+  withTests = haskellPackages.callCabal2nix "hat"
+    (nix-gitignore.gitignoreSource [ ] ./.) {
+      vterm = libvterm-neovim;
+    };
   # dontCheck: the test suite locates the hat binary via `cabal list-bin`
   # and drives it through real ptys alongside dev tools (vim, htop, …) —
   # it runs in the dev shell (`cabal test`), not in the build sandbox.
-  base = haskell.lib.dontCheck
-    (haskellPackages.callCabal2nix "hat"
-      (nix-gitignore.gitignoreSource [ ] ./.) {
-        vterm = libvterm-neovim;
-      });
+  base = haskell.lib.dontCheck withTests;
 in
 haskell.lib.overrideCabal
   (haskell.lib.justStaticExecutables base)
@@ -30,4 +33,7 @@ haskell.lib.overrideCabal
     '';
     # Let `nix run <flakeref>` resolve the binary without guessing.
     mainProgram = "hat";
+    # shellFor derives the devShell's GHC from this; checks-enabled so test
+    # deps come along.
+    passthru = (drv.passthru or { }) // { inherit withTests; };
   })
