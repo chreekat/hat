@@ -146,6 +146,19 @@ executable gen-fixtures
         hat,
         text        ^>= 2.1.3
 
+-- Not a validated benchmark: a minimal repro of a feed-scaled heap retention
+-- that outlives the emulator (see bench/Main.hs). Run `cabal bench hat-mem`.
+benchmark hat-mem
+    import:             defaults, pedantry
+    type:               exitcode-stdio-1.0
+    hs-source-dirs:     bench
+    main-is:            Main.hs
+    ghc-options:        -rtsopts "-with-rtsopts=-T"
+    build-depends:
+        base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
+        hat
+
 test-suite hat-test
     import:             defaults, pedantry
     type:               exitcode-stdio-1.0
