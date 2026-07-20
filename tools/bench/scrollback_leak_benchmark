@@ -14,10 +14,22 @@ srv=$!
 
 until [ -S "$SOCK" ]; do sleep 0.05; done
 
-# Attach a client; use up some scrollback buffer.
-hat -L profiled new-session -d ${path}/print_dots.sh
+# Start a session to keep the server alive
+hat -L profiled new -d
 
-# Let the eventlog do its writing
+# Attach a client; use up some scrollback buffer.
+hat -L profiled new-window -d "${path}/print_dots.sh 4000"
+
+# Let a GC happen
+sleep 3
+
+# Repeat. We should see a saw tooth, right?
+hat -L profiled new-window -d "${path}/print_dots.sh 8000"
+
+sleep 3
+
+hat -L profiled new-window -d "${path}/print_dots.sh 12000"
+
 sleep 3
 
 hat -L profiled kill-server

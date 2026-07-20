@@ -53,6 +53,8 @@ common pedantry
         -- Stylistic and repo-wide; enforcing either is pure churn.
         -Wno-implicit-prelude
         -Wno-prepositive-qualified-module
+        -- Needed for ghcid
+        -Wno-missing-export-lists
 
 common profiled
     if flag(profiling)

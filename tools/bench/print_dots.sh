@@ -2,4 +2,6 @@
 
 set -Eeuo pipefail
 
-for i in {1..4000}; do echo "."; done
+num=${1:-4000}
+
+for i in $(seq 1 $num); do echo "."; done
