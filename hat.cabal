@@ -64,6 +64,7 @@ library
     import:             defaults, pedantry, profiled
     hs-source-dirs:     src
     exposed-modules:
+        Hat.Bench.Residency
         Hat.Client
         Hat.Client.Draw
         Hat.Command.Parser
@@ -181,6 +182,7 @@ test-suite hat-test
     main-is:            Main.hs
     build-tool-depends: hat:hat
     other-modules:
+        Hat.Bench.ResidencySpec
         Hat.Client.DrawSpec
         Hat.Command.ParserSpec
         Hat.FuzzyMatchSpec
