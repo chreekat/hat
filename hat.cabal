@@ -147,10 +147,10 @@ executable gen-fixtures
         hat,
         text        ^>= 2.1.3
 
--- Not validated benchmarks: minimal repros of a feed-scaled heap retention
--- that outlives the emulator. feed-mem drives 'feed' with raw bytes;
--- scrollback-mem is the in-process form of tools/bench/scrollback_leak_benchmark
--- (a child under a real pty generates the scrollback). See each Main's header.
+-- Memory benches, run on demand (never in the fast unit suite); each Main's
+-- header says what it measures. feed-mem: repro of a feed-scaled retention
+-- under raw-bytes driving. scrollback-retain: regression guard on the fixed
+-- teardown leak. scrollback-live: baseline-judged cost of held scrollback.
 benchmark feed-mem
     import:             defaults, pedantry
     type:               exitcode-stdio-1.0
@@ -168,6 +168,18 @@ benchmark scrollback-retain
     type:               exitcode-stdio-1.0
     hs-source-dirs:     bench
     main-is:            ScrollbackRetain.hs
+    other-modules:      PaneSim
+    ghc-options:        -threaded -rtsopts "-with-rtsopts=-T"
+    build-depends:
+        base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
+        hat
+
+benchmark scrollback-live
+    import:             defaults, pedantry
+    type:               exitcode-stdio-1.0
+    hs-source-dirs:     bench
+    main-is:            ScrollbackLive.hs
     other-modules:      PaneSim
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-T"
     build-depends:

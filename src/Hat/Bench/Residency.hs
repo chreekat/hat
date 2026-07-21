@@ -6,6 +6,7 @@ module Hat.Bench.Residency
     , Baseline (..)
     , Tolerance
     , mkTolerance
+    , toleranceFraction
     , Verdict (..)
     , classify
     ) where
@@ -32,6 +33,10 @@ newtype Tolerance = Tolerance Double
 -- never invert the band or drop its lower edge to zero.
 mkTolerance :: Double -> Tolerance
 mkTolerance t = Tolerance (max 0 (min 0.999 t))
+
+-- | The (clamped) fraction a 'Tolerance' represents, e.g. 0.05 for a ±5% band.
+toleranceFraction :: Tolerance -> Double
+toleranceFraction (Tolerance t) = t
 
 -- | The outcome of 'classify'. 'Regressed' and 'Improved' carry the measured
 -- figure so the caller can report it and, on an improvement, ratchet the

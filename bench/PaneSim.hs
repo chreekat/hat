@@ -5,6 +5,7 @@ module PaneSim
     , liveBytesAfterGC
     ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (forM_, unless)
 import qualified Data.ByteString.Char8 as B8
 import Data.Word (Word64)
@@ -47,10 +48,21 @@ fillScrollback nlines limit = do
     Pty.closePty pty
     pure e
 
--- | Live heap after forcing the retained set to settle: two major GCs, then
--- the last GC's live-bytes figure.
+-- | Live heap once the retained set has settled: major-GC repeatedly, giving
+-- finalizer threads a chance to run in between, until the figure stops
+-- moving (bounded, so an unsettled heap returns loud-and-wrong rather than
+-- hanging). One GC alone is not enough — an emulator's C side is released by
+-- a 'Foreign.Concurrent' finalizer that only runs after a GC notices death,
+-- and until it does, its callback FunPtrs keep the emulator state alive.
 liveBytesAfterGC :: IO Word64
-liveBytesAfterGC = do
-    performMajorGC
-    performMajorGC
-    gcdetails_live_bytes . gc <$> getRTSStats
+liveBytesAfterGC = go (50 :: Int) =<< once
+  where
+    once = do
+        performMajorGC
+        gcdetails_live_bytes . gc <$> getRTSStats
+    go budget prev = do
+        threadDelay 1000
+        cur <- once
+        if cur == prev || budget <= 0
+            then pure cur
+            else go (budget - 1) cur
