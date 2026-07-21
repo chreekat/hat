@@ -162,11 +162,12 @@ benchmark feed-mem
         hat
 
 -- -threaded is required: Pty.spawn's reaper does a blocking waitpid.
-benchmark scrollback-mem
+benchmark scrollback-retain
     import:             defaults, pedantry
     type:               exitcode-stdio-1.0
     hs-source-dirs:     bench
-    main-is:            ScrollbackMem.hs
+    main-is:            ScrollbackRetain.hs
+    other-modules:      PaneSim
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-T"
     build-depends:
         base        ^>= 4.20.2.0,
