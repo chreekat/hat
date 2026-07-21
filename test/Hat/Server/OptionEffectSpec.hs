@@ -183,4 +183,4 @@ spec = do
             it "escape-time delays a lone trailing ESC by escape-time ms" $
                 pendingWith
                     "no consumer: ESC disambiguation is hardcoded to \
-                    \escape-time 0 (see audit defect 1)"
+                    \escape-time 0 (tracked as bug fd; see docs/options-audit.md)"

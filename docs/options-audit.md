@@ -75,8 +75,8 @@ spot-read of each suspect consumer.
 
 ## Defects (the backlog)
 
-1. **`escape-time` — no consumer.** ESC disambiguation in
-   `Hat.Server.Keys.tokenizeKeys` is hardcoded to `escape-time 0` semantics (a
+1. **`escape-time` — no consumer** (tracked as **bug `fd`**). ESC disambiguation
+   in `Hat.Server.Keys.tokenizeKeys` is hardcoded to `escape-time 0` semantics (a
    lone trailing ESC is the Escape key). A non-zero value is stored and ignored.
    A real fix buffers a trailing lone ESC and arms an `escape-time`-ms timer in
    the input path: coalesce with the next bytes if they arrive first, else emit
