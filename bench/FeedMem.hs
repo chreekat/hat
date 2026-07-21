@@ -12,8 +12,12 @@
 -- returns and never renders/drains the way the real server does — so this may
 -- be a defect the server hits, or an artifact of how it is driven here.
 --
--- Run:  cabal bench hat-mem            (defaults: 2000 lines, limit 500)
---       cabal bench hat-mem 8000 500   (lines, limit)
+-- Run:  cabal bench feed-mem                    (2000 lines, limit 500)
+--       cabal run bench:feed-mem -- 8000 500    (lines, limit)
+--
+-- Companion: bench/ScrollbackMem.hs generates the same scrollback through a
+-- real child under a pty, to tell a feed/emulator retention from a pty-layer
+-- one.
 module Main (main) where
 
 import Control.Monad (forM_)
