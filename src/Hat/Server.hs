@@ -40,7 +40,7 @@ import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-    (IOException, SomeException, bracket, catch, finally, handle, try)
+    (IOException, SomeException, bracket, catch, finally, handle, throwIO, try)
 import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
@@ -93,7 +93,8 @@ import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
-    (ColorScheme (..), applyPalette, parseSchemeLine)
+    ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
+    , watcherFault )
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Layout
@@ -450,14 +451,33 @@ captureWindow ws = do
 
 -- | Follow the desktop's light\/dark preference: read it once, then tail
 -- @gsettings monitor@ for changes. Runs after the config has loaded so
--- the @\@color-scheme-*@ options are set before the initial apply. On a
--- host without gsettings (or outside a desktop session) the first call
--- fails and the feature stays inert. Killed at server shutdown, which
--- also terminates the monitor subprocess (withCreateProcess's cleanup).
+-- the @\@color-scheme-*@ options are set before the initial apply. The
+-- monitor is a durable daemon: if its subprocess dies (a crash, EOF on its
+-- pipe) or the @gsettings@ binary is absent (a host without a desktop
+-- session), the watcher is respawned after a capped backoff so theme-
+-- following resumes on its own — a transient death never silently ends the
+-- feature for the server's life. Only synchronous faults restart; an async
+-- cancellation (the shutdown 'cancel' 'withDaemons' issues) or an 'ExitCode'
+-- is re-raised, never swallowed and never restarted (see 'watcherFault'), so
+-- teardown stays clean. Killed at server shutdown, which also terminates the
+-- monitor subprocess (withCreateProcess's cleanup).
 watchColorScheme :: ServerState -> IO ()
 watchColorScheme st = do
     atomically (readTVar st.configLoading >>= check . not)
-    r <- try $ do
+    loop minBackoff
+  where
+    loop backoff = do
+        r <- try watch
+        case r of
+            Right () -> pure ()  -- the monitor returned; nothing left to tail
+            Left e -> case watcherFault e of
+                PropagateFault -> throwIO e
+                RestartWatcher -> do
+                    logEvent st.logger DaemonFault
+                        { daemon = "color-scheme", err = T.pack (show e) }
+                    threadDelay backoff
+                    loop (min maxBackoff (backoff * 2))
+    watch = do
         out <- readCreateProcess
             (proc "gsettings" ["get", schemaKey, key]) { close_fds = True } ""
         forM_ (parseSchemeLine (T.strip (T.pack out))) (applyScheme st)
@@ -467,10 +487,8 @@ watchColorScheme st = do
             forM_ mout $ \h -> forever $ do
                 line <- TIO.hGetLine h
                 forM_ (parseSchemeLine line) (applyScheme st)
-    case r of
-        Left (_ :: SomeException) -> pure ()
-        Right () -> pure ()
-  where
+    minBackoff = 1_000_000     -- 1s after the first death
+    maxBackoff = 60_000_000    -- capped at 60s so an absent gsettings idles
     schemaKey = "org.gnome.desktop.interface"
     key = "color-scheme"
 
