@@ -1,6 +1,6 @@
 -- | The one place filenames are built. Every socket, store, log, and
 -- user-supplied buffer path is assembled here so separator joining and
--- @~@/@HOME@ expansion stay consistent instead of drifting between
+-- @~@/@~user@/@HOME@ expansion stay consistent instead of drifting between
 -- ad-hoc @<> "/"@ concatenations.
 module Hat.Path
     ( HatPath
@@ -11,8 +11,11 @@ module Hat.Path
     , expandTilde
     ) where
 
+import Control.Exception (try)
+import Control.Monad (join)
 import System.Environment (lookupEnv)
 import System.FilePath (dropTrailingPathSeparator, normalise, (</>))
+import System.Posix.User (getUserEntryForName, homeDirectory)
 
 -- | A filesystem path built through the smart constructor. See 'hatPath'.
 newtype HatPath = HatPath FilePath
@@ -33,16 +36,47 @@ infixl 5 </:>
 (</:>) :: HatPath -> FilePath -> HatPath
 HatPath base </:> comp = hatPath (base </> comp)
 
--- | Expand a leading @~/@ against the given @HOME@ (as looked up from the
--- environment), joining with a single separator. A bare @~@, an unknown
--- home, or any other path is returned unchanged, so applying it twice is a
+-- | Expand a leading tilde, joining with a single separator. @~@ and @~/rest@
+-- resolve against the given @HOME@ (as looked up from the environment);
+-- @~user@ and @~user/rest@ resolve against the named user's home, as reported
+-- by the first argument (the UNIX @~user@ idiom). An unknown home, an unknown
+-- user, or any other path is returned unchanged, so applying it twice is a
 -- no-op.
-expandTildeWith :: Maybe FilePath -> FilePath -> FilePath
-expandTildeWith (Just home) ('~' : '/' : rest) = home </> rest
-expandTildeWith _ p = p
+expandTildeWith :: (String -> Maybe FilePath) -> Maybe FilePath -> FilePath -> FilePath
+expandTildeWith _ (Just home) ('~' : '/' : rest) = home </> rest
+expandTildeWith _ (Just home) "~" = home
+expandTildeWith namedHome _ p@('~' : rest)
+    | not (null user) =
+        case namedHome user of
+            Just home -> home </> sub
+            Nothing -> p
+  where
+    (user, after) = break (== '/') rest
+    sub = drop 1 after
+expandTildeWith _ _ p = p
 
--- | 'expandTildeWith' against the process @HOME@.
+-- | 'expandTildeWith' against the process @HOME@ and the system user database.
+-- The named user, if the path calls for one, is resolved through @getpwnam@
+-- before the pure expansion runs, keeping the passwd lookup at this IO seam.
 expandTilde :: FilePath -> IO FilePath
 expandTilde p = do
     home <- lookupEnv "HOME"
-    pure (expandTildeWith home p)
+    resolved <- maybe (pure []) (fmap (: []) . lookupUserHome) (namedUser p)
+    let namedHome name = join (lookup name resolved)
+    pure (expandTildeWith namedHome home p)
+
+-- | The username a leading @~user@/@~user\/rest@ names, or @Nothing@ for a
+-- bare @~@, a @~\/rest@, or any non-tilde path.
+namedUser :: FilePath -> Maybe String
+namedUser ('~' : rest@(c : _)) | c /= '/' = Just (takeWhile (/= '/') rest)
+namedUser _ = Nothing
+
+-- | The home directory of a named user, or @Nothing@ when the user does not
+-- exist (a missing user is not an error, mirroring shells' @~user@). Paired
+-- with the username so it can seed a pure resolver.
+lookupUserHome :: String -> IO (String, Maybe FilePath)
+lookupUserHome name = do
+    result <- try (getUserEntryForName name)
+    pure . (,) name $ case result of
+        Left (_ :: IOError) -> Nothing
+        Right entry -> Just (homeDirectory entry)

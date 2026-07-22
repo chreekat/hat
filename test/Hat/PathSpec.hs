@@ -3,6 +3,8 @@ module Hat.PathSpec (spec) where
 import Test.Hspec
 import Test.QuickCheck
 
+import System.Posix.User (getRealUserID, getUserEntryForID, userName, homeDirectory)
+
 import Hat.Path
 
 spec :: Spec
@@ -29,24 +31,46 @@ spec = do
 
     describe "expandTildeWith" $ do
         it "expands a ~/ prefix against the given home" $
-            expandTildeWith (Just "/home/b") "~/notes.txt"
+            expandTildeWith noUser (Just "/home/b") "~/notes.txt"
                 `shouldBe` "/home/b/notes.txt"
         it "joins with a single separator (no double slash)" $
-            expandTildeWith (Just "/home/b/") "~/notes.txt"
+            expandTildeWith noUser (Just "/home/b/") "~/notes.txt"
                 `shouldBe` "/home/b/notes.txt"
         it "leaves the path untouched when home is unknown" $
-            expandTildeWith Nothing "~/notes.txt"
+            expandTildeWith noUser Nothing "~/notes.txt"
                 `shouldBe` "~/notes.txt"
-        it "leaves a bare ~ (not ~/) untouched" $
-            expandTildeWith (Just "/home/b") "~backup"
-                `shouldBe` "~backup"
         it "leaves an absolute path untouched" $
-            expandTildeWith (Just "/home/b") "/etc/passwd"
+            expandTildeWith noUser (Just "/home/b") "/etc/passwd"
                 `shouldBe` "/etc/passwd"
+        it "expands a bare ~user to that user's home" $
+            expandTildeWith (byUser [("backup", "/var/backups")]) (Just "/home/b") "~backup"
+                `shouldBe` "/var/backups"
+        it "expands ~user/subpath under that user's home" $
+            expandTildeWith (byUser [("backup", "/var/backups")]) (Just "/home/b") "~backup/db"
+                `shouldBe` "/var/backups/db"
+        it "leaves ~user untouched when the user is unknown" $
+            expandTildeWith noUser (Just "/home/b") "~nosuchuser/db"
+                `shouldBe` "~nosuchuser/db"
         it "is idempotent for an absolute home" $
             property $ \(AbsHome home) p ->
-                let e = expandTildeWith home p
-                in expandTildeWith home e `shouldBe` e
+                let e = expandTildeWith noUser home p
+                in expandTildeWith noUser home e `shouldBe` e
+
+    describe "expandTilde" $
+        it "expands ~<current-user> to the current user's home" $ do
+            entry <- getUserEntryForID =<< getRealUserID
+            let name = userName entry
+            expanded <- expandTilde ('~' : name)
+            expanded `shouldBe` homeDirectory entry
+
+-- | A named-user resolver that knows no users, for cases exercising only the
+-- @~@/@~/@ paths.
+noUser :: String -> Maybe FilePath
+noUser _ = Nothing
+
+-- | A named-user resolver backed by a fixed table.
+byUser :: [(String, FilePath)] -> String -> Maybe FilePath
+byUser table name = lookup name table
 
 -- | A @HOME@ value that is either unset or an absolute path, mirroring how
 -- the environment actually presents it.
