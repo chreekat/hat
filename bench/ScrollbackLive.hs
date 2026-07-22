@@ -38,15 +38,15 @@ import Hat.Term.Emulator (Emulator, scrollbackLength)
 import PaneSim (fillScrollback, liveBytesAfterGC)
 
 -- | Live bytes for the extra @benchBigLimit - benchSmallLimit@ held lines of
--- dots scrollback, measured on the pre-interning code (2026-07-21, GHC
--- 9.10.3). Ratchet this down whenever the benchmark reports an improvement.
+-- dots scrollback. Ratchet down on a reported improvement.
 baseline :: Baseline
-baseline = Baseline (LiveBytes 19700000)
+baseline = Baseline (LiveBytes 3726000)
 
--- | Half-width of the accepted band; pty chunking makes the figure jitter
--- slightly run-to-run, well inside this.
+-- | Half-width of the accepted band. The figure jitters ~±7% two-sided (a
+-- difference of two noisy ~5 MB pane increments), which this clears while
+-- still catching the multiple-x moves the benchmark exists to see.
 tolerance :: Tolerance
-tolerance = mkTolerance 0.05
+tolerance = mkTolerance 0.10
 
 benchLines, benchBigLimit, benchSmallLimit :: Int
 benchLines = 4000

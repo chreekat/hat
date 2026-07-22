@@ -40,6 +40,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
 import Data.Char (chr, ord)
 import Data.IORef
+import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
@@ -53,6 +54,7 @@ import Foreign.C.String (CString)
 import Foreign.C.Types
 
 import Hat.Geometry
+import Hat.Intern (shareVals)
 import Hat.Term.Cell
 import Hat.Term.HostProtocol
 
@@ -193,6 +195,7 @@ data EmulatorState = EmulatorState
 -- many scrollback lines are retained.
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz historyLimit = do
+    cellIntern <- newIORef Map.empty
     vtp <- c_vterm_new (fromIntegral sz.rows) (fromIntegral sz.cols)
     c_vterm_set_utf8 vtp 1
     scr <- c_vterm_obtain_screen vtp
@@ -276,10 +279,11 @@ newEmulator sz historyLimit = do
         _ -> pure ()
     bellW <- wrapBell $ modifyIORef' stateR $ \s -> s { events = Bell : s.events }
     pushW <- wrapPushline $ \ncols cellsPtr -> do
-        line <- forM [0 .. fromIntegral ncols - 1 :: Int] $ \i ->
-            allocaBytes #{size HatCell} $ \hc -> do
+        line <- forM [0 .. fromIntegral ncols - 1 :: Int] $ \i -> do
+            freshCell <- allocaBytes #{size HatCell} $ \hc -> do
                 c_flatten_cell_at cellsPtr (fromIntegral i) hc
                 peekHatCell hc
+            shareVals cellIntern freshCell
         limit <- readIORef limitR
         modifyIORef' stateR $ \s ->
             let sb' = s.scrollback Seq.|> line

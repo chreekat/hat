@@ -18,7 +18,7 @@ data Color
     = DefaultColor
     | Indexed Word8
     | RGB Word8 Word8 Word8
-    deriving (Eq, Show)
+    deriving (Eq, Show, Ord)
 
 data Style = Style
     { fg        :: Color
@@ -30,7 +30,7 @@ data Style = Style
     , strike    :: Bool
     , blink     :: Bool
     }
-    deriving (Eq, Show)
+    deriving (Eq, Show, Ord)
 
 defaultStyle :: Style
 defaultStyle = Style
@@ -51,7 +51,7 @@ data Cell = Cell
     , width :: Int
     , style :: Style
     }
-    deriving (Eq, Show)
+    deriving (Eq, Show, Ord)
 
 blankCell :: Cell
 blankCell = Cell { text = " ", width = 1, style = defaultStyle }
