@@ -1352,7 +1352,22 @@ startPaneReader st sid win pane = void . forkIO $ do
                 Emu.ScreenChanged -> atomically $ do
                     markActivity st sid win
                     bumpDirty st
+                -- libvterm reported a terminal property hat does not act on;
+                -- surface it as a warning rather than silently dropping it.
+                Emu.UnknownProp kind prop ->
+                    logEvent st.logger UnknownTermProp
+                        { pane = rawPane pane.id
+                        , propKind = propKindLabel kind
+                        , prop = prop
+                        }
             readLoop
+
+-- | Name a vterm prop's value kind for the 'UnknownTermProp' log.
+propKindLabel :: Emu.PropKind -> Text
+propKindLabel = \case
+    Emu.PropBool -> "bool"
+    Emu.PropInt  -> "int"
+    Emu.PropStr  -> "str"
 
 -- | Whether @win@ is the session's current (foreground) window.
 isCurrentWindow :: Session -> Window -> STM Bool

@@ -10,6 +10,7 @@
 module Hat.Term.Emulator
     ( Emulator
     , Event (..)
+    , PropKind (..)
     , OscColorTarget (..)
     , OscTerm (..)
     , Screen (..)
@@ -127,6 +128,15 @@ data Event
         -- ^ app raised a desktop notification (OSC 9 / OSC 777), captured
         --   verbatim to forward to the outer terminal
     | ScreenChanged
+    | UnknownProp PropKind Int
+        -- ^ libvterm reported a terminal property hat does not handle,
+        --   tagged with the value's kind and libvterm's prop number
+    deriving (Eq, Show)
+
+-- | The value kind of a libvterm terminal property, distinguishing the
+-- three @settermprop@ callbacks. See the 'UnknownProp' branches in
+-- 'newEmulator'.
+data PropKind = PropBool | PropInt | PropStr
     deriving (Eq, Show)
 
 data MouseMode = MouseOff | MouseClick | MouseDrag | MouseMove
@@ -256,7 +266,7 @@ newEmulator sz historyLimit = do
         #{const VTERM_PROP_FOCUSREPORT} ->
             modifyIORef' stateR $ \s ->
                 s { modeFlags = s.modeFlags { focusReport = val /= 0 } }
-        _ -> pure ()
+        _ -> emitUnknownProp stateR PropBool prop
     propIntW <- wrapPropInt $ \prop val -> case prop of
         #{const VTERM_PROP_MOUSE} ->
             let m = case val of
@@ -265,7 +275,7 @@ newEmulator sz historyLimit = do
                     3 -> MouseMove
                     _ -> MouseOff
             in modifyIORef' stateR $ \s -> s { modeFlags = s.modeFlags { mouse = m } }
-        _ -> pure ()
+        _ -> emitUnknownProp stateR PropInt prop
     propStrW <- wrapPropStr $ \prop str len final -> case prop of
         #{const VTERM_PROP_TITLE} -> do
             frag <- B.packCStringLen (str, fromIntegral len)
@@ -276,7 +286,9 @@ newEmulator sz historyLimit = do
                          , events = TitleChanged t : s.events }
                 else modifyIORef' stateR $ \s ->
                     s { pendingTitle = s.pendingTitle <> frag }
-        _ -> pure ()
+        -- libvterm delivers a string prop in fragments; surface it once,
+        -- when the terminating fragment arrives, not per fragment.
+        _ -> if final /= 0 then emitUnknownProp stateR PropStr prop else pure ()
     bellW <- wrapBell $ modifyIORef' stateR $ \s -> s { events = Bell : s.events }
     pushW <- wrapPushline $ \ncols cellsPtr -> do
         line <- forM [0 .. fromIntegral ncols - 1 :: Int] $ \i -> do
@@ -339,6 +351,15 @@ newEmulator sz historyLimit = do
             }
     refreshGrid e
     pure e
+
+-- | Record that libvterm reported a terminal property hat does not handle,
+-- so the unhandled prop is surfaced to the reader loop (which logs it)
+-- rather than silently dropped. Runs inside a libvterm callback, so it
+-- only touches the bare state IORef.
+emitUnknownProp :: IORef EmulatorState -> PropKind -> CInt -> IO ()
+emitUnknownProp stateR kind prop =
+    modifyIORef' stateR $ \s ->
+        s { events = UnknownProp kind (fromIntegral prop) : s.events }
 
 -- | Feed pty output into the emulator; returns what happened. Query events
 -- and 'Output' replies are emitted in stream order: apps fence their color

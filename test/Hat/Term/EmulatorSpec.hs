@@ -159,6 +159,13 @@ spec = do
         evs <- feedStr e "\BEL"
         evs `shouldSatisfy` elem Bell
 
+    it "surfaces a vterm prop it does not handle (DECSCUSR cursor shape)" $ do
+        e <- new80x24
+        -- CSI 2 SP q sets the cursor shape (VTERM_PROP_CURSORSHAPE), which
+        -- hat does not act on; it must be surfaced, not silently dropped.
+        evs <- feedStr e "\ESC[2 q"
+        evs `shouldSatisfy` any (\case UnknownProp {} -> True; _ -> False)
+
     it "answers cursor position reports" $ do
         e <- new80x24
         evs <- feedStr e "\ESC[6n"

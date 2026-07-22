@@ -42,6 +42,7 @@ data LogEvent
     | CommandRun      { client :: Int, command :: Text }
     | ConfigError     { file :: FilePath, err :: Text }
     | ProtocolError   { client :: Int, err :: Text }
+    | UnknownTermProp { pane :: Int, propKind :: Text, prop :: Int }  -- ^ libvterm reported a terminal property hat does not handle
     | ServerCrash     { err :: Text }
     deriving (Show, Generic)
     deriving anyclass (ToJSON)
