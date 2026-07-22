@@ -1,5 +1,8 @@
 module Hat.Server.ColorSchemeSpec (spec) where
 
+import Control.Exception (AsyncException (ThreadKilled), toException)
+import Control.Concurrent.Async (AsyncCancelled (AsyncCancelled))
+import System.Exit (ExitCode (ExitSuccess))
 import Test.Hspec
 
 import Hat.Model.Options
@@ -33,6 +36,26 @@ spec = do
     it "renders as the color_scheme format value" $ do
         schemeName SchemeDark `shouldBe` "dark"
         schemeName SchemeLight `shouldBe` "light"
+
+    describe "watcherFault" $ do
+        it "restarts on a transient synchronous failure" $ do
+            -- the monitor subprocess dying / EOF on its pipe surfaces as a
+            -- sync IOException: theme-following must be durable, so respawn.
+            watcherFault (toException (userError "gsettings monitor exited"))
+                `shouldBe` RestartWatcher
+
+        it "propagates async cancellation instead of restarting" $ do
+            -- withDaemons cancels the daemon at shutdown; swallowing or
+            -- restarting on that would spin teardown forever.
+            watcherFault (toException AsyncCancelled)
+                `shouldBe` PropagateFault
+            watcherFault (toException ThreadKilled)
+                `shouldBe` PropagateFault
+
+        it "propagates ExitCode instead of restarting" $ do
+            -- an exit thrown into the loop must not be buried by a restart.
+            watcherFault (toException ExitSuccess)
+                `shouldBe` PropagateFault
 
     describe "applyPalette" $ do
         it "adapts the default chrome to the scheme" $ do

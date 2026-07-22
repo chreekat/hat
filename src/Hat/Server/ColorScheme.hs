@@ -8,11 +8,15 @@ module Hat.Server.ColorScheme
     , parseSchemeLine
     , schemeName
     , applyPalette
+    , WatcherFault (..)
+    , watcherFault
     ) where
 
+import Control.Exception (SomeException, SomeAsyncException, fromException)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
+import System.Exit (ExitCode)
 
 import Hat.Model.Options
     ( OptionName (..), OptionValue (..), OptionsDelta
@@ -38,6 +42,34 @@ parseSchemeLine line = case T.words line of
       where
         keyed = length ws > 1
         aboutScheme = "color-scheme:" `elem` init ws
+
+-- | What to do when the color-scheme watcher's inner loop ends by throwing.
+-- See 'watcherFault'.
+data WatcherFault
+    = RestartWatcher  -- ^ a transient sync failure — respawn the monitor
+    | PropagateFault  -- ^ async cancellation or 'ExitCode' — re-raise, never restart
+    deriving (Eq, Show)
+
+-- | Decide whether a watcher death should be restarted. A synchronous failure
+-- (the @gsettings monitor@ subprocess crashing, EOF on its pipe, a transient
+-- @IOException@) is transient: respawn so theme-following is durable. An
+-- asynchronous exception — the 'Control.Concurrent.Async.cancel' that
+-- 'Hat.Server.withDaemons' uses to tear the daemon down at shutdown — must be
+-- re-raised, never swallowed and never restarted, or teardown would spin
+-- forever (the broad-catch-in-a-loop trap). 'ExitCode' likewise propagates:
+-- swallowing it would keep the process from exiting.
+watcherFault :: SomeException -> WatcherFault
+watcherFault e
+    | isJustAsync = PropagateFault
+    | isExit      = PropagateFault
+    | otherwise   = RestartWatcher
+  where
+    isJustAsync = case fromException e :: Maybe SomeAsyncException of
+        Just _  -> True
+        Nothing -> False
+    isExit = case fromException e :: Maybe ExitCode of
+        Just _  -> True
+        Nothing -> False
 
 -- | The value @#{color_scheme}@ expands to.
 schemeName :: ColorScheme -> Text
