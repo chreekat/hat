@@ -90,6 +90,8 @@ data ServerState = ServerState
     , nextClient  :: TVar Int
     , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
+    , reconciled  :: TVar Int    -- ^ dirty generation reconcileLoop has resized
+                                --   panes through; see 'awaitReconciled'
     , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
     , everAttached :: TVar Bool  -- ^ a session has existed at some point.
                                 --   See 'waitIdle'.
@@ -370,6 +372,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0      -- dirty
+    <*> newTVarIO 0      -- reconciled
     <*> newTVarIO 0      -- activityClock
     <*> newTVarIO False  -- everAttached
     <*> newTVarIO False  -- served

@@ -27,6 +27,7 @@ module Hat.Server
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
+    , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , markBell  -- ^ exported for the current-window bell test
     , markActivity  -- ^ exported for the outer-focus activity test
     , noteOuterFocus  -- ^ exported for the focus-in-clears test
@@ -1639,7 +1640,23 @@ reconcileLoop st = loop (-1)
             check (g /= lastGen)
             pure g
         reconcilePaneSizes st
+        atomically (writeTVar st.reconciled gen)
         loop gen
+
+-- | Block until 'reconcileLoop' has resized panes through the current dirty
+-- generation, so the caller observes a screen whose children have already
+-- been told their size. 'controlLoop' waits here before reporting a command
+-- done, giving @select-pane@ and friends a happens-before with the pty
+-- resize (@TIOCSWINSZ@ \/ @SIGWINCH@): when the command returns, no child is
+-- still holding a stale size. A no-op command reconciles to nothing and
+-- returns at once. Depends on a live 'reconcileLoop' to advance
+-- 'Hat.Model.reconciled'.
+awaitReconciled :: ServerState -> IO ()
+awaitReconciled st = do
+    target <- readTVarIO st.dirty
+    atomically $ do
+        done <- readTVar st.reconciled
+        check (done >= target)
 
 -- | Resize the pty and emulator of every pane whose stored size lags the
 -- layout, waking renderers once the child has been told (see 'reconcileLoop').
@@ -4231,6 +4248,10 @@ controlLoop st client = do
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
                 RErr e -> send client (ServerError e)
+            -- Report done only once any layout change the command made has
+            -- been reconciled into the panes, so a caller that immediately
+            -- inspects a pane's size never races the pty resize.
+            awaitReconciled st
             send client CommandDone
             controlLoop st client
         Just (Known Detach) -> pure ()

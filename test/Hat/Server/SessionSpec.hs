@@ -3,6 +3,7 @@ module Hat.Server.SessionSpec (spec) where
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Data.IORef (newIORef)
+import System.Timeout (timeout)
 import qualified Data.Map.Strict as Map
 import Network.Socket
     (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
@@ -17,7 +18,7 @@ import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
-    ( applySessionSize, attentionSeen, chooseActivePaneOnClose
+    ( applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
     , cmdAttachSession, chooseCurrentOnClose, deliversKey, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget
     , pickAttachSession )
@@ -346,6 +347,33 @@ spec = do
             -- bug 36: pane a is zoomed; Z targets alternate b. It must zoom
             -- b, not unzoom because *some* pane was zoomed.
             nextZoom (Just a) b `shouldBe` Just b
+
+    describe "awaitReconciled" $ do
+        let freshState = do
+                lg <- newLogger "/dev/null"
+                newServerState Map.empty lg "/tmp/hat-reconcilespec.sock" Nothing
+
+        it "returns at once when reconcile has caught up to the dirty tick" $ do
+            st <- freshState
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 5
+            settled <- timeout 1_000_000 (awaitReconciled st)
+            settled `shouldBe` Just ()
+
+        it "blocks while reconcile lags the dirty tick, then returns once it catches up" $ do
+            st <- freshState
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 2
+            -- The barrier must not report a stale generation settled: a
+            -- control command that returned here would race an unresized child.
+            early <- timeout 100_000 (awaitReconciled st)
+            early `shouldBe` Nothing
+            -- Once reconcileLoop publishes the generation, the barrier lifts.
+            atomically $ writeTVar st.reconciled 5
+            caught <- timeout 1_000_000 (awaitReconciled st)
+            caught `shouldBe` Just ()
 
     describe "deliversKey (focus-event gating)" $ do
         let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }
