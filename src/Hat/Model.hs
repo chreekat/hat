@@ -353,6 +353,9 @@ data Client = Client
     , toast     :: TVar (Maybe Text)  -- ^ display-message overlay
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
+    , outerFocused :: TVar Bool
+        -- ^ whether the client's outer terminal has OS focus (?1004); see
+        -- 'noteOuterFocus' and 'attentionSeen'.
     , env       :: [(Text, Text)]
     , cwd       :: Text
     }

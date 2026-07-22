@@ -17,8 +17,9 @@ import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
-    ( applySessionSize, chooseActivePaneOnClose, cmdAttachSession
-    , chooseCurrentOnClose, deliversKey, markBell, nextZoom, pickActivityTarget
+    ( applySessionSize, attentionSeen, chooseActivePaneOnClose
+    , cmdAttachSession, chooseCurrentOnClose, deliversKey, markActivity
+    , markBell, nextZoom, noteOuterFocus, pickActivityTarget
     , pickAttachSession )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout (Leaf))
@@ -97,6 +98,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO True     -- outerFocused
         <*> pure []
         <*> pure ""
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
@@ -147,13 +149,18 @@ spec = do
             b.prefix `shouldBe` "C-b"   -- B falls through to the global
 
     describe "current-window attention flags" $ do
+        let small = Size { rows = 24, cols = 80 }
         -- tmux shows no bell/activity marker on the window you are looking
         -- at. A bell in the current window must leave no marker — the sticky
         -- marker that only cleared on switch-away-and-back was the bug.
-        it "leaves no bell marker on the current window" $ do
+        -- "Looking at it" means an attached client whose outer terminal is
+        -- focused; see the outer-focus cases below.
+        it "leaves no bell marker on the current window with a focused client" $ do
             (st, sess) <- seedSession "/"
             w0 <- addWindow sess 0
             _  <- addWindow sess 1
+            c  <- addClient st sess.id small 1
+            atomically $ writeTVar c.outerFocused True
             atomically $ writeTVar sess.currentIx 0
             atomically $ markBell st sess.id w0
             readTVarIO w0.bellFlag `shouldReturn` False
@@ -162,9 +169,74 @@ spec = do
             (st, sess) <- seedSession "/"
             _  <- addWindow sess 0
             w1 <- addWindow sess 1
+            c  <- addClient st sess.id small 1
+            atomically $ writeTVar c.outerFocused True
             atomically $ writeTVar sess.currentIx 0
             atomically $ markBell st sess.id w1
             readTVarIO w1.bellFlag `shouldReturn` True
+
+        -- The bug: a client is attached but its OUTER terminal lost focus
+        -- (the user switched to another OS window). The hat-current window is
+        -- no longer being watched, so activity/bell there must still flag.
+        it "raises the bell marker on the current window when no viewer is focused" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            c  <- addClient st sess.id small 1
+            atomically $ writeTVar c.outerFocused False
+            atomically $ writeTVar sess.currentIx 0
+            atomically $ markBell st sess.id w0
+            readTVarIO w0.bellFlag `shouldReturn` True
+
+        it "raises the activity marker on the current window when no viewer is focused" $ do
+            (st, sess) <- seedSession "/"
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta OptMonitorActivity (OVBool True))
+            w0 <- addWindow sess 0
+            c  <- addClient st sess.id small 1
+            atomically $ writeTVar c.outerFocused False
+            atomically $ writeTVar sess.currentIx 0
+            atomically $ markActivity st sess.id w0
+            readTVarIO w0.activity `shouldReturn` True
+
+        -- One outer-focused viewer is enough to count the window as seen,
+        -- even when another attached client is unfocused.
+        it "counts the current window as seen if any viewer is focused" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            focused   <- addClient st sess.id small 1
+            unfocused <- addClient st sess.id small 2
+            atomically $ writeTVar focused.outerFocused True
+            atomically $ writeTVar unfocused.outerFocused False
+            atomically $ writeTVar sess.currentIx 0
+            atomically $ markBell st sess.id w0
+            readTVarIO w0.bellFlag `shouldReturn` False
+
+        -- The full cycle: FocusOut lets the current window flag, FocusIn (the
+        -- user looking again) clears the marker on the window it now views.
+        it "FocusIn clears the current window's markers, FocusOut lets them flag" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            c  <- addClient st sess.id small 1
+            atomically $ writeTVar sess.currentIx 0
+            noteOuterFocus st c (Key { name = "FocusOut", raw = "\ESC[O" })
+            readTVarIO c.outerFocused `shouldReturn` False
+            atomically $ markBell st sess.id w0
+            readTVarIO w0.bellFlag `shouldReturn` True
+            noteOuterFocus st c (Key { name = "FocusIn", raw = "\ESC[I" })
+            readTVarIO c.outerFocused `shouldReturn` True
+            readTVarIO w0.bellFlag `shouldReturn` False
+
+    describe "attentionSeen" $ do
+        -- The pure rule behind the outer-focus gating: a session-current
+        -- window is "seen" (suppress its marker) only when some attached
+        -- viewer's outer terminal is focused.
+        it "is seen when current and a viewer is focused" $
+            attentionSeen True True `shouldBe` True
+        it "is not seen when current but no viewer is focused" $
+            attentionSeen True False `shouldBe` False
+        it "is never seen when not current" $ do
+            attentionSeen False True `shouldBe` False
+            attentionSeen False False `shouldBe` False
 
     describe "chooseCurrentOnClose" $ do
         -- Closing the current window should jump to the last-active window,

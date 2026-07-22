@@ -39,13 +39,14 @@ mkClient = do
     toastV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
     pickV   <- newTVarIO Nothing
+    focusV  <- newTVarIO True
     let client = Client
             { id = ClientId 0, sock = a, sendLock = lock, size = sizeV
             , lastActive = activeV
             , session = sessV, lastSession = lastV, ready = readyV
             , keyState = keyV, lastFrame = frameV, lastCursor = curV
             , needsFull = fullV, toast = toastV, prompt = promptV
-            , picker = pickV, env = [], cwd = "" }
+            , picker = pickV, outerFocused = focusV, env = [], cwd = "" }
     pure (client, b)
 
 recv :: Socket -> IO (Maybe (Inbound ServerToClient))

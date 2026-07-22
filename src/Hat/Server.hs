@@ -28,6 +28,9 @@ module Hat.Server
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
     , markBell  -- ^ exported for the current-window bell test
+    , markActivity  -- ^ exported for the outer-focus activity test
+    , noteOuterFocus  -- ^ exported for the focus-in-clears test
+    , attentionSeen  -- ^ exported for the outer-focus gating test
     , deliversKey  -- ^ exported for the focus-event gating test
     , mainPaneRatio  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
@@ -1113,6 +1116,7 @@ newClient st conn h = do
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
+    focusVar <- newTVarIO True
     pure Client
         { id = ClientId cid
         , sock = conn
@@ -1129,6 +1133,7 @@ newClient st conn h = do
         , toast = toastVar
         , prompt = promptVar
         , picker = pickerVar
+        , outerFocused = focusVar
         , env = h.env
         , cwd = h.cwd
         }
@@ -1394,28 +1399,67 @@ isCurrentWindow sess win = do
     ws <- readTVar sess.windows
     pure $ maybe False (\w -> w.id == win.id) (Map.lookup cur ws)
 
--- | Flag a background window as having activity, when @monitor-activity@
--- is on. The current window is exempt — you are already watching it, so no
--- attention marker belongs there (mirrors 'markBell', which exempts the
--- current window the same way).
+-- | Whether a window counts as being watched, so its attention marker is
+-- suppressed. A window is "seen" only when it is the session's current
+-- window AND some attached client viewing it has its outer terminal focused
+-- (?1004). If every viewer's outer terminal is unfocused — the user has
+-- switched to another OS window — even the current window is unwatched and
+-- must still flag activity/bell.
+attentionSeen :: Bool -> Bool -> Bool
+attentionSeen isCurrent anyViewerFocused = isCurrent && anyViewerFocused
+
+-- | Resolve 'attentionSeen' against live state: whether @win@ is the
+-- session's current window and any attached client has outer focus.
+windowSeen :: ServerState -> Session -> Window -> STM Bool
+windowSeen st sess win = do
+    current <- isCurrentWindow sess win
+    cs <- sessionClients st sess.id
+    anyFocused <- or <$> mapM (readTVar . (.outerFocused)) cs
+    pure (attentionSeen current anyFocused)
+
+-- | Flag a window as having activity, when @monitor-activity@ is on. A
+-- window being watched ('windowSeen') is exempt — no attention marker
+-- belongs on what the user is looking at (mirrors 'markBell', which exempts
+-- a watched window the same way).
 markActivity :: ServerState -> SessionId -> Window -> STM ()
 markActivity st sid win = do
     msess <- Map.lookup sid <$> readTVar st.sessions
     forM_ msess $ \sess -> do
         opts <- resolveForWindow st sess win
         when opts.monitorActivity $ do
-            current <- isCurrentWindow sess win
-            unless current $ writeTVar win.activity True
+            seen <- windowSeen st sess win
+            unless seen $ writeTVar win.activity True
 
--- | Raise a window's bell marker. The current window is exempt — you are
--- already watching it — so only a background bell leaves a visible marker;
--- the audible bell rings regardless (see the 'Emu.Bell' handler).
+-- | Raise a window's bell marker. A window being watched ('windowSeen') is
+-- exempt — you are already looking at it — so only a bell you are not
+-- watching leaves a visible marker; the audible bell rings regardless (see
+-- the 'Emu.Bell' handler).
 markBell :: ServerState -> SessionId -> Window -> STM ()
 markBell st sid win = do
     msess <- Map.lookup sid <$> readTVar st.sessions
     forM_ msess $ \sess -> do
-        current <- isCurrentWindow sess win
-        unless current $ writeTVar win.bellFlag True
+        seen <- windowSeen st sess win
+        unless seen $ writeTVar win.bellFlag True
+
+-- | Track a client's outer-terminal focus from its ?1004 reports. FocusOut
+-- means the user looked away, so activity/bell on the window it is viewing
+-- will start flagging (see 'windowSeen'). FocusIn means they are looking
+-- again: clear the marker on the window the client now views. Non-focus
+-- keys are ignored.
+noteOuterFocus :: ServerState -> Client -> Key -> IO ()
+noteOuterFocus st client k
+    | k.name == "FocusOut" = atomically $ writeTVar client.outerFocused False
+    | k.name == "FocusIn"  = atomically $ do
+        writeTVar client.outerFocused True
+        sid <- readTVar client.session
+        msess <- Map.lookup sid <$> readTVar st.sessions
+        forM_ msess $ \sess -> do
+            mwin <- currentWindow sess
+            forM_ mwin $ \win -> do
+                writeTVar win.activity False
+                writeTVar win.bellFlag False
+        bumpDirty st
+    | otherwise = pure ()
 
 -- The grace a hung-up child gets before SIGKILL: long enough for a
 -- well-behaved child to die on SIGHUP, short enough that a shutdown never
@@ -1798,6 +1842,10 @@ handleKeys st client bs = do
                 Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
               k <- reencodeCursor mpane k0
+              -- The outer terminal's ?1004 focus reports track whether the
+              -- user is watching this client, independent of whether the
+              -- pane's app asked for them (the 'keepKey' gate below).
+              noteOuterFocus st client k
               keep <- keepKey opts mpane k
               if not keep
                 then loop kst rest
