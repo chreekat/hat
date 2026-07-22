@@ -18,7 +18,7 @@ import Hat.Model.Options
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
     ( applySessionSize, chooseActivePaneOnClose, cmdAttachSession
-    , chooseCurrentOnClose, deliversKey, markBell, pickActivityTarget
+    , chooseCurrentOnClose, deliversKey, markBell, nextZoom, pickActivityTarget
     , pickAttachSession )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout (Leaf))
@@ -255,6 +255,25 @@ spec = do
         it "has nothing to attach to when there are no sessions" $
             pickAttachSession (Just 2) (Map.empty :: Map.Map Int String)
                 `shouldBe` Nothing
+
+    describe "nextZoom" $ do
+        -- The author's @Z@ binding runs @resize-pane -t ! -Z@ to zoom the
+        -- alternate pane. Toggle must key off the *target*, not on whether
+        -- any zoom exists: zooming the alternate while a different pane is
+        -- already zoomed must land on the alternate, not just unzoom.
+        let a = PaneId 1
+            b = PaneId 2
+
+        it "zooms the target when nothing is zoomed" $
+            nextZoom Nothing b `shouldBe` Just b
+
+        it "unzooms when the target is the zoomed pane" $
+            nextZoom (Just b) b `shouldBe` Nothing
+
+        it "zooms the alternate when another pane is already zoomed" $
+            -- bug 36: pane a is zoomed; Z targets alternate b. It must zoom
+            -- b, not unzoom because *some* pane was zoomed.
+            nextZoom (Just a) b `shouldBe` Just b
 
     describe "deliversKey (focus-event gating)" $ do
         let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }

@@ -32,6 +32,7 @@ module Hat.Server
     , mainPaneRatio  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     , applyUpdateEnvironment  -- ^ exported for the update-environment effect test
+    , nextZoom  -- ^ exported for the zoom-alternate-pane test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -3169,8 +3170,9 @@ cmdResizePane st mclient args = do
                     pure []
 
 -- | Toggle zoom on the caller's current window. With a @-t@ target the
--- targeted pane becomes active first, so @resize-pane -t ! -Z@ zooms the
--- alternate pane (as the config's @Z@ binding intends).
+-- targeted pane becomes active first and the toggle keys off it, so
+-- @resize-pane -t ! -Z@ zooms the alternate pane even while another pane is
+-- already zoomed (as the config's @Z@ binding intends). See 'nextZoom'.
 zoomTarget :: ServerState -> Maybe Client -> Maybe Text -> IO ()
 zoomTarget st mclient mtok = do
     mtarget <- targetPane st mclient mtok
@@ -3184,12 +3186,20 @@ zoomTarget st mclient mtok = do
                     writeTVar win.activeId pane.id
             mz <- readTVar win.zoomed
             newActive <- readTVar win.activeId
-            writeTVar win.zoomed $ case mz of
-                Just _ -> Nothing
-                Nothing -> Just newActive
+            writeTVar win.zoomed (nextZoom mz newActive)
             bumpDirty st
         applySessionSize st sess.id
         pure []
+
+-- | The zoom state after toggling zoom on a target pane: unzoom only when
+-- that pane is the one already zoomed, otherwise zoom it. Keying off the
+-- target (not merely whether some pane is zoomed) is what lets @resize-pane
+-- -t ! -Z@ zoom the alternate pane even while another pane is zoomed. See
+-- 'zoomTarget'.
+nextZoom :: Maybe PaneId -> PaneId -> Maybe PaneId
+nextZoom mz target
+    | mz == Just target = Nothing
+    | otherwise         = Just target
 
 cmdDetachClient :: CommandImpl
 cmdDetachClient _ mclient _ = do
