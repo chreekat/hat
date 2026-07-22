@@ -12,13 +12,17 @@
 { haskell, haskellPackages, libvterm-neovim, nix-gitignore }:
 
 let
-  # Checks stay enabled here so the package's test dependencies (hspec, …)
-  # are part of its build-input closure; the flake devShell derives its GHC
-  # from this via shellFor and needs them to run `cabal test`.
-  withTests = haskellPackages.callCabal2nix "hat"
+  # Checks and benchmarks stay enabled here so the package's test AND
+  # benchmark dependencies are part of its build-input closure; the flake
+  # devShell derives its GHC from this via shellFor and needs them to run
+  # `cabal test` and `cabal bench`. shellFor pulls testHaskellDepends only
+  # when checks are enabled and benchmarkHaskellDepends only when benchmarks
+  # are — under `active-repositories: :none` a dep absent from the global db
+  # is a hard failure, not a Hackage fetch, so the shell must carry both.
+  withTests = haskell.lib.doBenchmark (haskellPackages.callCabal2nix "hat"
     (nix-gitignore.gitignoreSource [ ] ./.) {
       vterm = libvterm-neovim;
-    };
+    });
   # dontCheck: the test suite locates the hat binary via `cabal list-bin`
   # and drives it through real ptys alongside dev tools (vim, htop, …) —
   # it runs in the dev shell (`cabal test`), not in the build sandbox.
