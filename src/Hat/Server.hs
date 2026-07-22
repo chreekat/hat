@@ -2866,12 +2866,40 @@ cmdLastPane st mclient _ =
                 bumpDirty st
         pure []
 
+-- | Kill a pane: detach it from the model first — the reflow is
+-- synchronous with the command, never waiting on signal delivery, the
+-- child's exit, or the reader's reap ('detachPane' makes the double
+-- attempt safe) — then hang the child up; the reader's @finally@ reaps
+-- the OS side behind ('closePane').
 cmdKillPane :: CommandImpl
 cmdKillPane st mclient args = do
     let (opts, _, _) = parseArgs "t" args
     mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane hangupPane
+    forM_ mpane $ \pane -> do
+        (r, msid) <- atomically $ do
+            mloc <- locatePane st pane.id
+            case mloc of
+                Nothing -> pure (AlreadyDetached, Nothing)
+                Just (sid, win) -> do
+                    r <- detachPane st sid win pane
+                    pure (r, Just sid)
+        forM_ msid $ \sid -> do
+            when (r /= AlreadyDetached) $ applySessionSize st sid
+            when (r == Detached SessionEmptied) $ broadcast st sid Exited
+        hangupPane pane
     pure []
+
+-- | The session and window a live pane belongs to. See 'cmdKillPane'.
+locatePane :: ServerState -> PaneId -> STM (Maybe (SessionId, Window))
+locatePane st pid = do
+    sessions <- readTVar st.sessions
+    hits <- forM (Map.toList sessions) $ \(sid, sess) -> do
+        ws <- Map.elems <$> readTVar sess.windows
+        winHits <- forM ws $ \win -> do
+            ps <- readTVar win.panes
+            pure [(sid, win) | Map.member pid ps]
+        pure (concat winHits)
+    pure (listToMaybe (concat hits))
 
 -- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
 -- positions. @src@ defaults to the active pane; without @-d@ the active
