@@ -39,7 +39,7 @@ import Control.Concurrent.Async (race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-    (IOException, SomeException, bracket, catch, finally, try)
+    (IOException, SomeException, bracket, catch, finally, handle, try)
 import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -1546,16 +1546,25 @@ reconcileLoop st = loop (-1)
 
 -- | Resize the pty and emulator of every pane whose stored size lags the
 -- layout, waking renderers once the child has been told (see 'reconcileLoop').
+-- A pane whose pty has already closed (its child exiting mid-tick) fails only
+-- its own resize — logged, not raised — so one dead pane neither aborts the
+-- rest nor kills the loop. 'pane.size' is committed only after the child is
+-- actually resized, so a failure leaves the pane to retry rather than claiming
+-- a size its child never heard about.
 reconcilePaneSizes :: ServerState -> IO ()
 reconcilePaneSizes st = do
     targets <- atomically (paneSizeTargets st)
     forM_ targets $ \(pane, sz) -> do
         old <- readTVarIO pane.size
-        when (old /= sz) $ do
-            atomically (writeTVar pane.size sz)
-            Hat.Term.Pty.resize pane.pty sz
-            Emu.resize pane.emulator sz
-            atomically (bumpDirty st)
+        when (old /= sz) $
+            handle (\(e :: IOException) ->
+                        logEvent st.logger PaneResizeFailed
+                            { pane = rawPane pane.id, err = T.pack (show e) }) $ do
+                Hat.Term.Pty.resize pane.pty sz
+                Emu.resize pane.emulator sz
+                atomically $ do
+                    writeTVar pane.size sz
+                    bumpDirty st
 
 -- | The size the current layout assigns to every live pane across all
 -- sessions. See 'reconcilePaneSizes'.

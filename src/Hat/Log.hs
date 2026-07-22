@@ -37,6 +37,7 @@ data LogEvent
     | ClientDetached  { client :: Int, reason :: Text }
     | PaneSpawned     { pane :: Int, cmd :: Text }
     | PaneExited      { pane :: Int }
+    | PaneResizeFailed { pane :: Int, err :: Text }
     | CommandRun      { client :: Int, command :: Text }
     | ConfigError     { file :: FilePath, err :: Text }
     | ProtocolError   { client :: Int, err :: Text }
