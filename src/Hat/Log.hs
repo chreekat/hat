@@ -38,6 +38,7 @@ data LogEvent
     | PaneSpawned     { pane :: Int, cmd :: Text }
     | PaneExited      { pane :: Int }
     | PaneResizeFailed { pane :: Int, err :: Text }
+    | DaemonFault     { daemon :: Text, err :: Text }  -- ^ a background loop hit an expected fault; logged, non-fatal
     | CommandRun      { client :: Int, command :: Text }
     | ConfigError     { file :: FilePath, err :: Text }
     | ProtocolError   { client :: Int, err :: Text }

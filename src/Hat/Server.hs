@@ -35,11 +35,12 @@ module Hat.Server
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
-import Control.Concurrent.Async (race, withAsync)
+import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, finally, handle, try)
+import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -190,42 +191,56 @@ runServerWith path mconfig mhandover = do
             -- connection), so the autostarting client is always counted
             -- before we can drain, whatever the config-load timing.
             atomically (writeTVar st.configLoading False)
-        -- Keep status-line clocks fresh.
-        _ <- forkIO $ forever $ do
-            threadDelay 15_000_000
-            atomically (bumpDirty st)
-        -- Keep pane pty/emulator sizes in step with the layout (see
-        -- 'reconcileLoop').
-        _ <- forkIO (reconcileLoop st)
-        -- Track foreground commands for automatic-rename windows and the
-        -- clients' desktop titles.
         titlesRef <- newIORef Map.empty
-        _ <- forkIO $ forever $ do
-            threadDelay 500_000
-            refreshAutoNames st
-            refreshTitles st titlesRef
-        -- Continuously mirror the session tree into the SQLite store so a
-        -- restart can rebuild it (see 'persistLoop').
-        mpersist <- forM mstore $ \p -> forkIO (persistLoop st p)
-        -- Follow the desktop light/dark preference (waits out the config
-        -- load internally). Killed below so its monitor subprocess dies
-        -- with the server rather than lingering as an orphan.
-        schemeTid <- forkIO (watchColorScheme st)
-        r <- race (acceptLoop st lsock) (waitIdle st)
-        killThread schemeTid
+        -- Background daemons run under 'withDaemons': each is bracketed by
+        -- 'withAsync' (all torn down when the serve loop returns — no leaked
+        -- threads, and the persist mirror stops before the store is dropped)
+        -- and 'link'ed, so an unexpected fault re-raises here rather than
+        -- vanishing. Each daemon catches its own expected failures, so a link
+        -- fires only on a genuine bug.
+        let clockDaemon = forever $ do            -- keep status-line clocks fresh
+                threadDelay 15_000_000
+                atomically (bumpDirty st)
+            -- Track foreground commands for automatic-rename windows and the
+            -- clients' desktop titles. A dead pane's /proc read is the expected
+            -- failure here (logged, skipped) — anything else is a real bug.
+            titleDaemon = forever $ do
+                threadDelay 500_000
+                (refreshAutoNames st >> refreshTitles st titlesRef)
+                    `catch` \(e :: IOException) ->
+                        logEvent lg DaemonFault
+                            { daemon = "auto-rename", err = T.pack (show e) }
+            daemons =
+                [ clockDaemon
+                , reconcileLoop st                -- pane sizes track the layout
+                , titleDaemon
+                , watchColorScheme st             -- follow the desktop theme
+                ] <> [ persistLoop st p | p <- maybe [] pure mstore ]
+        r <- withDaemons daemons (race (acceptLoop st lsock) (waitIdle st))
         case r of
             Left () -> pure ()
             Right () -> do
                 logEvent lg ServerStopping { reason = "no sessions left" }
-                -- Stop the mirror first so no in-flight write can recreate
-                -- the store after we drop it. The tree drained (every
-                -- window closed), so the next start must be pristine —
-                -- unless kill-server asked to keep the tree for a restore.
-                forM_ mpersist killThread
+                -- The daemons (the persist mirror included) are already torn
+                -- down, so no in-flight write can recreate the store after we
+                -- drop it. The tree drained (every window closed), so the next
+                -- start must be pristine — unless kill-server asked to keep the
+                -- tree for a restore.
                 preserve <- readTVarIO st.preserveStore
                 unless preserve $ forM_ mstore $ \p ->
                     removeFile p `catch` \(_ :: IOException) -> pure ()
                 removeFile path `catch` \(_ :: IOException) -> pure ()
+
+-- | Run @body@ with each daemon alive under 'withAsync', so all are cancelled
+-- when @body@ returns or throws (the bracket pattern: no leaked threads, and
+-- teardown is ordered — every daemon stops before whatever runs after the
+-- scope). Each is 'link'ed, so a daemon dying of an unexpected fault is
+-- re-raised in this thread instead of vanishing silently; daemons catch their
+-- own expected failures, so a link only ever fires on a genuine bug.
+withDaemons :: [IO ()] -> IO a -> IO a
+withDaemons ds body = foldr spawn body ds
+  where
+    spawn d k = withAsync d $ \a -> link a >> k
 
 -- | Run a startup action (config load + restore), then clear the
 -- @restoring@ gate — always, even if it throws. A gate left set parks
@@ -346,12 +361,16 @@ saveNow st = forM_ st.store $ \path -> do
     snap <- captureSnapshot st
     unless (null snap.sessions) (saveSnapshotNow path snap)
 
--- Best-effort write; persistence must never take down the server, so any
--- store failure (I/O, a lost lock race) is swallowed rather than raised.
+-- Best-effort write; persistence must never take down the server, so a store
+-- failure (a SQLite error, a lost lock race, a filesystem error) is swallowed
+-- rather than raised. Only these synchronous failures are caught: an async
+-- exception (the persist daemon being cancelled at shutdown) must pass through,
+-- or 'cancel' would hang waiting on a loop that ate its own cancellation.
 saveSnapshotNow :: FilePath -> Snapshot -> IO ()
 saveSnapshotNow path snap =
     (withStore path $ \conn -> saveSnapshot conn snap)
-        `catch` \(_ :: SomeException) -> pure ()
+        `catch` \(_ :: SQLError) -> pure ()
+        `catch` \(_ :: IOException) -> pure ()
 
 -- | Read the whole session tree into a pure 'Snapshot': sessions in id
 -- order, windows by index, panes in layout order with their live cwd.
