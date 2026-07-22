@@ -71,6 +71,7 @@ library
         Hat.Client.Tty
         Hat.FuzzyMatch
         Hat.Geometry
+        Hat.Intern
         Hat.Log
         Hat.Model
         Hat.Model.Ids
@@ -198,6 +199,7 @@ test-suite hat-test
         Hat.Client.DrawSpec
         Hat.Command.ParserSpec
         Hat.FuzzyMatchSpec
+        Hat.InternSpec
         Hat.IntegrationSpec
         Hat.PathSpec
         Hat.Server.PersistSpec
