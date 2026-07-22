@@ -18,12 +18,13 @@ import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
-    ( applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
-    , cmdAttachSession, chooseCurrentOnClose, deliversKey, markActivity
-    , markBell, nextZoom, noteOuterFocus, pickActivityTarget
+    ( DetachResult (..), SessionFate (..)
+    , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
+    , cmdAttachSession, chooseCurrentOnClose, deliversKey, detachPane
+    , markActivity, markBell, nextZoom, noteOuterFocus, pickActivityTarget
     , pickAttachSession )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
-import Hat.Server.Layout (Layout (Leaf))
+import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
 
 -- A bare session with the given id inserted into an existing server.
@@ -104,6 +105,28 @@ addClient st sid sz stamp = do
         <*> pure ""
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
+
+-- A model-only pane for exercising 'detachPane', which touches a pane's
+-- id and dead flag but never its pty or emulator (those stay with the
+-- reader thread's reap). The unused fields trap on access.
+stubPane :: Int -> IO Pane
+stubPane n = do
+    sizeV <- newTVarIO (Size { rows = 24, cols = 80 })
+    deadV <- newTVarIO False
+    modeV <- newTVarIO Nothing
+    pipeV <- newTVarIO Nothing
+    tidV  <- newTVarIO Nothing
+    pure Pane
+        { id = PaneId n
+        , pty = error "stubPane: pty is never touched by detachPane"
+        , emulator = error "stubPane: emulator is never touched by detachPane"
+        , size = sizeV
+        , dead = deadV
+        , startCwd = "/"
+        , mode = modeV
+        , pipe = pipeV
+        , readerTid = tidV
+        }
 
 spec :: Spec
 spec = do
@@ -347,6 +370,65 @@ spec = do
             -- bug 36: pane a is zoomed; Z targets alternate b. It must zoom
             -- b, not unzoom because *some* pane was zoomed.
             nextZoom (Just a) b `shouldBe` Just b
+
+    describe "detachPane" $ do
+        -- A pane's removal from the model is one atomic transaction,
+        -- decoupled from the child's OS teardown (see 'reapPane'). Both the
+        -- killing command and the reader thread's finally may attempt it;
+        -- the dead-guard makes exactly one win, for ANY interleaving.
+        let twoPaneWindow = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                pa <- stubPane 1
+                pb <- stubPane 2
+                atomically $ do
+                    writeTVar win.layout
+                        (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                    writeTVar win.panes
+                        (Map.fromList [(pa.id, pa), (pb.id, pb)])
+                    writeTVar win.activeId pa.id
+                pure (st, sess, win, pa, pb)
+
+        it "removes the pane and reactivates a survivor in one transaction" $ do
+            (st, _, win, pa, pb) <- twoPaneWindow
+            r <- atomically (detachPane st (SessionId 0) win pa)
+            r `shouldBe` Detached SessionSurvives
+            readTVarIO win.layout `shouldReturn` Leaf pb.id
+            (Map.member pa.id <$> readTVarIO win.panes) `shouldReturn` False
+            readTVarIO win.activeId `shouldReturn` pb.id
+
+        it "no-ops for the loser of a detach race" $ do
+            -- Without the dead-guard a second detach would see the pane's
+            -- leaf already gone and wrongly collapse the whole window.
+            (st, sess, win, pa, _) <- twoPaneWindow
+            _  <- atomically (detachPane st (SessionId 0) win pa)
+            r2 <- atomically (detachPane st (SessionId 0) win pa)
+            r2 `shouldBe` AlreadyDetached
+            (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` True
+
+        it "collapses the window when its last pane detaches" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            _   <- addWindow sess 1     -- another window survives
+            pa <- stubPane 1
+            atomically $ do
+                writeTVar win.layout (Leaf pa.id)
+                writeTVar win.panes (Map.singleton pa.id pa)
+            r <- atomically (detachPane st (SessionId 0) win pa)
+            r `shouldBe` Detached SessionSurvives
+            (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` False
+
+        it "reports the session emptied by its last pane" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            pa <- stubPane 1
+            atomically $ do
+                writeTVar win.layout (Leaf pa.id)
+                writeTVar win.panes (Map.singleton pa.id pa)
+            r <- atomically (detachPane st (SessionId 0) win pa)
+            r `shouldBe` Detached SessionEmptied
+            (Map.member (SessionId 0) <$> readTVarIO st.sessions)
+                `shouldReturn` False
 
     describe "awaitReconciled" $ do
         let freshState = do

@@ -28,6 +28,9 @@ module Hat.Server
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
+    , detachPane  -- ^ exported for the pane-detach test
+    , DetachResult (..)
+    , SessionFate (..)
     , markBell  -- ^ exported for the current-window bell test
     , markActivity  -- ^ exported for the outer-focus activity test
     , noteOuterFocus  -- ^ exported for the focus-in-clears test
@@ -1483,23 +1486,33 @@ hangupPane pane = do
         Just tid -> killThread tid
         Nothing  -> Hat.Term.Pty.closePty pane.pty
 
--- | Release everything a pane owns and remove it from the model. Runs
--- exactly once, in the reader thread's @finally@, so no teardown path can
--- forget a resource. (The emulator frees itself via its finalizer.)
+-- | Tear a pane down from the reader thread's @finally@: the model detach
+-- (idempotent — a killing command may already have done it, see
+-- 'detachPane') followed by the OS-side reap, which runs exactly once here
+-- so no teardown path can forget a resource. (The emulator frees itself via
+-- its finalizer.)
 closePane :: ServerState -> SessionId -> Window -> Pane -> IO ()
 closePane st sid win pane = do
-    stopPipe pane
-    -- Wait for the child, but bound it: a child that ignores SIGHUP would
-    -- never exit on its own, so on timeout escalate to SIGKILL and wait
-    -- again. The reaper always fills the exit slot, so the second wait is
-    -- guaranteed to complete.
-    reaped <- timeout paneExitWaitMicros (Hat.Term.Pty.waitExit pane.pty)
-    when (reaped == Nothing) $ do
-        Hat.Term.Pty.signalKill pane.pty
-        void $ Hat.Term.Pty.waitExit pane.pty
-    Hat.Term.Pty.closePty pane.pty
-    logEvent st.logger PaneExited { pane = rawPane pane.id }
-    sessionGone <- atomically $ do
+    r <- atomically (detachPane st sid win pane)
+    when (r /= AlreadyDetached) $ applySessionSize st sid
+    reapPane st pane
+    when (r == Detached SessionEmptied) $ broadcast st sid Exited
+
+-- | The model half of a pane's teardown, in one atomic transaction: drop
+-- the pane from its window's map and layout, reactivate a surviving pane,
+-- and collapse an emptied window (and session) upward. Guarded by
+-- @pane.dead@, so of the two racers that may both attempt it — the killing
+-- command ('cmdKillPane', for a reflow synchronous with the command) and
+-- the reader thread's @finally@ — exactly one performs it under ANY
+-- interleaving; the loser sees 'AlreadyDetached' and must not touch the
+-- model (a second removal would find the leaf gone and wrongly collapse
+-- the window). Deliberately free of any OS-side effect: the child's
+-- lifetime is 'reapPane''s business, so the screen never waits on a
+-- process.
+detachPane :: ServerState -> SessionId -> Window -> Pane -> STM DetachResult
+detachPane st sid win pane = do
+    isDead <- readTVar pane.dead
+    if isDead then pure AlreadyDetached else do
         writeTVar pane.dead True
         modifyTVar' win.panes (Map.delete pane.id)
         lay <- readTVar win.layout
@@ -1515,11 +1528,11 @@ closePane st sid win pane = do
                         writeTVar win.activeId next
                         writeTVar win.lastActive Nothing
                 bumpDirty st
-                pure Nothing
+                pure (Detached SessionSurvives)
             Nothing -> do
                 msess <- Map.lookup sid <$> readTVar st.sessions
                 case msess of
-                    Nothing -> pure Nothing
+                    Nothing -> pure (Detached SessionSurvives)
                     Just sess -> do
                         ws <- readTVar sess.windows
                         let ws' = Map.filter (\w -> w.id /= win.id) ws
@@ -1527,7 +1540,7 @@ closePane st sid win pane = do
                         if Map.null ws'
                             then do
                                 modifyTVar' st.sessions (Map.delete sid)
-                                pure (Just sess)
+                                pure (Detached SessionEmptied)
                             else do
                                 cur <- readTVar sess.currentIx
                                 mlast <- readTVar sess.lastIx
@@ -1536,9 +1549,31 @@ closePane st sid win pane = do
                                     writeTVar sess.currentIx ix
                                     writeTVar sess.lastIx Nothing
                                 bumpDirty st
-                                pure Nothing
-    forM_ sessionGone $ \_ -> broadcast st sid Exited
-    applySessionSize st sid
+                                pure (Detached SessionSurvives)
+
+-- | What 'detachPane' did. See 'detachPane'.
+data DetachResult = AlreadyDetached | Detached SessionFate
+    deriving (Eq, Show)
+
+-- | Whether a detach emptied the pane's whole session. See 'detachPane'.
+data SessionFate = SessionSurvives | SessionEmptied
+    deriving (Eq, Show)
+
+-- | The OS half of a pane's teardown: stop any pipe-pane, wait for the
+-- child — bounded, since a child that ignores SIGHUP would never exit on
+-- its own; on timeout escalate to SIGKILL and wait again (the reaper
+-- always fills the exit slot, so the second wait is guaranteed to
+-- complete) — then release the pty. Runs once, in the reader thread's
+-- @finally@ (see 'closePane').
+reapPane :: ServerState -> Pane -> IO ()
+reapPane st pane = do
+    stopPipe pane
+    reaped <- timeout paneExitWaitMicros (Hat.Term.Pty.waitExit pane.pty)
+    when (reaped == Nothing) $ do
+        Hat.Term.Pty.signalKill pane.pty
+        void $ Hat.Term.Pty.waitExit pane.pty
+    Hat.Term.Pty.closePty pane.pty
+    logEvent st.logger PaneExited { pane = rawPane pane.id }
 
 -- | Pick the window to make current after one is closed. 'Nothing' means
 -- leave the current window as-is (it survived the close). Otherwise, when
