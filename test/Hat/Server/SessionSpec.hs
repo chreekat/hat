@@ -21,8 +21,8 @@ import Hat.Server
     ( DetachResult (..), SessionFate (..)
     , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
     , cmdAttachSession, chooseCurrentOnClose, deliversKey, detachPane
-    , markActivity, markBell, nextZoom, noteOuterFocus, pickActivityTarget
-    , pickAttachSession )
+    , detachPanes, markActivity, markBell, nextZoom, noteOuterFocus
+    , pickActivityTarget, pickAttachSession )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
@@ -427,6 +427,44 @@ spec = do
                 writeTVar win.panes (Map.singleton pa.id pa)
             r <- atomically (detachPane st (SessionId 0) win pa)
             r `shouldBe` Detached SessionEmptied
+            (Map.member (SessionId 0) <$> readTVarIO st.sessions)
+                `shouldReturn` False
+
+    describe "detachPanes" $ do
+        -- kill-window/-session detach a whole set of panes in one
+        -- transaction, so the window (and an emptied session) collapses
+        -- synchronously with the command — never waiting on the children.
+        let paneIn win n = do
+                p <- stubPane n
+                atomically $ modifyTVar' win.panes (Map.insert p.id p)
+                pure p
+
+        it "collapses a window when all its panes detach at once, session surviving" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            _  <- addWindow sess 1
+            pa <- paneIn w0 1
+            pb <- paneIn w0 2
+            atomically $ writeTVar w0.layout
+                (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+            emptied <- atomically $ detachPanes st
+                [(SessionId 0, w0, pa), (SessionId 0, w0, pb)]
+            emptied `shouldBe` []
+            (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` False
+            (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` True
+
+        it "empties the session when every pane in it detaches at once" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            w1 <- addWindow sess 1
+            pa <- paneIn w0 1
+            pb <- paneIn w1 2
+            atomically $ do
+                writeTVar w0.layout (Leaf pa.id)
+                writeTVar w1.layout (Leaf pb.id)
+            emptied <- atomically $ detachPanes st
+                [(SessionId 0, w0, pa), (SessionId 0, w1, pb)]
+            emptied `shouldBe` [SessionId 0]
             (Map.member (SessionId 0) <$> readTVarIO st.sessions)
                 `shouldReturn` False
 

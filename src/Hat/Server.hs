@@ -29,6 +29,7 @@ module Hat.Server
     , applySessionSize  -- ^ exported for the aggressive-resize test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , detachPane  -- ^ exported for the pane-detach test
+    , detachPanes  -- ^ exported for the multi-pane-detach test
     , DetachResult (..)
     , SessionFate (..)
     , markBell  -- ^ exported for the current-window bell test
@@ -58,7 +59,7 @@ import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -1575,6 +1576,31 @@ reapPane st pane = do
     Hat.Term.Pty.closePty pane.pty
     logEvent st.logger PaneExited { pane = rawPane pane.id }
 
+-- | Detach a whole set of located panes in one transaction, so a window —
+-- and a session emptied with it — collapses atomically. Returns the
+-- sessions the detach emptied (their clients need an @Exited@). The model
+-- primitive behind kill-window\/-session\/-server; see 'killPaneLocs' for
+-- the surrounding OS teardown and 'detachPane' for the per-pane guard.
+detachPanes :: ServerState -> [(SessionId, Window, Pane)] -> STM [SessionId]
+detachPanes st = fmap catMaybes . mapM detach
+  where
+    detach (sid, win, pane) = do
+        r <- detachPane st sid win pane
+        pure (if r == Detached SessionEmptied then Just sid else Nothing)
+
+-- | Kill a set of located panes: detach them from the model in one
+-- transaction (the reflow is synchronous with the command and never waits
+-- on signal delivery, child exit, or the reader's reap), redraw the
+-- sessions that survive, tell the clients of any emptied session, and hang
+-- the children up for their reader threads to reap ('closePane'). The one
+-- IO primitive behind kill-pane\/-window\/-session.
+killPaneLocs :: ServerState -> [(SessionId, Window, Pane)] -> IO ()
+killPaneLocs st locs = do
+    emptied <- atomically (detachPanes st locs)
+    forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
+    forM_ (List.nub emptied) $ \sid -> broadcast st sid Exited
+    forM_ locs $ \(_, _, pane) -> hangupPane pane
+
 -- | Pick the window to make current after one is closed. 'Nothing' means
 -- leave the current window as-is (it survived the close). Otherwise, when
 -- the current window is gone, prefer the session's last-active window (as
@@ -2717,9 +2743,9 @@ cmdResizeWindow st mclient args = do
 
 cmdKillWindow :: CommandImpl
 cmdKillWindow st mclient _ =
-    withCurrentWindow st mclient $ \_ win -> do
+    withCurrentWindow st mclient $ \sess win -> do
         ps <- readTVarIO win.panes
-        forM_ (Map.elems ps) hangupPane
+        killPaneLocs st [(sess.id, win, p) | p <- Map.elems ps]
         pure []
 
 cmdRenameWindow :: CommandImpl
@@ -2866,27 +2892,15 @@ cmdLastPane st mclient _ =
                 bumpDirty st
         pure []
 
--- | Kill a pane: detach it from the model first — the reflow is
--- synchronous with the command, never waiting on signal delivery, the
--- child's exit, or the reader's reap ('detachPane' makes the double
--- attempt safe) — then hang the child up; the reader's @finally@ reaps
--- the OS side behind ('closePane').
+-- | Kill the target pane: detach it from the model first so the reflow is
+-- synchronous with the command, then reap the child behind ('killPaneLocs').
 cmdKillPane :: CommandImpl
 cmdKillPane st mclient args = do
     let (opts, _, _) = parseArgs "t" args
     mpane <- targetPane st mclient (lookup "-t" opts)
     forM_ mpane $ \pane -> do
-        (r, msid) <- atomically $ do
-            mloc <- locatePane st pane.id
-            case mloc of
-                Nothing -> pure (AlreadyDetached, Nothing)
-                Just (sid, win) -> do
-                    r <- detachPane st sid win pane
-                    pure (r, Just sid)
-        forM_ msid $ \sid -> do
-            when (r /= AlreadyDetached) $ applySessionSize st sid
-            when (r == Detached SessionEmptied) $ broadcast st sid Exited
-        hangupPane pane
+        mloc <- atomically (locatePane st pane.id)
+        forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
     pure []
 
 -- | The session and window a live pane belongs to. See 'cmdKillPane'.
@@ -3963,10 +3977,12 @@ cmdKillSession :: CommandImpl
 cmdKillSession st mclient args = do
     let (opts, _, _) = parseArgs "t" args
     withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
-        panes <- atomically $ do
-            ws <- readTVar sess.windows
-            fmap concat . forM (Map.elems ws) $ windowPanes
-        forM_ panes hangupPane
+        locs <- atomically $ do
+            ws <- Map.elems <$> readTVar sess.windows
+            fmap concat . forM ws $ \win -> do
+                ps <- Map.elems <$> readTVar win.panes
+                pure [(sess.id, win, p) | p <- ps]
+        killPaneLocs st locs
         pure []
 
 cmdHasSession :: CommandImpl
