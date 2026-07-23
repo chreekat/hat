@@ -14,6 +14,7 @@ module Hat.Server
     , cmdAttachSession  -- ^ exported for the session re-anchor test
     , cmdSourceFile  -- ^ exported for the reload tilde-expansion test
     , PaneStart (..)  -- ^ exported for the restore-argv test
+    , SpawnOrigin (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
@@ -476,7 +477,10 @@ captureWindow ws = do
         -- The whole argv, so a restore re-opens the same file; the
         -- whitelist (see 'restoreRun') decides whether it is re-run.
         argv <- Hat.Term.Pty.foregroundArgv pane.pty
-        pure PaneSnap { cwd = T.pack dir, command = argv }
+        -- Whether that program was a child of the pane's interactive shell,
+        -- so a restore can relaunch it through the shell (see 'restoreRun').
+        shellSp <- Hat.Term.Pty.foregroundIsChild pane.pty
+        pure PaneSnap { cwd = T.pack dir, command = argv, shellSpawned = shellSp }
     pure WindowSnap
         { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
         , active = ws.wsActive, lastActive = ws.wsLastActive
@@ -697,7 +701,8 @@ restorePane
     -> [Text] -> PaneSnap -> IO Pane
 restorePane st sid shellCmd env sz whitelist psnap = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
-    spawnPane st pid sid shellCmd (restoreRun whitelist psnap.command)
+    let origin = if psnap.shellSpawned then ShellSpawned else Direct
+    spawnPane st pid sid shellCmd (restoreRun whitelist origin psnap.command)
         (T.unpack psnap.cwd) env sz
 
 -- Reload: capture the live tree with its inherited handles, and rebuild it
@@ -888,14 +893,21 @@ restoreWhitelist st = do
         Just v | not (T.null (T.strip v)) -> T.words v
         _                                 -> defaultRestoreCommands
 
--- | Re-exec the captured argv only when its program is whitelisted;
--- otherwise the pane comes back as a plain shell. Exec'ing the argv
--- directly (never through a shell) is what keeps an argument with spaces —
--- @vim "Foo Bar.txt"@ — from being re-split on restore.
-restoreRun :: [Text] -> Maybe [Text] -> PaneStart
-restoreRun whitelist mcmd = case mcmd of
+-- | Re-run the captured argv only when its program is whitelisted;
+-- otherwise the pane comes back as a plain shell. A program that was started
+-- from inside the pane's interactive shell ('ShellSpawned') comes back
+-- through that shell, so the shell init — direnv, per-directory env, PATH —
+-- runs before it (bug d). A program the pane was launched directly on
+-- ('Direct') is exec'd bare; doing so (never through a shell) is what keeps
+-- an argument with spaces — @vim "Foo Bar.txt"@ — from being re-split on
+-- restore. Either way the argv is passed through unsplit.
+restoreRun :: [Text] -> SpawnOrigin -> Maybe [Text] -> PaneStart
+restoreRun whitelist origin mcmd = case mcmd of
     Just argv@(prog : _) | commandName prog `elem` whitelist ->
-        ExecArgv (resumeArgv (commandName prog) argv)
+        let resumed = resumeArgv (commandName prog) argv
+        in case origin of
+            ShellSpawned -> ShellExecArgv resumed
+            Direct       -> ExecArgv resumed
     _ -> FreshShell
 
 -- | The argv a whitelisted program is re-exec'd with. Most programs get
@@ -1301,12 +1313,33 @@ data PaneStart
                          --   (@new-window@\/@split-window@ with an argument)
     | ExecArgv [Text]    -- ^ exec this argv directly, no shell. See
                          --   'restoreRun'.
+    | ShellExecArgv [Text]
+                         -- ^ run this argv through the pane's interactive
+                         --   login shell, so the shell init (direnv, per-dir
+                         --   env, PATH) runs before it. See 'restoreRun' and
+                         --   'spawnPane'.
+    deriving (Eq, Show)
+
+-- | Where a captured program was running: as a child of the pane's
+-- interactive shell (the user typed it), or as the pane's own top-level
+-- process (a pane launched directly on a program). See 'restoreRun'.
+data SpawnOrigin = ShellSpawned | Direct
     deriving (Eq, Show)
 
 -- | The shell-command spawn semantics for the user-facing @new-window@ and
 -- @split-window@: an argument is a command line for the shell to interpret.
 shellStart :: Maybe Text -> PaneStart
 shellStart = maybe FreshShell ShellCommand
+
+-- | The argv for launching the login shell so it runs @argv@ after its
+-- interactive startup files (bug d): @-i@ makes it source the user's rc — the
+-- direnv hook, aliases, PATH tweaks — before @-c@ execs the program. @exec
+-- "$@"@ replaces the shell with the program (so it owns the pane and no idle
+-- shell lingers behind it); @argv@ is passed as positional parameters rather
+-- than spliced into the command string, so an argument with spaces stays one
+-- argument — no shell re-splitting.
+shellExecArgs :: [Text] -> [String]
+shellExecArgs argv = ["-i", "-c", "exec \"$@\"", "hat-restore"] <> map T.unpack argv
 
 spawnPane
     :: ServerState -> PaneId -> SessionId -> FilePath -> PaneStart
@@ -1330,10 +1363,12 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             , ("HAT_PANE", "%" <> show (rawPane pid))
             ]
         (cmd, args) = case mrun of
-            FreshShell        -> (shellCmd, [])
-            ShellCommand run  -> ("/bin/sh", ["-c", T.unpack run])
-            ExecArgv (p:rest) -> (T.unpack p, map T.unpack rest)
-            ExecArgv []       -> (shellCmd, [])
+            FreshShell             -> (shellCmd, [])
+            ShellCommand run       -> ("/bin/sh", ["-c", T.unpack run])
+            ExecArgv (p:rest)      -> (T.unpack p, map T.unpack rest)
+            ExecArgv []            -> (shellCmd, [])
+            ShellExecArgv []       -> (shellCmd, [])
+            ShellExecArgv argv     -> (shellCmd, shellExecArgs argv)
     pty <- Hat.Term.Pty.spawn Hat.Term.Pty.Spawn
         { cmd = cmd
         , args = args

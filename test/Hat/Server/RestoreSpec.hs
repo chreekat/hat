@@ -9,7 +9,7 @@ import Test.Hspec
 import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Hat.Server
-    (PaneStart (..), PersistDecision (..), StorePin (..),
+    (PaneStart (..), PersistDecision (..), SpawnOrigin (..), StorePin (..),
      defaultRestoreCommands, finallyClearRestoring, persistDecision,
      restoreRun)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
@@ -52,28 +52,47 @@ spec = do
 
         -- b7/f: the whole argv comes back, and an argument with spaces stays
         -- one argument — exec'd directly, never re-split by a shell.
-        it "re-execs a whitelisted program with all of its arguments" $
-            restoreRun whitelist (Just ["vim", "Foo Bar.txt"])
+        it "re-execs a directly-launched whitelisted program with all its args" $
+            restoreRun whitelist Direct (Just ["vim", "Foo Bar.txt"])
                 `shouldBe` ExecArgv ["vim", "Foo Bar.txt"]
 
         it "drops to a fresh shell for a non-whitelisted program" $
-            restoreRun whitelist (Just ["bash", "-l"]) `shouldBe` FreshShell
+            restoreRun whitelist Direct (Just ["bash", "-l"]) `shouldBe` FreshShell
 
         it "drops to a fresh shell when nothing was captured" $
-            restoreRun whitelist Nothing `shouldBe` FreshShell
+            restoreRun whitelist Direct Nothing `shouldBe` FreshShell
+
+        -- d: a whitelisted program that was originally started from inside the
+        -- pane's interactive shell comes back through that shell (so the shell
+        -- init — direnv, per-dir env, PATH — runs), not exec'd bare.
+        it "runs a shell-spawned whitelisted program through the shell" $
+            restoreRun whitelist ShellSpawned (Just ["vim", "Foo Bar.txt"])
+                `shouldBe` ShellExecArgv ["vim", "Foo Bar.txt"]
+
+        -- A shell-spawned but non-whitelisted program still just drops to a
+        -- fresh shell — the whitelist gate comes first.
+        it "drops a shell-spawned non-whitelisted program to a fresh shell" $
+            restoreRun whitelist ShellSpawned (Just ["bash", "-l"])
+                `shouldBe` FreshShell
 
         -- df: a restored claude pane must resume the same conversation, so
         -- whatever argv was saved (claude, claude -r foo, …), it comes back
         -- as @claude --continue@ — never the original arguments.
         it "restores claude as claude --continue regardless of saved args" $
-            restoreRun defaultRestoreCommands (Just ["claude", "-r", "foo"])
+            restoreRun defaultRestoreCommands Direct (Just ["claude", "-r", "foo"])
                 `shouldBe` ExecArgv ["claude", "--continue"]
 
         it "keeps the saved claude binary path when rewriting to --continue" $
-            restoreRun defaultRestoreCommands
+            restoreRun defaultRestoreCommands Direct
                 (Just ["/nix/store/abc/bin/.claude-wrapped", "-r", "foo"])
                 `shouldBe`
                     ExecArgv ["/nix/store/abc/bin/.claude-wrapped", "--continue"]
+
+        -- The --continue rewrite carries through the shell wrapper too, so a
+        -- shell-spawned claude both resumes and picks up direnv.
+        it "rewrites a shell-spawned claude to --continue through the shell" $
+            restoreRun defaultRestoreCommands ShellSpawned (Just ["claude", "-r", "foo"])
+                `shouldBe` ShellExecArgv ["claude", "--continue"]
 
     describe "persistDecision" $ do
         let one = sampleSnapshot "one"
