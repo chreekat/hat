@@ -38,8 +38,20 @@
         default = pkgs.haskellPackages.shellFor {
           packages = p: [ (pkgs.callPackage ./package.nix { }).withTests ];
           nativeBuildInputs = [ pkgs.pkg-config ];
+          # Installs the pre-commit hook that guards hat.nix against drift
+          # from hat.cabal (see scripts/check-hat-nix.sh). Idempotent, and
+          # worktree-safe via `git rev-parse --git-path`.
+          shellHook = ''
+            if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              hookdir=$(git rev-parse --git-path hooks)
+              mkdir -p "$hookdir"
+              ln -sf "$(git rev-parse --show-toplevel)/scripts/pre-commit" \
+                "$hookdir/pre-commit"
+            fi
+          '';
           buildInputs = [
             pkgs.cabal-install
+            pkgs.cabal2nix
             pkgs.libvterm-neovim
             pkgs.haskellPackages.weeder
 

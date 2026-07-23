@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Git pre-commit hook. Installed into .git/hooks/pre-commit by the flake
+# devShell's shellHook (see flake.nix). Keeps generated files in sync.
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+exec "$repo_root/scripts/check-hat-nix.sh"
