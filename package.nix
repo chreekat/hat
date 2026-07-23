@@ -19,10 +19,17 @@ let
   # when checks are enabled and benchmarkHaskellDepends only when benchmarks
   # are — under `active-repositories: :none` a dep absent from the global db
   # is a hard failure, not a Hackage fetch, so the shell must carry both.
-  withTests = haskell.lib.doBenchmark (haskellPackages.callCabal2nix "hat"
-    (nix-gitignore.gitignoreSource [ ] ./.) {
+  #
+  # hat.nix is the committed cabal2nix output (kept in sync by the
+  # pre-commit hook in scripts/); callPackage on it avoids the IFD a live
+  # callCabal2nix would incur. src is overridden to the gitignore-filtered
+  # tree so a callPackage on a live checkout does not copy dist-newstyle.
+  withTests = haskell.lib.doBenchmark
+    ((haskellPackages.callPackage ./hat.nix {
       vterm = libvterm-neovim;
-    });
+    }).overrideAttrs (_: {
+      src = nix-gitignore.gitignoreSource [ ] ./.;
+    }));
   # dontCheck: the test suite locates the hat binary via `cabal list-bin`
   # and drives it through real ptys alongside dev tools (vim, htop, …) —
   # it runs in the dev shell (`cabal test`), not in the build sandbox.
