@@ -16,6 +16,7 @@ module Hat.Server
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , SpawnOrigin (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
+    , shellExecArgs   -- ^ exported for the shell-wrapper test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
     , chooseActivePaneOnClose  -- ^ exported for the close-to-last-pane test
@@ -1333,13 +1334,18 @@ shellStart = maybe FreshShell ShellCommand
 
 -- | The argv for launching the login shell so it runs @argv@ after its
 -- interactive startup files (bug d): @-i@ makes it source the user's rc — the
--- direnv hook, aliases, PATH tweaks — before @-c@ execs the program. @exec
--- "$@"@ replaces the shell with the program (so it owns the pane and no idle
--- shell lingers behind it); @argv@ is passed as positional parameters rather
--- than spliced into the command string, so an argument with spaces stays one
--- argument — no shell re-splitting.
+-- direnv hook, aliases, PATH tweaks — before @-c@ runs the program. Sourcing
+-- rc only installs direnv's hook on @PROMPT_COMMAND@; a @-c@ shell never draws
+-- a prompt, so the hook must be fired by hand — @eval "$PROMPT_COMMAND"@ —
+-- for the pane's per-directory env to load before the program. (Unset outside
+-- bash, that eval is a harmless no-op.) @exec "$@"@ then replaces the shell
+-- with the program, so it owns the pane and no idle shell lingers; @argv@
+-- rides as positional parameters rather than spliced into the command string,
+-- so an argument with spaces stays one argument — no shell re-splitting.
 shellExecArgs :: [Text] -> [String]
-shellExecArgs argv = ["-i", "-c", "exec \"$@\"", "hat-restore"] <> map T.unpack argv
+shellExecArgs argv =
+    ["-i", "-c", "eval \"$PROMPT_COMMAND\"; exec \"$@\"", "hat-restore"]
+        <> map T.unpack argv
 
 spawnPane
     :: ServerState -> PaneId -> SessionId -> FilePath -> PaneStart

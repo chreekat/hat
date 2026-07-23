@@ -11,7 +11,7 @@ import Hat.Model (ServerState (..), newServerState)
 import Hat.Server
     (PaneStart (..), PersistDecision (..), SpawnOrigin (..), StorePin (..),
      defaultRestoreCommands, finallyClearRestoring, persistDecision,
-     restoreRun)
+     restoreRun, shellExecArgs)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 
 -- A minimal non-empty tree: one named session with no windows is enough
@@ -74,6 +74,15 @@ spec = do
         it "drops a shell-spawned non-whitelisted program to a fresh shell" $
             restoreRun whitelist ShellSpawned (Just ["bash", "-l"])
                 `shouldBe` FreshShell
+
+        -- d: the shell wrapper fires the shell's prompt hooks before exec,
+        -- so direnv (bash installs it on PROMPT_COMMAND, which -c never
+        -- reaches on its own) loads the pane's per-directory env before the
+        -- program runs. The argv rides as positional params, unsplit.
+        it "runs the shell's prompt hooks before exec so direnv loads" $
+            shellExecArgs ["vim", "Foo Bar.txt"] `shouldBe`
+                [ "-i", "-c", "eval \"$PROMPT_COMMAND\"; exec \"$@\""
+                , "hat-restore", "vim", "Foo Bar.txt" ]
 
         -- df: a restored claude pane must resume the same conversation, so
         -- whatever argv was saved (claude, claude -r foo, …), it comes back
