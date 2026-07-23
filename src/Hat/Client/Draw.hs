@@ -69,7 +69,6 @@ fgCode = \case
     DefaultColor -> mempty
     Indexed n
         | n < 8 -> BB.char8 ';' <> BB.intDec (30 + fromIntegral n)
-        | n < 16 -> BB.char8 ';' <> BB.intDec (90 + fromIntegral n - 8)
         | otherwise -> BB.byteString ";38;5;" <> BB.intDec (fromIntegral n)
     RGB r g b -> BB.byteString ";38;2;"
         <> BB.intDec (fromIntegral r) <> BB.char8 ';'
@@ -81,7 +80,6 @@ bgCode = \case
     DefaultColor -> mempty
     Indexed n
         | n < 8 -> BB.char8 ';' <> BB.intDec (40 + fromIntegral n)
-        | n < 16 -> BB.char8 ';' <> BB.intDec (100 + fromIntegral n - 8)
         | otherwise -> BB.byteString ";48;5;" <> BB.intDec (fromIntegral n)
     RGB r g b -> BB.byteString ";48;2;"
         <> BB.intDec (fromIntegral r) <> BB.char8 ';'
