@@ -20,6 +20,7 @@ module Hat.Term.Pty
     , pid
     , foregroundCommand
     , foregroundArgv
+    , foregroundIsChild
     , parseCmdline
     , getWinsize
     , setWinsize
@@ -276,6 +277,20 @@ foregroundArgv pty = do
             pure $ case c of
                 Left (_ :: IOException) -> Nothing
                 Right bs -> parseCmdline bs
+
+-- | Whether the pty's foreground program is a child of the pane's top-level
+-- process rather than that process itself. True when a program is running
+-- under the pane's interactive shell (the user typed it); False when the
+-- foreground group is the top-level process itself (a pane launched directly
+-- on a program), or when the foreground group can't be read. This is the
+-- signal a restore uses to decide whether to relaunch a program through the
+-- shell (so the shell init — direnv, per-dir env — runs) or exec it bare.
+foregroundIsChild :: PtyHandle -> IO Bool
+foregroundIsChild pty = do
+    r <- try (getTerminalProcessGroupID pty.master)
+    pure $ case r of
+        Left (_ :: IOException) -> False
+        Right pgrp              -> pgrp /= pty.child
 
 -- | Split a @\/proc\/\<pid\>\/cmdline@ payload into argv. Fields are
 -- NUL-separated (with a trailing NUL), and each is decoded leniently: a

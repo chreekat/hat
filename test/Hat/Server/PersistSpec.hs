@@ -89,10 +89,11 @@ instance Arbitrary WindowSnap where
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
 instance Arbitrary PaneSnap where
-    arbitrary = PaneSnap <$> genText <*> genMaybeArgv
+    arbitrary = PaneSnap <$> genText <*> genMaybeArgv <*> arbitrary
     shrink p =
         [ p { cwd = c } | c <- shrinkText p.cwd ]
         ++ [ p { command = mc } | mc <- shrinkMaybeArgv p.command ]
+        ++ [ p { shellSpawned = False } | p.shellSpawned ]
 
 -- A captured command is either absent or a non-empty argv (argv[0] is the
 -- program); the empty list is not a value capture ever produces.
@@ -142,7 +143,7 @@ spec = do
                             [ WindowSnap { ix = 0, name = wnm, layout = lay
                                 , active = 0, lastActive = Nothing
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = pcwd, command = Nothing }] }
+                                , panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False }] }
                             ] } ] }
 
         it "reads rows written before the extra column existed" $ do
@@ -191,6 +192,29 @@ spec = do
                 loadSnapshot conn
             paneCommands got `shouldBe` [Just ["vim"]]
 
+        -- d: a pane extra with no shell_spawned key (written before the field
+        -- existed) defaults to a directly-launched program.
+        it "defaults a command with no shell_spawned key to directly-launched" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane \
+                    \VALUES (0, 0, 0, '/h', '{\"command\":[\"vim\"]}')"
+                loadSnapshot conn
+            paneShellSpawned got `shouldBe` [False]
+
+        -- d: a shell-spawned program round-trips through the extra JSON.
+        it "reads a shell_spawned command as shell-spawned" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/h', \
+                    \'{\"command\":[\"vim\"],\"shell_spawned\":true}')"
+                loadSnapshot conn
+            paneShellSpawned got `shouldBe` [True]
+
     -- b7: restore must preserve the last-active window and pane, not just
     -- the current ones. These fields used to be dropped by the codec.
     it "round-trips the last-active window and pane" $ do
@@ -202,13 +226,13 @@ spec = do
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, lastActive = Nothing
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/h", command = Nothing }] }
+                                , panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
                                 , active = 1, lastActive = Just 0
                                 , autoRename = False
                                 , panes =
-                                    [ PaneSnap { cwd = "/h", command = Nothing }
-                                    , PaneSnap { cwd = "/h", command = Nothing } ] }
+                                    [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }
+                                    , PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False } ] }
                             ] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
@@ -220,7 +244,7 @@ spec = do
     it "round-trips each window's automatic-rename status" $ do
         let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
                 , active = 0, lastActive = Nothing, autoRename = auto
-                , panes = [PaneSnap { cwd = "/h", command = Nothing }] }
+                , panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
@@ -241,15 +265,38 @@ spec = do
                                 , active = 0, lastActive = Nothing
                                 , autoRename = False
                                 , panes = [ PaneSnap { cwd = "/h"
-                                    , command = Just ["vim", "Foo Bar.txt"] } ] } ] } ] }
+                                    , command = Just ["vim", "Foo Bar.txt"]
+                                    , shellSpawned = False } ] } ] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         got `shouldBe` snap
+
+    -- d: whether a program was shell-spawned survives a save/load, so a
+    -- restore knows to relaunch it through the pane's shell.
+    it "round-trips a pane's shell-spawned flag" $ do
+        let pane sp = PaneSnap { cwd = "/h", command = Just ["vim"], shellSpawned = sp }
+            snap = Snapshot
+                { lastActiveSession = Nothing, sessions =
+                    [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
+                        , lastIx = Nothing
+                        , windows =
+                            [ WindowSnap { ix = 0, name = "w", layout = "l"
+                                , active = 0, lastActive = Nothing
+                                , autoRename = False
+                                , panes = [pane True, pane False] } ] } ] }
+        got <- withStore ":memory:" $ \conn ->
+            saveSnapshot conn snap >> loadSnapshot conn
+        paneShellSpawned got `shouldBe` [True, False]
 
 -- Every pane's captured command, in load order.
 paneCommands :: Snapshot -> [Maybe [Text]]
 paneCommands snap =
     [ p.command | s <- snap.sessions, w <- s.windows, p <- w.panes ]
+
+-- Every pane's shell-spawned flag, in load order.
+paneShellSpawned :: Snapshot -> [Bool]
+paneShellSpawned snap =
+    [ p.shellSpawned | s <- snap.sessions, w <- s.windows, p <- w.panes ]
 
 -- Run an action against a fresh in-memory database.
 withRaw :: (Connection -> IO a) -> IO a

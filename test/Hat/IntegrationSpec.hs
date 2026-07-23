@@ -667,12 +667,12 @@ spec = parallel $ do
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, lastActive = Nothing
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0, lastActive = Nothing
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing }
-                                          , PaneSnap { cwd = "/tmp", command = Nothing }] }
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -702,7 +702,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, lastActive = Nothing
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing }] }
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap

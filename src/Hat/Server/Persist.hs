@@ -81,6 +81,13 @@ data PaneSnap = PaneSnap
                                --   Storing argv as a list, not a flattened
                                --   string, keeps an argument with spaces
                                --   intact — no shell re-splitting on restore.
+    , shellSpawned :: Bool     -- ^ whether 'command' was running as a child of
+                               --   the pane's interactive shell (the user typed
+                               --   it) rather than as the pane's top-level
+                               --   process (a direct @new-window prog@); carried
+                               --   in the row's @extra@ JSON. A store written
+                               --   before this field omits the key; it defaults
+                               --   to 'False'. See 'Hat.Server.restoreRun'.
     }
     deriving (Eq, Show)
 
@@ -128,30 +135,38 @@ decodeWindowExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
     Just (WindowExtra ml auto) -> (ml, auto)
     Nothing                    -> (Nothing, False)
 
--- | The pane row's @extra@ JSON payload. Evolving, optional fields live
--- here rather than in core columns, so old and new binaries interoperate.
-newtype PaneExtra = PaneExtra (Maybe [Text])
+-- | The pane row's @extra@ JSON payload: the captured command and whether it
+-- was spawned from inside the pane's interactive shell. Evolving, optional
+-- fields live here rather than in core columns, so old and new binaries
+-- interoperate. A store written before @shell_spawned@ existed omits the key;
+-- it defaults to 'False'.
+data PaneExtra = PaneExtra (Maybe [Text]) Bool
 
 instance ToJSON PaneExtra where
-    toJSON (PaneExtra mc) = object (maybe [] (\argv -> ["command" .= argv]) mc)
+    toJSON (PaneExtra mc shellSp) =
+        object (maybe [] (\argv -> ["command" .= argv]) mc
+                ++ ["shell_spawned" .= shellSp | shellSp])
 
 instance FromJSON PaneExtra where
     parseJSON = withObject "pane extra" $ \o -> do
         mv <- o .:? "command"
-        PaneExtra <$> traverse parseArgv mv
+        mc <- traverse parseArgv mv
+        shellSp <- fromMaybe False <$> o .:? "shell_spawned"
+        pure (PaneExtra mc shellSp)
       where
         -- Accept an argv array (current) or a bare string (a store written
         -- by an older binary that persisted only the program name).
         parseArgv (String s) = pure [s]
         parseArgv v          = parseJSON v
 
-encodeExtra :: Maybe [Text] -> Text
-encodeExtra mc = TE.decodeUtf8 (BL.toStrict (encode (PaneExtra mc)))
+encodeExtra :: Maybe [Text] -> Bool -> Text
+encodeExtra mc shellSp =
+    TE.decodeUtf8 (BL.toStrict (encode (PaneExtra mc shellSp)))
 
-decodeExtra :: Text -> Maybe [Text]
+decodeExtra :: Text -> (Maybe [Text], Bool)
 decodeExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
-    Just (PaneExtra mc) -> mc
-    Nothing             -> Nothing
+    Just (PaneExtra mc shellSp) -> (mc, shellSp)
+    Nothing                     -> (Nothing, False)
 
 -- | Schema version stamped into the @meta@ table. A forward-looking breadcrumb,
 -- NOT a read-time gate: 'loadSnapshot' reads leniently (core columns, defaulting
@@ -247,7 +262,7 @@ saveSnapshot conn snap = withTransaction conn $ do
         execute conn
             "INSERT INTO pane (session_seq, window_ix, ordinal, cwd, extra) \
             \VALUES (?, ?, ?, ?, ?)"
-            (sseq, wix, ord, p.cwd, encodeExtra p.command)
+            (sseq, wix, ord, p.cwd, encodeExtra p.command p.shellSpawned)
 
 -- | Read the whole tree back. Returns an empty snapshot for a fresh store.
 loadSnapshot :: Connection -> IO Snapshot
@@ -283,5 +298,5 @@ loadSnapshot conn = do
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
             , lastActive = lastAct, autoRename = auto
-            , panes = [ PaneSnap { cwd = c, command = decodeExtra ex }
-                      | (c, ex) <- prows ] }
+            , panes = [ PaneSnap { cwd = c, command = mc, shellSpawned = shellSp }
+                      | (c, ex) <- prows, let (mc, shellSp) = decodeExtra ex ] }
