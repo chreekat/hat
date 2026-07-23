@@ -18,7 +18,7 @@ import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
-    ( DetachResult (..), SessionFate (..)
+    ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
     , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
     , cmdAttachSession, chooseCurrentOnClose, deliversKey, detachPane
     , detachPanes, markActivity, markBell, nextZoom, noteOuterFocus
@@ -467,6 +467,25 @@ spec = do
             emptied `shouldBe` [SessionId 0]
             (Map.member (SessionId 0) <$> readTVarIO st.sessions)
                 `shouldReturn` False
+
+    describe "serverIdle" $ do
+        let idle = IdleInputs
+                { idleAttached = True, idleServed = True, idleLoading = False
+                , idleSessions = 0, idleClients = 0, idlePanes = 0 }
+        it "is idle once served, drained, and every pane reaped" $
+            serverIdle idle `shouldBe` True
+        it "stays busy while a pane is still being reaped" $
+            -- bug 98: a drained server must outlive its children's reap, so a
+            -- SIGHUP-ignoring child is SIGKILLed rather than orphaned on exit.
+            serverIdle (idle { idlePanes = 1 }) `shouldBe` False
+        it "stays busy until it has served a client" $ do
+            serverIdle (idle { idleServed = False }) `shouldBe` False
+            serverIdle (idle { idleAttached = False }) `shouldBe` False
+        it "stays busy while config is still loading" $
+            serverIdle (idle { idleLoading = True }) `shouldBe` False
+        it "stays busy while any session or client remains" $ do
+            serverIdle (idle { idleSessions = 1 }) `shouldBe` False
+            serverIdle (idle { idleClients = 1 }) `shouldBe` False
 
     describe "awaitReconciled" $ do
         let freshState = do

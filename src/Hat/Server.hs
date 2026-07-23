@@ -32,6 +32,8 @@ module Hat.Server
     , detachPanes  -- ^ exported for the multi-pane-detach test
     , DetachResult (..)
     , SessionFate (..)
+    , serverIdle  -- ^ exported for the idle-predicate test
+    , IdleInputs (..)
     , markBell  -- ^ exported for the current-window bell test
     , markActivity  -- ^ exported for the outer-focus activity test
     , noteOuterFocus  -- ^ exported for the focus-in-clears test
@@ -274,16 +276,41 @@ acquireLock lockPath = do
         Left (_ :: IOException) -> LockHeldElsewhere
         Right () -> LockWon
 
--- Exit once every session is gone AND every attached client has
--- drained and disconnected, so nobody's final Exited message is cut off.
+-- | The reasons a server stays alive, gathered for 'serverIdle'. See it.
+data IdleInputs = IdleInputs
+    { idleAttached :: Bool
+    , idleServed   :: Bool
+    , idleLoading  :: Bool
+    , idleSessions :: Int
+    , idleClients  :: Int
+    , idlePanes    :: Int
+    }
+
+-- | Whether the server may exit: it has served at least one client, is done
+-- loading config, and has no sessions, clients, or live panes left. The
+-- live-pane term is what keeps a drained server alive until every child it
+-- spawned has been reaped — since 'cmdKillPane' detaches a pane from the
+-- model before its child is reaped, an empty session map no longer implies
+-- the children are gone, and exiting first would orphan a SIGHUP-ignoring
+-- child mid-'reapPane'. See 'waitIdle'.
+serverIdle :: IdleInputs -> Bool
+serverIdle i =
+    i.idleAttached && i.idleServed && not i.idleLoading
+        && i.idleSessions == 0 && i.idleClients == 0 && i.idlePanes == 0
+
+-- Exit once every session is gone, every attached client has drained and
+-- disconnected (so nobody's final Exited message is cut off), and every
+-- pane's child has been reaped (so a drain never orphans one). See 'serverIdle'.
 waitIdle :: ServerState -> IO ()
 waitIdle st = atomically $ do
-    armed <- readTVar st.everAttached
-    served <- readTVar st.served
-    loading <- readTVar st.configLoading
-    sess <- readTVar st.sessions
-    cs <- readTVar st.clients
-    check (armed && served && not loading && Map.null sess && Map.null cs)
+    inputs <- IdleInputs
+        <$> readTVar st.everAttached
+        <*> readTVar st.served
+        <*> readTVar st.configLoading
+        <*> (Map.size <$> readTVar st.sessions)
+        <*> (Map.size <$> readTVar st.clients)
+        <*> readTVar st.livePanes
+    check (serverIdle inputs)
 
 -- Persistence ----------------------------------------------------------
 
@@ -1339,10 +1366,17 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
 -- the pane's resources and model entry are released however the loop ends
 -- — clean EOF, a hang-up from a kill command, or an exception.
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
-startPaneReader st sid win pane = void . forkIO $ do
-    tid <- myThreadId
-    atomically $ writeTVar pane.readerTid (Just tid)
-    readLoop `finally` closePane st sid win pane
+startPaneReader st sid win pane = do
+    -- Count the pane live before forking, so a kill that lands before the
+    -- reader is scheduled still finds it counted and 'waitIdle' waits for
+    -- its reap. Decremented once the reader (and its 'reapPane') is done.
+    atomically $ modifyTVar' st.livePanes (+ 1)
+    void . forkIO $ do
+        tid <- myThreadId
+        atomically $ writeTVar pane.readerTid (Just tid)
+        readLoop
+            `finally` closePane st sid win pane
+            `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
     readLoop = do
         bs <- Hat.Term.Pty.readPty pane.pty

@@ -93,6 +93,9 @@ data ServerState = ServerState
     , reconciled  :: TVar Int    -- ^ dirty generation reconcileLoop has resized
                                 --   panes through; see 'awaitReconciled'
     , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
+    , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
+                                --   (running or reaping its child); see
+                                --   'Hat.Server.serverIdle'
     , everAttached :: TVar Bool  -- ^ a session has existed at some point.
                                 --   See 'waitIdle'.
     , served      :: TVar Bool  -- ^ a client connection has been accepted.
@@ -374,6 +377,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- dirty
     <*> newTVarIO 0      -- reconciled
     <*> newTVarIO 0      -- activityClock
+    <*> newTVarIO 0      -- livePanes
     <*> newTVarIO False  -- everAttached
     <*> newTVarIO False  -- served
     <*> newTVarIO False  -- configLoading
