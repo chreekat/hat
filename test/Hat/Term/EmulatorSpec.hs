@@ -92,6 +92,24 @@ spec = do
         m2 <- modes e
         m2.colorReport `shouldBe` False
 
+    -- A reload adopts a running program into a fresh emulator, which starts
+    -- with every mode off; replaying the app-set modes back into it is what
+    -- keeps a subscription (e.g. ?2031 colour reports) alive across a reload.
+    it "replays app-set modes into a fresh emulator" $ do
+        src <- new80x24
+        _ <- feedStr src "\ESC[?2031h\ESC[?1004h\ESC[?1002h"
+        m <- modes src
+        dst <- new80x24
+        _ <- feed dst (modeReplayBytes m)
+        m' <- modes dst
+        (m'.colorReport, m'.focusReport, m'.mouse)
+            `shouldBe` (True, True, MouseDrag)
+
+    it "replays nothing for an emulator with no app-set modes" $ do
+        e <- new80x24
+        m <- modes e
+        modeReplayBytes m `shouldBe` ""
+
     it "surfaces a color-scheme query (CSI ? 996 n) as an event" $ do
         e <- new80x24
         evs <- feedStr e "\ESC[?996n"

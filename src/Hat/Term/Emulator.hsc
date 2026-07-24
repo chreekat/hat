@@ -23,6 +23,7 @@ module Hat.Term.Emulator
     , resize
     , snapshot
     , modes
+    , modeReplayBytes
     , title
     , scrollbackLength
     , scrollbackLine
@@ -155,6 +156,22 @@ data Modes = Modes
     , colorReport :: Bool  -- ^ app enabled color-scheme reporting (?2031)
     }
     deriving (Eq, Show)
+
+-- | The DECSET bytes that re-establish an app's mode subscriptions in a fresh
+-- emulator — feed them into the one an in-place reload adopts a program into,
+-- and its ?2031\/?1004\/mouse subscriptions come back. @altScreen@ is omitted:
+-- it is screen-buffer state, not a subscription, and restoring it without the
+-- buffer's contents would only blank the pane.
+modeReplayBytes :: Modes -> B.ByteString
+modeReplayBytes m = B.concat $
+       mouseSeq m.mouse
+    ++ [ "\ESC[?1004h" | m.focusReport ]
+    ++ [ "\ESC[?2031h" | m.colorReport ]
+  where
+    mouseSeq MouseOff   = []
+    mouseSeq MouseClick = [ "\ESC[?1000h" ]
+    mouseSeq MouseDrag  = [ "\ESC[?1002h" ]
+    mouseSeq MouseMove  = [ "\ESC[?1003h" ]
 
 -- | Immutable view of the visible grid.
 data Screen = Screen
