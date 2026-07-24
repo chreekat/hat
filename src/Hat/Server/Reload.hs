@@ -17,6 +17,7 @@ module Hat.Server.Reload
     , ReloadSession (..)
     , ReloadWindow (..)
     , ReloadPane (..)
+    , ReloadModes (..)
     , ReloadCleanup (..)
     , Handover (..)
     , reloadEra
@@ -75,6 +76,19 @@ data ReloadPane = ReloadPane
     { cwd      :: Text
     , masterFd :: Int
     , childPid :: Int
+    , modes    :: ReloadModes  -- ^ replayed into the adopted pane's fresh
+                               --   emulator; see 'Hat.Server.adoptPane'
+    }
+    deriving (Eq, Show, Generic)
+    deriving anyclass (Serialise)
+
+-- | The app-set mode subscriptions a pane carries across a reload, so a program
+-- adopted into a fresh emulator keeps them. A blank set (everything off) is what
+-- an era-1 pane, which never recorded them, migrates to.
+data ReloadModes = ReloadModes
+    { colorReport :: Bool  -- ^ ?2031 color-scheme reporting
+    , focusReport :: Bool  -- ^ ?1004 focus reporting
+    , mouse       :: Int   -- ^ VTERM_PROP_MOUSE: 0 off, 1 click, 2 drag, 3 move
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -105,7 +119,7 @@ data Handover = Handover
 -- misdecode. The golden-byte test pins the encoding, so a shape change that
 -- forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 1
+reloadEra = 2
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -163,11 +177,37 @@ decodeReloadTree e payload
     | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    | e == 1 = case deserialiseOrFail (BL.fromStrict payload) of
+        Right v  -> Right (migrateV1 v)
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e > reloadEra =
         Left ("reload handover from a newer hat (era " <> T.pack (show e)
               <> "); this build is era " <> T.pack (show reloadEra))
     | otherwise =
-        -- Unreachable while reloadEra == 1 (eras start at 1). Becomes the
-        -- migration slot once the payload shape first changes; see the note
-        -- above.
         Left ("no migration for reload era " <> T.pack (show e))
+
+-- Era-1 payload shapes, frozen: a pane carried no mode subscriptions. CBOR
+-- Generic keys on constructor arity and field order, not names, so these
+-- positional mirrors decode an era-1 blob that a modes-bearing 'ReloadPane'
+-- no longer can. See 'decodeReloadTree'.
+data ReloadStateV1 = ReloadStateV1 [ReloadSessionV1] (Maybe Text)
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadSessionV1 = ReloadSessionV1 Text Text Int (Maybe Int) [ReloadWindowV1]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadWindowV1 =
+    ReloadWindowV1 Int Text Text Int (Maybe Int) Bool [ReloadPaneV1]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadPaneV1 = ReloadPaneV1 Text Int Int
+    deriving (Generic) deriving anyclass (Serialise)
+
+-- | Carry an era-1 tree forward: every pane gains a blank mode set, since an
+-- era-1 image never recorded one. See 'decodeReloadTree'.
+migrateV1 :: ReloadStateV1 -> ReloadState
+migrateV1 (ReloadStateV1 sess cur) = ReloadState (map migSession sess) cur
+  where
+    migSession (ReloadSessionV1 nm cwd' ci li wins) =
+        ReloadSession nm cwd' ci li (map migWindow wins)
+    migWindow (ReloadWindowV1 ix' nm lay act la ar ps) =
+        ReloadWindow ix' nm lay act la ar (map migPane ps)
+    migPane (ReloadPaneV1 cwd' mfd cpid) =
+        ReloadPane cwd' mfd cpid (ReloadModes False False 0)

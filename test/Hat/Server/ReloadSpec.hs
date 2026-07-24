@@ -60,10 +60,17 @@ instance Arbitrary ReloadWindow where
                    , (w.active, w.lastActive, w.autoRename, w.panes) ) ]
 
 instance Arbitrary ReloadPane where
-    arbitrary = ReloadPane <$> genText <*> arbitrary <*> arbitrary
+    arbitrary = ReloadPane <$> genText <*> arbitrary <*> arbitrary <*> arbitrary
     shrink p =
-        [ ReloadPane (T.pack c) m pid
-        | (c, m, pid) <- shrink (T.unpack p.cwd, p.masterFd, p.childPid) ]
+        [ ReloadPane (T.pack c) m pid ms
+        | (c, m, pid, ms) <-
+            shrink (T.unpack p.cwd, p.masterFd, p.childPid, p.modes) ]
+
+instance Arbitrary ReloadModes where
+    arbitrary = ReloadModes <$> arbitrary <*> arbitrary <*> choose (0, 3)
+    shrink m =
+        [ ReloadModes cr fr mo
+        | (cr, fr, mo) <- shrink (m.colorReport, m.focusReport, m.mouse) ]
 
 -- Re-encode a handover at an arbitrary era, to exercise the era gate. Mirrors
 -- 'encodeHandover' exactly except for the era field; the golden-byte test
@@ -95,8 +102,9 @@ unHex = B.pack . go
 fixedCleanup :: ReloadCleanup
 fixedCleanup = ReloadCleanup { listenFd = 3, live = [(7, 100)] }
 
-fixedTree :: ReloadState
-fixedTree = ReloadState
+-- A one-pane tree carrying the given mode subscriptions on its pane.
+treeWith :: ReloadModes -> ReloadState
+treeWith ms = ReloadState
     { sessions =
         [ ReloadSession
             { name = "work", startCwd = "/home", currentIx = 0, lastIx = Nothing
@@ -104,19 +112,33 @@ fixedTree = ReloadState
                 [ ReloadWindow
                     { ix = 0, name = "w", layout = "L", active = 0
                     , lastActive = Nothing, autoRename = True
-                    , panes = [ ReloadPane { cwd = "/tmp", masterFd = 7, childPid = 100 } ] } ] } ]
+                    , panes =
+                        [ ReloadPane
+                            { cwd = "/tmp", masterFd = 7, childPid = 100
+                            , modes = ms } ] } ] } ]
     , currentSession = Just "work" }
+
+-- The current-era representative, with a non-trivial mode set to pin its
+-- encoding.
+fixedTree :: ReloadState
+fixedTree = treeWith ReloadModes { colorReport = True, focusReport = False, mouse = 2 }
 
 -- The reload corpus: one committed encoding per era. A build MUST decode every
 -- vector here into the current tree (armor-style backward-compat enforcement).
 -- When 'reloadEra' is bumped, DO NOT edit an existing row — append a new one
--- with the new era's bytes and the tree they should migrate to.
+-- with the new era's bytes and the tree they should migrate to. The era-1 row
+-- predates pane modes, so it migrates to an all-off mode set.
 corpus :: [(Int, String, ReloadCleanup, ReloadState)]
 corpus =
     [ ( 1
       , "851a4841545201039f82071864ff583183009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
         \071864ffffff8164776f726b"
+      , fixedCleanup, treeWith (ReloadModes False False 0) )
+    , ( 2
+      , "851a4841545202039f82071864ff583683009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8500642f746d70\
+        \0718648400f5f402ffffff8164776f726b"
       , fixedCleanup, fixedTree )
     ]
 
@@ -154,6 +176,6 @@ spec = describe "reload handover" $ do
   where
     decodesToTree (_, hex, cl, t) =
         decodeHandover (unHex hex) `shouldBe` Right (Handover cl (Right t))
-    currentGolden = case corpus of
-        ((_, hex, _, _) : _) -> hex
-        _                    -> ""
+    currentGolden = case [ hex | (e, hex, _, _) <- corpus, e == reloadEra ] of
+        (hex : _) -> hex
+        _         -> ""

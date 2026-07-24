@@ -100,8 +100,9 @@ import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , loadSnapshot, saveSnapshot, withStore)
 import Hat.Server.Reload
-    (Handover (..), ReloadCleanup (..), ReloadPane (..), ReloadSession (..)
-    , ReloadState (..), ReloadWindow (..), decodeHandover, encodeHandover)
+    (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
+    , ReloadSession (..), ReloadState (..), ReloadWindow (..), decodeHandover
+    , encodeHandover)
 import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -752,10 +753,24 @@ captureReloadWindow ws = do
     rpanes <- forM ws.wsPanes $ \pane -> do
         dir <- paneCurrentPath pane
         let Fd fd = Hat.Term.Pty.masterFd pane.pty
+        ms <- Emu.modes pane.emulator
         pure (ReloadPane (T.pack dir) (fromIntegral fd)
-                (fromIntegral (Hat.Term.Pty.pid pane.pty)))
+                (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms))
     pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
             ws.wsLastActive ws.wsAutoRename rpanes)
+
+-- | The app-set mode subscriptions to carry across a reload; the inverse
+-- rebuild happens in 'adoptPane'.
+reloadModesOf :: Emu.Modes -> ReloadModes
+reloadModesOf m = ReloadModes
+    { colorReport = m.colorReport
+    , focusReport = m.focusReport
+    , mouse = case m.mouse of
+        Emu.MouseOff   -> 0
+        Emu.MouseClick -> 1
+        Emu.MouseDrag  -> 2
+        Emu.MouseMove  -> 3
+    }
 
 -- Read and consume the handover file the outgoing image wrote. The frozen
 -- envelope yields the cleanup core even for an incompatible version; 'Nothing'
@@ -863,6 +878,10 @@ adoptPane st sz histLimit rp = do
     pty <- Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
                               (fromIntegral rp.childPid)
     emu <- Emu.newEmulator sz histLimit
+    -- Replay the app's mode subscriptions the running program set before the
+    -- reload; the fresh emulator starts blank, and the watcher's first scheme
+    -- read then re-notifies whatever re-subscribed to ?2031 here.
+    _ <- Emu.feed emu (Emu.modeReplayBytes (emuModesOf rp.modes))
     sizeVar   <- newTVarIO sz
     deadVar   <- newTVarIO False
     modeVar   <- newTVarIO Nothing
@@ -872,6 +891,20 @@ adoptPane st sz histLimit rp = do
         { id = pid, pty = pty, emulator = emu, size = sizeVar
         , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
         , pipe = pipeVar, readerTid = readerVar }
+
+-- | Rebuild the emulator mode subscriptions a reload carried; @altScreen@ is
+-- always off (not preserved). Inverse of 'reloadModesOf'; see 'adoptPane'.
+emuModesOf :: ReloadModes -> Emu.Modes
+emuModesOf rm = Emu.Modes
+    { altScreen = False
+    , colorReport = rm.colorReport
+    , focusReport = rm.focusReport
+    , mouse = case rm.mouse of
+        1 -> Emu.MouseClick
+        2 -> Emu.MouseDrag
+        3 -> Emu.MouseMove
+        _ -> Emu.MouseOff
+    }
 
 -- The server's own environment seeds restored panes; spawnPane strips and
 -- re-adds the hat-specific vars (TERM, TMUX, HAT, …).
