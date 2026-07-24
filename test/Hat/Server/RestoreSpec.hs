@@ -9,9 +9,9 @@ import Test.Hspec
 import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Hat.Server
-    (PaneStart (..), PersistDecision (..), SpawnOrigin (..), StorePin (..),
-     defaultRestoreCommands, finallyClearRestoring, persistDecision,
-     restoreRun, shellExecArgs)
+    (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
+     SpawnOrigin (..), StorePin (..), defaultRestoreCommands,
+     finallyClearRestoring, persistDecision, restoreRun, restoreShellExec)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 
 -- A minimal non-empty tree: one named session with no windows is enough
@@ -75,14 +75,22 @@ spec = do
             restoreRun whitelist ShellSpawned (Just ["bash", "-l"])
                 `shouldBe` FreshShell
 
-        -- d: the shell wrapper fires the shell's prompt hooks before exec,
-        -- so direnv (bash installs it on PROMPT_COMMAND, which -c never
-        -- reaches on its own) loads the pane's per-directory env before the
-        -- program runs. The argv rides as positional params, unsplit.
-        it "runs the shell's prompt hooks before exec so direnv loads" $
-            shellExecArgs ["vim", "Foo Bar.txt"] `shouldBe`
-                [ "-i", "-c", "eval \"$PROMPT_COMMAND\"; exec \"$@\""
-                , "hat-restore", "vim", "Foo Bar.txt" ]
+        -- a2: direnv present → `direnv exec <cwd> <argv>`, so the per-directory
+        -- env loads under any shell; argv stays unsplit.
+        it "wraps a shell-spawned program as direnv exec when direnv is present" $
+            restoreShellExec DirenvOnPath "/bin/bash" "/work/dir"
+                ["vim", "Foo Bar.txt"]
+                `shouldBe`
+                    ("direnv", ["exec", "/work/dir", "vim", "Foo Bar.txt"])
+
+        -- a2: no direnv → login-shell relaunch (-i sources rc), argv unsplit.
+        it "falls back to a shell relaunch when direnv is absent" $
+            restoreShellExec DirenvAbsent "/bin/bash" "/work/dir"
+                ["vim", "Foo Bar.txt"]
+                `shouldBe`
+                    ( "/bin/bash"
+                    , [ "-i", "-c", "exec \"$@\""
+                      , "hat-restore", "vim", "Foo Bar.txt" ] )
 
         -- df: a restored claude pane must resume the same conversation, so
         -- whatever argv was saved (claude, claude -r foo, …), it comes back

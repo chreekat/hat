@@ -16,7 +16,8 @@ module Hat.Server
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , SpawnOrigin (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
-    , shellExecArgs   -- ^ exported for the shell-wrapper test
+    , restoreShellExec  -- ^ exported for the shell-relaunch test
+    , DirenvAvailable (..)  -- ^ exported for the shell-relaunch test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
     , chooseActivePaneOnClose  -- ^ exported for the close-to-last-pane test
@@ -894,20 +895,16 @@ restoreWhitelist st = do
         Just v | not (T.null (T.strip v)) -> T.words v
         _                                 -> defaultRestoreCommands
 
--- | Re-run the captured argv only when its program is whitelisted;
--- otherwise the pane comes back as a plain shell. A program that was started
--- from inside the pane's interactive shell ('ShellSpawned') comes back
--- through that shell, so the shell init — direnv, per-directory env, PATH —
--- runs before it (bug d). A program the pane was launched directly on
--- ('Direct') is exec'd bare; doing so (never through a shell) is what keeps
--- an argument with spaces — @vim "Foo Bar.txt"@ — from being re-split on
--- restore. Either way the argv is passed through unsplit.
+-- | Re-run the captured argv only when its program is whitelisted; otherwise
+-- the pane comes back as a plain shell. The argv is passed through unsplit.
 restoreRun :: [Text] -> SpawnOrigin -> Maybe [Text] -> PaneStart
 restoreRun whitelist origin mcmd = case mcmd of
     Just argv@(prog : _) | commandName prog `elem` whitelist ->
         let resumed = resumeArgv (commandName prog) argv
         in case origin of
+            -- Started from the pane's shell: bring its per-directory env back.
             ShellSpawned -> ShellExecArgv resumed
+            -- Launched directly: exec bare, so @vim "Foo Bar.txt"@ isn't re-split.
             Direct       -> ExecArgv resumed
     _ -> FreshShell
 
@@ -1315,10 +1312,8 @@ data PaneStart
     | ExecArgv [Text]    -- ^ exec this argv directly, no shell. See
                          --   'restoreRun'.
     | ShellExecArgv [Text]
-                         -- ^ run this argv through the pane's interactive
-                         --   login shell, so the shell init (direnv, per-dir
-                         --   env, PATH) runs before it. See 'restoreRun' and
-                         --   'spawnPane'.
+                         -- ^ relaunch this argv with the pane's per-directory
+                         --   env restored. See 'restoreShellExec'.
     deriving (Eq, Show)
 
 -- | Where a captured program was running: as a child of the pane's
@@ -1332,20 +1327,22 @@ data SpawnOrigin = ShellSpawned | Direct
 shellStart :: Maybe Text -> PaneStart
 shellStart = maybe FreshShell ShellCommand
 
--- | The argv for launching the login shell so it runs @argv@ after its
--- interactive startup files (bug d): @-i@ makes it source the user's rc — the
--- direnv hook, aliases, PATH tweaks — before @-c@ runs the program. Sourcing
--- rc only installs direnv's hook on @PROMPT_COMMAND@; a @-c@ shell never draws
--- a prompt, so the hook must be fired by hand — @eval "$PROMPT_COMMAND"@ —
--- for the pane's per-directory env to load before the program. (Unset outside
--- bash, that eval is a harmless no-op.) @exec "$@"@ then replaces the shell
--- with the program, so it owns the pane and no idle shell lingers; @argv@
--- rides as positional parameters rather than spliced into the command string,
--- so an argument with spaces stays one argument — no shell re-splitting.
-shellExecArgs :: [Text] -> [String]
-shellExecArgs argv =
-    ["-i", "-c", "eval \"$PROMPT_COMMAND\"; exec \"$@\"", "hat-restore"]
-        <> map T.unpack argv
+-- | Whether @direnv@ is on the server's PATH. See 'restoreShellExec'.
+data DirenvAvailable = DirenvOnPath | DirenvAbsent
+    deriving (Eq, Show)
+
+-- | How to relaunch a shell-spawned restored program so its pane's
+-- per-directory env loads before it runs. @argv@ rides as separate arguments,
+-- never spliced into a command string, so an argument with spaces stays one.
+restoreShellExec
+    :: DirenvAvailable -> FilePath -> FilePath -> [Text] -> (String, [String])
+-- direnv execs the program directly with the cwd's @.envrc@ loaded, so the env
+-- is restored the same under any shell — no rc, no shell-specific prompt hook.
+restoreShellExec DirenvOnPath _shell cwd argv =
+    ("direnv", ["exec", cwd] <> map T.unpack argv)
+-- Without direnv, a login shell sources the user's rc (aliases, PATH) first.
+restoreShellExec DirenvAbsent shellCmd _cwd argv =
+    (shellCmd, ["-i", "-c", "exec \"$@\"", "hat-restore"] <> map T.unpack argv)
 
 spawnPane
     :: ServerState -> PaneId -> SessionId -> FilePath -> PaneStart
@@ -1353,6 +1350,8 @@ spawnPane
 spawnPane st pid sid shellCmd mrun dir environ sz = do
     serverPid <- getProcessID
     opts <- readTVarIO st.options
+    direnv <- maybe DirenvAbsent (const DirenvOnPath)
+        <$> findExecutable "direnv"
     let cleanEnv =
             [ (T.unpack k, T.unpack v)
             | (k, v) <- environ
@@ -1374,7 +1373,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             ExecArgv (p:rest)      -> (T.unpack p, map T.unpack rest)
             ExecArgv []            -> (shellCmd, [])
             ShellExecArgv []       -> (shellCmd, [])
-            ShellExecArgv argv     -> (shellCmd, shellExecArgs argv)
+            ShellExecArgv argv     -> restoreShellExec direnv shellCmd dir argv
     pty <- Hat.Term.Pty.spawn Hat.Term.Pty.Spawn
         { cmd = cmd
         , args = args
