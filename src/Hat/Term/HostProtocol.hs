@@ -48,6 +48,7 @@ module Hat.Term.HostProtocol
     , QuerySignal (..)
     , CsSignal (..)
     , nextQuery
+    , honoredSignals
     ) where
 
 import Control.Applicative ((<|>))
@@ -77,18 +78,19 @@ data PassState
         --   payload accumulated so far
 
 -- | Strip DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's output
--- before libvterm parses it, returning the scrubbed bytes and any desktop
--- notifications carried inside the wrappers.
+-- before libvterm parses it, returning the scrubbed bytes and each completed
+-- wrapper's rebuilt payload (ESC-undoubled) for the caller to honour.
 --
 -- A tmux-aware app (claude) sees $TMUX set and wraps sequences meant for the
 -- outer terminal in this DCS; libvterm's parser aborts on the wrapper's
 -- doubled inner ESCs and spills the payload onto the screen as text (the
 -- \"11;?9;4;0;\" garbage). So the wrapper never reaches libvterm. tmux's
 -- default (@allow-passthrough off@) then discards the payload entirely; hat
--- goes one step further and honours just OSC 9\/777 desktop notifications out
--- of it (the point of a passthrough the user actually wants delivered),
--- discarding everything else. A wrapper can span pty reads, so the state —
--- including the partial payload — carries across 'feed' chunks.
+-- goes one step further and answers the host queries it recognises out of the
+-- payload (see 'honoredSignals'), discarding the rest. Framing only lives
+-- here; the caller decides what to do with each payload. A wrapper can span
+-- pty reads, so the state — including the partial payload — carries across
+-- 'feed' chunks.
 scrubPassthrough :: PassState -> ByteString -> (PassState, ByteString, [ByteString])
 scrubPassthrough st0 chunk = case st0 of
     Outside carry        -> outside [] [] (carry <> chunk)
@@ -96,29 +98,27 @@ scrubPassthrough st0 chunk = case st0 of
   where
     intro = "\ESCPtmux;"
     finish = B.concat . reverse
-    outside oacc notifs bs = case B.breakSubstring intro bs of
+    outside oacc payloads bs = case B.breakSubstring intro bs of
         (before, r)
             | B.null r ->
                 -- No wrapper here; hold back a chunk-final partial intro
                 -- (e.g. a trailing bare ESC) until the next read decides.
                 let held = introSuffix before
                     emit = B.take (B.length before - B.length held) before
-                in (Outside held, finish (emit : oacc), reverse notifs)
-            | otherwise -> inside (before : oacc) notifs [] (B.drop (B.length intro) r)
+                in (Outside held, finish (emit : oacc), reverse payloads)
+            | otherwise -> inside (before : oacc) payloads [] (B.drop (B.length intro) r)
     -- Inside the wrapper nothing reaches libvterm; the payload is rebuilt
     -- (un-doubling the ESCs the wrapper doubled) until the ST — a lone ESC
-    -- followed by backslash — closes it and its notifications are harvested.
-    inside oacc notifs pacc bs = case B.elemIndex 0x1b bs of
-        Nothing -> (Inside "" (finish (bs : pacc)), finish oacc, reverse notifs)
+    -- followed by backslash — closes it and emits the completed payload.
+    inside oacc payloads pacc bs = case B.elemIndex 0x1b bs of
+        Nothing -> (Inside "" (finish (bs : pacc)), finish oacc, reverse payloads)
         Just i ->
             let pacc' = B.take i bs : pacc
             in case B.uncons (B.drop (i + 1) bs) of
-                Nothing           -> (Inside "\ESC" (finish pacc'), finish oacc, reverse notifs)
-                Just (0x1b, rest) -> inside oacc notifs ("\ESC" : pacc') rest
-                Just (0x5c, rest) ->
-                    let found = extractNotifies (finish pacc')
-                    in outside oacc (reverse found <> notifs) rest
-                Just (c, rest)    -> inside oacc notifs (B.singleton c : pacc') rest
+                Nothing           -> (Inside "\ESC" (finish pacc'), finish oacc, reverse payloads)
+                Just (0x1b, rest) -> inside oacc payloads ("\ESC" : pacc') rest
+                Just (0x5c, rest) -> outside oacc (finish pacc' : payloads) rest
+                Just (c, rest)    -> inside oacc payloads (B.singleton c : pacc') rest
     -- The longest proper prefix of the intro that this chunk ends with.
     introSuffix bs =
         let cap = min (B.length intro - 1) (B.length bs)
@@ -173,12 +173,17 @@ scrubStitle st0 chunk = case st0 of
                     Just (0x5c, rest) -> outside oacc (finish nacc' : titles) rest
                     Just (_, _)       -> outside oacc (finish nacc' : titles) (B.drop i bs)
 
--- | Every OSC 9/777 desktop notification found in a byte string, in order.
-extractNotifies :: ByteString -> [ByteString]
-extractNotifies bs = case nextQuery bs of
-    Just (_, SigNotify raw, more) -> raw : extractNotifies more
-    Just (_, _, more)             -> extractNotifies more
-    Nothing                       -> []
+-- | Every host query hat recognises in a byte string, in order. Used to
+-- honour the payload of a DCS tmux passthrough: a tmux-aware app wraps a
+-- query meant for the outer terminal in passthrough, and hat — the terminal
+-- that holds the answer (the OS scheme) — answers the same set it answers
+-- inline, so a wrapped OSC 10\/11 or DEC 2031 query does not stall the app
+-- until its slow poll fallback. Unrecognised payload bytes yield nothing, as
+-- tmux's @allow-passthrough off@ discards them.
+honoredSignals :: ByteString -> [QuerySignal]
+honoredSignals bs = case nextQuery bs of
+    Just (_, sig, more) -> sig : honoredSignals more
+    Nothing             -> []
 
 -- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
 -- emulator's replies. Most terminals — ghostty included — ignore

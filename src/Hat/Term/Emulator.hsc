@@ -385,7 +385,7 @@ emitUnknownProp stateR kind prop =
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     s0 <- readIORef e.state
-    let (pass1, depassed, wrappedNotifs) = scrubPassthrough s0.passthrough bs0
+    let (pass1, depassed, passPayloads) = scrubPassthrough s0.passthrough bs0
         (stitle1, scrubbed, stitles) = scrubStitle s0.screenTitle depassed
         screenTitles = map TE.decodeUtf8Lenient stitles
         latestTitle = case screenTitles of
@@ -402,12 +402,16 @@ feed e bs0 = withMVar e.lock $ \_ -> do
         , damage = []
         , dirty = False
         }
+    -- Answer the host queries a tmux-aware app wrapped in passthrough (a
+    -- wrapped OSC 10/11 or DEC 2031 query) with the same events an inline
+    -- query yields, so it never reaches libvterm yet still gets its reply.
+    passEvs <- concat <$> mapM (applySignal e) (concatMap honoredSignals passPayloads)
     interleaved <- withForeignPtr e.vt $ \vtp -> do
         ievs <- feedSegments e vtp scrubbed
         ievs <$ c_flush_damage e.screen
     applyDamage e
     s1 <- readIORef e.state
-    pure $ map DesktopNotification wrappedNotifs
+    pure $ passEvs
         <> map TitleChanged screenTitles
         <> interleaved
         <> reverse s1.events
@@ -423,7 +427,7 @@ feedSegments e vtp = go
         Nothing -> writeSeg bs
         Just (before, sig, rest) -> do
             outEvs <- writeSeg before
-            sigEvs <- applySignal sig
+            sigEvs <- applySignal e sig
             ((outEvs <> sigEvs) <>) <$> go rest
     writeSeg seg
         | B.null seg = pure []
@@ -434,14 +438,21 @@ feedSegments e vtp = go
             writeIORef e.state (s { output = [] })
             let outs = dropDecxcprReply (B.concat (reverse s.output))
             pure [Output outs | not (B.null outs)]
-    applySignal sig = case sig of
-        SigColor CsEnable  -> [ColorSchemeQuery]
-            <$ modifyIORef' e.state (\s -> s { modeFlags = s.modeFlags { colorReport = True } })
-        SigColor CsDisable -> []
-            <$ modifyIORef' e.state (\s -> s { modeFlags = s.modeFlags { colorReport = False } })
-        SigColor CsQuery   -> pure [ColorSchemeQuery]
-        SigOsc target term -> pure [OscColorQuery target term]
-        SigNotify raw      -> pure [DesktopNotification raw]
+
+-- | Turn a host query hat answers itself into its 'Event', recording the DEC
+-- 2031 subscription a @CSI ? 2031 h@\/@l@ toggles so a scheme change knows to
+-- report to this pane (see 'Hat.Server.notifySubscribedPanes'). The same
+-- answer serves a query the inner app sent inline and one it wrapped in tmux
+-- passthrough (see 'Hat.Term.HostProtocol.honoredSignals').
+applySignal :: Emulator -> QuerySignal -> IO [Event]
+applySignal e sig = case sig of
+    SigColor CsEnable  -> [ColorSchemeQuery]
+        <$ modifyIORef' e.state (\s -> s { modeFlags = s.modeFlags { colorReport = True } })
+    SigColor CsDisable -> []
+        <$ modifyIORef' e.state (\s -> s { modeFlags = s.modeFlags { colorReport = False } })
+    SigColor CsQuery   -> pure [ColorSchemeQuery]
+    SigOsc target term -> pure [OscColorQuery target term]
+    SigNotify raw      -> pure [DesktopNotification raw]
 
 -- | Encode a cursor key the way this pane currently expects it: libvterm
 -- consults its own DECCKM state, so @man@/@less@ (application cursor keys)

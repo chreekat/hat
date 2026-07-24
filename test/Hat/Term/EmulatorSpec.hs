@@ -225,6 +225,29 @@ spec = do
         evs <- feedStr e "\ESCPtmux;\ESC\ESC]9;4;0;\a\ESC\\"
         [() | DesktopNotification _ <- evs] `shouldBe` []
 
+    -- Bug 16: a tmux-aware app (claude) wraps its OSC 10/11 color query in DCS
+    -- passthrough to reach past the multiplexer. hat is the terminal that
+    -- knows the OS scheme, so it must answer the wrapped query exactly as it
+    -- answers a direct one — otherwise the app blocks until its slow OSC-11
+    -- poll fallback, the ~2-3s theme lag. The wrapped query yields the same
+    -- OscColorQuery event a direct query does.
+    it "answers an OSC 11 color query wrapped in tmux passthrough" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESCPtmux;\ESC\ESC]11;?\a\ESC\\"
+        evs `shouldContain` [OscColorQuery Background TermBel]
+
+    it "answers an OSC 10 color query wrapped in tmux passthrough" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESCPtmux;\ESC\ESC]10;?\a\ESC\\"
+        evs `shouldContain` [OscColorQuery Foreground TermBel]
+
+    -- The DEC 2031 scheme query (CSI ? 996 n) is likewise answerable from the
+    -- scheme hat tracks, so honour it inside passthrough too.
+    it "answers a DEC 2031 scheme query wrapped in tmux passthrough" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESCPtmux;\ESC\ESC[?996n\ESC\\"
+        evs `shouldContain` [ColorSchemeQuery]
+
     -- Bug f: ghostty (like most terminals) ignores DECXCPR (CSI ? 6 n), but
     -- libvterm answers it with a DEC-private cursor report (CSI ? row;col R).
     -- Under a multiplexer that unexpected reply reaches the shell on the app's
