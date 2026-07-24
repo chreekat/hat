@@ -1,0 +1,12 @@
+# builds.sr.ht consumer of scripts/ci.sh.
+image: nixos/unstable
+environment:
+  # The NixOS image ships flakes off; scripts/ci.sh needs them on.
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+sources:
+  - git@git.sr.ht:~chreekat/hat
+tasks:
+  - ci: |
+      cd hat
+      ./scripts/ci.sh
