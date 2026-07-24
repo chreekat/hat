@@ -63,6 +63,11 @@
             pkgs.gnused
             pkgs.procps
 
+            # Programs the integration tests run inside panes; declared here so
+            # a clean CI shell has them, not just a NixOS system profile.
+            pkgs.vim
+            pkgs.htop
+
             # System-independent PERF benchmarks: instruction counts.
             pkgs.perf
           ];

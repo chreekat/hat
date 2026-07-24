@@ -27,7 +27,7 @@ import Test.Hspec
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
@@ -65,8 +65,10 @@ storeDir h = h.home </> "store"
 
 -- Minimal PATH for spawned shells and the hat binary. Deliberately does
 -- not inherit the ambient environment.
-testPath :: String
-testPath = "/run/current-system/sw/bin:/usr/bin:/bin"
+-- The dev shell's PATH, inherited whole: every tool the tests spawn is a
+-- flake.nix input, so nothing reaches a system profile.
+testPath :: IO String
+testPath = fromMaybe "" <$> lookupEnv "PATH"
 
 -- | Run a test against a freshly isolated hat, tearing the server and
 -- its temp dir down afterwards no matter how the test ends. The socket
@@ -101,10 +103,11 @@ teardown h = do
 -- Run a hat control command with the isolated HOME so it never resolves
 -- the ambient user config (even when it autostarts a server).
 hatCtl :: Hat -> [String] -> IO (ExitCode, String, String)
-hatCtl h args =
+hatCtl h args = do
+    path <- testPath
     P.readCreateProcessWithExitCode
         (P.proc h.bin (["-S", h.sock] <> args))
-            { P.env = Just ([("HOME", h.home), ("PATH", testPath)] <> persistEnv h) }
+            { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h) }
         ""
 
 -- Stdout of a hat control command.
@@ -157,6 +160,7 @@ startClientEnv :: Hat -> [(String, String)] -> [String] -> IO Driver
 startClientEnv h extraEnv extra = do
     -- Pane children need terminfo for TERM=tmux-256color on NixOS.
     terminfo <- lookupEnv "TERMINFO_DIRS"
+    path <- testPath
     let size = Size { rows = 24, cols = 80 }
     (masterFd, slaveFd) <- openPseudoTerminal
     setWinsize slaveFd size
@@ -179,7 +183,7 @@ startClientEnv h extraEnv extra = do
             , P.cwd = Just "/tmp"
             , P.env = Just $
                 let defaults =
-                        [ ("PATH", testPath)
+                        [ ("PATH", path)
                         , ("TERM", "xterm-256color")
                         , ("SHELL", "/bin/sh")
                         , ("HOME", h.home)
@@ -1411,7 +1415,8 @@ spec = parallel $ do
         writeFile (h.home </> "dark.conf") "set -g status-left 'DARKMODE '\n"
         writeFile (h.home </> "hat.conf") $
             "set -g @color-scheme-dark " <> (h.home </> "dark.conf") <> "\n"
-        c1 <- startClientEnv h [("PATH", bin <> ":" <> testPath)]
+        path <- testPath
+        c1 <- startClientEnv h [("PATH", bin <> ":" <> path)]
             ["-f", h.home </> "hat.conf"]
         awaitScreen c1 "0:sh*"
 
