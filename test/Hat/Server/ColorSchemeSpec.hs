@@ -3,6 +3,7 @@ module Hat.Server.ColorSchemeSpec (spec) where
 import Control.Exception (AsyncException (ThreadKilled), toException)
 import Control.Concurrent.Async (AsyncCancelled (AsyncCancelled))
 import System.Exit (ExitCode (ExitSuccess))
+import System.IO.Error (mkIOError, doesNotExistErrorType)
 import Test.Hspec
 
 import Hat.Model.Options
@@ -56,6 +57,14 @@ spec = do
             -- an exit thrown into the loop must not be buried by a restart.
             watcherFault (toException ExitSuccess)
                 `shouldBe` PropagateFault
+
+        it "abandons the watcher when gsettings is not installed" $ do
+            -- a host without gsettings (e.g. nix-on-droid) throws
+            -- does-not-exist on the spawn; retrying forever is pointless, so
+            -- give up (logged) instead of RestartWatcher's endless backoff.
+            let notFound = mkIOError doesNotExistErrorType
+                    "gsettings" Nothing (Just "gsettings")
+            watcherFault (toException notFound) `shouldBe` AbandonWatcher
 
     describe "applyPalette" $ do
         it "adapts the default chrome to the scheme" $ do

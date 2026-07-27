@@ -514,6 +514,13 @@ watchColorScheme st = do
             Right () -> pure ()  -- the monitor returned; nothing left to tail
             Left e -> case watcherFault e of
                 PropagateFault -> throwIO e
+                AbandonWatcher ->
+                    -- gsettings is not installed; theme-following can never
+                    -- start here, so give up quietly-but-logged instead of an
+                    -- endless respawn.
+                    logEvent st.logger DaemonStopped
+                        { daemon = "color-scheme"
+                        , reason = "gsettings not found; desktop theme-following disabled" }
                 RestartWatcher -> do
                     logEvent st.logger DaemonFault
                         { daemon = "color-scheme", err = T.pack (show e) }

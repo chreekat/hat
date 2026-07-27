@@ -13,6 +13,8 @@ module Hat.Server.ColorScheme
     ) where
 
 import Control.Exception (SomeException, SomeAsyncException, fromException)
+import GHC.IO.Exception (IOException)
+import System.IO.Error (isDoesNotExistError)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
@@ -48,20 +50,26 @@ parseSchemeLine line = case T.words line of
 data WatcherFault
     = RestartWatcher  -- ^ a transient sync failure — respawn the monitor
     | PropagateFault  -- ^ async cancellation or 'ExitCode' — re-raise, never restart
+    | AbandonWatcher  -- ^ the @gsettings@ binary is absent — give up (logged), never restart
     deriving (Eq, Show)
 
--- | Decide whether a watcher death should be restarted. A synchronous failure
--- (the @gsettings monitor@ subprocess crashing, EOF on its pipe, a transient
--- @IOException@) is transient: respawn so theme-following is durable. An
--- asynchronous exception — the 'Control.Concurrent.Async.cancel' that
--- 'Hat.Server.withDaemons' uses to tear the daemon down at shutdown — must be
--- re-raised, never swallowed and never restarted, or teardown would spin
--- forever (the broad-catch-in-a-loop trap). 'ExitCode' likewise propagates:
--- swallowing it would keep the process from exiting.
+-- | Decide how a watcher death is handled. A missing @gsettings@ binary (a
+-- host without it, e.g. nix-on-droid) surfaces as a does-not-exist
+-- 'IOException' on the spawn: retrying can never succeed, so abandon the
+-- watcher (the caller logs it) rather than back off forever. Any other
+-- synchronous failure (the @gsettings monitor@ subprocess crashing, EOF on
+-- its pipe, a transient @IOException@) is transient: respawn so
+-- theme-following is durable. An asynchronous exception — the
+-- 'Control.Concurrent.Async.cancel' that 'Hat.Server.withDaemons' uses to
+-- tear the daemon down at shutdown — must be re-raised, never swallowed and
+-- never restarted, or teardown would spin forever (the broad-catch-in-a-loop
+-- trap). 'ExitCode' likewise propagates: swallowing it would keep the process
+-- from exiting.
 watcherFault :: SomeException -> WatcherFault
 watcherFault e
     | isJustAsync = PropagateFault
     | isExit      = PropagateFault
+    | isMissing   = AbandonWatcher
     | otherwise   = RestartWatcher
   where
     isJustAsync = case fromException e :: Maybe SomeAsyncException of
@@ -70,6 +78,9 @@ watcherFault e
     isExit = case fromException e :: Maybe ExitCode of
         Just _  -> True
         Nothing -> False
+    isMissing = case fromException e :: Maybe IOException of
+        Just ioe -> isDoesNotExistError ioe
+        Nothing  -> False
 
 -- | The value @#{color_scheme}@ expands to.
 schemeName :: ColorScheme -> Text
