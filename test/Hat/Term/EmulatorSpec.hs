@@ -3,6 +3,7 @@ module Hat.Term.EmulatorSpec (spec) where
 import Control.Monad (forM_)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
@@ -109,6 +110,52 @@ spec = do
         e <- new80x24
         m <- modes e
         modeReplayBytes m `shouldBe` ""
+
+    -- Reload restores a pane's live screen by replaying 'restoreBytes' into
+    -- the adopted pane's fresh emulator; the visible grid must come back
+    -- byte-identical, so a full-screen app survives restart-server intact.
+    it "round-trips a styled screen through restoreBytes" $ do
+        src <- new80x24
+        _ <- feedStr src "line one\r\n\ESC[1;31mred bold\ESC[0m\r\n\ESC[44mon blue"
+        scr <- snapshot src
+        m <- modes src
+        dst <- new80x24
+        _ <- feed dst (restoreBytes m scr)
+        scr' <- snapshot dst
+        scr'.cells `shouldBe` scr.cells
+
+    -- The restart-server-mid-vim case: an alt-screen grid restores intact AND
+    -- leaves ?1049 armed, so a later exit reverts to a clean primary buffer
+    -- instead of stranding the app's frame.
+    it "round-trips an alt-screen grid and keeps ?1049 armed for exit" $ do
+        src <- new80x24
+        _ <- feedStr src "\ESC[?1049h\ESC[42mvim buffer\r\nsecond line"
+        scr <- snapshot src
+        m <- modes src
+        dst <- new80x24
+        _ <- feed dst (restoreBytes m scr)
+        restored <- snapshot dst
+        restored.cells `shouldBe` scr.cells
+        m' <- modes dst
+        m'.altScreen `shouldBe` True
+        _ <- feedStr dst "\ESC[?1049l"
+        cleared <- snapshot dst
+        rowText cleared 0 `shouldBe` ""
+
+    -- Scrollback lives in the emulator (not libvterm), so reload restores it
+    -- by capturing the lines and seeding them into the fresh emulator.
+    it "round-trips scrollback through capture and seed" $ do
+        src <- new80x24
+        forM_ [1 .. 30 :: Int] $ \i ->
+            feedStr src (B8.pack ("line " ++ show i ++ "\r\n"))
+        len <- scrollbackLength src
+        captured <- catMaybes <$> traverse (scrollbackLine src) [0 .. len - 1]
+        dst <- new80x24
+        seedScrollback dst captured
+        len' <- scrollbackLength dst
+        len' `shouldBe` len
+        restored <- catMaybes <$> traverse (scrollbackLine dst) [0 .. len - 1]
+        restored `shouldBe` captured
 
     it "surfaces a color-scheme query (CSI ? 996 n) as an event" $ do
         e <- new80x24
