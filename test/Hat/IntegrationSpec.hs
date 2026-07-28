@@ -1844,6 +1844,24 @@ spec = parallel $ do
         typeInto c2 "echo after-reload\r"
         awaitScreen c2 "after-reload"
 
+    -- Milestone B: `restart-server` preserves a pane's live screen. A
+    -- full-screen program is drawn into the alt screen, then blocks in `cat`
+    -- so nothing redraws it; after the reload and reattach the content is still
+    -- there only because the emulator's screen was captured and replayed. The
+    -- octal escapes keep a literal ESC out of the shell's line editor.
+    it "restart-server preserves a full-screen program's live display" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        typeInto c "printf '\\033[?1049h\\033[2J\\033[HALTSCREEN-BEACON'; cat\r"
+        awaitScreen c "ALTSCREEN-BEACON"
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c
+        c2 <- startClient h
+        -- `cat` never redrew: the beacon survives only because the reload
+        -- restored the alt-screen grid.
+        awaitScreen c2 "ALTSCREEN-BEACON"
+
     -- A typo'd binary path must be caught before anything is torn down, so the
     -- running session is untouched rather than half-dropped.
     it "restart-server rejects a missing binary without dropping the session" $
