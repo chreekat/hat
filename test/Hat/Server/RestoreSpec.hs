@@ -5,6 +5,7 @@ import Control.Exception (ErrorCall (..), throwIO)
 import Control.Monad (forM_)
 import qualified Data.ByteString.Char8 as B8
 import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Map.Strict as Map
 import Test.Hspec
 
@@ -13,9 +14,9 @@ import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
-     SpawnOrigin (..), StorePin (..), captureReloadScreen,
-     defaultRestoreCommands, finallyClearRestoring, persistDecision,
-     replayPane, restoreRun, restoreShellExec)
+     Reply (..), SpawnOrigin (..), StorePin (..), captureReloadScreen,
+     cmdRestartServer, defaultRestoreCommands, finallyClearRestoring,
+     persistDecision, replayPane, restoreRun, restoreShellExec)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
 import qualified Hat.Term.Emulator as Emu
@@ -33,6 +34,9 @@ sampleSnapshot nm = Snapshot
 
 emptySnapshot :: Snapshot
 emptySnapshot = Snapshot { sessions = [], lastActiveSession = Nothing }
+
+errStrings :: [Reply] -> [Text]
+errStrings replies = [e | RErr e <- replies]
 
 -- A bare server-state shell, enough to exercise the restoring gate.
 testState :: IO ServerState
@@ -82,6 +86,21 @@ spec = do
             dstScr.cells `shouldBe` srcScr.cells
             dstMode.altScreen `shouldBe` True
             dstSb `shouldBe` srcSb
+
+    -- Fail loud rather than reload on top of an in-flight restore: a second
+    -- restart-server issued mid-restore would capture a half-rebuilt tree.
+    -- Both cases pass a nonexistent target so neither ever re-execs.
+    describe "restart-server reload-in-progress guard" $ do
+        it "refuses to reload while a restore is in progress" $ do
+            st <- testState
+            atomically (writeTVar st.restoring True)
+            errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat"]
+            errs `shouldSatisfy` any (T.isInfixOf "in progress")
+
+        it "passes the guard when idle, reaching the normal target check" $ do
+            st <- testState
+            errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat"]
+            errs `shouldSatisfy` any (T.isInfixOf "no such binary")
 
     describe "restoreRun" $ do
         let whitelist = ["vim", "less"]

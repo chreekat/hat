@@ -6,6 +6,8 @@ module Hat.Server
     , resumeServer  -- ^ the reload re-exec re-enters here with a handover file
     , captureReloadScreen  -- ^ exported for the reload-screen round-trip test
     , replayPane           -- ^ exported for the reload-screen round-trip test
+    , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
+    , Reply (..)           -- ^ exported for the reload-in-progress guard test
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
     , chooseScope  -- ^ exported for the scope-routing test
@@ -4367,6 +4369,17 @@ cmdKillServer st mclient _ = do
 -- rather than a half-dropped server.
 cmdRestartServer :: CommandImpl
 cmdRestartServer st mclient args = do
+    -- Fail loud rather than reload on top of an in-flight reload/restore:
+    -- capturing a half-rebuilt tree and re-exec'ing through it is how a
+    -- second restart-server strands the live programs. The restore clears
+    -- this gate the moment the tree is whole again.
+    restoring <- readTVarIO st.restoring
+    if restoring
+        then pure [RErr "restart-server: a reload is already in progress; try again shortly"]
+        else cmdRestartServer' st mclient args
+
+cmdRestartServer' :: CommandImpl
+cmdRestartServer' st mclient args = do
     let (_, _, pos) = parseArgs "" args
     target <- case pos of
         (p : _) -> pure (T.unpack p)    -- explicit binary path (deterministic)
