@@ -19,9 +19,8 @@ import Network.Socket (Socket)
 import System.Directory (getCurrentDirectory)
 import System.Environment (getEnvironment, lookupEnv)
 import System.IO
-import System.Posix.IO (stdInput)
+import System.Posix.IO (stdInput, stdOutput)
 import System.Posix.Signals (Handler (Catch), installHandler)
-import System.Posix.Terminal (queryTerminal)
 
 import Hat.Client.Draw
 import Hat.Client.Tty
@@ -58,10 +57,11 @@ hello intent = do
 -- shell) run server-side to establish which session we render.
 runClient :: Socket -> [[Text]] -> IO ExitReason
 runClient sock setup = do
-    isTty <- queryTerminal stdInput
-    if not isTty
-        then pure (Rejected "not a terminal")
-        else attachClient sock setup
+    inp <- probeTerminal stdInput
+    out <- probeTerminal stdOutput
+    case diagnoseTerminal inp out of
+        Just msg -> pure (Rejected msg)
+        Nothing -> attachClient sock setup
 
 attachClient :: Socket -> [[Text]] -> IO ExitReason
 attachClient sock setup = do

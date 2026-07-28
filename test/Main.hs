@@ -2,6 +2,7 @@ import Test.Hspec
 
 import qualified Hat.Bench.ResidencySpec
 import qualified Hat.Client.DrawSpec
+import qualified Hat.Client.TtySpec
 import qualified Hat.Command.ParserSpec
 import qualified Hat.FuzzyMatchSpec
 import qualified Hat.InternSpec
@@ -48,6 +49,7 @@ main = hspec $ do
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
+    describe "Hat.Client.Tty" Hat.Client.TtySpec.spec
     describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec
     describe "Hat.Server.Session" Hat.Server.SessionSpec.spec
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec

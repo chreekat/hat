@@ -197,6 +197,7 @@ test-suite hat-test
     other-modules:
         Hat.Bench.ResidencySpec
         Hat.Client.DrawSpec
+        Hat.Client.TtySpec
         Hat.Command.ParserSpec
         Hat.FuzzyMatchSpec
         Hat.InternSpec
