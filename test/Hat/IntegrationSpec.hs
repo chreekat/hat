@@ -1862,6 +1862,25 @@ spec = parallel $ do
         -- restored the alt-screen grid.
         awaitScreen c2 "ALTSCREEN-BEACON"
 
+    -- Reloading a server that was ITSELF reloaded: the pane's emulator was
+    -- rebuilt by the first reload's replay, and adopting that rebuilt state a
+    -- second time must not hang (the production double-reload that fell back to
+    -- a respawn from disk, losing the live programs).
+    it "restart-server twice in a row keeps a full-screen pane alive" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        typeInto c "printf '\\033[?1049h\\033[2J\\033[HBEACON-ONE'; cat\r"
+        awaitScreen c "BEACON-ONE"
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c
+        c2 <- startClient h
+        awaitScreen c2 "BEACON-ONE"
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c2
+        c3 <- startClient h
+        awaitScreen c3 "BEACON-ONE"
+
     -- A typo'd binary path must be caught before anything is torn down, so the
     -- running session is untouched rather than half-dropped.
     it "restart-server rejects a missing binary without dropping the session" $
