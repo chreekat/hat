@@ -116,7 +116,9 @@ spec = do
     -- byte-identical, so a full-screen app survives restart-server intact.
     it "round-trips a styled screen through restoreBytes" $ do
         src <- new80x24
-        _ <- feedStr src "line one\r\n\ESC[1;31mred bold\ESC[0m\r\n\ESC[44mon blue"
+        _ <- feedStr src
+            "line one\r\n\ESC[1;31mred bold\ESC[0m\r\n\ESC[44mon blue\ESC[0m\r\n\
+            \wide \228\184\150\231\149\140 chars"  -- UTF-8 世界 (width 2 each)
         scr <- snapshot src
         m <- modes src
         dst <- new80x24
