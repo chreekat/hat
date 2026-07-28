@@ -16,11 +16,13 @@ module Hat.Log
     , LogEvent (..)
     , newLogger
     , logEvent
+    , flushLogger
+    , closeLogger
     ) where
 
 import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Monad (forever)
 import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy.Char8 as BL8
@@ -46,23 +48,55 @@ data LogEvent
     | ProtocolError   { client :: Int, err :: Text }
     | UnknownTermProp { pane :: Int, propKind :: Text, prop :: Int }  -- ^ libvterm reported a terminal property hat does not handle
     | ServerCrash     { err :: Text }
+    | ServerFatal     { err :: Text }  -- ^ an exception escaped the server's main loop and is taking the process down; carries its 'displayException' (backtrace included)
     deriving (Show, Generic)
     deriving anyclass (ToJSON)
 
-newtype Logger = Logger (TQueue Aeson.Value)
+-- A message to the writer thread: a line to append, or a barrier (flush or
+-- close) carrying the MVar to signal once the writer has drained everything
+-- ahead of it. Barriers ride the same FIFO queue as lines, so they observe
+-- every prior line.
+data LogMsg
+    = LogLine Aeson.Value
+    | LogFlush (MVar ())
+    | LogClose (MVar ())
+
+newtype Logger = Logger (TQueue LogMsg)
 
 newLogger :: FilePath -> IO Logger
 newLogger path = do
     h <- openFile path AppendMode
     hSetBuffering h LineBuffering
     q <- newTQueueIO
-    _ <- forkIO $ forever $ do
-        v <- atomically (readTQueue q)
-        BL8.hPutStrLn h (Aeson.encode v)
+    _ <- forkIO (writeLoop h q)
     pure (Logger q)
+  where
+    writeLoop h q = do
+        msg <- atomically (readTQueue q)
+        case msg of
+            LogLine v   -> BL8.hPutStrLn h (Aeson.encode v) >> writeLoop h q
+            LogFlush d  -> hFlush h >> putMVar d () >> writeLoop h q
+            LogClose d  -> hClose h >> putMVar d ()  -- last message; loop ends
 
 logEvent :: Logger -> LogEvent -> IO ()
 logEvent (Logger q) ev = do
     now <- getCurrentTime
     let v = Aeson.object ["time" .= now, "event" .= ev]
-    atomically (writeTQueue q v)
+    atomically (writeTQueue q (LogLine v))
+
+-- | Block until every event logged so far has been written to disk. The async
+-- writer normally flushes on its own; this is for the fatal path, where the
+-- process may exit right after logging its cause and never give it the chance.
+flushLogger :: Logger -> IO ()
+flushLogger = barrier LogFlush
+
+-- | Flush, then close the log handle and stop the writer. For a clean shutdown
+-- (or a test that must read the file back past the writer's exclusive lock).
+closeLogger :: Logger -> IO ()
+closeLogger = barrier LogClose
+
+barrier :: (MVar () -> LogMsg) -> Logger -> IO ()
+barrier mk (Logger q) = do
+    done <- newEmptyMVar
+    atomically (writeTQueue q (mk done))
+    takeMVar done

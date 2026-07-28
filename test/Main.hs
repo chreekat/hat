@@ -7,6 +7,7 @@ import qualified Hat.Command.ParserSpec
 import qualified Hat.FuzzyMatchSpec
 import qualified Hat.InternSpec
 import qualified Hat.IntegrationSpec
+import qualified Hat.LogSpec
 import qualified Hat.PathSpec
 import qualified Hat.Server.PersistSpec
 import qualified Hat.Term.PtySpec
@@ -40,6 +41,7 @@ main = hspec $ do
     describe "Hat.Path" Hat.PathSpec.spec
     describe "Hat.Bench.Residency" Hat.Bench.ResidencySpec.spec
     describe "Hat.Intern" Hat.InternSpec.spec
+    describe "Hat.Log" Hat.LogSpec.spec
     describe "Hat.Transport.Socket" Hat.Transport.SocketSpec.spec
     describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
     describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec

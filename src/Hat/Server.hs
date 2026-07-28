@@ -57,7 +57,8 @@ import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-    (IOException, SomeException, bracket, catch, finally, handle, throwIO, try)
+    (IOException, SomeException, bracket, catch, displayException, finally,
+     handle, throwIO, try)
 import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
@@ -236,7 +237,16 @@ runServerWith path mconfig mhandover = do
                 , titleDaemon
                 , watchColorScheme st             -- follow the desktop theme
                 ] <> [ persistLoop st p | p <- maybe [] pure mstore ]
+        -- Last-resort trace: an exception escaping the accept loop or a linked
+        -- daemon takes the process down (e.g. a reload's resume fault), and
+        -- otherwise vanishes to stderr with nothing in the log. Record its
+        -- 'displayException' (backtrace included) and flush before it dies,
+        -- then re-raise so the process still exits.
         r <- withDaemons daemons (race (acceptLoop st lsock) (waitIdle st))
+                `catch` \(e :: SomeException) -> do
+                    logEvent lg ServerFatal { err = T.pack (displayException e) }
+                    flushLogger lg
+                    throwIO e
         case r of
             Left () -> pure ()
             Right () -> do
