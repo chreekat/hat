@@ -12,13 +12,17 @@ import Test.Hspec
 import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
+import Data.Maybe (fromMaybe)
+
 import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
      Reply (..), SpawnOrigin (..), StorePin (..), captureReloadScreen,
-     cmdRestartServer, defaultRestoreCommands, finallyClearRestoring,
-     persistDecision, replayPane, restoreRun, restoreShellExec)
+     captureSize, cmdRestartServer, defaultRestoreCommands,
+     finallyClearRestoring, persistDecision, replayPane, restoreRun,
+     restoreShellExec)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
+import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 
 -- A minimal non-empty tree: one named session with no windows is enough
@@ -60,7 +64,7 @@ spec = do
     -- The restart-server live-screen preservation seam: capturing a pane's
     -- emulator and replaying it into a fresh one (as adoptPane does) must
     -- reproduce the visible grid, the alt-screen mode, and the scrollback.
-    describe "reload screen capture and replay" $
+    describe "reload screen capture and replay" $ do
         it "round-trips a pane's live screen, alt mode, and scrollback" $ do
             let sz = Size { rows = 5, cols = 20 }
             src <- Emu.newEmulator sz 1000
@@ -86,6 +90,31 @@ spec = do
             dstScr.cells `shouldBe` srcScr.cells
             dstMode.altScreen `shouldBe` True
             dstSb `shouldBe` srcSb
+
+        -- Bug capture (field crash 2026-07-28): a pane captured LARGER than
+        -- the rebuild default — cursor beyond the small grid, rows that would
+        -- wrap — must be adopted at its captured size. Replayed into 24x80
+        -- instead, the wrapped-and-clamped state made a later reconcile
+        -- shrink abort the whole process inside libvterm ("screen_resize
+        -- failed to update cursor position").
+        it "adopts an oversized capture at its captured size and survives the shrink" $ do
+            let wideRow = replicate 330 Cell.blankCell { Cell.text = "x" }
+                sc = ReloadScreen
+                    { altScreen = True, cursorRow = 39, cursorCol = 2
+                    , cursorVisible = True
+                    , rows = replicate 42 wideRow, scrollback = [] }
+                rp = ReloadPane
+                    { cwd = "/", masterFd = 0, childPid = 0
+                    , modes = ReloadModes False False 0, screen = sc }
+                esz = fromMaybe (Size 24 80) (captureSize sc)
+            esz `shouldBe` Size 42 330
+            e <- Emu.newEmulator esz 1000
+            let (bytes, sb) = replayPane esz rp
+            _ <- Emu.feed e bytes
+            Emu.seedScrollback e sb
+            Emu.resize e (Size 11 80)
+            scr <- Emu.snapshot e
+            scr.size `shouldBe` Size 11 80
 
     -- Fail loud rather than reload on top of an in-flight restore: a second
     -- restart-server issued mid-restore would capture a half-rebuilt tree.

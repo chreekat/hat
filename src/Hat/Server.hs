@@ -6,6 +6,7 @@ module Hat.Server
     , resumeServer  -- ^ the reload re-exec re-enters here with a handover file
     , captureReloadScreen  -- ^ exported for the reload-screen round-trip test
     , replayPane           -- ^ exported for the reload-screen round-trip test
+    , captureSize          -- ^ exported for the oversized-capture adopt test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
     , Reply (..)           -- ^ exported for the reload-in-progress guard test
     , setOption  -- ^ exported for the config-load burn-down test
@@ -924,7 +925,13 @@ adoptPane st sz histLimit rp = do
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "start" }
     pty <- Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
                               (fromIntegral rp.childPid)
-    emu <- Emu.newEmulator sz histLimit
+    -- Adopt at the size the pane was CAPTURED at, not the session default:
+    -- replaying a capture into a smaller grid wraps and clamps it into a
+    -- state whose later reflow-resize aborts inside libvterm ("screen_resize
+    -- failed to update cursor position", the 2026-07-28 field crash). The
+    -- reconcile loop then resizes toward the layout as for any live pane.
+    let esz = fromMaybe sz (captureSize rp.screen)
+    emu <- Emu.newEmulator esz histLimit
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "replaying" }
     -- Replay the app's mode subscriptions the running program set before the
     -- reload; the fresh emulator starts blank, and the watcher's first scheme
@@ -932,11 +939,11 @@ adoptPane st sz histLimit rp = do
     -- Then repaint the captured live screen (re-entering the alt screen when
     -- the program was in it, so a later exit reverts cleanly) and reseed the
     -- scrollback, so a full-screen program survives the reload with its display.
-    let (replayBytes, replaySb) = replayPane sz rp
+    let (replayBytes, replaySb) = replayPane esz rp
     _ <- Emu.feed emu replayBytes
     Emu.seedScrollback emu replaySb
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
-    sizeVar   <- newTVarIO sz
+    sizeVar   <- newTVarIO esz
     deadVar   <- newTVarIO False
     modeVar   <- newTVarIO Nothing
     pipeVar   <- newTVarIO Nothing
@@ -983,6 +990,20 @@ replayPane sz rp =
     , rp.screen.scrollback )
   where
     restoreModes = (emuModesOf rp.modes) { Emu.altScreen = rp.screen.altScreen }
+
+-- | The size a reload capture was taken at, reconstructed from its grid;
+-- 'Nothing' for a blank capture (a migrated pre-screen blob), where there is
+-- nothing to preserve and the caller's default applies. See 'adoptPane'.
+captureSize :: ReloadScreen -> Maybe Size
+captureSize sc = case sc.rows of
+    [] -> Nothing
+    rs -> Just Size
+        { rows = clamp (length rs)
+        , cols = clamp (maximum (map length rs)) }
+  where
+    -- Sane bounds armor a hand-edited or corrupt blob: a Word16-overflowing
+    -- or zero dimension must not produce a degenerate emulator.
+    clamp n = fromIntegral (max 1 (min 1000 n))
 
 -- The server's own environment seeds restored panes; spawnPane strips and
 -- re-adds the hat-specific vars (TERM, TMUX, HAT, …).

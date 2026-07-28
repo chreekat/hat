@@ -148,6 +148,20 @@ executable gen-fixtures
         hat,
         text        ^>= 2.1.3
 
+-- Replays a preserved reload handover (<socket>.reload.last) through the
+-- emulator restore + resize path, to reproduce the libvterm resize abort
+-- offline. See tools/ReplayReload.hs.
+executable replay-reload
+    import:             defaults, pedantry
+    hs-source-dirs:     tools
+    main-is:            ReplayReload.hs
+    ghc-options:        -threaded
+    build-depends:
+        base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
+        hat,
+        text        ^>= 2.1.3
+
 -- Memory benches, run on demand (never in the fast unit suite); each Main's
 -- header says what it measures. feed-mem: repro of a feed-scaled retention
 -- under raw-bytes driving. scrollback-retain: regression guard on the fixed
