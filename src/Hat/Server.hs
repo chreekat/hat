@@ -80,7 +80,8 @@ import qualified Data.Text.Read as TR
 import qualified Data.Vector as V
 import qualified Network.Socket as N
 import System.Directory
-    (createDirectoryIfMissing, doesFileExist, findExecutable, removeFile)
+    (createDirectoryIfMissing, doesFileExist, findExecutable, removeFile,
+     renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory, takeFileName)
@@ -819,7 +820,10 @@ reloadModesOf m = ReloadModes
 readReload :: Logger -> FilePath -> IO (Maybe Handover)
 readReload lg hp = do
     r <- try (B.readFile hp)
-    removeFile hp `catch` \(_ :: IOException) -> pure ()
+    -- Keep the consumed blob as .last rather than deleting it: a resume that
+    -- crashes the process (e.g. a native abort in libvterm) leaves the exact
+    -- bytes that reproduce it on disk for offline replay.
+    renameFile hp (hp <> ".last") `catch` \(_ :: IOException) -> pure ()
     case r of
         Left (e :: IOException) -> do
             logEvent lg ServerCrash
@@ -1916,6 +1920,14 @@ reconcilePaneSizes st = do
             handle (\(e :: IOException) ->
                         logEvent st.logger PaneResizeFailed
                             { pane = rawPane pane.id, err = T.pack (show e) }) $ do
+                -- Flushed, not just queued: libvterm's resize can abort() the
+                -- whole process (a native assertion), and this line is what
+                -- names the culprit pane and dimensions afterwards.
+                logEvent st.logger PaneResizing
+                    { pane = rawPane pane.id
+                    , toRows = fromIntegral sz.rows
+                    , toCols = fromIntegral sz.cols }
+                flushLogger st.logger
                 Hat.Term.Pty.resize pane.pty sz
                 Emu.resize pane.emulator sz
                 atomically $ do

@@ -9,7 +9,8 @@ import qualified Data.List as List
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
+import System.Directory
+    (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hSetBuffering, BufferMode (..))
@@ -1861,6 +1862,9 @@ spec = parallel $ do
         -- `cat` never redrew: the beacon survives only because the reload
         -- restored the alt-screen grid.
         awaitScreen c2 "ALTSCREEN-BEACON"
+        -- The consumed handover is kept as .last: it is the exact reproducer
+        -- when a resume crashes natively, so it must survive the reload.
+        doesFileExist (h.sock <> ".reload.last") `shouldReturn` True
 
     -- Reloading a server that was ITSELF reloaded: the pane's emulator was
     -- rebuilt by the first reload's replay, and adopting that rebuilt state a

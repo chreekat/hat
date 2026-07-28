@@ -71,6 +71,24 @@ spec = do
         m2 <- modes e
         m2.altScreen `shouldBe` False
 
+    it "survives resizing a restored emulator across a size mismatch" $ do
+        -- Mirror adoptPane: the pane ran at the client's real size, but the
+        -- fresh emulator is built at 24x80 and only resized on client attach.
+        src <- newEmulator Size { rows = 50, cols = 200 } 1000
+        forM_ [1 .. 80 :: Int] $ \i ->
+            feedStr src (B8.pack ("line " ++ show i ++ "\r\n"))
+        _ <- feedStr src "\ESC[?1049h\ESC[42malt content"
+        scr <- snapshot src
+        m <- modes src
+        sblen <- scrollbackLength src
+        sblines <- catMaybes <$> mapM (scrollbackLine src) [0 .. sblen - 1]
+        dst <- newEmulator Size { rows = 24, cols = 80 } 1000
+        _ <- feed dst (restoreBytes m scr)
+        seedScrollback dst sblines
+        resize dst Size { rows = 50, cols = 200 }
+        scr2 <- snapshot dst
+        scr2.size `shouldBe` Size { rows = 50, cols = 200 }
+
     it "tracks focus reporting (?1004)" $ do
         e <- new80x24
         m0 <- modes e

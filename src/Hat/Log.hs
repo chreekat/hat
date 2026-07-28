@@ -41,6 +41,7 @@ data LogEvent
     | PaneSpawned     { pane :: Int, cmd :: Text }
     | PaneExited      { pane :: Int }
     | PaneResizeFailed { pane :: Int, err :: Text }
+    | PaneResizing    { pane :: Int, toRows :: Int, toCols :: Int }  -- ^ written (and flushed) just before the libvterm resize call, so a native crash there still leaves the culprit pane and dimensions in the log
     | DaemonFault     { daemon :: Text, err :: Text }  -- ^ a background loop hit an expected fault; logged, non-fatal
     | DaemonStopped   { daemon :: Text, reason :: Text }  -- ^ a background loop gave up for good (e.g. a missing dependency); logged, non-fatal
     | CommandRun      { client :: Int, command :: Text }
