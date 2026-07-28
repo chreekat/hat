@@ -4,6 +4,8 @@
 module Hat.Server
     ( runServer
     , resumeServer  -- ^ the reload re-exec re-enters here with a handover file
+    , captureReloadScreen  -- ^ exported for the reload-screen round-trip test
+    , replayPane           -- ^ exported for the reload-screen round-trip test
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
     , chooseScope  -- ^ exported for the scope-routing test
@@ -101,8 +103,8 @@ import Hat.Server.Persist
     , loadSnapshot, saveSnapshot, withStore)
 import Hat.Server.Reload
     (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
-    , ReloadSession (..), ReloadState (..), ReloadWindow (..)
-    , decodeHandover, emptyReloadScreen, encodeHandover)
+    , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
+    , decodeHandover, encodeHandover)
 import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -761,11 +763,29 @@ captureReloadWindow ws = do
         dir <- paneCurrentPath pane
         let Fd fd = Hat.Term.Pty.masterFd pane.pty
         ms <- Emu.modes pane.emulator
+        sc <- captureReloadScreen pane.emulator
         pure (ReloadPane (T.pack dir) (fromIntegral fd)
-                (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms)
-                emptyReloadScreen)
+                (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms) sc)
     pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
             ws.wsLastActive ws.wsAutoRename rpanes)
+
+-- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
+-- its alt-screen flag, and its scrollback (oldest line first). 'adoptPane'
+-- replays this back into the fresh emulator after a reload.
+captureReloadScreen :: Emu.Emulator -> IO ReloadScreen
+captureReloadScreen emu = do
+    scr <- Emu.snapshot emu
+    m   <- Emu.modes emu
+    len <- Emu.scrollbackLength emu
+    sb  <- catMaybes <$> mapM (Emu.scrollbackLine emu) [0 .. len - 1]
+    pure ReloadScreen
+        { altScreen     = m.altScreen
+        , cursorRow     = scr.cursor.row
+        , cursorCol     = scr.cursor.col
+        , cursorVisible = scr.cursorVisible
+        , rows          = map V.toList (V.toList scr.cells)
+        , scrollback    = sb
+        }
 
 -- | The app-set mode subscriptions to carry across a reload; the inverse
 -- rebuild happens in 'adoptPane'.
@@ -889,7 +909,12 @@ adoptPane st sz histLimit rp = do
     -- Replay the app's mode subscriptions the running program set before the
     -- reload; the fresh emulator starts blank, and the watcher's first scheme
     -- read then re-notifies whatever re-subscribed to ?2031 here.
-    _ <- Emu.feed emu (Emu.modeReplayBytes (emuModesOf rp.modes))
+    -- Then repaint the captured live screen (re-entering the alt screen when
+    -- the program was in it, so a later exit reverts cleanly) and reseed the
+    -- scrollback, so a full-screen program survives the reload with its display.
+    let (replayBytes, replaySb) = replayPane sz rp
+    _ <- Emu.feed emu replayBytes
+    Emu.seedScrollback emu replaySb
     sizeVar   <- newTVarIO sz
     deadVar   <- newTVarIO False
     modeVar   <- newTVarIO Nothing
@@ -900,8 +925,9 @@ adoptPane st sz histLimit rp = do
         , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
         , pipe = pipeVar, readerTid = readerVar }
 
--- | Rebuild the emulator mode subscriptions a reload carried; @altScreen@ is
--- always off (not preserved). Inverse of 'reloadModesOf'; see 'adoptPane'.
+-- | Rebuild the emulator mode subscriptions a reload carried. @altScreen@ is
+-- left off here; 'adoptPane' sets it from the captured screen before replaying
+-- it. Inverse of 'reloadModesOf'.
 emuModesOf :: ReloadModes -> Emu.Modes
 emuModesOf rm = Emu.Modes
     { altScreen = False
@@ -913,6 +939,29 @@ emuModesOf rm = Emu.Modes
         3 -> Emu.MouseMove
         _ -> Emu.MouseOff
     }
+
+-- | Rebuild the 'Emu.Screen' a reload captured, sized to the pane, for
+-- 'Emu.restoreBytes'. See 'replayPane'.
+screenOf :: Size -> ReloadScreen -> Emu.Screen
+screenOf sz rs = Emu.Screen
+    { size = sz
+    , cells = V.fromList (map V.fromList rs.rows)
+    , cursor = Pos { row = rs.cursorRow, col = rs.cursorCol }
+    , cursorVisible = rs.cursorVisible
+    }
+
+-- | What 'adoptPane' feeds a reloaded pane's fresh emulator to reconstruct it:
+-- the bytes that replay the mode subscriptions then repaint the captured
+-- screen (re-entering the alt screen when the program was in it), paired with
+-- the scrollback lines to reseed. Pure, so the capture→replay round trip is
+-- testable without a pty.
+replayPane :: Size -> ReloadPane -> (B.ByteString, [[Cell.Cell]])
+replayPane sz rp =
+    ( Emu.modeReplayBytes (emuModesOf rp.modes)
+        <> Emu.restoreBytes restoreModes (screenOf sz rp.screen)
+    , rp.screen.scrollback )
+  where
+    restoreModes = (emuModesOf rp.modes) { Emu.altScreen = rp.screen.altScreen }
 
 -- The server's own environment seeds restored panes; spawnPane strips and
 -- re-adds the hat-specific vars (TERM, TMUX, HAT, …).

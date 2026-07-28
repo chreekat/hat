@@ -2,17 +2,23 @@ module Hat.Server.RestoreSpec (spec) where
 
 import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
 import Control.Exception (ErrorCall (..), throwIO)
+import Control.Monad (forM_)
+import qualified Data.ByteString.Char8 as B8
 import Data.Text (Text)
 import qualified Data.Map.Strict as Map
 import Test.Hspec
 
+import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
-     SpawnOrigin (..), StorePin (..), defaultRestoreCommands,
-     finallyClearRestoring, persistDecision, restoreRun, restoreShellExec)
+     SpawnOrigin (..), StorePin (..), captureReloadScreen,
+     defaultRestoreCommands, finallyClearRestoring, persistDecision,
+     replayPane, restoreRun, restoreShellExec)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
+import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
+import qualified Hat.Term.Emulator as Emu
 
 -- A minimal non-empty tree: one named session with no windows is enough
 -- for the mirror's write decision, which only inspects emptiness and
@@ -46,6 +52,36 @@ spec = do
             finallyClearRestoring st (throwIO (ErrorCall "restore blew up"))
                 `shouldThrow` anyErrorCall
             readTVarIO st.restoring `shouldReturn` False
+
+    -- The restart-server live-screen preservation seam: capturing a pane's
+    -- emulator and replaying it into a fresh one (as adoptPane does) must
+    -- reproduce the visible grid, the alt-screen mode, and the scrollback.
+    describe "reload screen capture and replay" $
+        it "round-trips a pane's live screen, alt mode, and scrollback" $ do
+            let sz = Size { rows = 5, cols = 20 }
+            src <- Emu.newEmulator sz 1000
+            forM_ [1 .. 8 :: Int] $ \i ->
+                Emu.feed src (B8.pack ("history " ++ show i ++ "\r\n"))
+            _ <- Emu.feed src "\ESC[?1049h\ESC[42mALT SCREEN\r\nsecond row"
+            srcScr <- Emu.snapshot src
+            srcLen <- Emu.scrollbackLength src
+            srcSb  <- mapM (Emu.scrollbackLine src) [0 .. srcLen - 1]
+            captured <- captureReloadScreen src
+            captured.altScreen `shouldBe` True
+            let rp = ReloadPane
+                    { cwd = "/tmp", masterFd = 0, childPid = 0
+                    , modes = ReloadModes False False 0, screen = captured }
+                (bytes, sb) = replayPane sz rp
+            dst <- Emu.newEmulator sz 1000
+            _ <- Emu.feed dst bytes
+            Emu.seedScrollback dst sb
+            dstScr <- Emu.snapshot dst
+            dstMode <- Emu.modes dst
+            dstLen <- Emu.scrollbackLength dst
+            dstSb  <- mapM (Emu.scrollbackLine dst) [0 .. dstLen - 1]
+            dstScr.cells `shouldBe` srcScr.cells
+            dstMode.altScreen `shouldBe` True
+            dstSb `shouldBe` srcSb
 
     describe "restoreRun" $ do
         let whitelist = ["vim", "less"]
