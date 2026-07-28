@@ -15,6 +15,7 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
 import Hat.Server.Reload
+import Hat.Term.Cell
 
 genText :: Gen T.Text
 genText = T.pack <$> listOf (chooseEnum (' ', '~'))
@@ -60,17 +61,55 @@ instance Arbitrary ReloadWindow where
                    , (w.active, w.lastActive, w.autoRename, w.panes) ) ]
 
 instance Arbitrary ReloadPane where
-    arbitrary = ReloadPane <$> genText <*> arbitrary <*> arbitrary <*> arbitrary
+    arbitrary = ReloadPane
+        <$> genText <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     shrink p =
-        [ ReloadPane (T.pack c) m pid ms
-        | (c, m, pid, ms) <-
-            shrink (T.unpack p.cwd, p.masterFd, p.childPid, p.modes) ]
+        [ ReloadPane (T.pack c) m pid ms sc
+        | (c, m, pid, (ms, sc)) <-
+            shrink (T.unpack p.cwd, p.masterFd, p.childPid, (p.modes, p.screen)) ]
 
 instance Arbitrary ReloadModes where
     arbitrary = ReloadModes <$> arbitrary <*> arbitrary <*> choose (0, 3)
     shrink m =
         [ ReloadModes cr fr mo
         | (cr, fr, mo) <- shrink (m.colorReport, m.focusReport, m.mouse) ]
+
+instance Arbitrary ReloadScreen where
+    arbitrary = ReloadScreen
+        <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        <*> shortGrid <*> shortGrid
+    shrink = genericShrink
+
+-- Small grids keep the round-trip cheap; the cells only need to survive the
+-- CBOR codec, not mean anything to the emulator.
+shortGrid :: Gen [[Cell]]
+shortGrid = do
+    r <- choose (0, 2)
+    vectorOf r (choose (0, 3) >>= (`vectorOf` arbitrary))
+
+instance Arbitrary Cell where
+    arbitrary = Cell
+        <$> (T.pack <$> vectorOf 1 (chooseEnum ('a', '~')))
+        <*> elements [1, 2] <*> arbitrary
+    shrink c =
+        [ Cell (T.pack t) w s
+        | (t, w, s) <- shrink (T.unpack c.text, c.width, c.style) ]
+
+instance Arbitrary Style where
+    arbitrary = Style
+        <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    shrink = genericShrink
+
+instance Arbitrary Color where
+    arbitrary = oneof
+        [ pure DefaultColor
+        , Indexed <$> arbitrary
+        , RGB <$> arbitrary <*> arbitrary <*> arbitrary ]
+    shrink DefaultColor = []
+    shrink (Indexed n)  = DefaultColor : (Indexed <$> shrink n)
+    shrink (RGB r g b)  =
+        DefaultColor : [ RGB r' g' b' | (r', g', b') <- shrink (r, g, b) ]
 
 -- Re-encode a handover at an arbitrary era, to exercise the era gate. Mirrors
 -- 'encodeHandover' exactly except for the era field; the golden-byte test
@@ -102,9 +141,9 @@ unHex = B.pack . go
 fixedCleanup :: ReloadCleanup
 fixedCleanup = ReloadCleanup { listenFd = 3, live = [(7, 100)] }
 
--- A one-pane tree carrying the given mode subscriptions on its pane.
-treeWith :: ReloadModes -> ReloadState
-treeWith ms = ReloadState
+-- A one-pane tree carrying the given mode subscriptions and screen on its pane.
+treeWith :: ReloadModes -> ReloadScreen -> ReloadState
+treeWith ms sc = ReloadState
     { sessions =
         [ ReloadSession
             { name = "work", startCwd = "/home", currentIx = 0, lastIx = Nothing
@@ -115,30 +154,51 @@ treeWith ms = ReloadState
                     , panes =
                         [ ReloadPane
                             { cwd = "/tmp", masterFd = 7, childPid = 100
-                            , modes = ms } ] } ] } ]
+                            , modes = ms, screen = sc } ] } ] } ]
     , currentSession = Just "work" }
 
--- The current-era representative, with a non-trivial mode set to pin its
--- encoding.
+-- A non-trivial captured screen, to pin the current era's encoding: an
+-- alt-screen pane with one styled live cell and one scrollback cell.
+fixedScreen :: ReloadScreen
+fixedScreen = ReloadScreen
+    { altScreen = True, cursorRow = 1, cursorCol = 2, cursorVisible = True
+    , rows = [[ Cell { text = "x", width = 1
+                     , style = defaultStyle { fg = Indexed 1 } } ]]
+    , scrollback = [[ blankCell ]] }
+
+-- The current-era representative, with a non-trivial mode set and screen to pin
+-- its encoding.
 fixedTree :: ReloadState
-fixedTree = treeWith ReloadModes { colorReport = True, focusReport = False, mouse = 2 }
+fixedTree = treeWith
+    ReloadModes { colorReport = True, focusReport = False, mouse = 2 }
+    fixedScreen
 
 -- The reload corpus: one committed encoding per era. A build MUST decode every
 -- vector here into the current tree (armor-style backward-compat enforcement).
--- When 'reloadEra' is bumped, DO NOT edit an existing row — append a new one
--- with the new era's bytes and the tree they should migrate to. The era-1 row
--- predates pane modes, so it migrates to an all-off mode set.
+-- When 'reloadEra' is bumped, DO NOT edit an existing row's bytes — append a new
+-- one. A row's target tree is what its bytes migrate to in THIS build, so it
+-- tracks the current shape: the pre-screen era-1 and era-2 rows migrate to a
+-- blank ('emptyReloadScreen') pane.
 corpus :: [(Int, String, ReloadCleanup, ReloadState)]
 corpus =
     [ ( 1
       , "851a4841545201039f82071864ff583183009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
         \071864ffffff8164776f726b"
-      , fixedCleanup, treeWith (ReloadModes False False 0) )
+      , fixedCleanup
+      , treeWith (ReloadModes False False 0) emptyReloadScreen )
     , ( 2
       , "851a4841545202039f82071864ff583683009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8500642f746d70\
         \0718648400f5f402ffffff8164776f726b"
+      , fixedCleanup
+      , treeWith (ReloadModes True False 2) emptyReloadScreen )
+    , ( 3
+      , "851a4841545203039f82071864ff586783009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
+        \0718648400f5f4028700f50102f59f9f840061780189008201018100\
+        \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
+        \ffffffff8164776f726b"
       , fixedCleanup, fixedTree )
     ]
 

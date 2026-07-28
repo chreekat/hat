@@ -101,8 +101,8 @@ import Hat.Server.Persist
     , loadSnapshot, saveSnapshot, withStore)
 import Hat.Server.Reload
     (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
-    , ReloadSession (..), ReloadState (..), ReloadWindow (..), decodeHandover
-    , encodeHandover)
+    , ReloadSession (..), ReloadState (..), ReloadWindow (..)
+    , decodeHandover, emptyReloadScreen, encodeHandover)
 import qualified Hat.Term.Pty
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -762,7 +762,8 @@ captureReloadWindow ws = do
         let Fd fd = Hat.Term.Pty.masterFd pane.pty
         ms <- Emu.modes pane.emulator
         pure (ReloadPane (T.pack dir) (fromIntegral fd)
-                (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms))
+                (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms)
+                emptyReloadScreen)
     pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
             ws.wsLastActive ws.wsAutoRename rpanes)
 

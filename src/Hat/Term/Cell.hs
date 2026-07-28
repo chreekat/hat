@@ -3,6 +3,9 @@
 
 -- Everything here has no business being lazy.
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 module Hat.Term.Cell
     ( Color (..)
     , Style (..)
@@ -11,14 +14,20 @@ module Hat.Term.Cell
     , blankCell
     ) where
 
+import Codec.Serialise (Serialise)
 import Data.Text (Text)
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 
+-- The 'Serialise' instances serve the era-gated reload handover payload only
+-- (see 'Hat.Server.Reload'); the client wire keeps its own explicit-tag
+-- encoding and never leans on this Generic derivation.
 data Color
     = DefaultColor
     | Indexed Word8
     | RGB Word8 Word8 Word8
-    deriving (Eq, Show, Ord)
+    deriving stock (Eq, Show, Ord, Generic)
+    deriving anyclass (Serialise)
 
 data Style = Style
     { fg        :: Color
@@ -30,7 +39,8 @@ data Style = Style
     , strike    :: Bool
     , blink     :: Bool
     }
-    deriving (Eq, Show, Ord)
+    deriving stock (Eq, Show, Ord, Generic)
+    deriving anyclass (Serialise)
 
 defaultStyle :: Style
 defaultStyle = Style
@@ -51,7 +61,8 @@ data Cell = Cell
     , width :: Int
     , style :: Style
     }
-    deriving (Eq, Show, Ord)
+    deriving stock (Eq, Show, Ord, Generic)
+    deriving anyclass (Serialise)
 
 blankCell :: Cell
 blankCell = Cell { text = " ", width = 1, style = defaultStyle }

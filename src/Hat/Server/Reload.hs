@@ -18,6 +18,8 @@ module Hat.Server.Reload
     , ReloadWindow (..)
     , ReloadPane (..)
     , ReloadModes (..)
+    , ReloadScreen (..)
+    , emptyReloadScreen
     , ReloadCleanup (..)
     , Handover (..)
     , reloadEra
@@ -36,6 +38,8 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+
+import Hat.Term.Cell (Cell)
 
 -- | The tree an era-matched reload rebuilds by adopting each pane's inherited
 -- pty and child. This is the EVOLVING payload: any change to its shape (or its
@@ -78,9 +82,34 @@ data ReloadPane = ReloadPane
     , childPid :: Int
     , modes    :: ReloadModes  -- ^ replayed into the adopted pane's fresh
                                --   emulator; see 'Hat.Server.adoptPane'
+    , screen   :: ReloadScreen -- ^ the live grid and scrollback, replayed into
+                               --   the adopted pane; see 'Hat.Server.adoptPane'
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
+
+-- | A pane's captured screen: the live grid (top row first), its cursor, its
+-- alternate-screen flag, and the scrollback (oldest line first). Replayed into
+-- the adopted pane's fresh emulator so a full-screen program survives a reload
+-- with its display intact. An 'emptyReloadScreen' restores to a blank pane,
+-- which is what a pre-screen (era ≤ 2) blob migrates to.
+data ReloadScreen = ReloadScreen
+    { altScreen     :: Bool
+    , cursorRow     :: Int
+    , cursorCol     :: Int
+    , cursorVisible :: Bool
+    , rows          :: [[Cell]]
+    , scrollback    :: [[Cell]]
+    }
+    deriving (Eq, Show, Generic)
+    deriving anyclass (Serialise)
+
+-- | The blank screen a pane with no captured display restores to: no grid, no
+-- scrollback, primary buffer, cursor home and visible. See 'ReloadScreen'.
+emptyReloadScreen :: ReloadScreen
+emptyReloadScreen = ReloadScreen
+    { altScreen = False, cursorRow = 0, cursorCol = 0, cursorVisible = True
+    , rows = [], scrollback = [] }
 
 -- | The app-set mode subscriptions a pane carries across a reload, so a program
 -- adopted into a fresh emulator keeps them. A blank set (everything off) is what
@@ -119,7 +148,7 @@ data Handover = Handover
 -- misdecode. The golden-byte test pins the encoding, so a shape change that
 -- forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 2
+reloadEra = 3
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -177,8 +206,11 @@ decodeReloadTree e payload
     | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    | e == 2 = case deserialiseOrFail (BL.fromStrict payload) of
+        Right v  -> Right (migrateV2 v)
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 1 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV1 v)
+        Right v  -> Right (migrateV2 (migrateV1 v))
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e > reloadEra =
         Left ("reload handover from a newer hat (era " <> T.pack (show e)
@@ -200,14 +232,41 @@ data ReloadWindowV1 =
 data ReloadPaneV1 = ReloadPaneV1 Text Int Int
     deriving (Generic) deriving anyclass (Serialise)
 
--- | Carry an era-1 tree forward: every pane gains a blank mode set, since an
--- era-1 image never recorded one. See 'decodeReloadTree'.
-migrateV1 :: ReloadStateV1 -> ReloadState
-migrateV1 (ReloadStateV1 sess cur) = ReloadState (map migSession sess) cur
+-- Era-2 payload shapes, frozen: a pane carried its modes but no screen. Same
+-- positional-mirror trick as the era-1 shapes, so a screen-bearing 'ReloadPane'
+-- can still decode an era-2 blob. See 'decodeReloadTree'.
+data ReloadStateV2 = ReloadStateV2 [ReloadSessionV2] (Maybe Text)
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadSessionV2 = ReloadSessionV2 Text Text Int (Maybe Int) [ReloadWindowV2]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadWindowV2 =
+    ReloadWindowV2 Int Text Text Int (Maybe Int) Bool [ReloadPaneV2]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadPaneV2 = ReloadPaneV2 Text Int Int ReloadModes
+    deriving (Generic) deriving anyclass (Serialise)
+
+-- | Carry an era-1 tree forward to the era-2 shape: every pane gains a blank
+-- mode set, since an era-1 image never recorded one. See 'decodeReloadTree'.
+migrateV1 :: ReloadStateV1 -> ReloadStateV2
+migrateV1 (ReloadStateV1 sess cur) = ReloadStateV2 (map migSession sess) cur
   where
     migSession (ReloadSessionV1 nm cwd' ci li wins) =
-        ReloadSession nm cwd' ci li (map migWindow wins)
+        ReloadSessionV2 nm cwd' ci li (map migWindow wins)
     migWindow (ReloadWindowV1 ix' nm lay act la ar ps) =
-        ReloadWindow ix' nm lay act la ar (map migPane ps)
+        ReloadWindowV2 ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV1 cwd' mfd cpid) =
-        ReloadPane cwd' mfd cpid (ReloadModes False False 0)
+        ReloadPaneV2 cwd' mfd cpid (ReloadModes False False 0)
+
+-- | Carry an era-2 tree forward: every pane gains a blank screen, since an
+-- era-2 image never captured one, so it restores to a blank pane (the same
+-- behaviour a reload had before live-screen preservation). See
+-- 'decodeReloadTree'.
+migrateV2 :: ReloadStateV2 -> ReloadState
+migrateV2 (ReloadStateV2 sess cur) = ReloadState (map migSession sess) cur
+  where
+    migSession (ReloadSessionV2 nm cwd' ci li wins) =
+        ReloadSession nm cwd' ci li (map migWindow wins)
+    migWindow (ReloadWindowV2 ix' nm lay act la ar ps) =
+        ReloadWindow ix' nm lay act la ar (map migPane ps)
+    migPane (ReloadPaneV2 cwd' mfd cpid ms) =
+        ReloadPane cwd' mfd cpid ms emptyReloadScreen

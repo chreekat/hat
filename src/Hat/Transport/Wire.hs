@@ -85,10 +85,8 @@ deriving instance Generic Size
 deriving anyclass instance Serialise Size
 deriving instance Generic Pos
 deriving anyclass instance Serialise Pos
-deriving instance Generic Color
-deriving anyclass instance Serialise Color
-deriving instance Generic Style
-deriving anyclass instance Serialise Style
+-- 'Color' and 'Style' get their Generic/Serialise instances at their home
+-- module ('Hat.Term.Cell'); the wire reuses them as leaf field types.
 
 -- | Why this client connected: to attach and render, or only to issue
 -- commands (e.g. @hat kill-server@ from a shell).
