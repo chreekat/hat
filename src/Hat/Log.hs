@@ -33,6 +33,7 @@ data LogEvent
     = ServerStarted   { socket :: FilePath }
     | ServerStopping  { reason :: Text }
     | ServerReloading { target :: FilePath }  -- ^ the binary an in-place reload re-execs
+    | ReloadAdopt     { pane :: Int, phase :: Text }  -- ^ a reload's per-pane adopt progress (start\/replaying\/ready), to pinpoint a resume that stalls
     | ClientConnected { client :: Int, term :: Text }
     | ClientDetached  { client :: Int, reason :: Text }
     | PaneSpawned     { pane :: Int, cmd :: Text }

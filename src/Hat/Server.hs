@@ -903,9 +903,13 @@ rebuildReloadWindow st sz rwin = do
 adoptPane :: ServerState -> Size -> Int -> ReloadPane -> IO Pane
 adoptPane st sz histLimit rp = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
+    -- Trace each adopt phase so a resume that stalls names the pane and the
+    -- step it stalled on (fd adopt vs. screen replay) instead of going silent.
+    logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "start" }
     pty <- Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
                               (fromIntegral rp.childPid)
     emu <- Emu.newEmulator sz histLimit
+    logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "replaying" }
     -- Replay the app's mode subscriptions the running program set before the
     -- reload; the fresh emulator starts blank, and the watcher's first scheme
     -- read then re-notifies whatever re-subscribed to ?2031 here.
@@ -915,6 +919,7 @@ adoptPane st sz histLimit rp = do
     let (replayBytes, replaySb) = replayPane sz rp
     _ <- Emu.feed emu replayBytes
     Emu.seedScrollback emu replaySb
+    logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
     sizeVar   <- newTVarIO sz
     deadVar   <- newTVarIO False
     modeVar   <- newTVarIO Nothing
@@ -2194,6 +2199,12 @@ runCommands st mclient cmds = concat <$> mapM (runArgv st mclient) cmds
 runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
 runArgv _ _ [] = pure []
 runArgv st mclient (name : args) = do
+    -- Attribute every command to its issuing client, so a duplicate or
+    -- unexpected control command (e.g. a second restart-server nobody typed)
+    -- is traceable to its source.
+    logEvent st.logger CommandRun
+        { client = maybe (-1) (\c -> rawClient c.id) mclient
+        , command = T.unwords (name : args) }
     case Map.lookup name commandTable of
         Nothing -> pure [RErr ("unknown command: " <> name)]
         Just impl -> impl st mclient args
