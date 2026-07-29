@@ -808,8 +808,12 @@ spec = parallel $ do
         typeInto c1 "\x02%"
         awaitScreen c1 "\x2502"  -- │
 
-        -- Zoom the active pane: its child now sees the full 80 cols.
-        typeInto c1 "\x02z"
+        -- Zoom the active pane: its child now sees the full 80 cols. Zoom via
+        -- the control path (not the \x02z keystroke) so the command returns
+        -- only after the pty resize is reconciled; an interactive keystroke is
+        -- fire-and-forget, so a following 'stty size' could read the pre-zoom
+        -- 39 before SIGWINCH lands.
+        _ <- ctlOut h ["resize-pane", "-Z"]
         typeInto c1 "stty size\r"
         awaitScreen c1 "23 80"
 
