@@ -905,9 +905,12 @@ spec = parallel $ do
         -- window 0 still exists in the status line.
         awaitWith "broken out into window 1" (\d -> do
             t <- screenText d
+            -- Anchor on the window labels ("0:sh"/"1:sh"), not bare "0:"/"1:":
+            -- the status-bar clock (e.g. 10:52, 11:52) would otherwise spoof a
+            -- window's presence and mask a regression.
             pure ("b-marker" `T.isInfixOf` t
                   && not ("\x2502" `T.isInfixOf` t)
-                  && "0:" `T.isInfixOf` t && "1:" `T.isInfixOf` t)) c1
+                  && "0:sh" `T.isInfixOf` t && "1:sh" `T.isInfixOf` t)) c1
 
     -- Bug: a pane's reader captures the window it was spawned in, but
     -- break-pane re-parents the live pane. When its program then exits, the
@@ -924,7 +927,9 @@ spec = parallel $ do
         typeInto c1 "exit\r"                 -- end the broken-out pane's shell
         awaitWith "window 1 collapsed, back on window 0" (\d -> do
             t <- screenText d
-            pure (not ("1:" `T.isInfixOf` t) && "0:sh*" `T.isInfixOf` t)) c1
+            -- Match the window-1 label ("1:sh"), not a bare "1:", so the
+            -- status-bar clock (e.g. 11:52) can't spoof the "still there" check.
+            pure (not ("1:sh" `T.isInfixOf` t) && "0:sh*" `T.isInfixOf` t)) c1
 
     it "join-pane merges a pane in from another window" $
         withHat hatBin $ \h -> do
