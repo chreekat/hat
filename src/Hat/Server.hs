@@ -158,7 +158,9 @@ runServerWith path mconfig mhandover = do
             case lockResult of
                 LockHeldElsewhere -> exitSuccess  -- another server won the race
                 LockWon -> pure ()
-    lg <- newLogger (render (hatPath (takeDirectory path) </:> "server.log"))
+    withLogger (render (hatPath (takeDirectory path) </:> "server.log")) serve
+  where
+   serve lg = do
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
@@ -4443,6 +4445,9 @@ cmdRestartServer' st mclient args = do
             let argv = ["--server", st.sockPath]
                     <> maybe [] (: []) mconfig
                     <> ["--reload-handover", blobPath]
+            -- The self-exec replaces this image, so 'withLogger's flush-on-exit
+            -- never runs; drain the queue now or the reload trace is lost.
+            flushLogger st.logger
             _ <- executeFile target False argv Nothing
             pure []  -- unreachable: executeFile replaces this image
 
