@@ -18,10 +18,12 @@ module Hat.Log
     , logEvent
     , flushLogger
     , closeLogger
+    , withLogger
     ) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (bracket)
 import Control.Concurrent.STM
 import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as Aeson
@@ -95,6 +97,15 @@ flushLogger = barrier LogFlush
 -- (or a test that must read the file back past the writer's exclusive lock).
 closeLogger :: Logger -> IO ()
 closeLogger = barrier LogClose
+
+-- | Run @body@ with a logger whose file handle and writer thread live only for
+-- the scope: 'closeLogger' flushes the queue, closes the handle, and stops the
+-- writer on every exit — normal or exceptional — so neither can leak and a body
+-- that logged right up to the end loses nothing. This is the structural lifetime
+-- the resource-cleanup audit (bug 9) calls for, and the precondition for
+-- flushing the log before a @restart-server@ self-exec replaces the image.
+withLogger :: FilePath -> (Logger -> IO a) -> IO a
+withLogger path = bracket (newLogger path) closeLogger
 
 barrier :: (MVar () -> LogMsg) -> Logger -> IO ()
 barrier mk (Logger q) = do

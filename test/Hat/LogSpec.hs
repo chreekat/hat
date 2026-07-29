@@ -11,16 +11,42 @@ import Test.Hspec
 import Hat.Log
 
 spec :: Spec
-spec =
-    -- The fatal path logs the crash cause then flushes before the process
-    -- dies; without a real flush the async writer would lose it. This is what
-    -- makes a server death show up in the log instead of vanishing to stderr.
-    it "flushLogger writes queued events to disk before returning" $ do
+spec = do
+    -- The bracketed lifetime flushes queued events and tears the drain thread
+    -- + handle down on scope exit, structurally — no hand-called close. Reading
+    -- the file back proves the queued line reached disk before the scope ended.
+    it "withLogger flushes queued events on scope exit" $ do
         dir <- getTemporaryDirectory
-        let path = dir <> "/hat-logspec.log"
+        let path = dir <> "/hat-logspec-with.log"
         removeFile path `catch` \(_ :: IOException) -> pure ()
-        lg <- newLogger path
-        logEvent lg ServerFatal { err = "boom-marker-42" }
-        closeLogger lg  -- flushes, then releases the writer's file lock
+        withLogger path $ \lg ->
+            logEvent lg ServerCrash { err = "with-marker-42" }
         contents <- readFile' path
-        contents `shouldSatisfy` isInfixOf "boom-marker-42"
+        contents `shouldSatisfy` isInfixOf "with-marker-42"
+
+    -- The teardown must run even when the body throws, so a crash mid-scope
+    -- still leaves its queued events on disk rather than losing them to an
+    -- abandoned drain thread.
+    it "withLogger flushes even when the body throws" $ do
+        dir <- getTemporaryDirectory
+        let path = dir <> "/hat-logspec-throw.log"
+        removeFile path `catch` \(_ :: IOException) -> pure ()
+        (withLogger path $ \lg -> do
+            logEvent lg ServerCrash { err = "throw-marker-7" }
+            ioError (userError "boom"))
+            `catch` \(_ :: IOException) -> pure ()
+        contents <- readFile' path
+        contents `shouldSatisfy` isInfixOf "throw-marker-7"
+
+    -- The explicit flush is what lets the fatal trace and the restart-server
+    -- self-exec drain the queue before the process is replaced. A flush that
+    -- returned early would leave the marker unwritten when the scope exits.
+    it "flushLogger drains the queue before it returns" $ do
+        dir <- getTemporaryDirectory
+        let path = dir <> "/hat-logspec-flush.log"
+        removeFile path `catch` \(_ :: IOException) -> pure ()
+        withLogger path $ \lg -> do
+            logEvent lg ServerCrash { err = "flush-marker-99" }
+            flushLogger lg
+        contents <- readFile' path
+        contents `shouldSatisfy` isInfixOf "flush-marker-99"
