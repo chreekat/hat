@@ -11,7 +11,7 @@
 typedef struct {
     uint32_t chars[VTERM_MAX_CHARS_PER_CELL];
     int width;
-    unsigned flags; /* 1 bold, 2 underline, 4 italic, 8 reverse, 16 strike, 32 blink */
+    unsigned flags; /* 1 bold, 2 underline, 4 italic, 8 reverse, 16 strike, 32 blink, 64 dim */
     int fg_kind, fg_idx, fg_r, fg_g, fg_b;
     int bg_kind, bg_idx, bg_r, bg_g, bg_b;
 } HatCell;

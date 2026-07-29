@@ -34,7 +34,8 @@ static void flatten_cell(const VTermScreenCell *in, HatCell *out) {
                | (in->attrs.italic ? 4u : 0u)
                | (in->attrs.reverse ? 8u : 0u)
                | (in->attrs.strike ? 16u : 0u)
-               | (in->attrs.blink ? 32u : 0u);
+               | (in->attrs.blink ? 32u : 0u)
+               | (in->attrs.dim ? 64u : 0u);
     flatten_color(&in->fg, &out->fg_kind, &out->fg_idx,
                   &out->fg_r, &out->fg_g, &out->fg_b);
     flatten_color(&in->bg, &out->bg_kind, &out->bg_idx,
@@ -77,6 +78,7 @@ static void unflatten_cell(const HatCell *in, VTermScreenCell *out) {
     out->attrs.reverse   = (in->flags & 8u)  ? 1 : 0;
     out->attrs.strike    = (in->flags & 16u) ? 1 : 0;
     out->attrs.blink     = (in->flags & 32u) ? 1 : 0;
+    out->attrs.dim       = (in->flags & 64u) ? 1 : 0;
     unflatten_color(&out->fg, in->fg_kind, in->fg_idx,
                     in->fg_r, in->fg_g, in->fg_b, VTERM_COLOR_DEFAULT_FG);
     unflatten_color(&out->bg, in->bg_kind, in->bg_idx,

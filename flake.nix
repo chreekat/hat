@@ -12,9 +12,21 @@
   outputs = { self, nixpkgs, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
+      # Teach the vendored libvterm the SGR 2 (faint/dim) attribute it
+      # otherwise drops: an additive C patch adding a `dim` bit to the cell
+      # attrs. hat is the canonical home for the patch; the NixOS deploy
+      # overlay references this same file by path. See nix/libvterm-dim.patch.
+      overlay = final: prev: {
+        libvterm-neovim = prev.libvterm-neovim.overrideAttrs (o: {
+          patches = (o.patches or [ ]) ++ [ ./nix/libvterm-dim.patch ];
+        });
+      };
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems
-          (system: f nixpkgs.legacyPackages.${system});
+          (system: f (import nixpkgs {
+            inherit system;
+            overlays = [ overlay ];
+          }));
     in
     {
       packages = forAllSystems (pkgs: rec {
