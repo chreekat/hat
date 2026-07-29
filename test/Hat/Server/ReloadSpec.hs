@@ -37,10 +37,13 @@ instance Arbitrary ReloadCleanup where
         [ ReloadCleanup fd lv | (fd, lv) <- shrink (c.listenFd, c.live) ]
 
 instance Arbitrary ReloadState where
-    arbitrary = ReloadState <$> shortList <*> genMaybeText
+    arbitrary = ReloadState <$> shortList <*> genMaybeText <*> genMaybeText
     shrink rs =
-        [ ReloadState ss (T.pack <$> cs)
-        | (ss, cs) <- shrink (rs.sessions, T.unpack <$> rs.currentSession) ]
+        [ ReloadState ss (T.pack <$> cs) (T.pack <$> ls)
+        | (ss, cs, ls) <- shrink
+            ( rs.sessions
+            , T.unpack <$> rs.currentSession
+            , T.unpack <$> rs.lastSession ) ]
 
 instance Arbitrary ReloadSession where
     arbitrary = ReloadSession
@@ -141,9 +144,10 @@ unHex = B.pack . go
 fixedCleanup :: ReloadCleanup
 fixedCleanup = ReloadCleanup { listenFd = 3, live = [(7, 100)] }
 
--- A one-pane tree carrying the given mode subscriptions and screen on its pane.
-treeWith :: ReloadModes -> ReloadScreen -> ReloadState
-treeWith ms sc = ReloadState
+-- A one-pane tree carrying the given mode subscriptions and screen on its pane
+-- and the given alternate session.
+treeWith :: Maybe T.Text -> ReloadModes -> ReloadScreen -> ReloadState
+treeWith mlast ms sc = ReloadState
     { sessions =
         [ ReloadSession
             { name = "work", startCwd = "/home", currentIx = 0, lastIx = Nothing
@@ -155,7 +159,8 @@ treeWith ms sc = ReloadState
                         [ ReloadPane
                             { cwd = "/tmp", masterFd = 7, childPid = 100
                             , modes = ms, screen = sc } ] } ] } ]
-    , currentSession = Just "work" }
+    , currentSession = Just "work"
+    , lastSession = mlast }
 
 -- A non-trivial captured screen, to pin the current era's encoding: an
 -- alt-screen pane with one styled live cell and one scrollback cell.
@@ -166,10 +171,10 @@ fixedScreen = ReloadScreen
                      , style = defaultStyle { fg = Indexed 1 } } ]]
     , scrollback = [[ blankCell ]] }
 
--- The current-era representative, with a non-trivial mode set and screen to pin
--- its encoding.
+-- The current-era representative, with a non-trivial mode set, screen, and
+-- alternate session to pin its encoding.
 fixedTree :: ReloadState
-fixedTree = treeWith
+fixedTree = treeWith (Just "prev")
     ReloadModes { colorReport = True, focusReport = False, mouse = 2 }
     fixedScreen
 
@@ -186,19 +191,27 @@ corpus =
         \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
         \071864ffffff8164776f726b"
       , fixedCleanup
-      , treeWith (ReloadModes False False 0) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes False False 0) emptyReloadScreen )
     , ( 2
       , "851a4841545202039f82071864ff583683009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8500642f746d70\
         \0718648400f5f402ffffff8164776f726b"
       , fixedCleanup
-      , treeWith (ReloadModes True False 2) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes True False 2) emptyReloadScreen )
     , ( 3
       , "851a4841545203039f82071864ff586783009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
         \0718648400f5f4028700f50102f59f9f840061780189008201018100\
         \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
         \ffffffff8164776f726b"
+      , fixedCleanup
+      , treeWith Nothing (ReloadModes True False 2) fixedScreen )
+    , ( 4
+      , "851a4841545204039f82071864ff586d84009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
+        \0718648400f5f4028700f50102f59f9f840061780189008201018100\
+        \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
+        \ffffffff8164776f726b816470726576"
       , fixedCleanup, fixedTree )
     ]
 

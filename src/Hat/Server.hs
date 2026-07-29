@@ -744,14 +744,16 @@ restorePane st sid shellCmd env sz whitelist psnap = do
 -- inherited processes up cleanly rather than orphan them).
 captureReload :: ServerState -> IO (ReloadCleanup, ReloadState)
 captureReload st = do
-    (sess, laName, mfd) <- atomically $ do
+    (sess, laName, lsName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
         laId    <- readTVar st.lastActiveSession
         laName  <- traverse (readTVar . (.name)) (laId >>= (`Map.lookup` sessMap))
+        lsId    <- readTVar st.lastSession
+        lsName  <- traverse (readTVar . (.name)) (lsId >>= (`Map.lookup` sessMap))
         mfd     <- readTVar st.listenFd
-        pure (Map.elems sessMap, laName, mfd)
+        pure (Map.elems sessMap, laName, lsName, mfd)
     rsessions <- mapM captureReloadSession sess
-    let tree = ReloadState rsessions laName
+    let tree = ReloadState rsessions laName lsName
         liveHandles =
             [ (p.masterFd, p.childPid)
             | s <- rsessions, w <- s.windows, p <- w.panes ]
@@ -845,11 +847,18 @@ readReload lg hp = do
 rebuildReload :: ServerState -> ReloadState -> IO ()
 rebuildReload st rs = do
     forM_ rs.sessions (rebuildReloadSession st)
-    forM_ rs.currentSession $ \nm -> do
-        sessMap <- readTVarIO st.sessions
-        hits <- filterM (fmap (== nm) . readTVarIO . (.name)) (Map.elems sessMap)
-        forM_ (listToMaybe hits) $ \s ->
+    forM_ rs.currentSession $ \nm ->
+        resolveSessionByName st nm $ \s ->
             atomically (writeTVar st.lastActiveSession (Just s.id))
+    forM_ rs.lastSession $ \nm ->
+        resolveSessionByName st nm $ \s ->
+            atomically (writeTVar st.lastSession (Just s.id))
+
+resolveSessionByName :: ServerState -> Text -> (Session -> IO ()) -> IO ()
+resolveSessionByName st nm act = do
+    sessMap <- readTVarIO st.sessions
+    hits <- filterM (fmap (== nm) . readTVarIO . (.name)) (Map.elems sessMap)
+    forM_ (listToMaybe hits) act
 
 rebuildReloadSession :: ServerState -> ReloadSession -> IO ()
 rebuildReloadSession st rsess = do
@@ -1265,6 +1274,11 @@ attachSetup st client [] = do
     atomically $ do
         writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
+        -- Adopt the server-wide alternate (e.g. one carried across a reload) so
+        -- @switch-client -l@ still returns to it. See 'switchClientTo'.
+        gLast <- readTVar st.lastSession
+        forM_ gLast $ \g -> when (g /= sess.id) $
+            writeTVar client.lastSession (Just g)
     pure Nothing
 attachSetup st client cmds = do
     replies <- runCommands st (Just client) cmds
@@ -4169,6 +4183,7 @@ switchClientTo st client sess = do
     atomically $ do
         when (old /= sess.id) $ do
             writeTVar client.lastSession (Just old)
+            writeTVar st.lastSession (Just old)
             writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
         markActive st client

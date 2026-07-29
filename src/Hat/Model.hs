@@ -127,6 +127,10 @@ data ServerState = ServerState
     , lastActiveSession :: TVar (Maybe SessionId)
         -- ^ the session most recently focused by any client; captured into
         --   the snapshot by name. See 'pickAttachSession'.
+    , lastSession :: TVar (Maybe SessionId)
+        -- ^ the alternate session a switching client left (@switch-client -l@
+        --   returns to it), collapsed server-wide so a reattaching client can
+        --   adopt it across a reload. See 'Hat.Server.switchClientTo'.
     , logger      :: Logger
     , sockPath    :: FilePath
     , store       :: Maybe FilePath
@@ -395,6 +399,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO []
     <*> newTVarIO Nothing  -- markedPane
     <*> newTVarIO Nothing  -- lastActiveSession
+    <*> newTVarIO Nothing  -- lastSession
     <*> pure lg
     <*> pure path
     <*> pure storePath

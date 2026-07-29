@@ -48,6 +48,10 @@ import Hat.Term.Cell (Cell)
 data ReloadState = ReloadState
     { sessions       :: [ReloadSession]
     , currentSession :: Maybe Text  -- ^ name of the focused session at capture
+    , lastSession    :: Maybe Text  -- ^ name of the alternate session
+                                    --   (@switch-client -l@ returns to it), if
+                                    --   any; a reattaching client adopts it. See
+                                    --   'Hat.Server.rebuildReload'.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -148,7 +152,7 @@ data Handover = Handover
 -- misdecode. The golden-byte test pins the encoding, so a shape change that
 -- forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 3
+reloadEra = 4
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -206,11 +210,14 @@ decodeReloadTree e payload
     | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    | e == 3 = case deserialiseOrFail (BL.fromStrict payload) of
+        Right v  -> Right (migrateV3 v)
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 2 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV2 v)
+        Right v  -> Right (migrateV3 (migrateV2 v))
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 1 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV2 (migrateV1 v))
+        Right v  -> Right (migrateV3 (migrateV2 (migrateV1 v)))
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e > reloadEra =
         Left ("reload handover from a newer hat (era " <> T.pack (show e)
@@ -257,12 +264,12 @@ migrateV1 (ReloadStateV1 sess cur) = ReloadStateV2 (map migSession sess) cur
     migPane (ReloadPaneV1 cwd' mfd cpid) =
         ReloadPaneV2 cwd' mfd cpid (ReloadModes False False 0)
 
--- | Carry an era-2 tree forward: every pane gains a blank screen, since an
--- era-2 image never captured one, so it restores to a blank pane (the same
--- behaviour a reload had before live-screen preservation). See
+-- | Carry an era-2 tree forward to the era-3 shape: every pane gains a blank
+-- screen, since an era-2 image never captured one, so it restores to a blank
+-- pane (the same behaviour a reload had before live-screen preservation). See
 -- 'decodeReloadTree'.
-migrateV2 :: ReloadStateV2 -> ReloadState
-migrateV2 (ReloadStateV2 sess cur) = ReloadState (map migSession sess) cur
+migrateV2 :: ReloadStateV2 -> ReloadStateV3
+migrateV2 (ReloadStateV2 sess cur) = ReloadStateV3 (map migSession sess) cur
   where
     migSession (ReloadSessionV2 nm cwd' ci li wins) =
         ReloadSession nm cwd' ci li (map migWindow wins)
@@ -270,3 +277,14 @@ migrateV2 (ReloadStateV2 sess cur) = ReloadState (map migSession sess) cur
         ReloadWindow ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV2 cwd' mfd cpid ms) =
         ReloadPane cwd' mfd cpid ms emptyReloadScreen
+
+-- Era-3 top-level shape, frozen: the tree carried no alternate session. Its
+-- nested types are today's, unchanged since era 3; only 'ReloadState' grew a
+-- field, so this positional mirror decodes an era-3 blob. See 'decodeReloadTree'.
+data ReloadStateV3 = ReloadStateV3 [ReloadSession] (Maybe Text)
+    deriving (Generic) deriving anyclass (Serialise)
+
+-- | Carry an era-3 tree forward: it gains an empty alternate session, since an
+-- era-3 image never recorded one. See 'decodeReloadTree'.
+migrateV3 :: ReloadStateV3 -> ReloadState
+migrateV3 (ReloadStateV3 sess cur) = ReloadState sess cur Nothing
