@@ -61,11 +61,15 @@ defaultStyle = Style
 
 -- | Encode 'Style' as @[tag, fg, bg, bold, underline, italic, reverse, strike,
 -- blink, faint]@, mirroring the Generic layout the other leaf types keep but
--- with 'faint' appended. A pre-faint payload is a nine-element list; the
--- decoder defaults 'faint' off when the list is short, so a new build reads an
--- old reload/wire payload additively. A peer that must not see the new field is
--- gated out by 'Hat.Transport.Wire.protocolVersion'/'Hat.Server.Reload.reloadEra',
--- not by a decode failure.
+-- with 'faint' appended. A pre-faint payload is a nine-element list; the decoder
+-- defaults 'faint' off when the list is short, so a new build reads an old
+-- reload/wire payload additively — the point being that this ships WITHOUT a
+-- 'Hat.Transport.Wire.protocolVersion' bump (which would break 'restart-server'
+-- across the upgrade; see the note there). A reader that genuinely can't handle
+-- the longer list rejects it cleanly (CBOR arity mismatch → 'Malformed'/'Left'),
+-- never misreads. The reload handover still bumps
+-- 'Hat.Server.Reload.reloadEra' for an accurate newer-than-me signal on
+-- rollback, but decodes old and new payloads with this one lenient reader.
 instance Serialise Style where
     encode s =
            encodeListLen 10

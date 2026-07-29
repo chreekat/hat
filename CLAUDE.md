@@ -68,6 +68,19 @@ When you add or change any such format, the rules are:
    the `ReloadSpec`/`PersistSpec` corpora). This is what actually *prevents* a
    backward-incompatible change — prose doesn't. Never edit an existing vector;
    append a new one.
+6. **A `protocolVersion` bump cannot ride `restart-server`.** The wire handshake
+   is a strict `client == server` equality, and the *already-running old server*
+   does that check — so a new client presenting a bumped version is rejected and
+   can't even connect to deliver the `restart-server` command that would upgrade
+   the server. A bump therefore forces a kill-server + full restart (state loss),
+   defeating the whole point of in-place reload. So evolve the **wire leaves
+   additively instead** (a tolerant list-append like `Hello`/`Style`: a new field
+   is a longer list an old reader rejects cleanly and a new reader defaults) and
+   leave `protocolVersion` alone; reserve a bump for a genuine envelope reframing
+   deployed by restarting everything. `reloadEra` has no such constraint (the
+   handover is a fresh read each reload), so it still bumps for an accurate
+   newer-than-me signal — but decode old and new with one lenient reader rather
+   than a frozen migration when the change is a tolerant append.
 
 If you can't tell whether a change is compatible, it isn't: add the version, the
 migration, and a corpus vector.

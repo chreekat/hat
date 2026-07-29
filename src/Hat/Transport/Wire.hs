@@ -79,7 +79,7 @@ import Hat.Term.Cell
 -- envelope; a mismatch between peers is fatal. See the evolution charter
 -- in the module haddock.
 protocolVersion :: Word16
-protocolVersion = 5
+protocolVersion = 4
 
 deriving instance Generic Size
 deriving anyclass instance Serialise Size
@@ -87,8 +87,13 @@ deriving instance Generic Pos
 deriving anyclass instance Serialise Pos
 -- 'Color' and 'Style' get their 'Serialise' instances at their home module
 -- ('Hat.Term.Cell'); the wire reuses them as leaf field types. 'Style' is
--- hand-written and append-tolerant, but a leaf change still shifts these golden
--- bytes, so it rides a 'protocolVersion' bump (peers must match).
+-- hand-written and append-tolerant (like 'Hello'): a new field is a longer
+-- list a new reader defaults and an old reader rejects as 'Malformed' — never
+-- misreads. That is why a 'faint' bit ships WITHOUT a 'protocolVersion' bump:
+-- a bump would make the running old server reject the new client's handshake,
+-- and 'restart-server' — the very command that upgrades the server — could
+-- never connect to trigger it. Style flows server→client only; the client
+-- sends no Style, so a new client fully drives an old server.
 
 -- | Why this client connected: to attach and render, or only to issue
 -- commands (e.g. @hat kill-server@ from a shell).

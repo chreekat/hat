@@ -3,6 +3,7 @@
 
 module Hat.Transport.WireSpec (spec) where
 
+import Codec.Serialise (DeserialiseFailure, deserialiseOrFail)
 import Control.Concurrent.Async (concurrently)
 import Data.Bits (shiftR)
 import qualified Data.Bits as Bits
@@ -152,13 +153,16 @@ frameOf payload = B.pack header <> payload
 spec :: Spec
 spec = do
     -- WARNING: these golden bytes ARE the wire contract. A failure here
-    -- means the on-wire encoding changed and every deployed peer will
-    -- misread it. NEVER "fix" a golden by pasting the new bytes: instead
-    -- append a NEW message tag (leaving old ones untouched), or, for an
-    -- envelope reframing, bump 'protocolVersion' knowing all peers must
-    -- restart together. These goldens pin the tag numbers AND the
-    -- payload shapes, including the Generic-derived leaf types (Size,
-    -- Pos, Color, Style, DrawOp, Intent).
+    -- means the on-wire encoding changed and a deployed peer may misread it.
+    -- NEVER "fix" a golden by blindly pasting the new bytes. Valid ways to
+    -- change one: append a NEW message tag (leaving old ones untouched); grow
+    -- an append-tolerant leaf (like 'Style' — a longer list an old reader
+    -- rejects cleanly and a new reader defaults, pinned by the compat test
+    -- below); or, for an envelope reframing, bump 'protocolVersion' knowing all
+    -- peers must restart TOGETHER — a bump can't ride 'restart-server', since
+    -- the running old server would reject the new client's handshake. These
+    -- goldens pin the tag numbers AND the payload shapes (Size, Pos, Color,
+    -- Style, DrawOp, Intent).
     describe "golden bytes (client -> server)" $ do
         it "ClientHello" $
             hex (encodeMessage (ClientHello
@@ -197,6 +201,21 @@ spec = do
             hex (encodeMessage (ServerError "boom")) `shouldBe` "820864626f6f6d"
         it "Exited" $
             hex (encodeMessage Exited) `shouldBe` "8109"
+
+    -- The reason 'faint' ships without a 'protocolVersion' bump: a new build
+    -- must read an OLD peer's nine-element (pre-faint) Style as faint-off, so a
+    -- new client drives an old server through 'restart-server' and a reload
+    -- reads an old handover. A bump would instead make the old server reject the
+    -- new client at the handshake, bricking the upgrade.
+    describe "append-tolerant leaf compatibility" $ do
+        let decodeStyle ws = either (const Nothing) Just
+                (deserialiseOrFail (BL.pack ws) :: Either DeserialiseFailure Style)
+        it "reads a legacy nine-element Style with faint defaulted off" $
+            decodeStyle [0x89,0,0x81,0,0x81,0,0xf4,0xf4,0xf4,0xf4,0xf4,0xf4]
+                `shouldBe` Just defaultStyle
+        it "keeps the legacy fields when the pre-faint list is short" $
+            decodeStyle [0x89,0,0x81,0,0x81,0,0xf5,0xf4,0xf4,0xf4,0xf4,0xf4]
+                `shouldBe` Just defaultStyle { bold = True }
 
     describe "roundtrip" $ do
         prop "client messages" $ \(msg :: ClientToServer) ->
