@@ -307,8 +307,9 @@ encodeServerMessageAt lvl = \case
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),
 -- with 'Style' at @lvl@.
 encodeDrawOpsAt :: Word16 -> [DrawOp] -> Encoding
-encodeDrawOpsAt lvl ops =
-    encodeListLenIndef <> foldMap opAt ops <> encodeBreak
+encodeDrawOpsAt lvl ops = case ops of
+    [] -> encodeListLen 0  -- cborg encodes only the empty list definite
+    _  -> encodeListLenIndef <> foldMap opAt ops <> encodeBreak
   where
     opAt = \case
         Put p s t -> encodeListLen 4 <> encodeWord 0

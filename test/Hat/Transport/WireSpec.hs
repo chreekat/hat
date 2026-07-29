@@ -239,6 +239,9 @@ spec = do
         prop "level-current bytes match the plain encoder" $
             \(msg :: ServerToClient) ->
                 encodeServerMessageAt 5 msg === encodeMessage msg
+        it "encodes an empty Draw exactly like the plain encoder" $
+            encodeServerMessageAt 5 (Draw [])
+                `shouldBe` encodeMessage (Draw [])
         it "emits the pre-faint nine-element Style at level 4" $
             hex (encodeServerMessageAt 4
                 (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll,
