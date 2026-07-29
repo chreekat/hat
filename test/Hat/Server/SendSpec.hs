@@ -18,7 +18,8 @@ import Hat.Model
 import Hat.Server.ClientIO (send)
 import Hat.Server.Keys (PrefixState (NoPrefix))
 import Hat.Server.Render (blankFrame)
-import Hat.Transport.Wire (Inbound (..), ServerToClient (..), recvMessage)
+import Hat.Transport.Wire
+    (Inbound (..), ServerToClient (..), protocolVersion, recvMessage)
 
 -- A Client wired to one end of a socketpair (returned second), initially
 -- not ready.
@@ -41,7 +42,8 @@ mkClient = do
     pickV   <- newTVarIO Nothing
     focusV  <- newTVarIO True
     let client = Client
-            { id = ClientId 0, sock = a, sendLock = lock, size = sizeV
+            { id = ClientId 0, sock = a, wireLevel = protocolVersion
+            , sendLock = lock, size = sizeV
             , lastActive = activeV
             , session = sessV, lastSession = lastV, ready = readyV
             , keyState = keyV, lastFrame = frameV, lastCursor = curV

@@ -1,12 +1,14 @@
 module Hat.Server.SessionSpec (spec) where
 
+import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import qualified Data.Map.Strict as Map
 import Network.Socket
-    (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
+    ( Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket
+    , socketPair )
 import Test.Hspec
 
 import qualified Data.Set as Set
@@ -23,8 +25,11 @@ import Hat.Server
     , cmdAttachSession, chooseCurrentOnClose, deliversKey, detachPane
     , detachPaneCurrent, detachPanes, markActivity, markBell, nextZoom
     , noteOuterFocus, pickActivityTarget, pickAttachSession
-    , removePaneFromTree )
+    , removePaneFromTree, welcome )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
+import Hat.Transport.Wire
+    ( ClientToServer (..), Hello (..), Inbound (..), Intent (..)
+    , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
 
@@ -88,7 +93,7 @@ addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
 addClient st sid sz stamp = do
     sock <- socket AF_UNIX Stream defaultProtocol
     lock <- newMVar ()
-    client <- Client (ClientId stamp) sock lock
+    client <- Client (ClientId stamp) sock protocolVersion lock
         <$> newTVarIO sz
         <*> newTVarIO stamp
         <*> newTVarIO sid
@@ -131,6 +136,22 @@ stubPane n = do
 
 spec :: Spec
 spec = do
+    -- Any client at or above the floor is welcomed and told the server's
+    -- version (after Welcome, which old clients validate strictly).
+    describe "handshake" $
+        it "welcomes a future-version client and reports its own version" $ do
+            (st, _) <- seedSession "/"
+            (server, client) <- socketPair AF_UNIX Stream defaultProtocol
+            let h = Hello
+                    { protoVersion = protocolVersion + 1
+                    , term = "xterm", env = [], size = Size 24 80
+                    , cwd = "/", intent = ControlIntent }
+            withAsync (welcome st server h) $ \_ -> do
+                Just (Known (Welcome _)) <- recvMessage client
+                Just (Known (ServerVersion v)) <- recvMessage client
+                v `shouldBe` protocolVersion
+                sendMessage client Detach
+
     describe "aggressive-resize sizing" $ do
         let big = Size { rows = 50, cols = 200 }
             small = Size { rows = 24, cols = 80 }

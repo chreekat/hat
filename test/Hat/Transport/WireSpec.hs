@@ -5,6 +5,7 @@ module Hat.Transport.WireSpec (spec) where
 
 import Codec.Serialise (DeserialiseFailure, deserialiseOrFail)
 import Control.Concurrent.Async (concurrently)
+import Data.Either (isLeft)
 import Data.Bits (shiftR)
 import qualified Data.Bits as Bits
 import qualified Data.ByteString as B
@@ -223,6 +224,14 @@ spec = do
         it "keeps the legacy fields when the pre-faint list is short" $
             decodeStyle [0x89,0,0x81,0,0x81,0,0xf5,0xf4,0xf4,0xf4,0xf4,0xf4]
                 `shouldBe` Just defaultStyle { bold = True }
+
+    describe "negotiate" $ do
+        it "meets an older client at its version" $
+            negotiate dialectFloor `shouldBe` Right dialectFloor
+        it "caps a newer client at our version" $
+            negotiate (protocolVersion + 1) `shouldBe` Right protocolVersion
+        it "rejects a client below the floor" $
+            negotiate (dialectFloor - 1) `shouldSatisfy` isLeft
 
     -- The level-4 golden is the pre-faint Draw encoding, frozen forever as
     -- that dialect's corpus vector.

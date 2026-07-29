@@ -39,6 +39,8 @@
 -- compatibly without a tag or era bump.
 module Hat.Transport.Wire
     ( protocolVersion
+    , dialectFloor
+    , negotiate
     , Intent (..)
     , Hello (..)
     , ClientToServer (..)
@@ -69,6 +71,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
 import Network.Socket (Socket)
@@ -78,11 +81,24 @@ import qualified Network.Socket.ByteString.Lazy as SBL
 import Hat.Geometry
 import Hat.Term.Cell
 
--- | The wire era. Bumped only for an incompatible reframing of the
--- envelope; a mismatch between peers is fatal. See the evolution charter
--- in the module haddock.
+-- | This build's wire version. See the evolution charter in the module
+-- haddock and 'negotiate'.
 protocolVersion :: Word16
 protocolVersion = 4
+
+-- | The oldest dialect any build ever froze; nothing older exists to speak.
+dialectFloor :: Word16
+dialectFloor = 4
+
+-- | Accept any client at or above 'dialectFloor'; both sides then speak
+-- @min client server@. The server answers with 'ServerVersion' so the
+-- client computes the same minimum.
+negotiate :: Word16 -> Either Text Word16
+negotiate clientV
+    | clientV < dialectFloor =
+        Left ("protocol too old: client " <> T.pack (show clientV)
+              <> ", server floor " <> T.pack (show dialectFloor))
+    | otherwise = Right (min protocolVersion clientV)
 
 deriving instance Generic Size
 deriving anyclass instance Serialise Size

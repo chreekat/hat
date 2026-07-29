@@ -16,6 +16,7 @@ module Hat.Server
     , SetDefault (..)
     , finallyClearRestoring  -- ^ exported for the restore-gate test
     , awaitRestoreForCommand  -- ^ exported for the command restore-gate test
+    , welcome  -- ^ exported for the handshake test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
     , cmdSourceFile  -- ^ exported for the reload tilde-expansion test
@@ -1224,11 +1225,9 @@ handleConn :: ServerState -> N.Socket -> IO ()
 handleConn st conn = do
     m <- recvMessage conn
     case m of
-        Just (Known (ClientHello h))
-            | h.protoVersion == protocolVersion -> welcome st conn h
-            | otherwise -> sendMessage conn $ ServerError $
-                "protocol mismatch: server " <> tshow protocolVersion
-                <> ", client " <> tshow h.protoVersion
+        Just (Known (ClientHello h)) -> case negotiate h.protoVersion of
+            Right _ -> welcome st conn h
+            Left e  -> sendMessage conn (ServerError e)
         _ -> sendMessage conn (ServerError "expected hello")
 
 welcome :: ServerState -> N.Socket -> Hello -> IO ()
@@ -1238,6 +1237,9 @@ welcome st conn h = do
         ControlIntent -> do
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
             sendMessage conn (Welcome "")
+            -- After Welcome: a client validates its one greeting strictly,
+            -- then skips unknown tags.
+            sendMessage conn (ServerVersion protocolVersion)
             atomically $ writeTVar client.ready True
             controlLoop st client `finally` removeClient st client
         AttachIntent setupCmds -> do
@@ -1260,6 +1262,7 @@ welcome st conn h = do
                     atomically $ writeTVar st.everAttached True
                     applySessionSize st sess.id
                     sendMessage conn (Welcome sname)
+                    sendMessage conn (ServerVersion protocolVersion)
                     atomically $ writeTVar client.ready True
                     logEvent st.logger ClientConnected
                         { client = rawClient client.id, term = h.term }
@@ -1313,6 +1316,7 @@ newClient st conn h = do
     pure Client
         { id = ClientId cid
         , sock = conn
+        , wireLevel = min protocolVersion h.protoVersion
         , sendLock = sendLock
         , size = sizeVar
         , lastActive = activeVar

@@ -11,7 +11,7 @@ import Control.Exception (SomeException, catch)
 import Control.Monad (forM_, when)
 
 import Hat.Model
-import Hat.Transport.Wire (ServerToClient, sendMessage)
+import Hat.Transport.Wire (ServerToClient, sendMessageAt)
 
 -- | Every server-initiated message except the Welcome/ServerError handshake
 -- (sent raw on the socket) goes through here — both broadcasts and a
@@ -22,7 +22,8 @@ send :: Client -> ServerToClient -> IO ()
 send client msg = do
     isReady <- readTVarIO client.ready
     when isReady $
-        withMVar client.sendLock (\_ -> sendMessage client.sock msg)
+        withMVar client.sendLock
+            (\_ -> sendMessageAt client.wireLevel client.sock msg)
             `catch` \(_ :: SomeException) -> pure ()
 
 -- | Send one message to every client attached to a session.

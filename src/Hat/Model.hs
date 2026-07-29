@@ -65,6 +65,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
 import qualified Data.Vector as V
+import Data.Word (Word16)
 import Network.Socket (Socket)
 import qualified System.Posix.Files as PFiles
 
@@ -348,6 +349,7 @@ data Expansion
 data Client = Client
     { id        :: ClientId
     , sock      :: Socket
+    , wireLevel :: Word16  -- ^ negotiated dialect; see 'Hat.Transport.Wire.negotiate'
     , sendLock  :: MVar ()
     , size      :: TVar Size
     , lastActive :: TVar Int  -- ^ activity stamp; see 'markActive'
