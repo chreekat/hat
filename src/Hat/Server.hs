@@ -15,6 +15,7 @@ module Hat.Server
     , SetScope (..)
     , SetDefault (..)
     , finallyClearRestoring  -- ^ exported for the restore-gate test
+    , awaitRestoreForCommand  -- ^ exported for the command restore-gate test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
     , cmdSourceFile  -- ^ exported for the reload tilde-expansion test
@@ -4592,11 +4593,25 @@ cmdIfShell st mclient args = do
 
 -- Control clients ------------------------------------------------------------
 
+-- | Block a control command until any in-flight restore finishes, so it reads
+-- a whole tree rather than one still being rebuilt — the same gate 'ensureSession'
+-- parks an attach on. A 'restart-server' batch is exempt: it must REJECT an
+-- in-flight reload (see 'cmdRestartServer'), not wait for it, so gating it here
+-- would turn the reject into a silent wait-then-reload.
+awaitRestoreForCommand :: ServerState -> [[Text]] -> IO ()
+awaitRestoreForCommand st cmds =
+    unless (any isReload cmds) $
+        atomically $ readTVar st.restoring >>= \r -> when r retry
+  where
+    isReload (name : _) = name == "restart-server"
+    isReload []         = False
+
 controlLoop :: ServerState -> Client -> IO ()
 controlLoop st client = do
     m <- recvMessage client.sock
     case m of
         Just (Known (Command cmds)) -> do
+            awaitRestoreForCommand st cmds
             replies <- runCommands st (Just client) cmds
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
