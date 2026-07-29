@@ -140,6 +140,7 @@ data ServerToClient
     | CommandDone           -- ^ all replies for one Command were sent
     | ServerError Text
     | Exited                -- ^ the client's session is gone
+    | ServerVersion Word16  -- ^ the server's own wire version; see 'negotiate'
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -193,16 +194,17 @@ instance WireMessage ClientToServer where
         _ -> pure (UnknownTag tag)
 
 -- ServerToClient tag registry (append-only; never renumber or reuse):
---   Welcome     = 0
---   Draw        = 1
---   SetTitle    = 2
---   RingBell    = 3
---   Notify      = 4
---   Message     = 5
---   DetachOk    = 6
---   CommandDone = 7
---   ServerError = 8
---   Exited      = 9
+--   Welcome       = 0
+--   Draw          = 1
+--   SetTitle      = 2
+--   RingBell      = 3
+--   Notify        = 4
+--   Message       = 5
+--   DetachOk      = 6
+--   CommandDone   = 7
+--   ServerError   = 8
+--   Exited        = 9
+--   ServerVersion = 10
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -215,6 +217,7 @@ instance WireMessage ServerToClient where
         CommandDone   -> encodeListLen 1 <> encodeWord 7
         ServerError e -> encodeListLen 2 <> encodeWord 8 <> encode e
         Exited        -> encodeListLen 1 <> encodeWord 9
+        ServerVersion v -> encodeListLen 2 <> encodeWord 10 <> encode v
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -226,6 +229,7 @@ instance WireMessage ServerToClient where
         7 -> nullary len (Known CommandDone)
         8 -> field len (Known . ServerError <$> decode)
         9 -> nullary len (Known Exited)
+        10 -> field len (Known . ServerVersion <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.

@@ -112,6 +112,9 @@ shuttle sock = do
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
                 Welcome _ -> receiver
+                -- Informational: our decoder already reads every dialect
+                -- ≤ ours, and nothing we send upstream is dialect-sensitive.
+                ServerVersion _ -> receiver
     stdinReader outbox = forever $ do
         bs <- B.hGetSome stdin 4096
         if B.null bs

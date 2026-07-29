@@ -117,6 +117,7 @@ instance Arbitrary ServerToClient where
         , pure CommandDone
         , ServerError <$> genText
         , pure Exited
+        , ServerVersion <$> arbitrary
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -129,6 +130,7 @@ instance Arbitrary ServerToClient where
         CommandDone -> []
         ServerError e -> ServerError . T.pack <$> shrink (T.unpack e)
         Exited -> []
+        ServerVersion v -> ServerVersion <$> shrink v
 
 -- | Render bytes as lowercase hex for golden comparison.
 hex :: B.ByteString -> String
@@ -201,6 +203,8 @@ spec = do
             hex (encodeMessage (ServerError "boom")) `shouldBe` "820864626f6f6d"
         it "Exited" $
             hex (encodeMessage Exited) `shouldBe` "8109"
+        it "ServerVersion" $
+            hex (encodeMessage (ServerVersion 5)) `shouldBe` "820a05"
 
     -- The reason 'faint' ships without a 'protocolVersion' bump: a new build
     -- must read an OLD peer's nine-element (pre-faint) Style as faint-off, so a
