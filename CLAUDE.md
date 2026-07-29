@@ -34,7 +34,7 @@ check, and **add a row whenever you introduce a new one**:
 
 | Boundary | Module | Evolution rule | Corpus |
 |---|---|---|---|
-| Client ↔ server wire | `Hat.Transport.Wire` | Explicit append-only CBOR tags `[tag, …]`, **never** Generic-derived constructor/field numbering. Unknown tag → skip; `Malformed` → fatal. | golden-byte tests in `WireSpec` |
+| Client ↔ server wire | `Hat.Transport.Wire` | Versions exchanged, both speak `min` (`negotiate`); window = every version ≥ floor 4, forever. Append-only CBOR tags; leaves grow under a new dialect level, encoded per-peer. Unknown tag → skip; `Malformed` → fatal. | golden-byte + dialect corpus in `WireSpec` |
 | Persistence store | `Hat.Server.Persist` (SQLite) | Additive schema: core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent and ignore the unknown (never gate on `schema_version`). | `PersistSpec` "schema compatibility" |
 | Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload; a build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. | `ReloadSpec` corpus |
 
@@ -68,19 +68,16 @@ When you add or change any such format, the rules are:
    the `ReloadSpec`/`PersistSpec` corpora). This is what actually *prevents* a
    backward-incompatible change — prose doesn't. Never edit an existing vector;
    append a new one.
-6. **A `protocolVersion` bump cannot ride `restart-server`.** The wire handshake
-   is a strict `client == server` equality, and the *already-running old server*
-   does that check — so a new client presenting a bumped version is rejected and
-   can't even connect to deliver the `restart-server` command that would upgrade
-   the server. A bump therefore forces a kill-server + full restart (state loss),
-   defeating the whole point of in-place reload. So evolve the **wire leaves
-   additively instead** (a tolerant list-append like `Hello`/`Style`: a new field
-   is a longer list an old reader rejects cleanly and a new reader defaults) and
-   leave `protocolVersion` alone; reserve a bump for a genuine envelope reframing
-   deployed by restarting everything. `reloadEra` has no such constraint (the
-   handover is a fresh read each reload), so it still bumps for an accurate
-   newer-than-me signal — but decode old and new with one lenient reader rather
-   than a frozen migration when the change is a tolerant append.
+6. **The wire upgrades in place: version skew must never break
+   `restart-server`.** The handshake negotiates `min(client, server)` and
+   accepts every version ≥ the floor (4), in both directions, for all time. The
+   command path (hello, `Command`, its replies) is shape-frozen forever, so a
+   client at any version can deliver `restart-server` to any older server. Wire
+   leaves evolve by tolerant append under a **new dialect level**: new readers
+   default what shorter lists omit, the server writes each client's negotiated
+   level (`encodeServerMessageAt`), and every historical level's bytes stay
+   pinned in the `WireSpec` dialect corpus. (`Hat.Client.stepDown` is a one-time
+   shim for the last pre-negotiation server; delete it after that hop.)
 
 If you can't tell whether a change is compatible, it isn't: add the version, the
 migration, and a corpus vector.

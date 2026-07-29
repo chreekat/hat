@@ -161,17 +161,11 @@ frameOf payload = B.pack header <> payload
 
 spec :: Spec
 spec = do
-    -- WARNING: these golden bytes ARE the wire contract. A failure here
-    -- means the on-wire encoding changed and a deployed peer may misread it.
-    -- NEVER "fix" a golden by blindly pasting the new bytes. Valid ways to
-    -- change one: append a NEW message tag (leaving old ones untouched); grow
-    -- an append-tolerant leaf (like 'Style' — a longer list an old reader
-    -- rejects cleanly and a new reader defaults, pinned by the compat test
-    -- below); or, for an envelope reframing, bump 'protocolVersion' knowing all
-    -- peers must restart TOGETHER — a bump can't ride 'restart-server', since
-    -- the running old server would reject the new client's handshake. These
-    -- goldens pin the tag numbers AND the payload shapes (Size, Pos, Color,
-    -- Style, DrawOp, Intent).
+    -- WARNING: these golden bytes ARE the wire contract; they pin the tag
+    -- numbers and payload shapes (Size, Pos, Color, Style, DrawOp, Intent).
+    -- NEVER "fix" a golden by blindly pasting new bytes. Valid changes:
+    -- append a NEW message tag, or grow a leaf under a new dialect level —
+    -- keeping every old level's bytes in the dialect corpus below.
     describe "golden bytes (client -> server)" $ do
         it "ClientHello" $
             hex (encodeMessage (ClientHello

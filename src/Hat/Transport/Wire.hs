@@ -14,29 +14,29 @@
 --
 -- == Evolution charter
 --
--- 'protocolVersion' is a wire /era/: it is bumped ONLY for an
--- incompatible reframing (ideally never again). A mismatched era is
--- fatal. Within an era the protocol evolves by APPENDING new tags:
+-- 'protocolVersion' names this build's dialect. Peers exchange versions
+-- ('Hello' up, 'ServerVersion' down) and both speak the minimum
+-- ('negotiate'); every version ≥ 'dialectFloor' interoperates, forever. A
+-- build therefore READS every dialect ≤ its own (tolerant leaf decoders)
+-- and WRITES any dialect ≤ its own ('encodeServerMessageAt'); each
+-- level's bytes are pinned by the dialect corpus in WireSpec.
 --
 --   * Tags are append-only forever. Never renumber a tag, never reuse a
 --     retired one, never insert one mid-list. The tag registries below
 --     are frozen; new constructors get the next unused number.
---   * A tag's payload shape is frozen forever. To change a message,
---     add a NEW tag; do not alter an existing one.
+--   * A tag's payload shape is frozen forever — the control core
+--     (hello, Command, its replies) is what lets any client drive
+--     restart-server on any older server. To change a message, add a
+--     NEW tag; to grow a leaf (like 'Style'), append the field under a
+--     new dialect level and teach 'encodeServerMessageAt' the old form.
 --   * Receivers SKIP unknown tags ('UnknownTag') so a new sender can
 --     talk to an old receiver.
 --   * A malformed payload ('Malformed') is FATAL to the connection: the
 --     bytes are unintelligible, so draining further would loop.
---   * The golden-byte tests in "Hat.Transport.WireSpec" pin every tag
---     number and every payload shape — including the Generic-derived
---     leaf types (Size, Pos, Color, Style, DrawOp, Intent). Changing any
---     leaf encoding therefore breaks the wire contract: add a new
---     message tag instead, or bump the era knowing all peers must
---     restart together.
 --
 -- 'Hello' is encoded as a definite list of its fields and its decoder
 -- TOLERATES extra trailing elements, so new hello fields can be appended
--- compatibly without a tag or era bump.
+-- compatibly without a tag or level bump.
 module Hat.Transport.Wire
     ( protocolVersion
     , dialectFloor
@@ -84,7 +84,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 4
+protocolVersion = 5
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -104,15 +104,9 @@ deriving instance Generic Size
 deriving anyclass instance Serialise Size
 deriving instance Generic Pos
 deriving anyclass instance Serialise Pos
--- 'Color' and 'Style' get their 'Serialise' instances at their home module
--- ('Hat.Term.Cell'); the wire reuses them as leaf field types. 'Style' is
--- hand-written and append-tolerant (like 'Hello'): a new field is a longer
--- list a new reader defaults and an old reader rejects as 'Malformed' — never
--- misreads. That is why a 'faint' bit ships WITHOUT a 'protocolVersion' bump:
--- a bump would make the running old server reject the new client's handshake,
--- and 'restart-server' — the very command that upgrades the server — could
--- never connect to trigger it. Style flows server→client only; the client
--- sends no Style, so a new client fully drives an old server.
+-- 'Color' and 'Style' live in 'Hat.Term.Cell'; the wire reuses them as leaf
+-- field types. 'Style' is the one dialect-sensitive leaf — see
+-- 'Hat.Term.Cell.encodeStyleAt'.
 
 -- | Why this client connected: to attach and render, or only to issue
 -- commands (e.g. @hat kill-server@ from a shell).
