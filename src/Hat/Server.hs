@@ -38,6 +38,8 @@ module Hat.Server
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , detachPane  -- ^ exported for the pane-detach test
     , detachPanes  -- ^ exported for the multi-pane-detach test
+    , detachPaneCurrent  -- ^ exported for the mobile-pane teardown test
+    , removePaneFromTree  -- ^ exported for the mobile-pane teardown test
     , DetachResult (..)
     , SessionFate (..)
     , serverIdle  -- ^ exported for the idle-predicate test
@@ -1553,6 +1555,13 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
 -- the emulator until end-of-file, and 'closePane' runs in a @finally@ so
 -- the pane's resources and model entry are released however the loop ends
 -- — clean EOF, a hang-up from a kill command, or an exception.
+--
+-- The @sid@\/@win@ are the pane's window AT SPAWN. They drive only the
+-- best-effort attention markers (bell\/activity) and desktop-notification
+-- routing, where a stale window after a re-parent is a harmless misroute — not
+-- worth a tree scan on every screen change. Teardown must NOT use them: a
+-- re-parented pane's 'closePane' finds its CURRENT window (see
+-- 'detachPaneCurrent'), or it would strand the pane in the wrong window.
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
 startPaneReader st sid win pane = do
     -- Count the pane live before forking, so a kill that lands before the
@@ -1563,7 +1572,7 @@ startPaneReader st sid win pane = do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
         readLoop
-            `finally` closePane st sid win pane
+            `finally` closePane st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
     readLoop = do
@@ -1709,17 +1718,31 @@ hangupPane pane = do
         Just tid -> killThread tid
         Nothing  -> Hat.Term.Pty.closePty pane.pty
 
+-- | The model half of the reader thread's teardown: detach the pane from the
+-- window it lives in NOW. A pane is mobile — break-pane, join-pane, and
+-- swap-pane re-parent a live pane after its reader started — so teardown must
+-- find the pane's current window ('locatePane') rather than the one it was
+-- spawned in, or it detaches from the wrong window and strands the pane. Yields
+-- the session detached from (for the reflow and the emptied-session notice), or
+-- 'Nothing' when a killing command already removed the pane from the tree.
+detachPaneCurrent :: ServerState -> Pane -> STM (Maybe SessionId, DetachResult)
+detachPaneCurrent st pane = do
+    mloc <- locatePane st pane.id
+    case mloc of
+        Just (sid, win) -> (,) (Just sid) <$> detachPane st sid win pane
+        Nothing         -> pure (Nothing, AlreadyDetached)
+
 -- | Tear a pane down from the reader thread's @finally@: the model detach
 -- (idempotent — a killing command may already have done it, see
 -- 'detachPane') followed by the OS-side reap, which runs exactly once here
 -- so no teardown path can forget a resource. (The emulator frees itself via
 -- its finalizer.)
-closePane :: ServerState -> SessionId -> Window -> Pane -> IO ()
-closePane st sid win pane = do
-    r <- atomically (detachPane st sid win pane)
-    when (r /= AlreadyDetached) $ applySessionSize st sid
+closePane :: ServerState -> Pane -> IO ()
+closePane st pane = do
+    (msid, r) <- atomically (detachPaneCurrent st pane)
+    forM_ msid $ \sid -> when (r /= AlreadyDetached) $ applySessionSize st sid
     reapPane st pane
-    when (r == Detached SessionEmptied) $ broadcast st sid Exited
+    forM_ msid $ \sid -> when (r == Detached SessionEmptied) $ broadcast st sid Exited
 
 -- | The model half of a pane's teardown, in one atomic transaction: drop
 -- the pane from its window's map and layout, reactivate a surviving pane,
