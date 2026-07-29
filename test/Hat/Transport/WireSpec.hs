@@ -132,6 +132,12 @@ instance Arbitrary ServerToClient where
         Exited -> []
         ServerVersion v -> ServerVersion <$> shrink v
 
+-- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
+dropFaint :: DrawOp -> DrawOp
+dropFaint = \case
+    Put p s t -> Put p s { faint = False } t
+    op -> op
+
 -- | Render bytes as lowercase hex for golden comparison.
 hex :: B.ByteString -> String
 hex = concatMap byte . B.unpack
@@ -206,11 +212,8 @@ spec = do
         it "ServerVersion" $
             hex (encodeMessage (ServerVersion 5)) `shouldBe` "820a05"
 
-    -- The reason 'faint' ships without a 'protocolVersion' bump: a new build
-    -- must read an OLD peer's nine-element (pre-faint) Style as faint-off, so a
-    -- new client drives an old server through 'restart-server' and a reload
-    -- reads an old handover. A bump would instead make the old server reject the
-    -- new client at the handshake, bricking the upgrade.
+    -- A new build must read an old peer's nine-element (pre-faint) Style —
+    -- that's what lets a new client drive an old server.
     describe "append-tolerant leaf compatibility" $ do
         let decodeStyle ws = either (const Nothing) Just
                 (deserialiseOrFail (BL.pack ws) :: Either DeserialiseFailure Style)
@@ -220,6 +223,24 @@ spec = do
         it "keeps the legacy fields when the pre-faint list is short" $
             decodeStyle [0x89,0,0x81,0,0x81,0,0xf5,0xf4,0xf4,0xf4,0xf4,0xf4]
                 `shouldBe` Just defaultStyle { bold = True }
+
+    -- The level-4 golden is the pre-faint Draw encoding, frozen forever as
+    -- that dialect's corpus vector.
+    describe "dialect-levelled encoding" $ do
+        prop "level-current bytes match the plain encoder" $
+            \(msg :: ServerToClient) ->
+                encodeServerMessageAt 5 msg === encodeMessage msg
+        it "emits the pre-faint nine-element Style at level 4" $
+            hex (encodeServerMessageAt 4
+                (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll,
+                       CursorAt (Pos 3 4) True]))
+                `shouldBe` "82019f840083000102890081008100f4f4f4f4f4f4617881\
+                           \01830283000304f5ff"
+        prop "a level-4 frame decodes back with faint dropped" $
+            \(ops :: [DrawOp]) ->
+                (decodeMessage (encodeServerMessageAt 4 (Draw ops))
+                    :: Inbound ServerToClient)
+                    === Known (Draw (map dropFaint ops))
 
     describe "roundtrip" $ do
         prop "client messages" $ \(msg :: ClientToServer) ->

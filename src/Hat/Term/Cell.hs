@@ -12,13 +12,14 @@ module Hat.Term.Cell
     , Cell (..)
     , defaultStyle
     , blankCell
+    , encodeStyleAt
     ) where
 
 import Codec.Serialise (Serialise (..))
 import Codec.Serialise.Decoding (decodeListLen, decodeWord)
-import Codec.Serialise.Encoding (encodeListLen, encodeWord)
+import Codec.Serialise.Encoding (Encoding, encodeListLen, encodeWord)
 import Data.Text (Text)
-import Data.Word (Word8)
+import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
 
 -- The 'Serialise' instances serve two version-gated boundaries: the era-gated
@@ -59,30 +60,11 @@ defaultStyle = Style
     , faint = False
     }
 
--- | Encode 'Style' as @[tag, fg, bg, bold, underline, italic, reverse, strike,
--- blink, faint]@, mirroring the Generic layout the other leaf types keep but
--- with 'faint' appended. A pre-faint payload is a nine-element list; the decoder
--- defaults 'faint' off when the list is short, so a new build reads an old
--- reload/wire payload additively — the point being that this ships WITHOUT a
--- 'Hat.Transport.Wire.protocolVersion' bump (which would break 'restart-server'
--- across the upgrade; see the note there). A reader that genuinely can't handle
--- the longer list rejects it cleanly (CBOR arity mismatch → 'Malformed'/'Left'),
--- never misreads. The reload handover still bumps
--- 'Hat.Server.Reload.reloadEra' for an accurate newer-than-me signal on
--- rollback, but decodes old and new payloads with this one lenient reader.
+-- | 'encode' emits the current full form; 'decode' reads every dialect ≤ ours,
+-- defaulting fields a shorter list omits. Older peers are written via
+-- 'encodeStyleAt'.
 instance Serialise Style where
-    encode s =
-           encodeListLen 10
-        <> encodeWord 0
-        <> encode s.fg
-        <> encode s.bg
-        <> encode s.bold
-        <> encode s.underline
-        <> encode s.italic
-        <> encode s.reverse
-        <> encode s.strike
-        <> encode s.blink
-        <> encode s.faint
+    encode = encodeStyleAt maxBound
     decode = do
         len <- decodeListLen
         _   <- decodeWord
@@ -99,6 +81,25 @@ instance Serialise Style where
             { fg = fg', bg = bg', bold = bold', underline = underline'
             , italic = italic', reverse = reverse', strike = strike'
             , blink = blink', faint = faint' }
+
+-- | Encode for a peer at wire dialect @lvl@: ≤ 4 gets the nine-element
+-- pre-faint list, ≥ 5 the full ten. Each level's bytes are frozen forever
+-- (dialect corpus in @WireSpec@).
+encodeStyleAt :: Word16 -> Style -> Encoding
+encodeStyleAt lvl s =
+       encodeListLen (if hasFaint then 10 else 9)
+    <> encodeWord 0
+    <> encode s.fg
+    <> encode s.bg
+    <> encode s.bold
+    <> encode s.underline
+    <> encode s.italic
+    <> encode s.reverse
+    <> encode s.strike
+    <> encode s.blink
+    <> (if hasFaint then encode s.faint else mempty)
+  where
+    hasFaint = lvl >= 5
 
 -- | One grid cell. A wide character occupies one 'Cell' with @width = 2@;
 -- the following grid column is a continuation and is skipped when drawing.

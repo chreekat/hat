@@ -47,8 +47,10 @@ module Hat.Transport.Wire
     , Inbound (..)
     , WireMessage (..)
     , encodeMessage
+    , encodeServerMessageAt
     , decodeMessage
     , sendMessage
+    , sendMessageAt
     , recvMessage
     ) where
 
@@ -59,7 +61,8 @@ import Codec.Serialise (Serialise, decode, encode)
 import Codec.Serialise.Decoding
     (Decoder, decodeListLen, decodeWord, decodeWord16)
 import Codec.Serialise.Encoding
-    (Encoding, encodeListLen, encodeWord, encodeWord16)
+    ( Encoding, encodeBreak, encodeListLen, encodeListLenIndef, encodeWord
+    , encodeWord16 )
 import Control.Monad (replicateM_)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
@@ -277,6 +280,27 @@ skipField = () <$ decodeTerm
 encodeMessage :: WireMessage a => a -> ByteString
 encodeMessage = toStrictByteString . encodeWire
 
+-- | Encode for a peer at the negotiated dialect @lvl@. Only 'Draw' is
+-- dialect-sensitive today; every other message is shape-frozen.
+encodeServerMessageAt :: Word16 -> ServerToClient -> ByteString
+encodeServerMessageAt lvl = \case
+    Draw ops -> toStrictByteString $
+        encodeListLen 2 <> encodeWord 1 <> encodeDrawOpsAt lvl ops
+    msg -> encodeMessage msg
+
+-- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),
+-- with 'Style' at @lvl@.
+encodeDrawOpsAt :: Word16 -> [DrawOp] -> Encoding
+encodeDrawOpsAt lvl ops =
+    encodeListLenIndef <> foldMap opAt ops <> encodeBreak
+  where
+    opAt = \case
+        Put p s t -> encodeListLen 4 <> encodeWord 0
+            <> encode p <> encodeStyleAt lvl s <> encode t
+        ClearAll -> encodeListLen 1 <> encodeWord 1
+        CursorAt p v -> encodeListLen 3 <> encodeWord 2
+            <> encode p <> encode v
+
 -- | Decode a framed message payload into an 'Inbound' result.
 decodeMessage :: WireMessage a => ByteString -> Inbound a
 decodeMessage bs =
@@ -297,9 +321,15 @@ maxFrame :: Word32
 maxFrame = 64 * 1024 * 1024
 
 sendMessage :: WireMessage a => Socket -> a -> IO ()
-sendMessage sock msg = do
-    let payload = encodeMessage msg
-        n = fromIntegral (B.length payload) :: Word32
+sendMessage sock = sendPayload sock . encodeMessage
+
+-- | 'sendMessage' at a peer's negotiated dialect; see 'encodeServerMessageAt'.
+sendMessageAt :: Word16 -> Socket -> ServerToClient -> IO ()
+sendMessageAt lvl sock = sendPayload sock . encodeServerMessageAt lvl
+
+sendPayload :: Socket -> ByteString -> IO ()
+sendPayload sock payload = do
+    let n = fromIntegral (B.length payload) :: Word32
         header = B.pack
             [ fromIntegral (n `shiftR` 24 .&. 0xff)
             , fromIntegral (n `shiftR` 16 .&. 0xff)
