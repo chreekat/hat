@@ -60,6 +60,15 @@ spec = do
         cell.style.fg `shouldBe` Indexed 1
         cell.style.bold `shouldBe` True
 
+    -- SGR 2 (faint/dim) is what Claude Code paints its ghost suggestions with;
+    -- the vendored libvterm is patched to carry it (bug 33/48).
+    it "records the faint (SGR 2) attribute, and SGR 22 clears it" $ do
+        e <- new80x24
+        _ <- feedStr e "\ESC[2md\ESC[22mn"
+        scr <- snapshot e
+        (screenCell scr Pos { row = 0, col = 0 }).style.faint `shouldBe` True
+        (screenCell scr Pos { row = 0, col = 1 }).style.faint `shouldBe` False
+
     it "tracks the alternate screen" $ do
         e <- new80x24
         m0 <- modes e

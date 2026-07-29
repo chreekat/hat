@@ -79,14 +79,16 @@ import Hat.Term.Cell
 -- envelope; a mismatch between peers is fatal. See the evolution charter
 -- in the module haddock.
 protocolVersion :: Word16
-protocolVersion = 4
+protocolVersion = 5
 
 deriving instance Generic Size
 deriving anyclass instance Serialise Size
 deriving instance Generic Pos
 deriving anyclass instance Serialise Pos
--- 'Color' and 'Style' get their Generic/Serialise instances at their home
--- module ('Hat.Term.Cell'); the wire reuses them as leaf field types.
+-- 'Color' and 'Style' get their 'Serialise' instances at their home module
+-- ('Hat.Term.Cell'); the wire reuses them as leaf field types. 'Style' is
+-- hand-written and append-tolerant, but a leaf change still shifts these golden
+-- bytes, so it rides a 'protocolVersion' bump (peers must match).
 
 -- | Why this client connected: to attach and render, or only to issue
 -- commands (e.g. @hat kill-server@ from a shell).

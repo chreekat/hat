@@ -225,6 +225,7 @@ cellSgr :: Style -> B.ByteString
 cellSgr st = BL.toStrict $ BB.toLazyByteString $
     BB.byteString "\ESC[0"
     <> flag st.bold 1
+    <> flag st.faint 2
     <> flag st.italic 3
     <> flag st.underline 4
     <> flag st.blink 5
@@ -717,6 +718,7 @@ peekHatCell p = do
             , reverse = has 8
             , strike = has 16
             , blink = has 32
+            , faint = has 64
             }
         }
 
@@ -736,6 +738,7 @@ pokeHatCell p cell = do
         onFlag b m = if b then m else 0
         flags = onFlag s.bold 1 .|. onFlag s.underline 2 .|. onFlag s.italic 4
             .|. onFlag s.reverse 8 .|. onFlag s.strike 16 .|. onFlag s.blink 32
+            .|. onFlag s.faint 64
     #{poke HatCell, flags} p (flags :: CUInt)
     let (fgK, fgI, fgR, fgG, fgB) = colorFields s.fg
         (bgK, bgI, bgR, bgG, bgB) = colorFields s.bg

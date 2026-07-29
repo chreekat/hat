@@ -152,7 +152,7 @@ data Handover = Handover
 -- misdecode. The golden-byte test pins the encoding, so a shape change that
 -- forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 4
+reloadEra = 5
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -208,6 +208,12 @@ decodeHandover bs =
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadState
 decodeReloadTree e payload
     | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
+        Right t  -> Right t
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    -- Era 4 differs from era 5 only by 'Style.faint', appended additively; the
+    -- hand-written Style decoder defaults it off for the shorter list, so an
+    -- era-4 payload decodes into the current tree with no migration.
+    | e == 4 = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 3 = case deserialiseOrFail (BL.fromStrict payload) of

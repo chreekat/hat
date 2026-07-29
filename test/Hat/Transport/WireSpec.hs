@@ -43,12 +43,12 @@ instance Arbitrary Color where
 
 instance Arbitrary Style where
     arbitrary = Style <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     shrink st =
-        [ Style fg' bg' bo un ita rv sk bl
-        | (fg', bg', bo, un, ita, rv, sk, bl) <-
-            shrink (st.fg, st.bg, st.bold, st.underline, st.italic,
-                    st.reverse, st.strike, st.blink)
+        [ Style fg' bg' bo un ita rv sk bl ft
+        | ((fg', bg', bo, un, ita, rv, sk, bl), ft) <-
+            shrink ((st.fg, st.bg, st.bold, st.underline, st.italic,
+                     st.reverse, st.strike, st.blink), st.faint)
         ]
 
 genText :: Gen T.Text
@@ -180,7 +180,7 @@ spec = do
         it "Draw" $
             hex (encodeMessage
                 (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll, CursorAt (Pos 3 4) True]))
-                `shouldBe` "82019f840083000102890081008100f4f4f4f4f4f461788101830283000304f5ff"
+                `shouldBe` "82019f8400830001028a0081008100f4f4f4f4f4f4f461788101830283000304f5ff"
         it "SetTitle" $
             hex (encodeMessage (SetTitle "t")) `shouldBe` "82026174"
         it "RingBell" $

@@ -101,7 +101,7 @@ instance Arbitrary Cell where
 instance Arbitrary Style where
     arbitrary = Style
         <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
     shrink = genericShrink
 
 instance Arbitrary Color where
@@ -212,6 +212,13 @@ corpus =
         \0718648400f5f4028700f50102f59f9f840061780189008201018100\
         \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
         \ffffffff8164776f726b816470726576"
+      , fixedCleanup, fixedTree )
+    , ( 5
+      , "851a4841545205039f82071864ff586f84009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
+        \0718648400f5f4028700f50102f59f9f84006178018a0082010181\
+        \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
+        \f4f4f4ffffffffff8164776f726b816470726576"
       , fixedCleanup, fixedTree )
     ]
 

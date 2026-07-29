@@ -25,6 +25,11 @@ spec = do
     it "keeps the first eight indices as ANSI 30-37/40-47" $ do
         sgr defaultStyle { fg = Indexed 1 } `shouldBe` "\ESC[0;31m"
         sgr defaultStyle { bg = Indexed 4 } `shouldBe` "\ESC[0;44m"
+
+    -- Bug 33/48: a faint (dim) run — Claude Code's ghost suggestions — must
+    -- reach the client's tty as SGR 2 so it renders dim, not normal text.
+    it "emits the faint attribute as SGR 2" $
+        sgr defaultStyle { faint = True } `shouldBe` "\ESC[0;2m"
     -- Bug d6fd9d65: a full redraw (ClearAll then repaint) let the
     -- terminal present the cleared screen before the repaint arrived,
     -- flickering the whole window on pane open/close.

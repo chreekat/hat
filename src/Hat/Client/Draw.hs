@@ -53,6 +53,7 @@ sgr :: Style -> ByteString
 sgr st = BL.toStrict . BB.toLazyByteString $
     BB.byteString "\ESC[0"
     <> flag st.bold 1
+    <> flag st.faint 2
     <> flag st.italic 3
     <> flag st.underline 4
     <> flag st.blink 5
