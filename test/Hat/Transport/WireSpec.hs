@@ -4,7 +4,7 @@
 module Hat.Transport.WireSpec (spec) where
 
 import Codec.Serialise (DeserialiseFailure, deserialiseOrFail)
-import Control.Concurrent.Async (concurrently)
+import Control.Concurrent.Async (concurrently, withAsync)
 import Data.Either (isLeft)
 import Data.Bits (shiftR)
 import qualified Data.Bits as Bits
@@ -12,7 +12,7 @@ import qualified Data.ByteString as B
 import Data.Word (Word32, Word8)
 import qualified Data.Text as T
 import Network.Socket
-    (Family (AF_UNIX), SocketType (Stream), close, socketPair)
+    (Family (AF_UNIX), Socket, SocketType (Stream), close, socketPair)
 import qualified Network.Socket.ByteString.Lazy as SBL
 import qualified Data.ByteString.Lazy as BL
 import Test.Hspec
@@ -287,6 +287,50 @@ spec = do
                 ]
             reason `shouldSatisfy` isRejected
 
+    -- The one-time migration shim: a strict-equality server rejects our
+    -- version, so the client reconnects once speaking 4.
+    describe "step-down against a strict-equality server" $ do
+        it "retries at the legacy version and delivers the command" $ do
+            (c1, s1) <- socketPair AF_UNIX Stream 0
+            (c2, s2) <- socketPair AF_UNIX Stream 0
+            withAsync (strictServer s1) $ \_ ->
+                withAsync (strictServer s2) $ \_ -> do
+                    r <- runControl (pure (Just c2)) c1 [["restart-server"]]
+                    r `shouldBe` SessionEnded
+        it "does not step down when the server negotiates" $ do
+            (c1, s1) <- socketPair AF_UNIX Stream 0
+            withAsync (negotiatingServer s1) $ \_ -> do
+                r <- runControl (pure Nothing) c1 [["list-panes"]]
+                r `shouldBe` SessionEnded
+
+-- The deployed pre-negotiation handshake: exact-4 or the field's exact error.
+strictServer :: Socket -> IO ()
+strictServer sock = do
+    m <- recvMessage sock
+    case m of
+        Just (Known (ClientHello h))
+            | h.protoVersion == 4 -> do
+                sendMessage sock (Welcome "")
+                _ <- recvMessage sock :: IO (Maybe (Inbound ClientToServer))
+                sendMessage sock CommandDone
+            | otherwise -> sendMessage sock
+                (ServerError "protocol mismatch: server 4, client 5")
+        _ -> pure ()
+    close sock
+
+-- A current server: any version, Welcome then ServerVersion.
+negotiatingServer :: Socket -> IO ()
+negotiatingServer sock = do
+    m <- recvMessage sock
+    case m of
+        Just (Known (ClientHello _)) -> do
+            sendMessage sock (Welcome "")
+            sendMessage sock (ServerVersion protocolVersion)
+            _ <- recvMessage sock :: IO (Maybe (Inbound ClientToServer))
+            sendMessage sock CommandDone
+        _ -> pure ()
+    close sock
+
 isMalformed :: Inbound a -> Bool
 isMalformed (Malformed _) = True
 isMalformed _ = False
@@ -307,7 +351,7 @@ withFakeServer frames = do
     pure reason
   where
     client sock = do
-        r <- runControl sock [["kill-server"]]
+        r <- runControl (pure Nothing) sock [["kill-server"]]
         close sock
         pure r
     server sock = do
