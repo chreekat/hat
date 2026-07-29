@@ -905,6 +905,23 @@ spec = parallel $ do
                   && not ("\x2502" `T.isInfixOf` t)
                   && "0:" `T.isInfixOf` t && "1:" `T.isInfixOf` t)) c1
 
+    -- Bug: a pane's reader captures the window it was spawned in, but
+    -- break-pane re-parents the live pane. When its program then exits, the
+    -- reader must reap it from its CURRENT window (1), not the split it came
+    -- from (0) — otherwise the broken-out window lingers with a dead pane.
+    it "a broken-out pane's window closes when its program exits" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        typeInto c1 "\x02%"                 -- split -h; new pane active
+        awaitScreen c1 "\x2502"
+        _ <- ctlOut h ["break-pane"]        -- move it into window 1 (now current)
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "exit\r"                 -- end the broken-out pane's shell
+        awaitWith "window 1 collapsed, back on window 0" (\d -> do
+            t <- screenText d
+            pure (not ("1:" `T.isInfixOf` t) && "0:sh*" `T.isInfixOf` t)) c1
+
     it "join-pane merges a pane in from another window" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

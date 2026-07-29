@@ -21,8 +21,9 @@ import Hat.Server
     ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
     , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
     , cmdAttachSession, chooseCurrentOnClose, deliversKey, detachPane
-    , detachPanes, markActivity, markBell, nextZoom, noteOuterFocus
-    , pickActivityTarget, pickAttachSession )
+    , detachPaneCurrent, detachPanes, markActivity, markBell, nextZoom
+    , noteOuterFocus, pickActivityTarget, pickAttachSession
+    , removePaneFromTree )
 import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
@@ -467,6 +468,38 @@ spec = do
             emptied `shouldBe` [SessionId 0]
             (Map.member (SessionId 0) <$> readTVarIO st.sessions)
                 `shouldReturn` False
+
+    describe "detachPaneCurrent" $
+        -- A pane's reader captures nothing about where it lives: break-pane
+        -- re-parents a live pane into a new window, so teardown must collapse
+        -- the pane's CURRENT window, not the split it was spawned in. Detaching
+        -- from the spawn window would strand the broken-out pane forever.
+        it "detaches a re-parented pane from its current window" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            pa <- stubPane 1
+            pb <- stubPane 2
+            atomically $ do
+                writeTVar w0.layout
+                    (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                writeTVar w0.panes (Map.fromList [(pa.id, pa), (pb.id, pb)])
+                writeTVar w0.activeId pa.id
+            -- Break pa out into its own window, as cmdBreakPane does: drop it
+            -- from w0 first (the new window is not in the tree yet), then place
+            -- it in w1. pa now lives only in w1.
+            atomically (removePaneFromTree st pa.id)
+            w1 <- addWindow sess 1
+            atomically $ do
+                writeTVar w1.layout (Leaf pa.id)
+                writeTVar w1.panes (Map.singleton pa.id pa)
+                writeTVar w1.activeId pa.id
+            (msid, r) <- atomically (detachPaneCurrent st pa)
+            msid `shouldBe` Just (SessionId 0)
+            r `shouldBe` Detached SessionSurvives
+            -- w1 (pa's current window) collapsed; w0 survives with pb.
+            (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` False
+            (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` True
+            (Map.member pb.id <$> readTVarIO w0.panes) `shouldReturn` True
 
     describe "serverIdle" $ do
         let idle = IdleInputs
