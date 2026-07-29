@@ -1,10 +1,13 @@
 module Hat.Server.CopyModeSpec (spec) where
 
+import Control.Exception (SomeException, try)
 import Control.Monad (forM)
 import Data.Functor.Identity (Identity, runIdentity)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import System.IO (hIsClosed)
 import Test.Hspec
 
 import Hat.Geometry (Pos (..), Size (..))
@@ -423,3 +426,19 @@ spec = do
             _ <- Emu.feed e "\r\nafter"
             g <- frozenGrid <$> freezeGrid e
             T.stripEnd (rowText (g :: Grid Identity) 1) `shouldBe` "after"
+
+    describe "copy-pipe fd hygiene (withDevNullSink)" $ do
+        -- The /dev/null sink a copy-pipe hands its child must be released on
+        -- every path. A createProcess that throws would otherwise orphan the
+        -- fd — one leaked per copy-pipe on a long-lived server.
+        it "closes the handle even when the body throws" $ do
+            captured <- newIORef Nothing
+            let boom = withDevNullSink $ \h -> do
+                    writeIORef captured (Just h)
+                    ioError (userError "boom")
+            (_ :: Either SomeException ()) <- try boom
+            Just h <- readIORef captured
+            hIsClosed h `shouldReturn` True
+        it "closes the handle on the normal path" $ do
+            h <- withDevNullSink pure
+            hIsClosed h `shouldReturn` True

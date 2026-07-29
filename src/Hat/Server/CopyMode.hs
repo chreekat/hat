@@ -43,11 +43,12 @@ module Hat.Server.CopyMode
     , overlaySelection
     , copyCursorPos
     , scrollToCursor
+    , withDevNullSink
     ) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, bracket, catch)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
@@ -56,7 +57,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.IO (IOMode (WriteMode), hClose, hPutStr, openFile)
+import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
 import System.Process
     ( CreateProcess (..)
     , StdStream (CreatePipe, UseHandle)
@@ -888,8 +889,7 @@ handlers = Map.fromList
 runPipeCommand :: String -> Text -> IO ()
 runPipeCommand cmd body = act `catch` \(_ :: SomeException) -> pure ()
   where
-    act = do
-        devnull <- openFile "/dev/null" WriteMode
+    act = withDevNullSink $ \devnull -> do
         (mIn, _, _, ph) <- createProcess (shell cmd)
             { std_in   = CreatePipe
             , std_out  = UseHandle devnull
@@ -902,6 +902,15 @@ runPipeCommand cmd body = act `catch` \(_ :: SomeException) -> pure ()
         void . forkIO $
             void (waitForProcess ph)
                 `catch` \(_ :: SomeException) -> pure ()
+
+-- | Run @body@ with a write handle on @\/dev\/null@ for a child's
+-- stdout\/stderr, closing it on every exit path. 'bracket' is load-bearing:
+-- a 'createProcess' that throws would otherwise orphan the fd (leaking one
+-- per copy-pipe on a long-lived server); on the success path 'createProcess'
+-- has already closed the handle after dup'ing it into the child, so the
+-- releasing 'hClose' is a harmless no-op.
+withDevNullSink :: (Handle -> IO a) -> IO a
+withDevNullSink = bracket (openFile "/dev/null" WriteMode) hClose
 
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s
