@@ -10,11 +10,21 @@ module Hat.Server.ColorScheme
     , applyPalette
     , WatcherFault (..)
     , watcherFault
+    , MonitorRegistry
+    , monitorHandle
+    , newMonitorRegistry
+    , registerMonitor
+    , withRegisteredMonitor
+    , reapMonitor
     ) where
 
-import Control.Exception (SomeException, SomeAsyncException, fromException)
+import Control.Concurrent.STM
+    (TVar, atomically, newTVarIO, readTVar, writeTVar)
+import Control.Exception
+    (SomeException, SomeAsyncException, finally, fromException)
 import GHC.IO.Exception (IOException)
 import System.IO.Error (isDoesNotExistError)
+import System.Process (ProcessHandle, terminateProcess, waitForProcess)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
@@ -81,6 +91,50 @@ watcherFault e
     isMissing = case fromException e :: Maybe IOException of
         Just ioe -> isDoesNotExistError ioe
         Nothing  -> False
+
+-- | The live @gsettings monitor@ child, if one is currently running. See
+-- 'reapMonitor': the server execve's over itself on @restart-server@, so the
+-- watcher's own 'withCreateProcess' cleanup never fires and the child would be
+-- orphaned; this handle is the pre-exec kill's only reference to it.
+newtype MonitorRegistry = MonitorRegistry (TVar (Maybe ProcessHandle))
+
+-- | The registry's underlying cell — the live monitor handle, or 'Nothing'.
+monitorHandle :: MonitorRegistry -> TVar (Maybe ProcessHandle)
+monitorHandle (MonitorRegistry v) = v
+
+newMonitorRegistry :: IO MonitorRegistry
+newMonitorRegistry = MonitorRegistry <$> newTVarIO Nothing
+
+-- | Record the currently-spawned monitor so 'reapMonitor' can find it.
+registerMonitor :: MonitorRegistry -> ProcessHandle -> IO ()
+registerMonitor reg ph = atomically (writeTVar (monitorHandle reg) (Just ph))
+
+-- | Run @body@ with @ph@ registered as the live monitor, clearing the
+-- registration when it ends however it ends. Pairs with the watcher's
+-- 'System.Process.withCreateProcess' so the registry never outlives the child
+-- on the normal (exception-driven) teardown; only an execve escapes it, which
+-- is exactly what 'reapMonitor' covers.
+withRegisteredMonitor :: MonitorRegistry -> ProcessHandle -> IO a -> IO a
+withRegisteredMonitor reg ph body =
+    (registerMonitor reg ph >> body)
+        `finally` atomically (writeTVar (monitorHandle reg) Nothing)
+
+-- | Terminate the registered @gsettings monitor@ child and clear the registry.
+-- The server calls this immediately before it execve's itself on a reload:
+-- the exec replaces the whole image atomically, so no bracket unwinds and the
+-- watcher's own cleanup never runs — without this the monitor is orphaned on
+-- every @restart-server@ (each reload leaked one). Reaps synchronously
+-- ('waitForProcess') so the child is gone, not merely signalled, before the
+-- exec. A no-op when no monitor is registered (a host without gsettings).
+reapMonitor :: MonitorRegistry -> IO ()
+reapMonitor reg = do
+    mph <- atomically $ do
+        cur <- readTVar (monitorHandle reg)
+        writeTVar (monitorHandle reg) Nothing
+        pure cur
+    case mph of
+        Nothing -> pure ()
+        Just ph -> terminateProcess ph >> () <$ waitForProcess ph
 
 -- | The value @#{color_scheme}@ expands to.
 schemeName :: ColorScheme -> Text

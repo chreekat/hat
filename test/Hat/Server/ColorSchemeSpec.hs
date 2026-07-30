@@ -1,9 +1,15 @@
 module Hat.Server.ColorSchemeSpec (spec) where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM (readTVarIO)
 import Control.Exception (AsyncException (ThreadKilled), toException)
 import Control.Concurrent.Async (AsyncCancelled (AsyncCancelled))
+import Data.Maybe (isJust, isNothing)
 import System.Exit (ExitCode (ExitSuccess))
 import System.IO.Error (mkIOError, doesNotExistErrorType)
+import System.Process
+    (ProcessHandle, getProcessExitCode, proc, withCreateProcess)
+import System.Timeout (timeout)
 import Test.Hspec
 
 import Hat.Model.Options
@@ -66,6 +72,33 @@ spec = do
                     "gsettings" Nothing (Just "gsettings")
             watcherFault (toException notFound) `shouldBe` AbandonWatcher
 
+    describe "reapMonitor" $ do
+        -- The gsettings monitor is a real child of the server. On a
+        -- restart-server the server execve's over its own image, so
+        -- withCreateProcess's exception-driven cleanup never fires and the
+        -- monitor is orphaned (14 such orphans were found on the dev box).
+        -- reapMonitor is the structural pre-exec kill: a registered monitor
+        -- must be dead and deregistered after it runs.
+        it "kills the registered monitor process" $ do
+            reg <- newMonitorRegistry
+            withCreateProcess (proc "sleep" ["60"]) $ \_ _ _ ph -> do
+                registerMonitor reg ph
+                (isJust <$> readTVarIO (monitorHandle reg))
+                    `shouldReturn` True
+                reapMonitor reg
+                -- the child is gone (bounded wait: it must exit, not linger)
+                dead <- timeout 5_000_000 (awaitExit ph)
+                dead `shouldSatisfy` isJust
+                -- and the registry no longer points at a reaped handle
+                (isNothing <$> readTVarIO (monitorHandle reg))
+                    `shouldReturn` True
+
+        it "is a no-op when no monitor is registered" $ do
+            reg <- newMonitorRegistry
+            reapMonitor reg  -- must not throw with an empty registry
+            (isNothing <$> readTVarIO (monitorHandle reg))
+                `shouldReturn` True
+
     describe "applyPalette" $ do
         it "adapts the default chrome to the scheme" $ do
             let dark = resolveOptions [applyPalette SchemeDark]
@@ -117,3 +150,13 @@ spec = do
             dark.statusStyle.bg `shouldBe` Cell.Indexed 196
             -- options the user did not set still adapt
             dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
+
+-- Poll a process handle until it has exited; used under a bounded 'timeout'
+-- so a monitor that reapMonitor failed to kill fails the test rather than
+-- hanging it.
+awaitExit :: ProcessHandle -> IO ()
+awaitExit ph = do
+    mcode <- getProcessExitCode ph
+    case mcode of
+        Just _  -> pure ()
+        Nothing -> threadDelay 10_000 >> awaitExit ph
