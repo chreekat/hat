@@ -7,6 +7,7 @@ import qualified Data.ByteString.Char8 as B8
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector as V
 import Test.Hspec
 
 import Hat.Geometry (Size (..))
@@ -16,10 +17,10 @@ import Data.Maybe (fromMaybe)
 
 import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
-     Reply (..), SpawnOrigin (..), StorePin (..), captureReloadScreen,
-     captureSize, cmdRestartServer, defaultRestoreCommands,
-     finallyClearRestoring, persistDecision, replayPane, restoreRun,
-     restoreShellExec)
+     Reply (..), ScrollbackCarry (..), SpawnOrigin (..), StorePin (..),
+     captureReloadScreen, captureSize, cmdRestartServer,
+     defaultRestoreCommands, finallyClearRestoring, persistDecision,
+     replayPane, restoreRun, restoreShellExec)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
 import qualified Hat.Term.Cell as Cell
@@ -74,7 +75,7 @@ spec = do
             srcScr <- Emu.snapshot src
             srcLen <- Emu.scrollbackLength src
             srcSb  <- mapM (Emu.scrollbackLine src) [0 .. srcLen - 1]
-            captured <- captureReloadScreen src
+            captured <- captureReloadScreen KeepScrollback src
             captured.altScreen `shouldBe` True
             let rp = ReloadPane
                     { cwd = "/tmp", masterFd = 0, childPid = 0
@@ -90,6 +91,18 @@ spec = do
             dstScr.cells `shouldBe` srcScr.cells
             dstMode.altScreen `shouldBe` True
             dstSb `shouldBe` srcSb
+
+        -- restart-server -C: restart as memory cleanup — the handover keeps
+        -- the live grid but sheds every scrollback line.
+        it "drops the scrollback from the capture when asked" $ do
+            let sz = Size { rows = 5, cols = 20 }
+            src <- Emu.newEmulator sz 1000
+            forM_ [1 .. 8 :: Int] $ \i ->
+                Emu.feed src (B8.pack ("history " ++ show i ++ "\r\n"))
+            srcScr <- Emu.snapshot src
+            captured <- captureReloadScreen DropScrollback src
+            captured.scrollback `shouldBe` []
+            captured.rows `shouldBe` map V.toList (V.toList srcScr.cells)
 
         -- Bug capture (field crash 2026-07-28): a pane captured LARGER than
         -- the rebuild default — cursor beyond the small grid, rows that would
@@ -130,6 +143,18 @@ spec = do
             st <- testState
             errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat"]
             errs `shouldSatisfy` any (T.isInfixOf "no such binary")
+
+    describe "restart-server flags" $ do
+        it "accepts -C, reaching the normal target check" $ do
+            st <- testState
+            errs <- errStrings <$> cmdRestartServer st Nothing ["-C", "/no/such/hat"]
+            errs `shouldSatisfy` any (T.isInfixOf "no such binary")
+
+        -- Fail loud, never silently accept: a flag we don't implement errors.
+        it "rejects an unknown flag" $ do
+            st <- testState
+            errs <- errStrings <$> cmdRestartServer st Nothing ["-X", "/no/such/hat"]
+            errs `shouldSatisfy` any (T.isInfixOf "unknown flag")
 
     describe "restoreRun" $ do
         let whitelist = ["vim", "less"]

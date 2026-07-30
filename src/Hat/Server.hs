@@ -5,6 +5,7 @@ module Hat.Server
     ( runServer
     , resumeServer  -- ^ the reload re-exec re-enters here with a handover file
     , captureReloadScreen  -- ^ exported for the reload-screen round-trip test
+    , ScrollbackCarry (..)  -- ^ exported for the reload-screen round-trip test
     , replayPane           -- ^ exported for the reload-screen round-trip test
     , captureSize          -- ^ exported for the oversized-capture adopt test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
@@ -746,8 +747,13 @@ restorePane st sid shellCmd env sz whitelist psnap = do
 -- 'ReloadCleanup' core (the listening socket fd and the flat list of every
 -- pane's (master fd, child pid), so a version-mismatched reload can hang the
 -- inherited processes up cleanly rather than orphan them).
-captureReload :: ServerState -> IO (ReloadCleanup, ReloadState)
-captureReload st = do
+-- | Whether a reload's handover carries the panes' scrollback; see
+-- 'captureReloadScreen'.
+data ScrollbackCarry = KeepScrollback | DropScrollback
+    deriving (Eq, Show)
+
+captureReload :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, ReloadState)
+captureReload carry st = do
     (sess, laName, lsName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
         laId    <- readTVar st.lastActiveSession
@@ -756,7 +762,7 @@ captureReload st = do
         lsName  <- traverse (readTVar . (.name)) (lsId >>= (`Map.lookup` sessMap))
         mfd     <- readTVar st.listenFd
         pure (Map.elems sessMap, laName, lsName, mfd)
-    rsessions <- mapM captureReloadSession sess
+    rsessions <- mapM (captureReloadSession carry) sess
     let tree = ReloadState rsessions laName lsName
         liveHandles =
             [ (p.masterFd, p.childPid)
@@ -765,8 +771,8 @@ captureReload st = do
             { listenFd = fromMaybe (-1) mfd, live = liveHandles }
     pure (cleanup, tree)
 
-captureReloadSession :: Session -> IO ReloadSession
-captureReloadSession s = do
+captureReloadSession :: ScrollbackCarry -> Session -> IO ReloadSession
+captureReloadSession carry s = do
     (nm, cwd, curIx, lastI, wstructs) <- atomically $ do
         nm    <- readTVar s.name
         cwd   <- readTVar s.startCwd
@@ -776,16 +782,16 @@ captureReloadSession s = do
         ws    <- Map.toAscList <$> readTVar s.windows
         wstructs <- mapM (windowStruct eff) ws
         pure (nm, cwd, curIx, lastI, wstructs)
-    rwins <- mapM captureReloadWindow wstructs
+    rwins <- mapM (captureReloadWindow carry) wstructs
     pure (ReloadSession nm (T.pack cwd) curIx lastI rwins)
 
-captureReloadWindow :: WindowStruct -> IO ReloadWindow
-captureReloadWindow ws = do
+captureReloadWindow :: ScrollbackCarry -> WindowStruct -> IO ReloadWindow
+captureReloadWindow carry ws = do
     rpanes <- forM ws.wsPanes $ \pane -> do
         dir <- paneCurrentPath pane
         let Fd fd = Hat.Term.Pty.masterFd pane.pty
         ms <- Emu.modes pane.emulator
-        sc <- captureReloadScreen pane.emulator
+        sc <- captureReloadScreen carry pane.emulator
         pure (ReloadPane (T.pack dir) (fromIntegral fd)
                 (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms) sc)
     pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
@@ -793,13 +799,17 @@ captureReloadWindow ws = do
 
 -- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
 -- its alt-screen flag, and its scrollback (oldest line first). 'adoptPane'
--- replays this back into the fresh emulator after a reload.
-captureReloadScreen :: Emu.Emulator -> IO ReloadScreen
-captureReloadScreen emu = do
+-- replays this back into the fresh emulator after a reload. 'DropScrollback'
+-- skips the scrollback entirely, so the reload doubles as a memory cleanup.
+captureReloadScreen :: ScrollbackCarry -> Emu.Emulator -> IO ReloadScreen
+captureReloadScreen carry emu = do
     scr <- Emu.snapshot emu
     m   <- Emu.modes emu
-    len <- Emu.scrollbackLength emu
-    sb  <- catMaybes <$> mapM (Emu.scrollbackLine emu) [0 .. len - 1]
+    sb  <- case carry of
+        DropScrollback -> pure []
+        KeepScrollback -> do
+            len <- Emu.scrollbackLength emu
+            catMaybes <$> mapM (Emu.scrollbackLine emu) [0 .. len - 1]
     pure ReloadScreen
         { altScreen     = m.altScreen
         , cursorRow     = scr.cursor.row
@@ -4446,8 +4456,9 @@ cmdKillServer st mclient _ = do
         writeTVar st.everAttached True
     pure []
 
--- | @restart-server [path]@: reload the server binary in place while every
--- pane's program keeps running. Serializes the live tree and its inherited fds
+-- | @restart-server [-C] [path]@: reload the server binary in place while every
+-- pane's program keeps running. @-C@ drops all scrollback across the reload
+-- (a memory cleanup). Serializes the live tree and its inherited fds
 -- to a handover file, drops the clients (they reconnect with @hat@), then
 -- re-execs @path@ (default: the on-PATH @hat@, see 'resolveReloadTarget'),
 -- which re-adopts the tree ('resumeServer'). The pane pty masters and the
@@ -4468,31 +4479,36 @@ cmdRestartServer st mclient args = do
 
 cmdRestartServer' :: CommandImpl
 cmdRestartServer' st mclient args = do
-    let (_, _, pos) = parseArgs "" args
-    target <- case pos of
-        (p : _) -> pure (T.unpack p)    -- explicit binary path (deterministic)
-        []      -> resolveReloadTarget  -- default: the on-PATH hat
-    exists <- doesFileExist target
-    if not exists
-        then pure [RErr ("restart-server: no such binary: " <> T.pack target)]
-        else do
-            logEvent st.logger ServerReloading { target = target }
-            (cleanup, tree) <- captureReload st
-            let blobPath = st.sockPath <> ".reload"
-            B.writeFile blobPath (encodeHandover cleanup tree)
-            keepOpenAcrossExec cleanup
-            sessions <- readTVarIO st.sessions
-            forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
-            forM_ mclient $ \client -> send client Exited
-            mconfig <- readTVarIO st.serverConfig
-            let argv = ["--server", st.sockPath]
-                    <> maybe [] (: []) mconfig
-                    <> ["--reload-handover", blobPath]
-            -- The self-exec replaces this image, so 'withLogger's flush-on-exit
-            -- never runs; drain the queue now or the reload trace is lost.
-            flushLogger st.logger
-            _ <- executeFile target False argv Nothing
-            pure []  -- unreachable: executeFile replaces this image
+    let (_, flags, pos) = parseArgs "" args
+        carry = if "-C" `elem` flags then DropScrollback else KeepScrollback
+    case filter (/= "-C") flags of
+      (f : _) -> pure [RErr ("restart-server: unknown flag: " <> f)]
+      [] -> do
+        target <- case pos of
+            (p : _) -> pure (T.unpack p)    -- explicit binary path (deterministic)
+            []      -> resolveReloadTarget  -- default: the on-PATH hat
+        exists <- doesFileExist target
+        if not exists
+            then pure [RErr ("restart-server: no such binary: " <> T.pack target)]
+            else do
+                logEvent st.logger ServerReloading { target = target }
+                (cleanup, tree) <- captureReload carry st
+                let blobPath = st.sockPath <> ".reload"
+                B.writeFile blobPath (encodeHandover cleanup tree)
+                keepOpenAcrossExec cleanup
+                sessions <- readTVarIO st.sessions
+                forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
+                forM_ mclient $ \client -> send client Exited
+                mconfig <- readTVarIO st.serverConfig
+                let argv = ["--server", st.sockPath]
+                        <> maybe [] (: []) mconfig
+                        <> ["--reload-handover", blobPath]
+                -- The self-exec replaces this image, so 'withLogger's
+                -- flush-on-exit never runs; drain the queue now or the
+                -- reload trace is lost.
+                flushLogger st.logger
+                _ <- executeFile target False argv Nothing
+                pure []  -- unreachable: executeFile replaces this image
 
 -- | The binary a no-argument @restart-server@ re-execs: @hat@ as resolved on
 -- @PATH@. That is a stable profile\/system symlink the kernel follows at exec
