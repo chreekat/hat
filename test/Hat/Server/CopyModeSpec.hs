@@ -122,6 +122,15 @@ spec = do
         it "emacs mode: Space begins a selection" $
             bound "copy-mode" "Space" `shouldBe` beginSel
 
+    describe "default prefix key bindings (tmux parity)" $ do
+        let bound key = Map.lookup key =<< Map.lookup "prefix" defaultKeymap
+        it "! breaks the pane into a new window" $
+            bound "!" `shouldBe` Just [["break-pane"]]
+        it "{ swaps the pane with its predecessor" $
+            bound "{" `shouldBe` Just [["swap-pane", "-U"]]
+        it "} swaps the pane with its successor" $
+            bound "}" `shouldBe` Just [["swap-pane", "-D"]]
+
     describe "vi copy-mode motions (upstream copy-mode-test-vi)" $ do
         it "reproduces every yanked buffer in order" $
             vi
