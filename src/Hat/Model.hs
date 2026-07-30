@@ -49,6 +49,7 @@ module Hat.Model
     ) where
 
 import Control.Concurrent (ThreadId)
+import Control.Concurrent.Async (Async)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, try)
@@ -56,7 +57,6 @@ import Control.Monad (forM)
 import Data.IORef (IORef)
 import qualified Data.List as List
 import System.IO (Handle)
-import System.Process (ProcessHandle)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Sequence (Seq)
@@ -198,13 +198,12 @@ data Pane = Pane
         -- 'Nothing' only in the spawn race before it runs. See 'hangupPane'.
     }
 
--- | A @pipe-pane@ subprocess. Pane output is forwarded to 'toStdin'
--- (@-O@); 'reader' is the thread pumping the process's stdout back into
--- the pane pty (@-I@).
+-- | A live @pipe-pane@. Pane output is forwarded to 'toStdin' (@-O@) on the
+-- hot path; 'super' owns the subprocess, its handles, and the stdout-pump
+-- thread (@-I@) as one scoped sub-resource that a cancel releases in full.
 data PipeHandle = PipeHandle
-    { process :: ProcessHandle
+    { super   :: Async ()
     , toStdin :: Maybe Handle
-    , reader  :: Maybe ThreadId
     }
 
 -- | Per-pane copy-mode state. Cursor rows are absolute in the pane's

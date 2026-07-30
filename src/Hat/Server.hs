@@ -59,7 +59,7 @@ module Hat.Server
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
-import Control.Concurrent.Async (link, race, withAsync)
+import Control.Concurrent.Async (Async, async, cancel, link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
@@ -91,16 +91,16 @@ import System.Directory
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory, takeFileName)
-import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush)
+import System.IO (Handle, SeekMode (AbsoluteSeek), hFlush)
 import qualified System.Posix.IO as PIO
 import System.Posix.Process (executeFile, getProcessID)
 import System.Posix.Signals (sigHUP, signalProcess)
 import System.Posix.Types (Fd (..))
 import System.Timeout (timeout)
 import System.Process
-    (CreateProcess (..), StdStream (..), createProcess, proc,
+    (CreateProcess (..), StdStream (..), proc,
      readCreateProcess, readCreateProcessWithExitCode, shell,
-     terminateProcess, waitForProcess, withCreateProcess)
+     withCreateProcess)
 
 import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Geometry
@@ -4099,28 +4099,44 @@ data OutputTap = OutputTapped | OutputUntapped
 data StdinFeed = StdinFed | StdinUnfed
     deriving (Eq)
 
--- Spawn the pipe subprocess and record it on the pane.
+-- Spawn a @pipe-pane@ under a supervisor thread that owns the subprocess and
+-- its handles as scoped sub-resources: @withCreateProcess@ terminates and reaps
+-- the child (and closes its pipes) on every exit, and the stdout pump runs in
+-- the supervisor itself, so a cancel unwinds both. 'stopPipe' thus releases
+-- everything by a single cancel, never a hand-called kill/close/terminate an
+-- exception could skip (mirrors 'startPaneReader's scoped ownership).
 startPipe :: Pane -> String -> OutputTap -> StdinFeed -> IO ()
 startPipe pane cmd outputTap stdinFeed = do
-    (mIn, mOut, _, ph) <- createProcess (shell cmd)
+    ready <- newEmptyMVar
+    super <- async $ withCreateProcess (shell cmd)
         { std_in  = if tapOn then CreatePipe else Inherit
         , std_out = if feedOn then CreatePipe else Inherit
-        }
-    rtid <- case (feedOn, mOut) of
-        (True, Just hout) -> Just <$> forkIO (pumpPipeOutput pane hout)
-        _ -> pure Nothing
-    atomically $ writeTVar pane.pipe $ Just PipeHandle
-        { process = ph
-        , toStdin = if tapOn then mIn else Nothing
-        , reader = rtid
-        }
+        } $ \mIn mOut _ _ -> do
+            self <- takeMVar ready
+            atomically $ writeTVar pane.pipe $ Just PipeHandle
+                { super = self, toStdin = if tapOn then mIn else Nothing }
+            (case mOut of
+                Just hout | feedOn -> pumpPipeOutput pane hout
+                _                  -> forever (threadDelay maxBound))
+                `finally` clearPipe pane self
+    putMVar ready super
   where
     tapOn = outputTap == OutputTapped
     feedOn = stdinFeed == StdinFed
 
--- Read the process's stdout and write it into the pane's pty (@-I@).
+-- Drop a supervisor's own 'pane.pipe' entry as it exits (a child that quit on
+-- its own, or a 'stopPipe' cancel), but only while the entry is still this
+-- supervisor: a newer 'startPipe' that already replaced it must not be cleared.
+clearPipe :: Pane -> Async () -> IO ()
+clearPipe pane self = atomically $ modifyTVar' pane.pipe $ \case
+    Just ph | ph.super == self -> Nothing
+    other                      -> other
+
+-- Read the process's stdout and write it into the pane's pty (@-I@). A closed
+-- stdout (the child exited) ends the pump; an async cancel from 'stopPipe'
+-- propagates so the supervisor's brackets can tear it down.
 pumpPipeOutput :: Pane -> Handle -> IO ()
-pumpPipeOutput pane hout = loop `catch` \(_ :: SomeException) -> pure ()
+pumpPipeOutput pane hout = loop `catch` \(_ :: IOException) -> pure ()
   where
     loop = do
         chunk <- B8.hGetSome hout 4096
@@ -4128,29 +4144,26 @@ pumpPipeOutput pane hout = loop `catch` \(_ :: SomeException) -> pure ()
             Hat.Term.Pty.writePty pane.pty chunk
             loop
 
--- Feed a chunk of pane output to the pipe subprocess (@-O@).
+-- Feed a chunk of pane output to the pipe subprocess (@-O@). A write to a
+-- handle 'stopPipe' has closed underneath us raises 'IOException' and is
+-- dropped; anything else (including an async cancel) propagates.
 forwardToPipe :: Pane -> B.ByteString -> IO ()
 forwardToPipe pane bs = do
     mp <- readTVarIO pane.pipe
     forM_ mp $ \ph -> forM_ ph.toStdin $ \hdl ->
         (B8.hPut hdl bs >> hFlush hdl)
-            `catch` \(_ :: SomeException) -> pure ()
+            `catch` \(_ :: IOException) -> pure ()
 
--- Stop and reap any pipe subprocess on the pane.
+-- Stop any pipe on the pane by cancelling its supervisor, whose brackets reap
+-- the child and stop the pump. 'cancel' waits for the teardown, so a following
+-- 'startPipe' never races the old child.
 stopPipe :: Pane -> IO ()
 stopPipe pane = do
     mp <- atomically $ do
         m <- readTVar pane.pipe
         writeTVar pane.pipe Nothing
         pure m
-    forM_ mp $ \ph -> do
-        forM_ ph.reader killThread
-        forM_ ph.toStdin $ \hdl ->
-            hClose hdl `catch` \(_ :: SomeException) -> pure ()
-        terminateProcess ph.process `catch` \(_ :: SomeException) -> pure ()
-        void . forkIO $
-            void (waitForProcess ph.process)
-                `catch` \(_ :: SomeException) -> pure ()
+    forM_ mp $ \ph -> cancel ph.super
 
 -- | The top buffer, or a named one.
 bufferBody :: Maybe Text -> Seq (Text, Text) -> Maybe Text
