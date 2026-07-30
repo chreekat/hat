@@ -102,6 +102,9 @@ data ReloadScreen = ReloadScreen
     , cursorRow     :: Int
     , cursorCol     :: Int
     , cursorVisible :: Bool
+    -- These should probably be vectors, but I'm leaving it as lists to avoid a
+    -- migration. Besides, they get read directly into vectors anyway, and the
+    -- serialized shape is basically identical.
     , rows          :: [[Cell]]
     , scrollback    :: [[Cell]]
     }

@@ -806,7 +806,7 @@ captureReloadScreen emu = do
         , cursorCol     = scr.cursor.col
         , cursorVisible = scr.cursorVisible
         , rows          = map V.toList (V.toList scr.cells)
-        , scrollback    = sb
+        , scrollback    = map V.toList sb
         }
 
 -- | The app-set mode subscriptions to carry across a reload; the inverse
@@ -998,11 +998,11 @@ screenOf sz rs = Emu.Screen
 -- screen (re-entering the alt screen when the program was in it), paired with
 -- the scrollback lines to reseed. Pure, so the capture→replay round trip is
 -- testable without a pty.
-replayPane :: Size -> ReloadPane -> (B.ByteString, [[Cell.Cell]])
+replayPane :: Size -> ReloadPane -> (B.ByteString, [V.Vector Cell.Cell])
 replayPane sz rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
         <> Emu.restoreBytes restoreModes (screenOf sz rp.screen)
-    , rp.screen.scrollback )
+    , map V.fromList rp.screen.scrollback )
   where
     restoreModes = (emuModesOf rp.modes) { Emu.altScreen = rp.screen.altScreen }
 

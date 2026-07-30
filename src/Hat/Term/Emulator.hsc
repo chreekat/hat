@@ -292,7 +292,7 @@ data EmulatorState = EmulatorState
     , output       :: [ByteString]   -- reversed
     , passthrough  :: PassState      -- tmux-passthrough scrubber state
     , screenTitle  :: StitleState    -- screen/tmux title scrubber state
-    , scrollback   :: Seq [Cell]
+    , scrollback   :: Seq (V.Vector Cell)
     }
 
 -- | Build a fresh emulator for a pane: a libvterm instance sized to 'Size'
@@ -388,7 +388,7 @@ newEmulator sz historyLimit = do
         _ -> if final /= 0 then emitUnknownProp stateR PropStr prop else pure ()
     bellW <- wrapBell $ modifyIORef' stateR $ \s -> s { events = Bell : s.events }
     pushW <- wrapPushline $ \ncols cellsPtr -> do
-        line <- forM [0 .. fromIntegral ncols - 1 :: Int] $ \i -> do
+        line <- V.generateM (fromIntegral ncols - 1 :: Int) $ \i -> do
             freshCell <- allocaBytes #{size HatCell} $ \hc -> do
                 c_flatten_cell_at cellsPtr (fromIntegral i) hc
                 peekHatCell hc
@@ -403,7 +403,7 @@ newEmulator sz historyLimit = do
             Seq.EmptyR -> pure 0
             rest Seq.:> line -> do
                 writeIORef stateR s { scrollback = rest }
-                let padded = take (fromIntegral ncols) (line ++ repeat blankCell)
+                let padded = take (fromIntegral ncols) (V.toList line ++ repeat blankCell)
                 allocaBytes #{size HatCell} $ \hc ->
                     forM_ (zip [0 ..] padded) $ \(i, cell) -> do
                         pokeHatCell hc cell
@@ -582,7 +582,7 @@ scrollbackLength :: Emulator -> IO Int
 scrollbackLength e = Seq.length . (.scrollback) <$> readIORef e.state
 
 -- | Scrollback line by age: 0 is the oldest.
-scrollbackLine :: Emulator -> Int -> IO (Maybe [Cell])
+scrollbackLine :: Emulator -> Int -> IO (Maybe (V.Vector Cell))
 scrollbackLine e i = Seq.lookup i . (.scrollback) <$> readIORef e.state
 
 -- | Change the scrollback cap of an already-open emulator, trimming any
@@ -603,7 +603,7 @@ clearScrollback e = modifyIORef' e.state $ \s -> s { scrollback = Seq.empty }
 -- first), trimmed to the current limit. The reload-restore companion to
 -- 'restoreBytes': scrollback lives here, not in libvterm, so it is restored by
 -- setting the sequence directly rather than by replaying bytes.
-seedScrollback :: Emulator -> [[Cell]] -> IO ()
+seedScrollback :: Emulator -> [V.Vector Cell] -> IO ()
 seedScrollback e ls = do
     limit <- readIORef e.scrollbackLimit
     modifyIORef' e.state $ \s ->

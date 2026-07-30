@@ -5,6 +5,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck hiding (resize)
@@ -514,4 +515,4 @@ spec = do
         _ <- snapshot e
         pure True
   where
-    cellsText cells = T.stripEnd (T.concat (map (.text) cells))
+    cellsText cells = T.stripEnd (T.concat (map (.text) (V.toList cells)))

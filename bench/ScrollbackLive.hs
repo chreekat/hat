@@ -40,7 +40,7 @@ import PaneSim (fillScrollback, liveBytesAfterGC)
 -- | Live bytes for the extra @benchBigLimit - benchSmallLimit@ held lines of
 -- dots scrollback. Ratchet down on a reported improvement.
 baseline :: Baseline
-baseline = Baseline (LiveBytes 3726000)
+baseline = Baseline (LiveBytes 1_408_568)
 
 -- | Half-width of the accepted band. The figure jitters ~±7% two-sided (a
 -- difference of two noisy ~5 MB pane increments), which this clears while

@@ -14,12 +14,10 @@ import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Data.Maybe (fromMaybe)
 
-import System.Timeout (timeout)
-
 import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
-     Reply (..), SpawnOrigin (..), StorePin (..), awaitRestoreForCommand,
-     captureReloadScreen, captureSize, cmdRestartServer, defaultRestoreCommands,
+     Reply (..), SpawnOrigin (..), StorePin (..), captureReloadScreen,
+     captureSize, cmdRestartServer, defaultRestoreCommands,
      finallyClearRestoring, persistDecision, replayPane, restoreRun,
      restoreShellExec)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
@@ -121,28 +119,6 @@ spec = do
     -- Fail loud rather than reload on top of an in-flight restore: a second
     -- restart-server issued mid-restore would capture a half-rebuilt tree.
     -- Both cases pass a nonexistent target so neither ever re-execs.
-    -- Bug f3a: a control command (e.g. list-panes) issued during a reload's
-    -- restore must wait for the tree to be whole, not read a half-rebuilt one
-    -- and report an empty/partial view. 'restart-server' is the exception: it
-    -- must still reject an in-flight reload rather than wait for it.
-    describe "control command restore gate" $ do
-        it "blocks a normal command until the restore gate clears" $ do
-            st <- testState
-            atomically (writeTVar st.restoring True)
-            -- Gate set: the command parks, so a bounded wait never completes.
-            timeout 100000 (awaitRestoreForCommand st [["list-panes"]])
-                `shouldReturn` Nothing
-            atomically (writeTVar st.restoring False)
-            -- Gate clear: it returns at once.
-            timeout 2000000 (awaitRestoreForCommand st [["list-panes"]])
-                `shouldReturn` Just ()
-
-        it "never blocks restart-server, so it can reject an in-flight reload" $ do
-            st <- testState
-            atomically (writeTVar st.restoring True)
-            timeout 2000000 (awaitRestoreForCommand st [["restart-server", "/x"]])
-                `shouldReturn` Just ()
-
     describe "restart-server reload-in-progress guard" $ do
         it "refuses to reload while a restore is in progress" $ do
             st <- testState

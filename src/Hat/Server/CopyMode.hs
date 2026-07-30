@@ -124,7 +124,7 @@ freezeGrid e = do
     let sy = V.length scr.cells
         sx = fromIntegral scr.size.cols
     sb <- forM [0 .. hsize - 1] $ \i ->
-        maybe V.empty V.fromList <$> Emu.scrollbackLine e i
+        maybe V.empty id <$> Emu.scrollbackLine e i
     pure FrozenGrid
         { fgHsize = hsize
         , fgSy = sy
