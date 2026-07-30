@@ -302,6 +302,27 @@ awaitFile path ok = go (500 :: Int)
         _ <- evaluate (length s)
         pure s
 
+-- Whether a process id is still alive, via @kill -0@ (no signal, just an
+-- existence probe). A reaped process's pid is gone, so this reads false.
+pidAlive :: Int -> IO Bool
+pidAlive pid = do
+    (code, _, _) <- P.readProcessWithExitCode "kill" ["-0", show pid] ""
+    pure (code == ExitSuccess)
+
+-- Poll until a pid stops being alive; fail after ~5s. A pipe-pane child that
+-- teardown reaped structurally disappears; one that leaked stays alive here.
+awaitReaped :: Int -> IO ()
+awaitReaped pid = go (500 :: Int)
+  where
+    go n = do
+        alive <- pidAlive pid
+        if not alive
+            then pure ()
+            else if n <= 0
+                then expectationFailure $
+                    "pipe-pane child " <> show pid <> " was not reaped"
+                else threadDelay 10000 >> go (n - 1)
+
 -- Poll until the current pane's foreground command matches, so a test can
 -- wait for a program (e.g. cat) to actually be running before driving it.
 -- This is genuinely a poll, not a laziness: Unix publishes no event when a
@@ -1704,6 +1725,35 @@ spec = parallel $ do
         typeInto c1 "echo AFTERSTOPMARKER\r"
         awaitScreen c1 "AFTERSTOPMARKER"
         readFile logPath >>= (`shouldNotSatisfy` List.isInfixOf "AFTERSTOPMARKER")
+
+    -- Pins the structural reap: the pipe-pane child is owned as a scoped
+    -- sub-resource, so stopping the pipe — and, on the teardown path, killing
+    -- the pane out from under it — reaps the child rather than orphaning it.
+    it "pipe-pane reaps its subprocess on stop and on pane kill" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        let spawnPipe path = ctlOut h
+                ["pipe-pane", "echo $$ > " <> path <> "; cat > /dev/null"]
+            readPid path =
+                read . takeWhile (/= '\n') <$> awaitFile path (not . null)
+
+        -- Stop path: no-arg pipe-pane cancels the supervisor, reaping the child.
+        let pidPath1 = h.home <> "/pipe1.pid"
+        _ <- spawnPipe pidPath1
+        pid1 <- readPid pidPath1
+        pidAlive pid1 `shouldReturn` True
+        _ <- ctlOut h ["pipe-pane"]
+        awaitReaped pid1
+
+        -- Teardown path: killing the pane runs reapPane -> stopPipe, so a live
+        -- pipe child is reaped as the pane dies, not left orphaned.
+        let pidPath2 = h.home <> "/pipe2.pid"
+        _ <- spawnPipe pidPath2
+        pid2 <- readPid pidPath2
+        pidAlive pid2 `shouldReturn` True
+        _ <- ctlOut h ["kill-pane"]
+        awaitReaped pid2
 
     it "default-terminal sets $TERM for a pane's program" $
         withHat hatBin $ \h -> do
