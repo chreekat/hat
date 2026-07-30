@@ -120,7 +120,7 @@ import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
-    , watcherFault )
+    , reapMonitor, watcherFault, withRegisteredMonitor )
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Layout
@@ -524,8 +524,10 @@ captureWindow ws = do
 -- feature for the server's life. Only synchronous faults restart; an async
 -- cancellation (the shutdown 'cancel' 'withDaemons' issues) or an 'ExitCode'
 -- is re-raised, never swallowed and never restarted (see 'watcherFault'), so
--- teardown stays clean. Killed at server shutdown, which also terminates the
--- monitor subprocess (withCreateProcess's cleanup).
+-- teardown stays clean. At server shutdown the daemon's cancel unwinds
+-- 'withCreateProcess', terminating the monitor subprocess; across a reload the
+-- execve escapes that cleanup, so 'cmdRestartServer' reaps the registered
+-- monitor first (see 'withRegisteredMonitor', 'reapMonitor').
 watchColorScheme :: ServerState -> IO ()
 watchColorScheme st = do
     atomically (readTVar st.configLoading >>= check . not)
@@ -555,10 +557,14 @@ watchColorScheme st = do
         forM_ (parseSchemeLine (T.strip (T.pack out))) (applyScheme st)
         withCreateProcess
             (proc "gsettings" ["monitor", schemaKey, key])
-                { std_out = CreatePipe, close_fds = True } $ \_ mout _ _ ->
-            forM_ mout $ \h -> forever $ do
-                line <- TIO.hGetLine h
-                forM_ (parseSchemeLine line) (applyScheme st)
+                { std_out = CreatePipe, close_fds = True } $ \_ mout _ ph ->
+            -- Register the child so a reload's pre-exec 'reapMonitor' can kill
+            -- it (the execve escapes this bracket's cleanup); deregistered
+            -- when this scope ends, so the registry never outlives the child.
+            withRegisteredMonitor st.monitorRegistry ph $
+                forM_ mout $ \h -> forever $ do
+                    line <- TIO.hGetLine h
+                    forM_ (parseSchemeLine line) (applyScheme st)
     minBackoff = 1_000_000     -- 1s after the first death
     maxBackoff = 60_000_000    -- capped at 60s so an absent gsettings idles
     schemaKey = "org.gnome.desktop.interface"
@@ -4506,6 +4512,11 @@ cmdRestartServer' st mclient args = do
                 let argv = ["--server", st.sockPath]
                         <> maybe [] (: []) mconfig
                         <> ["--reload-handover", blobPath]
+                -- The execve replaces this image atomically, so no bracket
+                -- unwinds: the gsettings monitor child would be orphaned (14 such
+                -- orphans accrued on the dev box across upgrades). Reap it here,
+                -- while we can still signal it.
+                reapMonitor st.monitorRegistry
                 -- The self-exec replaces this image, so 'withLogger's
                 -- flush-on-exit never runs; drain the queue now or the
                 -- reload trace is lost.

@@ -75,7 +75,7 @@ import Hat.Model.Ids
 import qualified Hat.Term.Pty
 import Hat.Model.Options
     (Keymap, Options, OptionsDelta, defaultOptions, emptyDelta, resolveOptions)
-import Hat.Server.ColorScheme (ColorScheme)
+import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.Keys (PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
@@ -144,6 +144,10 @@ data ServerState = ServerState
     , serverConfig :: TVar (Maybe FilePath)
         -- ^ the config file this server was started with, replayed into the
         --   reload re-exec argv. See 'Hat.Server.cmdRestartServer'.
+    , monitorRegistry :: MonitorRegistry
+        -- ^ the live @gsettings monitor@ child, killed before a reload's
+        --   execve so it is not orphaned. See 'Hat.Server.cmdRestartServer'
+        --   and 'Hat.Server.ColorScheme.reapMonitor'.
     }
 
 data Session = Session
@@ -407,6 +411,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> pure storePath
     <*> newTVarIO Nothing  -- listenFd
     <*> newTVarIO Nothing  -- serverConfig
+    <*> newMonitorRegistry
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
