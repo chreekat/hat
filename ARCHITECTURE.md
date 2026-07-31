@@ -322,11 +322,14 @@ Style: every module that defines a record uses
 {-# LANGUAGE DuplicateRecordFields #-}
 ```
 
-so field names are short, unprefixed, and only accessible via dot
-syntax. No `paneFoo` / `sessionBar` prefixes. `NoFieldSelectors`
-suppresses the auto-exported accessor functions, which removes the
-Prelude-shadow concerns with names like `id`, and `OverloadedRecordDot`
-makes `pane.pty` the only access path.
+so field names are short, unprefixed, and read with dot syntax. No
+`paneFoo` / `sessionBar` prefixes. This is house *style*, not access
+control: fields stay public. `NoFieldSelectors` only drops the
+auto-generated accessor functions (removing Prelude-shadow concerns
+with names like `id`), and `OverloadedRecordDot` makes `pane.pty` the
+ergonomic access path. A type that must protect an invariant earns
+privacy the normal way — an explicit module export list that hides its
+constructor — never by leaning on these pragmas.
 
 ```haskell
 data Server = Server
