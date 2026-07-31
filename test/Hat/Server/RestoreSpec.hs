@@ -20,7 +20,8 @@ import Hat.Server
      Reply (..), ScrollbackCarry (..), SpawnOrigin (..), StorePin (..),
      captureReloadScreen, captureSize, cmdRestartServer,
      defaultRestoreCommands, finallyClearRestoring, persistDecision,
-     replayPane, restoreRun, restoreShellExec)
+     reloadSchemePush, replayPane, restoreRun, restoreShellExec)
+import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
 import qualified Hat.Term.Cell as Cell
@@ -128,6 +129,25 @@ spec = do
             Emu.resize e (Size 11 80)
             scr <- Emu.snapshot e
             scr.size `shouldBe` Size 11 80
+
+    -- Bug f3: a reload re-arms the ?2031 subscription (replayPane) but the
+    -- surviving app never re-emits it, so without a re-push it renders the old
+    -- scheme until the OS scheme next CHANGES. adoptPane must push the current
+    -- scheme once into a subscribed pane.
+    describe "reload color-scheme re-push" $ do
+        it "re-pushes the current scheme to a pane that held the ?2031 subscription" $ do
+            reloadSchemePush (ReloadModes True False 0) (Just SchemeDark)
+                `shouldBe` Just "\ESC[?997;1n"
+            reloadSchemePush (ReloadModes True False 0) (Just SchemeLight)
+                `shouldBe` Just "\ESC[?997;2n"
+
+        it "pushes nothing to a pane that never subscribed" $
+            reloadSchemePush (ReloadModes False False 0) (Just SchemeDark)
+                `shouldBe` Nothing
+
+        it "pushes nothing when the server does not yet know the scheme" $
+            reloadSchemePush (ReloadModes True False 0) Nothing
+                `shouldBe` Nothing
 
     -- Fail loud rather than reload on top of an in-flight restore: a second
     -- restart-server issued mid-restore would capture a half-rebuilt tree.
