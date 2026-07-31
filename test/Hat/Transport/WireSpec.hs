@@ -119,6 +119,7 @@ instance Arbitrary ServerToClient where
         , ServerError <$> genText
         , pure Exited
         , ServerVersion <$> arbitrary
+        , pure RestartClient
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -132,6 +133,7 @@ instance Arbitrary ServerToClient where
         ServerError e -> ServerError . T.pack <$> shrink (T.unpack e)
         Exited -> []
         ServerVersion v -> ServerVersion <$> shrink v
+        RestartClient -> []
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -206,6 +208,8 @@ spec = do
             hex (encodeMessage Exited) `shouldBe` "8109"
         it "ServerVersion" $
             hex (encodeMessage (ServerVersion 5)) `shouldBe` "820a05"
+        it "RestartClient" $
+            hex (encodeMessage RestartClient) `shouldBe` "810b"
 
     -- A new build must read an old peer's nine-element (pre-faint) Style —
     -- that's what lets a new client drive an old server.
