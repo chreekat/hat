@@ -7,9 +7,16 @@
       url = "github:edolstra/flake-compat";
       flake = false;
     };
+    # Upstream tmux source, pinned so the regress/ corpus the upstream
+    # test-suite runs against is deterministic. Bump the rev to re-baseline
+    # against a newer tmux; the xfail list is honest only for the pinned rev.
+    tmux-src = {
+      url = "github:tmux/tmux/31dccb6bc9521b0ea46307974d071ad7f09f0e9b";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, ... }:
+  outputs = { self, nixpkgs, tmux-src, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       # Patch the vendored libvterm: teach it the SGR 2 (faint/dim) attribute
@@ -65,6 +72,10 @@
               ln -sf "$(git rev-parse --show-toplevel)/scripts/pre-commit" \
                 "$hookdir/pre-commit"
             fi
+            # Pinned tmux source for the upstream regress corpus, so
+            # tools/run-upstream-tests.sh and the hat-upstream test-suite
+            # find it without a hardcoded path.
+            export HAT_TMUX_SRC=${tmux-src}
           '';
           buildInputs = [
             pkgs.cabal-install

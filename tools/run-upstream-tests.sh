@@ -13,8 +13,14 @@
 # at a checkout (e.g. ~/src/tmux).
 set -u
 
-tmux_src=${1:?usage: run-upstream-tests.sh /path/to/tmux-source [-j N] [tests...]}
-shift
+# Default to the nix-pinned tmux source ($HAT_TMUX_SRC, exported by the dev
+# shell) so no path need be passed; an explicit first arg still overrides it.
+if [ $# -gt 0 ] && [ "$1" != "-j" ]; then
+    tmux_src=$1
+    shift
+else
+    tmux_src=${HAT_TMUX_SRC:?usage: run-upstream-tests.sh /path/to/tmux-source [-j N] [tests...] (or enter the dev shell for $HAT_TMUX_SRC)}
+fi
 
 jobs=$(nproc 2>/dev/null || echo 4)
 if [ "${1:-}" = "-j" ]; then

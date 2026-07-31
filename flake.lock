@@ -35,7 +35,25 @@
     "root": {
       "inputs": {
         "flake-compat": "flake-compat",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "tmux-src": "tmux-src"
+      }
+    },
+    "tmux-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785385372,
+        "narHash": "sha256-/iRpbo6jady0bFg1MZP/Jsf1itIS41GXhZ6edmJoHHo=",
+        "owner": "tmux",
+        "repo": "tmux",
+        "rev": "31dccb6bc9521b0ea46307974d071ad7f09f0e9b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tmux",
+        "repo": "tmux",
+        "rev": "31dccb6bc9521b0ea46307974d071ad7f09f0e9b",
+        "type": "github"
       }
     }
   },
