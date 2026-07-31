@@ -403,6 +403,18 @@ spec = do
         rowText scr 0 `shouldBe` T.replicate 20 "x"
         rowText scr 1 `shouldBe` T.replicate 10 "x"
 
+    -- An extreme shrink of a pane holding a wrapped long line once abort()ed
+    -- the whole server inside libvterm's screen_resize (bug 7); the emulator
+    -- must clamp to a safe minimum so the C call never sees it.
+    it "survives an extreme shrink of a wrapped long line" $ do
+        e <- new80x24
+        _ <- feedStr e (B8.intercalate "\r\n" [B8.pack ("line" <> show i) | i <- [1 :: Int .. 20]])
+        _ <- feedStr e ("\r\n" <> B8.pack (replicate 300 'x'))
+        resize e Size { rows = 2, cols = 2 }
+        scr <- snapshot e
+        scr.size.rows `shouldSatisfy` (>= 2)
+        scr.size.cols `shouldSatisfy` (>= 2)
+
     describe "OSC title sequences (zsh preexec announcing the command)" $ do
         -- zsh/oh-my-zsh retitle the terminal on every command: the bare
         -- command word via OSC 1 (icon/tab title) and the whole line via
