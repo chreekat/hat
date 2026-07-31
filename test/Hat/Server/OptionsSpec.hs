@@ -21,7 +21,9 @@ import Hat.Model.Options
     , optionScopeClass, validateScope
     )
 import Hat.Server
-    (SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..))
+    ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
+    , placeWindow
+    )
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
 loadSetErrors :: [[Text]] -> [Text]
@@ -146,6 +148,31 @@ spec = do
 
         it "set -s on a session option fails loud" $
             chooseScope DefaultSession ["-s"] OptPrefix `shouldSatisfy` isLeft
+
+        it "set -s @user routes a user option to the server table" $
+            -- @-prefixed user options are valid at every scope in tmux, so
+            -- `set -s @done yes` (as if-shell-nested.sh does) must not be rejected.
+            chooseScope DefaultSession ["-s"] (OptUser "@done")
+                `shouldBe` Right SetServer
+
+        it "setw @user routes a user option to the current window" $
+            chooseScope DefaultWindow [] (OptUser "@x")
+                `shouldBe` Right SetLocalWindow
+
+    describe "new-window index placement" $ do
+        let ws = Map.fromList [(100 :: Int, ())]
+        it "numbers from the session-resolved base-index" $
+            -- the base-index bug: with origin window 100 and base-index 200,
+            -- the next window is 200, not 101 (upstream new-session-base-index.sh)
+            placeWindow Nothing False 100 200 ws `shouldBe` 200
+        it "falls to the next free slot when base-index itself is taken" $
+            placeWindow Nothing False 100 100 ws `shouldBe` 101
+        it "honors an explicit -t index verbatim" $
+            placeWindow (Just 5) False 100 100 ws `shouldBe` 5
+        it "-a places the window right after the current one" $
+            placeWindow Nothing True 100 100 ws `shouldBe` 101
+        it "a requested index that collides falls back to base-index" $
+            placeWindow (Just 100) False 100 200 ws `shouldBe` 200
 
     describe "config-load burn-down (real ~/.tmux.conf)" $
         it "rejects exactly the not-yet-implemented options" $ do

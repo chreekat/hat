@@ -298,9 +298,11 @@ optionScopeClass = \case
 -- | Reject setting an option at a scope its class forbids (e.g. @setw prefix@),
 -- so a mis-scoped set fails loud rather than landing in the wrong table.
 validateScope :: ScopeClass -> OptionName -> Either Text ()
-validateScope requested name
-    | optionScopeClass name == requested = Right ()
-    | otherwise = Left (scopeError requested name)
+validateScope requested name = case name of
+    -- @-prefixed user options are valid at every scope (server/session/window).
+    OptUser _ -> Right ()
+    _ | optionScopeClass name == requested -> Right ()
+      | otherwise -> Left (scopeError requested name)
 
 scopeError :: ScopeClass -> OptionName -> Text
 scopeError requested name =

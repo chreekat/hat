@@ -62,6 +62,7 @@ module Hat.Server
     , applyUpdateEnvironment  -- ^ exported for the update-environment effect test
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
+    , placeWindow  -- ^ exported for the base-index window-numbering test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -2899,12 +2900,30 @@ cmdSourceFile st mclient args = case pos of
 nextFreeWindowIndex :: Int -> Map.Map Int a -> Int
 nextFreeWindowIndex start ws = until (\i -> not (Map.member i ws)) (+ 1) start
 
+-- | The index @new-window@ assigns: an explicit @-t@ index verbatim (or the
+-- next free slot above it under @-a@), else the next free slot after the
+-- current window (@-a@) or from @base-index@ — and a collision with a live
+-- window always falls back to the next free slot from @base-index@. The
+-- @base-index@ is the /session/-resolved one, so @set base-index@ takes effect
+-- for that session (upstream new-session-base-index.sh).
+placeWindow :: Maybe Int -> Bool -> Int -> Int -> Map.Map Int a -> Int
+placeWindow requested afterCurrent cur base ws =
+    if Map.member ix ws then nextFreeFrom base else ix
+  where
+    nextFreeFrom n = nextFreeWindowIndex n ws
+    ix = case requested of
+        Just n
+            | afterCurrent -> nextFreeFrom (n + 1)
+            | otherwise    -> n
+        Nothing
+            | afterCurrent -> nextFreeFrom (cur + 1)
+            | otherwise    -> nextFreeFrom base
+
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args = do
     let (opts, flags, pos) = parseArgs "nct" args
     withTargetSession st mclient Nothing $ \sess -> do
         eff <- readTVarIO sess.lastSize
-        srvOpts <- readTVarIO st.options
         environ <- readTVarIO sess.environ
         let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
             mrun = case pos of
@@ -2923,20 +2942,13 @@ cmdNewWindow st mclient args = do
         atomically $ do
             ws <- readTVar sess.windows
             cur <- readTVar sess.currentIx
+            sopts <- resolveForSession st sess
             let requested = do
                     t <- lookup "-t" opts
                     case TR.decimal t of
                         Right (n, restT) | T.null restT -> Just n
                         _ -> Nothing
-                nextFreeFrom n = nextFreeWindowIndex n ws
-                ix = case requested of
-                    Just n
-                        | "-a" `elem` flags -> nextFreeFrom (n + 1)
-                        | otherwise -> n
-                    Nothing
-                        | "-a" `elem` flags -> nextFreeFrom (cur + 1)
-                        | otherwise -> nextFreeFrom srvOpts.baseIndex
-                ix' = if Map.member ix ws then nextFreeFrom srvOpts.baseIndex else ix
+                ix' = placeWindow requested ("-a" `elem` flags) cur sopts.baseIndex ws
             modifyTVar' sess.windows (Map.insert ix' win)
             unless ("-d" `elem` flags) $ do
                 writeTVar sess.lastIx (Just cur)
