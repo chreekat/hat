@@ -137,6 +137,10 @@ data Event
     | UnknownProp PropKind Int
         -- ^ libvterm reported a terminal property hat does not handle,
         --   tagged with the value's kind and libvterm's prop number
+    | UnhandledPassthrough ByteString
+        -- ^ a DCS tmux passthrough payload hat neither answers nor forwards
+        --   (OSC 52 clipboard, OSC 12 cursor color, OSC 4 palette, …),
+        --   surfaced so the reader logs it instead of dropping it silently
     deriving (Eq, Show)
 
 -- | The value kind of a libvterm terminal property, distinguishing the
@@ -497,16 +501,20 @@ feed e bs0 = withMVar e.lock $ \_ -> do
         , damage = []
         , dirty = False
         }
-    -- Answer the host queries a tmux-aware app wrapped in passthrough (a
-    -- wrapped OSC 10/11 or DEC 2031 query) with the same events an inline
-    -- query yields, so it never reaches libvterm yet still gets its reply.
-    passEvs <- concat <$> mapM (applySignal e) (concatMap honoredSignals passPayloads)
+    -- Split each passthrough payload into the host queries hat answers (a
+    -- wrapped OSC 10/11 or DEC 2031 query, yielding the same events an inline
+    -- query would) and the leftover it does not handle, surfaced as an
+    -- UnhandledPassthrough so the reader logs it rather than dropping it.
+    let parts = map partitionPassthrough passPayloads
+        unhandled = [UnhandledPassthrough r | (_, r) <- parts, not (B.null r)]
+    passEvs <- concat <$> mapM (applySignal e) (concatMap fst parts)
     interleaved <- withForeignPtr e.vt $ \vtp -> do
         ievs <- feedSegments e vtp scrubbed
         ievs <$ c_flush_damage e.screen
     applyDamage e
     s1 <- readIORef e.state
     pure $ passEvs
+        <> unhandled
         <> map TitleChanged screenTitles
         <> interleaved
         <> reverse s1.events

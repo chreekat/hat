@@ -302,6 +302,23 @@ spec = do
         evs <- feedStr e "\ESCPtmux;\ESC\ESC]9;4;0;\a\ESC\\"
         [() | DesktopNotification _ <- evs] `shouldBe` []
 
+    -- Bug 0b: a passthrough payload hat does not answer (OSC 52 clipboard,
+    -- OSC 12 cursor color, OSC 4 palette) must not vanish silently — it is
+    -- surfaced as an UnhandledPassthrough event the reader logs. Otherwise
+    -- allow-passthrough-off would discard it with no trace.
+    it "surfaces an unhandled passthrough payload (OSC 52 clipboard)" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESCPtmux;\ESC\ESC]52;c;aGVsbG8=\a\ESC\\"
+        [bs | UnhandledPassthrough bs <- evs]
+            `shouldBe` ["\ESC]52;c;aGVsbG8=\a"]
+
+    -- A payload hat answers (OSC 11) is handled, not reported as unhandled,
+    -- so the log stays quiet for the sequences hat honours.
+    it "does not surface an answered passthrough payload as unhandled" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESCPtmux;\ESC\ESC]11;?\a\ESC\\"
+        [() | UnhandledPassthrough _ <- evs] `shouldBe` []
+
     -- Bug 16: a tmux-aware app (claude) wraps its OSC 10/11 color query in DCS
     -- passthrough to reach past the multiplexer. hat is the terminal that
     -- knows the OS scheme, so it must answer the wrapped query exactly as it

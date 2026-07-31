@@ -1669,6 +1669,15 @@ startPaneReader st sid win pane = do
                         , propKind = propKindLabel kind
                         , prop = prop
                         }
+                -- A tmux passthrough payload hat neither answers nor forwards
+                -- (OSC 52 clipboard, OSC 12 cursor color, OSC 4 palette, …);
+                -- log it rather than discard it silently (allow-passthrough
+                -- off would drop it with no trace).
+                Emu.UnhandledPassthrough raw ->
+                    logEvent st.logger UnhandledPassthrough
+                        { pane = rawPane pane.id
+                        , payload = T.pack (show raw)
+                        }
             readLoop
 
 -- | Name a vterm prop's value kind for the 'UnknownTermProp' log.
