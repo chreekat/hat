@@ -7,6 +7,7 @@ module Hat.Server
     , captureReloadScreen  -- ^ exported for the reload-screen round-trip test
     , ScrollbackCarry (..)  -- ^ exported for the reload-screen round-trip test
     , replayPane           -- ^ exported for the reload-screen round-trip test
+    , reloadSchemePush     -- ^ exported for the reload scheme re-push test
     , captureSize          -- ^ exported for the oversized-capture adopt test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
     , Reply (..)           -- ^ exported for the reload-in-progress guard test
@@ -608,12 +609,27 @@ notifySubscribedPanes st scheme = do
                 subscribed <- (.colorReport) <$> Emu.modes pane.emulator
                 when subscribed (notifyColorScheme pane scheme)
 
--- | Write a single DEC-mode-2031 color-scheme report to a pane's pty:
--- @CSI ? 997 ; 1 n@ for dark, @CSI ? 997 ; 2 n@ for light.
+-- | Write a single DEC-mode-2031 color-scheme report to a pane's pty.
 notifyColorScheme :: Pane -> ColorScheme -> IO ()
-notifyColorScheme pane scheme = Hat.Term.Pty.writePty pane.pty $ case scheme of
-    SchemeDark  -> "\ESC[?997;1n"
-    SchemeLight -> "\ESC[?997;2n"
+notifyColorScheme pane scheme =
+    Hat.Term.Pty.writePty pane.pty (schemeReport scheme)
+
+-- | The DEC-mode-2031 color-scheme report bytes: @CSI ? 997 ; 1 n@ for dark,
+-- @CSI ? 997 ; 2 n@ for light.
+schemeReport :: ColorScheme -> B.ByteString
+schemeReport SchemeDark  = "\ESC[?997;1n"
+schemeReport SchemeLight = "\ESC[?997;2n"
+
+-- | The color-scheme report a reload must re-push into an adopted pane so a
+-- surviving app reacts to the OS scheme immediately, not only on its next
+-- change. Only a pane whose app held the ?2031 subscription gets one, and only
+-- when the server already knows the scheme; otherwise 'Nothing' (nothing to
+-- push). The subscription itself is re-armed separately, by 'replayPane'. See
+-- 'adoptPane'.
+reloadSchemePush :: ReloadModes -> Maybe ColorScheme -> Maybe B.ByteString
+reloadSchemePush rm mscheme
+    | rm.colorReport = schemeReport <$> mscheme
+    | otherwise      = Nothing
 
 -- | The reply to an OSC 10/11 color query, echoing the query's terminator
 -- (xterm answers BEL with BEL, ST with ST).
@@ -966,11 +982,11 @@ adoptPane st sz histLimit rp = do
     emu <- Emu.newEmulator esz histLimit
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "replaying" }
     -- Replay the app's mode subscriptions the running program set before the
-    -- reload; the fresh emulator starts blank, and the watcher's first scheme
-    -- read then re-notifies whatever re-subscribed to ?2031 here.
-    -- Then repaint the captured live screen (re-entering the alt screen when
-    -- the program was in it, so a later exit reverts cleanly) and reseed the
-    -- scrollback, so a full-screen program survives the reload with its display.
+    -- reload; the fresh emulator starts blank, so this re-arms its ?2031/?1004/
+    -- mouse subscriptions. Then repaint the captured live screen (re-entering
+    -- the alt screen when the program was in it, so a later exit reverts
+    -- cleanly) and reseed the scrollback, so a full-screen program survives the
+    -- reload with its display.
     let (replayBytes, replaySb) = replayPane esz rp
     _ <- Emu.feed emu replayBytes
     Emu.seedScrollback emu replaySb
@@ -980,10 +996,16 @@ adoptPane st sz histLimit rp = do
     modeVar   <- newTVarIO Nothing
     pipeVar   <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
-    pure Pane
-        { id = pid, pty = pty, emulator = emu, size = sizeVar
-        , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
-        , pipe = pipeVar, readerTid = readerVar }
+    let pane = Pane
+            { id = pid, pty = pty, emulator = emu, size = sizeVar
+            , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
+            , pipe = pipeVar, readerTid = readerVar }
+    -- A surviving app that held the ?2031 subscription never re-emits it across
+    -- the reload, so re-push the current scheme once — otherwise it renders the
+    -- pre-reload scheme until the OS scheme next changes (bug f3).
+    scheme <- readTVarIO st.colorScheme
+    forM_ (reloadSchemePush rp.modes scheme) (Hat.Term.Pty.writePty pty)
+    pure pane
 
 -- | Rebuild the emulator mode subscriptions a reload carried. @altScreen@ is
 -- left off here; 'adoptPane' sets it from the captured screen before replaying
