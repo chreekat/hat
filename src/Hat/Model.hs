@@ -11,6 +11,7 @@ module Hat.Model
     , Pane (..)
     , PipeHandle (..)
     , Client (..)
+    , ClientRole (..)
     , CopyModeState (..)
     , FrozenGrid (..)
     , PaneMode (..)
@@ -349,8 +350,14 @@ data Expansion
     | Collapsed
     deriving (Eq, Show)
 
+-- | Whether a connected client renders a session or is a bare control
+-- connection (@hat \<command\>@ from a shell). See 'Hat.Server.restartClientAction'.
+data ClientRole = Attached | Control
+    deriving (Eq, Show)
+
 data Client = Client
     { id        :: ClientId
+    , role      :: ClientRole
     , sock      :: Socket
     , wireLevel :: Word16  -- ^ negotiated dialect; see 'Hat.Transport.Wire.negotiate'
     , sendLock  :: MVar ()

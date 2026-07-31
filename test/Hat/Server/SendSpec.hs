@@ -43,7 +43,7 @@ mkClient = do
     pickV   <- newTVarIO Nothing
     focusV  <- newTVarIO True
     let client = Client
-            { id = ClientId 0, sock = a, wireLevel = protocolVersion
+            { id = ClientId 0, role = Attached, sock = a, wireLevel = protocolVersion
             , sendLock = lock, size = sizeV
             , lastActive = activeV
             , session = sessV, lastSession = lastV, ready = readyV
