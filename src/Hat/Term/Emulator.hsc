@@ -33,6 +33,7 @@ module Hat.Term.Emulator
     , clearScrollback
     , screenRowText
     , screenCell
+    , iconName
     ) where
 
 #include "hat_shim.h"
@@ -286,6 +287,8 @@ data EmulatorState = EmulatorState
     , modeFlags    :: Modes
     , title        :: Text
     , pendingTitle :: ByteString     -- title fragments awaiting their final chunk
+    , iconName     :: Text           -- OSC 1 icon name (VTERM_PROP_ICONNAME)
+    , pendingIcon  :: ByteString     -- icon-name fragments awaiting their final chunk
     , dirty        :: Bool
     , damage       :: [Rect]         -- reversed
     , events       :: [Event]        -- reversed
@@ -326,6 +329,8 @@ newEmulator sz historyLimit = do
             }
         , title = ""
         , pendingTitle = ""
+        , iconName = ""
+        , pendingIcon = ""
         , dirty = False
         , damage = []
         , events = []
@@ -383,6 +388,16 @@ newEmulator sz historyLimit = do
                          , events = TitleChanged t : s.events }
                 else modifyIORef' stateR $ \s ->
                     s { pendingTitle = s.pendingTitle <> frag }
+        -- The OSC 1 icon name: record it as emulator state (assembled from its
+        -- fragments) but raise no event — hat surfaces only the pane title.
+        #{const VTERM_PROP_ICONNAME} -> do
+            frag <- B.packCStringLen (str, fromIntegral len)
+            if final /= 0
+                then modifyIORef' stateR $ \s ->
+                    s { pendingIcon = ""
+                      , iconName = TE.decodeUtf8Lenient (s.pendingIcon <> frag) }
+                else modifyIORef' stateR $ \s ->
+                    s { pendingIcon = s.pendingIcon <> frag }
         -- libvterm delivers a string prop in fragments; surface it once,
         -- when the terminating fragment arrives, not per fragment.
         _ -> if final /= 0 then emitUnknownProp stateR PropStr prop else pure ()
@@ -576,6 +591,10 @@ modes e = (.modeFlags) <$> readIORef e.state
 -- @ESC k@ escape.
 title :: Emulator -> IO Text
 title e = (.title) <$> readIORef e.state
+
+-- | The current OSC 1 icon name (VTERM_PROP_ICONNAME), as last set.
+iconName :: Emulator -> IO Text
+iconName e = (.iconName) <$> readIORef e.state
 
 -- | How many scrollback lines are currently retained.
 scrollbackLength :: Emulator -> IO Int

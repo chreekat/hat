@@ -434,6 +434,16 @@ spec = do
             rowText scr 0 `shouldBe` "foo"
             noEcho scr
 
+        -- Bug c28: the OSC 1 icon name (VTERM_PROP_ICONNAME, prop 5/str) is a
+        -- recognized emulator property, not an UnknownProp — it must not spam
+        -- the logs, and the emulator records it.
+        it "records an OSC 1 icon name without an UnknownProp event" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]1;my-icon\a"
+            evs `shouldSatisfy` all (\case UnknownProp {} -> False; _ -> True)
+            icon <- iconName e
+            icon `shouldBe` "my-icon"
+
         it "swallows an OSC 1 icon/tab title (ST)" $ do
             e <- new80x24
             _ <- feedStr e "\ESC]1;echo\ESC\\foo"
