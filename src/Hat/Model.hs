@@ -76,7 +76,7 @@ import qualified Hat.Term.Pty
 import Hat.Model.Options
     (Keymap, Options, OptionsDelta, defaultOptions, emptyDelta, resolveOptions)
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
-import Hat.Server.Keys (PrefixState)
+import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
 import qualified Hat.Term.Cell as Cell
@@ -361,6 +361,7 @@ data Client = Client
     , ready     :: TVar Bool  -- ^ the client's Welcome greeting has been sent.
                              --   See 'send'.
     , keyState  :: IORef PrefixState  -- input thread only
+    , escState  :: IORef EscPending   -- ^ held trailing ESC; input thread only
     , lastFrame :: IORef Frame        -- render thread only
     , lastCursor :: IORef (Pos, Bool)
     , needsFull :: TVar Bool

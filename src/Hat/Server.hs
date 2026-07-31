@@ -55,6 +55,7 @@ module Hat.Server
     , deliversKey  -- ^ exported for the focus-event gating test
     , mainPaneRatio  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
+    , escTiming  -- ^ exported for the escape-time effect test
     , applyUpdateEnvironment  -- ^ exported for the update-environment effect test
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
@@ -1347,6 +1348,7 @@ newClient st conn h = do
     sessVar <- newTVarIO (SessionId (-1))
     lastSessVar <- newTVarIO Nothing
     keyVar <- newIORef NoPrefix
+    escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame h.size)
     cursorVar <- newIORef (Pos 0 0, True)
     fullVar <- newTVarIO True
@@ -1366,6 +1368,7 @@ newClient st conn h = do
         , lastSession = lastSessVar
         , ready = readyVar
         , keyState = keyVar
+        , escState = escVar
         , lastFrame = frameVar
         , lastCursor = cursorVar
         , needsFull = fullVar
@@ -2069,13 +2072,22 @@ inputLoop :: ServerState -> Client -> IO ()
 inputLoop st client = loop
   where
     loop = do
-        m <- recvMessage client.sock
+        -- A lone trailing ESC held by escape-time races the next chunk: if
+        -- nothing arrives within the window, flush it as the Escape key.
+        held <- readIORef client.escState
+        m <- case held of
+            NoEscPending -> Right <$> recvMessage client.sock
+            EscPending -> do
+                opts <- clientOptions st client
+                timer <- registerDelay (opts.escapeTime * 1000)
+                race (atomically (readTVar timer >>= check)) (recvMessage client.sock)
         case m of
-            Nothing -> pure ()
-            Just (Malformed err) -> logEvent st.logger ProtocolError
+            Left () -> flushHeldEscape st client >> loop
+            Right Nothing -> pure ()
+            Right (Just (Malformed err)) -> logEvent st.logger ProtocolError
                 { client = rawClient client.id, err = T.pack err }
-            Just (UnknownTag _) -> loop
-            Just (Known msg) -> case msg of
+            Right (Just (UnknownTag _)) -> loop
+            Right (Just (Known msg)) -> case msg of
                 Input bs -> do
                     handleInput st client bs
                     loop
@@ -2205,8 +2217,38 @@ handlePromptInput st client pr0 bs = do
 -- therefore changes how the very next key in the same input chunk is
 -- routed, so @prefix [@ followed immediately by motions never leaks the
 -- motions to the shell (and vice versa on exit).
+-- escape-time coalescing: 0 forwards a lone trailing ESC as Escape at once
+-- ('EscImmediate'); a non-zero value holds it ('EscBuffered') for 'inputLoop'
+-- to coalesce with the next chunk or flush on timeout.
+escTiming :: Options -> EscTiming
+escTiming opts = if opts.escapeTime <= 0 then EscImmediate else EscBuffered
+
+-- | Tokenize a chunk under the client's escape-time, coalescing any ESC held
+-- from the previous chunk, then route the resulting keys. A fresh lone
+-- trailing ESC is left in 'escState' for 'inputLoop' to resolve.
 handleKeys :: ServerState -> Client -> B.ByteString -> IO ()
 handleKeys st client bs = do
+    opts <- clientOptions st client
+    held <- readIORef client.escState
+    let toks = feedKeys (escTiming opts) held bs
+    writeIORef client.escState toks.escPending
+    runKeys st client toks.escKeys
+
+-- | The escape-time timer fired: forward the held lone ESC as Escape and clear
+-- the buffer. A no-op if the ESC was already coalesced by an arriving chunk.
+flushHeldEscape :: ServerState -> Client -> IO ()
+flushHeldEscape st client = do
+    held <- readIORef client.escState
+    writeIORef client.escState NoEscPending
+    runKeys st client (flushEscape held)
+
+-- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
+-- its copy-mode table before each. A key that enters or leaves copy mode
+-- therefore changes how the very next key in the same input chunk is
+-- routed, so @prefix [@ followed immediately by motions never leaks the
+-- motions to the shell (and vice versa on exit).
+runKeys :: ServerState -> Client -> [Key] -> IO ()
+runKeys st client keys = do
     opts <- clientOptions st client
     km <- readTVarIO st.keymap
     let loop kst [] = writeIORef client.keyState kst
@@ -2240,7 +2282,7 @@ handleKeys st client bs = do
                                 RErr e -> showToast st client ("error: " <> e)
                     loop kst' rest
     st0 <- readIORef client.keyState
-    loop st0 (tokenizeKeys bs)
+    loop st0 keys
   where
     -- Reads the pane's live focus-reporting mode, then defers the actual
     -- keep/drop decision to the pure 'deliversKey'.
