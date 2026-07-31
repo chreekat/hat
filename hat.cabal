@@ -135,7 +135,8 @@ executable hat
         hat,
         network     ^>= 3.2.8.0,
         process     ^>= 1.6.26.1,
-        text        ^>= 2.1.3
+        text        ^>= 2.1.3,
+        unix        ^>= 2.8.7.0
 
 executable gen-fixtures
     import:             defaults, pedantry

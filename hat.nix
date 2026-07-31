@@ -16,7 +16,7 @@ mkDerivation {
   ];
   libraryPkgconfigDepends = [ vterm ];
   executableHaskellDepends = [
-    base bytestring directory network process text
+    base bytestring directory network process text unix
   ];
   testHaskellDepends = [
     async base bytestring cborg containers directory filepath hspec

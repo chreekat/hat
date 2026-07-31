@@ -33,6 +33,7 @@ data ExitReason
     | SessionEnded
     | ServerDied
     | Rejected Text
+    | RestartRequested  -- ^ server asked us to re-exec in place; see 'Main.attach'
     deriving (Eq, Show)
 
 versionMismatch :: Text
@@ -123,6 +124,7 @@ shuttle sock = do
                 Notify raw -> B.hPut stdout raw >> receiver
                 Message _ -> receiver  -- server renders toasts into frames
                 DetachOk -> pure Detached
+                RestartClient -> pure RestartRequested
                 CommandDone -> receiver
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)

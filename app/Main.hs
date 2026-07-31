@@ -3,10 +3,11 @@ module Main (main) where
 import Control.Concurrent (threadDelay)
 import qualified Data.Text as T
 import Network.Socket (Socket)
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, findExecutable)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO
+import System.Posix.Process (executeFile)
 import System.Process
     (CreateProcess (..), StdStream (..), createProcess, proc)
 
@@ -131,12 +132,26 @@ attach path mconfig setup = do
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
+        RestartRequested -> restartClient path mconfig
         ServerDied -> do
             hPutStrLn stderr "hat: server connection lost"
             exitWith (ExitFailure 1)
         Rejected e -> do
             hPutStrLn stderr ("hat: " <> T.unpack e)
             exitWith (ExitFailure 1)
+
+-- | Re-exec @hat@ in place to reattach: the server told us to restart, so
+-- replace this client image with a fresh @hat attach@ against the same socket
+-- and config. Resolving @hat@ on @PATH@ (not @\/proc\/self\/exe@) is what lets
+-- the restart pick up a just-installed build — the point of restart-client —
+-- mirroring 'Hat.Server.resolveReloadTarget'. A bare attach lands on the
+-- session the server last had us on, so the attachment survives.
+restartClient :: FilePath -> Maybe FilePath -> IO ()
+restartClient path mconfig = do
+    onPath <- findExecutable "hat"
+    target <- maybe getExecutablePath pure onPath
+    let argv = ["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig <> ["attach"]
+    executeFile target False argv Nothing
 
 control :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
 control path mconfig cmds = do
