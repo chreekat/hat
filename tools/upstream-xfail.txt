@@ -50,3 +50,115 @@ style-trim.sh
 tty-draw-line.sh
 tty-keys.sh
 utf8-test.sh
+
+# Re-baselined 2026-07-31 against pinned tmux master (flake input tmux-src,
+# 31dccb6): upstream grew from ~51 to 122 regress scripts. Triaged the new
+# failures below. new-session-base-index graduated (session-scoped base-index
+# fix). Reasons name the unimplemented subsystem each hinges on; several also
+# surfaced real close-miss bugs now in the tracker (b).
+
+# control mode (-C): whole subsystem unimplemented
+control-client-exit.sh          # no %-notification / exit handshake
+control-client-wait-exit.sh     # no wait-exit / %exit lifecycle
+control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-changed
+control-subscriptions.sh        # no refresh-client -B / %subscription-changed
+
+# hooks / set-hook / wait-for: no hook engine
+hooks.sh                        # set-hook is an unknown command
+hooks-after.sh                  # after-* / command-error hooks unimplemented
+hooks-lifecycle.sh              # lifecycle hooks unimplemented
+hooks-notify.sh                 # notify hooks unimplemented
+set-hook-B.sh                   # set-hook / show-hooks unimplemented
+set-hook-E.sh                   # set-hook + wait-for unimplemented
+set-hook-R.sh                   # set-hook unimplemented
+wait-for-E.sh                   # wait-for command unimplemented
+alerts.sh                       # monitor-bell/-silence/-activity + alert hooks unimplemented
+
+# interactive mode-screens: choose-*/customize/display-panes/modal
+choose-buffer.sh                # choose-buffer + mode-screen rendering unimplemented
+choose-client.sh                # choose-client + list-clients unimplemented
+choose-tree.sh                  # needs list-clients + interactive mode-screen
+customize-mode.sh               # customize-mode unimplemented
+display-panes.sh                # display-panes mode + display-panes-format unimplemented
+modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
+mode-kill.sh                    # mode -k (kill-pane-on-exit) flag unimplemented
+mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
+
+# copy-mode advanced motions/options
+copy-mode-redraw.sh             # needs status + copy-mode-position-format/line-numbers + mode redraw
+copy-mode-scroll-exit.sh        # needs window-size + copy-mode -e + send-keys -N + selection/scroll formats
+copy-mode-selection-scroll.sh   # needs window-size + copy-mode scroll/selection subcommands + mouse wheel
+
+# format engine: modifiers/vars beyond ?/=N/e|op| unimplemented
+cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
+format-animation.sh             # #{A/n:...} animation modifier + window-size
+format-fuzzy.sh                 # #{m/z:} / #{m/p:} fuzzy-match modifiers
+format-modifiers.sh             # most FORMATS modifiers (m,s/,b,d,q,t,c,p,n,w,a,...)
+format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
+format-variables.sh             # list-clients + monitor-bell + most format_table vars
+
+# mouse: option + bindings + mouse_* vars unimplemented
+format-mouse.sh                 # mouse option + MouseDown bindings + mouse_* format vars
+menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click routing
+new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
+
+# environment commands
+environ.sh                      # set-environment / show-environment commands unimplemented
+environ-update.sh               # update-environment works internally but is unreachable without set/show-environment
+
+# option engine breadth: flat scalar table, global-only read-back
+options-array.sh                # array options (option[key], -a append, ordering) unmodeled
+options-values.sh               # most option names fail-loud + no typed value-validation table
+options-scope.sh                # show has no session/window/pane read-back (reads only the global cache) -- tracked in b
+show-options-output.sh          # needs hooks + show -A inheritance + array output; also unquoted scalars -- tracked in b
+
+# capture-pane is a stub (ignores -R/-N/-F/-J/-S/-E/-t); emulation itself is correct
+input-cursor.sh                 # display-message ignores -t so #{cursor_x/y} empty -- tracked in b
+input-edit.sh                   # capture-pane ignores args, drops trailing blank rows
+input-malformed.sh              # capture-pane -R + some malformed input crashes the server -- tracked in b
+input-modes.sh                  # capture-pane -R osc133 line metadata
+input-osc.sh                    # capture-pane -F flags (hyperlink) + respawn-pane
+input-raw-controls.sh           # capture-pane -pR raw grid dump
+input-raw-cursor.sh             # capture-pane -pR raw grid + display-message cursor
+input-raw-edit.sh               # capture-pane -pR raw cell dump
+input-raw-history.sh            # capture-pane -pR raw dump + history_size header
+input-raw-reflow.sh             # capture-pane -pR WRAPPED line flags after reflow
+input-raw-scroll.sh             # capture-pane -pR raw dump (DECSTBM/IND/RI/IL/DL)
+input-raw-sgr.sh                # capture-pane -pR raw SGR/colour/underline/hyperlink cells
+input-raw-unicode.sh            # capture-pane -pR wide/PADDING/combining cells
+input-raw-wrap.sh               # capture-pane -pR WRAPPED flag + cursor_x/y
+input-reflow-stress.sh          # capture-pane -pR/-pM + history_size + copy-mode -H + respawn-*
+input-replies.sh                # remain-on-exit + respawn-window (blocks before DSR/DA/DECRQM checks)
+input-requests.sh               # respawn-window + get-clipboard + OSC-4/OSC-52 request round-trips
+input-scroll.sh                 # capture-pane -S/-E + cursor_x/y + respawn-pane; also a scroll-region off-by-one -- tracked in b
+input-sgr.sh                    # relies on capture-pane -e/-N escape fidelity not emitted
+input-unicode.sh                # capture-pane -N/-F/-R wide-char padding/cursor markers
+
+# buffers: subsystem is a stub
+buffers.sh                      # no -F/-f, buffer_* formats, set-buffer -n, buffer-limit, load-buffer
+
+# display-message -t target scoping (the cmd-find-in-format feature) -- tracked in b
+targets.sh                      # display-message ignores -t; no sess:win.pane target-in-format-context
+targets-panes.sh                # display-message ignores -t pane target
+pane-ops.sh                     # display-message -t builds only session env so #{pane_*} empty; + advanced pane cmds
+
+# windows / sessions / pipe / lifecycle
+window-ops.sh                   # link/unlink/swap/rotate-window absent; new-window -t sess:idx parse bug -- tracked in b
+session-ops.sh                  # grouped sessions, new-session -A/-t, detach-on-destroy, kill-session -a/-C/-f
+pipe-pane.sh                    # pipe-pane works but the test needs remain-on-exit (dead-pane model)
+lifecycle-deferred.sh           # needs detach-on-destroy + lifecycle hooks + control-mode + link/unlink-window
+
+# screen redraw / theme
+screen-redraw-fill-character.sh # needs fill-character + window-size manual + status off + floating panes
+screen-redraw-menus.sh          # needs display-menu window menus + menu styles + window-size
+theme-report.sh                 # needs respawn-window + window-style + remain-on-exit + nested attach
+
+# if-shell-nested: real bug, tracked in b (re-entrancy, not "unimplemented")
+if-shell-nested.sh              # @-user scope now fixed; a nested hat command as an if-shell condition in config crashes the server -- tracked in b
+#
+# NOT listed: if-shell-TERM.sh. It is FLAKY, not cleanly failing -- config load
+# runs in a background thread (so a nested `$TMUX` in an if-shell can reach the
+# accept loop), which lets `new` be served before the config's default-terminal
+# is set, racing the pane's TERM under load. Neither xfail nor pass is stable, so
+# it stays UNLISTED as the tracked open item pending the real config-load
+# ordering fix -- tracked in b. Do not paper over it with an xfail/skip.
