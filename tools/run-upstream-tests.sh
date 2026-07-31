@@ -33,7 +33,11 @@ regress="$tmux_src/regress"
 
 here=$(dirname "$0")
 xfail_file="$here/upstream-xfail.txt"
-hat_bin=$(cabal list-bin hat 2>/dev/null) || { echo "build hat first" >&2; exit 2; }
+# Prefer hat on PATH — the hat-upstream test-suite's build-tool-depends puts the
+# freshly-built binary there, so no `cabal list-bin` subprocess is needed under
+# `cabal test`. Fall back to it for a standalone dev-shell invocation.
+hat_bin=$(command -v hat 2>/dev/null || cabal list-bin hat 2>/dev/null) \
+    || { echo "build hat first" >&2; exit 2; }
 
 if [ $# -gt 0 ]; then
     tests=$(printf '%s\n' "$@" | xargs -n1 basename)
