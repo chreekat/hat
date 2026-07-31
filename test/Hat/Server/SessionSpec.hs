@@ -7,7 +7,7 @@ import Data.IORef (newIORef)
 import System.Timeout (timeout)
 import qualified Data.Map.Strict as Map
 import Network.Socket
-    ( Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket
+    ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
     , socketPair )
 import Test.Hspec
 
@@ -21,10 +21,11 @@ import Hat.Model.Options
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
     ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
+    , RestartClientOutcome (..), restartClientAction
     , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
-    , cmdAttachSession, chooseCurrentOnClose, deliversKey, detachPane
-    , detachPaneCurrent, detachPanes, markActivity, markBell, nextZoom
-    , noteOuterFocus, pickActivityTarget, pickAttachSession
+    , cmdAttachSession, chooseCurrentOnClose, cmdRestartClient, deliversKey
+    , detachPane, detachPaneCurrent, detachPanes, markActivity, markBell
+    , nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
     , removePaneFromTree, welcome )
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
@@ -93,7 +94,7 @@ addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
 addClient st sid sz stamp = do
     sock <- socket AF_UNIX Stream defaultProtocol
     lock <- newMVar ()
-    client <- Client (ClientId stamp) sock protocolVersion lock
+    client <- Client (ClientId stamp) Attached sock protocolVersion lock
         <$> newTVarIO sz
         <*> newTVarIO stamp
         <*> newTVarIO sid
@@ -112,6 +113,32 @@ addClient st sid sz stamp = do
         <*> pure ""
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
+
+-- A client whose socket is one half of a socketpair, so a test can read what
+-- the server sends it. 'ready' is armed so 'send' does not drop the message.
+wiredClient :: ServerState -> ClientRole -> IO (Client, Socket)
+wiredClient st clientRole = do
+    (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
+    lock <- newMVar ()
+    client <- Client (ClientId 1) clientRole server protocolVersion lock
+        <$> newTVarIO (Size 24 80)
+        <*> newTVarIO 0
+        <*> newTVarIO (SessionId 0)
+        <*> newTVarIO Nothing
+        <*> newTVarIO True    -- ready
+        <*> newIORef NoPrefix
+        <*> newIORef NoEscPending
+        <*> newIORef (blankFrame (Size 24 80))
+        <*> newIORef (Pos 0 0, True)
+        <*> newTVarIO True
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
+        <*> newTVarIO True
+        <*> pure []
+        <*> pure ""
+    atomically $ modifyTVar' st.clients (Map.insert client.id client)
+    pure (client, peer)
 
 -- A model-only pane for exercising 'detachPane', which touches a pane's
 -- id and dead flag but never its pty or emulator (those stay with the
@@ -152,6 +179,30 @@ spec = do
                 Just (Known (ServerVersion v)) <- recvMessage client
                 v `shouldBe` protocolVersion
                 sendMessage client Detach
+
+    -- restart-client tells the attached client to re-exec in place; issued
+    -- from a bare control connection there is nothing rendering, so it is a
+    -- no-op. The role decides which.
+    describe "restart-client" $ do
+        it "is a restart for an attached client, a no-op for a control one" $ do
+            restartClientAction (Just Attached) `shouldBe` RestartAttached
+            restartClientAction (Just Control) `shouldBe` NoAttachedClient
+            restartClientAction Nothing `shouldBe` NoAttachedClient
+
+        it "sends RestartClient to the attached client that issued it" $ do
+            (st, _) <- seedSession "/"
+            (client, peer) <- wiredClient st Attached
+            [] <- cmdRestartClient st (Just client) []
+            recvMessage peer `shouldReturn` Just (Known RestartClient)
+
+        it "sends nothing when a control connection issues it" $ do
+            (st, _) <- seedSession "/"
+            (client, peer) <- wiredClient st Control
+            [] <- cmdRestartClient st (Just client) []
+            -- Nothing is queued, so a bounded read finds no frame.
+            got <- timeout 100_000
+                (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))
+            got `shouldBe` Nothing
 
     describe "aggressive-resize sizing" $ do
         let big = Size { rows = 50, cols = 200 }

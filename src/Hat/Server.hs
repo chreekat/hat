@@ -10,6 +10,9 @@ module Hat.Server
     , reloadSchemePush     -- ^ exported for the reload scheme re-push test
     , captureSize          -- ^ exported for the oversized-capture adopt test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
+    , restartClientAction  -- ^ exported for the restart-client no-op test
+    , RestartClientOutcome (..)
+    , cmdRestartClient     -- ^ exported for the restart-client delivery test
     , Reply (..)           -- ^ exported for the reload-in-progress guard test
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
@@ -1359,6 +1362,9 @@ newClient st conn h = do
     focusVar <- newTVarIO True
     pure Client
         { id = ClientId cid
+        , role = case h.intent of
+            AttachIntent {} -> Attached
+            ControlIntent   -> Control
         , sock = conn
         , wireLevel = min protocolVersion h.protoVersion
         , sendLock = sendLock
@@ -2452,6 +2458,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["switch-client", "switchc"], cmdSwitchClient)
     , (["kill-server"], cmdKillServer)
     , (["restart-server"], cmdRestartServer)
+    , (["restart-client"], cmdRestartClient)
     , (["display-message", "display"], cmdDisplayMessage)
     , (["run-shell", "run"], cmdRunShell)
     , (["if-shell", "if"], cmdIfShell)
@@ -4658,6 +4665,30 @@ cleanupInherited cleanup = do
             `catch` \(_ :: IOException) -> pure ()
     PIO.closeFd (Fd (fromIntegral cleanup.listenFd))
         `catch` \(_ :: IOException) -> pure ()
+
+-- | @restart-client@: tell the currently-attached client to re-exec itself in
+-- place, keeping its session. A no-op when the command is not issued from an
+-- attached client — a bare @hat restart-client@ from a shell reaches the server
+-- as a control connection, so there is nothing rendering to restart.
+cmdRestartClient :: CommandImpl
+cmdRestartClient _ mclient _ =
+    case restartClientAction ((.role) <$> mclient) of
+        NoAttachedClient -> pure []
+        RestartAttached  -> do
+            forM_ mclient $ \client -> send client RestartClient
+            pure []
+
+-- | The outcome of 'cmdRestartClient': restart the issuing client, or do
+-- nothing because no attached client issued the command.
+data RestartClientOutcome = RestartAttached | NoAttachedClient
+    deriving (Eq, Show)
+
+-- | Decide 'cmdRestartClient' from the issuing client's role: only an
+-- 'Attached' client restarts; a 'Control' connection (or none) is the no-op.
+restartClientAction :: Maybe ClientRole -> RestartClientOutcome
+restartClientAction = \case
+    Just Attached -> RestartAttached
+    _             -> NoAttachedClient
 
 cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do
