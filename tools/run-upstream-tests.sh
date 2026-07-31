@@ -14,8 +14,9 @@
 set -u
 
 # Default to the nix-pinned tmux source ($HAT_TMUX_SRC, exported by the dev
-# shell) so no path need be passed; an explicit first arg still overrides it.
-if [ $# -gt 0 ] && [ "$1" != "-j" ]; then
+# shell) so no path need be passed; a first arg that is a tmux checkout (has a
+# regress/ dir) still overrides it, while bare test names fall through to it.
+if [ $# -gt 0 ] && [ -d "$1/regress" ]; then
     tmux_src=$1
     shift
 else
@@ -33,11 +34,12 @@ regress="$tmux_src/regress"
 
 here=$(dirname "$0")
 xfail_file="$here/upstream-xfail.txt"
-# Prefer hat on PATH — the hat-upstream test-suite's build-tool-depends puts the
-# freshly-built binary there, so no `cabal list-bin` subprocess is needed under
-# `cabal test`. Fall back to it for a standalone dev-shell invocation.
-hat_bin=$(command -v hat 2>/dev/null || cabal list-bin hat 2>/dev/null) \
+# Use the binary the hat-upstream suite resolved from its build-tool-depends
+# PATH ($HAT_BIN), else the dev build via `cabal list-bin`. Never fall through
+# to a $PATH `hat`, which on a dev box is the stale system-installed one.
+hat_bin=${HAT_BIN:-$(cabal list-bin hat 2>/dev/null)} \
     || { echo "build hat first" >&2; exit 2; }
+[ -x "$hat_bin" ] || { echo "build hat first (no binary at: $hat_bin)" >&2; exit 2; }
 
 if [ $# -gt 0 ]; then
     tests=$(printf '%s\n' "$@" | xargs -n1 basename)

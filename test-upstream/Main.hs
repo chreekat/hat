@@ -10,7 +10,8 @@
 module Main (main) where
 
 import Control.Monad (when)
-import System.Environment (lookupEnv)
+import System.Directory (findExecutable)
+import System.Environment (lookupEnv, setEnv)
 import System.Exit (exitFailure, exitSuccess, exitWith)
 import System.IO (hPutStrLn, stderr)
 import System.Process (spawnProcess, waitForProcess)
@@ -29,6 +30,9 @@ main = do
                 "hat-upstream: HAT_UPSTREAM=1 but HAT_TMUX_SRC is unset \
                 \(enter the nix dev shell for the pinned tmux corpus)."
             exitFailure
-        Just _ ->
+        Just _ -> do
+            -- build-tool-depends puts the freshly-built hat first on PATH, so
+            -- hand it to the runner directly — no `cabal list-bin` subprocess.
+            findExecutable "hat" >>= mapM_ (setEnv "HAT_BIN")
             spawnProcess "tools/run-upstream-tests.sh" []
                 >>= waitForProcess >>= exitWith
