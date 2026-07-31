@@ -62,7 +62,7 @@ spot-read of each suspect consumer.
 | `pane-border-lines` | `mapGlyph`/`borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-border-indicators` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
-| `escape-time` | — | **defect: no consumer** | — |
+| `escape-time` | `escTiming`/`feedKeys`/`flushEscape` (Server.hs, Keys.hs) | implemented ✅ tested | pure |
 | `display-time` | toast duration (Server.hs) | implemented | plumbed |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented | pure |
 | `aggressive-resize` | `resizeModeOf` (Server.hs) | implemented ✅ tested | pure |
@@ -75,14 +75,18 @@ spot-read of each suspect consumer.
 
 ## Defects (the backlog)
 
-1. **`escape-time` — no consumer** (tracked as **bug `fd`**). ESC disambiguation
-   in `Hat.Server.Keys.tokenizeKeys` is hardcoded to `escape-time 0` semantics (a
-   lone trailing ESC is the Escape key). A non-zero value is stored and ignored.
-   A real fix buffers a trailing lone ESC and arms an `escape-time`-ms timer in
-   the input path: coalesce with the next bytes if they arrive first, else emit
-   Escape. Needs event-loop timing.
+*(none open)*
 
 ## Fixed during the audit
+
+- **`escape-time`** was a silent no-op (tracked as **bug `fd`**): stored in
+  `Options` but read by nothing, with `tokenizeKeys` hardcoded to `escape-time
+  0` (a lone trailing ESC is the Escape key). The pure coalescing core now lives
+  in `Hat.Server.Keys` (`EscTiming`/`feedKeys`/`flushEscape`): a non-zero value
+  holds a lone trailing ESC (`EscBuffered`) so `inputLoop` coalesces it with the
+  next chunk or flushes it to Escape when the `escape-time`-ms timer fires.
+  Pinned by an `OptionEffectSpec` behavior test over the pure seam.
+
 
 - **`pane-base-index`** was a partial no-op: honored in the `autoName` path but
   not in `cmdListPanes`, so `#{pane_index}` (and `list-panes`,
@@ -112,9 +116,9 @@ non-default value, drive the consumer, assert the *observable* result.
 
 - Behavior-verified so far are the ✅ rows in the table above (via
   `OptionEffectSpec`, `CopyModeSpec`, `KeysSpec`, `FormatSpec`, or
-  `IntegrationSpec`). The only rows without a behavior test are the four
-  `plumbed` option `display-time` (its effect is a timed toast dismissal, not
-  synchronously observable without a sleep) and the `escape-time` defect.
+  `IntegrationSpec`). The only row without a behavior test is the `plumbed`
+  option `display-time` (its effect is a timed toast dismissal, not
+  synchronously observable without a sleep).
 - Every `needs seam` option first needs a pure core extracted from its
   `ServerState`-IO consumer (e.g. `statusCells` → a pure
   `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;

@@ -4,8 +4,7 @@
 -- semantics) fails a test instead of needing another manual audit.
 --
 -- Options whose consumer still needs a pure seam extracted (see the audit's
--- @needs seam@ column) are not yet here; the known defects are pinned as
--- pending specs below until they are fixed.
+-- @needs seam@ column) are not yet here.
 module Hat.Server.OptionEffectSpec (spec) where
 
 import Test.Hspec
@@ -19,8 +18,9 @@ import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), Options (..)
     , StatusPosition (..), defaultOptions )
 import Hat.Server
-    (applyUpdateEnvironment, deliversKey, mainPaneRatio, resizeModeOf)
-import Hat.Server.Keys (Key (..))
+    (applyUpdateEnvironment, deliversKey, escTiming, mainPaneRatio, resizeModeOf)
+import Hat.Server.Keys
+    (EscPending (..), EscTokens (..), Key (..), feedKeys, flushEscape)
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
 import Hat.Server.View
     ( assembleStatusRow, borderCells, mapGlyph, statusLayout
@@ -177,10 +177,22 @@ spec = do
                 lookup "DISPLAY" (applyUpdateEnvironment ["MISSING"] clientEnv sessEnv)
                     `shouldBe` Just ":0"
 
-        -- Defects catalogued in docs/options-audit.md, pinned here as the
-        -- executable backlog. Each flips to a real assertion when fixed.
-        describe "defects (pending until fixed)" $
-            it "escape-time delays a lone trailing ESC by escape-time ms" $
-                pendingWith
-                    "no consumer: ESC disambiguation is hardcoded to \
-                    \escape-time 0 (tracked as bug fd; see docs/options-audit.md)"
+        -- escape-time: 0 forwards a lone trailing ESC as Escape at once; a
+        -- non-zero value holds it (EscBuffered) so the input loop can coalesce
+        -- it with the next chunk or flush it on timeout.
+        describe "escape-time gates lone-trailing-ESC coalescing" $ do
+            let feed opts held = feedKeys (escTiming opts) held
+            it "0 (default): a lone trailing ESC is Escape now, nothing held" $ do
+                let toks = feed defaultOptions NoEscPending "a\ESC"
+                map (.name) toks.escKeys `shouldBe` ["a", "Escape"]
+                toks.escPending `shouldBe` NoEscPending
+            it "non-zero: a lone trailing ESC is held, not emitted" $ do
+                let toks = feed (defaultOptions { escapeTime = 500 }) NoEscPending "a\ESC"
+                map (.name) toks.escKeys `shouldBe` ["a"]
+                toks.escPending `shouldBe` EscPending
+            it "non-zero: a held ESC coalesces with the next chunk into M-x" $ do
+                let opts = defaultOptions { escapeTime = 500 }
+                    held = (feed opts NoEscPending "\ESC").escPending
+                map (.name) (feed opts held "x").escKeys `shouldBe` ["M-x"]
+            it "non-zero: a held ESC flushes to Escape on timeout" $
+                map (.name) (flushEscape EscPending) `shouldBe` ["Escape"]

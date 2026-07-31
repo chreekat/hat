@@ -26,7 +26,7 @@ import Hat.Server
     , detachPaneCurrent, detachPanes, markActivity, markBell, nextZoom
     , noteOuterFocus, pickActivityTarget, pickAttachSession
     , removePaneFromTree, welcome )
-import Hat.Server.Keys (Key (..), PrefixState (NoPrefix))
+import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
     ( ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
@@ -100,6 +100,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO True
         <*> newIORef NoPrefix
+        <*> newIORef NoEscPending
         <*> newIORef (blankFrame sz)
         <*> newIORef (Pos 0 0, True)
         <*> newTVarIO True

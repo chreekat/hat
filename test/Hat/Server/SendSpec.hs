@@ -16,7 +16,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Server.ClientIO (send)
-import Hat.Server.Keys (PrefixState (NoPrefix))
+import Hat.Server.Keys (EscPending (NoEscPending), PrefixState (NoPrefix))
 import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire
     (Inbound (..), ServerToClient (..), protocolVersion, recvMessage)
@@ -34,6 +34,7 @@ mkClient = do
     lastV   <- newTVarIO Nothing
     readyV  <- newTVarIO False
     keyV    <- newIORef NoPrefix
+    escV    <- newIORef NoEscPending
     frameV  <- newIORef (blankFrame sz)
     curV    <- newIORef (Pos 0 0, True)
     fullV   <- newTVarIO True
@@ -46,7 +47,7 @@ mkClient = do
             , sendLock = lock, size = sizeV
             , lastActive = activeV
             , session = sessV, lastSession = lastV, ready = readyV
-            , keyState = keyV, lastFrame = frameV, lastCursor = curV
+            , keyState = keyV, escState = escV, lastFrame = frameV, lastCursor = curV
             , needsFull = fullV, toast = toastV, prompt = promptV
             , picker = pickV, outerFocused = focusV, env = [], cwd = "" }
     pure (client, b)
