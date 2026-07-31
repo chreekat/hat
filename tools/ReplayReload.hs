@@ -37,9 +37,8 @@ historyLimit = 50000
 
 -- The geometries the reconcile daemon and a client attach actually drive
 -- (from the field logs' PaneResizing events). Extreme shrinks (5x20, 2x2)
--- also abort libvterm on content no reload ever touched — a separate,
--- pre-existing landmine — so they are opt-in via arguments, not part of the
--- default reload validation.
+-- are opt-in via arguments, not part of the default reload validation; the
+-- libvterm abort they once triggered is fixed (nix/libvterm-resize-clamp.patch).
 defaultLadder :: [Size]
 defaultLadder =
     [ Size 11 80, Size 23 80, Size 42 330, Size 85 330, Size 24 80 ]
