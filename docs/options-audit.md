@@ -39,7 +39,7 @@ spot-read of each suspect consumer.
 | Option | Consumer | Verdict | Seam |
 |---|---|---|---|
 | `prefix` | `routeKeys` (Server.hs:1693), `parseKeyName` (3124) | implemented ✅ tested | pure |
-| `base-index` | initial + next-free window index (Server.hs) | implemented ✅ tested | integration |
+| `base-index` | `nextFreeWindowIndex` for new-window + break-pane (Server.hs) | implemented ✅ tested | integration |
 | `pane-base-index` | `cmdListPanes` pane numbering (Server.hs) | implemented ✅ tested | integration |
 | `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
@@ -88,6 +88,11 @@ spot-read of each suspect consumer.
   not in `cmdListPanes`, so `#{pane_index}` (and `list-panes`,
   `display-panes`) numbered panes from 0 regardless. Now `cmdListPanes` numbers
   from `pane-base-index`; pinned by an integration test.
+
+- **`base-index`** was honored by `new-window` but not `break-pane` (tracked as
+  **bug `a4`**): `cmdBreakPane` numbered the broken-out window from a hardcoded 0.
+  Both now share `nextFreeWindowIndex`, numbering from `base-index`; pinned by an
+  integration test.
 
 ## Minor divergences (not defects)
 

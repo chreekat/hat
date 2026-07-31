@@ -56,6 +56,7 @@ module Hat.Server
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     , applyUpdateEnvironment  -- ^ exported for the update-environment effect test
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
+    , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -2813,6 +2814,11 @@ cmdSourceFile st mclient args = case pos of
   where
     (_, flags, pos) = parseArgs "" args
 
+-- | The first index at or above @start@ not already taken by a window, so a
+-- fresh window numbers from @base-index@ exactly like @new-window@ does.
+nextFreeWindowIndex :: Int -> Map.Map Int a -> Int
+nextFreeWindowIndex start ws = until (\i -> not (Map.member i ws)) (+ 1) start
+
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args = do
     let (opts, flags, pos) = parseArgs "nct" args
@@ -2842,7 +2848,7 @@ cmdNewWindow st mclient args = do
                     case TR.decimal t of
                         Right (n, restT) | T.null restT -> Just n
                         _ -> Nothing
-                nextFreeFrom n = until (\i -> not (Map.member i ws)) (+ 1) n
+                nextFreeFrom n = nextFreeWindowIndex n ws
                 ix = case requested of
                     Just n
                         | "-a" `elem` flags -> nextFreeFrom (n + 1)
@@ -3421,10 +3427,11 @@ cmdBreakPane st mclient args = do
         case mactive of
             Just pane | Map.size ps > 1 -> do
                 win2 <- wrapPaneInWindow st pane
+                srvOpts <- readTVarIO st.options
                 atomically $ do
                     removePaneFromTree st pane.id
                     ws <- readTVar sess.windows
-                    let ix = until (\i -> not (Map.member i ws)) (+ 1) 0
+                    let ix = nextFreeWindowIndex srvOpts.baseIndex ws
                     modifyTVar' sess.windows (Map.insert ix win2)
                     unless ("-d" `elem` flags) $ do
                         cur <- readTVar sess.currentIx

@@ -933,6 +933,21 @@ spec = parallel $ do
                   && not ("\x2502" `T.isInfixOf` t)
                   && "0:sh" `T.isInfixOf` t && "1:sh" `T.isInfixOf` t)) c1
 
+    -- Bug a4: break-pane numbered the new window from 0, ignoring base-index.
+    -- With base-index 1 the origin window is 1, so the broken-out pane must
+    -- land at the next free index (2), exactly like new-window would.
+    it "break-pane numbers the new window from base-index" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "set -g base-index 1\n"
+        c1 <- startClientArgs h ["-f", confPath]
+        awaitScreen c1 "1:sh*"
+        typeInto c1 "\x02%"                 -- split -h; new pane active
+        awaitScreen c1 "\x2502"
+        _ <- ctlOut h ["break-pane"]
+        out <- ctlOut h ["list-windows", "-F", "#{window_index}"]
+        List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
+
     -- Bug: a pane's reader captures the window it was spawned in, but
     -- break-pane re-parents the live pane. When its program then exits, the
     -- reader must reap it from its CURRENT window (1), not the split it came
