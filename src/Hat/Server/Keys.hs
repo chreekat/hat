@@ -2,14 +2,22 @@
 -- for @bind-key@'s key names. A 'Key' keeps the raw bytes so unbound
 -- keys pass through to the pane untouched.
 --
--- ESC disambiguation follows @escape-time 0@ semantics: a lone ESC at
--- the end of a chunk is the Escape key, ESC followed by more bytes is
--- a meta or CSI/SS3 sequence.
+-- A lone ESC at the end of a chunk is ambiguous: the Escape key, or the
+-- first byte of a meta/CSI/SS3 sequence whose rest is still in flight.
+-- @escape-time@ resolves it (see 'feedKeys'): 0 calls it Escape at once
+-- ('EscImmediate', what 'tokenizeKeys' bakes in), non-zero holds it for
+-- that many ms ('EscBuffered'), coalescing with the next bytes if they
+-- arrive first, else emitting Escape on timeout.
 module Hat.Server.Keys
     ( Key (..)
     , PrefixState (..)
     , KeyAction (..)
+    , EscTiming (..)
+    , EscPending (..)
+    , EscTokens (..)
     , tokenizeKeys
+    , feedKeys
+    , flushEscape
     , parseKeyName
     , routeKeys
     ) where
@@ -68,48 +76,90 @@ csiNames =
     , ("[1;5C", "C-Right"), ("[1;5D", "C-Left")
     ]
 
+-- | @escape-time@ semantics for a lone trailing ESC. See 'feedKeys'.
+data EscTiming = EscImmediate | EscBuffered
+    deriving (Eq, Show)
+
+-- | A lone trailing ESC held awaiting the escape-time window. See 'feedKeys'.
+data EscPending = NoEscPending | EscPending
+    deriving (Eq, Show)
+
+-- | Result of 'feedKeys': the keys to act on now, plus any trailing lone ESC
+-- held for coalescing with the next chunk.
+data EscTokens = EscTokens
+    { escKeys    :: [Key]
+    , escPending :: EscPending
+    }
+    deriving (Eq, Show)
+
+-- | The escape-time coalescing core, pure over (held ESC, timing, bytes).
+--
+-- Any held ESC is prepended to the new bytes and the whole run is tokenized;
+-- under 'EscBuffered' a fresh /lone trailing/ ESC is held (reported as
+-- 'EscPending') rather than emitted, so the next chunk — or 'flushEscape' on
+-- timeout — decides it. Under 'EscImmediate' this matches 'tokenizeKeys'.
+feedKeys :: EscTiming -> EscPending -> ByteString -> EscTokens
+feedKeys timing pending bs =
+    let full = case pending of
+            EscPending   -> "\ESC" <> bs
+            NoEscPending -> bs
+        (keys, pending') = tokenize timing full
+    in EscTokens { escKeys = keys, escPending = pending' }
+
+-- | The escape-time timer fired with an ESC still held: it is the Escape key.
+flushEscape :: EscPending -> [Key]
+flushEscape EscPending   = [mkKey "Escape" "\ESC"]
+flushEscape NoEscPending = []
+
 tokenizeKeys :: ByteString -> [Key]
-tokenizeKeys = go
+tokenizeKeys = fst . tokenize EscImmediate
+
+tokenize :: EscTiming -> ByteString -> ([Key], EscPending)
+tokenize timing = go
   where
     go bs = case B.uncons bs of
-        Nothing -> []
+        Nothing -> ([], NoEscPending)
         Just (b, rest)
             | b == 0x1b -> escape rest
-            | b == 0x00 -> mkKey "C-Space" (B.singleton b) : go rest
-            | b == 0x09 -> mkKey "Tab" (B.singleton b) : go rest
-            | b == 0x0d -> mkKey "Enter" (B.singleton b) : go rest
-            | b == 0x20 -> mkKey "Space" (B.singleton b) : go rest
-            | b == 0x7f -> mkKey "BSpace" (B.singleton b) : go rest
+            | b == 0x00 -> cons (mkKey "C-Space" (B.singleton b)) (go rest)
+            | b == 0x09 -> cons (mkKey "Tab" (B.singleton b)) (go rest)
+            | b == 0x0d -> cons (mkKey "Enter" (B.singleton b)) (go rest)
+            | b == 0x20 -> cons (mkKey "Space" (B.singleton b)) (go rest)
+            | b == 0x7f -> cons (mkKey "BSpace" (B.singleton b)) (go rest)
             | b < 0x20 ->
-                mkKey (T.pack ['C', '-', ctrlChar b]) (B.singleton b) : go rest
+                cons (mkKey (T.pack ['C', '-', ctrlChar b]) (B.singleton b)) (go rest)
             | b < 0x80 ->
-                mkKey (T.singleton (toEnum (fromIntegral b))) (B.singleton b)
-                    : go rest
+                cons (mkKey (T.singleton (toEnum (fromIntegral b))) (B.singleton b))
+                    (go rest)
             | otherwise -> utf8 bs
     ctrlChar b = toEnum (fromIntegral b + fromEnum 'a' - 1)
+    cons k (ks, p) = (k : ks, p)
 
     escape rest = case B.uncons rest of
-        -- escape-time 0: chunk ends right after ESC -> the Escape key
-        Nothing -> [mkKey "Escape" "\ESC"]
+        -- Chunk ends right after ESC: Escape now (escape-time 0), or held for
+        -- the next chunk / a timeout flush (escape-time > 0).
+        Nothing -> case timing of
+            EscImmediate -> ([mkKey "Escape" "\ESC"], NoEscPending)
+            EscBuffered  -> ([], EscPending)
         Just (b2, rest2)
             | b2 == 0x1b ->
                 -- ESC ESC ...: meta variant of whatever follows
                 case escape rest2 of
-                    (k : ks) | k.name /= "Escape" ->
-                        mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks
-                    ks -> mkKey "Escape" "\ESC" : ks
+                    (k : ks, p) | k.name /= "Escape" ->
+                        (mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks, p)
+                    (ks, p) -> (mkKey "Escape" "\ESC" : ks, p)
             | b2 == 0x5b || b2 == 0x4f ->  -- '[' or 'O'
                 case matchCsi rest of
                     Just (nm, len) ->
-                        mkKey nm ("\ESC" <> B.take len rest) : go (B.drop len rest)
+                        cons (mkKey nm ("\ESC" <> B.take len rest)) (go (B.drop len rest))
                     Nothing ->
                         -- Unknown sequence: swallow it whole so garbage
                         -- doesn't leak keys; forward raw.
                         let (seqBytes, rest') = spanCsi rest
-                        in mkKey "Unknown" ("\ESC" <> seqBytes) : go rest'
+                        in cons (mkKey "Unknown" ("\ESC" <> seqBytes)) (go rest')
             | otherwise -> case go (B.cons b2 rest2) of
-                (k : ks) -> mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks
-                [] -> [mkKey "Escape" "\ESC"]
+                (k : ks, p) -> (mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks, p)
+                ([], p) -> ([mkKey "Escape" "\ESC"], p)
 
     matchCsi rest =
         let candidates =
@@ -135,7 +185,7 @@ tokenizeKeys = go
         let len = utf8Len (B.head bs)
             (ch, rest) = B.splitAt len bs
             txt = TE.decodeUtf8Lenient ch
-        in mkKey txt ch : go rest
+        in cons (mkKey txt ch) (go rest)
     utf8Len b
         | b >= 0xf0 = 4
         | b >= 0xe0 = 3

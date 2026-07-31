@@ -52,6 +52,43 @@ spec = do
         it "reads utf-8 sequences as single keys" $
             map (.name) (tokenizeKeys "\xc3\xa9") `shouldBe` ["é"]
 
+    -- escape-time coalescing core: with escape-time 0 (EscImmediate) a lone
+    -- trailing ESC is Escape at once; with escape-time > 0 (EscBuffered) it is
+    -- held, then either coalesced with the next bytes or flushed on timeout.
+    describe "feedKeys / flushEscape (escape-time)" $ do
+        it "EscImmediate: a lone trailing ESC is Escape now, nothing held" $
+            feedKeys EscImmediate NoEscPending "a\ESC"
+                `shouldBe` EscTokens
+                    { escKeys = tokenizeKeys "a\ESC", escPending = NoEscPending }
+
+        it "EscBuffered: a lone trailing ESC is held, not emitted" $
+            feedKeys EscBuffered NoEscPending "a\ESC"
+                `shouldBe` EscTokens
+                    { escKeys = [Key { name = "a", raw = "a" }]
+                    , escPending = EscPending }
+
+        it "EscBuffered: a held ESC coalesces with a following [A into Up" $ do
+            let held = feedKeys EscBuffered NoEscPending "\ESC"
+            held.escPending `shouldBe` EscPending
+            map (.name) (feedKeys EscBuffered held.escPending "[A").escKeys
+                `shouldBe` ["Up"]
+
+        it "EscBuffered: a held ESC coalesces with a following x into M-x" $ do
+            let held = feedKeys EscBuffered NoEscPending "\ESC"
+            map (.name) (feedKeys EscBuffered held.escPending "x").escKeys
+                `shouldBe` ["M-x"]
+
+        it "EscBuffered: bytes with no trailing ESC hold nothing" $
+            feedKeys EscBuffered NoEscPending "ab"
+                `shouldBe` EscTokens
+                    { escKeys = tokenizeKeys "ab", escPending = NoEscPending }
+
+        it "flushEscape emits the held ESC as Escape on timeout" $
+            map (.name) (flushEscape EscPending) `shouldBe` ["Escape"]
+
+        it "flushEscape emits nothing when no ESC is held" $
+            flushEscape NoEscPending `shouldBe` []
+
     describe "routeKeys" $ do
         let km = Map.fromList
                 [ ("prefix", Map.fromList
