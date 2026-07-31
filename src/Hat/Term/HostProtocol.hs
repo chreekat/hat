@@ -49,6 +49,7 @@ module Hat.Term.HostProtocol
     , CsSignal (..)
     , nextQuery
     , honoredSignals
+    , partitionPassthrough
     ) where
 
 import Control.Applicative ((<|>))
@@ -181,9 +182,22 @@ scrubStitle st0 chunk = case st0 of
 -- until its slow poll fallback. Unrecognised payload bytes yield nothing, as
 -- tmux's @allow-passthrough off@ discards them.
 honoredSignals :: ByteString -> [QuerySignal]
-honoredSignals bs = case nextQuery bs of
-    Just (_, sig, more) -> sig : honoredSignals more
-    Nothing             -> []
+honoredSignals = fst . partitionPassthrough
+
+-- | Split a DCS tmux passthrough payload into the queries hat answers and the
+-- bytes left over — the sequences it does not recognise (OSC 52 clipboard,
+-- OSC 12 cursor color, OSC 4 palette, …). @allow-passthrough off@ would drop
+-- the leftover silently; hat surfaces it instead so the reader can log it
+-- (see 'Hat.Term.Emulator.feed' / 'Hat.Server''s @UnhandledPassthrough@) and
+-- we stop discarding payloads without a trace.
+partitionPassthrough :: ByteString -> ([QuerySignal], ByteString)
+partitionPassthrough = go
+  where
+    go bs = case nextQuery bs of
+        Just (before, sig, more) ->
+            let (sigs, rest) = go more
+            in (sig : sigs, before <> rest)
+        Nothing -> ([], bs)
 
 -- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
 -- emulator's replies. Most terminals — ghostty included — ignore
