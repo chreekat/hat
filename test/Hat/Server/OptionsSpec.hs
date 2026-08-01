@@ -18,7 +18,7 @@ import Hat.Model.Options
     ( Options (..), defaultOptions
     , OptionName (..), OptionValue (..), ScopeClass (..)
     , emptyDelta, singletonDelta, mergeDeltas, resolveOptions
-    , optionScopeClass, validateScope
+    , optionScopeClass, validateScope, resolveOptionName
     )
 import Hat.Server
     ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
@@ -51,7 +51,7 @@ spec = do
     describe "setOption" $ do
         it "rejects an unknown option instead of silently storing it" $
             setOption Assign defaultOptions "no-such-option" "x"
-                `shouldBe` Left "unimplemented option: no-such-option"
+                `shouldBe` Left "invalid option: no-such-option"
 
         it "stores @-options in the user map" $
             fmap (Map.lookup "@foo" . (.user))
@@ -64,6 +64,29 @@ spec = do
                 opts0 = set Assign defaultOptions "status-right" "a"
                 opts1 = set Append opts0 "status-right" "b" :: Options
             (opts1.statusRight :: Text) `shouldBe` "ab"
+
+    describe "resolveOptionName" $ do
+        it "resolves an exact name" $
+            resolveOptionName "status-left" `shouldBe` Right OptStatusLeft
+
+        it "resolves a unique prefix" $
+            resolveOptionName "hist" `shouldBe` Right OptHistoryLimit
+
+        it "prefers an exact name over a longer collision" $
+            -- "status-left" is itself a prefix of "status-left-length"
+            resolveOptionName "status-left-l"
+                `shouldBe` Right OptStatusLeftLength
+
+        it "rejects an ambiguous prefix in tmux's words" $
+            resolveOptionName "status-l"
+                `shouldBe` Left "ambiguous option: status-l"
+
+        it "rejects an unknown name in tmux's words" $
+            resolveOptionName "no-such-option"
+                `shouldBe` Left "invalid option: no-such-option"
+
+        it "passes @-options through untouched" $
+            resolveOptionName "@foo" `shouldBe` Right (OptUser "@foo")
 
     describe "option-scope overlays" $ do
         it "resolves an empty chain to the defaults" $

@@ -24,11 +24,14 @@ module Hat.Model.Options
     , resolveOptions
     , optionScopeClass
     , validateScope
+    , optionNameText
+    , resolveOptionName
     ) where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 
 import qualified Hat.Term.Cell as Cell
 
@@ -313,6 +316,37 @@ scopeError requested name =
         ServerOption -> "server"
         SessionOption -> "session"
         WindowOption -> "window"
+
+-- | Every non-user option, for name resolution and listing. Keep in sync
+-- with 'OptionName' (a new constructor must be appended here).
+allOptionNames :: [OptionName]
+allOptionNames =
+    [ OptPrefix, OptBaseIndex, OptPaneBaseIndex, OptStatusPosition
+    , OptModeKeys, OptHistoryLimit, OptDefaultTerminal, OptWordSeparators
+    , OptStatusLeft, OptStatusLeftLength, OptStatusRight
+    , OptStatusRightLength, OptWindowStatusFormat
+    , OptWindowStatusCurrentFormat, OptStatusStyle, OptWindowStatusStyle
+    , OptWindowStatusCurrentStyle, OptWindowStatusBellStyle
+    , OptPaneBorderStyle, OptPaneActiveBorderStyle, OptModeStyle
+    , OptPaneBorderLines, OptPaneBorderIndicators, OptSetTitles
+    , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
+    , OptMonitorActivity, OptAutomaticRename, OptAutomaticRenameFormat
+    , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
+    ]
+
+-- | Resolve a user-typed option name as tmux does: @\@foo@ passes through,
+-- an exact name wins outright, and otherwise a unique prefix resolves —
+-- anything else is invalid or ambiguous, in tmux's words.
+resolveOptionName :: Text -> Either Text OptionName
+resolveOptionName t
+    | "@" `T.isPrefixOf` t = Right (OptUser t)
+    | Just n <- lookup t table = Right n
+    | otherwise = case filter ((t `T.isPrefixOf`) . fst) table of
+        [(_, n)] -> Right n
+        []       -> Left ("invalid option: " <> t)
+        _        -> Left ("ambiguous option: " <> t)
+  where
+    table = [(optionNameText n, n) | n <- allOptionNames]
 
 optionNameText :: OptionName -> Text
 optionNameText = \case

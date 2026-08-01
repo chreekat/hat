@@ -2839,17 +2839,20 @@ cmdSet def st mclient args = do
         mode = if "-a" `elem` flags then Append else Assign
         mtarget = lookup "-t" opts
     case pos of
-        (nameT : rest) -> do
-            curOpts <- currentResolved st mclient mtarget
-            case setOptionEntry mode curOpts nameT (T.unwords rest) of
-                Left err -> pure [RErr err]
-                Right (n, v) -> case chooseScope def flags n of
+        (nameT : rest) -> case resolveOptionName nameT of
+            Left err -> pure [RErr err]
+            Right canonical -> do
+                curOpts <- currentResolved st mclient mtarget
+                case setOptionEntry mode curOpts (optionNameText canonical)
+                        (T.unwords rest) of
                     Left err -> pure [RErr err]
-                    Right scope -> do
-                        etv <- scopeTargetVar st mclient mtarget scope
-                        case etv of
-                            Left err -> pure [RErr err]
-                            Right deltaVar -> writeScoped st deltaVar n v
+                    Right (n, v) -> case chooseScope def flags n of
+                        Left err -> pure [RErr err]
+                        Right scope -> do
+                            etv <- scopeTargetVar st mclient mtarget scope
+                            case etv of
+                                Left err -> pure [RErr err]
+                                Right deltaVar -> writeScoped st deltaVar n v
         [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
 
 -- | Insert a resolved entry into its scope's overlay, refresh the cached
@@ -3147,7 +3150,7 @@ setOptionEntry mode opts name value = case name of
     "main-pane-height" -> withInt OptMainPaneHeight
     _
         | "@" `T.isPrefixOf` name -> Right (OptUser name, OVText value)
-        | otherwise -> Left ("unimplemented option: " <> name)
+        | otherwise -> Left ("invalid option: " <> name)
   where
     withInt n = case TR.decimal value of
         Right (m, restT) | T.null restT -> Right (n, OVInt m)
