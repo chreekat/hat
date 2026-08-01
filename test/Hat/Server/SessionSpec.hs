@@ -8,7 +8,8 @@ import System.Timeout (timeout)
 import qualified Data.Map.Strict as Map
 import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
-    , socketPair )
+    , socketPair, touchSocket )
+import System.Mem (performGC)
 import Test.Hspec
 
 import qualified Data.Set as Set
@@ -201,9 +202,15 @@ spec = do
             (st, _) <- seedSession "/"
             (client, peer) <- wiredClient st Control
             [] <- cmdRestartClient st (Just client) []
-            -- Nothing is queued, so a bounded read finds no frame.
+            -- Nothing is queued, so a bounded read finds no frame. The GC
+            -- must not close the server-side socket mid-read (its finalizer
+            -- would turn "no message" into EOF): force a collection to make
+            -- that hazard deterministic, and hold the socket open past the
+            -- read with touchSocket.
+            performGC
             got <- timeout 100_000
                 (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))
+            touchSocket client.sock
             got `shouldBe` Nothing
 
     describe "aggressive-resize sizing" $ do
