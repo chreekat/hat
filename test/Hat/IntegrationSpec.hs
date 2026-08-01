@@ -4,7 +4,7 @@ module Hat.IntegrationSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, SomeException, catch, evaluate, finally, throwIO, try)
-import Control.Monad (forM, unless, when)
+import Control.Monad (forM, unless, void, when)
 import qualified Data.List as List
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -95,8 +95,16 @@ withHatOn hatBin persistOn sockRel action = do
 -- Kill the server (harmless if already gone) and remove the temp dir.
 teardown :: Hat -> IO ()
 teardown h = do
-    _ <- hatCtl h ["kill-server"]
+    r <- timeout 5_000_000 $ hatCtl h ["kill-server"]
         `catch` \(_ :: SomeException) -> pure (ExitFailure 1, "", "")
+    -- A wedged server can hold kill-server forever: reap it by its unique
+    -- socket path instead, so a red run neither hangs the suite nor leaks
+    -- a server. The path lives under this test's private tmpdir, so the
+    -- match can never touch an unrelated hat.
+    case r of
+        Nothing -> void $ P.readProcessWithExitCode
+            "pkill" ["-f", "--", "--server " <> h.sock] ""
+        Just _ -> pure ()
     _ <- pollServerGone h.sock 50
     removeDirectoryRecursive h.home
         `catch` \(_ :: SomeException) -> pure ()
