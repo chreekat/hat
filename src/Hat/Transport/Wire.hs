@@ -135,6 +135,8 @@ data Hello = Hello
     , size         :: Size
     , cwd          :: Text
     , intent       :: Intent
+    , autostarted  :: Bool  -- ^ appended 2026-08; absent in a six-field
+                            --   hello -> 'False'. See 'Hat.Server.startupGate'.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -269,13 +271,14 @@ nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 -- length >= 6 and ignores extras, so fields can be appended compatibly.
 encodeHello :: Hello -> Encoding
 encodeHello h =
-       encodeListLen 6
+       encodeListLen 7
     <> encodeWord16 h.protoVersion
     <> encode h.term
     <> encode h.env
     <> encode h.size
     <> encode h.cwd
     <> encode h.intent
+    <> encode h.autostarted
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -290,7 +293,10 @@ decodeHello = do
                 <*> decode
                 <*> decode
                 <*> decode
-            replicateM_ (n - 6) skipField
+                -- Fields appended since the six-field original default when
+                -- absent; any the decoder doesn't know yet are skipped.
+                <*> (if n >= 7 then decode else pure False)
+            replicateM_ (max 0 (n - 7)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).

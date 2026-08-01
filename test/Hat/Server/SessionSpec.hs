@@ -173,7 +173,8 @@ spec = do
             let h = Hello
                     { protoVersion = protocolVersion + 1
                     , term = "xterm", env = [], size = Size 24 80
-                    , cwd = "/", intent = ControlIntent }
+                    , cwd = "/", intent = ControlIntent
+                    , autostarted = False }
             withAsync (welcome st server h) $ \_ -> do
                 Just (Known (Welcome _)) <- recvMessage client
                 Just (Known (ServerVersion v)) <- recvMessage client

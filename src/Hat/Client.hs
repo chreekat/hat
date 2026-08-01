@@ -52,6 +52,7 @@ hello v intent = do
         , size = sz
         , cwd = T.pack dir
         , intent = intent
+        , autostarted = False
         }
 
 -- One-time migration shim — DELETE once no strict-equality (pre-negotiation)

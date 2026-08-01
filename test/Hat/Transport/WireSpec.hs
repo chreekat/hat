@@ -9,6 +9,8 @@ import Data.Either (isLeft)
 import Data.Bits (shiftR)
 import qualified Data.Bits as Bits
 import qualified Data.ByteString as B
+import qualified Data.List as List
+import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word8)
 import qualified Data.Text as T
 import Network.Socket
@@ -88,6 +90,7 @@ genHello = Hello
     <*> arbitrary
     <*> genText
     <*> genIntent
+    <*> arbitrary
 
 instance Arbitrary ClientToServer where
     arbitrary = oneof
@@ -101,6 +104,7 @@ instance Arbitrary ClientToServer where
         ClientHello h ->
             [ ClientHello h { term = T.pack t' } | t' <- shrink (T.unpack h.term) ]
             ++ [ ClientHello h { cwd = T.pack c' } | c' <- shrink (T.unpack h.cwd) ]
+            ++ [ ClientHello h { autostarted = False } | h.autostarted ]
         Input bs -> Input . B.pack <$> shrink (B.unpack bs)
         Resize sz -> Resize <$> shrink sz
         Command cmds -> Command . unstrs <$> shrink (strs cmds)
@@ -148,6 +152,14 @@ hex = concatMap byte . B.unpack
     byte w = [digit (w `shiftR` 4), digit (w Bits..&. 0xf)]
     digit n = "0123456789abcdef" !! fromIntegral n
 
+-- | Inverse of 'hex', for feeding pinned golden bytes back to a decoder.
+hexBytes :: String -> [Word8]
+hexBytes (h : l : rest) = fromIntegral (digit h * 16 + digit l) : hexBytes rest
+  where
+    digit c = fromMaybe (error ("hexBytes: bad digit " <> [c]))
+        (List.elemIndex c "0123456789abcdef")
+hexBytes _ = []
+
 -- | Prefix a raw CBOR payload with the 4-byte big-endian length header,
 -- exactly as 'sendMessage' frames a message.
 frameOf :: B.ByteString -> B.ByteString
@@ -171,8 +183,8 @@ spec = do
     describe "golden bytes (client -> server)" $ do
         it "ClientHello" $
             hex (encodeMessage (ClientHello
-                (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent)))
-                `shouldBe` "8200860465787465726d9f8261416142ff830018181850642f746d708101"
+                (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False)))
+                `shouldBe` "8200870465787465726d9f8261416142ff830018181850642f746d708101f4"
         it "Input" $
             hex (encodeMessage (Input "hi")) `shouldBe` "8201426869"
         it "Resize" $
@@ -222,6 +234,23 @@ spec = do
         it "keeps the legacy fields when the pre-faint list is short" $
             decodeStyle [0x89,0,0x81,0,0x81,0,0xf5,0xf4,0xf4,0xf4,0xf4,0xf4]
                 `shouldBe` Just defaultStyle { bold = True }
+        -- The hello's own append rule: a six-field (pre-autostart) hello —
+        -- these are the previous golden's bytes, verbatim — defaults the
+        -- flag off, and a seventh field carries it.
+        it "reads a legacy six-field hello with autostarted defaulted off" $
+            (decodeMessage (B.pack (hexBytes
+                "8200860465787465726d9f8261416142ff830018181850642f746d708101"))
+                :: Inbound ClientToServer)
+                `shouldBe` Known (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
+                        ControlIntent False))
+        it "reads the autostarted flag from a seven-field hello" $
+            (decodeMessage (B.pack (hexBytes
+                "8200870465787465726d9f8261416142ff830018181850642f746d708101f5"))
+                :: Inbound ClientToServer)
+                `shouldBe` Known (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
+                        ControlIntent True))
 
     describe "negotiate" $ do
         it "meets an older client at its version" $
