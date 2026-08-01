@@ -19,8 +19,9 @@ module Hat.Server
     , chooseScope  -- ^ exported for the scope-routing test
     , SetScope (..)
     , SetDefault (..)
-    , finallyClearRestoring  -- ^ exported for the restore-gate test
-    , awaitRestoreForCommand  -- ^ exported for the command restore-gate test
+    , finallyReady  -- ^ exported for the startup-gate test
+    , startupGate, StartupGate (..)  -- ^ exported for the startup-gate test
+    , phaseAfterConfig  -- ^ exported for the startup-gate test
     , welcome  -- ^ exported for the handshake test
     , readConfigUtf8  -- ^ exported for the config-encoding test
     , cmdAttachSession  -- ^ exported for the session re-anchor test
@@ -205,29 +206,25 @@ runServerWith path mconfig mhandover = do
         logEvent lg ServerStarted { socket = path }
         -- Load the config in a background thread so shell conditions
         -- like `if '$TMUX run ...' ...` can reach the accept loop while
-        -- the config is still running. configLoading suppresses the
-        -- empty-idle exit until the config has drained.
-        atomically $ do
-            writeTVar st.configLoading True
-            -- Armed before the accept loop can serve, so a client that
-            -- autostarts us and attaches waits for the restore to finish
-            -- (see 'ensureSession') and joins the restored tree. A reload
-            -- rebuilds the tree too, so the same gate applies.
-            when (persistOn || isJust mreload) (writeTVar st.restoring True)
-        _ <- forkIO $ do
-            finallyClearRestoring st $
-                (loadConfig st mconfig >> case mreload of
+        -- the config is still running; 'startupGate' says who is served in
+        -- each phase, and the idle-exit waits for Ready.
+        -- Armed before the accept loop can serve anyone.
+        atomically $ writeTVar st.startupPhase LoadingConfig
+        _ <- forkIO $ finallyReady st $
+            (do loadConfig st mconfig
+                atomically $ writeTVar st.startupPhase
+                    (phaseAfterConfig (persistOn || isJust mreload))
+                case mreload of
                     -- Reload: re-adopt the still-running tree the outgoing
                     -- image handed over, rather than respawning from disk.
                     Just (_, rs) -> rebuildReload st rs
                     Nothing -> forM_ mstore (restoreSaved st))
-                    `catch` \(e :: SomeException) ->
-                        logEvent lg ServerCrash
-                            { err = "startup restore failed: " <> T.pack (show e) }
+                `catch` \(e :: SomeException) ->
+                    logEvent lg ServerCrash
+                        { err = "startup restore failed: " <> T.pack (show e) }
             -- No fixed grace: the idle-exit now waits on 'served' (a real
             -- connection), so the autostarting client is always counted
             -- before we can drain, whatever the config-load timing.
-            atomically (writeTVar st.configLoading False)
         titlesRef <- newIORef Map.empty
         -- Background daemons run under 'withDaemons': each is bracketed by
         -- 'withAsync' (all torn down when the serve loop returns — no leaked
@@ -288,13 +285,51 @@ withDaemons ds body = foldr spawn body ds
   where
     spawn d k = withAsync d $ \a -> link a >> k
 
--- | Run a startup action (config load + restore), then clear the
--- @restoring@ gate — always, even if it throws. A gate left set parks
--- every attach forever on 'ensureSession'\'s retry, so the clear must be
+-- | Run the startup action (config load + restore), then land the phase at
+-- 'Ready' — always, even if it throws. A phase stuck short of Ready parks
+-- every attach forever on 'ensureSession'\'s retry, so the landing must be
 -- structural (a @finally@), never a line a crash can skip.
-finallyClearRestoring :: ServerState -> IO a -> IO a
-finallyClearRestoring st act =
-    act `finally` atomically (writeTVar st.restoring False)
+finallyReady :: ServerState -> IO a -> IO a
+finallyReady st act =
+    act `finally` atomically (writeTVar st.startupPhase Ready)
+
+-- | The phase after the config has drained: straight to 'Ready' unless a
+-- persisted tree or reload handover still has to be rebuilt.
+phaseAfterConfig :: Bool -> StartupPhase
+phaseAfterConfig hasRestoreWork = if hasRestoreWork then Restoring else Ready
+
+-- | What 'startupGate' decides for a command batch.
+data StartupGate = Proceed | Hold
+    deriving (Eq, Show)
+
+-- | Whether a client's command batch may run in the given startup phase.
+-- During 'LoadingConfig' only the client that spawned the server is held —
+-- it raced the config for the right to create the first session (upstream
+-- if-shell-TERM.sh), while a client the config itself spawned (a nested
+-- @hat run@ in an @if-shell@ condition) must be served or config load
+-- deadlocks on its own child. 'Restoring' holds everyone: a command must
+-- see the whole restored tree, not one mid-rebuild. A @restart-server@
+-- batch always proceeds — 'cmdRestartServer' must REJECT an in-flight
+-- reload, and holding it here would turn that reject into a silent wait.
+startupGate :: StartupPhase -> Autostart -> [[Text]] -> StartupGate
+startupGate phase origin cmds
+    | any isReload cmds = Proceed
+    | otherwise = case (phase, origin) of
+        (Ready, _) -> Proceed
+        (Restoring, _) -> Hold
+        (LoadingConfig, Autostarted) -> Hold
+        (LoadingConfig, Joined) -> Proceed
+  where
+    isReload (name : _) = name == "restart-server"
+    isReload []         = False
+
+-- | Park a command batch until 'startupGate' lets it through.
+awaitStartup :: ServerState -> Autostart -> [[Text]] -> IO ()
+awaitStartup st origin cmds = atomically $ do
+    phase <- readTVar st.startupPhase
+    case startupGate phase origin cmds of
+        Proceed -> pure ()
+        Hold -> retry
 
 -- | The outcome of racing for the server's lock file.
 data LockResult
@@ -314,22 +349,22 @@ acquireLock lockPath = do
 data IdleInputs = IdleInputs
     { idleAttached :: Bool
     , idleServed   :: Bool
-    , idleLoading  :: Bool
+    , idlePhase    :: StartupPhase
     , idleSessions :: Int
     , idleClients  :: Int
     , idlePanes    :: Int
     }
 
--- | Whether the server may exit: it has served at least one client, is done
--- loading config, and has no sessions, clients, or live panes left. The
--- live-pane term is what keeps a drained server alive until every child it
--- spawned has been reaped — since 'cmdKillPane' detaches a pane from the
--- model before its child is reaped, an empty session map no longer implies
--- the children are gone, and exiting first would orphan a SIGHUP-ignoring
--- child mid-'reapPane'. See 'waitIdle'.
+-- | Whether the server may exit: it has served at least one client, startup
+-- has fully landed at 'Ready', and no sessions, clients, or live panes are
+-- left. The live-pane term is what keeps a drained server alive until every
+-- child it spawned has been reaped — since 'cmdKillPane' detaches a pane
+-- from the model before its child is reaped, an empty session map no longer
+-- implies the children are gone, and exiting first would orphan a
+-- SIGHUP-ignoring child mid-'reapPane'. See 'waitIdle'.
 serverIdle :: IdleInputs -> Bool
 serverIdle i =
-    i.idleAttached && i.idleServed && not i.idleLoading
+    i.idleAttached && i.idleServed && i.idlePhase == Ready
         && i.idleSessions == 0 && i.idleClients == 0 && i.idlePanes == 0
 
 -- Exit once every session is gone, every attached client has drained and
@@ -340,7 +375,7 @@ waitIdle st = atomically $ do
     inputs <- IdleInputs
         <$> readTVar st.everAttached
         <*> readTVar st.served
-        <*> readTVar st.configLoading
+        <*> readTVar st.startupPhase
         <*> (Map.size <$> readTVar st.sessions)
         <*> (Map.size <$> readTVar st.clients)
         <*> readTVar st.livePanes
@@ -412,6 +447,9 @@ persistLoop st path = go Nothing
   where
     go prev = do
         threadDelay 2_000_000
+        -- Never mirror a tree still being restored or rebuilt: a snapshot of
+        -- a half-adopted tree would overwrite the good saved one.
+        atomically (readTVar st.startupPhase >>= check . (== Ready))
         snap <- captureSnapshot st
         pinned <- readTVarIO st.preserveStore
         let pin = if pinned then Pinned else Unpinned
@@ -537,7 +575,7 @@ captureWindow ws = do
 -- monitor first (see 'withRegisteredMonitor', 'reapMonitor').
 watchColorScheme :: ServerState -> IO ()
 watchColorScheme st = do
-    atomically (readTVar st.configLoading >>= check . not)
+    atomically (readTVar st.startupPhase >>= check . (/= LoadingConfig))
     loop minBackoff
   where
     loop backoff = do
@@ -1420,9 +1458,9 @@ applyUpdateEnvironment vars clientEnv = \env0 -> List.foldl' step env0 vars
 
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do
-    -- Let any restore finish first, so we attach to the restored tree
+    -- Let startup land first, so we attach to the configured, restored tree
     -- rather than racing it and creating a redundant fresh session.
-    atomically $ readTVar st.restoring >>= \r -> when r retry
+    atomically $ readTVar st.startupPhase >>= \p -> when (p /= Ready) retry
     (existing, laId) <- atomically $
         (,) <$> readTVar st.sessions <*> readTVar st.lastActiveSession
     case pickAttachSession laId existing of
@@ -4589,13 +4627,13 @@ cmdKillServer st mclient _ = do
 -- rather than a half-dropped server.
 cmdRestartServer :: CommandImpl
 cmdRestartServer st mclient args = do
-    -- Fail loud rather than reload on top of an in-flight reload/restore:
-    -- capturing a half-rebuilt tree and re-exec'ing through it is how a
-    -- second restart-server strands the live programs. The restore clears
-    -- this gate the moment the tree is whole again.
-    restoring <- readTVarIO st.restoring
-    if restoring
-        then pure [RErr "restart-server: a reload is already in progress; try again shortly"]
+    -- Fail loud rather than reload on top of an in-flight startup or
+    -- reload: capturing a half-rebuilt tree and re-exec'ing through it is
+    -- how a second restart-server strands the live programs. Startup lands
+    -- at Ready the moment the tree is whole again.
+    phase <- readTVarIO st.startupPhase
+    if phase /= Ready
+        then pure [RErr "restart-server: startup or reload still in progress; try again shortly"]
         else cmdRestartServer' st mclient args
 
 cmdRestartServer' :: CommandImpl
@@ -4763,25 +4801,12 @@ cmdIfShell st mclient args = do
 
 -- Control clients ------------------------------------------------------------
 
--- | Block a control command until any in-flight restore finishes, so it reads
--- a whole tree rather than one still being rebuilt — the same gate 'ensureSession'
--- parks an attach on. A 'restart-server' batch is exempt: it must REJECT an
--- in-flight reload (see 'cmdRestartServer'), not wait for it, so gating it here
--- would turn the reject into a silent wait-then-reload.
-awaitRestoreForCommand :: ServerState -> [[Text]] -> IO ()
-awaitRestoreForCommand st cmds =
-    unless (any isReload cmds) $
-        atomically $ readTVar st.restoring >>= \r -> when r retry
-  where
-    isReload (name : _) = name == "restart-server"
-    isReload []         = False
-
 controlLoop :: ServerState -> Client -> IO ()
 controlLoop st client = do
     m <- recvMessage client.sock
     case m of
         Just (Known (Command cmds)) -> do
-            awaitRestoreForCommand st cmds
+            awaitStartup st Joined cmds
             replies <- runCommands st (Just client) cmds
             forM_ replies $ \case
                 ROutput out -> send client (Message out)

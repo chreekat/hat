@@ -1927,7 +1927,7 @@ spec = parallel $ do
         -- install (a different, reload-unaware binary).
         _ <- hatCtl h ["restart-server", h.bin]
         _ <- awaitExit c
-        -- Reattach: the rebuilt session waits out the reload's restoring gate.
+        -- Reattach: the rebuilt session waits out the reload's Restoring phase.
         c2 <- startClient h
         pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
         -- Same process — the shell never died across the binary swap.

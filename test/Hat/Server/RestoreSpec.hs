@@ -12,15 +12,17 @@ import Test.Hspec
 
 import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
-import Hat.Model (ServerState (..), newServerState)
+import Hat.Model (ServerState (..), StartupPhase (..), newServerState)
+import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
 import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
-     Reply (..), ScrollbackCarry (..), SpawnOrigin (..), StorePin (..),
+     Reply (..), ScrollbackCarry (..), SpawnOrigin (..),
+     StartupGate (..), StorePin (..),
      captureReloadScreen, captureSize, cmdRestartServer,
-     defaultRestoreCommands, finallyClearRestoring, persistDecision,
-     reloadSchemePush, replayPane, restoreRun, restoreShellExec)
+     defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
+     reloadSchemePush, replayPane, restoreRun, restoreShellExec, startupGate)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
@@ -44,7 +46,7 @@ emptySnapshot = Snapshot { sessions = [], lastActiveSession = Nothing }
 errStrings :: [Reply] -> [Text]
 errStrings replies = [e | RErr e <- replies]
 
--- A bare server-state shell, enough to exercise the restoring gate.
+-- A bare server-state shell, enough to exercise the startup gates.
 testState :: IO ServerState
 testState = do
     lg <- newLogger "/dev/null"
@@ -52,16 +54,43 @@ testState = do
 
 spec :: Spec
 spec = do
-    describe "finallyClearRestoring" $
-        -- A crashed config load or restore must never leave the gate set:
+    describe "finallyReady" $
+        -- A crashed config load or restore must never strand the phase:
         -- every attach parks on it forever in ensureSession (the deadlock
         -- an interrupted server used to cause on the next start).
-        it "clears the restoring gate even when the startup action throws" $ do
+        it "lands the phase at Ready even when the startup action throws" $ do
             st <- testState
-            atomically (writeTVar st.restoring True)
-            finallyClearRestoring st (throwIO (ErrorCall "restore blew up"))
+            atomically (writeTVar st.startupPhase Restoring)
+            finallyReady st (throwIO (ErrorCall "restore blew up"))
                 `shouldThrow` anyErrorCall
-            readTVarIO st.restoring `shouldReturn` False
+            readTVarIO st.startupPhase `shouldReturn` Ready
+
+    -- The startup ordering contract (tmux's, minus the C machinery): config
+    -- commands run on their own thread; the client that spawned the server
+    -- waits for startup to land; everyone else — in particular a nested
+    -- `hat run` spawned BY an if-shell condition in the config — is served
+    -- immediately, or config load deadlocks on its own child.
+    describe "startupGate" $ do
+        let cmds = [["new-window"]]
+        it "serves everyone once startup is Ready" $ do
+            startupGate Ready Autostarted cmds `shouldBe` Proceed
+            startupGate Ready Joined cmds `shouldBe` Proceed
+        it "holds everyone while a restore is rebuilding the tree" $ do
+            startupGate Restoring Autostarted cmds `shouldBe` Hold
+            startupGate Restoring Joined cmds `shouldBe` Hold
+        it "holds only the autostarting client during config load" $ do
+            startupGate LoadingConfig Autostarted cmds `shouldBe` Hold
+            startupGate LoadingConfig Joined cmds `shouldBe` Proceed
+        it "never holds a restart-server batch (the guard must reject, not wait)" $ do
+            let reload = [["restart-server", "/some/hat"]]
+            startupGate Restoring Autostarted reload `shouldBe` Proceed
+            startupGate LoadingConfig Autostarted reload `shouldBe` Proceed
+
+    describe "phaseAfterConfig" $ do
+        it "moves to Restoring when a tree remains to rebuild" $
+            phaseAfterConfig True `shouldBe` Restoring
+        it "lands straight at Ready when there is nothing to restore" $
+            phaseAfterConfig False `shouldBe` Ready
 
     -- The restart-server live-screen preservation seam: capturing a pane's
     -- emulator and replaying it into a fresh one (as adoptPane does) must
@@ -149,13 +178,19 @@ spec = do
             reloadSchemePush (ReloadModes True False 0) Nothing
                 `shouldBe` Nothing
 
-    -- Fail loud rather than reload on top of an in-flight restore: a second
+    -- Fail loud rather than reload on top of an in-flight startup: a second
     -- restart-server issued mid-restore would capture a half-rebuilt tree.
-    -- Both cases pass a nonexistent target so neither ever re-execs.
+    -- All cases pass a nonexistent target so none ever re-execs.
     describe "restart-server reload-in-progress guard" $ do
         it "refuses to reload while a restore is in progress" $ do
             st <- testState
-            atomically (writeTVar st.restoring True)
+            atomically (writeTVar st.startupPhase Restoring)
+            errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat"]
+            errs `shouldSatisfy` any (T.isInfixOf "in progress")
+
+        it "refuses to reload while the config is still loading" $ do
+            st <- testState
+            atomically (writeTVar st.startupPhase LoadingConfig)
             errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat"]
             errs `shouldSatisfy` any (T.isInfixOf "in progress")
 

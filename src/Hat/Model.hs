@@ -12,6 +12,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
+    , StartupPhase (..)
     , CopyModeState (..)
     , FrozenGrid (..)
     , PaneMode (..)
@@ -102,9 +103,7 @@ data ServerState = ServerState
                                 --   See 'waitIdle'.
     , served      :: TVar Bool  -- ^ a client connection has been accepted.
                                 --   See 'waitIdle'.
-    , configLoading :: TVar Bool  -- ^ config sourcing is in progress. See 'waitIdle'.
-    , restoring   :: TVar Bool  -- ^ a persisted tree is being restored. See
-                                --   'ensureSession'.
+    , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
     , preserveStore :: TVar Bool
         -- ^ the store holds an explicitly saved final tree that must
         --   survive shutdown. Set by @kill-server@; off across a natural
@@ -355,6 +354,12 @@ data Expansion
 data ClientRole = Attached | Control
     deriving (Eq, Show)
 
+-- | Where server startup stands: sourcing the config, restoring or
+-- re-adopting a session tree, or serving normally. See
+-- 'Hat.Server.startupGate' for what each phase admits.
+data StartupPhase = LoadingConfig | Restoring | Ready
+    deriving (Eq, Show)
+
 data Client = Client
     { id        :: ClientId
     , role      :: ClientRole
@@ -397,8 +402,9 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- livePanes
     <*> newTVarIO False  -- everAttached
     <*> newTVarIO False  -- served
-    <*> newTVarIO False  -- configLoading
-    <*> newTVarIO False  -- restoring
+    -- Ready, not LoadingConfig: a bare state (tests) is idle. 'runServerWith'
+    -- arms LoadingConfig before its accept loop can serve anyone.
+    <*> newTVarIO Ready  -- startupPhase
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions

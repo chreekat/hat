@@ -576,7 +576,7 @@ spec = do
 
     describe "serverIdle" $ do
         let idle = IdleInputs
-                { idleAttached = True, idleServed = True, idleLoading = False
+                { idleAttached = True, idleServed = True, idlePhase = Ready
                 , idleSessions = 0, idleClients = 0, idlePanes = 0 }
         it "is idle once served, drained, and every pane reaped" $
             serverIdle idle `shouldBe` True
@@ -587,8 +587,9 @@ spec = do
         it "stays busy until it has served a client" $ do
             serverIdle (idle { idleServed = False }) `shouldBe` False
             serverIdle (idle { idleAttached = False }) `shouldBe` False
-        it "stays busy while config is still loading" $
-            serverIdle (idle { idleLoading = True }) `shouldBe` False
+        it "stays busy until startup lands at Ready" $ do
+            serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` False
+            serverIdle (idle { idlePhase = Restoring }) `shouldBe` False
         it "stays busy while any session or client remains" $ do
             serverIdle (idle { idleSessions = 1 }) `shouldBe` False
             serverIdle (idle { idleClients = 1 }) `shouldBe` False

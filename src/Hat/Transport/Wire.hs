@@ -42,6 +42,7 @@ module Hat.Transport.Wire
     , dialectFloor
     , negotiate
     , Intent (..)
+    , Autostart (..)
     , Hello (..)
     , ClientToServer (..)
     , ServerToClient (..)
@@ -119,6 +120,11 @@ deriving anyclass instance Serialise Pos
 data Intent = AttachIntent [[Text]] | ControlIntent
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
+
+-- | Whether this invocation spawned the server it is talking to, or found
+-- one already running. See 'Hat.Server.startupGate'.
+data Autostart = Autostarted | Joined
+    deriving (Eq, Show)
 
 -- | The client's opening handshake. A standalone single-constructor
 -- record so its field selectors are total.
