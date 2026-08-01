@@ -19,6 +19,7 @@ module Hat.Server
     , chooseScope  -- ^ exported for the scope-routing test
     , SetScope (..)
     , SetDefault (..)
+    , listingLines  -- ^ exported for the show-options listing test
     , finallyReady  -- ^ exported for the startup-gate test
     , startupGate, StartupGate (..)  -- ^ exported for the startup-gate test
     , phaseAfterConfig  -- ^ exported for the startup-gate test
@@ -3033,43 +3034,159 @@ applyHistoryLimit st = do
             forM_ (Map.elems paneMap) $ \pane ->
                 Emu.setScrollbackLimit pane.emulator limit
 
+-- | @show-options@. tmux semantics: a plain read answers from the target
+-- scope's own table only — no parent walk — so an option unset at that scope
+-- prints nothing (success); @-A@ walks the parents and marks an inherited
+-- value with a trailing @*@. The global scopes answer from the resolved
+-- global chain, which includes the compiled defaults. Without a name, the
+-- scope's own entries are listed (@-H@ adds the hook table, which hat keeps
+-- empty).
 cmdShow :: CommandImpl
-cmdShow st _ args = do
-    let (_, flags, pos) = parseArgs "t" args
+cmdShow st mclient args = do
+    let (opts, flags, pos) = parseArgs "t" args
+        mtarget = lookup "-t" opts
         valueOnly = "-v" `elem` flags
         quiet = "-q" `elem` flags
-    opts <- readTVarIO st.options
+        withParents = "-A" `elem` flags
     case pos of
-        [name] -> case lookupOption opts name of
-            Just v -> pure [ROutput (if valueOnly then v else name <> " " <> v)]
-            Nothing
-                | quiet -> pure []
-                | otherwise -> pure [RErr ("unknown option: " <> name)]
-        _ -> pure [RErr "usage: show-options [-gsvq] name"]
+        [] -> showListing st mclient mtarget flags
+        [nameT] -> case resolveOptionName nameT of
+            Left err -> pure [RErr err | not quiet]
+            Right n -> case chooseScope DefaultSession flags n of
+                Left err -> pure [RErr err]
+                Right scope -> do
+                    ev <- showScopeValue st mclient mtarget withParents scope n
+                    pure $ case ev of
+                        Left err -> [RErr err]
+                        Right Nothing -> []
+                        Right (Just (v, inherited)) -> [ROutput $ if valueOnly
+                            then v
+                            else optionNameText n <> (if inherited then "*" else "")
+                                <> " " <> quoteIfNeeded v]
+        _ -> pure [RErr "usage: show-options [-AgHpqsvw] [-t target] [option]"]
 
-lookupOption :: Options -> Text -> Maybe Text
-lookupOption opts name = case name of
-    "prefix" -> Just opts.prefix
-    "base-index" -> Just (tshow opts.baseIndex)
-    "pane-base-index" -> Just (tshow opts.paneBaseIndex)
-    "history-limit" -> Just (tshow opts.historyLimit)
-    "default-terminal" -> Just opts.defaultTerminal
-    "word-separators" -> Just opts.wordSeparators
-    "status-position" -> Just (case opts.statusPosition of
-        StatusTop -> "top"; StatusBottom -> "bottom")
-    "mode-keys" -> Just (case opts.modeKeys of
-        KeysVi -> "vi"; KeysEmacs -> "emacs")
-    "status-left" -> Just opts.statusLeft
-    "status-left-length" -> Just (tshow opts.statusLeftLength)
-    "status-right" -> Just opts.statusRight
-    "status-right-length" -> Just (tshow opts.statusRightLength)
-    "window-status-format" -> Just opts.windowStatusFormat
-    "window-status-current-format" -> Just opts.windowStatusCurrentFormat
-    "automatic-rename" -> Just (if opts.automaticRename then "on" else "off")
-    "automatic-rename-format" -> Just opts.automaticRenameFormat
-    _
-        | "@" `T.isPrefixOf` name -> Map.lookup name opts.user
-        | otherwise -> Nothing
+-- | One option's value at one scope: 'Nothing' when the scope does not set
+-- it (or, with the parent walk on, when nothing in the chain does); the
+-- 'Bool' is the @-A@ inherited marker. See 'cmdShow'.
+showScopeValue
+    :: ServerState -> Maybe Client -> Maybe Text -> Bool -> SetScope
+    -> OptionName -> IO (Either Text (Maybe (Text, Bool)))
+showScopeValue st mclient mtarget withParents scope n = case scope of
+    SetServer -> globalAnswer
+    SetGlobalSession -> globalAnswer
+    SetGlobalWindow -> globalAnswer
+    SetLocalSession -> do
+        msess <- targetSession st mclient mtarget
+        case msess of
+            Nothing -> pure (Left (noSuchTarget "session" mtarget))
+            Just sess -> ownOr sess.options (resolveGlobal st)
+    SetLocalWindow -> do
+        mwin <- targetCurrentWindow st mclient mtarget
+        case mwin of
+            Nothing -> pure (Left (noSuchTarget "window" mtarget))
+            Just win -> ownOr win.options (resolveGlobal st)
+    SetLocalPane -> do
+        mpane <- targetPaneScoped st mclient mtarget
+        case mpane of
+            Nothing -> pure (Left (noSuchTarget "pane" mtarget))
+            Just pane -> do
+                mloc <- atomically (locatePane st pane.id)
+                let parentChain = case mloc of
+                        Just (sid, win) -> do
+                            msess <- Map.lookup sid <$> readTVar st.sessions
+                            case msess of
+                                Just sess -> resolveForWindow st sess win
+                                Nothing -> resolveGlobal st
+                        Nothing -> resolveGlobal st
+                ownOr pane.options parentChain
+  where
+    globalAnswer = do
+        resolved <- atomically (resolveGlobal st)
+        pure (Right (asOwn <$> optionValueOf resolved n))
+    ownOr deltaVar parentChain = do
+        own <- readTVarIO deltaVar
+        case lookupDelta n own of
+            Just v -> pure (Right (Just (asOwn v)))
+            Nothing
+                | withParents -> do
+                    resolved <- atomically parentChain
+                    pure (Right (asInherited <$> optionValueOf resolved n))
+                | otherwise -> pure (Right Nothing)
+    asOwn v = (formatOptionValue v, False)
+    asInherited v = (formatOptionValue v, True)
+
+-- | The no-name form of @show-options@: list the scope's own table (plus,
+-- under @-A@, the parent tables' unshadowed entries). See 'cmdShow'.
+showListing :: ServerState -> Maybe Client -> Maybe Text -> [Text] -> IO [Reply]
+showListing st mclient mtarget flags = do
+    etables <- scopeTables
+    case etables of
+        Left err -> pure [RErr err]
+        Right (own, parents) -> do
+            let ls = listingLines valueOnly own
+                    (if withParents then parents else [])
+                hooks = if withHooks && hasG && not (hasW || hasS)
+                    then hookNames else []
+            pure (map ROutput (List.sort (ls <> hooks)))
+  where
+    hasS = "-s" `elem` flags
+    hasG = "-g" `elem` flags
+    hasW = "-w" `elem` flags
+    hasP = "-p" `elem` flags
+    valueOnly = "-v" `elem` flags
+    withParents = "-A" `elem` flags
+    withHooks = "-H" `elem` flags
+    noParents d = Right (d, [])
+    scopeTables
+        | hasS = noParents <$> readTVarIO st.serverOptions
+        | hasG && hasW = noParents <$> readTVarIO st.globalWindowOptions
+        | hasG = noParents <$> readTVarIO st.globalSessionOptions
+        | hasP = do
+            mpane <- targetPaneScoped st mclient mtarget
+            case mpane of
+                Nothing -> pure (Left (noSuchTarget "pane" mtarget))
+                Just pane -> do
+                    own <- readTVarIO pane.options
+                    mloc <- atomically (locatePane st pane.id)
+                    gw <- readTVarIO st.globalWindowOptions
+                    parents <- case mloc of
+                        Just (_, win) -> do
+                            w <- readTVarIO win.options
+                            pure [w, gw]
+                        Nothing -> pure [gw]
+                    pure (Right (own, parents))
+        | hasW = do
+            mwin <- targetCurrentWindow st mclient mtarget
+            case mwin of
+                Nothing -> pure (Left (noSuchTarget "window" mtarget))
+                Just win -> do
+                    own <- readTVarIO win.options
+                    gw <- readTVarIO st.globalWindowOptions
+                    pure (Right (own, [gw]))
+        | otherwise = do
+            msess <- targetSession st mclient mtarget
+            case msess of
+                Nothing -> pure (Left (noSuchTarget "session" mtarget))
+                Just sess -> do
+                    own <- readTVarIO sess.options
+                    gs <- readTVarIO st.globalSessionOptions
+                    pure (Right (own, [gs]))
+
+-- | Format a scope's entries plus unshadowed parent entries (marked @*@),
+-- name-ordered, as @show-options@ prints them.
+listingLines :: Bool -> OptionsDelta -> [OptionsDelta] -> [Text]
+listingLines valueOnly own parents = map line (List.sortOn name entries)
+  where
+    parentMerged = mergeDeltas parents
+    entries = deltaEntries own <>
+        [ e | e@(n, _) <- deltaEntries parentMerged
+        , Nothing <- [lookupDelta n own] ]
+    name (n, _) = optionNameText n
+    inherited (n, _) = deltaMember n parentMerged && not (deltaMember n own)
+    line e@(n, v)
+        | valueOnly = formatOptionValue v
+        | otherwise = optionNameText n <> (if inherited e then "*" else "")
+            <> " " <> quoteIfNeeded (formatOptionValue v)
 
 -- | The environment store a command's flags address: the global scope under
 -- @-g@, else the target session's. Like tmux, @-g@ ignores any @-t@.

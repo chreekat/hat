@@ -22,7 +22,7 @@ import Hat.Model.Options
     )
 import Hat.Server
     ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
-    , placeWindow
+    , listingLines, placeWindow
     )
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
@@ -218,6 +218,25 @@ spec = do
         it "set -p on a non-pane option fails loud" $
             chooseScope DefaultSession ["-p"] OptStatusLeft
                 `shouldSatisfy` isLeft
+
+    describe "show-options listings" $ do
+        it "lists own entries plain and inherited entries starred" $
+            listingLines False
+                (singletonDelta (OptUser "@own") (OVText "mine"))
+                [singletonDelta OptStatusLeft (OVText "GLOBAL")]
+                `shouldBe` ["@own mine", "status-left* GLOBAL"]
+
+        it "an own entry shadows the parent's copy" $
+            listingLines False
+                (singletonDelta OptStatusLeft (OVText "SESSION"))
+                [singletonDelta OptStatusLeft (OVText "GLOBAL")]
+                `shouldBe` ["status-left SESSION"]
+
+        it "quotes values that would not re-parse bare" $
+            listingLines False
+                (singletonDelta OptStatusLeft (OVText "[#{session_name}] "))
+                []
+                `shouldBe` ["status-left \"[#{session_name}] \""]
 
     describe "new-window index placement" $ do
         let ws = Map.fromList [(100 :: Int, ())]

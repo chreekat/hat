@@ -19,6 +19,8 @@ module Hat.Model.Options
     , insertDelta
     , deleteDelta
     , deltaMember
+    , lookupDelta
+    , deltaEntries
     , mergeDeltas
     , applyEntry
     , applyDelta
@@ -28,6 +30,10 @@ module Hat.Model.Options
     , allowedAtPane
     , optionNameText
     , resolveOptionName
+    , optionValueOf
+    , formatOptionValue
+    , quoteIfNeeded
+    , hookNames
     ) where
 
 import Data.Map.Strict (Map)
@@ -228,6 +234,15 @@ deleteDelta name (OptionsDelta m) = OptionsDelta (Map.delete name m)
 deltaMember :: OptionName -> OptionsDelta -> Bool
 deltaMember name (OptionsDelta m) = Map.member name m
 
+-- | A scope's own entry for one option, if any — never the inherited value.
+-- @show-options@ without @-A@ reads exactly this.
+lookupDelta :: OptionName -> OptionsDelta -> Maybe OptionValue
+lookupDelta name (OptionsDelta m) = Map.lookup name m
+
+-- | Everything set at one scope, in name order, for @show-options@ listings.
+deltaEntries :: OptionsDelta -> [(OptionName, OptionValue)]
+deltaEntries (OptionsDelta m) = Map.toAscList m
+
 -- | Collapse overlapping deltas into one, most-specific first: when two deltas
 -- set the same option the earlier (more specific) one wins.
 mergeDeltas :: [OptionsDelta] -> OptionsDelta
@@ -412,3 +427,127 @@ optionNameText = \case
     OptMainPaneWidth -> "main-pane-width"
     OptMainPaneHeight -> "main-pane-height"
     OptUser k -> k
+
+-- | Project one option back out of a resolved 'Options' (inverse of
+-- 'applyEntry'), so a global-scope @show@ can answer from the resolved
+-- chain (which includes the compiled defaults). 'Nothing' only for an
+-- unset user option.
+optionValueOf :: Options -> OptionName -> Maybe OptionValue
+optionValueOf o = \case
+    OptPrefix -> Just (OVText o.prefix)
+    OptBaseIndex -> Just (OVInt o.baseIndex)
+    OptPaneBaseIndex -> Just (OVInt o.paneBaseIndex)
+    OptStatusPosition -> Just (OVStatusPosition o.statusPosition)
+    OptModeKeys -> Just (OVModeKeys o.modeKeys)
+    OptHistoryLimit -> Just (OVInt o.historyLimit)
+    OptDefaultTerminal -> Just (OVText o.defaultTerminal)
+    OptWordSeparators -> Just (OVText o.wordSeparators)
+    OptStatusLeft -> Just (OVText o.statusLeft)
+    OptStatusLeftLength -> Just (OVInt o.statusLeftLength)
+    OptStatusRight -> Just (OVText o.statusRight)
+    OptStatusRightLength -> Just (OVInt o.statusRightLength)
+    OptStatusInterval -> Just (OVInt o.statusInterval)
+    OptWindowStatusFormat -> Just (OVText o.windowStatusFormat)
+    OptWindowStatusCurrentFormat -> Just (OVText o.windowStatusCurrentFormat)
+    OptStatusStyle -> Just (OVStyle o.statusStyle)
+    OptWindowStatusStyle -> Just (OVStyle o.windowStatusStyle)
+    OptWindowStatusCurrentStyle -> Just (OVStyle o.windowStatusCurrentStyle)
+    OptWindowStatusBellStyle -> Just (OVStyle o.windowStatusBellStyle)
+    OptPaneBorderStyle -> Just (OVStyle o.paneBorderStyle)
+    OptPaneActiveBorderStyle -> Just (OVStyle o.paneActiveBorderStyle)
+    OptModeStyle -> Just (OVStyle o.modeStyle)
+    OptPaneBorderLines -> Just (OVBorderLines o.paneBorderLines)
+    OptPaneBorderIndicators -> Just (OVBorderIndicators o.paneBorderIndicators)
+    OptCursorColour -> Just (OVText o.cursorColour)
+    OptSetTitles -> Just (OVBool o.setTitles)
+    OptEscapeTime -> Just (OVInt o.escapeTime)
+    OptDisplayTime -> Just (OVInt o.displayTime)
+    OptFocusEvents -> Just (OVBool o.focusEvents)
+    OptAggressiveResize -> Just (OVBool o.aggressiveResize)
+    OptMonitorActivity -> Just (OVBool o.monitorActivity)
+    OptAutomaticRename -> Just (OVBool o.automaticRename)
+    OptAutomaticRenameFormat -> Just (OVText o.automaticRenameFormat)
+    OptUpdateEnvironment -> Just (OVTextList o.updateEnvironment)
+    OptMainPaneWidth -> Just (OVInt o.mainPaneWidth)
+    OptMainPaneHeight -> Just (OVInt o.mainPaneHeight)
+    OptUser k -> OVText <$> Map.lookup k o.user
+
+-- | Render an option value the way tmux's @show-options -v@ does: the raw
+-- text, with no quoting.
+formatOptionValue :: OptionValue -> Text
+formatOptionValue = \case
+    OVText t -> t
+    OVInt n -> T.pack (show n)
+    OVBool b -> if b then "on" else "off"
+    OVTextList ts -> T.unwords ts
+    OVStatusPosition p -> case p of
+        StatusTop -> "top"
+        StatusBottom -> "bottom"
+    OVModeKeys k -> case k of
+        KeysVi -> "vi"
+        KeysEmacs -> "emacs"
+    OVStyle s -> styleText s
+    OVBorderLines l -> case l of
+        BorderSingle -> "single"
+        BorderHeavy -> "heavy"
+        BorderDouble -> "double"
+        BorderSimple -> "simple"
+    OVBorderIndicators i -> case i of
+        IndicatorsOff -> "off"
+        IndicatorsColour -> "colour"
+        IndicatorsArrows -> "arrows"
+        IndicatorsBoth -> "both"
+
+-- | Display form of a parsed style (a set never round-trips its original
+-- spelling; this is for @show-options@ output only).
+styleText :: Cell.Style -> Text
+styleText s = case parts of
+    [] -> "default"
+    ps -> T.intercalate "," ps
+  where
+    parts = concat
+        [ [ "fg=" <> colorText s.fg | s.fg /= Cell.DefaultColor ]
+        , [ "bg=" <> colorText s.bg | s.bg /= Cell.DefaultColor ]
+        , [ "bold" | s.bold ], [ "underscore" | s.underline ]
+        , [ "italics" | s.italic ], [ "reverse" | s.reverse ]
+        , [ "strikethrough" | s.strike ], [ "blink" | s.blink ]
+        , [ "dim" | s.faint ]
+        ]
+    colorText = \case
+        Cell.DefaultColor -> "default"
+        Cell.Indexed n -> "colour" <> T.pack (show n)
+        Cell.RGB r g b -> T.pack (printfHex r g b)
+    printfHex r g b = '#' : concatMap hex2 [r, g, b]
+    hex2 w = [hexDigit (w `div` 16), hexDigit (w `mod` 16)]
+    hexDigit d
+        | d < 10 = toEnum (fromEnum '0' + fromIntegral d)
+        | otherwise = toEnum (fromEnum 'a' + fromIntegral d - 10)
+
+-- | Double-quote a value for a name-and-value @show-options@ line when it
+-- would not survive re-parsing bare, as tmux does.
+quoteIfNeeded :: Text -> Text
+quoteIfNeeded t
+    | T.null t || T.any needs t =
+        "\"" <> T.concatMap escape t <> "\""
+    | otherwise = t
+  where
+    needs c = c `elem` (" \t;#\"'\\$" :: String)
+    escape c = case c of
+        '"' -> "\\\""
+        '\\' -> "\\\\"
+        _ -> T.singleton c
+
+-- | tmux's hook names. hat runs no hooks (setting one fails loud), but
+-- @show-options -H@ lists them — empty, exactly as an unconfigured tmux
+-- does (upstream options-scope.sh greps @show -gH@ for @alert-bell@).
+hookNames :: [Text]
+hookNames =
+    [ "alert-activity", "alert-bell", "alert-silence"
+    , "client-active", "client-attached", "client-closed", "client-created"
+    , "client-dark-theme", "client-detached", "client-focus-in"
+    , "client-focus-out", "client-light-theme", "client-resized"
+    , "client-session-changed", "command-error", "marked-pane-changed"
+    , "session-added-to-group", "session-closed", "session-created"
+    , "session-removed-from-group", "session-renamed"
+    , "session-window-changed", "window-linked", "window-unlinked"
+    ]
