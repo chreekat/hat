@@ -100,10 +100,6 @@ format-mouse.sh                 # mouse option + MouseDown bindings + mouse_* fo
 menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click routing
 new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
 
-# environment commands
-environ.sh                      # set-environment / show-environment commands unimplemented
-environ-update.sh               # update-environment works internally but is unreachable without set/show-environment
-
 # option engine breadth: flat scalar table, global-only read-back
 options-array.sh                # array options (option[key], -a append, ordering) unmodeled
 options-values.sh               # most option names fail-loud + no typed value-validation table
@@ -135,10 +131,7 @@ input-unicode.sh                # capture-pane -N/-F/-R wide-char padding/cursor
 # buffers: subsystem is a stub
 buffers.sh                      # no -F/-f, buffer_* formats, set-buffer -n, buffer-limit, load-buffer
 
-# display-message -t target scoping (the cmd-find-in-format feature) -- tracked in b
-targets.sh                      # display-message ignores -t; no sess:win.pane target-in-format-context
-targets-panes.sh                # display-message ignores -t pane target
-pane-ops.sh                     # display-message -t builds only session env so #{pane_*} empty; + advanced pane cmds
+pane-ops.sh                     # needs new-window -E/-I, respawn-pane -E, resize-pane -T, split -Z/-e/-s
 
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # link/unlink/swap/rotate-window absent; new-window -t sess:idx parse bug -- tracked in b
