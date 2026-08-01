@@ -81,6 +81,7 @@ library
         Hat.Server.ClientIO
         Hat.Server.ColorScheme
         Hat.Server.CopyMode
+        Hat.Server.Environ
         Hat.Server.Format
         Hat.Server.Keys
         Hat.Server.Layout
@@ -225,6 +226,7 @@ test-suite hat-test
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
         Hat.Server.CopyModeSpec
+        Hat.Server.EnvironSpec
         Hat.Server.FlagsSpec
         Hat.Server.FormatSpec
         Hat.Server.KeysSpec

@@ -14,6 +14,7 @@ import qualified Hat.Term.PtySpec
 import qualified Hat.Server.ColorSchemeSpec
 import qualified Hat.Server.ConfigSpec
 import qualified Hat.Server.CopyModeSpec
+import qualified Hat.Server.EnvironSpec
 import qualified Hat.Server.FlagsSpec
 import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
@@ -58,6 +59,7 @@ main = hspec $ do
     describe "Hat.Server.LayoutString" Hat.Server.LayoutStringSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
+    describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
