@@ -81,6 +81,7 @@ import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
+import Hat.Transport.Wire (Autostart)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 
@@ -363,6 +364,7 @@ data StartupPhase = LoadingConfig | Restoring | Ready
 data Client = Client
     { id        :: ClientId
     , role      :: ClientRole
+    , autostart :: Autostart  -- ^ from the hello; see 'Hat.Server.startupGate'
     , sock      :: Socket
     , wireLevel :: Word16  -- ^ negotiated dialect; see 'Hat.Transport.Wire.negotiate'
     , sendLock  :: MVar ()

@@ -29,7 +29,7 @@ import Hat.Server
     , removePaneFromTree, welcome )
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
-    ( ClientToServer (..), Hello (..), Inbound (..), Intent (..)
+    ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
@@ -94,7 +94,7 @@ addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
 addClient st sid sz stamp = do
     sock <- socket AF_UNIX Stream defaultProtocol
     lock <- newMVar ()
-    client <- Client (ClientId stamp) Attached sock protocolVersion lock
+    client <- Client (ClientId stamp) Attached Joined sock protocolVersion lock
         <$> newTVarIO sz
         <*> newTVarIO stamp
         <*> newTVarIO sid
@@ -120,7 +120,7 @@ wiredClient :: ServerState -> ClientRole -> IO (Client, Socket)
 wiredClient st clientRole = do
     (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
     lock <- newMVar ()
-    client <- Client (ClientId 1) clientRole server protocolVersion lock
+    client <- Client (ClientId 1) clientRole Joined server protocolVersion lock
         <$> newTVarIO (Size 24 80)
         <*> newTVarIO 0
         <*> newTVarIO (SessionId 0)

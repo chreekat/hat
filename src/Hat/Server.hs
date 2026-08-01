@@ -1331,6 +1331,10 @@ welcome st conn h = do
             -- Register early so the setup commands (new-session,
             -- attach-session -t) act on a live client and can switch it.
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
+            -- Gate here, not only in ensureSession: setup commands run
+            -- directly, so an autostarting `hat new` would otherwise race
+            -- its own server's config load (upstream if-shell-TERM.sh).
+            awaitStartup st client.autostart setupCmds
             setupErr <- attachSetup st client setupCmds
             msess <- case setupErr of
                 Just _ -> pure Nothing
@@ -1404,6 +1408,7 @@ newClient st conn h = do
         , role = case h.intent of
             AttachIntent {} -> Attached
             ControlIntent   -> Control
+        , autostart = if h.autostarted then Autostarted else Joined
         , sock = conn
         , wireLevel = min protocolVersion h.protoVersion
         , sendLock = sendLock
@@ -4806,7 +4811,7 @@ controlLoop st client = do
     m <- recvMessage client.sock
     case m of
         Just (Known (Command cmds)) -> do
-            awaitStartup st Joined cmds
+            awaitStartup st client.autostart cmds
             replies <- runCommands st (Just client) cmds
             forM_ replies $ \case
                 ROutput out -> send client (Message out)

@@ -28,7 +28,7 @@ import Test.Hspec
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
@@ -1863,6 +1863,41 @@ spec = parallel $ do
         out2 `shouldSatisfy` List.isInfixOf "%"
         out3 <- ctlOut h ["display-message", "-p", "hello-cli"]
         out3 `shouldSatisfy` List.isInfixOf "hello-cli"
+
+    -- The autostart barrier (upstream if-shell-TERM.sh): the client that
+    -- spawned the server must wait out the config before its new-session
+    -- runs, or the pane spawns before `set -g default-terminal` applies.
+    -- The sleep is a race inducer inside the fixture: without the barrier
+    -- the pane deterministically wins and captures the default TERM.
+    it "an autostarting new waits out the config before spawning its pane" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+            out = h.home <> "/term.out"
+        writeFile confPath
+            "if 'sleep 0.3' 'set -g default-terminal vt220' 'set -g default-terminal ansi'\n"
+        _ <- hatCtl h ["-f", confPath, "new", "-d", "echo \"#$TERM\" >> " <> out]
+        got <- awaitFile out ("#vt220" `List.isInfixOf`)
+        got `shouldSatisfy` ("#vt220" `List.isInfixOf`)
+
+    -- A nested hat command as an if-shell condition during config load
+    -- (upstream if-shell-nested.sh): with persistence on this used to
+    -- deadlock the whole startup — the nested client parked on the restore
+    -- gate the config thread itself held — and the pane's `show` raced the
+    -- config's `set`. The bounded hatCtl pins the deadlock; the file pins
+    -- the ordering.
+    it "serves a nested hat command inside an if-shell condition mid-config" $
+        withHatPersist hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+            out = h.home <> "/done.out"
+        writeFile confPath $
+            "if 'sleep 0.3; " <> h.bin <> " -S " <> h.sock
+                <> " run \"true\"' 'set -s @done yes'\n"
+        r <- timeout 15_000_000 $ hatCtl h
+            [ "-f", confPath, "new", "-d"
+            , h.bin <> " -S " <> h.sock <> " show -vs @done >> " <> out ]
+        r `shouldSatisfy` isJust
+        got <- awaitFile out ("yes" `List.isInfixOf`)
+        got `shouldSatisfy` ("yes" `List.isInfixOf`)
 
     it "autostarts the server when the socket directory does not exist yet" $
         -- the parent dirs of the socket must be created by the server.
