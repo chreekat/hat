@@ -107,10 +107,9 @@ show-options-output.sh          # needs hooks (set-hook -B/-H, show-hooks) + arr
 
 # capture-pane's grid dump (-p/-N/-e/-L/-S/-E) is implemented; the raw cell
 # dump (-pR) and the -J/-F wrapped-line flags are not. The grid-path scripts
-# below are further blocked on a detached window taking its full -y height (hat
-# reserves a status row with no client attached) and on display-message -t.
+# below are blocked on display-message -t (#{cursor_x/y}), respawn-pane, and the
+# raw dump; the remaining raw scripts hinge entirely on -pR.
 input-cursor.sh                 # display-message ignores -t so #{cursor_x/y} empty -- tracked in b
-input-edit.sh                   # detached window is one row short (status row reserved with no client)
 input-malformed.sh              # capture-pane -pR + some malformed input crashes the server -- tracked in b
 input-modes.sh                  # capture-pane -pR osc133 line metadata
 input-osc.sh                    # capture-pane -F flags (hyperlink) + respawn-pane
