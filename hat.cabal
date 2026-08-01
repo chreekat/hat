@@ -223,6 +223,7 @@ test-suite hat-test
         Hat.Server.PersistSpec
         Hat.Term.PtySpec
         Hat.Transport.SocketSpec
+        Hat.Server.CaptureSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
         Hat.Server.CopyModeSpec

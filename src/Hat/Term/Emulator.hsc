@@ -26,6 +26,7 @@ module Hat.Term.Emulator
     , modes
     , modeReplayBytes
     , restoreBytes
+    , cellSgr
     , seedScrollback
     , title
     , scrollbackLength

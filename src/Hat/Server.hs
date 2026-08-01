@@ -69,6 +69,9 @@ module Hat.Server
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
     , placeWindow  -- ^ exported for the base-index window-numbering test
+    , CaptureOpts (..)  -- ^ exported for the capture-pane grid-dump tests
+    , captureBounds
+    , captureText
     ) where
 
 import Control.Applicative ((<|>))
@@ -3568,19 +3571,96 @@ cycleWindow st mclient step =
 -- Only @-p@ (print to stdout, plain text) is supported so far; escape,
 -- range, and hyperlink flags are ignored — enough for the light-touch
 -- @capturep -p@ uses in upstream tests.
+-- | Modifiers that shape a @capture-pane@ grid dump. See 'captureText'.
+data CaptureOpts = CaptureOpts
+    { captTrim   :: Bool  -- ^ trim trailing blanks (default; @-N@ turns it off)
+    , captSeq    :: Bool  -- ^ @-e@: emit SGR escape sequences before styled runs
+    , captNumber :: Bool  -- ^ @-L@: prefix each line with its screen-relative number
+    }
+    deriving stock (Eq, Show)
+
+-- | Resolve tmux's @-S@\/@-E@ selectors to an inclusive @(top, bottom)@ over
+-- the combined history+screen line space: history lines are @0..hsize-1@ and
+-- screen lines @hsize..hsize+sy-1@. @-@ means the very start (@-S@) or the very
+-- bottom (@-E@); a bare number counts from the top of the screen, negative into
+-- history; an absent or unparseable selector defaults to the visible screen.
+captureBounds :: Int -> Int -> Maybe Text -> Maybe Text -> (Int, Int)
+captureBounds hsize sy sflag eflag =
+    if bottom < top then (bottom, top) else (top, bottom)
+  where
+    lastLine = hsize + sy - 1
+    top    = resolve 0        hsize    sflag
+    bottom = resolve lastLine lastLine eflag
+    resolve dashVal def = \case
+        Just "-" -> dashVal
+        Just s -> case parseSigned s of
+            Just n
+                | n < 0 && negate n > hsize -> 0
+                | otherwise                 -> min lastLine (hsize + n)
+            Nothing -> def
+        Nothing -> def
+    parseSigned s = case TR.signed TR.decimal s of
+        Right (n, rest) | T.null rest -> Just (n :: Int)
+        _ -> Nothing
+
+-- | Render captured rows into @capture-pane@ output. Each row is tagged with
+-- its screen-relative line number (history lines negative), used by @-L@. A
+-- wide character occupies one cell carrying its glyph; its continuation cell
+-- carries empty text and is skipped. With @-e@, an SGR sequence precedes each
+-- run whose style differs from the previous cell.
+captureText :: CaptureOpts -> [(Int, V.Vector Cell.Cell)] -> Text
+captureText opts = T.intercalate "\n" . map renderRow
+  where
+    renderRow (n, r) = numberPrefix n <> rowText r
+    numberPrefix n
+        | opts.captNumber = tshow n <> " "
+        | otherwise       = ""
+    rowText r =
+        let body = T.concat (go Cell.defaultStyle (V.toList r))
+        in if opts.captTrim then T.stripEnd body else body
+    go _ [] = []
+    go prev (cell : cs)
+        | cell.width == 0 = cell.text : go prev cs
+        | otherwise =
+            let lead
+                    | opts.captSeq && cell.style /= prev =
+                        TE.decodeUtf8 (Emu.cellSgr cell.style)
+                    | otherwise = ""
+            in (lead <> cell.text) : go cell.style cs
+
 cmdCapturePane :: CommandImpl
-cmdCapturePane st mclient _ = do
-    withCurrentWindow st mclient $ \_ win -> do
-        mactive <- atomically (activePane win)
-        case mactive of
-            Nothing -> pure []
-            Just pane -> do
-                scr <- Emu.snapshot pane.emulator
-                let rows = V.toList scr.cells
-                    rowText r = T.stripEnd . T.concat
-                        $ [ c.text | c <- V.toList r ]
-                    body = T.intercalate "\n" (map rowText rows)
-                pure [ROutput body]
+cmdCapturePane st mclient args = do
+    let (opts, flags, _) = parseArgs "bESt" args
+        has f = f `elem` flags
+        rejected = filter has
+            ["-J", "-F", "-H", "-R", "-M", "-a", "-P", "-T", "-C"]
+    case () of
+        _ | not (has "-p") ->
+                pure [RErr "capture-pane: only stdout capture (-p) is supported"]
+          | (bad : _) <- rejected ->
+                pure [RErr ("capture-pane: " <> bad <> " is not supported")]
+          | otherwise -> do
+                res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+                case res of
+                    Left e -> pure [RErr e]
+                    Right (_, _, _, pane) -> do
+                        scr <- Emu.snapshot pane.emulator
+                        hsize <- Emu.scrollbackLength pane.emulator
+                        let sy = V.length scr.cells
+                            (top, bottom) =
+                                captureBounds hsize sy (lookup "-S" opts) (lookup "-E" opts)
+                        history <- mapM (Emu.scrollbackLine pane.emulator) [0 .. hsize - 1]
+                        let allRows = [ fromMaybe V.empty h | h <- history ]
+                                   <> V.toList scr.cells
+                            picked =
+                                [ (i - hsize, allRows !! i)
+                                | i <- [top .. bottom], i >= 0, i < length allRows ]
+                            copts = CaptureOpts
+                                { captTrim   = not (has "-N")
+                                , captSeq    = has "-e"
+                                , captNumber = has "-L"
+                                }
+                        pure [ROutput (captureText copts picked)]
 
 cmdResizeWindow :: CommandImpl
 cmdResizeWindow st mclient args = do

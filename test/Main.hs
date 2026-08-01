@@ -11,6 +11,7 @@ import qualified Hat.LogSpec
 import qualified Hat.PathSpec
 import qualified Hat.Server.PersistSpec
 import qualified Hat.Term.PtySpec
+import qualified Hat.Server.CaptureSpec
 import qualified Hat.Server.ColorSchemeSpec
 import qualified Hat.Server.ConfigSpec
 import qualified Hat.Server.CopyModeSpec
@@ -60,6 +61,7 @@ main = hspec $ do
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
+    describe "Hat.Server.Capture" Hat.Server.CaptureSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
