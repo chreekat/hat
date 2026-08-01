@@ -112,7 +112,7 @@ defaultOptions = Options
     , historyLimit = 50000
     , defaultTerminal = "tmux-256color"
     , wordSeparators = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
-    , statusLeft = "[#S] "
+    , statusLeft = "[#{session_name}] "  -- tmux's default spelling (#S expands the same)
     , statusLeftLength = 10
     , statusRight = "%H:%M %d-%b-%y #H"
     , statusRightLength = 40
