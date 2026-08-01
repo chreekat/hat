@@ -57,6 +57,24 @@ void hat_flatten_cell_at(const VTermScreenCell *cells, int i, HatCell *out) {
     flatten_cell(cells + i, out);
 }
 
+int hat_get_pen(VTerm *vt, HatCell *out) {
+    VTermState *state = vterm_obtain_state(vt);
+    VTermScreenCell cell;
+    VTermValue v;
+    memset(&cell, 0, sizeof cell);
+    vterm_state_get_penattr(state, VTERM_ATTR_BOLD, &v);       cell.attrs.bold = v.boolean;
+    vterm_state_get_penattr(state, VTERM_ATTR_UNDERLINE, &v);  cell.attrs.underline = v.number ? 1 : 0;
+    vterm_state_get_penattr(state, VTERM_ATTR_ITALIC, &v);     cell.attrs.italic = v.boolean;
+    vterm_state_get_penattr(state, VTERM_ATTR_BLINK, &v);      cell.attrs.blink = v.boolean;
+    vterm_state_get_penattr(state, VTERM_ATTR_REVERSE, &v);    cell.attrs.reverse = v.boolean;
+    vterm_state_get_penattr(state, VTERM_ATTR_STRIKE, &v);     cell.attrs.strike = v.boolean;
+    vterm_state_get_penattr(state, VTERM_ATTR_DIM, &v);        cell.attrs.dim = v.boolean;
+    vterm_state_get_penattr(state, VTERM_ATTR_FOREGROUND, &v); cell.fg = v.color;
+    vterm_state_get_penattr(state, VTERM_ATTR_BACKGROUND, &v); cell.bg = v.color;
+    flatten_cell(&cell, out);
+    return 1;
+}
+
 static void unflatten_color(VTermColor *c, int kind, int idx,
                             int r, int g, int b, uint8_t default_flag) {
     if (kind == 1)

@@ -890,6 +890,7 @@ captureReloadScreen :: ScrollbackCarry -> Emu.Emulator -> IO ReloadScreen
 captureReloadScreen carry emu = do
     scr <- Emu.snapshot emu
     m   <- Emu.modes emu
+    pen <- Emu.currentPen emu
     sb  <- case carry of
         DropScrollback -> pure []
         KeepScrollback -> do
@@ -902,6 +903,7 @@ captureReloadScreen carry emu = do
         , cursorVisible = scr.cursorVisible
         , rows          = map V.toList (V.toList scr.cells)
         , scrollback    = map V.toList sb
+        , pen           = pen
         }
 
 -- | The app-set mode subscriptions to carry across a reload; the inverse
@@ -1104,7 +1106,7 @@ screenOf sz rs = Emu.Screen
 replayPane :: Size -> ReloadPane -> (B.ByteString, [V.Vector Cell.Cell])
 replayPane sz rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
-        <> Emu.restoreBytes restoreModes (screenOf sz rp.screen)
+        <> Emu.restoreBytes restoreModes rp.screen.pen (screenOf sz rp.screen)
     , map V.fromList rp.screen.scrollback )
   where
     restoreModes = (emuModesOf rp.modes) { Emu.altScreen = rp.screen.altScreen }

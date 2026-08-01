@@ -80,7 +80,7 @@ instance Arbitrary ReloadModes where
 instance Arbitrary ReloadScreen where
     arbitrary = ReloadScreen
         <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        <*> shortGrid <*> shortGrid
+        <*> shortGrid <*> shortGrid <*> arbitrary
     shrink = genericShrink
 
 -- Small grids keep the round-trip cheap; the cells only need to survive the
@@ -169,7 +169,7 @@ fixedScreen = ReloadScreen
     { altScreen = True, cursorRow = 1, cursorCol = 2, cursorVisible = True
     , rows = [[ Cell { text = "x", width = 1
                      , style = defaultStyle { fg = Indexed 1 } } ]]
-    , scrollback = [[ blankCell ]] }
+    , scrollback = [[ blankCell ]], pen = defaultStyle }
 
 -- The current-era representative, with a non-trivial mode set, screen, and
 -- alternate session to pin its encoding.
@@ -220,6 +220,14 @@ corpus =
         \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
         \f4f4f4ffffffffff8164776f726b816470726576"
       , fixedCleanup, fixedTree )
+    , ( 6
+      , "851a4841545206039f82071864ff587c84009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
+        \0718648400f5f4028800f50102f59f9f84006178018a0082010181\
+        \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
+        \f4f4f4ffff8a0081008100f4f4f4f4f4f4f4ffffff8164776f726b\
+        \816470726576"
+      , fixedCleanup, fixedTree )
     ]
 
 spec :: Spec
@@ -254,8 +262,8 @@ spec = describe "reload handover" $ do
         hexOf (encodeHandover fixedCleanup fixedTree)
             `shouldBe` currentGolden
   where
-    decodesToTree (_, hex, cl, t) =
-        decodeHandover (unHex hex) `shouldBe` Right (Handover cl (Right t))
+    decodesToTree (e, hex, cl, t) =
+        (e, decodeHandover (unHex hex)) `shouldBe` (e, Right (Handover cl (Right t)))
     currentGolden = case [ hex | (e, hex, _, _) <- corpus, e == reloadEra ] of
         (hex : _) -> hex
         _         -> ""

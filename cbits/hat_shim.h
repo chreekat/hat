@@ -32,6 +32,9 @@ typedef struct {
 
 void hat_setup(VTerm *vt, HatCallbacks *cbs);
 int hat_get_cell(VTermScreen *screen, int row, int col, HatCell *out);
+/* Flatten the state's current pen (the SGR the next glyph would take) into a
+ * HatCell, so its style is read back exactly like a cell's. */
+int hat_get_pen(VTerm *vt, HatCell *out);
 void hat_flatten_cell_at(const VTermScreenCell *cells, int i, HatCell *out);
 void hat_unflatten_cell_at(VTermScreenCell *cells, int i, const HatCell *in);
 

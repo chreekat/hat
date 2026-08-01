@@ -22,6 +22,7 @@ module Hat.Term.Emulator
     , encodeKey
     , resize
     , snapshot
+    , currentPen
     , modes
     , modeReplayBytes
     , restoreBytes
@@ -97,6 +98,8 @@ foreign import ccall unsafe "hat_setup"
     c_hat_setup :: Ptr CVTerm -> Ptr CHatCallbacks -> IO ()
 foreign import ccall unsafe "hat_get_cell"
     c_hat_get_cell :: Ptr CVTermScreen -> CInt -> CInt -> Ptr CHatCell -> IO CInt
+foreign import ccall unsafe "hat_get_pen"
+    c_hat_get_pen :: Ptr CVTerm -> Ptr CHatCell -> IO CInt
 foreign import ccall unsafe "hat_flatten_cell_at"
     c_flatten_cell_at :: Ptr CVTermCells -> CInt -> Ptr CHatCell -> IO ()
 foreign import ccall unsafe "hat_unflatten_cell_at"
@@ -189,16 +192,15 @@ modeReplayBytes m = B.concat $
 -- cell's text under an absolute SGR. Feeding this into a 'newEmulator'
 -- reproduces the visible grid — the replay half of reload's live-screen
 -- restore. The cursor lands where the capture left it.
-restoreBytes :: Modes -> Screen -> B.ByteString
-restoreBytes m scr = BL.toStrict $ BB.toLazyByteString $
+restoreBytes :: Modes -> Style -> Screen -> B.ByteString
+restoreBytes m pen scr = BL.toStrict $ BB.toLazyByteString $
        (if m.altScreen then BB.byteString "\ESC[?1049h" else mempty)
     <> BB.byteString "\ESC[0m\ESC[H"
     <> foldMap rowBytes [0 .. V.length scr.cells - 1]
-    -- Reset the pen after the grid: the live pen is not carried in the
-    -- capture, so leave it at the default rather than the last painted
-    -- cell's colour, which the program's next output would otherwise
-    -- inherit (a coloured keystroke echo after restart-server).
-    <> BB.byteString "\ESC[0m"
+    -- Restore the live pen after the grid, so the program's next output
+    -- (an echoed keystroke after restart-server) takes its captured colour,
+    -- not the last painted cell's. 'cellSgr' of the default pen is "\ESC[0m".
+    <> BB.byteString (cellSgr pen)
     <> moveTo scr.cursor
     <> BB.byteString (if scr.cursorVisible then "\ESC[?25h" else "\ESC[?25l")
   where
@@ -594,6 +596,15 @@ resize e sz = withMVar e.lock $ \_ -> do
 -- cursor visibility as they stand now.
 snapshot :: Emulator -> IO Screen
 snapshot e = withMVar e.lock $ \_ -> (.view) <$> readIORef e.state
+
+-- | The emulator's live pen: the style the next glyph written would take.
+-- Captured across a reload ('Hat.Server.captureReloadScreen') so a program's
+-- echoed input keeps its colour instead of inheriting the last painted cell's.
+currentPen :: Emulator -> IO Style
+currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.vt $ \vtp ->
+    allocaBytes #{size HatCell} $ \hc -> do
+        _ <- c_hat_get_pen vtp hc
+        (.style) <$> peekHatCell hc
 
 -- | The mode flags apps have toggled: alternate screen, mouse tracking,
 -- focus reporting, and color-scheme reporting.

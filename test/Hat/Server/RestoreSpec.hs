@@ -122,29 +122,31 @@ spec = do
             dstMode.altScreen `shouldBe` True
             dstSb `shouldBe` srcSb
 
-        -- Bug (2026-08-01): restoreBytes repainted the grid but left the
-        -- emulator's pen at the last painted cell's colour. After a
-        -- restart-server the still-alive shell's echoed keystrokes inherited
-        -- it — green text at the prompt until a redraw (C-u) reset it. The
-        -- restore must leave the pen at the default (the live pen is not
-        -- carried in the capture, and a program at a prompt expects default).
-        it "resets the pen to default after a restore, not the last cell's colour" $ do
-            let sz = Size { rows = 3, cols = 20 }
-            src <- Emu.newEmulator sz 1000
-            -- a green glyph, then a reset (as a coloured prompt ends): the last
-            -- VISIBLE cell is green, but the live pen is default.
-            _ <- Emu.feed src "\ESC[32m$\ESC[0m "
-            captured <- captureReloadScreen KeepScrollback src
-            let rp = ReloadPane
-                    { cwd = "/tmp", masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0, screen = captured }
-                (bytes, _) = replayPane sz rp
-            dst <- Emu.newEmulator sz 1000
-            _ <- Emu.feed dst bytes
-            -- what the shell echoes next must be default-styled, not green
-            _ <- Emu.feed dst "X"
-            scr <- Emu.snapshot dst
-            ((scr.cells V.! 0) V.! 2).style `shouldBe` Cell.defaultStyle
+        -- Bug (2026-08-01): a reload repainted the grid but left the emulator's
+        -- pen at the last painted cell's colour, so a restart-server left the
+        -- still-alive shell's echoed keystrokes coloured (green at the prompt
+        -- until a redraw reset it). The fix carries the live pen in the
+        -- capture and restores it, so the program's next output is styled
+        -- exactly as it was — whatever the last painted cell.
+        let penAfterReload feedBytes = do
+                let sz = Size { rows = 3, cols = 20 }
+                src <- Emu.newEmulator sz 1000
+                _ <- Emu.feed src feedBytes
+                captured <- captureReloadScreen KeepScrollback src
+                let rp = ReloadPane
+                        { cwd = "/tmp", masterFd = 0, childPid = 0
+                        , modes = ReloadModes False False 0, screen = captured }
+                    (bytes, _) = replayPane sz rp
+                dst <- Emu.newEmulator sz 1000
+                _ <- Emu.feed dst bytes
+                Emu.currentPen dst   -- the pen the next echoed keystroke takes
+        it "restores a default live pen (coloured glyph, then the prompt's reset)" $
+            -- the last VISIBLE cell is green, but the live pen is default
+            penAfterReload "\ESC[32m$\ESC[0m " `shouldReturn` Cell.defaultStyle
+        it "restores a non-default live pen (program mid-colour at the reload)" $
+            -- green foreground still active, no reset: the pen stays green
+            penAfterReload "\ESC[32mgreen"
+                `shouldReturn` Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
 
         -- restart-server -C: restart as memory cleanup — the handover keeps
         -- the live grid but sheds every scrollback line.
@@ -169,7 +171,8 @@ spec = do
                 sc = ReloadScreen
                     { altScreen = True, cursorRow = 39, cursorCol = 2
                     , cursorVisible = True
-                    , rows = replicate 42 wideRow, scrollback = [] }
+                    , rows = replicate 42 wideRow, scrollback = []
+                    , pen = Cell.defaultStyle }
                 rp = ReloadPane
                     { cwd = "/", masterFd = 0, childPid = 0
                     , modes = ReloadModes False False 0, screen = sc }

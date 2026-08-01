@@ -28,18 +28,20 @@ module Hat.Server.Reload
     ) where
 
 import Codec.CBOR.Read (deserialiseFromBytes)
+import Codec.CBOR.Term (decodeTerm)
 import Codec.CBOR.Write (toStrictByteString)
 import Codec.Serialise (Serialise, decode, deserialiseOrFail, encode, serialise)
 import Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
 import Codec.Serialise.Encoding (encodeListLen, encodeWord)
-import Control.Monad (unless)
+import Control.Monad (replicateM_, unless)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
 
-import Hat.Term.Cell (Cell)
+import Hat.Term.Cell (Cell, Style)
+import qualified Hat.Term.Cell as Cell
 
 -- | The tree an era-matched reload rebuilds by adopting each pane's inherited
 -- pty and child. This is the EVOLVING payload: any change to its shape (or its
@@ -107,16 +109,39 @@ data ReloadScreen = ReloadScreen
     -- serialized shape is basically identical.
     , rows          :: [[Cell]]
     , scrollback    :: [[Cell]]
+    , pen           :: Style  -- ^ the live pen (SGR the next glyph takes); see
+                              --   'Hat.Server.captureReloadScreen'
     }
     deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
+
+-- Appended 'pen' tolerantly (era 6): a pre-pen (era ≤ 5) screen is a six-field
+-- list, which decodes with the default pen — the same additive-leaf trick the
+-- 'Style' and 'Hello' codecs use, so no positional-mirror migration is needed.
+-- The list is (constructor-tag word, then fields), matching what a derived
+-- Serialise would emit, so a pre-pen (era ≤ 5) six-field screen — 'encodeListLen
+-- 7' with no pen — decodes here with the default pen.
+instance Serialise ReloadScreen where
+    encode s =
+           encodeListLen 8
+        <> encodeWord 0
+        <> encode s.altScreen <> encode s.cursorRow <> encode s.cursorCol
+        <> encode s.cursorVisible <> encode s.rows <> encode s.scrollback
+        <> encode s.pen
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        s <- ReloadScreen
+            <$> decode <*> decode <*> decode <*> decode <*> decode <*> decode
+            <*> (if len >= 8 then decode else pure Cell.defaultStyle)
+        replicateM_ (max 0 (len - 8)) (() <$ decodeTerm)
+        pure s
 
 -- | The blank screen a pane with no captured display restores to: no grid, no
 -- scrollback, primary buffer, cursor home and visible. See 'ReloadScreen'.
 emptyReloadScreen :: ReloadScreen
 emptyReloadScreen = ReloadScreen
     { altScreen = False, cursorRow = 0, cursorCol = 0, cursorVisible = True
-    , rows = [], scrollback = [] }
+    , rows = [], scrollback = [], pen = Cell.defaultStyle }
 
 -- | The app-set mode subscriptions a pane carries across a reload, so a program
 -- adopted into a fresh emulator keeps them. A blank set (everything off) is what
@@ -155,7 +180,7 @@ data Handover = Handover
 -- misdecode. The golden-byte test pins the encoding, so a shape change that
 -- forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 5
+reloadEra = 6
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -213,9 +238,13 @@ decodeReloadTree e payload
     | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
-    -- Era 4 differs from era 5 only by 'Style.faint', appended additively; the
-    -- hand-written Style decoder defaults it off for the shorter list, so an
-    -- era-4 payload decodes into the current tree with no migration.
+    -- Eras 4 and 5 differ from era 6 only by additive leaves (era 4 lacks
+    -- 'Style.faint', era 5 lacks 'ReloadScreen.pen'); the hand-written Style
+    -- and ReloadScreen decoders default the missing fields, so both decode
+    -- into the current tree with no positional migration.
+    | e == 5 = case deserialiseOrFail (BL.fromStrict payload) of
+        Right t  -> Right t
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 4 = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))

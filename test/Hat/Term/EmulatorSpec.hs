@@ -93,7 +93,7 @@ spec = do
         sblen <- scrollbackLength src
         sblines <- catMaybes <$> mapM (scrollbackLine src) [0 .. sblen - 1]
         dst <- newEmulator Size { rows = 24, cols = 80 } 1000
-        _ <- feed dst (restoreBytes m scr)
+        _ <- feed dst (restoreBytes m defaultStyle scr)
         seedScrollback dst sblines
         resize dst Size { rows = 50, cols = 200 }
         scr2 <- snapshot dst
@@ -150,7 +150,7 @@ spec = do
         scr <- snapshot src
         m <- modes src
         dst <- new80x24
-        _ <- feed dst (restoreBytes m scr)
+        _ <- feed dst (restoreBytes m defaultStyle scr)
         scr' <- snapshot dst
         scr'.cells `shouldBe` scr.cells
 
@@ -163,7 +163,7 @@ spec = do
         scr <- snapshot src
         m <- modes src
         dst <- new80x24
-        _ <- feed dst (restoreBytes m scr)
+        _ <- feed dst (restoreBytes m defaultStyle scr)
         restored <- snapshot dst
         restored.cells `shouldBe` scr.cells
         m' <- modes dst
