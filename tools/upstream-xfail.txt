@@ -105,11 +105,14 @@ options-array.sh                # array options (option[key], -a append, orderin
 options-values.sh               # most option names fail-loud + no typed value-validation table
 show-options-output.sh          # needs hooks (set-hook -B/-H, show-hooks) + array-index output
 
-# capture-pane is a stub (ignores -R/-N/-F/-J/-S/-E/-t); emulation itself is correct
+# capture-pane's grid dump (-p/-N/-e/-L/-S/-E) is implemented; the raw cell
+# dump (-pR) and the -J/-F wrapped-line flags are not. The grid-path scripts
+# below are further blocked on a detached window taking its full -y height (hat
+# reserves a status row with no client attached) and on display-message -t.
 input-cursor.sh                 # display-message ignores -t so #{cursor_x/y} empty -- tracked in b
-input-edit.sh                   # capture-pane ignores args, drops trailing blank rows
-input-malformed.sh              # capture-pane -R + some malformed input crashes the server -- tracked in b
-input-modes.sh                  # capture-pane -R osc133 line metadata
+input-edit.sh                   # detached window is one row short (status row reserved with no client)
+input-malformed.sh              # capture-pane -pR + some malformed input crashes the server -- tracked in b
+input-modes.sh                  # capture-pane -pR osc133 line metadata
 input-osc.sh                    # capture-pane -F flags (hyperlink) + respawn-pane
 input-raw-controls.sh           # capture-pane -pR raw grid dump
 input-raw-cursor.sh             # capture-pane -pR raw grid + display-message cursor
@@ -123,9 +126,8 @@ input-raw-wrap.sh               # capture-pane -pR WRAPPED flag + cursor_x/y
 input-reflow-stress.sh          # capture-pane -pR/-pM + history_size + copy-mode -H + respawn-*
 input-replies.sh                # remain-on-exit + respawn-window (blocks before DSR/DA/DECRQM checks)
 input-requests.sh               # respawn-window + get-clipboard + OSC-4/OSC-52 request round-trips
-input-scroll.sh                 # capture-pane -S/-E + cursor_x/y + respawn-pane; also a scroll-region off-by-one -- tracked in b
-input-sgr.sh                    # relies on capture-pane -e/-N escape fidelity not emitted
-input-unicode.sh                # capture-pane -N/-F/-R wide-char padding/cursor markers
+input-scroll.sh                 # display-message cursor_x/y + respawn-pane + detached window height
+input-unicode.sh                # capture-pane -pR/-F wide-char cells + display-message cursor
 
 # buffers: subsystem is a stub
 buffers.sh                      # no -F/-f, buffer_* formats, set-buffer -n, buffer-limit, load-buffer
