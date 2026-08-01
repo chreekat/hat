@@ -62,11 +62,20 @@ run_one() {
     name=$1
     tdir=$(mktemp -d)
     trap 'rm -rf "$tdir"' EXIT
+    # Copy the script and its shared includes, stripping the hardcoded
+    # PATH=/bin:/usr/bin (no coreutils there on NixOS) so both inherit the
+    # devShell PATH. Includes are sourced cwd-relative (. ./input-common.inc),
+    # so run from $tdir where the sanitized copies live. Scripts resolve the
+    # binary via TEST_TMUX, never the cwd-relative ../tmux, so $tdir is safe.
     sed '/^PATH=\/bin:\/usr\/bin$/d' "$regress/$name" > "$tdir/$name"
+    for inc in "$regress"/*.inc; do
+        [ -e "$inc" ] || continue
+        sed '/^PATH=\/bin:\/usr\/bin$/d' "$inc" > "$tdir/$(basename "$inc")"
+    done
     (
-        cd "$regress"
+        cd "$tdir"
         TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" HAT_PERSIST=0 \
-            timeout 30 sh "$tdir/$name"
+            timeout 30 sh "$name"
     ) >/dev/null 2>&1
     printf '%d %s\n' "$?" "$name" >> "$results"
 }
