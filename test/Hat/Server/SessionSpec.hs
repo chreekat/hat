@@ -4,6 +4,7 @@ import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Data.IORef (newIORef)
+import Data.Text (Text)
 import System.Timeout (timeout)
 import qualified Data.Map.Strict as Map
 import Network.Socket
@@ -16,19 +17,22 @@ import qualified Data.Set as Set
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
+import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, singletonDelta)
 import Hat.Server
     ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
-    , RestartClientOutcome (..), restartClientAction
+    , Reply (..), RestartClientOutcome (..), restartClientAction
     , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
-    , cmdAttachSession, chooseCurrentOnClose, cmdRestartClient, deliversKey
-    , detachPane, detachPaneCurrent, detachPanes, markActivity, markBell
-    , nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
-    , removePaneFromTree, welcome )
-import Hat.Server.Environ (emptyEnviron)
+    , cmdAttachSession, chooseCurrentOnClose, cmdListClients, cmdRestartClient
+    , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
+    , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
+    , refreshSessionEnv, removePaneFromTree, welcome )
+import Hat.Server.Environ
+    ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
+    , environSet )
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
@@ -111,6 +115,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO True     -- outerFocused
+        <*> newTVarIO ImportEnv
         <*> pure []
         <*> pure ""
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
@@ -119,7 +124,13 @@ addClient st sid sz stamp = do
 -- A client whose socket is one half of a socketpair, so a test can read what
 -- the server sends it. 'ready' is armed so 'send' does not drop the message.
 wiredClient :: ServerState -> ClientRole -> IO (Client, Socket)
-wiredClient st clientRole = do
+wiredClient st clientRole = wiredClientEnv st clientRole []
+
+-- 'wiredClient' with a chosen client environment, for update-environment
+-- import tests.
+wiredClientEnv
+    :: ServerState -> ClientRole -> [(Text, Text)] -> IO (Client, Socket)
+wiredClientEnv st clientRole clientEnv = do
     (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
     lock <- newMVar ()
     client <- Client (ClientId 1) clientRole Joined server protocolVersion lock
@@ -137,7 +148,8 @@ wiredClient st clientRole = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO True
-        <*> pure []
+        <*> newTVarIO ImportEnv
+        <*> pure clientEnv
         <*> pure ""
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
@@ -239,6 +251,51 @@ spec = do
             (st, sess) <- seedSession "/start"
             _ <- cmdAttachSession st Nothing ["-c", "/re/anchored"]
             readTVarIO sess.startCwd `shouldReturn` "/re/anchored"
+
+    -- attach-session -E: the attach leaves the session environment alone
+    -- (no update-environment import); a plain attach imports.
+    describe "attach-session -E" $ do
+        let seedEnv st sess = do
+                atomically $ writeTVar st.options
+                    defaultOptions { updateEnvironment = ["MYVAR"] }
+                atomically $ writeTVar sess.environ
+                    (environSet EnvVisible "MYVAR" "old" emptyEnviron)
+        it "skips the update-environment import" $ do
+            (st, sess) <- seedSession "/"
+            seedEnv st sess
+            (client, _peer) <- wiredClientEnv st Attached [("MYVAR", "new")]
+            [] <- cmdAttachSession st (Just client) ["-E", "-t", "work"]
+            refreshSessionEnv st sess client
+            env <- readTVarIO sess.environ
+            environFind "MYVAR" env
+                `shouldBe` Just (EnvEntry (Just "old") EnvVisible)
+        it "a plain attach still imports" $ do
+            (st, sess) <- seedSession "/"
+            seedEnv st sess
+            (client, _peer) <- wiredClientEnv st Attached [("MYVAR", "new")]
+            [] <- cmdAttachSession st (Just client) ["-t", "work"]
+            refreshSessionEnv st sess client
+            env <- readTVarIO sess.environ
+            environFind "MYVAR" env
+                `shouldBe` Just (EnvEntry (Just "new") EnvVisible)
+
+    describe "list-clients" $
+        it "lists attached clients only" $ do
+            (st, _) <- seedSession "/"
+            _ <- addClient st (SessionId 0) (Size 24 80) 2  -- attached
+            _ <- wiredClient st Control
+            cmdListClients st Nothing ["-F", "x"]
+                `shouldReturn` [ROutput "x"]
+
+    -- Attaching from a pane of a *different* server must be allowed (the
+    -- upstream environ-update test drives one hat from inside another);
+    -- only nesting a client inside its own server is refused.
+    describe "attach nesting guard" $ do
+        it "refuses only the enclosing server's own socket" $ do
+            nestsOwnServer "/tmp/a.sock,123,0" "/tmp/a.sock" `shouldBe` True
+            nestsOwnServer "/tmp/b.sock,123,0" "/tmp/a.sock" `shouldBe` False
+        it "an empty TMUX value never refuses" $
+            nestsOwnServer "" "/tmp/a.sock" `shouldBe` False
 
     describe "scoped option resolution" $ do
         it "a session overlay shadows the global chain for that session only" $ do

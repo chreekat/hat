@@ -12,6 +12,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
+    , EnvImport (..)
     , StartupPhase (..)
     , CopyModeState (..)
     , FrozenGrid (..)
@@ -359,6 +360,12 @@ data Expansion
 data ClientRole = Attached | Control
     deriving (Eq, Show)
 
+-- | Whether an attach folds the client's environment into the session's
+-- via @update-environment@, or leaves it untouched (@attach-session -E@).
+-- See 'Hat.Server.refreshSessionEnv'.
+data EnvImport = ImportEnv | SkipEnvImport
+    deriving (Eq, Show)
+
 -- | Where server startup stands: sourcing the config, restoring or
 -- re-adopting a session tree, or serving normally. See
 -- 'Hat.Server.startupGate' for what each phase admits.
@@ -389,6 +396,7 @@ data Client = Client
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see
         -- 'noteOuterFocus' and 'attentionSeen'.
+    , envImport :: TVar EnvImport  -- ^ set by @attach-session -E@
     , env       :: [(Text, Text)]
     , cwd       :: Text
     }

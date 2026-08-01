@@ -63,6 +63,8 @@ module Hat.Server
     , sessionSpawnEnv  -- ^ exported for the spawn-env merge test
     , cmdSetEnvironment   -- ^ exported for the environment command tests
     , cmdShowEnvironment  -- ^ exported for the environment command tests
+    , cmdListClients      -- ^ exported for the attached-clients listing test
+    , refreshSessionEnv   -- ^ exported for the attach -E test
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
     , placeWindow  -- ^ exported for the base-index window-numbering test
@@ -1410,6 +1412,7 @@ newClient st conn h = do
     pickerVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
+    envImportVar <- newTVarIO ImportEnv
     pure Client
         { id = ClientId cid
         , role = case h.intent of
@@ -1433,6 +1436,7 @@ newClient st conn h = do
         , prompt = promptVar
         , picker = pickerVar
         , outerFocused = focusVar
+        , envImport = envImportVar
         , env = h.env
         , cwd = h.cwd
         }
@@ -1450,11 +1454,13 @@ removeClient st client = do
 -- | On attach, import the @update-environment@ vars from the attaching
 -- client's env into the session ('environUpdate'), so panes spawned
 -- afterward see fresh values (e.g. a new @DISPLAY@ after reconnecting
--- over @ssh -X@).
+-- over @ssh -X@). An @attach-session -E@ marks the client to skip this.
 refreshSessionEnv :: ServerState -> Session -> Client -> IO ()
-refreshSessionEnv st sess client = do
-    vars <- (.updateEnvironment) <$> readTVarIO st.options
-    atomically $ modifyTVar' sess.environ (environUpdate vars client.env)
+refreshSessionEnv st sess client = readTVarIO client.envImport >>= \case
+    SkipEnvImport -> pure ()
+    ImportEnv -> do
+        vars <- (.updateEnvironment) <$> readTVarIO st.options
+        atomically $ modifyTVar' sess.environ (environUpdate vars client.env)
 
 -- | The env a new pane inherits: the global environment overlaid by the
 -- session's, hidden and cleared entries dropped (tmux's environ_for_session).
@@ -2531,6 +2537,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["has-session", "has"], cmdHasSession)
     , (["start-server", "start"], cmdStartServer)
     , (["rename-session", "rename"], cmdRenameSession)
+    , (["list-clients", "lsc"], cmdListClients)
     , (["list-sessions", "ls"], cmdListSessions)
     , (["list-windows", "lsw"], cmdListWindows)
     , (["list-panes", "lsp"], cmdListPanes)
@@ -4527,8 +4534,11 @@ switchClientTo st client sess = do
 -- windows, so it is useful (and valid) even without a client to attach.
 cmdAttachSession :: CommandImpl
 cmdAttachSession st mclient args = do
-    let (opts, _, _) = parseArgs "tc" args
+    let (opts, flags, _) = parseArgs "tc" args
     withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
+        -- -E: skip the update-environment import this attach would run.
+        when ("-E" `elem` flags) $ forM_ mclient $ \client ->
+            atomically (writeTVar client.envImport SkipEnvImport)
         forM_ (lookup "-c" opts) $ \d -> do
             env <- sessionFormatEnv st sess
             dir <- T.unpack <$> expandFormat st env d
@@ -4584,6 +4594,35 @@ cmdRenameSession st mclient args = do
                         bumpDirty st
                     pure []
         _ -> pure [RErr "usage: rename-session [-t target] name"]
+
+-- | tmux @list-clients@: one line per attached client (control connections
+-- are not clients), filtered by @-t@ and shaped by @-F@.
+cmdListClients :: CommandImpl
+cmdListClients st mclient args = do
+    let (opts, _, _) = parseArgs "tF" args
+    efilter <- case lookup "-t" opts of
+        Nothing -> pure (Right Nothing)
+        Just t -> do
+            msess <- targetSession st mclient (Just t)
+            pure $ case msess of
+                Nothing -> Left ("no such session: " <> t)
+                Just sess -> Right (Just sess.id)
+    case efilter of
+        Left err -> pure [RErr err]
+        Right msid -> do
+            (cs, sessions) <- atomically $
+                (,) <$> readTVar st.clients <*> readTVar st.sessions
+            fmap concat . forM (Map.elems cs) $ \c -> do
+                sid <- readTVarIO c.session
+                case Map.lookup sid sessions of
+                    Just sess
+                        | c.role == Attached
+                        , maybe True (== sid) msid -> do
+                            env <- sessionFormatEnv st sess
+                            out <- expandFormat st env $ fromMaybe
+                                "#{session_name}" (lookup "-F" opts)
+                            pure [ROutput out]
+                    _ -> pure []
 
 cmdListSessions :: CommandImpl
 cmdListSessions st _ args = do

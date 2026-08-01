@@ -5,6 +5,7 @@ module Hat.Client
     , Autostart (..)  -- ^ re-exported for 'Main.connectOrStart'
     , runClient
     , runControl
+    , nestsOwnServer
     ) where
 
 import Control.Concurrent.Async (race)
@@ -39,6 +40,14 @@ data ExitReason
 
 versionMismatch :: Text
 versionMismatch = "unexpected greeting — mismatched hat versions?"
+
+-- | Whether attaching to @target@ from inside a pane would nest a client
+-- in its own server: @$TMUX@'s first comma-field is the enclosing server's
+-- socket path. Attaching to a different server from a pane is fine (tmux
+-- allows it too; its check matches the client tty against its own panes).
+nestsOwnServer :: String -> FilePath -> Bool
+nestsOwnServer tmuxVar target =
+    not (null tmuxVar) && takeWhile (/= ',') tmuxVar == target
 
 hello :: Word16 -> Autostart -> Intent -> IO ClientToServer
 hello v origin intent = do

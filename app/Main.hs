@@ -115,18 +115,17 @@ terminalMode _ = FireAndForget
 
 attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
 attach path mconfig setup = do
-    -- Attaching from inside a pane (of hat or tmux — both set $TMUX)
-    -- nests one multiplexer's client in another's pane; against the same
-    -- server it renders the session inside itself. Refuse, like tmux.
-    -- Control commands (list-sessions, send-keys, …) stay available to
-    -- scripts running in panes: only terminal-grabbing verbs come here.
+    -- Attaching from inside a pane of the *same* server ($TMUX names its
+    -- socket) would render the session inside itself. Refuse, like tmux.
+    -- Attaching to a different server, and control commands (list-sessions,
+    -- send-keys, …), stay available to scripts running in panes.
     nested <- lookupEnv "TMUX"
     case nested of
-        Just _ -> do
+        Just v | nestsOwnServer v path -> do
             hPutStrLn stderr
                 "hat: sessions should be nested with care, unset TMUX to force"
             exitFailure
-        Nothing -> pure ()
+        _ -> pure ()
     (sock, origin) <- connectOrStart path mconfig
     reason <- runClient (connectTo path) sock origin setup
     case reason of

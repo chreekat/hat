@@ -42,6 +42,7 @@ mkClient = do
     promptV <- newTVarIO Nothing
     pickV   <- newTVarIO Nothing
     focusV  <- newTVarIO True
+    envImpV <- newTVarIO ImportEnv
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a, wireLevel = protocolVersion
             , sendLock = lock, size = sizeV
@@ -49,7 +50,8 @@ mkClient = do
             , session = sessV, lastSession = lastV, ready = readyV
             , keyState = keyV, escState = escV, lastFrame = frameV, lastCursor = curV
             , needsFull = fullV, toast = toastV, prompt = promptV
-            , picker = pickV, outerFocused = focusV, env = [], cwd = "" }
+            , picker = pickV, outerFocused = focusV, envImport = envImpV
+            , env = [], cwd = "" }
     pure (client, b)
 
 recv :: Socket -> IO (Maybe (Inbound ServerToClient))
