@@ -187,6 +187,14 @@ spec = do
             chooseScope DefaultWindow [] (OptUser "@x")
                 `shouldBe` Right SetLocalWindow
 
+        it "set -p routes a user option to the pane table" $
+            chooseScope DefaultSession ["-p"] (OptUser "@u")
+                `shouldBe` Right SetLocalPane
+
+        it "set -p on a non-pane option fails loud" $
+            chooseScope DefaultSession ["-p"] OptStatusLeft
+                `shouldSatisfy` isLeft
+
     describe "new-window index placement" $ do
         let ws = Map.fromList [(100 :: Int, ())]
         it "numbers from the session-resolved base-index" $

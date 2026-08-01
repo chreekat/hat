@@ -36,6 +36,7 @@ module Hat.Model
     , resolveGlobal
     , resolveForSession
     , resolveForWindow
+    , resolveForPane
     , sessionClients
     , currentWindow
     , activePane
@@ -78,7 +79,8 @@ import Hat.Log (Logger)
 import Hat.Model.Ids
 import qualified Hat.Term.Pty
 import Hat.Model.Options
-    (Keymap, Options, OptionsDelta, defaultOptions, emptyDelta, resolveOptions)
+    ( Keymap, Options, OptionsDelta, applyDelta, defaultOptions, emptyDelta
+    , resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
@@ -194,6 +196,7 @@ data Pane = Pane
     , size     :: TVar Size
     , dead     :: TVar Bool
     , startCwd :: FilePath
+    , options  :: TVar OptionsDelta  -- ^ pane-scoped set-option; see 'resolveForPane'
     , mode     :: TVar (Maybe PaneMode)
         -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
         -- its own cursor/selection over a frozen snapshot of the pane's
@@ -489,6 +492,14 @@ resolveForWindow st sess win = do
     sv <- readTVar st.serverOptions
     sc <- readTVar st.schemeOptions
     pure (resolveOptions [w, s, gw, gs, sv, sc])
+
+-- | Resolve the effective options for one pane: its own overlay (@set -p@)
+-- shadows its window's chain.
+resolveForPane :: ServerState -> Session -> Window -> Pane -> STM Options
+resolveForPane st sess win pane = do
+    p <- readTVar pane.options
+    rest <- resolveForWindow st sess win
+    pure (applyDelta p rest)
 
 freshId :: TVar Int -> STM Int
 freshId counter = do

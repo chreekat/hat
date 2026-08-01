@@ -1057,9 +1057,11 @@ adoptPane st sz histLimit rp = do
     modeVar   <- newTVarIO Nothing
     pipeVar   <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
+    optionsVar <- newTVarIO emptyDelta
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
+            , options = optionsVar
             , pipe = pipeVar, readerTid = readerVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the
@@ -1663,6 +1665,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     modeVar <- newTVarIO Nothing
     pipeVar <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
+    optionsVar <- newTVarIO emptyDelta
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
     pure Pane
@@ -1673,6 +1676,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , dead = deadVar
         , startCwd = dir
         , mode = modeVar
+        , options = optionsVar
         , pipe = pipeVar
         , readerTid = readerVar
         }
@@ -2814,6 +2818,7 @@ data SetScope
     | SetGlobalWindow
     | SetLocalSession
     | SetLocalWindow
+    | SetLocalPane
     deriving (Eq, Show)
 
 -- | Route a set to its scope from the command's default, its flags, and the
@@ -2829,6 +2834,9 @@ chooseScope def flags name
         WindowOption -> SetGlobalWindow
         ServerOption -> SetServer
         SessionOption -> SetGlobalSession
+    | hasP = if allowedAtPane name
+        then Right SetLocalPane
+        else Left (optionNameText name <> " is not a pane option")
     | wantWindow = SetLocalWindow <$ validateScope WindowOption name
     | otherwise = Right $ case cls of
         WindowOption -> SetLocalWindow
@@ -2838,6 +2846,7 @@ chooseScope def flags name
     cls = optionScopeClass name
     hasS = "-s" `elem` flags
     hasG = "-g" `elem` flags
+    hasP = "-p" `elem` flags
     wantWindow = "-w" `elem` flags || def == DefaultWindow
 
 cmdSet :: SetDefault -> CommandImpl
@@ -2891,8 +2900,9 @@ clientOptions st client = atomically $ do
     msess <- Map.lookup sid <$> readTVar st.sessions
     maybe (resolveGlobal st) (resolveForSession st) msess
 
--- | The overlay table a scope writes into, resolving the target session or
--- its current window; a missing target fails loud.
+-- | The overlay table a scope writes into, resolving the target session,
+-- its current window, or a pane; a missing target fails loud, naming the
+-- target and the scope's kind (upstream options-scope.sh).
 scopeTargetVar
     :: ServerState -> Maybe Client -> Maybe Text -> SetScope
     -> IO (Either Text (TVar OptionsDelta))
@@ -2902,10 +2912,37 @@ scopeTargetVar st mclient mtarget = \case
     SetGlobalWindow -> pure (Right st.globalWindowOptions)
     SetLocalSession -> do
         msess <- targetSession st mclient mtarget
-        pure (maybe (Left "no such session") (Right . (.options)) msess)
+        pure (orNoSuch "session" ((.options) <$> msess))
     SetLocalWindow -> do
         mwin <- targetCurrentWindow st mclient mtarget
-        pure (maybe (Left "no current window") (Right . (.options)) mwin)
+        pure (orNoSuch "window" ((.options) <$> mwin))
+    SetLocalPane -> do
+        mpane <- targetPaneScoped st mclient mtarget
+        pure (orNoSuch "pane" ((.options) <$> mpane))
+  where
+    orNoSuch kind = maybe (Left (noSuchTarget kind mtarget)) Right
+
+-- | The scope-specific error for an option target that did not resolve.
+noSuchTarget :: Text -> Maybe Text -> Text
+noSuchTarget kind = \case
+    Just t -> "no such " <> kind <> ": " <> t
+    Nothing -> "no current " <> kind
+
+-- | The pane a @-p@ option scope acts on: a pane id (or @!@/@~@) via
+-- 'targetPane', or the active pane of the target session's current window —
+-- an unresolvable @-t@ is the caller's error, never a silent fallback to
+-- the current pane.
+targetPaneScoped :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
+targetPaneScoped st mclient mtarget = case (mtarget, parsePaneTarget mtarget) of
+    (Just _, PaneCurrent) -> do
+        mwin <- targetCurrentWindow st mclient mtarget
+        case mwin of
+            Nothing -> pure Nothing
+            Just win -> atomically $ do
+                ps <- readTVar win.panes
+                a <- readTVar win.activeId
+                pure (Map.lookup a ps)
+    _ -> targetPane st mclient mtarget
 
 -- | The current window of the target session (or the client's).
 targetCurrentWindow

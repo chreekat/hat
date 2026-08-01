@@ -164,6 +164,7 @@ stubPane n = do
     modeV <- newTVarIO Nothing
     pipeV <- newTVarIO Nothing
     tidV  <- newTVarIO Nothing
+    optsV <- newTVarIO emptyDelta
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -172,6 +173,7 @@ stubPane n = do
         , dead = deadV
         , startCwd = "/"
         , mode = modeV
+        , options = optsV
         , pipe = pipeV
         , readerTid = tidV
         }

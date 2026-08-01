@@ -24,6 +24,7 @@ module Hat.Model.Options
     , resolveOptions
     , optionScopeClass
     , validateScope
+    , allowedAtPane
     , optionNameText
     , resolveOptionName
     ) where
@@ -301,6 +302,13 @@ optionScopeClass = \case
     OptPaneBorderIndicators -> WindowOption
     OptUser _ -> SessionOption
     _ -> SessionOption
+
+-- | Whether an option may live in a pane's own table: tmux's
+-- window-and-pane options, plus @\@foo@ user options.
+allowedAtPane :: OptionName -> Bool
+allowedAtPane = \case
+    OptUser _ -> True
+    _ -> False
 
 -- | Reject setting an option at a scope its class forbids (e.g. @setw prefix@),
 -- so a mis-scoped set fails loud rather than landing in the wrong table.
