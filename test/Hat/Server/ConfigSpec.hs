@@ -14,6 +14,8 @@ import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
 import Hat.Model.Options (Options (..))
 import Hat.Server (cmdSourceFile, readConfigUtf8)
+import Hat.Server.Environ
+    (EnvEntry (..), EnvVisibility (..), environFind)
 
 -- Run an action with @HOME@ pointed at @dir@, restoring the prior value.
 withHome :: FilePath -> IO a -> IO a
@@ -57,3 +59,20 @@ spec = do
                 _ <- cmdSourceFile st Nothing ["~/reload.conf"]
                 opts <- readTVarIO st.options
                 opts.statusLeft `shouldBe` "RELOADED"
+
+    -- tmux's config assignment forms (environ_put): a bare NAME=value line
+    -- sets a global environment variable, %hidden NAME=value a hidden one.
+    describe "config assignment forms" $
+        it "NAME=value and %hidden NAME=value set global variables" $ do
+            dir <- mkdtemp "/tmp/hat-envconf-"
+            flip finally (removeDirectoryRecursive dir) $ do
+                writeFile (dir <> "/env.conf")
+                    "CFGVAR=fromconfig\n%hidden CFGHID=hiddencfg\n"
+                lg <- newLogger "/dev/null"
+                st <- newServerState Map.empty lg (dir <> "/s.sock") Nothing
+                _ <- cmdSourceFile st Nothing [T.pack (dir <> "/env.conf")]
+                env <- readTVarIO st.globalEnviron
+                environFind "CFGVAR" env
+                    `shouldBe` Just (EnvEntry (Just "fromconfig") EnvVisible)
+                environFind "CFGHID" env
+                    `shouldBe` Just (EnvEntry (Just "hiddencfg") EnvHidden)

@@ -79,6 +79,7 @@ import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import Data.Char (isAlpha, isAlphaNum)
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
@@ -2448,11 +2449,34 @@ runArgv st mclient (name : args) = do
     logEvent st.logger CommandRun
         { client = maybe (-1) (\c -> rawClient c.id) mclient
         , command = T.unwords (name : args) }
-    case Map.lookup name commandTable of
-        Nothing -> pure [RErr ("unknown command: " <> name)]
-        Just impl -> impl st mclient args
-            `catch` \(e :: SomeException) ->
-                pure [RErr (name <> ": " <> T.pack (show e))]
+    case envAssignment (name : args) of
+        Just (vis, n, v) -> [] <$ atomically
+            (modifyTVar' st.globalEnviron (environSet vis n v))
+        Nothing -> case Map.lookup name commandTable of
+            Nothing -> pure [RErr ("unknown command: " <> name)]
+            Just impl -> impl st mclient args
+                `catch` \(e :: SomeException) ->
+                    pure [RErr (name <> ": " <> T.pack (show e))]
+
+-- | The config assignment forms (tmux's environ_put): a bare @NAME=value@
+-- line sets a global environment variable, @%hidden NAME=value@ a hidden
+-- one. Anything not shaped exactly like these stays a command lookup, so a
+-- typo still fails loud.
+envAssignment :: [Text] -> Maybe (EnvVisibility, Text, Text)
+envAssignment = \case
+    [w]            -> assign EnvVisible w
+    ["%hidden", w] -> assign EnvHidden w
+    _              -> Nothing
+  where
+    assign vis w = case T.breakOn "=" w of
+        (n, rest)
+            | Just v <- T.stripPrefix "=" rest
+            , isVarName n -> Just (vis, n, v)
+        _ -> Nothing
+    isVarName n = case T.uncons n of
+        Just (c, cs) -> (isAlpha c || c == '_')
+            && T.all (\x -> isAlphaNum x || x == '_') cs
+        Nothing -> False
 
 type CommandImpl = ServerState -> Maybe Client -> [Text] -> IO [Reply]
 
