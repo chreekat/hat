@@ -558,7 +558,7 @@ windowStruct eff (wix, w) = do
         lastOrd = lastAId >>= \pid -> List.elemIndex pid order
     pure WindowStruct
         { wsIx = wix, wsName = nm
-        , wsLayout = emitLayout (sizeRect (windowArea eff)) lay
+        , wsLayout = emitLayout (sizeRect (eff)) lay
         , wsActive = activeOrd, wsLastActive = lastOrd
         , wsAutoRename = auto
         , wsPanes = mapMaybe (`Map.lookup` paneMap) order }
@@ -1528,7 +1528,7 @@ createSession st mname mrun environ dir sz = do
     spawnEnv <- globalSpawnEnv st environ
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
-        dir spawnEnv (windowArea sz)
+        dir spawnEnv (sz)
     nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
@@ -2072,7 +2072,7 @@ applySessionSize st sid = atomically $ do
         lastSz <- readTVar sess.lastSize
         mwin <- currentWindow sess
         mode <- resizeModeFor st sess mwin
-        let eff = effectiveWindowSize mode lastSz stamps
+        let eff = sessionWindowArea mode lastSz stamps
         writeTVar sess.lastSize eff
         forM_ cs $ \c -> writeTVar c.needsFull True
         bumpDirty st
@@ -2150,7 +2150,7 @@ paneSizeTargets st = do
         eff <- readTVar sess.lastSize
         ws <- Map.elems <$> readTVar sess.windows
         fmap concat $ forM ws $ \win -> do
-            (rects, _) <- windowArrange (windowArea eff) win
+            (rects, _) <- windowArrange (eff) win
             ps <- readTVar win.panes
             pure [ (p, rectSize rect)
                  | (pidL, rect) <- rects
@@ -2648,7 +2648,7 @@ targetWorld st mclient = do
                 <$> readTVar win.name <*> readTVar win.layout
                 <*> readTVar win.activeId <*> readTVar win.lastActive
                 <*> readTVar win.panes
-            let warea = windowArea eff
+            let warea = eff
                 rects = fst (arrange (sizeRect warea) lay)
             pure ( ix
                  , Target.WindowEntry
@@ -3462,7 +3462,7 @@ cmdNewWindow st mclient args = do
                     env <- sessionFormatEnv st sess
                     T.unpack <$> expandFormat st env d
             (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
-                environ (windowArea eff)
+                environ (eff)
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False
@@ -3728,9 +3728,9 @@ cmdSplitWindow st mclient args = do
         Left e -> pure [RErr e]
         Right (sess, _, win, active) -> do
                 eff <- readTVarIO sess.lastSize
-                (rects, _) <- atomically (windowArrange (windowArea eff) win)
+                (rects, _) <- atomically (windowArrange (eff) win)
                 let mrect = List.lookup active.id rects
-                    wholeRect = sizeRect (windowArea eff)
+                    wholeRect = sizeRect (eff)
                     fitRect = if full then Just wholeRect else mrect
                     fits = case (orient, fitRect) of
                         (LeftRight, Just r) -> r.endCol - r.startCol >= 5
@@ -3749,7 +3749,7 @@ cmdSplitWindow st mclient args = do
                         let shellCmd = maybe "/bin/sh" T.unpack
                                 (List.lookup "SHELL" environ)
                         pane <- spawnPane st pid sess.id shellCmd (shellStart mrun)
-                            dir environ (windowArea eff)
+                            dir environ (eff)
                         atomically $ do
                             modifyTVar' win.panes (Map.insert pane.id pane)
                             modifyTVar' win.layout $ if full
@@ -3826,7 +3826,7 @@ cmdSelectPane st mclient args = do
                 eff <- readTVar sess.lastSize
                 lay <- readTVar win.layout
                 active <- readTVar win.activeId
-                forM_ (directionalTarget (windowArea eff) lay active dir) $ \next -> do
+                forM_ (directionalTarget (eff) lay active dir) $ \next -> do
                     writeTVar win.lastActive (Just active)
                     writeTVar win.activeId next
                     -- Leaving a zoomed pane cancels the zoom (bug 5).
@@ -4201,7 +4201,7 @@ arrangeNamed :: ServerState -> Session -> Window -> LayoutName -> IO ()
 arrangeNamed st sess win lname = do
     eff <- readTVarIO sess.lastSize
     opts <- readTVarIO st.options
-    let mainRatio = mainPaneRatio lname opts (windowArea eff)
+    let mainRatio = mainPaneRatio lname opts (eff)
     atomically $ do
         pids <- layoutPanes <$> readTVar win.layout
         unless (null pids) $ do
@@ -4332,7 +4332,7 @@ cmdResizePane st mclient args = do
                         active <- readTVar win.activeId
                         modifyTVar' win.layout
                             (resizeSplit active dir delta
-                                (sizeRect (windowArea eff)))
+                                (sizeRect (eff)))
                         bumpDirty st
                     applySessionSize st sess.id
                     pure []
@@ -5116,7 +5116,7 @@ windowFormatEnv st sess ix win = do
         [ ("window_index", tshow ix)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
-        , ("window_layout", emitLayout (sizeRect (windowArea eff)) lay)
+        , ("window_layout", emitLayout (sizeRect (eff)) lay)
         , ("window_active", if ix == cur then "1" else "0")
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))

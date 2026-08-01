@@ -101,7 +101,7 @@ renderOnce st client = do
                     Nothing -> pure Nothing
                     Just win -> do
                         eff <- readTVar sess.lastSize
-                        (rects, borders) <- windowArrange (windowArea eff) win
+                        (rects, borders) <- windowArrange (eff) win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
                         pure (Just (sess, win, rects, borders, ps, active))

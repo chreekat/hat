@@ -307,3 +307,15 @@ spec = do
         it "keeps the fallback size when no client is attached" $ do
             effectiveWindowSize SmallestClient fallback [] `shouldBe` fallback
             effectiveWindowSize ActiveClient fallback [] `shouldBe` fallback
+
+    describe "sessionWindowArea (status-line carve)" $ do
+        let fallback = Size { rows = 3, cols = 10 }
+            client = Size { rows = 24, cols = 80 }
+        it "gives a detached session its full size (no status line drawn)" $
+            sessionWindowArea SmallestClient fallback [] `shouldBe` fallback
+        it "carves one status row from an attached client's viewport" $
+            sessionWindowArea SmallestClient fallback [(1, client)]
+                `shouldBe` Size { rows = 23, cols = 80 }
+        it "never carves below a single row" $
+            sessionWindowArea ActiveClient fallback [(1, Size { rows = 1, cols = 5 })]
+                `shouldBe` Size { rows = 1, cols = 5 }

@@ -41,7 +41,6 @@ module Hat.Model
     , currentWindow
     , activePane
     , windowPanes
-    , windowArea
     , paneCurrentPath
     , findPaneById
     , findWindowById
@@ -165,7 +164,7 @@ data Session = Session
     , windows  :: TVar (Map Int Window)  -- ^ keyed by window index (sparse)
     , currentIx :: TVar Int
     , lastIx   :: TVar (Maybe Int)
-    , lastSize :: TVar Size              -- ^ effective size while no client is attached
+    , lastSize :: TVar Size              -- ^ the window's pane area; see 'sessionWindowArea'
     , environ  :: TVar Environ           -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
@@ -533,10 +532,6 @@ activePane win = do
 
 windowPanes :: Window -> STM [Pane]
 windowPanes win = Map.elems <$> readTVar win.panes
-
--- | The pane area of the screen: everything except the status line.
-windowArea :: Size -> Size
-windowArea sz = sz { rows = max 1 (sz.rows - 1) }
 
 -- | Where is a pane's child process now? /proc, with a fallback.
 paneCurrentPath :: Pane -> IO FilePath
