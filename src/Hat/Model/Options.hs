@@ -17,6 +17,7 @@ module Hat.Model.Options
     , emptyDelta
     , singletonDelta
     , insertDelta
+    , deleteDelta
     , deltaMember
     , mergeDeltas
     , applyEntry
@@ -216,6 +217,11 @@ singletonDelta name val = OptionsDelta (Map.singleton name val)
 
 insertDelta :: OptionName -> OptionValue -> OptionsDelta -> OptionsDelta
 insertDelta name val (OptionsDelta m) = OptionsDelta (Map.insert name val m)
+
+-- | Remove a scope's own entry (@set -u@), so resolution falls through to
+-- the parent scopes (or the compiled default at the top).
+deleteDelta :: OptionName -> OptionsDelta -> OptionsDelta
+deleteDelta name (OptionsDelta m) = OptionsDelta (Map.delete name m)
 
 -- | Whether an option was set in this delta (used to tell a user's set apart
 -- from a color-scheme default). See 'Hat.Server.ColorScheme.applyPalette'.

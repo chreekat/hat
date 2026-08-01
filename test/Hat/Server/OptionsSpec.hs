@@ -17,7 +17,7 @@ import Hat.Command.Parser (parseConfig)
 import Hat.Model.Options
     ( Options (..), defaultOptions
     , OptionName (..), OptionValue (..), ScopeClass (..)
-    , emptyDelta, singletonDelta, mergeDeltas, resolveOptions
+    , emptyDelta, singletonDelta, deleteDelta, mergeDeltas, resolveOptions
     , optionScopeClass, validateScope, resolveOptionName
     )
 import Hat.Server
@@ -121,6 +121,15 @@ spec = do
                 opts = resolveOptions [session, global]
             opts.prefix `shouldBe` "C-a"      -- only set globally
             opts.baseIndex `shouldBe` 1       -- session overrides global
+
+        it "deleting a scope's entry reveals the inherited value" $ do
+            let g = singletonDelta OptStatusLeft (OVText "GLOBAL")
+                s = singletonDelta OptStatusLeft (OVText "SESSION")
+            (resolveOptions [deleteDelta OptStatusLeft s, g]).statusLeft
+                `shouldBe` "GLOBAL"
+            -- and at the top, the compiled default
+            (resolveOptions [deleteDelta OptStatusLeft g]).statusLeft
+                `shouldBe` defaultOptions.statusLeft
 
         it "window scope beats session beats global" $ do
             let g = singletonDelta OptHistoryLimit (OVInt 1)

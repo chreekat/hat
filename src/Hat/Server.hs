@@ -2856,21 +2856,32 @@ cmdSet def st mclient args = do
     let (opts, flags, pos) = parseArgs "t" args
         mode = if "-a" `elem` flags then Append else Assign
         mtarget = lookup "-t" opts
+        quiet = "-q" `elem` flags   -- tolerate unknown/ambiguous names
+        unsetPanes = "-U" `elem` flags
+        unset = "-u" `elem` flags || unsetPanes
     case pos of
         (nameT : rest) -> case resolveOptionName nameT of
-            Left err -> pure [RErr err]
-            Right canonical -> do
-                curOpts <- currentResolved st mclient mtarget
-                case setOptionEntry mode curOpts (optionNameText canonical)
-                        (T.unwords rest) of
-                    Left err -> pure [RErr err]
-                    Right (n, v) -> case chooseScope def flags n of
+            Left err -> pure [RErr err | not quiet]
+            Right n -> case chooseScope def flags n of
+                Left err -> pure [RErr err]
+                Right scope -> do
+                    etv <- scopeTargetVar st mclient mtarget scope
+                    case etv of
                         Left err -> pure [RErr err]
-                        Right scope -> do
-                            etv <- scopeTargetVar st mclient mtarget scope
-                            case etv of
-                                Left err -> pure [RErr err]
-                                Right deltaVar -> writeScoped st deltaVar n v
+                        Right deltaVar
+                            | unset, (v : _) <- rest ->
+                                pure [RErr ("value passed to unset option: " <> v)]
+                            | unset -> do
+                                unsetScoped st deltaVar n
+                                when unsetPanes $
+                                    clearPaneCopies st mclient mtarget scope n
+                                pure []
+                            | otherwise -> do
+                                curOpts <- currentResolved st mclient mtarget
+                                case setOptionEntry mode curOpts
+                                        (optionNameText n) (T.unwords rest) of
+                                    Left err -> pure [RErr err]
+                                    Right (n', v) -> writeScoped st deltaVar n' v
         [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
 
 -- | Insert a resolved entry into its scope's overlay, refresh the cached
@@ -2886,6 +2897,40 @@ writeScoped st deltaVar n v = do
         bumpDirty st
     when (n == OptHistoryLimit) (applyHistoryLimit st)
     pure []
+
+-- | @set -u@: drop a scope's own entry so the parent scopes (or the compiled
+-- default) show through, with the same cache refresh as 'writeScoped'.
+unsetScoped :: ServerState -> TVar OptionsDelta -> OptionName -> IO ()
+unsetScoped st deltaVar n = do
+    atomically $ do
+        modifyTVar' deltaVar (deleteDelta n)
+        refreshGlobalOptions st
+        bumpDirty st
+    when (n == OptHistoryLimit) (applyHistoryLimit st)
+
+-- | @set -U@ on a window scope: additionally clear each pane's own copy, so
+-- every pane in the window (or everywhere, under @-g@) falls back to
+-- inheritance.
+clearPaneCopies
+    :: ServerState -> Maybe Client -> Maybe Text -> SetScope -> OptionName
+    -> IO ()
+clearPaneCopies st mclient mtarget scope n = case scope of
+    SetLocalWindow -> do
+        mwin <- targetCurrentWindow st mclient mtarget
+        forM_ mwin $ \win -> atomically $ do
+            clearWindow win
+            bumpDirty st
+    SetGlobalWindow -> atomically $ do
+        sessions <- readTVar st.sessions
+        forM_ (Map.elems sessions) $ \sess -> do
+            ws <- readTVar sess.windows
+            mapM_ clearWindow (Map.elems ws)
+        bumpDirty st
+    _ -> pure ()
+  where
+    clearWindow win = do
+        ps <- readTVar win.panes
+        forM_ (Map.elems ps) $ \p -> modifyTVar' p.options (deleteDelta n)
 
 -- | The options in effect for the target session (or the global chain when
 -- there is none): the base an @-a@ append concatenates onto.
