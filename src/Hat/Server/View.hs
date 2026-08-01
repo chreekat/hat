@@ -487,6 +487,7 @@ sessionFormatEnv st sess = do
     msch <- readTVarIO st.colorScheme
     pure . Map.union userOpts . Map.fromList $
         [ ("session_name", sname)
+        , ("session_id", "$" <> tshow (rawSession sess.id))
         , ("session_attached", tshow nclients)
         , ("session_windows", tshow nwindows)
         , ("host", T.pack hostname)

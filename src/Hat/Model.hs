@@ -48,6 +48,7 @@ module Hat.Model
     , rawClient
     , rawPane
     , rawSession
+    , rawWindow
     , tshow
     ) where
 
@@ -563,6 +564,9 @@ rawPane (PaneId n) = n
 
 rawSession :: SessionId -> Int
 rawSession (SessionId n) = n
+
+rawWindow :: WindowId -> Int
+rawWindow (WindowId n) = n
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

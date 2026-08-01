@@ -4681,6 +4681,7 @@ windowFormatEnv st sess ix win = do
             }
     pure $ Map.union (Map.fromList
         [ ("window_index", tshow ix)
+        , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
         , ("window_layout", emitLayout (sizeRect (windowArea eff)) lay)
         , ("window_active", if ix == cur then "1" else "0")
