@@ -2,6 +2,7 @@
 -- multiplexer logic lives on the other side of the socket.
 module Hat.Client
     ( ExitReason (..)
+    , Autostart (..)  -- ^ re-exported for 'Main.connectOrStart'
     , runClient
     , runControl
     ) where
@@ -39,8 +40,8 @@ data ExitReason
 versionMismatch :: Text
 versionMismatch = "unexpected greeting — mismatched hat versions?"
 
-hello :: Word16 -> Intent -> IO ClientToServer
-hello v intent = do
+hello :: Word16 -> Autostart -> Intent -> IO ClientToServer
+hello v origin intent = do
     term <- maybe "xterm" T.pack <$> lookupEnv "TERM"
     env0 <- getEnvironment
     sz <- ttySize
@@ -52,7 +53,7 @@ hello v intent = do
         , size = sz
         , cwd = T.pack dir
         , intent = intent
-        , autostarted = False
+        , autostarted = origin == Autostarted
         }
 
 -- One-time migration shim — DELETE once no strict-equality (pre-negotiation)
@@ -72,17 +73,17 @@ stepDown reconnect run sock = do
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
 -- shell) run server-side to establish which session we render.
 -- @reconnect@ serves 'stepDown' only.
-runClient :: IO (Maybe Socket) -> Socket -> [[Text]] -> IO ExitReason
-runClient reconnect sock setup = do
+runClient :: IO (Maybe Socket) -> Socket -> Autostart -> [[Text]] -> IO ExitReason
+runClient reconnect sock origin setup = do
     inp <- probeTerminal stdInput
     out <- probeTerminal stdOutput
     case diagnoseTerminal inp out of
         Just msg -> pure (Rejected msg)
-        Nothing -> stepDown reconnect (\v s -> attachClient v s setup) sock
+        Nothing -> stepDown reconnect (\v s -> attachClient v s origin setup) sock
 
-attachClient :: Word16 -> Socket -> [[Text]] -> IO ExitReason
-attachClient v sock setup = do
-    sendMessage sock =<< hello v (AttachIntent setup)
+attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
+attachClient v sock origin setup = do
+    sendMessage sock =<< hello v origin (AttachIntent setup)
     greeting <- recvMessage sock
     case greeting of
         Just (Known (Welcome _)) ->
@@ -144,13 +145,13 @@ shuttle sock = do
 
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell.
-runControl :: IO (Maybe Socket) -> Socket -> [[Text]] -> IO ExitReason
-runControl reconnect sock cmds =
-    stepDown reconnect (\v s -> controlAt v s cmds) sock
+runControl :: IO (Maybe Socket) -> Socket -> Autostart -> [[Text]] -> IO ExitReason
+runControl reconnect sock origin cmds =
+    stepDown reconnect (\v s -> controlAt v s origin cmds) sock
 
-controlAt :: Word16 -> Socket -> [[Text]] -> IO ExitReason
-controlAt v sock cmds = do
-    sendMessage sock =<< hello v ControlIntent
+controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
+controlAt v sock origin cmds = do
+    sendMessage sock =<< hello v origin ControlIntent
     greeting <- recvMessage sock
     case greeting of
         Just (Known (Welcome _)) -> do

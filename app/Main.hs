@@ -127,8 +127,8 @@ attach path mconfig setup = do
                 "hat: sessions should be nested with care, unset TMUX to force"
             exitFailure
         Nothing -> pure ()
-    sock <- connectOrStart path mconfig
-    reason <- runClient (connectTo path) sock setup
+    (sock, origin) <- connectOrStart path mconfig
+    reason <- runClient (connectTo path) sock origin setup
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
@@ -164,13 +164,13 @@ control path mconfig cmds = do
             _ -> ""
     msock <- if firstWord `elem` starters
         then Just <$> connectOrStart path mconfig
-        else connectTo path
+        else fmap (, Joined) <$> connectTo path
     case msock of
         Nothing -> do
             hPutStrLn stderr "hat: no server running"
             exitFailure
-        Just sock -> do
-            reason <- runControl (connectTo path) sock cmds
+        Just (sock, origin) -> do
+            reason <- runControl (connectTo path) sock origin cmds
             case reason of
                 -- Bare, like tmux: scripts match on the exact error text
                 -- (e.g. @duplicate session: NAME@), so no @hat: @ prefix.
@@ -179,17 +179,21 @@ control path mconfig cmds = do
                     exitFailure
                 _ -> pure ()
 
-connectOrStart :: FilePath -> Maybe FilePath -> IO Socket
+-- | Connect, spawning the server first if none is running. The origin says
+-- which happened: an 'Autostarted' invocation raced its own server's config
+-- load for the first session, so the server holds its commands until startup
+-- lands (see 'Hat.Server.startupGate').
+connectOrStart :: FilePath -> Maybe FilePath -> IO (Socket, Autostart)
 connectOrStart path mconfig = do
     msock <- connectTo path
     case msock of
-        Just sock -> pure sock
+        Just sock -> pure (sock, Joined)
         Nothing -> do
             startServer path mconfig
             -- 10s of headroom: the fresh server forks, sets up its socket
             -- dir/lock, and loads config before it starts listening, which
             -- can take a while under heavy load.
-            waitForServer path 100
+            (, Autostarted) <$> waitForServer path 100
 
 -- Spawn the detached server via 'createProcess' rather than a manual
 -- 'forkProcess'/'executeFile': createProcess does the fork+exec entirely

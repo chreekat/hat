@@ -325,12 +325,12 @@ spec = do
             (c2, s2) <- socketPair AF_UNIX Stream 0
             withAsync (strictServer s1) $ \_ ->
                 withAsync (strictServer s2) $ \_ -> do
-                    r <- runControl (pure (Just c2)) c1 [["restart-server"]]
+                    r <- runControl (pure (Just c2)) c1 Joined [["restart-server"]]
                     r `shouldBe` SessionEnded
         it "does not step down when the server negotiates" $ do
             (c1, s1) <- socketPair AF_UNIX Stream 0
             withAsync (negotiatingServer s1) $ \_ -> do
-                r <- runControl (pure Nothing) c1 [["list-panes"]]
+                r <- runControl (pure Nothing) c1 Joined [["list-panes"]]
                 r `shouldBe` SessionEnded
 
 -- The deployed pre-negotiation handshake: exact-4 or the field's exact error.
@@ -381,7 +381,7 @@ withFakeServer frames = do
     pure reason
   where
     client sock = do
-        r <- runControl (pure Nothing) sock [["kill-server"]]
+        r <- runControl (pure Nothing) sock Joined [["kill-server"]]
         close sock
         pure r
     server sock = do
