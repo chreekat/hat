@@ -58,6 +58,11 @@ spec = do
                 (setOption Assign defaultOptions "@foo" "bar")
                 `shouldBe` Right (Just "bar")
 
+        it "parses status-interval as a number of seconds" $
+            fmap (.statusInterval)
+                (setOption Assign defaultOptions "status-interval" "5")
+                `shouldBe` Right 5
+
         it "appends to a string option with -a" $ do
             let set mode opts name v =
                     either (const opts) id (setOption mode opts name v)

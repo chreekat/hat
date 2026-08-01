@@ -243,9 +243,16 @@ runServerWith path mconfig mhandover = do
         -- and 'link'ed, so an unexpected fault re-raises here rather than
         -- vanishing. Each daemon catches its own expected failures, so a link
         -- fires only on a genuine bug.
-        let clockDaemon = forever $ do            -- keep status-line clocks fresh
-                threadDelay 15_000_000
-                atomically (bumpDirty st)
+        -- Keep status-line clocks fresh, at the resolved @status-interval@
+        -- (the fastest across sessions); 0 disables the periodic redraw
+        -- (re-polled each second so a later set re-enables it).
+        let clockDaemon = forever $ do
+                miv <- atomically (statusRefreshInterval st)
+                case miv of
+                    Nothing -> threadDelay 1_000_000
+                    Just iv -> do
+                        threadDelay (iv * 1_000_000)
+                        atomically (bumpDirty st)
             -- Track foreground commands for automatic-rename windows and the
             -- clients' desktop titles. A dead pane's /proc read is the expected
             -- failure here (logged, skipped) — anything else is a real bug.
@@ -2914,6 +2921,19 @@ targetCurrentWindow st mclient mtarget = do
 refreshGlobalOptions :: ServerState -> STM ()
 refreshGlobalOptions st = writeTVar st.options =<< resolveGlobal st
 
+-- | The seconds the clock daemon sleeps between status redraws: the fastest
+-- session-resolved @status-interval@ (global when no sessions); 'Nothing'
+-- when every interval is 0 (periodic redraw disabled).
+statusRefreshInterval :: ServerState -> STM (Maybe Int)
+statusRefreshInterval st = do
+    sessions <- Map.elems <$> readTVar st.sessions
+    ivs <- if null sessions
+        then (: []) . (.statusInterval) <$> resolveGlobal st
+        else mapM (fmap (.statusInterval) . resolveForSession st) sessions
+    pure $ case filter (> 0) ivs of
+        [] -> Nothing
+        positive -> Just (minimum positive)
+
 -- | Push a changed @history-limit@ into every open pane's emulator so the new
 -- cap governs existing panes' scrollback immediately, not just panes created
 -- afterward. Each session resolves its own limit, so a session-scoped set
@@ -3105,6 +3125,7 @@ setOptionEntry mode opts name value = case name of
     "status-right" ->
         Right (OptStatusRight, OVText (withAppend opts.statusRight))
     "status-right-length" -> withInt OptStatusRightLength
+    "status-interval" -> withInt OptStatusInterval
     "window-status-format" ->
         Right (OptWindowStatusFormat,
             OVText (withAppend opts.windowStatusFormat))

@@ -63,6 +63,7 @@ data Options = Options
     , statusLeftLength :: Int
     , statusRight     :: Text
     , statusRightLength :: Int
+    , statusInterval  :: Int  -- ^ seconds between status redraws; 0 disables
     , windowStatusFormat :: Text
     , windowStatusCurrentFormat :: Text
     , statusStyle            :: Cell.Style
@@ -106,6 +107,7 @@ defaultOptions = Options
     , statusLeftLength = 10
     , statusRight = "%H:%M %d-%b-%y #H"
     , statusRightLength = 40
+    , statusInterval = 15
     , windowStatusFormat = "#I:#W#F"
     , windowStatusCurrentFormat = "#I:#W#F"
     , statusStyle = barStyle
@@ -151,6 +153,7 @@ data OptionName
     | OptStatusLeftLength
     | OptStatusRight
     | OptStatusRightLength
+    | OptStatusInterval
     | OptWindowStatusFormat
     | OptWindowStatusCurrentFormat
     | OptStatusStyle
@@ -235,6 +238,7 @@ applyEntry name val o = case (name, val) of
     (OptStatusLeftLength, OVInt n) -> o { statusLeftLength = n }
     (OptStatusRight, OVText t) -> o { statusRight = t }
     (OptStatusRightLength, OVInt n) -> o { statusRightLength = n }
+    (OptStatusInterval, OVInt n) -> o { statusInterval = n }
     (OptWindowStatusFormat, OVText t) -> o { windowStatusFormat = t }
     (OptWindowStatusCurrentFormat, OVText t) ->
         o { windowStatusCurrentFormat = t }
@@ -324,7 +328,7 @@ allOptionNames =
     [ OptPrefix, OptBaseIndex, OptPaneBaseIndex, OptStatusPosition
     , OptModeKeys, OptHistoryLimit, OptDefaultTerminal, OptWordSeparators
     , OptStatusLeft, OptStatusLeftLength, OptStatusRight
-    , OptStatusRightLength, OptWindowStatusFormat
+    , OptStatusRightLength, OptStatusInterval, OptWindowStatusFormat
     , OptWindowStatusCurrentFormat, OptStatusStyle, OptWindowStatusStyle
     , OptWindowStatusCurrentStyle, OptWindowStatusBellStyle
     , OptPaneBorderStyle, OptPaneActiveBorderStyle, OptModeStyle
@@ -362,6 +366,7 @@ optionNameText = \case
     OptStatusLeftLength -> "status-left-length"
     OptStatusRight -> "status-right"
     OptStatusRightLength -> "status-right-length"
+    OptStatusInterval -> "status-interval"
     OptWindowStatusFormat -> "window-status-format"
     OptWindowStatusCurrentFormat -> "window-status-current-format"
     OptStatusStyle -> "status-style"
