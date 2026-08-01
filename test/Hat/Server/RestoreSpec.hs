@@ -122,6 +122,30 @@ spec = do
             dstMode.altScreen `shouldBe` True
             dstSb `shouldBe` srcSb
 
+        -- Bug (2026-08-01): restoreBytes repainted the grid but left the
+        -- emulator's pen at the last painted cell's colour. After a
+        -- restart-server the still-alive shell's echoed keystrokes inherited
+        -- it — green text at the prompt until a redraw (C-u) reset it. The
+        -- restore must leave the pen at the default (the live pen is not
+        -- carried in the capture, and a program at a prompt expects default).
+        it "resets the pen to default after a restore, not the last cell's colour" $ do
+            let sz = Size { rows = 3, cols = 20 }
+            src <- Emu.newEmulator sz 1000
+            -- a green glyph, then a reset (as a coloured prompt ends): the last
+            -- VISIBLE cell is green, but the live pen is default.
+            _ <- Emu.feed src "\ESC[32m$\ESC[0m "
+            captured <- captureReloadScreen KeepScrollback src
+            let rp = ReloadPane
+                    { cwd = "/tmp", masterFd = 0, childPid = 0
+                    , modes = ReloadModes False False 0, screen = captured }
+                (bytes, _) = replayPane sz rp
+            dst <- Emu.newEmulator sz 1000
+            _ <- Emu.feed dst bytes
+            -- what the shell echoes next must be default-styled, not green
+            _ <- Emu.feed dst "X"
+            scr <- Emu.snapshot dst
+            ((scr.cells V.! 0) V.! 2).style `shouldBe` Cell.defaultStyle
+
         -- restart-server -C: restart as memory cleanup — the handover keeps
         -- the live grid but sheds every scrollback line.
         it "drops the scrollback from the capture when asked" $ do

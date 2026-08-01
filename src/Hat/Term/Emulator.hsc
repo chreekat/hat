@@ -194,6 +194,11 @@ restoreBytes m scr = BL.toStrict $ BB.toLazyByteString $
        (if m.altScreen then BB.byteString "\ESC[?1049h" else mempty)
     <> BB.byteString "\ESC[0m\ESC[H"
     <> foldMap rowBytes [0 .. V.length scr.cells - 1]
+    -- Reset the pen after the grid: the live pen is not carried in the
+    -- capture, so leave it at the default rather than the last painted
+    -- cell's colour, which the program's next output would otherwise
+    -- inherit (a coloured keystroke echo after restart-server).
+    <> BB.byteString "\ESC[0m"
     <> moveTo scr.cursor
     <> BB.byteString (if scr.cursorVisible then "\ESC[?25h" else "\ESC[?25l")
   where
