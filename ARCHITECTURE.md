@@ -170,12 +170,20 @@ Haskell's strength here. The shape:
   (`renderLoop`) that wakes on a single global `dirty` generation `TVar`
   (STM `retry`, not a per-client broadcast `TChan`) and re-renders the
   visible panes + status line + overlays into output bytes.
-- **No separate command-queue worker.** Tmux has per-client command
-  queues (`cmd-queue.c`); HAT runs commands inline in the socket-reader
-  thread instead — `if-shell` / `run-shell` shell out, but the command
-  set stayed small enough that inline execution never needed a queue.
-  **(the per-client `TQueue` worker first sketched below was dropped as
-  premature.)**
+- **Threads are the queues.** Tmux has per-client command queues plus a
+  global one for the config (`cmd-queue.c`, `cfg.c`), with `if-shell`
+  parking its queue item on a job callback. HAT gets the same semantics
+  from its threads: the config/startup thread *is* the global queue (an
+  `if-shell` condition blocking it *is* a parked item — green threads
+  make that free), and each connection thread is that client's queue.
+  What threads alone don't give is cross-flow *ordering* at startup;
+  that is the `StartupPhase` machine (`LoadingConfig → Restoring →
+  Ready`, landed exception-safely by `finallyReady`) plus the autostart
+  barrier — `startupGate` holds the client that spawned the server until
+  `Ready` (tmux's `cfg_client_done`), while a client the config itself
+  spawned (a nested `hat run` in an `if-shell` condition) is served
+  during `LoadingConfig`, so the config can never deadlock on its own
+  child. **(shipped.)**
 - **`async`** ties the renderer's lifetime to the client's:
   `withAsync (renderLoop …) (\_ -> inputLoop …)`, so detach cancels the
   renderer. **(shipped.)**
@@ -633,11 +641,14 @@ Architecture:
    `commandTable` that maps each name — and its aliases — to an impl
    function). No giant case statement; a name lookup dispatches. **(shipped
    as a lookup table, close to how tmux registers commands.)**
-3. **Execution is inline, not queued.** The socket-reader thread calls
-   `runCommands` and blocks until they finish; `if-shell` runs its chosen
-   branch in the same call. The per-client `TQueue` worker sketched in the
-   concurrency section was never built — the command set never grew a case
-   that needed it.
+3. **Execution is inline within a flow; startup ordering is the gate.**
+   The socket-reader thread calls `runCommands` and blocks until they
+   finish; `if-shell` runs its chosen branch in the same call. Per-flow
+   order comes from that inlining; the only cross-flow ordering is at
+   startup, where `awaitStartup`/`startupGate` hold a batch against the
+   `StartupPhase` (everyone during `Restoring`; only the autostarting
+   client during `LoadingConfig`) — see "Threads are the queues" in the
+   concurrency section.
 4. **Format strings** — `Hat.Server.Format` is a pure parser + pure
    evaluator over a `FormatEnv` record. The renderer constructs
    `FormatEnv` from current state and calls `evaluate`. `#(shell)`
