@@ -153,12 +153,8 @@ screen-redraw-fill-character.sh # needs fill-character + window-size manual + st
 screen-redraw-menus.sh          # needs display-menu window menus + menu styles + window-size
 theme-report.sh                 # needs respawn-window + window-style + remain-on-exit + nested attach
 
-# if-shell-nested: real bug, tracked in b (re-entrancy, not "unimplemented")
-if-shell-nested.sh              # @-user scope now fixed; a nested hat command as an if-shell condition in config crashes the server -- tracked in b
-#
-# NOT listed: if-shell-TERM.sh. It is FLAKY, not cleanly failing -- config load
-# runs in a background thread (so a nested `$TMUX` in an if-shell can reach the
-# accept loop), which lets `new` be served before the config's default-terminal
-# is set, racing the pane's TERM under load. Neither xfail nor pass is stable, so
-# it stays UNLISTED as the tracked open item pending the real config-load
-# ordering fix -- tracked in b. Do not paper over it with an xfail/skip.
+# NOT listed (they pass): if-shell-TERM.sh and if-shell-nested.sh. Both were
+# the config-load ordering bug, fixed by the startup phase machine + autostart
+# barrier (the client that spawned the server waits for the config to drain;
+# a nested client the config itself spawned is served immediately). Pinned by
+# the two config-ordering tests in IntegrationSpec.
