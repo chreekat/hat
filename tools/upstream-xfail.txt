@@ -51,11 +51,9 @@ tty-draw-line.sh
 tty-keys.sh
 utf8-test.sh
 
-# Re-baselined 2026-07-31 against pinned tmux master (flake input tmux-src,
-# 31dccb6): upstream grew from ~51 to 122 regress scripts. Triaged the new
-# failures below. new-session-base-index graduated (session-scoped base-index
-# fix). Reasons name the unimplemented subsystem each hinges on; several also
-# surfaced real close-miss bugs now in the tracker (b).
+# Baseline re-recorded 2026-07-31 against the pinned tmux master corpus
+# (flake input tmux-src). Each reason names the unimplemented subsystem
+# the script hinges on.
 
 # control mode (-C): whole subsystem unimplemented
 control-client-exit.sh          # no %-notification / exit handshake
@@ -152,9 +150,3 @@ lifecycle-deferred.sh           # needs detach-on-destroy + lifecycle hooks + co
 screen-redraw-fill-character.sh # needs fill-character + window-size manual + status off + floating panes
 screen-redraw-menus.sh          # needs display-menu window menus + menu styles + window-size
 theme-report.sh                 # needs respawn-window + window-style + remain-on-exit + nested attach
-
-# NOT listed (they pass): if-shell-TERM.sh and if-shell-nested.sh. Both were
-# the config-load ordering bug, fixed by the startup phase machine + autostart
-# barrier (the client that spawned the server waits for the config to drain;
-# a nested client the config itself spawned is served immediately). Pinned by
-# the two config-ordering tests in IntegrationSpec.
