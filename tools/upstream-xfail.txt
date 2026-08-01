@@ -103,8 +103,7 @@ new-pane-mouse.sh               # mouse/default-command options + list-keys + ne
 # option engine breadth: flat scalar table, global-only read-back
 options-array.sh                # array options (option[key], -a append, ordering) unmodeled
 options-values.sh               # most option names fail-loud + no typed value-validation table
-options-scope.sh                # show has no session/window/pane read-back (reads only the global cache) -- tracked in b
-show-options-output.sh          # needs hooks + show -A inheritance + array output; also unquoted scalars -- tracked in b
+show-options-output.sh          # needs hooks (set-hook -B/-H, show-hooks) + array-index output
 
 # capture-pane is a stub (ignores -R/-N/-F/-J/-S/-E/-t); emulation itself is correct
 input-cursor.sh                 # display-message ignores -t so #{cursor_x/y} empty -- tracked in b
