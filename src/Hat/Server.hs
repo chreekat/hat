@@ -61,6 +61,8 @@ module Hat.Server
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     , escTiming  -- ^ exported for the escape-time effect test
     , sessionSpawnEnv  -- ^ exported for the spawn-env merge test
+    , cmdSetEnvironment   -- ^ exported for the environment command tests
+    , cmdShowEnvironment  -- ^ exported for the environment command tests
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
     , placeWindow  -- ^ exported for the base-index window-numbering test
@@ -114,7 +116,9 @@ import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Geometry
 import Hat.Log
 import Hat.Server.Environ
-    (environFromPairs, environMerge, environPairs, environUpdate)
+    ( Environ, EnvEntry (..), EnvForm (..), EnvVisibility (..)
+    , environClear, environFind, environFromPairs, environMerge, environPairs
+    , environSet, environUnset, environUpdate, renderEnvLine )
 import Hat.Model
 import Hat.Model.Options
 import Hat.Path (expandTilde, hatPath, render, (</:>))
@@ -2425,6 +2429,7 @@ clientView st client = do
 -- The command engine ---------------------------------------------------------
 
 data Reply = ROutput Text | RErr Text
+    deriving (Eq, Show)
 
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
 runCommandText st mclient input = case parseCommandLine input of
@@ -2458,6 +2463,8 @@ commandTable = Map.fromList $ concatMap expand
     , (["set-option", "set"], cmdSet DefaultSession)
     , (["set-window-option", "setw"], cmdSet DefaultWindow)
     , (["show-options", "show", "show-option"], cmdShow)
+    , (["set-environment", "setenv"], cmdSetEnvironment)
+    , (["show-environment", "showenv"], cmdShowEnvironment)
     , (["source-file", "source"], cmdSourceFile)
     , (["new-window", "neww"], cmdNewWindow)
     , (["select-window", "selectw"], cmdSelectWindow)
@@ -2817,6 +2824,98 @@ lookupOption opts name = case name of
     _
         | "@" `T.isPrefixOf` name -> Map.lookup name opts.user
         | otherwise -> Nothing
+
+-- | The environment store a command's flags address: the global scope under
+-- @-g@, else the target session's. Like tmux, @-g@ ignores any @-t@.
+environScope
+    :: ServerState -> Maybe Client -> Maybe Text -> [Text]
+    -> IO (Either Text (TVar Environ))
+environScope st mclient mtarget flags
+    | "-g" `elem` flags = pure (Right st.globalEnviron)
+    | otherwise = do
+        msess <- targetSession st mclient mtarget
+        pure $ case (msess, mtarget) of
+            (Just sess, _)      -> Right sess.environ
+            (Nothing, Just t)   -> Left ("no such session: " <> t)
+            (Nothing, Nothing)  -> Left "no current session"
+
+-- | tmux @set-environment@: write a variable at global (@-g@) or session
+-- scope. @-u@ removes it, @-r@ clears it (masking inheritance), @-h@ hides
+-- it, @-F@ expands the value as a format against the target session.
+cmdSetEnvironment :: CommandImpl
+cmdSetEnvironment st mclient args
+    | any (`notElem` ["-F", "-h", "-g", "-r", "-u"]) flags = usage
+    | (name : rest) <- pos, length rest <= 1 = run name (listToMaybe rest)
+    | otherwise = usage
+  where
+    (opts, flags, pos) = parseArgs "t" args
+    usage = pure
+        [RErr "usage: set-environment [-Fhgru] [-t target-session] name [value]"]
+    run name rawValue
+        | T.null name = pure [RErr "empty variable name"]
+        | "=" `T.isInfixOf` name = pure [RErr "variable name contains ="]
+        | otherwise = do
+            mvalue <- case rawValue of
+                Just v | "-F" `elem` flags -> do
+                    msess <- targetSession st mclient (lookup "-t" opts)
+                    env <- maybe (pure Map.empty) (sessionFormatEnv st) msess
+                    Just <$> expandFormat st env v
+                _ -> pure rawValue
+            escope <- environScope st mclient (lookup "-t" opts) flags
+            case escope of
+                Left err -> pure [RErr err]
+                Right envVar
+                    | "-u" `elem` flags ->
+                        valueless mvalue "-u" (environUnset name) envVar
+                    | "-r" `elem` flags ->
+                        valueless mvalue "-r" (environClear name) envVar
+                    | otherwise -> case mvalue of
+                        Nothing -> pure [RErr "no value specified"]
+                        Just v -> [] <$ atomically
+                            (modifyTVar' envVar (environSet vis name v))
+    vis = if "-h" `elem` flags then EnvHidden else EnvVisible
+    valueless mvalue flagName f envVar = case mvalue of
+        Just _ -> pure [RErr ("can't specify a value with " <> flagName)]
+        Nothing -> [] <$ atomically (modifyTVar' envVar f)
+
+-- | tmux @show-environment@: print variables at global or session scope,
+-- cleared entries as @-NAME@. @-s@ emits shell re-export lines, @-h@ selects
+-- hidden variables instead of plain ones, a name prints just that variable.
+cmdShowEnvironment :: CommandImpl
+cmdShowEnvironment st mclient args
+    | any (`notElem` ["-h", "-g", "-s"]) flags = usage
+    | length pos > 1 = usage
+    | otherwise = do
+        -- Like tmux, an explicit but unresolvable -t fails even with -g.
+        badTarget <- case lookup "-t" opts of
+            Nothing -> pure Nothing
+            Just t -> do
+                msess <- targetSession st mclient (Just t)
+                pure $ maybe (Just ("no such session: " <> t))
+                    (const Nothing) msess
+        case badTarget of
+            Just err -> pure [RErr err]
+            Nothing -> do
+                escope <- environScope st mclient (lookup "-t" opts) flags
+                case escope of
+                    Left err -> pure [RErr err]
+                    Right envVar -> do
+                        env <- readTVarIO envVar
+                        pure $ case pos of
+                            [name] -> case environFind name env of
+                                Nothing ->
+                                    [RErr ("unknown variable: " <> name)]
+                                Just entry -> line (name, entry)
+                            _ -> concatMap line (Map.toAscList env)
+  where
+    (opts, flags, pos) = parseArgs "t" args
+    usage = pure
+        [RErr "usage: show-environment [-hgs] [-t target-session] [name]"]
+    wanted = if "-h" `elem` flags then EnvHidden else EnvVisible
+    form = if "-s" `elem` flags then EnvShellExport else EnvPlain
+    line (name, entry)
+        | entry.visibility == wanted = [ROutput (renderEnvLine form name entry)]
+        | otherwise = []
 
 -- | Whether a @set-option@ replaces the option or concatenates onto it.
 data SetMode
