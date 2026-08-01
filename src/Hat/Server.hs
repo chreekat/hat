@@ -146,7 +146,7 @@ import Hat.Server.LayoutString (emitLayout, layoutFromString)
 import qualified Hat.Server.Picker as Picker
 import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
-import Hat.Server.Style (parseStyle)
+import Hat.Server.Style (parseColor, parseStyle)
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
 import qualified Hat.Server.Target as Target
 import Hat.Server.Title (TitleParts (..), composeTitle)
@@ -1417,6 +1417,7 @@ newClient st conn h = do
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame h.size)
     cursorVar <- newIORef (Pos 0 0, True)
+    cursorColourVar <- newIORef ""
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
@@ -1442,6 +1443,7 @@ newClient st conn h = do
         , escState = escVar
         , lastFrame = frameVar
         , lastCursor = cursorVar
+        , lastCursorColour = cursorColourVar
         , needsFull = fullVar
         , toast = toastVar
         , prompt = promptVar
@@ -3181,6 +3183,13 @@ setOptionEntry mode opts name value = case name of
     "pane-active-border-style" ->
         Right (OptPaneActiveBorderStyle, OVStyle (parseStyle value))
     "mode-style" -> Right (OptModeStyle, OVStyle (parseStyle value))
+    "cursor-colour"
+        -- "default"/"" clear it; anything else must be a colour parseColor
+        -- recognizes (it answers DefaultColor only for those two and junk).
+        | T.null value || value == "default"
+            || parseColor value /= Cell.DefaultColor ->
+                Right (OptCursorColour, OVText value)
+        | otherwise -> Left ("bad colour: " <> value)
     "pane-border-lines" -> case value of
         "single" -> Right (OptPaneBorderLines, OVBorderLines BorderSingle)
         "heavy"  -> Right (OptPaneBorderLines, OVBorderLines BorderHeavy)

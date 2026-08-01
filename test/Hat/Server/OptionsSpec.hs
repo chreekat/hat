@@ -63,6 +63,13 @@ spec = do
                 (setOption Assign defaultOptions "status-interval" "5")
                 `shouldBe` Right 5
 
+        it "stores a valid cursor-colour and rejects junk" $ do
+            fmap (.cursorColour)
+                (setOption Assign defaultOptions "cursor-colour" "red")
+                `shouldBe` Right "red"
+            setOption Assign defaultOptions "cursor-colour" "zzz"
+                `shouldSatisfy` isLeft
+
         it "appends to a string option with -a" $ do
             let set mode opts name v =
                     either (const opts) id (setOption mode opts name v)
@@ -190,6 +197,14 @@ spec = do
         it "set -p routes a user option to the pane table" $
             chooseScope DefaultSession ["-p"] (OptUser "@u")
                 `shouldBe` Right SetLocalPane
+
+        it "set -p routes cursor-colour (window-and-pane) to the pane" $
+            chooseScope DefaultSession ["-p"] OptCursorColour
+                `shouldBe` Right SetLocalPane
+
+        it "bare set on cursor-colour infers the window scope" $
+            chooseScope DefaultSession [] OptCursorColour
+                `shouldBe` Right SetLocalWindow
 
         it "set -p on a non-pane option fails loud" $
             chooseScope DefaultSession ["-p"] OptStatusLeft

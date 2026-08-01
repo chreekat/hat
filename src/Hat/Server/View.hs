@@ -29,6 +29,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
@@ -103,10 +104,10 @@ renderOnce st client = do
                         (rects, borders) <- windowArrange (windowArea eff) win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
-                        pure (Just (sess, rects, borders, ps, active))
+                        pure (Just (sess, win, rects, borders, ps, active))
     (frame, cursor, mActiveRect) <- case view of
         Nothing -> pure (blankFrame csize, (Pos 0 0, False), Nothing)
-        Just (sess, rects, borders, ps, active) -> do
+        Just (sess, _, rects, borders, ps, active) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
@@ -164,6 +165,20 @@ renderOnce st client = do
     writeIORef client.lastFrame frame'
     writeIORef client.lastCursor cursor'
     when needSend $ send client (Draw (ops <> [cursorOp]))
+    -- @cursor-colour@: mirror the viewed active pane's resolved colour onto
+    -- the outer terminal's cursor (OSC 12), resetting it (OSC 112) when the
+    -- pane in view no longer has one.
+    colour <- case view of
+        Just (sess, win, _, _, ps, active)
+            | Just pane <- Map.lookup active ps ->
+                (.cursorColour) <$> atomically (resolveForPane st sess win pane)
+        _ -> pure ""
+    oldColour <- readIORef client.lastCursorColour
+    when (colour /= oldColour) $ do
+        writeIORef client.lastCursorColour colour
+        send client $ Notify $ if T.null colour
+            then "\ESC]112\a"
+            else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where
     foldM' z xs f = foldM f z xs
 

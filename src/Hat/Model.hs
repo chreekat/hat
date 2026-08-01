@@ -393,6 +393,7 @@ data Client = Client
     , escState  :: IORef EscPending   -- ^ held trailing ESC; input thread only
     , lastFrame :: IORef Frame        -- render thread only
     , lastCursor :: IORef (Pos, Bool)
+    , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool
     , toast     :: TVar (Maybe Text)  -- ^ display-message overlay
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor

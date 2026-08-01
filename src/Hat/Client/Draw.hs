@@ -93,5 +93,7 @@ bgCode = \case
 enterAltScreen :: ByteString
 enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[2J\ESC[H"
 
+-- Also resets the cursor colour (OSC 112) in case a pane's
+-- @cursor-colour@ was mirrored onto the outer terminal.
 leaveAltScreen :: ByteString
-leaveAltScreen = "\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h"
+leaveAltScreen = "\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a"

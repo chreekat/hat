@@ -37,6 +37,7 @@ mkClient = do
     escV    <- newIORef NoEscPending
     frameV  <- newIORef (blankFrame sz)
     curV    <- newIORef (Pos 0 0, True)
+    colourV <- newIORef ""
     fullV   <- newTVarIO True
     toastV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
@@ -49,6 +50,7 @@ mkClient = do
             , lastActive = activeV
             , session = sessV, lastSession = lastV, ready = readyV
             , keyState = keyV, escState = escV, lastFrame = frameV, lastCursor = curV
+            , lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, prompt = promptV
             , picker = pickV, outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "" }

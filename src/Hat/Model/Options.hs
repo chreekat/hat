@@ -76,6 +76,7 @@ data Options = Options
     , modeStyle              :: Cell.Style  -- ^ copy-mode selection highlight
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
+    , cursorColour           :: Text  -- ^ tmux colour text; @\"\"@ = terminal default
     , setTitles              :: Bool
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
     , displayTime            :: Int   -- ^ toast duration, ms
@@ -120,6 +121,7 @@ defaultOptions = Options
     , modeStyle = Cell.defaultStyle { Cell.reverse = True }
     , paneBorderLines = BorderSingle
     , paneBorderIndicators = IndicatorsColour
+    , cursorColour = ""
     , setTitles = False
     , escapeTime = 0
     , displayTime = 3000
@@ -166,6 +168,7 @@ data OptionName
     | OptModeStyle
     | OptPaneBorderLines
     | OptPaneBorderIndicators
+    | OptCursorColour
     | OptSetTitles
     | OptEscapeTime
     | OptDisplayTime
@@ -254,6 +257,7 @@ applyEntry name val o = case (name, val) of
     (OptPaneBorderLines, OVBorderLines l) -> o { paneBorderLines = l }
     (OptPaneBorderIndicators, OVBorderIndicators i) ->
         o { paneBorderIndicators = i }
+    (OptCursorColour, OVText t) -> o { cursorColour = t }
     (OptSetTitles, OVBool b) -> o { setTitles = b }
     (OptEscapeTime, OVInt n) -> o { escapeTime = n }
     (OptDisplayTime, OVInt n) -> o { displayTime = n }
@@ -300,6 +304,7 @@ optionScopeClass = \case
     OptModeStyle -> WindowOption
     OptPaneBorderLines -> WindowOption
     OptPaneBorderIndicators -> WindowOption
+    OptCursorColour -> WindowOption
     OptUser _ -> SessionOption
     _ -> SessionOption
 
@@ -308,6 +313,7 @@ optionScopeClass = \case
 allowedAtPane :: OptionName -> Bool
 allowedAtPane = \case
     OptUser _ -> True
+    OptCursorColour -> True
     _ -> False
 
 -- | Reject setting an option at a scope its class forbids (e.g. @setw prefix@),
@@ -340,7 +346,8 @@ allOptionNames =
     , OptWindowStatusCurrentFormat, OptStatusStyle, OptWindowStatusStyle
     , OptWindowStatusCurrentStyle, OptWindowStatusBellStyle
     , OptPaneBorderStyle, OptPaneActiveBorderStyle, OptModeStyle
-    , OptPaneBorderLines, OptPaneBorderIndicators, OptSetTitles
+    , OptPaneBorderLines, OptPaneBorderIndicators, OptCursorColour
+    , OptSetTitles
     , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
     , OptMonitorActivity, OptAutomaticRename, OptAutomaticRenameFormat
     , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
@@ -386,6 +393,7 @@ optionNameText = \case
     OptModeStyle -> "mode-style"
     OptPaneBorderLines -> "pane-border-lines"
     OptPaneBorderIndicators -> "pane-border-indicators"
+    OptCursorColour -> "cursor-colour"
     OptSetTitles -> "set-titles"
     OptEscapeTime -> "escape-time"
     OptDisplayTime -> "display-time"
