@@ -27,6 +27,7 @@ import Hat.Server
     , detachPane, detachPaneCurrent, detachPanes, markActivity, markBell
     , nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
     , removePaneFromTree, welcome )
+import Hat.Server.Environ (emptyEnviron)
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
@@ -43,7 +44,7 @@ addSession st n = do
         <*> newTVarIO 0
         <*> newTVarIO Nothing
         <*> newTVarIO (Size { rows = 24, cols = 80 })
-        <*> newTVarIO []
+        <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
         <*> newTVarIO emptyDelta
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId n) sess)
@@ -61,7 +62,7 @@ seedSession start = do
         <*> newTVarIO 0
         <*> newTVarIO Nothing
         <*> newTVarIO (Size { rows = 24, cols = 80 })
-        <*> newTVarIO []
+        <*> newTVarIO emptyEnviron
         <*> newTVarIO start
         <*> newTVarIO emptyDelta
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)

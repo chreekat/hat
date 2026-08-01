@@ -60,7 +60,7 @@ module Hat.Server
     , mainPaneRatio  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     , escTiming  -- ^ exported for the escape-time effect test
-    , applyUpdateEnvironment  -- ^ exported for the update-environment effect test
+    , sessionSpawnEnv  -- ^ exported for the spawn-env merge test
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
     , placeWindow  -- ^ exported for the base-index window-numbering test
@@ -113,6 +113,8 @@ import System.Process
 import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Geometry
 import Hat.Log
+import Hat.Server.Environ
+    (environFromPairs, environMerge, environPairs, environUpdate)
 import Hat.Model
 import Hat.Model.Options
 import Hat.Path (expandTilde, hatPath, render, (</:>))
@@ -723,7 +725,7 @@ restoreSession st ssnap = do
     let wins = filter (not . null . (.panes)) ssnap.windows
     unless (null wins) $ do
         sid <- SessionId <$> atomically (freshId st.nextSession)
-        env <- restoreEnv
+        env <- globalSpawnEnv st =<< restoreEnv
         whitelist <- restoreWhitelist st
         let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
             sz = Size { rows = 24, cols = 80 }  -- resized on client attach
@@ -742,7 +744,7 @@ restoreSession st ssnap = do
         currentVar <- newTVarIO curIx
         lastVar    <- newTVarIO lastI
         sizeVar    <- newTVarIO sz
-        environVar <- newTVarIO env
+        environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
         optionsVar <- newTVarIO emptyDelta
         let sess = Session
@@ -960,7 +962,7 @@ rebuildReloadSession st rsess = do
         currentVar <- newTVarIO curIx
         lastVar    <- newTVarIO lastI
         sizeVar    <- newTVarIO sz
-        environVar <- newTVarIO env
+        environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack rsess.startCwd)
         optionsVar <- newTVarIO emptyDelta
         let sess = Session
@@ -1440,26 +1442,29 @@ removeClient st client = do
 
 -- Sessions --------------------------------------------------------------
 
--- | On attach, copy the @update-environment@ vars from the attaching
--- client's env into the session, so panes spawned afterward see fresh
--- values (e.g. a new @DISPLAY@ after reconnecting over @ssh -X@).
+-- | On attach, import the @update-environment@ vars from the attaching
+-- client's env into the session ('environUpdate'), so panes spawned
+-- afterward see fresh values (e.g. a new @DISPLAY@ after reconnecting
+-- over @ssh -X@).
 refreshSessionEnv :: ServerState -> Session -> Client -> IO ()
 refreshSessionEnv st sess client = do
     vars <- (.updateEnvironment) <$> readTVarIO st.options
-    atomically $ modifyTVar' sess.environ
-        (applyUpdateEnvironment vars client.env)
+    atomically $ modifyTVar' sess.environ (environUpdate vars client.env)
 
--- | Fold the @update-environment@ vars from a client's env into a session's:
--- each listed var the client has replaces the session's entry; unlisted vars,
--- and listed vars the client lacks, are left as they were. See
--- 'refreshSessionEnv'.
-applyUpdateEnvironment
-    :: [Text] -> [(Text, Text)] -> [(Text, Text)] -> [(Text, Text)]
-applyUpdateEnvironment vars clientEnv = \env0 -> List.foldl' step env0 vars
-  where
-    step env v = case List.lookup v clientEnv of
-        Just val -> (v, val) : filter ((/= v) . fst) env
-        Nothing  -> env
+-- | The env a new pane inherits: the global environment overlaid by the
+-- session's, hidden and cleared entries dropped (tmux's environ_for_session).
+sessionSpawnEnv :: ServerState -> Session -> IO [(Text, Text)]
+sessionSpawnEnv st sess = atomically $ do
+    g <- readTVar st.globalEnviron
+    s <- readTVar sess.environ
+    pure (environPairs (environMerge g s))
+
+-- | 'sessionSpawnEnv' for spawn paths that have seed pairs but no 'Session'
+-- to read yet (session creation, restore).
+globalSpawnEnv :: ServerState -> [(Text, Text)] -> IO [(Text, Text)]
+globalSpawnEnv st pairs = do
+    g <- readTVarIO st.globalEnviron
+    pure (environPairs (environMerge g (environFromPairs pairs)))
 
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do
@@ -1490,15 +1495,16 @@ createSession
 createSession st mname mrun environ dir sz = do
     sid <- atomically (freshId st.nextSession)
     opts <- readTVarIO st.options
-    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
+    spawnEnv <- globalSpawnEnv st environ
+    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
-        dir environ (windowArea sz)
+        dir spawnEnv (windowArea sz)
     nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
     lastVar <- newTVarIO Nothing
     sizeVar <- newTVarIO sz
-    environVar <- newTVarIO environ
+    environVar <- newTVarIO (environFromPairs environ)
     cwdVar <- newTVarIO dir
     optionsVar <- newTVarIO emptyDelta
     let sess = Session
@@ -2967,7 +2973,7 @@ cmdNewWindow st mclient args = do
     let (opts, flags, pos) = parseArgs "nct" args
     withTargetSession st mclient Nothing $ \sess -> do
         eff <- readTVarIO sess.lastSize
-        environ <- readTVarIO sess.environ
+        environ <- sessionSpawnEnv st sess
         let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
             mrun = case pos of
                 [] -> Nothing
@@ -3231,7 +3237,7 @@ cmdSplitWindow st mclient args = do
                                 env <- sessionFormatEnv st sess
                                 T.unpack <$> expandFormat st env d
                             Nothing -> paneCurrentPath active
-                        environ <- readTVarIO sess.environ
+                        environ <- sessionSpawnEnv st sess
                         let shellCmd = maybe "/bin/sh" T.unpack
                                 (List.lookup "SHELL" environ)
                         pane <- spawnPane st pid sess.id shellCmd (shellStart mrun)

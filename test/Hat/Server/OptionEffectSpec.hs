@@ -17,8 +17,10 @@ import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), Options (..)
     , StatusPosition (..), defaultOptions )
-import Hat.Server
-    (applyUpdateEnvironment, deliversKey, escTiming, mainPaneRatio, resizeModeOf)
+import Hat.Server (deliversKey, escTiming, mainPaneRatio, resizeModeOf)
+import Hat.Server.Environ
+    ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
+    , environUpdate )
 import Hat.Server.Keys
     (EscPending (..), EscTokens (..), Key (..), feedKeys, flushEscape)
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
@@ -162,20 +164,24 @@ spec = do
                 resizeModeOf (defaultOptions { aggressiveResize = True })
                     `shouldBe` ActiveClient
 
-        -- update-environment: on attach, the listed vars are pulled from the
-        -- client's env into the session; others are left alone.
+        -- update-environment: on attach, each listed pattern pulls matching
+        -- vars from the client's env into the session; a pattern matching
+        -- nothing clears that name, masking the stale value.
         describe "update-environment refreshes only the listed vars" $ do
-            let clientEnv = [("DISPLAY", ":1"), ("FOO", "bar")]
-                sessEnv = [("DISPLAY", ":0"), ("KEEP", "yes")]
+            let clientEnv = [("DISPLAY", ":1"), ("TEST_GLOB", "gv"), ("FOO", "bar")]
+                sessEnv = environFromPairs [("DISPLAY", ":0"), ("KEEP", "yes")]
             it "a listed var the client has replaces the session's" $
-                lookup "DISPLAY" (applyUpdateEnvironment ["DISPLAY"] clientEnv sessEnv)
-                    `shouldBe` Just ":1"
+                environFind "DISPLAY" (environUpdate ["DISPLAY"] clientEnv sessEnv)
+                    `shouldBe` Just (EnvEntry (Just ":1") EnvVisible)
             it "an unlisted var is left untouched" $
-                lookup "KEEP" (applyUpdateEnvironment ["DISPLAY"] clientEnv sessEnv)
-                    `shouldBe` Just "yes"
-            it "a listed var the client lacks leaves the session as-is" $
-                lookup "DISPLAY" (applyUpdateEnvironment ["MISSING"] clientEnv sessEnv)
-                    `shouldBe` Just ":0"
+                environFind "KEEP" (environUpdate ["DISPLAY"] clientEnv sessEnv)
+                    `shouldBe` Just (EnvEntry (Just "yes") EnvVisible)
+            it "a glob pattern imports every matching client var" $
+                environFind "TEST_GLOB" (environUpdate ["TEST_*"] clientEnv sessEnv)
+                    `shouldBe` Just (EnvEntry (Just "gv") EnvVisible)
+            it "a listed var the client lacks is cleared, not kept" $
+                environFind "ABSENT" (environUpdate ["ABSENT"] clientEnv sessEnv)
+                    `shouldBe` Just (EnvEntry Nothing EnvVisible)
 
         -- escape-time: 0 forwards a lone trailing ESC as Escape at once; a
         -- non-zero value holds it (EscBuffered) so the input loop can coalesce

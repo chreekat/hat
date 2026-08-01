@@ -78,6 +78,7 @@ import qualified Hat.Term.Pty
 import Hat.Model.Options
     (Keymap, Options, OptionsDelta, defaultOptions, emptyDelta, resolveOptions)
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
+import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
@@ -120,6 +121,9 @@ data ServerState = ServerState
     , globalSessionOptions :: TVar OptionsDelta   -- ^ see 'resolveForSession'
     , globalWindowOptions :: TVar OptionsDelta     -- ^ see 'resolveForWindow'
     , schemeOptions :: TVar OptionsDelta            -- ^ see 'resolveGlobal'
+    , globalEnviron :: TVar Environ
+        -- ^ server-wide variables (@set-environment -g@, config @NAME=value@
+        --   lines); see 'Hat.Server.sessionSpawnEnv' for how they reach panes.
     , keymap      :: TVar Keymap
     , buffers     :: TVar (Seq (Text, Text))
         -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
@@ -158,7 +162,7 @@ data Session = Session
     , currentIx :: TVar Int
     , lastIx   :: TVar (Maybe Int)
     , lastSize :: TVar Size              -- ^ effective size while no client is attached
-    , environ  :: TVar [(Text, Text)]    -- ^ env for new panes; refreshed on attach (update-environment)
+    , environ  :: TVar Environ           -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
     }
@@ -414,6 +418,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO emptyDelta  -- globalSessionOptions
     <*> newTVarIO emptyDelta  -- globalWindowOptions
     <*> newTVarIO emptyDelta  -- schemeOptions
+    <*> newTVarIO emptyEnviron
     <*> newTVarIO defaultKeymap
     <*> newTVarIO Seq.empty
     <*> newTVarIO Map.empty
