@@ -2507,6 +2507,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["kill-window", "killw"], cmdKillWindow)
     , (["rename-window", "renamew"], cmdRenameWindow)
     , (["move-window", "movew"], cmdMoveWindow)
+    , (["link-window", "linkw"], cmdLinkWindow)
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
@@ -3960,6 +3961,38 @@ cmdMoveWindow st mclient args = do
                     ws' <- readTVar srcSess.windows
                     forM_ (Map.lookupMin ws') $ \(i, _) ->
                         writeTVar srcSess.currentIx i
+
+-- | @link-window -s src -t dst@: link the source window into the
+-- destination session at the given index (the same window, shared) and,
+-- without @-d@, make it current there.
+cmdLinkWindow :: CommandImpl
+cmdLinkWindow st mclient args = do
+    let (opts, flags, _) = parseArgs "st" args
+    esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
+    edst <- findWindowIndexTarget st mclient (lookup "-t" opts)
+    case (esrc, edst) of
+        (Right (_, _, win, _), Right (dstSess, mdstIx)) -> do
+            res <- atomically $ do
+                dws <- readTVar dstSess.windows
+                sopts <- resolveForSession st dstSess
+                let dstIx = fromMaybe
+                        (until (`Map.notMember` dws) (+ 1) sopts.baseIndex)
+                        mdstIx
+                if Map.member dstIx dws
+                    then pure (Left ("index in use: " <> tshow dstIx))
+                    else do
+                        modifyTVar' dstSess.windows (Map.insert dstIx win)
+                        unless ("-d" `elem` flags) $ do
+                            cur <- readTVar dstSess.currentIx
+                            writeTVar dstSess.lastIx (Just cur)
+                            writeTVar dstSess.currentIx dstIx
+                        bumpDirty st
+                        pure (Right ())
+            case res of
+                Left e -> pure [RErr e]
+                Right () -> applySessionSize st dstSess.id >> pure []
+        (Left e, _) -> pure [RErr e]
+        (_, Left e) -> pure [RErr e]
 
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args = do
