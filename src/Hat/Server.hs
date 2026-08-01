@@ -70,6 +70,7 @@ module Hat.Server
     , placeWindow  -- ^ exported for the base-index window-numbering test
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
 import Control.Concurrent.Async (Async, async, cancel, link, race, withAsync)
 import Control.Concurrent.MVar
@@ -147,6 +148,7 @@ import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
 import Hat.Server.Style (parseStyle)
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
+import qualified Hat.Server.Target as Target
 import Hat.Server.Title (TitleParts (..), composeTitle)
 import Hat.Server.View
     (WindowFlagState (..), expandFormat, renderLoop, sessionFormatEnv,
@@ -2609,6 +2611,111 @@ targetSession st mclient mtarget = atomically $ do
                     Nothing -> pure (snd <$> Map.lookupMax sessions)
             Nothing -> pure (snd <$> Map.lookupMax sessions)
 
+-- | Snapshot the server tree for the pure cmd-find core
+-- ('Hat.Server.Target.resolveTarget'). The current state is the client's
+-- attached view, else the session its @TMUX_PANE@ lives in, else the
+-- newest session (matching 'targetSession').
+targetWorld :: ServerState -> Maybe Client -> IO Target.World
+targetWorld st mclient = do
+    sessMap <- readTVarIO st.sessions
+    entries <- forM (Map.toAscList sessMap) $ \(sid, sess) -> do
+        (nm, cur, lastIx, eff) <- atomically $ (,,,)
+            <$> readTVar sess.name <*> readTVar sess.currentIx
+            <*> readTVar sess.lastIx <*> readTVar sess.lastSize
+        ws <- readTVarIO sess.windows
+        wentries <- forM (Map.toAscList ws) $ \(ix, win) -> do
+            (wname, lay, act, lastP, ps) <- atomically $ (,,,,)
+                <$> readTVar win.name <*> readTVar win.layout
+                <*> readTVar win.activeId <*> readTVar win.lastActive
+                <*> readTVar win.panes
+            let warea = windowArea eff
+                rects = fst (arrange (sizeRect warea) lay)
+            pure ( ix
+                 , Target.WindowEntry
+                     { windowId = win.id
+                     , name = wname
+                     , panes =
+                         [ (pid, fromMaybe (sizeRect warea) (List.lookup pid rects))
+                         | pid <- Map.keys ps ]
+                     , activePane = act
+                     , lastPane = lastP
+                     , area = warea
+                     } )
+        pure Target.SessionEntry
+            { sessionId = sid, name = nm, windows = wentries
+            , currentIx = cur, lastIx = lastIx }
+    pbase <- (.paneBaseIndex) <$> readTVarIO st.options
+    mmarked <- readTVarIO st.markedPane
+    msid <- traverse (\c -> readTVarIO c.session) mclient
+    let entryById i = List.find (\se -> se.sessionId == i) entries
+        clientCur = Target.sessionCurrent =<< entryById =<< msid
+        tmuxPaneCur = do
+            client <- mclient
+            v <- List.lookup "TMUX_PANE" client.env
+            n <- T.stripPrefix "%" v >>= parseDec
+            Target.sessionCurrentFound entries (PaneId n)
+        bestCur = Target.sessionCurrent =<< listToMaybe (reverse entries)
+    pure Target.World
+        { sessions = entries
+        , paneBase = pbase
+        , marked = Target.paneFound entries =<< mmarked
+        , clientCurrent = clientCur
+        , current = clientCur <|> tmuxPaneCur <|> bestCur
+        }
+  where
+    parseDec t = case TR.decimal t of
+        Right (n, rest) | T.null rest -> Just n
+        _ -> Nothing
+
+-- | Resolve a full @-t@ target to live structures; errors carry
+-- cmd-find's texts.
+findTarget
+    :: ServerState -> Maybe Client -> Target.FindType -> Maybe Text
+    -> IO (Either Text (Session, Int, Window, Pane))
+findTarget st mclient ftype mtarget = do
+    world <- targetWorld st mclient
+    case Target.resolveTarget ftype world mtarget of
+        Left e -> pure (Left e)
+        Right f -> do
+            got <- atomically $ do
+                sessions <- readTVar st.sessions
+                case Map.lookup f.session sessions of
+                    Nothing -> pure Nothing
+                    Just sess -> do
+                        ws <- readTVar sess.windows
+                        case Map.lookup f.windowIx ws of
+                            Nothing -> pure Nothing
+                            Just win -> do
+                                ps <- readTVar win.panes
+                                pure $ (,,,) sess f.windowIx win
+                                    <$> Map.lookup f.pane ps
+            -- The snapshot raced a concurrent mutation; treat as missing.
+            pure (maybe (Left "no such target") Right got)
+
+-- | Resolve a destination window index (@new-window@\/@move-window@ style
+-- @-t@): the session plus an index that may not exist yet ('Nothing' =
+-- the command picks a free slot).
+findWindowIndexTarget
+    :: ServerState -> Maybe Client -> Maybe Text
+    -> IO (Either Text (Session, Maybe Int))
+findWindowIndexTarget st mclient mtarget = do
+    world <- targetWorld st mclient
+    case Target.resolveWindowIndex world mtarget of
+        Left e -> pure (Left e)
+        Right (sid, mix) -> do
+            sessions <- readTVarIO st.sessions
+            pure $ case Map.lookup sid sessions of
+                Nothing -> Left "no such target"
+                Just sess -> Right (sess, mix)
+
+-- | A pane's tmux index: its position in the window's creation order,
+-- offset by @pane-base-index@.
+paneIndexOf :: ServerState -> Window -> Pane -> IO Int
+paneIndexOf st win pane = do
+    pbase <- (.paneBaseIndex) <$> readTVarIO st.options
+    ps <- readTVarIO win.panes
+    pure (maybe pbase (pbase +) (Map.lookupIndex pane.id ps))
+
 withTargetSession
     :: ServerState -> Maybe Client -> Maybe Text
     -> (Session -> IO [Reply]) -> IO [Reply]
@@ -3101,41 +3208,40 @@ placeWindow requested afterCurrent cur base ws =
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args = do
     let (opts, flags, pos) = parseArgs "nct" args
-    withTargetSession st mclient Nothing $ \sess -> do
-        eff <- readTVarIO sess.lastSize
-        environ <- sessionSpawnEnv st sess
-        let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
-            mrun = case pos of
-                [] -> Nothing
-                ws -> Just (T.unwords ws)
-        dir <- case lookup "-c" opts of
-            Nothing -> readTVarIO sess.startCwd
-            Just d -> do
-                env <- sessionFormatEnv st sess
-                T.unpack <$> expandFormat st env d
-        (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
-            environ (windowArea eff)
-        forM_ (lookup "-n" opts) $ \nm -> atomically $ do
-            writeTVar win.name nm
-            writeTVar win.autoRename False
-        atomically $ do
-            ws <- readTVar sess.windows
-            cur <- readTVar sess.currentIx
-            sopts <- resolveForSession st sess
-            let requested = do
-                    t <- lookup "-t" opts
-                    case TR.decimal t of
-                        Right (n, restT) | T.null restT -> Just n
-                        _ -> Nothing
-                ix' = placeWindow requested ("-a" `elem` flags) cur sopts.baseIndex ws
-            modifyTVar' sess.windows (Map.insert ix' win)
-            unless ("-d" `elem` flags) $ do
-                writeTVar sess.lastIx (Just cur)
-                writeTVar sess.currentIx ix'
-            bumpDirty st
-        startPaneReader st sess.id win pane
-        applySessionSize st sess.id
-        pure []
+    res <- findWindowIndexTarget st mclient (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, requested) -> do
+            eff <- readTVarIO sess.lastSize
+            environ <- sessionSpawnEnv st sess
+            let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
+                mrun = case pos of
+                    [] -> Nothing
+                    ws -> Just (T.unwords ws)
+            dir <- case lookup "-c" opts of
+                Nothing -> readTVarIO sess.startCwd
+                Just d -> do
+                    env <- sessionFormatEnv st sess
+                    T.unpack <$> expandFormat st env d
+            (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
+                environ (windowArea eff)
+            forM_ (lookup "-n" opts) $ \nm -> atomically $ do
+                writeTVar win.name nm
+                writeTVar win.autoRename False
+            atomically $ do
+                ws <- readTVar sess.windows
+                cur <- readTVar sess.currentIx
+                sopts <- resolveForSession st sess
+                let ix' = placeWindow requested ("-a" `elem` flags) cur
+                        sopts.baseIndex ws
+                modifyTVar' sess.windows (Map.insert ix' win)
+                unless ("-d" `elem` flags) $ do
+                    writeTVar sess.lastIx (Just cur)
+                    writeTVar sess.currentIx ix'
+                bumpDirty st
+            startPaneReader st sess.id win pane
+            applySessionSize st sess.id
+            pure []
 
 cmdSelectWindow :: CommandImpl
 cmdSelectWindow st mclient args = do
@@ -3144,56 +3250,12 @@ cmdSelectWindow st mclient args = do
             (Just t, _) -> Just t
             (Nothing, [t]) -> Just t
             _ -> Nothing
-    mres <- resolveWindowTarget st mclient target
-    case mres of
-        Nothing -> pure [RErr "usage: select-window -t index"]
-        Just (sess, ix) -> do
+    res <- findTarget st mclient Target.FindWindow target
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, ix, _, _) -> do
             atomically (switchTo st sess ix)
             pure []
-
--- Accepts @[session][:window]@ where session may be a name or @$id@ and
--- window may be a number, @$@ for the last window, or omitted to mean
--- the session's current window. A bare token without @:@ is a window
--- spec in the current session (or a session spec if it starts with @$@).
-resolveWindowTarget
-    :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe (Session, Int))
-resolveWindowTarget st mclient mtarget = case mtarget of
-    Nothing -> do
-        msess <- targetSession st mclient Nothing
-        traverse currentPair msess
-    Just t
-        | ":" `T.isInfixOf` t -> withColon t
-        | "$" `T.isPrefixOf` t -> do
-            msess <- targetSession st mclient (Just t)
-            traverse currentPair msess
-        | otherwise -> do  -- bare window spec in current session
-            msess <- targetSession st mclient Nothing
-            case msess of
-                Nothing -> pure Nothing
-                Just sess -> do
-                    mix <- parseWinIx sess t
-                    pure $ (,) sess <$> mix
-  where
-    withColon t =
-        let (s, rest) = T.break (== ':') t
-            w = T.drop 1 rest
-        in do
-            msess <- targetSession st mclient
-                (if T.null s then Nothing else Just s)
-            case msess of
-                Nothing -> pure Nothing
-                Just sess
-                    | T.null w -> Just <$> currentPair sess
-                    | otherwise -> do
-                        mix <- parseWinIx sess w
-                        pure $ (,) sess <$> mix
-    currentPair sess = (,) sess <$> readTVarIO sess.currentIx
-    parseWinIx sess "$" = do
-        ws <- readTVarIO sess.windows
-        pure (fst <$> Map.lookupMax ws)
-    parseWinIx _ w = pure $ case TR.decimal w of
-        Right (n, rest) | T.null rest -> Just n
-        _ -> Nothing
 
 switchTo :: ServerState -> Session -> Int -> STM ()
 switchTo st sess ix = do
@@ -3302,34 +3364,36 @@ cmdResizeWindow st mclient args = do
         pure []
 
 cmdKillWindow :: CommandImpl
-cmdKillWindow st mclient _ =
-    withCurrentWindow st mclient $ \sess win -> do
-        ps <- readTVarIO win.panes
-        killPaneLocs st [(sess.id, win, p) | p <- Map.elems ps]
-        pure []
+cmdKillWindow st mclient args = do
+    let (opts, _, _) = parseArgs "t" args
+    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, _, win, _) -> do
+            ps <- readTVarIO win.panes
+            killPaneLocs st [(sess.id, win, p) | p <- Map.elems ps]
+            pure []
 
 cmdRenameWindow :: CommandImpl
 cmdRenameWindow st mclient args = do
     let (opts, _, pos) = parseArgs "t" args
     case pos of
         [nm] -> do
-            mres <- resolveWindowTarget st mclient (lookup "-t" opts)
-            case mres of
-                Just (sess, ix) -> do
-                    ws <- readTVarIO sess.windows
-                    forM_ (Map.lookup ix ws) $ \win ->
-                        -- An empty name hands the window back to
-                        -- automatic-rename; a real name pins it.
-                        if T.null nm
-                            then do
-                                atomically (writeTVar win.autoRename True)
-                                refreshAutoNames st
-                            else atomically $ do
-                                writeTVar win.name nm
-                                writeTVar win.autoRename False
-                                bumpDirty st
+            res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+            case res of
+                Right (_, _, win, _) -> do
+                    -- An empty name hands the window back to
+                    -- automatic-rename; a real name pins it.
+                    if T.null nm
+                        then do
+                            atomically (writeTVar win.autoRename True)
+                            refreshAutoNames st
+                        else atomically $ do
+                            writeTVar win.name nm
+                            writeTVar win.autoRename False
+                            bumpDirty st
                     pure []
-                Nothing -> pure [RErr "no such window"]
+                Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
 
 cmdSplitWindow :: CommandImpl
@@ -3344,11 +3408,10 @@ cmdSplitWindow st mclient args = do
         mrun = case pos of
             [] -> Nothing
             ws -> Just (T.unwords ws)
-    withCurrentWindow st mclient $ \sess win -> do
-        mactive <- atomically (activePane win)
-        case mactive of
-            Nothing -> pure [RErr "no active pane"]
-            Just active -> do
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, _, win, active) -> do
                 eff <- readTVarIO sess.lastSize
                 (rects, _) <- atomically (windowArrange (windowArea eff) win)
                 let mrect = List.lookup active.id rects
@@ -3405,10 +3468,13 @@ cmdSelectPane st mclient args = do
                 atomically $ writeTVar st.markedPane Nothing >> bumpDirty st
                 pure []
             | "-m" `elem` flags -> do
-                mp <- targetPane st mclient (lookup "-t" opts)
-                forM_ mp $ \pane -> atomically $
-                    writeTVar st.markedPane (Just pane.id) >> bumpDirty st
-                pure []
+                res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+                case res of
+                    Left e -> pure [RErr e]
+                    Right (_, _, _, pane) -> do
+                        atomically $
+                            writeTVar st.markedPane (Just pane.id) >> bumpDirty st
+                        pure []
             | "-l" `elem` flags -> cmdLastPane st mclient []
             | Just idx <- mPaneIndex ->
                 withCurrentWindow st mclient $ \_ win -> do
@@ -3425,6 +3491,20 @@ cmdSelectPane st mclient args = do
                                 writeTVar win.activeId next
                                 bumpDirty st
                     pure []
+            -- A full cmd-find pane target (e.g. @sess:win.%id@) activates
+            -- that pane within its own window.
+            | Just t <- lookup "-t" opts -> do
+                res <- findTarget st mclient Target.FindPane (Just t)
+                case res of
+                    Left e -> pure [RErr e]
+                    Right (_, _, win, pane) -> do
+                        atomically $ do
+                            active <- readTVar win.activeId
+                            when (pane.id /= active) $ do
+                                writeTVar win.lastActive (Just active)
+                                writeTVar win.activeId pane.id
+                                bumpDirty st
+                        pure []
             | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l|-t index|:.[+-][N]"]
         Just dir -> withCurrentWindow st mclient $ \sess win -> do
             atomically $ do
@@ -3838,19 +3918,23 @@ cycleLayout step st mclient _ =
 cmdMoveWindow :: CommandImpl
 cmdMoveWindow st mclient args = do
     let (opts, _, _) = parseArgs "st" args
-    msrc <- resolveWindowTarget st mclient (lookup "-s" opts)
-    mdst <- resolveWindowTarget st mclient (lookup "-t" opts)
-    case (msrc, mdst) of
-        (Just (srcSess, srcIx), Just (dstSess, dstIx)) -> do
+    esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
+    edst <- findWindowIndexTarget st mclient (lookup "-t" opts)
+    case (esrc, edst) of
+        (Right (srcSess, srcIx, _, _), Right (dstSess, mdstIx)) -> do
             res <- atomically $ do
                 sws <- readTVar srcSess.windows
+                dws <- readTVar dstSess.windows
+                sopts <- resolveForSession st dstSess
+                let dstIx = fromMaybe
+                        (until (`Map.notMember` dws) (+ 1) sopts.baseIndex)
+                        mdstIx
                 case Map.lookup srcIx sws of
                     Nothing -> pure (Right ())  -- nothing to move
                     Just win
                         | srcSess.id == dstSess.id, srcIx == dstIx ->
                             pure (Right ())  -- already there
                         | otherwise -> do
-                            dws <- readTVar dstSess.windows
                             if Map.member dstIx dws
                                 then pure (Left ("can't move window: "
                                     <> tshow dstIx <> " in use"))
@@ -3861,7 +3945,8 @@ cmdMoveWindow st mclient args = do
                                     bumpDirty st
                                     pure (Right ())
             pure [RErr e | Left e <- [res]]
-        _ -> pure [RErr "usage: move-window -s src -t dst"]
+        (Left e, _) -> pure [RErr e]
+        (_, Left e) -> pure [RErr e]
   where
     -- The moved window keeps the focus: within a session the current
     -- index follows it to the destination; across sessions the source
@@ -4563,14 +4648,15 @@ cmdKillSession st mclient args = do
         killPaneLocs st locs
         pure []
 
+-- | @has-session -t target@: resolve strictly and report cmd-find's
+-- error; upstream targets.sh probes error paths through it.
 cmdHasSession :: CommandImpl
 cmdHasSession st mclient args = do
     let (opts, _, _) = parseArgs "t" args
-    msess <- targetSession st mclient (lookup "-t" opts)
-    pure $ case msess of
-        Just _ -> []
-        Nothing -> [RErr $ "can't find session: "
-            <> fromMaybe "" (lookup "-t" opts)]
+    res <- findTarget st mclient Target.FindSession (lookup "-t" opts)
+    pure $ case res of
+        Right _ -> []
+        Left e -> [RErr e]
 
 -- The server is necessarily running by the time this executes.
 cmdStartServer :: CommandImpl
@@ -4914,15 +5000,20 @@ restartClientAction = \case
     Just Attached -> RestartAttached
     _             -> NoAttachedClient
 
+-- | @display-message [-p] [-t target] message@. The target is a pane
+-- (tmux's @CMD_FIND_PANE@ with @CANFAIL@): the message expands in the
+-- resolved pane's format environment, and an unresolvable target
+-- degrades to the plain text instead of erroring.
 cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do
-    let (_, flags, pos) = parseArgs "t" args
+    let (opts, flags, pos) = parseArgs "t" args
         raw = T.unwords pos
-    msess <- targetSession st mclient Nothing
-    text <- case msess of
-        Nothing -> pure raw
-        Just sess -> do
-            env <- sessionFormatEnv st sess
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    text <- case res of
+        Left _ -> pure raw
+        Right (sess, wix, win, pane) -> do
+            pix <- paneIndexOf st win pane
+            env <- paneFormatEnv st sess wix win pix pane
             expandFormat st env raw
     if "-p" `elem` flags
         then pure [ROutput text]

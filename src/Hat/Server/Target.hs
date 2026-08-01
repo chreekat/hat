@@ -15,6 +15,7 @@ module Hat.Server.Target
     , resolveTarget
     , resolveWindowIndex
     , paneFound
+    , sessionCurrent
     , sessionCurrentFound
     , wildMatch
     ) where
