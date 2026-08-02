@@ -151,9 +151,11 @@ spec = do
         -- content offset; top puts it on row 0 and pushes content down one.
         describe "status-position places the status bar" $ do
             it "bottom (default): last row, no content offset" $
-                statusLayout StatusBottom 24 `shouldBe` (0, 23)
+                statusLayout StatusBottom 1 24 `shouldBe` (0, Just 23)
             it "top: row 0, content offset by one" $
-                statusLayout StatusTop 24 `shouldBe` (1, 0)
+                statusLayout StatusTop 1 24 `shouldBe` (1, Just 0)
+            it "off (status 0): no bar, content fills the height" $
+                statusLayout StatusBottom 0 24 `shouldBe` (0, Nothing)
 
         -- aggressive-resize: on follows the active client, off fits the
         -- smallest.

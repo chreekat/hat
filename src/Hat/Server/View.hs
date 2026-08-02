@@ -76,20 +76,23 @@ renderLoop st client = loop (-1)
         renderOnce st client
         loop gen
 
--- | @status-position@'s placement in a client of @rows@ rows: the row the
--- status bar occupies, and the vertical offset the window content takes below
--- a top bar. See 'renderOnce'.
-statusLayout :: StatusPosition -> Int -> (Int, Int)
-statusLayout pos rows = case pos of
-    StatusTop    -> (1, 0)
-    StatusBottom -> (0, rows - 1)
+-- | Where the status bar sits in a client of @rows@ rows: the vertical offset
+-- the window content takes below a top bar, and the row the bar occupies
+-- (@Nothing@ when @status@ is off — no bar, content fills the height). See
+-- 'renderOnce'.
+statusLayout :: StatusPosition -> Int -> Int -> (Int, Maybe Int)
+statusLayout _   0     _    = (0, Nothing)
+statusLayout pos _count rows = case pos of
+    StatusTop    -> (1, Just 0)
+    StatusBottom -> (0, Just (rows - 1))
 
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
     csize <- readTVarIO client.size
     opts <- readTVarIO st.options
-    let (rowOff, statusRowIx) =
-            statusLayout opts.statusPosition (fromIntegral csize.rows)
+    let (rowOff, mStatusRowIx) =
+            statusLayout opts.statusPosition opts.statusLines
+                (fromIntegral csize.rows)
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions
@@ -122,18 +125,29 @@ renderOnce st client = do
                         pure (overlayGrid acc (shiftRect rect) cells)
             mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast
-            statusRow <- case (mprompt, mtoast) of
-                (Just pr, _) -> pure (promptCells pr (fromIntegral csize.cols))
-                (Nothing, Just t) -> pure (toastCells t (fromIntegral csize.cols))
-                (Nothing, Nothing) -> statusCells st sess (fromIntegral csize.cols)
-            let withStatus
-                    | csize.rows >= 2 = base V.// [(statusRowIx, statusRow)]
-                    | otherwise = base
-            cur <- case mprompt of
-                Just pr | csize.rows >= 2 ->
-                    pure (Pos { row = statusRowIx
-                              , col = min (fromIntegral csize.cols - 1)
-                                          (promptCursorCol pr) }, True)
+            let w = fromIntegral csize.cols
+                -- A transient prompt or message borrows the bottom line even
+                -- when the persistent bar is off; the bar itself draws only
+                -- when status is on.
+                bottomIx = fromIntegral csize.rows - 1
+            mBarRow <-
+                if csize.rows < 2
+                    then pure Nothing
+                    else case (mprompt, mtoast) of
+                        (Just pr, _) ->
+                            pure (Just (fromMaybe bottomIx mStatusRowIx, promptCells pr w))
+                        (Nothing, Just t) ->
+                            pure (Just (fromMaybe bottomIx mStatusRowIx, toastCells t w))
+                        (Nothing, Nothing) -> case mStatusRowIx of
+                            Just ix -> Just . (,) ix <$> statusCells st sess w
+                            Nothing -> pure Nothing
+            let withStatus = case mBarRow of
+                    Just (ix, cells) -> base V.// [(ix, cells)]
+                    Nothing -> base
+            cur <- case (mprompt, mBarRow) of
+                (Just pr, Just (ix, _)) ->
+                    pure (Pos { row = ix
+                              , col = min (w - 1) (promptCursorCol pr) }, True)
                 _ -> case Map.lookup active ps of
                     Nothing -> pure (Pos 0 0, False)
                     Just pane -> do
