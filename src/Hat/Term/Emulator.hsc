@@ -41,7 +41,7 @@ module Hat.Term.Emulator
 #include "hat_shim.h"
 
 import Control.Concurrent.MVar
-import Control.Monad (foldM, forM, forM_)
+import Control.Monad (foldM, forM, forM_, unless)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
@@ -414,21 +414,27 @@ newEmulator sz historyLimit = do
         -- when the terminating fragment arrives, not per fragment.
         _ -> if final /= 0 then emitUnknownProp stateR PropStr prop else pure ()
     bellW <- wrapBell $ modifyIORef' stateR $ \s -> s { events = Bell : s.events }
+    -- The alt screen has no scrollback of its own. Shrinking it (unzooming a
+    -- pane while a full-screen app runs) must not push the app's rows into ours
+    -- -- else a later grow of the primary pops them back up over the shell --
+    -- and growing it must not pull the primary's history in (the app repaints
+    -- on SIGWINCH). So while on the alt screen our scrollback is frozen.
     pushW <- wrapPushline $ \ncols cellsPtr -> do
-        line <- V.generateM (fromIntegral ncols - 1 :: Int) $ \i -> do
-            freshCell <- allocaBytes #{size HatCell} $ \hc -> do
-                c_flatten_cell_at cellsPtr (fromIntegral i) hc
-                peekHatCell hc
-            shareVals cellIntern freshCell
-        limit <- readIORef limitR
-        modifyIORef' stateR $ \s ->
-            let sb' = s.scrollback Seq.|> line
-            in s { scrollback = Seq.drop (Seq.length sb' - limit) sb' }
+        onAlt <- (.modeFlags.altScreen) <$> readIORef stateR
+        unless onAlt $ do
+            line <- V.generateM (fromIntegral ncols - 1 :: Int) $ \i -> do
+                freshCell <- allocaBytes #{size HatCell} $ \hc -> do
+                    c_flatten_cell_at cellsPtr (fromIntegral i) hc
+                    peekHatCell hc
+                shareVals cellIntern freshCell
+            limit <- readIORef limitR
+            modifyIORef' stateR $ \s ->
+                let sb' = s.scrollback Seq.|> line
+                in s { scrollback = Seq.drop (Seq.length sb' - limit) sb' }
     popW <- wrapPopline $ \ncols cellsPtr -> do
         s <- readIORef stateR
-        case Seq.viewr s.scrollback of
-            Seq.EmptyR -> pure 0
-            rest Seq.:> line -> do
+        case (s.modeFlags.altScreen, Seq.viewr s.scrollback) of
+            (False, rest Seq.:> line) -> do
                 writeIORef stateR s { scrollback = rest }
                 let padded = take (fromIntegral ncols) (V.toList line ++ repeat blankCell)
                 allocaBytes #{size HatCell} $ \hc ->
@@ -436,6 +442,7 @@ newEmulator sz historyLimit = do
                         pokeHatCell hc cell
                         c_unflatten_cell_at cellsPtr i hc
                 pure 1
+            _ -> pure 0
     outputW <- wrapOutput $ \str len -> do
         bs <- B.packCStringLen (str, fromIntegral len)
         modifyIORef' stateR $ \s -> s { output = bs : s.output }

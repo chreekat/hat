@@ -139,6 +139,30 @@ spec = do
         let allText = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
         allText `shouldNotSatisfy` T.isInfixOf "FILEDATA"
 
+    -- bug: vim on the alt screen, zoom (grow) then unzoom (shrink) while it is
+    -- still up, then Ctrl-Z (?1049l) suspends it, then zoom again. A shrink of
+    -- the alt screen must not push its rows into scrollback -- if it does, the
+    -- later grow of the primary pops them back and the file reappears.
+    it "keeps alt-screen rows out of scrollback across a zoom/unzoom cycle" $ do
+        e <- newEmulator Size { rows = 6, cols = 20 } 1000
+        forM_ [1 .. 20 :: Int] $ \i ->
+            feedStr e (B8.pack ("shell line " ++ show i ++ "\r\n"))
+        _ <- feedStr e "prompt$ vim file\r\n"
+        _ <- feedStr e "\ESC[?1049h"          -- vim opens on the alt screen
+        forM_ [1 .. 6 :: Int] $ \i ->
+            feedStr e (B8.pack ("FILEDATA line " ++ show i ++ "\r\n"))
+        resize e Size { rows = 24, cols = 40 }  -- zoom while vim runs
+        resize e Size { rows = 6, cols = 20 }   -- unzoom while vim runs
+        _ <- feedStr e "\ESC[?1049l"          -- Ctrl-Z: primary returns
+        resize e Size { rows = 24, cols = 40 }  -- zoom: reveals scrollback
+        scr <- snapshot e
+        sblen <- scrollbackLength e
+        sblines <- catMaybes <$> mapM (scrollbackLine e) [0 .. sblen - 1]
+        let onScreen = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
+            inSb = T.concat (map cellsText sblines)
+        inSb `shouldNotSatisfy` T.isInfixOf "FILEDATA"
+        onScreen `shouldNotSatisfy` T.isInfixOf "FILEDATA"
+
     it "tracks focus reporting (?1004)" $ do
         e <- new80x24
         m0 <- modes e
