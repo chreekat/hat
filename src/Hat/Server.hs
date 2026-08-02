@@ -44,6 +44,7 @@ module Hat.Server
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
+    , reencodeCursor    -- ^ exported for the cursor-key encoding test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , detachPane  -- ^ exported for the pane-detach test
     , detachPanes  -- ^ exported for the multi-pane-detach test
@@ -2395,23 +2396,27 @@ runKeys st client keys = do
                 pure True
             _ -> pure False
 
--- | Cursor keys ('\ESC[A' vs '\ESCOA') depend on the pane's DECCKM mode,
--- so re-encode them via the pane's emulator instead of forwarding the raw
--- bytes the client's terminal happened to send.
+-- | Forward a recognized key as the pane's advertised terminal expects, not
+-- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
+-- (@\ESC[A@ vs @\ESCOA@), so the pane's emulator encodes them. Home\/End are
+-- mode-independent in tmux-256color (@khome=\ESC[1~@, @kend=\ESC[4~@) but
+-- libvterm would emit the xterm SS3 forms, so they are normalized to the
+-- terminfo bytes here — else a pager keyed off terminfo reads a bare @H@\/@F@
+-- (less opens its help).
 reencodeCursor :: Maybe Pane -> Key -> IO Key
-reencodeCursor mpane key = case (mpane, cursorKeyOf key.name) of
-    (Just pane, Just ck) -> do
+reencodeCursor mpane key = case arrowOf key.name of
+    Just ck | Just pane <- mpane -> do
         enc <- Emu.encodeKey pane.emulator ck
-        pure Key { name = key.name, raw = enc }
+        pure key { raw = enc }
+    _ | key.name `elem` ["Home", "End"]
+      , Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
     _ -> pure key
   where
-    cursorKeyOf n = case n of
+    arrowOf n = case n of
         "Up"    -> Just Emu.CursorUp
         "Down"  -> Just Emu.CursorDown
         "Left"  -> Just Emu.CursorLeft
         "Right" -> Just Emu.CursorRight
-        "Home"  -> Just Emu.CursorHome
-        "End"   -> Just Emu.CursorEnd
         _       -> Nothing
 
 showToast :: ServerState -> Client -> Text -> IO ()

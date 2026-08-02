@@ -173,6 +173,11 @@ spec = do
         it "parses named keys" $ do
             (.raw) <$> parseKeyName "Up" `shouldBe` Just "\ESC[A"
             (.raw) <$> parseKeyName "Enter" `shouldBe` Just "\r"
+        it "encodes Home/End as tmux-256color terminfo (khome/kend), not xterm" $ do
+            -- khome=\E[1~, kend=\E[4~; the xterm SS3 forms \EOH/\EOF are read
+            -- as a bare H/F by a pager keyed off terminfo (less opens help).
+            (.raw) <$> parseKeyName "Home" `shouldBe` Just "\ESC[1~"
+            (.raw) <$> parseKeyName "End"  `shouldBe` Just "\ESC[4~"
         it "roundtrips through tokenization" $ do
             let names = ["C-b", "C-Space", "M-x", "Up", "Down", "Space",
                          "Enter", "Tab", "BSpace", "x", "%", "\"", "M-Up",

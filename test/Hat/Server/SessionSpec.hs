@@ -29,7 +29,7 @@ import Hat.Server
     , cmdAttachSession, chooseCurrentOnClose, cmdListClients, cmdRestartClient
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
-    , refreshSessionEnv, removePaneFromTree, welcome )
+    , reencodeCursor, refreshSessionEnv, removePaneFromTree, welcome )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
@@ -717,3 +717,16 @@ spec = do
 
         it "delivers a focus report only when focus-events is on and ?1004 set" $
             deliversKey (withFocus True) True focusIn `shouldBe` True
+
+    describe "reencodeCursor (Home/End terminfo normalization)" $ do
+        -- hat advertises TERM=tmux-256color (khome=\E[1~, kend=\E[4~), so Home
+        -- and End must forward those bytes whatever xterm-ish form the outer
+        -- terminal sent -- else a pager reads a bare H/F and less opens help.
+        let reraw form = (.raw) <$> reencodeCursor Nothing (Key "Home" form)
+        it "normalizes Home to khome (\\E[1~) from any incoming form" $ do
+            reraw "\ESC[H"  `shouldReturn` "\ESC[1~"
+            reraw "\ESCOH"  `shouldReturn` "\ESC[1~"
+            reraw "\ESC[1~" `shouldReturn` "\ESC[1~"
+        it "normalizes End to kend (\\E[4~)" $
+            ((.raw) <$> reencodeCursor Nothing (Key "End" "\ESCOF"))
+                `shouldReturn` "\ESC[4~"

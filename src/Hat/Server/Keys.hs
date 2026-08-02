@@ -19,6 +19,7 @@ module Hat.Server.Keys
     , feedKeys
     , flushEscape
     , parseKeyName
+    , namedKeys
     , routeKeys
     ) where
 
@@ -55,8 +56,10 @@ namedKeys =
     , ("Down", "\ESC[B")
     , ("Right", "\ESC[C")
     , ("Left", "\ESC[D")
-    , ("Home", "\ESC[H")
-    , ("End", "\ESC[F")
+    -- tmux-256color terminfo khome/kend, not the xterm SS3 forms (\EOH/\EOF):
+    -- a pager keyed off terminfo reads those as a bare H/F.
+    , ("Home", "\ESC[1~")
+    , ("End", "\ESC[4~")
     , ("PgUp", "\ESC[5~")
     , ("PgDn", "\ESC[6~")
     , ("Delete", "\ESC[3~")
