@@ -506,6 +506,53 @@ spec = parallel $ do
         left <- rawModesLeftBehind c1
         left `shouldBe` []
 
+    -- bug 6: a pager (less) draws on the alternate screen; on exit the primary
+    -- buffer must be repainted on the *client*, not just in the emulator, or
+    -- the pager's screen bleeds through.
+    it "repaints the client when a program exits the alternate screen" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        -- Enter the alt screen, show a marker, and park in `read` so the client
+        -- renders the alt screen before we trigger the exit. The markers are
+        -- printf-generated (ALT42MARK / BACK99SHELL) so they appear only in the
+        -- rendered output, never in the echoed command line.
+        typeInto c "printf '\\033[?1049hALT%dMARK' 42; read x; printf '\\033[?1049lBACK%dSHELL\\n' 99\r"
+        awaitScreen c "ALT42MARK"
+        typeInto c "\r"                 -- satisfy `read`, program exits the alt screen
+        awaitScreen c "BACK99SHELL"
+        scr <- screenText c
+        T.isInfixOf "ALT42MARK" scr `shouldBe` False
+
+    -- bug 6: zooming a short pane that runs less (alternate screen) grew the
+    -- pane; less redrew once for the new size via SIGWINCH. If the emulator is
+    -- resized after the pty, that one-shot redraw lands on the old-size model
+    -- and persists as garbage. The redraw must land clean at the new height.
+    it "cleanly redraws a zoomed pane running less" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        -- Horizontal split: the new (bottom) pane is active and short.
+        typeInto c "\x02\""
+        awaitScreen c "\x2500"  -- ─ border
+        -- Run less on distinctive numbered lines in the short pane.
+        typeInto c "seq 1 200 | sed 's/^/ZOOMLINE-/' > zf.txt; less zf.txt\r"
+        awaitScreen c "ZOOMLINE-1"
+        -- Press h for less's full-screen help overlay (what the screenshot
+        -- showed), then zoom via the control path (returns after reconcile).
+        typeInto c "h"
+        awaitScreen c "SUMMARY OF LESS COMMANDS"
+        _ <- hatCtl h ["resize-pane", "-Z"]
+        awaitScreen c "MOVING"        -- a help section that only fits post-zoom
+        scr <- screenText c
+        -- The help redrew clean at the new height: its header survives and the
+        -- file content it overlays does not bleed through.
+        T.isInfixOf "SUMMARY OF LESS COMMANDS" scr `shouldBe` True
+        T.isInfixOf "ZOOMLINE-" scr `shouldBe` False
+        typeInto c "q"                -- leave help
+        typeInto c "q"                -- exit less
+        awaitScreen c "$"
+
     it "new-session creates and attaches to a fresh session" $
         withHat hatBin $ \h -> do
         -- First client autostarts the server on session $1.

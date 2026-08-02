@@ -99,6 +99,28 @@ spec = do
         scr2 <- snapshot dst
         scr2.size `shouldBe` Size { rows = 50, cols = 200 }
 
+    -- bug 6: less draws its help on the alternate screen; on exit (?1049l) the
+    -- primary buffer must come back, and a later zoom (resize) must not bleed
+    -- the alt-screen content or leave a stale/garbage row.
+    it "reverts to the primary buffer on alt-screen exit, and a resize stays clean" $ do
+        e <- newEmulator Size { rows = 6, cols = 20 } 1000
+        _ <- feedStr e "primary prompt$ "
+        _ <- feedStr e "\ESC[?1049h"          -- less enters the alt screen
+        _ <- feedStr e "\ESC[31mHELP SCREEN\ESC[0m\r\nmore help"
+        _ <- feedStr e "\ESC[?1049l"          -- less exits: primary returns
+        resize e Size { rows = 12, cols = 40 }  -- zoom the pane
+        scr <- snapshot e
+        let allText = T.concat [ screenRowText scr r | r <- [0 .. 11] ]
+        -- no alt-screen content bled through
+        allText `shouldNotSatisfy` T.isInfixOf "HELP"
+        allText `shouldNotSatisfy` T.isInfixOf "more help"
+        -- the primary line survived
+        rowText scr 0 `shouldBe` "primary prompt$"
+        -- every cell is a real, single-width glyph or a blank -- no garbage
+        forM_ [0 .. 11] $ \r -> forM_ [0 .. 39] $ \c -> do
+            let cell = screenCell scr Pos { row = r, col = c }
+            cell.width `shouldSatisfy` (\w -> w == 0 || w == 1 || w == 2)
+
     it "tracks focus reporting (?1004)" $ do
         e <- new80x24
         m0 <- modes e
