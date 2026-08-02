@@ -62,6 +62,7 @@ data Options = Options
     { prefix          :: Text  -- ^ key name, e.g. \"C-b\", \"C-Space\"
     , baseIndex       :: Int
     , paneBaseIndex   :: Int
+    , statusLines     :: Int  -- ^ @status@: status-bar height in rows (0 = off)
     , statusPosition  :: StatusPosition
     , modeKeys        :: ModeKeys
     , historyLimit    :: Int
@@ -107,6 +108,7 @@ defaultOptions = Options
     { prefix = "C-b"
     , baseIndex = 0
     , paneBaseIndex = 0
+    , statusLines = 1
     , statusPosition = StatusBottom
     , modeKeys = KeysEmacs
     , historyLimit = 50000
@@ -154,6 +156,7 @@ data OptionName
     = OptPrefix
     | OptBaseIndex
     | OptPaneBaseIndex
+    | OptStatus
     | OptStatusPosition
     | OptModeKeys
     | OptHistoryLimit
@@ -198,6 +201,7 @@ data OptionValue
     | OVInt Int
     | OVBool Bool
     | OVTextList [Text]
+    | OVStatusLines Int
     | OVStatusPosition StatusPosition
     | OVModeKeys ModeKeys
     | OVStyle Cell.Style
@@ -254,6 +258,7 @@ applyEntry name val o = case (name, val) of
     (OptPrefix, OVText t) -> o { prefix = t }
     (OptBaseIndex, OVInt n) -> o { baseIndex = n }
     (OptPaneBaseIndex, OVInt n) -> o { paneBaseIndex = n }
+    (OptStatus, OVStatusLines n) -> o { statusLines = n }
     (OptStatusPosition, OVStatusPosition p) -> o { statusPosition = p }
     (OptModeKeys, OVModeKeys k) -> o { modeKeys = k }
     (OptHistoryLimit, OVInt n) -> o { historyLimit = n }
@@ -360,7 +365,7 @@ scopeError requested name =
 -- with 'OptionName' (a new constructor must be appended here).
 allOptionNames :: [OptionName]
 allOptionNames =
-    [ OptPrefix, OptBaseIndex, OptPaneBaseIndex, OptStatusPosition
+    [ OptPrefix, OptBaseIndex, OptPaneBaseIndex, OptStatus, OptStatusPosition
     , OptModeKeys, OptHistoryLimit, OptDefaultTerminal, OptWordSeparators
     , OptStatusLeft, OptStatusLeftLength, OptStatusRight
     , OptStatusRightLength, OptStatusInterval, OptWindowStatusFormat
@@ -393,6 +398,7 @@ optionNameText = \case
     OptPrefix -> "prefix"
     OptBaseIndex -> "base-index"
     OptPaneBaseIndex -> "pane-base-index"
+    OptStatus -> "status"
     OptStatusPosition -> "status-position"
     OptModeKeys -> "mode-keys"
     OptHistoryLimit -> "history-limit"
@@ -437,6 +443,7 @@ optionValueOf o = \case
     OptPrefix -> Just (OVText o.prefix)
     OptBaseIndex -> Just (OVInt o.baseIndex)
     OptPaneBaseIndex -> Just (OVInt o.paneBaseIndex)
+    OptStatus -> Just (OVStatusLines o.statusLines)
     OptStatusPosition -> Just (OVStatusPosition o.statusPosition)
     OptModeKeys -> Just (OVModeKeys o.modeKeys)
     OptHistoryLimit -> Just (OVInt o.historyLimit)
@@ -480,6 +487,10 @@ formatOptionValue = \case
     OVInt n -> T.pack (show n)
     OVBool b -> if b then "on" else "off"
     OVTextList ts -> T.unwords ts
+    OVStatusLines n -> case n of
+        0 -> "off"
+        1 -> "on"
+        _ -> T.pack (show n)
     OVStatusPosition p -> case p of
         StatusTop -> "top"
         StatusBottom -> "bottom"

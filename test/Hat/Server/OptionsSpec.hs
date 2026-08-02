@@ -63,6 +63,23 @@ spec = do
                 (setOption Assign defaultOptions "status-interval" "5")
                 `shouldBe` Right 5
 
+        it "parses status off/on into a line count" $ do
+            fmap (.statusLines)
+                (setOption Assign defaultOptions "status" "off")
+                `shouldBe` Right 0
+            fmap (.statusLines)
+                (setOption Assign defaultOptions "status" "on")
+                `shouldBe` Right 1
+
+        it "rejects a multi-line status bar loudly (unsupported)" $
+            setOption Assign defaultOptions "status" "3"
+                `shouldBe`
+                    Left "status: multi-line status (2-5) not yet supported"
+
+        it "rejects a junk status value" $
+            setOption Assign defaultOptions "status" "yes"
+                `shouldBe` Left "status: off, on, or 2-5"
+
         it "stores a valid cursor-colour and rejects junk" $ do
             fmap (.cursorColour)
                 (setOption Assign defaultOptions "cursor-colour" "red")

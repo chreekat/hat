@@ -248,6 +248,13 @@ spec = do
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
             readTVarIO sess.lastSize `shouldReturn` pane big
+        it "carves no status row when status is off" $ do
+            (st, sess) <- seedSession "/"
+            atomically $ writeTVar st.globalSessionOptions
+                (singletonDelta OptStatus (OVStatusLines 0))
+            _ <- addClient st (SessionId 0) small 1
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` small
 
     describe "attach-session -c" $
         -- The feature behind the author's @M-c@ binding: re-anchor where

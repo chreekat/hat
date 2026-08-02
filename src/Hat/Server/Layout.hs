@@ -66,15 +66,16 @@ effectiveWindowSize SmallestClient _ clients = Size
 effectiveWindowSize ActiveClient _ clients =
     snd (List.maximumBy (comparing fst) clients)
 
--- | The pane area of a session's window: its 'effectiveWindowSize' with one
--- status row carved out when a client is attached to draw it. A detached
--- session keeps its full size — tmux draws no status line without a client, so
--- @new-session -d -x W -y H@ gives an H-row window, not H-1.
-sessionWindowArea :: ResizeMode -> Size -> [(Int, Size)] -> Size
-sessionWindowArea _ fallback [] = fallback
-sessionWindowArea mode fallback clients =
+-- | The pane area of a session's window: its 'effectiveWindowSize' with the
+-- status bar's @statusLines@ rows carved out when a client is attached to draw
+-- it. A detached session keeps its full size — tmux draws no status line
+-- without a client, so @new-session -d -x W -y H@ gives an H-row window, not
+-- H-1 — and @status off@ (0 lines) carves nothing even when attached.
+sessionWindowArea :: Int -> ResizeMode -> Size -> [(Int, Size)] -> Size
+sessionWindowArea _ _ fallback [] = fallback
+sessionWindowArea statusLines mode fallback clients =
     let s = effectiveWindowSize mode fallback clients
-    in s { rows = max 1 (s.rows - 1) }
+    in s { rows = fromIntegral (max 1 (fromIntegral s.rows - statusLines)) }
 
 data Direction = DirLeft | DirRight | DirUp | DirDown
     deriving (Eq, Show)

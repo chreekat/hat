@@ -2044,14 +2044,6 @@ pickActivityTarget ixs cur flagged mlast =
 
 -- Sizing ----------------------------------------------------------------
 
--- | The resize mode in force for a session's displayed size: the current
--- window's resolved @aggressive-resize@ (or the global setting when the
--- session has no window). 'ActiveClient' follows the most-recently-active
--- client; 'SmallestClient' fits every client.
-resizeModeFor :: ServerState -> Session -> Maybe Window -> STM ResizeMode
-resizeModeFor st sess mwin =
-    resizeModeOf <$> maybe (resolveGlobal st) (resolveForWindow st sess) mwin
-
 -- | The resize mode @aggressive-resize@ selects: on, follow the active
 -- client; off, fit the smallest. See 'resizeModeFor'.
 resizeModeOf :: Options -> ResizeMode
@@ -2071,8 +2063,8 @@ applySessionSize st sid = atomically $ do
                                    <*> readTVar c.size) cs
         lastSz <- readTVar sess.lastSize
         mwin <- currentWindow sess
-        mode <- resizeModeFor st sess mwin
-        let eff = sessionWindowArea mode lastSz stamps
+        opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
+        let eff = sessionWindowArea opts.statusLines (resizeModeOf opts) lastSz stamps
         writeTVar sess.lastSize eff
         forM_ cs $ \c -> writeTVar c.needsFull True
         bumpDirty st
@@ -3317,6 +3309,15 @@ setOptionEntry mode opts name value = case name of
     "history-limit" -> withInt OptHistoryLimit
     "default-terminal" -> Right (OptDefaultTerminal, OVText value)
     "word-separators" -> Right (OptWordSeparators, OVText value)
+    "status" -> case value of
+        "off" -> Right (OptStatus, OVStatusLines 0)
+        "on"  -> Right (OptStatus, OVStatusLines 1)
+        -- tmux accepts 2..5 too, but each extra line needs its own
+        -- status-format[i] (pane/session lists via #{P:}/#{S:}), which hat
+        -- does not model yet; reject loudly rather than draw a blank bar.
+        _ | value `elem` ["2", "3", "4", "5"] ->
+                Left "status: multi-line status (2-5) not yet supported"
+          | otherwise -> Left "status: off, on, or 2-5"
     "status-position" -> case value of
         "top" -> Right (OptStatusPosition, OVStatusPosition StatusTop)
         "bottom" -> Right (OptStatusPosition, OVStatusPosition StatusBottom)

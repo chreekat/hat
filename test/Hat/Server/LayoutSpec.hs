@@ -312,10 +312,16 @@ spec = do
         let fallback = Size { rows = 3, cols = 10 }
             client = Size { rows = 24, cols = 80 }
         it "gives a detached session its full size (no status line drawn)" $
-            sessionWindowArea SmallestClient fallback [] `shouldBe` fallback
+            sessionWindowArea 1 SmallestClient fallback [] `shouldBe` fallback
         it "carves one status row from an attached client's viewport" $
-            sessionWindowArea SmallestClient fallback [(1, client)]
+            sessionWindowArea 1 SmallestClient fallback [(1, client)]
                 `shouldBe` Size { rows = 23, cols = 80 }
+        it "carves nothing when status is off, even attached" $
+            sessionWindowArea 0 SmallestClient fallback [(1, client)]
+                `shouldBe` client
+        it "carves the full status height for a multi-line bar" $
+            sessionWindowArea 3 SmallestClient fallback [(1, client)]
+                `shouldBe` Size { rows = 21, cols = 80 }
         it "never carves below a single row" $
-            sessionWindowArea ActiveClient fallback [(1, Size { rows = 1, cols = 5 })]
+            sessionWindowArea 1 ActiveClient fallback [(1, Size { rows = 1, cols = 5 })]
                 `shouldBe` Size { rows = 1, cols = 5 }
