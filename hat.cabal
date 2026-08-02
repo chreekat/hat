@@ -97,6 +97,7 @@ library
         Hat.Server.View
         Hat.Term.Cell
         Hat.Term.Emulator
+        Hat.Term.Emulator.Types
         Hat.Term.HostProtocol
         Hat.Term.Pty
         Hat.Transport.Socket
