@@ -45,11 +45,15 @@ module Hat.Term.Emulator
 #include "ghostty_shim.h"
 
 import Control.Concurrent.MVar
+import Control.Monad (unless)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Unsafe as BU
 import Data.Char (chr)
 import Data.IORef
+import Data.List (intersperse)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -413,13 +417,40 @@ setScrollbackLimit e limit = writeIORef e.sbLimit limit
 -- history on ED 3 (@CSI 3 J@).
 clearScrollback :: Emulator -> IO ()
 clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    BU.unsafeUseAsCStringLen "\ESC[3J" $ \(p, n) ->
-        c_write t (castPtr p) (fromIntegral n)
+    feedBytes t "\ESC[3J"
 
+-- | Seed a fresh emulator's history with captured lines (oldest first), trimmed
+-- to the current limit. libghostty owns scrollback and offers no way to inject
+-- history rows directly, so replay them as bytes: paint each line, then scroll
+-- the whole block up out of the viewport with SU (@CSI n S@), which pushes
+-- primary-screen rows into history and leaves a blank screen for a following
+-- 'restoreBytes'. The reload-restore companion to it.
 seedScrollback :: Emulator -> [V.Vector Cell] -> IO ()
-seedScrollback _ _ = pure ()
+seedScrollback e ls = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    lim <- readIORef e.sbLimit
+    let kept = drop (length ls - lim) ls
+        n = length kept
+    unless (n == 0) $ do
+        rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
+        feedBytes t (seedBytes (min n rows) kept)
+
+-- | The bytes 'seedScrollback' feeds: each line painted under a leading reset,
+-- CRLF-separated (no trailing CRLF, so the last line is not left one row low),
+-- then SU by @su@ to scroll every line into history, then a final pen reset.
+seedBytes :: Int -> [V.Vector Cell] -> ByteString
+seedBytes su ls = BL.toStrict $ BB.toLazyByteString $
+       mconcat (intersperse (BB.byteString "\r\n") (map paintLine ls))
+    <> BB.byteString "\ESC[" <> BB.intDec su <> BB.char8 'S'
+    <> BB.byteString "\ESC[0m"
+  where
+    paintLine row =
+        BB.byteString "\ESC[0m" <> paintRow defaultStyle (rtrimBlank (V.toList row))
 
 -- | libghostty's physical scrollback row count (total rows minus the viewport).
 physicalScrollback :: Ptr CTerm -> IO Int
 physicalScrollback t =
     max 0 . fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS}
+
+feedBytes :: Ptr CTerm -> ByteString -> IO ()
+feedBytes t bs = BU.unsafeUseAsCStringLen bs $ \(p, n) ->
+    c_write t (castPtr p) (fromIntegral n)

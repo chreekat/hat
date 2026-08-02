@@ -17,6 +17,8 @@ module Hat.Term.Emulator.Types
     , modeReplayBytes
     , restoreBytes
     , cellSgr
+    , paintRow
+    , rtrimBlank
     , screenRowText
     , screenCell
     , blankGrid
