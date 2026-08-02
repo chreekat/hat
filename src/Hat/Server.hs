@@ -2128,8 +2128,14 @@ reconcilePaneSizes st = do
                     , toRows = fromIntegral sz.rows
                     , toCols = fromIntegral sz.cols }
                 flushLogger st.logger
-                Hat.Term.Pty.resize pane.pty sz
+                -- Resize the emulator model BEFORE the pty: setting the pty
+                -- winsize SIGWINCHes the pane's program, which redraws once for
+                -- the new size. If the emulator were still at the old size when
+                -- that redraw arrived, it would mis-wrap the one-shot repaint
+                -- into persistent garbage (a zoomed pager). Model first, then
+                -- signal the child.
                 Emu.resize pane.emulator sz
+                Hat.Term.Pty.resize pane.pty sz
                 atomically $ do
                     writeTVar pane.size sz
                     bumpDirty st
