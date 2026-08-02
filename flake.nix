@@ -81,6 +81,10 @@
             pkgs.cabal-install
             pkgs.cabal2nix
             pkgs.libvterm-neovim
+            # libghostty-vt backs the emulator under `cabal build -fghostty`
+            # (bug 17). Its pkg-config files live in the dev output's
+            # share/pkgconfig, which the pkg-config setup hook adds to the path.
+            pkgs.libghostty-vt
             pkgs.haskellPackages.weeder
 
             # Upstream tmux regress/ scripts need FHS-ish utilities on PATH.
