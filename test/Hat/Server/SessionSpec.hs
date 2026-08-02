@@ -39,6 +39,7 @@ import Hat.Transport.Wire
     , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
+import Hat.Server.View (awaitRenderable)
 
 -- A bare session with the given id inserted into an existing server.
 addSession :: ServerState -> Int -> IO Session
@@ -699,6 +700,67 @@ spec = do
             atomically $ writeTVar st.reconciled 5
             caught <- timeout 1_000_000 (awaitReconciled st)
             caught `shouldBe` Just ()
+
+    describe "awaitRenderable (render gate)" $ do
+        let freshState = do
+                lg <- newLogger "/dev/null"
+                newServerState Map.empty lg "/tmp/hat-rendergate.sock" Nothing
+            sz = Size { rows = 24, cols = 80 }
+            -- Whether the render loop would paint now, or block for a fresh,
+            -- reconciled generation. 'orElse' turns a blocking retry into
+            -- 'Nothing' with no reliance on timing.
+            renderable st client lastGen =
+                atomically
+                    ((Just <$> awaitRenderable st client lastGen)
+                        `orElse` pure Nothing)
+
+        it "paints a fresh generation once reconcile has sized it" $ do
+            st <- freshState
+            client <- addClient st (SessionId 0) sz 1
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 5
+                writeTVar client.needsFull False
+            renderable st client (-1) `shouldReturn` Just 5
+
+        it "does not paint while reconcile lags the dirty tick" $ do
+            st <- freshState
+            client <- addClient st (SessionId 0) sz 1
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 2
+                writeTVar client.needsFull False
+            -- Painting here would flash the old grid into the new geometry:
+            -- the layout (zoom/unzoom/split) has changed but the emulators
+            -- behind it are not yet resized.
+            renderable st client (-1) `shouldReturn` Nothing
+
+        it "holds a forced full redraw until its generation is reconciled" $ do
+            st <- freshState
+            client <- addClient st (SessionId 0) sz 1
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 2
+                writeTVar client.needsFull True
+            renderable st client (-1) `shouldReturn` Nothing
+
+        it "repaints on needsFull once the generation is reconciled" $ do
+            st <- freshState
+            client <- addClient st (SessionId 0) sz 1
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 5
+                writeTVar client.needsFull True
+            renderable st client 5 `shouldReturn` Just 5
+
+        it "idles when nothing is new and no full redraw is pending" $ do
+            st <- freshState
+            client <- addClient st (SessionId 0) sz 1
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.reconciled 5
+                writeTVar client.needsFull False
+            renderable st client 5 `shouldReturn` Nothing
 
     describe "deliversKey (focus-event gating)" $ do
         let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }

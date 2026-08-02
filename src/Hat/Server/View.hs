@@ -3,6 +3,7 @@
 module Hat.Server.View
     ( windowArrange
     , renderLoop
+    , awaitRenderable
     , renderOnce
     , sessionFormatEnv
     , paneModeEnv
@@ -68,13 +69,25 @@ renderLoop :: ServerState -> Client -> IO ()
 renderLoop st client = loop (-1)
   where
     loop lastGen = do
-        gen <- atomically $ do
-            g <- readTVar st.dirty
-            full <- readTVar client.needsFull
-            check (g /= lastGen || full)
-            pure g
+        gen <- atomically (awaitRenderable st client lastGen)
         renderOnce st client
         loop gen
+
+-- | The dirty generation 'renderLoop' paints next: newer than the one last
+-- painted (or a forced full redraw via @needsFull@), but only once
+-- 'reconcileLoop' has resized the panes through it. Gating on @reconciled@
+-- keeps a layout change — a zoom, an unzoom, a split, a client resize — off
+-- the screen until the emulators behind it grow or shrink to match; painting
+-- earlier flashes one frame of the old grid composited into the new geometry.
+-- Blocks until such a generation exists.
+awaitRenderable :: ServerState -> Client -> Int -> STM Int
+awaitRenderable st client lastGen = do
+    g <- readTVar st.dirty
+    full <- readTVar client.needsFull
+    check (g /= lastGen || full)
+    done <- readTVar st.reconciled
+    check (done >= g)
+    pure g
 
 -- | Where the status bar sits in a client of @rows@ rows: the vertical offset
 -- the window content takes below a top bar, and the row the bar occupies
