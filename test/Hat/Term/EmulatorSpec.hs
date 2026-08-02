@@ -121,6 +121,24 @@ spec = do
             let cell = screenCell scr Pos { row = r, col = c }
             cell.width `shouldSatisfy` (\w -> w == 0 || w == 1 || w == 2)
 
+    -- bug: a pane with shell scrollback runs vim on the alt screen, then Ctrl-Z
+    -- suspends it (?1049l restores the primary). A later zoom grows the pane and
+    -- pulls scrollback back up -- that revealed area must be the shell's history,
+    -- never the file vim was showing on the alt screen.
+    it "keeps alt-screen content out of scrollback revealed by a zoom" $ do
+        e <- newEmulator Size { rows = 6, cols = 20 } 1000
+        forM_ [1 .. 20 :: Int] $ \i ->
+            feedStr e (B8.pack ("shell line " ++ show i ++ "\r\n"))
+        _ <- feedStr e "prompt$ vim file\r\n"
+        _ <- feedStr e "\ESC[?1049h"          -- vim opens on the alt screen
+        forM_ [1 .. 6 :: Int] $ \i ->
+            feedStr e (B8.pack ("FILEDATA line " ++ show i ++ "\r\n"))
+        _ <- feedStr e "\ESC[?1049l"          -- Ctrl-Z: primary returns
+        resize e Size { rows = 24, cols = 40 }  -- zoom: grows, reveals scrollback
+        scr <- snapshot e
+        let allText = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
+        allText `shouldNotSatisfy` T.isInfixOf "FILEDATA"
+
     it "tracks focus reporting (?1004)" $ do
         e <- new80x24
         m0 <- modes e
