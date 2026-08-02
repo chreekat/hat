@@ -55,6 +55,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Foreign
+import qualified Foreign.Concurrent as FC
 import Foreign.C.Types
 
 import Hat.Geometry
@@ -66,18 +67,30 @@ data CTerm
 
 foreign import ccall unsafe "ghost_shim_new"
     c_new :: CUShort -> CUShort -> CSize -> IO (Ptr CTerm)
-foreign import ccall unsafe "&ghost_shim_free"
-    p_free :: FunPtr (Ptr CTerm -> IO ())
+foreign import ccall unsafe "ghost_shim_free"
+    c_free :: Ptr CTerm -> IO ()
 foreign import ccall safe "ghost_shim_write"
     c_write :: Ptr CTerm -> Ptr Word8 -> CSize -> IO ()
 foreign import ccall safe "ghost_shim_resize"
     c_resize :: Ptr CTerm -> CUShort -> CUShort -> IO ()
 foreign import ccall unsafe "ghost_shim_get"
     c_get :: Ptr CTerm -> CInt -> IO CLong
+foreign import ccall unsafe "ghost_shim_get_title"
+    c_get_title :: Ptr CTerm -> Ptr Word8 -> CSize -> IO CLong
 foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_cell"
     c_cell :: Ptr CTerm -> CInt -> CUShort -> CUInt -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghostty_terminal_set"
+    c_set :: Ptr CTerm -> CInt -> Ptr () -> IO CInt
+
+-- libghostty invokes these synchronously inside 'ghost_shim_write'; the
+-- closures registered in 'newEmulator' capture the state IORef and land the
+-- pty write-back and the bell in its accumulators.
+type WritePtyFn = Ptr CTerm -> Ptr () -> Ptr Word8 -> CSize -> IO ()
+type BellFn     = Ptr CTerm -> Ptr () -> IO ()
+foreign import ccall "wrapper" wrapWritePty :: WritePtyFn -> IO (FunPtr WritePtyFn)
+foreign import ccall "wrapper" wrapBell     :: BellFn -> IO (FunPtr BellFn)
 
 data Emulator = Emulator
     { term    :: ForeignPtr CTerm
@@ -94,18 +107,19 @@ data Emulator = Emulator
 -- title\/icon-name hat scrubs out of the stream, and the two cross-chunk
 -- scrubber states for tmux passthrough and screen\/tmux ESC k titles.
 data EmulatorState = EmulatorState
-    { colorSub     :: Bool
+    { colorSub    :: Bool
     , title       :: Text
     , iconName    :: Text
     , passthrough :: PassState
     , screenTitle :: StitleState
+    , output      :: [ByteString]  -- ^ write_pty callback bytes, reversed
+    , events      :: [Event]       -- ^ bell callback events, reversed
     }
 
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz limit = do
     t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) (fromIntegral limit)
     if t == nullPtr then error "ghostty_terminal_new failed" else pure ()
-    fp <- newForeignPtr p_free t
     lk <- newMVar ()
     lr <- newIORef limit
     st <- newIORef EmulatorState
@@ -114,7 +128,24 @@ newEmulator sz limit = do
         , iconName = ""
         , passthrough = Outside ""
         , screenTitle = StOutside ""
+        , output = []
+        , events = []
         }
+
+    writePtyW <- wrapWritePty $ \_ _ p n -> do
+        bs <- B.packCStringLen (castPtr p, fromIntegral n)
+        modifyIORef' st $ \s -> s { output = bs : s.output }
+    bellW <- wrapBell $ \_ _ ->
+        modifyIORef' st $ \s -> s { events = Bell : s.events }
+    _ <- c_set t #{const GHOSTTY_TERMINAL_OPT_WRITE_PTY} (castFunPtrToPtr writePtyW)
+    _ <- c_set t #{const GHOSTTY_TERMINAL_OPT_BELL} (castFunPtrToPtr bellW)
+
+    -- Free the terminal and both callback FunPtrs once the emulator is
+    -- unreachable, so a closed pane leaks neither.
+    fp <- FC.newForeignPtr t $ do
+        c_free t
+        freeHaskellFunPtr writePtyW
+        freeHaskellFunPtr bellW
     pure Emulator { term = fp, lock = lk, sbLimit = lr, state = st }
 
 -- | Feed pty output into the emulator; returns what happened. The
@@ -122,11 +153,9 @@ newEmulator sz limit = do
 -- OSC 10\/11 and DEC 2031 queries hat answers, OSC 9\/777 notifications) run
 -- here exactly as on the libvterm backend — they are pure byte-scanning, blind
 -- to which library owns the grid — and only the leftover bytes reach
--- libghostty.
---
--- TODO(bug17 M2 cont.): the libghostty write_pty\/bell\/title callbacks still
--- need wiring, so 'Output' (CPR\/DA replies), 'Bell', and OSC 0\/2 titles do
--- not come back yet.
+-- libghostty. libghostty's own write_pty\/bell callbacks land the 'Output'
+-- (CPR\/DA replies) and 'Bell' events, and the OSC 0\/2 title is polled back
+-- after the write.
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     s0 <- readIORef e.state
@@ -140,17 +169,24 @@ feed e bs0 = withMVar e.lock $ \_ -> do
         { passthrough = pass1
         , screenTitle = stitle1
         , title = latestTitle
+        , output = []
+        , events = []
         }
     -- Split each passthrough payload into the host queries hat answers and the
     -- leftover it surfaces as UnhandledPassthrough for the reader to log.
     let parts = map partitionPassthrough passPayloads
         unhandled = [UnhandledPassthrough r | (_, r) <- parts, not (B.null r)]
     passEvs <- concat <$> mapM (applySignal e) (concatMap fst parts)
-    interleaved <- withForeignPtr e.term $ \t -> feedSegments e t scrubbed
+    (interleaved, oscTitleEvs) <- withForeignPtr e.term $ \t -> do
+        ievs <- feedSegments e t scrubbed
+        (,) ievs <$> pollTitle e t
+    s1 <- readIORef e.state
     pure $ passEvs
         <> unhandled
         <> map TitleChanged screenTitles
         <> interleaved
+        <> reverse s1.events
+        <> oscTitleEvs
         <> [ScreenChanged | not (B.null scrubbed) || not (null screenTitles)]
 
 -- | Feed a chunk to libghostty piecewise, splitting at each color query hat
@@ -162,14 +198,21 @@ feedSegments e t = go
     go bs = case nextQuery bs of
         Nothing -> writeSeg bs
         Just (before, sig, rest) -> do
-            _ <- writeSeg before
+            outEvs <- writeSeg before
             sigEvs <- applySignal e sig
-            (sigEvs <>) <$> go rest
-    -- TODO(bug17 M2 cont.): read the write_pty callback's bytes here for Output.
+            ((outEvs <> sigEvs) <>) <$> go rest
+    -- After feeding a segment, collect what libghostty wrote back to the pty
+    -- (a DA/CPR reply), dropping the spurious DECXCPR reply exactly as the
+    -- libvterm backend does.
     writeSeg seg
         | B.null seg = pure []
-        | otherwise = [] <$ BU.unsafeUseAsCStringLen seg
-            (\(p, n) -> c_write t (castPtr p) (fromIntegral n))
+        | otherwise = do
+            BU.unsafeUseAsCStringLen seg $ \(p, n) ->
+                c_write t (castPtr p) (fromIntegral n)
+            s <- readIORef e.state
+            writeIORef e.state (s { output = [] })
+            let outs = dropDecxcprReply (B.concat (reverse s.output))
+            pure [Output outs | not (B.null outs)]
 
 -- | Turn a host query hat answers itself into its 'Event', recording the DEC
 -- 2031 subscription a @CSI ? 2031 h@\/@l@ toggles (never fed to libghostty, so
@@ -184,6 +227,27 @@ applySignal e sig = case sig of
     SigColor CsQuery   -> pure [ColorSchemeQuery]
     SigOsc target term -> pure [OscColorQuery target term]
     SigNotify raw      -> pure [DesktopNotification raw]
+
+-- | libghostty swallows an OSC 0\/2 title and stores it rather than exposing a
+-- string in its callback, so read it back after a feed and raise a
+-- 'TitleChanged' when it actually changed.
+pollTitle :: Emulator -> Ptr CTerm -> IO [Event]
+pollTitle e t = do
+    newT <- readTitle t
+    cur <- (.title) <$> readIORef e.state
+    if not (T.null newT) && newT /= cur
+        then [TitleChanged newT] <$ modifyIORef' e.state (\s -> s { title = newT })
+        else pure []
+
+readTitle :: Ptr CTerm -> IO Text
+readTitle t = allocaBytes cap $ \buf -> do
+    n <- c_get_title t buf (fromIntegral cap)
+    if n <= 0
+        then pure ""
+        else TE.decodeUtf8Lenient
+            <$> B.packCStringLen (castPtr buf, min (fromIntegral n) cap)
+  where
+    cap = 4096
 
 -- | Resize the terminal; libghostty reflows the primary screen itself.
 resize :: Emulator -> Size -> IO ()

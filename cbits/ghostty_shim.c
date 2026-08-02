@@ -129,3 +129,13 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
     }
     return 1;
 }
+
+long ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen) {
+    GhosttyString s = { 0 };
+    if (ghostty_terminal_get((GhosttyTerminal)t, GHOSTTY_TERMINAL_DATA_TITLE, &s)
+            != GHOSTTY_SUCCESS)
+        return -1;
+    size_t n = s.len < buflen ? s.len : buflen;
+    if (s.ptr != NULL && n > 0) memcpy(buf, s.ptr, n);
+    return (long)s.len;
+}
