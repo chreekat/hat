@@ -163,6 +163,23 @@ spec = do
         inSb `shouldNotSatisfy` T.isInfixOf "FILEDATA"
         onScreen `shouldNotSatisfy` T.isInfixOf "FILEDATA"
 
+    -- bug: a full-screen app (vim in light mode) sets a background pen on the
+    -- alt screen. Zooming then unzooming it resizes the primary buffer behind
+    -- it; libvterm erases the reflowed cells with the live pen, so after ?1049l
+    -- the shell's restored screen wears the app's background on its blank cells.
+    it "keeps the app's background pen off the primary screen across a resize" $ do
+        e <- newEmulator Size { rows = 4, cols = 20 } 1000
+        _ <- feedStr e "diff line one\r\ndiff line two"
+        _ <- feedStr e "\ESC[?1049h"           -- vim opens on the alt screen
+        _ <- feedStr e "\ESC[44m\ESC[2J"        -- light-mode bg, clear (BCE)
+        resize e Size { rows = 12, cols = 60 }   -- zoom
+        resize e Size { rows = 4, cols = 20 }    -- unzoom
+        _ <- feedStr e "\ESC[?1049l"           -- Ctrl-Z: primary returns
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "diff line one"
+        forM_ [ Pos { row = r, col = c } | r <- [0 .. 3], c <- [0 .. 19] ] $ \p ->
+            (screenCell scr p).style.bg `shouldBe` DefaultColor
+
     it "tracks focus reporting (?1004)" $ do
         e <- new80x24
         m0 <- modes e

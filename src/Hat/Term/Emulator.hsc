@@ -595,10 +595,23 @@ encodeKey e key = withMVar e.lock $ \_ -> do
 resize :: Emulator -> Size -> IO ()
 resize e sz = withMVar e.lock $ \_ -> do
     withForeignPtr e.vt $ \vtp -> do
+        -- Neutralize the pen across the resize. libvterm erases the cells it
+        -- reflows -- in the primary AND alternate buffers, which share one pen
+        -- -- with the live pen, so a full-screen app's background would bleed
+        -- onto the primary screen behind it. Erase with the default pen (as a
+        -- real terminal does), then restore the app's pen for its next output.
+        saved <- allocaBytes #{size HatCell} $ \hc -> do
+            _ <- c_hat_get_pen vtp hc
+            (.style) <$> peekHatCell hc
+        writeParser vtp (cellSgr defaultStyle)
         c_vterm_set_size vtp (fromIntegral sz.rows) (fromIntegral sz.cols)
+        writeParser vtp (cellSgr saved)
         c_flush_damage e.screen
     modifyIORef' e.state $ \s -> s { view = s.view { size = sz }, damage = [] }
     refreshGrid e
+  where
+    writeParser vtp bs = BU.unsafeUseAsCStringLen bs $ \(p, n) ->
+        () <$ c_vterm_input_write vtp p (fromIntegral n)
 
 -- | Take an immutable 'Screen' of the visible grid, cursor position, and
 -- cursor visibility as they stand now.
