@@ -52,6 +52,7 @@ import Data.Char (chr)
 import Data.IORef
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Foreign
 import Foreign.C.Types
@@ -59,6 +60,7 @@ import Foreign.C.Types
 import Hat.Geometry
 import Hat.Term.Cell
 import Hat.Term.Emulator.Types
+import Hat.Term.HostProtocol
 
 data CTerm
 
@@ -88,12 +90,15 @@ data Emulator = Emulator
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
--- subscription hat tracks itself (?2031, not fed to the terminal), and the
--- title\/icon-name hat scrubs out of the stream.
+-- subscription hat tracks itself (?2031, not fed to the terminal), the
+-- title\/icon-name hat scrubs out of the stream, and the two cross-chunk
+-- scrubber states for tmux passthrough and screen\/tmux ESC k titles.
 data EmulatorState = EmulatorState
-    { colorReport :: Bool
+    { colorSub     :: Bool
     , title       :: Text
     , iconName    :: Text
+    , passthrough :: PassState
+    , screenTitle :: StitleState
     }
 
 newEmulator :: Size -> Int -> IO Emulator
@@ -103,20 +108,82 @@ newEmulator sz limit = do
     fp <- newForeignPtr p_free t
     lk <- newMVar ()
     lr <- newIORef limit
-    st <- newIORef EmulatorState { colorReport = False, title = "", iconName = "" }
+    st <- newIORef EmulatorState
+        { colorSub = False
+        , title = ""
+        , iconName = ""
+        , passthrough = Outside ""
+        , screenTitle = StOutside ""
+        }
     pure Emulator { term = fp, lock = lk, sbLimit = lr, state = st }
 
--- | Feed pty output into the emulator; returns what happened.
+-- | Feed pty output into the emulator; returns what happened. The
+-- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
+-- OSC 10\/11 and DEC 2031 queries hat answers, OSC 9\/777 notifications) run
+-- here exactly as on the libvterm backend — they are pure byte-scanning, blind
+-- to which library owns the grid — and only the leftover bytes reach
+-- libghostty.
 --
--- TODO(bug17 M2): route the HostProtocol scrubbers and the libghostty
--- write_pty\/bell\/title callbacks through here so the query, notification,
--- bell, and title events come back. For now it drives the grid and reports a
--- coarse repaint.
+-- TODO(bug17 M2 cont.): the libghostty write_pty\/bell\/title callbacks still
+-- need wiring, so 'Output' (CPR\/DA replies), 'Bell', and OSC 0\/2 titles do
+-- not come back yet.
 feed :: Emulator -> ByteString -> IO [Event]
-feed e bs = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    BU.unsafeUseAsCStringLen bs $ \(p, n) ->
-        c_write t (castPtr p) (fromIntegral n)
-    pure [ScreenChanged | not (B.null bs)]
+feed e bs0 = withMVar e.lock $ \_ -> do
+    s0 <- readIORef e.state
+    let (pass1, depassed, passPayloads) = scrubPassthrough s0.passthrough bs0
+        (stitle1, scrubbed, stitles) = scrubStitle s0.screenTitle depassed
+        screenTitles = map TE.decodeUtf8Lenient stitles
+        latestTitle = case screenTitles of
+            [] -> s0.title
+            ts -> last ts
+    modifyIORef' e.state $ \s -> s
+        { passthrough = pass1
+        , screenTitle = stitle1
+        , title = latestTitle
+        }
+    -- Split each passthrough payload into the host queries hat answers and the
+    -- leftover it surfaces as UnhandledPassthrough for the reader to log.
+    let parts = map partitionPassthrough passPayloads
+        unhandled = [UnhandledPassthrough r | (_, r) <- parts, not (B.null r)]
+    passEvs <- concat <$> mapM (applySignal e) (concatMap fst parts)
+    interleaved <- withForeignPtr e.term $ \t -> feedSegments e t scrubbed
+    pure $ passEvs
+        <> unhandled
+        <> map TitleChanged screenTitles
+        <> interleaved
+        <> [ScreenChanged | not (B.null scrubbed) || not (null screenTitles)]
+
+-- | Feed a chunk to libghostty piecewise, splitting at each color query hat
+-- answers itself so the query's event lands in stream order among the bytes
+-- around it.
+feedSegments :: Emulator -> Ptr CTerm -> ByteString -> IO [Event]
+feedSegments e t = go
+  where
+    go bs = case nextQuery bs of
+        Nothing -> writeSeg bs
+        Just (before, sig, rest) -> do
+            _ <- writeSeg before
+            sigEvs <- applySignal e sig
+            (sigEvs <>) <$> go rest
+    -- TODO(bug17 M2 cont.): read the write_pty callback's bytes here for Output.
+    writeSeg seg
+        | B.null seg = pure []
+        | otherwise = [] <$ BU.unsafeUseAsCStringLen seg
+            (\(p, n) -> c_write t (castPtr p) (fromIntegral n))
+
+-- | Turn a host query hat answers itself into its 'Event', recording the DEC
+-- 2031 subscription a @CSI ? 2031 h@\/@l@ toggles (never fed to libghostty, so
+-- hat is its sole tracker). The same answer serves an inline query and one
+-- wrapped in tmux passthrough.
+applySignal :: Emulator -> QuerySignal -> IO [Event]
+applySignal e sig = case sig of
+    SigColor CsEnable  -> [ColorSchemeQuery]
+        <$ modifyIORef' e.state (\s -> s { colorSub = True })
+    SigColor CsDisable -> []
+        <$ modifyIORef' e.state (\s -> s { colorSub = False })
+    SigColor CsQuery   -> pure [ColorSchemeQuery]
+    SigOsc target term -> pure [OscColorQuery target term]
+    SigNotify raw      -> pure [DesktopNotification raw]
 
 -- | Resize the terminal; libghostty reflows the primary screen itself.
 resize :: Emulator -> Size -> IO ()
@@ -193,7 +260,7 @@ peekShimCell p = do
 -- itself (its ?2031 toggle is never fed to the terminal).
 modes :: Emulator -> IO Modes
 modes e = withMVar e.lock $ \_ -> do
-    cr <- (.colorReport) <$> readIORef e.state
+    cr <- (.colorSub) <$> readIORef e.state
     withForeignPtr e.term $ \t -> do
         alt   <- c_get t #{const GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN}
         foc   <- c_mode t 1004 0
