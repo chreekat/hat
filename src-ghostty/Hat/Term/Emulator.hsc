@@ -118,7 +118,11 @@ data EmulatorState = EmulatorState
 
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz limit = do
-    t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) (fromIntegral limit)
+    -- libghostty's max_scrollback is a byte budget, not a row count, so the row
+    -- limit is enforced on the read side ('scrollbackLength'). Give it bytes
+    -- generously proportional to the limit so the row cap is never starved.
+    let budget = max 65536 (fromIntegral limit * 512) :: CSize
+    t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) budget
     if t == nullPtr then error "ghostty_terminal_new failed" else pure ()
     lk <- newMVar ()
     lr <- newIORef limit
@@ -266,18 +270,21 @@ readGrid t = do
     cx   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_X}
     cy   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_Y}
     vis  <- c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
-    grid <- allocaBytes #{size GhostShimCell} $ \cellp ->
-        V.generateM rows $ \r ->
-            V.generateM cols $ \c -> do
-                _ <- c_cell t #{const GHOST_SHIM_ACTIVE}
-                        (fromIntegral c) (fromIntegral r) cellp
-                peekShimCell cellp
+    grid <- V.generateM rows $ \r -> readRow t #{const GHOST_SHIM_ACTIVE} r cols
     pure Screen
         { size = Size { rows = fromIntegral rows, cols = fromIntegral cols }
         , cells = grid
         , cursor = Pos { row = cy, col = cx }
         , cursorVisible = vis /= 0
         }
+
+-- | Read one row's @cols@ cells under a point tag (active or history) into a
+-- vector of 'Cell's.
+readRow :: Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
+readRow t tag y cols = allocaBytes #{size GhostShimCell} $ \cellp ->
+    V.generateM cols $ \c -> do
+        _ <- c_cell t tag (fromIntegral c) (fromIntegral y) cellp
+        peekShimCell cellp
 
 -- | Marshal one 'GhostShimCell' the shim just filled into a 'Cell': a
 -- zero-width continuation renders as empty, a zero codepoint as a space, and
@@ -372,20 +379,47 @@ iconName e = (.iconName) <$> readIORef e.state
 currentPen :: Emulator -> IO Style
 currentPen _ = pure defaultStyle
 
--- Scrollback: libghostty owns history internally (read via the HISTORY point
--- tag, seeded by byte-replay). TODO(bug17 M3): wire these to it.
+-- Scrollback lives inside libghostty (the HISTORY point tag), so the row limit
+-- hat exposes is enforced here on the read side, over libghostty's byte-bounded
+-- history. 'scrollbackLine' 0 is the oldest of the newest 'limit' rows.
 
+-- | How many scrollback rows hat exposes: libghostty's physical count capped
+-- to the live row limit.
 scrollbackLength :: Emulator -> IO Int
-scrollbackLength _ = pure 0
+scrollbackLength e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    lim <- readIORef e.sbLimit
+    phys <- physicalScrollback t
+    pure (min phys (max 0 lim))
 
+-- | Scrollback line by age within the exposed window: 0 is the oldest.
 scrollbackLine :: Emulator -> Int -> IO (Maybe (V.Vector Cell))
-scrollbackLine _ _ = pure Nothing
+scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    lim <- readIORef e.sbLimit
+    phys <- physicalScrollback t
+    let exposed = min phys (max 0 lim)
+    if i < 0 || i >= exposed
+        then pure Nothing
+        else do
+            cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
+            Just <$> readRow t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
 
+-- | Change the live row cap. Read-side only: libghostty already bounds the
+-- history's memory, so a lowered limit hides the oldest rows and a raised one
+-- reveals rows still retained, without touching libghostty.
 setScrollbackLimit :: Emulator -> Int -> IO ()
 setScrollbackLimit e limit = writeIORef e.sbLimit limit
 
+-- | Drop all scrollback (the live screen is untouched): libghostty clears its
+-- history on ED 3 (@CSI 3 J@).
 clearScrollback :: Emulator -> IO ()
-clearScrollback _ = pure ()
+clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    BU.unsafeUseAsCStringLen "\ESC[3J" $ \(p, n) ->
+        c_write t (castPtr p) (fromIntegral n)
 
 seedScrollback :: Emulator -> [V.Vector Cell] -> IO ()
 seedScrollback _ _ = pure ()
+
+-- | libghostty's physical scrollback row count (total rows minus the viewport).
+physicalScrollback :: Ptr CTerm -> IO Int
+physicalScrollback t =
+    max 0 . fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS}
