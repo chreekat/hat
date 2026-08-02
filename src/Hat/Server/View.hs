@@ -82,9 +82,9 @@ renderLoop st client = loop (-1)
 -- 'renderOnce'.
 statusLayout :: StatusPosition -> Int -> Int -> (Int, Maybe Int)
 statusLayout _   0     _    = (0, Nothing)
-statusLayout pos _count rows = case pos of
-    StatusTop    -> (1, Just 0)
-    StatusBottom -> (0, Just (rows - 1))
+statusLayout pos count rows = case pos of
+    StatusTop    -> (count, Just 0)
+    StatusBottom -> (0, Just (rows - count))
 
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
