@@ -85,6 +85,8 @@ foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_cell"
     c_cell :: Ptr CTerm -> CInt -> CUShort -> CUInt -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_pen"
+    c_pen :: Ptr CTerm -> Ptr () -> IO CInt
 foreign import ccall unsafe "ghostty_terminal_set"
     c_set :: Ptr CTerm -> CInt -> Ptr () -> IO CInt
 
@@ -376,12 +378,13 @@ title e = (.title) <$> readIORef e.state
 iconName :: Emulator -> IO Text
 iconName e = (.iconName) <$> readIORef e.state
 
--- | The emulator's live pen (the style the next glyph would take).
---
--- TODO(bug17 M3): read it from libghostty's cursor style (the @formatter@'s
--- style emit), for now the default.
+-- | The emulator's live pen: the style the next glyph would take. libghostty
+-- surfaces it only through the shim's formatter round-trip.
 currentPen :: Emulator -> IO Style
-currentPen _ = pure defaultStyle
+currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    allocaBytes #{size GhostShimCell} $ \cellp -> do
+        _ <- c_pen t cellp
+        (.style) <$> peekShimCell cellp
 
 -- Scrollback lives inside libghostty (the HISTORY point tag), so the row limit
 -- hat exposes is enforced here on the read side, over libghostty's byte-bounded

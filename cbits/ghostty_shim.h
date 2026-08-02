@@ -46,4 +46,10 @@ int   ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *o
  * buflen bytes. Returns the full title length, or -1 on failure. */
 long  ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen);
 
+/* Read the terminal's current pen (the style the next glyph would take) into
+ * out's style fields. libghostty exposes the pen only as an SGR sequence from
+ * the formatter, so it is replayed into a scratch terminal and read back off a
+ * space cell. Returns 1 on success, 0 on failure. */
+int   ghost_shim_pen(void *t, GhostShimCell *out);
+
 #endif

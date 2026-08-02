@@ -139,3 +139,37 @@ long ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen) {
     if (s.ptr != NULL && n > 0) memcpy(buf, s.ptr, n);
     return (long)s.len;
 }
+
+int ghost_shim_pen(void *t, GhostShimCell *out) {
+    memset(out, 0, sizeof(*out));
+
+    /* Emit the cursor's active SGR (plus the screen, which we discard). */
+    GhosttyFormatterTerminalOptions fo = { .size = sizeof(fo) };
+    fo.emit = GHOSTTY_FORMATTER_FORMAT_VT;
+    fo.extra.size = sizeof(fo.extra);
+    fo.extra.screen.size = sizeof(fo.extra.screen);
+    fo.extra.screen.style = true;
+    GhosttyFormatter f = NULL;
+    if (ghostty_formatter_terminal_new(NULL, &f, (GhosttyTerminal)t, fo)
+            != GHOSTTY_SUCCESS)
+        return 0;
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    GhosttyResult fr = ghostty_formatter_format_alloc(f, NULL, &buf, &len);
+    ghostty_formatter_free(f);
+    if (fr != GHOSTTY_SUCCESS) return 0;
+
+    /* Replay it into a scratch terminal so libghostty's own parser rebuilds the
+     * pen, then take it off a space written under it. */
+    GhosttyTerminal scratch = NULL;
+    GhosttyTerminalOptions so = { .cols = 4, .rows = 2, .max_scrollback = 4096 };
+    int ok = 0;
+    if (ghostty_terminal_new(NULL, &scratch, so) == GHOSTTY_SUCCESS) {
+        ghostty_terminal_vt_write(scratch, buf, len);
+        ghostty_terminal_vt_write(scratch, (const uint8_t *)"\x1b[H ", 4);
+        ok = ghost_shim_cell(scratch, GHOST_SHIM_ACTIVE, 0, 0, out);
+        ghostty_terminal_free(scratch);
+    }
+    ghostty_free(NULL, buf, len);
+    return ok;
+}
