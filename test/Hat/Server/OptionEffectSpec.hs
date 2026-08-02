@@ -118,6 +118,13 @@ spec = do
                 windowEntryStyle opts False True `shouldBe` bellS
             it "any other window takes window-status-style" $
                 windowEntryStyle opts False False `shouldBe` normal
+            it "distinguishes the current window from the rest by default" $ do
+                -- tmux underscores the current window; the default must not
+                -- leave it indistinguishable from window-status-style.
+                let d = defaultOptions
+                windowEntryStyle d True False
+                    `shouldNotBe` windowEntryStyle d False False
+                (windowEntryStyle d True False).underline `shouldBe` True
 
         -- window-status-format / -current-format: which format string a
         -- window's entry renders through (the rendering itself is FormatSpec).

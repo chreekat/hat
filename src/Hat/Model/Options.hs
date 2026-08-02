@@ -123,7 +123,8 @@ defaultOptions = Options
     , windowStatusCurrentFormat = "#I:#W#F"
     , statusStyle = barStyle
     , windowStatusStyle = barStyle
-    , windowStatusCurrentStyle = barStyle
+    -- tmux underscores the current window (window-status-current-style default).
+    , windowStatusCurrentStyle = barStyle { Cell.underline = True }
     , windowStatusBellStyle = barStyle
     , paneBorderStyle = Cell.defaultStyle
     , paneActiveBorderStyle = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
