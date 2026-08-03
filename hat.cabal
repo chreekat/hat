@@ -87,6 +87,7 @@ library
         Hat.Server.ClientIO
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
+        Hat.Server.Command.Buffer
         Hat.Server.Command.Option
         Hat.Server.Command.Session
         Hat.Server.Command.Types
