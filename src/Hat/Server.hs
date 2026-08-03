@@ -143,7 +143,7 @@ import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
-    , reapMonitor, watcherFault, withRegisteredMonitor )
+    , reapMonitor, schemeReport, watcherFault, withRegisteredMonitor )
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Layout
@@ -680,12 +680,6 @@ notifySubscribedPanes st scheme = do
 notifyColorScheme :: Pane -> ColorScheme -> IO ()
 notifyColorScheme pane scheme =
     Hat.Term.Pty.writePty pane.pty (schemeReport scheme)
-
--- | The DEC-mode-2031 color-scheme report bytes: @CSI ? 997 ; 1 n@ for dark,
--- @CSI ? 997 ; 2 n@ for light.
-schemeReport :: ColorScheme -> B.ByteString
-schemeReport SchemeDark  = "\ESC[?997;1n"
-schemeReport SchemeLight = "\ESC[?997;2n"
 
 -- | The color-scheme report a reload must re-push into an adopted pane so a
 -- surviving app reacts to the OS scheme immediately, not only on its next

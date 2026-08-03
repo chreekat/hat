@@ -7,6 +7,7 @@ module Hat.Server.ColorScheme
     ( ColorScheme (..)
     , parseSchemeLine
     , schemeName
+    , schemeReport
     , applyPalette
     , WatcherFault (..)
     , watcherFault
@@ -25,6 +26,7 @@ import Control.Exception
 import GHC.IO.Exception (IOException)
 import System.IO.Error (isDoesNotExistError)
 import System.Process (ProcessHandle, terminateProcess, waitForProcess)
+import qualified Data.ByteString as B
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
@@ -140,6 +142,12 @@ reapMonitor reg = do
 schemeName :: ColorScheme -> Text
 schemeName SchemeDark = "dark"
 schemeName SchemeLight = "light"
+
+-- | The DEC-mode-2031 color-scheme report bytes: @CSI ? 997 ; 1 n@ for dark,
+-- @CSI ? 997 ; 2 n@ for light.
+schemeReport :: ColorScheme -> B.ByteString
+schemeReport SchemeDark  = "\ESC[?997;1n"
+schemeReport SchemeLight = "\ESC[?997;2n"
 
 -- | The scheme's chrome (status bar, pane borders) as an option overlay. It
 -- is applied as the lowest-priority layer under every user scope (see
