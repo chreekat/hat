@@ -101,7 +101,10 @@ statusLayout pos count rows = case pos of
 
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
-    csize <- readTVarIO client.size
+    -- One transaction: the frame is built from this size, so 'fullFlag' must
+    -- decide against the same size.
+    (csize, fullFlag) <- atomically $
+        (,) <$> readTVar client.size <*> swapTVar client.needsFull False
     opts <- readTVarIO st.options
     let (rowOff, mStatusRowIx) =
             statusLayout opts.statusPosition opts.statusLines
@@ -183,10 +186,12 @@ renderOnce st client = do
                     , cols = fromIntegral (max 0 (width - listW - 1)) }
                 Nothing -> pure Nothing
             pure (overlayPicker region pk mPreview frame, (Pos 0 0, False))
-    full <- atomically (swapTVar client.needsFull False)
     old <- readIORef client.lastFrame
     oldCursor <- readIORef client.lastCursor
-    let ops = if full then fullRedraw frame' else diffFrame old frame'
+    -- A diff is only valid between same-sized frames; force full on any
+    -- dimension change.
+    let full = fullFlag || frameDims old /= frameDims frame'
+        ops = if full then fullRedraw frame' else diffFrame old frame'
         cursorOp = CursorAt (fst cursor') (snd cursor')
         needSend = not (null ops) || cursor' /= oldCursor || full
     writeIORef client.lastFrame frame'
@@ -208,6 +213,7 @@ renderOnce st client = do
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where
     foldM' z xs f = foldM f z xs
+    frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
 
 -- | The rendered cells previewing the highlighted node, sized to the
 -- preview column (@size@): a single pane's contents, a whole window

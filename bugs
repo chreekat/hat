@@ -12,7 +12,6 @@ FEAT [UI] when the prefix key is sent, give a quick animated 'flash' of the acti
 learn how to use ghcid for fast feedback in a general way (not just for hat) | id:7cf4a94b9747eecb4f55c578b56c2a57f732c5b2
 Followup to d8. direnv was just an example. I bigger example is that hitting Ctrl-z in vim should drop me to a real shell. | id:820e4ae0efa2beb0f2028cd7fc315e50b21bf7dc
 PERF design model benchmarks against tmux. neutralize the system confounder by running same test against tmux and hat as black boxes. but what is the test, and what gets measured? | id:86b9d0f2bf07f11ebd78d40c017a07d0caefce76
-BUG un-full-sizing the OS window (using my Mod+q binding in Notion) leaves a bunch of garbage in the UI -- sometimes. maybe after resizing the pane while the os window is full screen. | id:97fbf5aa408c66d1897bf47b4d0ee9b90516bd53
 BUG zooming a solo pane should be a no-op | id:9e13bafe07312c733c51107ec73b32938c5659eb
 FEAT store snapshot history / undo keep N historical snapshots so a bad overwrite can be rolled back. split from 99, whose overwrite-safeguard half is fixed: the persist mirror is pinned once kill-server saves | id:bb66505b500c7423e42f93147352db7e26bd7b21
 audit all tests and distingush those that were part of catching real bugs vs "speculative" bugs. The latter should be lightweight and minimal and really just test normal paths, since their main purpose is to explain code, not speculate | id:bc0376c6022fabe66cec1ab4cbba7a74465746b3

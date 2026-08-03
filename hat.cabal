@@ -231,6 +231,7 @@ test-suite hat-test
         Hat.Server.TargetSpec
         Hat.Server.TitleSpec
         Hat.Server.RenderSpec
+        Hat.Server.ResizeRenderSpec
         Hat.Server.RestoreSpec
         Hat.Server.SessionSpec
         Hat.Term.EmulatorSpec
