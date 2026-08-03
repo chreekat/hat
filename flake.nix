@@ -77,6 +77,11 @@
             # tools/run-upstream-tests.sh and the hat-upstream test-suite
             # find it without a hardcoded path.
             export HAT_TMUX_SRC=${tmux-src}
+            # Programs the integration tests run inside panes, handed to the
+            # suite out-of-band instead of on PATH: a bare `pkgs.vim` on the
+            # interactive PATH shadows the developer's own vim (bug d9). The
+            # suite prepends this to its private PATH (see `testPath`).
+            export HAT_TEST_TOOLS=${pkgs.vim}/bin:${pkgs.htop}/bin
           '';
           buildInputs = [
             pkgs.cabal-install
@@ -94,11 +99,6 @@
             pkgs.gnugrep
             pkgs.gnused
             pkgs.procps
-
-            # Programs the integration tests run inside panes; declared here so
-            # a clean CI shell has them, not just a NixOS system profile.
-            pkgs.vim
-            pkgs.htop
 
             # System-independent PERF benchmarks: instruction counts.
             pkgs.perf

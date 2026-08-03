@@ -64,12 +64,15 @@ persistEnv h
 storeDir :: Hat -> FilePath
 storeDir h = h.home </> "store"
 
--- Minimal PATH for spawned shells and the hat binary. Deliberately does
--- not inherit the ambient environment.
--- The dev shell's PATH, inherited whole: every tool the tests spawn is a
--- flake.nix input, so nothing reaches a system profile.
+-- PATH for spawned shells and the hat binary. Prepends the flake's
+-- test-only tools (vim, htop via @HAT_TEST_TOOLS@) so the suite spawns
+-- pinned binaries even though they are kept off the interactive PATH
+-- (bug d9); falls back to the ambient PATH for everything else.
 testPath :: IO String
-testPath = fromMaybe "" <$> lookupEnv "PATH"
+testPath = do
+    ambient <- fromMaybe "" <$> lookupEnv "PATH"
+    tools <- lookupEnv "HAT_TEST_TOOLS"
+    pure $ maybe ambient (<> (':' : ambient)) tools
 
 -- | Run a test against a freshly isolated hat, tearing the server and
 -- its temp dir down afterwards no matter how the test ends. The socket
