@@ -25,6 +25,8 @@ common defaults
         NoFieldSelectors
         OverloadedRecordDot
         OverloadedStrings
+    if flag(profiling)
+        ghc-options: -finfo-table-map -fdistinct-constructor-tables
 
 -- Warnings are mandatory: -Weverything -Werror, with a curated set of
 -- exemptions. -Wno-* silences noise; -Wno-error=* keeps a warning
@@ -56,12 +58,8 @@ common pedantry
         -- Needed for ghcid
         -Wno-missing-export-lists
 
-common profiled
-    if flag(profiling)
-        ghc-options: -finfo-table-map -fdistinct-constructor-tables
-
 library
-    import:             defaults, pedantry, profiled
+    import:             defaults, pedantry
     hs-source-dirs:     src
     exposed-modules:
         Hat.Bench.Residency
@@ -131,7 +129,7 @@ library
         vector      ^>= 0.13.2.0
 
 executable hat
-    import:             defaults, pedantry, profiled
+    import:             defaults, pedantry
     hs-source-dirs:     app
     main-is:            Main.hs
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
