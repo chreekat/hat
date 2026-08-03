@@ -107,8 +107,8 @@ spec = do
         sblen <- scrollbackLength src
         sblines <- catMaybes <$> mapM (scrollbackLine src) [0 .. sblen - 1]
         dst <- newEmulator Size { rows = 24, cols = 80 } 1000
-        _ <- feed dst (restoreBytes m defaultStyle scr)
         seedScrollback dst sblines
+        _ <- feed dst (restoreBytes m defaultStyle scr)
         resize dst Size { rows = 50, cols = 200 }
         scr2 <- snapshot dst
         scr2.size `shouldBe` Size { rows = 50, cols = 200 }
@@ -281,6 +281,26 @@ spec = do
         len' `shouldBe` len
         restored <- catMaybes <$> traverse (scrollbackLine dst) [0 .. len - 1]
         restored `shouldBe` captured
+
+    -- bug: adoptPane restores a primary-screen pane by both painting the live
+    -- grid and seeding scrollback into one fresh emulator. The live grid must
+    -- survive the seed -- a shell that never repaints on attach would otherwise
+    -- come back to an empty viewport.
+    it "keeps the live grid after seeding scrollback (adoptPane order)" $ do
+        src <- new80x24
+        forM_ [1 .. 40 :: Int] $ \i ->
+            feedStr src (B8.pack ("line " ++ show i ++ "\r\n"))
+        _ <- feedStr src "prompt$ "
+        scr <- snapshot src
+        m <- modes src
+        len <- scrollbackLength src
+        sblines <- catMaybes <$> mapM (scrollbackLine src) [0 .. len - 1]
+        dst <- new80x24
+        -- adoptPane order: seed scrollback under the live grid, then paint it.
+        seedScrollback dst sblines
+        _ <- feed dst (restoreBytes m defaultStyle scr)
+        restored <- snapshot dst
+        restored.cells `shouldBe` scr.cells
 
     it "surfaces a color-scheme query (CSI ? 996 n) as an event" $ do
         e <- new80x24

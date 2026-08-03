@@ -1021,15 +1021,13 @@ adoptPane st sz histLimit rp = do
     let esz = fromMaybe sz (captureSize rp.screen)
     emu <- Emu.newEmulator esz histLimit
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "replaying" }
-    -- Replay the app's mode subscriptions the running program set before the
-    -- reload; the fresh emulator starts blank, so this re-arms its ?2031/?1004/
-    -- mouse subscriptions. Then repaint the captured live screen (re-entering
-    -- the alt screen when the program was in it, so a later exit reverts
-    -- cleanly) and reseed the scrollback, so a full-screen program survives the
-    -- reload with its display.
+    -- Seed the scrollback first, then paint the live grid on top of it, so the
+    -- restored viewport sits above the reseeded history. replayBytes also re-arms
+    -- the app's ?2031/?1004/mouse subscriptions and re-enters the alt screen when
+    -- the program was in it, so a later exit reverts cleanly.
     let (replayBytes, replaySb) = replayPane esz rp
-    _ <- Emu.feed emu replayBytes
     Emu.seedScrollback emu replaySb
+    _ <- Emu.feed emu replayBytes
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
     sizeVar   <- newTVarIO esz
     deadVar   <- newTVarIO False
