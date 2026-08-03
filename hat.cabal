@@ -93,6 +93,7 @@ library
         Hat.Server.Keys
         Hat.Server.Layout
         Hat.Server.LayoutString
+        Hat.Server.Locate
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt
