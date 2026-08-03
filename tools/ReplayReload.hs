@@ -1,21 +1,24 @@
--- | Replay a preserved reload handover through the emulator restore path.
---
--- The handover blob (kept as @<socket>.reload.last@) reproduces a pane's
--- restore-then-resize offline: this replays every pane in the blob — restore
--- at the rebuild size (24x80), then resize through a ladder of geometries,
--- once against a fresh restore per size, then chained on one emulator. Each
--- step is printed before it runs, so a crash names its pane and geometry on
--- the last line. (It was written to reproduce a native resize abort in the old
--- libvterm backend, since replaced by libghostty-vt.)
+-- | Load a preserved reload handover (@<socket>.reload.last@) offline as a
+-- faithful model of the server's resume path: walk the decoded tree once,
+-- restoring each pane into a libghostty emulator, and hold only the emulators
+-- afterwards -- exactly as 'Hat.Server.rebuildReload' consumes its 'ReloadState'
+-- into 'ServerState' and returns, leaving the tree unreferenced. The summary is
+-- read back out of the emulators, never off the tree, so a heap census here
+-- measures the state the server actually keeps rather than the inflated
+-- @[[Cell]]@ dump it was only meant to consume. Reads only the blob, so it
+-- never touches a running server.
 --
 -- Run from the repo root:
--- @cabal run replay-reload -- /tmp/hat-1000/default.reload.last [ROWSxCOLS ...]@
+-- @cabal run replay-reload -- /tmp/hat-1000/default.reload.last@
+--
+-- Heap-profile the rehydration with @just reload_rehydrate_profile@.
 module Main (main) where
 
-import Control.Monad (forM_, unless)
+import Control.Monad (forM)
 import qualified Data.ByteString as B
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
@@ -23,6 +26,7 @@ import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
 import Hat.Geometry
 import Hat.Server (captureSize, replayPane)
 import Hat.Server.Reload
+import Hat.Term.Emulator (Screen (cells))
 import qualified Hat.Term.Emulator as Emu
 
 -- The fallback size 'adoptPane' uses for a blank capture; a real capture is
@@ -30,71 +34,64 @@ import qualified Hat.Term.Emulator as Emu
 rebuildSize :: Size
 rebuildSize = Size { rows = 24, cols = 80 }
 
--- Matches the deployed config's @history-limit@, so seeded scrollback trims
--- the same way it does in the crashing server.
+-- Matches the deployed config's @history-limit@, so seeded scrollback trims the
+-- same way it does in the server.
 historyLimit :: Int
 historyLimit = 50000
-
--- The geometries the reconcile daemon and a client attach actually drive
--- (from the field logs' PaneResizing events). Extreme shrinks (5x20, 2x2)
--- are opt-in via arguments, not part of the default reload validation; the
--- resize abort they once triggered on the old libvterm backend is long fixed.
-defaultLadder :: [Size]
-defaultLadder =
-    [ Size 11 80, Size 23 80, Size 42 330, Size 85 330, Size 24 80 ]
 
 main :: IO ()
 main = do
     hSetBuffering stdout LineBuffering
-    args <- getArgs
-    (path, ladder) <- case args of
-        [] -> die "usage: replay-reload <blob> [ROWSxCOLS ...]"
-        (p : szs) -> (p,) <$> case szs of
-            [] -> pure defaultLadder
-            _  -> mapM parseSize szs
+    path <- getArgs >>= \case
+        [p] -> pure p
+        _   -> die "usage: replay-reload <blob>"
     bs <- B.readFile path
     tree <- case decodeHandover bs of
         Left e -> die ("undecodable blob: " <> T.unpack e)
         Right h -> case h.tree of
             Left e -> die ("unusable tree: " <> T.unpack e)
             Right t -> pure t
-    let panes =
-            [ (sess.name, w.ix, ordinal, rp)
-            | sess <- tree.sessions
-            , w <- sess.windows
-            , (ordinal, rp) <- zip [0 :: Int ..] w.panes
-            ]
-    putStrLn ("replaying " <> show (length panes) <> " pane(s) through "
-              <> show (length ladder) <> " size(s)")
-    forM_ panes $ \(sname, wix, ordinal, rp) -> do
-        let label = T.unpack sname <> ":" <> show wix <> "." <> show ordinal
-        forM_ ladder $ \sz -> do
-            putStrLn (label <> " fresh restore, resize to " <> showSize sz)
-            e <- restored rp
-            Emu.resize e sz
-        putStrLn (label <> " chained resizes: "
-                  <> unwords (map showSize ladder))
-        e <- restored rp
-        forM_ ladder $ \sz -> do
-            putStrLn (label <> "   -> " <> showSize sz)
-            Emu.resize e sz
-    putStrLn "all panes survived"
-  where
-    restored rp = do
-        let esz = fromMaybe rebuildSize (captureSize rp.screen)
-        e <- Emu.newEmulator esz historyLimit
-        let (bytes, sb) = replayPane esz rp
-        _ <- Emu.feed e bytes
-        Emu.seedScrollback e sb
-        pure e
+    emus <- rebuild tree
+    putStrLn ("rehydrated " <> show (length emus) <> " pane(s)")
+    -- putStr =<< summarize emus
 
-showSize :: Size -> String
-showSize sz = show sz.rows <> "x" <> show sz.cols
+-- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty
+-- adoption and 'ServerState' bookkeeping: the traversal consumes the tree and
+-- yields only the emulators, so the tree is collectable once it returns.
+rebuild :: ReloadState -> IO [(String, Emu.Emulator)]
+rebuild tree = fmap concat $ forM tree.sessions $ \sess ->
+    fmap concat $ forM sess.windows $ \win ->
+        forM (zip [0 :: Int ..] win.panes) $ \(ordinal, rp) -> do
+            e <- adopt rp
+            pure (T.unpack sess.name <> ":" <> show win.ix <> "." <> show ordinal, e)
 
-parseSize :: String -> IO Size
-parseSize s = case break (== 'x') s of
-    (r, 'x' : c)
-        | [(ri, "")] <- reads r, [(ci, "")] <- reads c, ri > 0, ci > 0 -> do
-            unless (ri < 10000 && ci < 10000) (die ("size out of range: " <> s))
-            pure Size { rows = ri, cols = ci }
-    _ -> die ("bad size (want ROWSxCOLS): " <> s)
+adopt :: ReloadPane -> IO Emu.Emulator
+adopt rp = do
+    let esz = fromMaybe rebuildSize (captureSize rp.screen)
+    e <- Emu.newEmulator esz historyLimit
+    let (bytes, sb) = replayPane esz rp
+    _ <- Emu.feed e bytes
+    Emu.seedScrollback e sb
+    pure e
+
+-- Reads every figure back through the shim from libghostty's own grid and
+-- history, so it counts the emulator state the server retains, not the tree.
+_summarize :: [(String, Emu.Emulator)] -> IO String
+_summarize emus = do
+    per <- forM emus $ \(_, e) -> do
+        scr   <- Emu.snapshot e
+        sbLen <- Emu.scrollbackLength e
+        sbCells <- sum <$> forM [0 .. sbLen - 1]
+            (\i -> maybe 0 V.length <$> Emu.scrollbackLine e i)
+        pure (V.length scr.cells, V.sum (V.map V.length scr.cells), sbLen, sbCells)
+    let (grs, gcs, sbl, sbc) =
+            foldr (\(a, b, c, d) (w, x, y, z) -> (a + w, b + x, c + y, d + z))
+                  (0, 0, 0, 0) per
+    pure $ unlines
+        [ "emulator state (read back from libghostty):"
+        , "  panes            " <> show (length emus)
+        , "  grid rows        " <> show grs
+        , "  grid cells       " <> show gcs
+        , "  scrollback lines " <> show sbl
+        , "  scrollback cells " <> show sbc
+        ]

@@ -153,18 +153,20 @@ executable gen-fixtures
         hat,
         text        ^>= 2.1.3
 
--- Replays a preserved reload handover (<socket>.reload.last) through the
--- emulator restore + resize path offline. See tools/ReplayReload.hs.
+-- Decodes a preserved reload handover (<socket>.reload.last) offline, prints
+-- summary stats, and replays each pane through the emulator restore seam.
+-- See tools/ReplayReload.hs.
 executable replay-reload
     import:             defaults, pedantry
     hs-source-dirs:     tools
     main-is:            ReplayReload.hs
-    ghc-options:        -threaded
+    ghc-options:        -threaded -rtsopts
     build-depends:
         base        ^>= 4.20.2.0,
         bytestring  ^>= 0.12.2.0,
         hat,
-        text        ^>= 2.1.3
+        text        ^>= 2.1.3,
+        vector      ^>= 0.13.2.0
 
 test-suite hat-test
     import:             defaults, pedantry

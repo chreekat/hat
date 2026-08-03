@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Heap-profile the reload rehydration path: replay a saved .reload.last blob
+# through replay-reload -- the same restore seam adoptPane uses -- and render
+# the info-table heap profile. Read-only w.r.t. any running server: it reads
+# the blob and rebuilds emulators in its own memory, never adopting the panes.
+
+BLOB="${1:-/tmp/hat-1000/default.reload.last}"
+EVLOG=reload-rehydrate.eventlog
+
+nix develop -c cabal build --enable-profiling -fprofiling hat:exe:replay-reload
+BIN=$(nix develop -c cabal list-bin replay-reload)
+
+# -hi -l stream an info-table heap census into the eventlog; each census forces
+#        a major GC, so its bands are live data, not floating garbage.
+# -s     print maximum residency at exit -- the retention figure that does not
+#        depend on when GCs happen to fire.
+# For a tighter RSS curve (slower, perturbs allocation), add: -A1m -F1.1
+"$BIN" "$BLOB" +RTS -hT -l -ol"$EVLOG" -s
+
+eventlog2html "$EVLOG"
