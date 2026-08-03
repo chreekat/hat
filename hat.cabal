@@ -16,6 +16,14 @@ flag profiling
     default:     False
     manual:      True
 
+flag ghc-debug
+    description: Link ghc-debug-stub and open a debug socket in the server
+                 ('GHC.Debug.Stub.withGhcDebug') so ghc-debug-brick can attach
+                 to a running server; also turns on info-table maps for named
+                 closures. Dev-only; off in production builds.
+    default:     False
+    manual:      True
+
 common defaults
     default-language:   GHC2021
     default-extensions:
@@ -25,7 +33,7 @@ common defaults
         NoFieldSelectors
         OverloadedRecordDot
         OverloadedStrings
-    if flag(profiling)
+    if flag(profiling) || flag(ghc-debug)
         ghc-options: -finfo-table-map -fdistinct-constructor-tables
 
 -- Warnings are mandatory: -Weverything -Werror, with a curated set of
@@ -141,6 +149,9 @@ executable hat
         process     ^>= 1.6.26.1,
         text        ^>= 2.1.3,
         unix        ^>= 2.8.7.0
+    if flag(ghc-debug)
+        cpp-options:   -DGHC_DEBUG
+        build-depends: ghc-debug-stub ^>= 0.8.0.0
 
 executable gen-fixtures
     import:             defaults, pedantry

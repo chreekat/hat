@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
@@ -16,6 +18,10 @@ import Hat.Command.Parser (parseArgv)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
 import Hat.Transport.Socket (connectTo, defaultSocketPath)
+
+#ifdef GHC_DEBUG
+import qualified GHC.Debug.Stub
+#endif
 
 data Cli = Cli
     { socketName :: String
@@ -47,9 +53,20 @@ main = do
                     (cfg : _) -> Just cfg
                     _ -> Nothing
             in case mhandover of
-                Just h -> resumeServer path mconfig h
-                Nothing -> runServer path mconfig
+                Just h -> withServerDebug (resumeServer path mconfig h)
+                Nothing -> withServerDebug (runServer path mconfig)
         _ -> clientMain =<< resolveConfig (parseCli args)
+
+-- | Under @-fghc-debug@, run the server wrapped in
+-- 'GHC.Debug.Stub.withGhcDebug' so ghc-debug-brick can attach to the live
+-- process; the identity otherwise. Only the long-lived server is a debuggee —
+-- one-shot client invocations are left alone.
+withServerDebug :: IO () -> IO ()
+#ifdef GHC_DEBUG
+withServerDebug = GHC.Debug.Stub.withGhcDebug
+#else
+withServerDebug = id
+#endif
 
 -- | Pull @--reload-handover PATH@ (the in-place reload marker
 -- 'Hat.Server.cmdRestartServer' passes to its re-exec) out of the server
