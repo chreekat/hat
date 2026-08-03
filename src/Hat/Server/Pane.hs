@@ -50,6 +50,8 @@ module Hat.Server.Pane
     , removePaneFromTree
     , wrapPaneInWindow
     , paneCommandName
+    , globalSpawnEnv
+    , createSession
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -81,6 +83,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (broadcast)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
+import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Locate (locatePane)
@@ -814,3 +817,43 @@ paneCommandName pane = do
                 Right s -> let t = T.strip s in if T.null t then "sh" else t
                 Left (_ :: IOException) -> "sh"
     pure (commandName raw)
+
+-- | 'sessionSpawnEnv' for spawn paths that have seed pairs but no 'Session'
+-- to read yet (session creation, restore).
+globalSpawnEnv :: ServerState -> [(Text, Text)] -> IO [(Text, Text)]
+globalSpawnEnv st pairs = do
+    g <- readTVarIO st.globalEnviron
+    pure (environPairs (environMerge g (environFromPairs pairs)))
+
+createSession
+    :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
+    -> FilePath -> Size -> IO Session
+createSession st mname mrun environ dir sz = do
+    sid <- atomically (freshId st.nextSession)
+    opts <- readTVarIO st.options
+    spawnEnv <- globalSpawnEnv st environ
+    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
+    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
+        dir spawnEnv (sz)
+    nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
+    windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
+    currentVar <- newTVarIO opts.baseIndex
+    lastVar <- newTVarIO Nothing
+    sizeVar <- newTVarIO sz
+    environVar <- newTVarIO (environFromPairs environ)
+    cwdVar <- newTVarIO dir
+    optionsVar <- newTVarIO emptyDelta
+    let sess = Session
+            { id = SessionId sid
+            , name = nameVar
+            , windows = windowsVar
+            , currentIx = currentVar
+            , lastIx = lastVar
+            , lastSize = sizeVar
+            , environ = environVar
+            , startCwd = cwdVar
+            , options = optionsVar
+            }
+    atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
+    startPaneReader st sess.id win pane
+    pure sess

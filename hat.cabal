@@ -88,10 +88,12 @@ library
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
         Hat.Server.Command.Option
+        Hat.Server.Command.Session
         Hat.Server.Command.Types
         Hat.Server.CopyMode
         Hat.Server.Environ
         Hat.Server.Format
+        Hat.Server.FormatEnv
         Hat.Server.Keys
         Hat.Server.Layout
         Hat.Server.LayoutString

@@ -105,7 +105,7 @@ import qualified Network.Socket as N
 import System.Directory
     (createDirectoryIfMissing, doesFileExist, findExecutable, removeFile,
      renameFile)
-import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess)
 import System.FilePath (takeDirectory, takeFileName)
 import System.IO (SeekMode (AbsoluteSeek))
@@ -137,6 +137,7 @@ import Hat.Server.Reload
 import qualified Hat.Term.Pty
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.Option
+import Hat.Server.Command.Session
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -144,6 +145,7 @@ import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
     , reapMonitor, schemeReport, watcherFault, withRegisteredMonitor )
 import Hat.Server.Format (FormatEnv)
+import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout, layoutFromString)
@@ -1400,13 +1402,6 @@ sessionSpawnEnv st sess = atomically $ do
     s <- readTVar sess.environ
     pure (environPairs (environMerge g s))
 
--- | 'sessionSpawnEnv' for spawn paths that have seed pairs but no 'Session'
--- to read yet (session creation, restore).
-globalSpawnEnv :: ServerState -> [(Text, Text)] -> IO [(Text, Text)]
-globalSpawnEnv st pairs = do
-    g <- readTVarIO st.globalEnviron
-    pure (environPairs (environMerge g (environFromPairs pairs)))
-
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do
     -- Let startup land first, so we attach to the configured, restored tree
@@ -1429,39 +1424,6 @@ pickAttachSession lastActive m =
     case lastActive >>= \k -> (,) k <$> Map.lookup k m of
         Just kv -> Just kv
         Nothing -> Map.lookupMin m
-
-createSession
-    :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
-    -> FilePath -> Size -> IO Session
-createSession st mname mrun environ dir sz = do
-    sid <- atomically (freshId st.nextSession)
-    opts <- readTVarIO st.options
-    spawnEnv <- globalSpawnEnv st environ
-    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
-    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
-        dir spawnEnv (sz)
-    nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
-    windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
-    currentVar <- newTVarIO opts.baseIndex
-    lastVar <- newTVarIO Nothing
-    sizeVar <- newTVarIO sz
-    environVar <- newTVarIO (environFromPairs environ)
-    cwdVar <- newTVarIO dir
-    optionsVar <- newTVarIO emptyDelta
-    let sess = Session
-            { id = SessionId sid
-            , name = nameVar
-            , windows = windowsVar
-            , currentIx = currentVar
-            , lastIx = lastVar
-            , lastSize = sizeVar
-            , environ = environVar
-            , startCwd = cwdVar
-            , options = optionsVar
-            }
-    atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
-    startPaneReader st sess.id win pane
-    pure sess
 
 -- Input ---------------------------------------------------------------------
 
@@ -3150,328 +3112,6 @@ lookupBuffer name = go
             | n == name -> Just b
             | otherwise -> go rest
 
-cmdNewSession :: CommandImpl
-cmdNewSession st mclient args = do
-    let (opts, flags, pos) = parseArgs "sctnxy" args
-        mname = lookup "-s" opts
-        mrun = case pos of
-            [] -> Nothing
-            ws -> Just (T.unwords ws)
-    dup <- case mname of
-        Nothing -> pure False
-        Just nm -> atomically $ do
-            sessions <- readTVar st.sessions
-            names <- mapM (\s -> readTVar s.name) (Map.elems sessions)
-            pure (nm `elem` names)
-    if dup
-        then pure [RErr ("duplicate session: " <> fromMaybe "" mname)]
-        else do
-            (environ, dir, baseSz) <- case mclient of
-                Just c -> do
-                    csz <- readTVarIO c.size
-                    pure (c.env, T.unpack c.cwd, csz)
-                Nothing -> do
-                    -- Config-loaded or otherwise clientless: inherit the
-                    -- server process env so shells find PATH, SHELL, etc.
-                    procEnv <- getEnvironment
-                    pure ( [(T.pack k, T.pack v) | (k, v) <- procEnv]
-                         , "/"
-                         , Size { rows = 24, cols = 80 } )
-            let dir' = maybe dir T.unpack (lookup "-c" opts)
-                parseInt t = case TR.decimal t of
-                    Right (n, rest) | T.null rest -> Just n
-                    _ -> Nothing
-                sz = baseSz
-                    { cols = fromMaybe baseSz.cols (parseInt =<< lookup "-x" opts)
-                    , rows = fromMaybe baseSz.rows (parseInt =<< lookup "-y" opts)
-                    }
-            sess <- createSession st mname mrun environ dir' sz
-            atomically $ do
-                writeTVar st.everAttached True
-                forM_ (lookup "-n" opts) $ \wname -> do
-                    ws <- readTVar sess.windows
-                    forM_ (Map.elems ws) $ \w -> do
-                        writeTVar w.name wname
-                        writeTVar w.autoRename False
-            unless ("-d" `elem` flags) $
-                forM_ mclient $ \client -> switchClientTo st client sess
-            pure []
-
-switchClientTo :: ServerState -> Client -> Session -> IO ()
-switchClientTo st client sess = do
-    old <- readTVarIO client.session
-    atomically $ do
-        when (old /= sess.id) $ do
-            writeTVar client.lastSession (Just old)
-            writeTVar st.lastSession (Just old)
-            writeTVar client.session sess.id
-        writeTVar st.lastActiveSession (Just sess.id)
-        markActive st client
-        writeTVar client.needsFull True
-        bumpDirty st
-    applySessionSize st old
-    applySessionSize st sess.id
-
--- @-c@ re-anchors the session's default working directory for new
--- windows, so it is useful (and valid) even without a client to attach.
-cmdAttachSession :: CommandImpl
-cmdAttachSession st mclient args = do
-    let (opts, flags, _) = parseArgs "tc" args
-    withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
-        -- -E: skip the update-environment import this attach would run.
-        when ("-E" `elem` flags) $ forM_ mclient $ \client ->
-            atomically (writeTVar client.envImport SkipEnvImport)
-        forM_ (lookup "-c" opts) $ \d -> do
-            env <- sessionFormatEnv st sess
-            dir <- T.unpack <$> expandFormat st env d
-            atomically $ do
-                writeTVar sess.startCwd dir
-                bumpDirty st
-        case mclient of
-            Just client -> switchClientTo st client sess >> pure []
-            Nothing
-                | isJust (lookup "-c" opts) -> pure []
-                | otherwise -> pure [RErr "no client to attach"]
-
-cmdKillSession :: CommandImpl
-cmdKillSession st mclient args = do
-    let (opts, _, _) = parseArgs "t" args
-    withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
-        locs <- atomically $ do
-            ws <- Map.elems <$> readTVar sess.windows
-            fmap concat . forM ws $ \win -> do
-                ps <- Map.elems <$> readTVar win.panes
-                pure [(sess.id, win, p) | p <- ps]
-        killPaneLocs st locs
-        pure []
-
--- | @has-session -t target@: resolve strictly and report cmd-find's
--- error; upstream targets.sh probes error paths through it.
-cmdHasSession :: CommandImpl
-cmdHasSession st mclient args = do
-    let (opts, _, _) = parseArgs "t" args
-    res <- findTarget st mclient Target.FindSession (lookup "-t" opts)
-    pure $ case res of
-        Right _ -> []
-        Left e -> [RErr e]
-
--- The server is necessarily running by the time this executes.
-cmdStartServer :: CommandImpl
-cmdStartServer _ _ _ = pure []
-
-cmdRenameSession :: CommandImpl
-cmdRenameSession st mclient args = do
-    let (opts, _, pos) = parseArgs "t" args
-    case pos of
-        [nm] -> withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
-            dup <- atomically $ do
-                sessions <- readTVar st.sessions
-                names <- mapM (\s -> readTVar s.name)
-                    (filter (\s -> s.id /= sess.id) (Map.elems sessions))
-                pure (nm `elem` names)
-            if dup
-                then pure [RErr ("duplicate session: " <> nm)]
-                else do
-                    atomically $ do
-                        writeTVar sess.name nm
-                        bumpDirty st
-                    pure []
-        _ -> pure [RErr "usage: rename-session [-t target] name"]
-
--- | tmux @list-clients@: one line per attached client (control connections
--- are not clients), filtered by @-t@ and shaped by @-F@.
-cmdListClients :: CommandImpl
-cmdListClients st mclient args = do
-    let (opts, _, _) = parseArgs "tF" args
-    efilter <- case lookup "-t" opts of
-        Nothing -> pure (Right Nothing)
-        Just t -> do
-            msess <- targetSession st mclient (Just t)
-            pure $ case msess of
-                Nothing -> Left ("no such session: " <> t)
-                Just sess -> Right (Just sess.id)
-    case efilter of
-        Left err -> pure [RErr err]
-        Right msid -> do
-            (cs, sessions) <- atomically $
-                (,) <$> readTVar st.clients <*> readTVar st.sessions
-            fmap concat . forM (Map.elems cs) $ \c -> do
-                sid <- readTVarIO c.session
-                case Map.lookup sid sessions of
-                    Just sess
-                        | c.role == Attached
-                        , maybe True (== sid) msid -> do
-                            env <- sessionFormatEnv st sess
-                            out <- expandFormat st env $ fromMaybe
-                                "#{session_name}" (lookup "-F" opts)
-                            pure [ROutput out]
-                    _ -> pure []
-
-cmdListSessions :: CommandImpl
-cmdListSessions st _ args = do
-    let (opts, _, _) = parseArgs "F" args
-    sessions <- Map.elems <$> readTVarIO st.sessions
-    lines' <- case lookup "-F" opts of
-        Just fmt -> forM sessions $ \sess -> do
-            env <- sessionFormatEnv st sess
-            expandFormat st env fmt
-        Nothing -> forM sessions $ \sess -> atomically $ do
-            nm <- readTVar sess.name
-            ws <- readTVar sess.windows
-            pure (nm <> ": " <> tshow (Map.size ws) <> " windows")
-    pure (map ROutput lines')
-
-cmdListWindows :: CommandImpl
-cmdListWindows st mclient args = do
-    let (opts, flags, _) = parseArgs "Ft" args
-        mfmt = lookup "-F" opts
-        allSessions = "-a" `elem` flags
-    sessions <- if allSessions
-        then Map.elems <$> readTVarIO st.sessions
-        else do
-            msess <- targetSession st mclient (lookup "-t" opts)
-            pure (maybe [] pure msess)
-    fmap (map ROutput . concat) . forM sessions $ \sess -> do
-        ws <- Map.toAscList <$> readTVarIO sess.windows
-        cur <- readTVarIO sess.currentIx
-        forM ws $ \(ix, win) -> case mfmt of
-            Just fmt -> do
-                env <- windowFormatEnv st sess ix win
-                expandFormat st env fmt
-            Nothing -> atomically $ do
-                nm <- readTVar win.name
-                ps <- readTVar win.panes
-                let mark = if ix == cur then "*" else ""
-                pure $ tshow ix <> ": " <> nm <> mark
-                    <> " (" <> tshow (Map.size ps) <> " panes)"
-
-windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
-windowFormatEnv st sess ix win = do
-    base <- sessionFormatEnv st sess
-    eff <- readTVarIO sess.lastSize
-    (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
-        <$> readTVar win.name <*> readTVar win.layout
-        <*> readTVar sess.currentIx <*> readTVar sess.lastIx
-        <*> readTVar win.bellFlag <*> readTVar win.activity
-        <*> readTVar win.autoRename <*> readTVar win.zoomed
-    ps <- readTVarIO win.panes
-    let flags = windowFlags WindowFlagState
-            { flagCurrent = ix == cur
-            , flagLast = Just ix == mlast
-            , flagBell = bell
-            , flagActivity = act
-            , flagZoomed = isJust zoom
-            }
-    pure $ Map.union (Map.fromList
-        [ ("window_index", tshow ix)
-        , ("window_id", "@" <> tshow (rawWindow win.id))
-        , ("window_name", wname)
-        , ("window_layout", emitLayout (sizeRect (eff)) lay)
-        , ("window_active", if ix == cur then "1" else "0")
-        , ("window_flags", flags)
-        , ("window_panes", tshow (Map.size ps))
-        , ("automatic_rename", if auto then "1" else "0")
-        ]) base
-
--- | The full format environment for a specific pane, including the
--- fields tmux-resurrect's @save.sh@ dumps (pid, command, cursor,
--- history, cwd).
-paneFormatEnv
-    :: ServerState -> Session -> Int -> Window -> Int -> Pane -> IO FormatEnv
-paneFormatEnv st sess wix win pix pane = do
-    wenv <- windowFormatEnv st sess wix win
-    dir <- paneCurrentPath pane
-    cmd <- paneCommandName pane
-    scr <- Emu.snapshot pane.emulator
-    hsize <- Emu.scrollbackLength pane.emulator
-    active <- readTVarIO win.activeId
-    sz <- readTVarIO pane.size
-    pure $ Map.union (Map.fromList
-        [ ("pane_id", "%" <> tshow (rawPane pane.id))
-        , ("pane_index", tshow pix)
-        , ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
-        , ("pane_current_path", T.pack dir)
-        , ("pane_current_command", cmd)
-        , ("pane_active", if pane.id == active then "1" else "0")
-        , ("cursor_x", tshow scr.cursor.col)
-        , ("cursor_y", tshow scr.cursor.row)
-        , ("history_size", tshow hsize)
-        , ("pane_width", tshow sz.cols)
-        , ("pane_height", tshow sz.rows)
-        , ("session_grouped", "0")  -- hat has no session groups
-        ]) wenv
-
-cmdListPanes :: CommandImpl
-cmdListPanes st mclient args = do
-    let (opts, flags, _) = parseArgs "Ft" args
-        mfmt = lookup "-F" opts
-        allSessions = "-a" `elem` flags
-    -- Which (session, window-index, window) triples to list panes from:
-    -- -a covers every window of every session; otherwise the target
-    -- session's current window.
-    targets <- if allSessions
-        then do
-            sessions <- Map.elems <$> readTVarIO st.sessions
-            fmap concat . forM sessions $ \sess -> do
-                ws <- Map.toAscList <$> readTVarIO sess.windows
-                pure [ (sess, ix, win) | (ix, win) <- ws ]
-        else do
-            msess <- targetSession st mclient (lookup "-t" opts)
-            case msess of
-                Nothing -> pure []
-                Just sess -> do
-                    cur <- readTVarIO sess.currentIx
-                    mwin <- atomically (currentWindow sess)
-                    pure [ (sess, cur, win) | win <- maybe [] pure mwin ]
-    pbase <- (.paneBaseIndex) <$> readTVarIO st.options
-    fmap (map ROutput . concat) . forM targets $ \(sess, wix, win) -> do
-        ps <- Map.elems <$> readTVarIO win.panes
-        forM (zip [pbase ..] ps) $ \(pix, pane) -> case mfmt of
-            Just fmt -> do
-                env <- paneFormatEnv st sess wix win pix pane
-                expandFormat st env fmt
-            Nothing -> do
-                sz <- readTVarIO pane.size
-                pure $ "%" <> tshow (rawPane pane.id) <> ": ["
-                    <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
-
-cmdSwitchClient :: CommandImpl
-cmdSwitchClient st mclient args = do
-    let (opts, flags, _) = parseArgs "t" args
-    case mclient of
-        Nothing -> pure [RErr "no client"]
-        Just client
-            | "-l" `elem` flags -> do
-                mlast <- readTVarIO client.lastSession
-                sessions <- readTVarIO st.sessions
-                case mlast >>= (`Map.lookup` sessions) of
-                    Nothing -> pure [RErr "no last session"]
-                    Just sess -> switchClientTo st client sess >> pure []
-            | otherwise ->
-                withTargetSession st mclient (lookup "-t" opts) $ \sess ->
-                    switchClientTo st client sess >> pure []
-
-cmdKillServer :: CommandImpl
-cmdKillServer st mclient _ = do
-    -- Flag first: pane readers race us into closePane once the ptys go,
-    -- and the shutdown path must know this drain is a kill, not the last
-    -- window closing (which drops the store instead).
-    atomically $ writeTVar st.preserveStore True
-    saveNow st  -- capture the tree before we tear it down
-    sessions <- readTVarIO st.sessions
-    forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
-    forM_ mclient $ \client -> send client Exited
-    panes <- atomically $ do
-        sess <- readTVar st.sessions
-        fmap concat . forM (Map.elems sess) $ \s -> do
-            ws <- readTVar s.windows
-            fmap concat . forM (Map.elems ws) $ windowPanes
-    forM_ panes hangupPane
-    atomically $ do
-        writeTVar st.sessions Map.empty
-        writeTVar st.everAttached True
-    pure []
-
 -- | @restart-server [-C] [path]@: reload the server binary in place while every
 -- pane's program keeps running. @-C@ drops all scrollback across the reload
 -- (a memory cleanup). Serializes the live tree and its inherited fds
@@ -3684,3 +3324,26 @@ controlLoop st client = do
         Nothing -> pure ()
         _ -> controlLoop st client
 
+
+-- | @kill-server [-a]@: drain every session (a normal shutdown). @-a@ keeps
+-- the store's saved tree; a bare kill drops it. See 'saveNow'.
+cmdKillServer :: CommandImpl
+cmdKillServer st mclient _ = do
+    -- Flag first: pane readers race us into closePane once the ptys go,
+    -- and the shutdown path must know this drain is a kill, not the last
+    -- window closing (which drops the store instead).
+    atomically $ writeTVar st.preserveStore True
+    saveNow st  -- capture the tree before we tear it down
+    sessions <- readTVarIO st.sessions
+    forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
+    forM_ mclient $ \client -> send client Exited
+    panes <- atomically $ do
+        sess <- readTVar st.sessions
+        fmap concat . forM (Map.elems sess) $ \s -> do
+            ws <- readTVar s.windows
+            fmap concat . forM (Map.elems ws) $ windowPanes
+    forM_ panes hangupPane
+    atomically $ do
+        writeTVar st.sessions Map.empty
+        writeTVar st.everAttached True
+    pure []
