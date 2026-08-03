@@ -139,6 +139,7 @@ import Hat.Server.Reload
     , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
     , decodeHandover, encodeHandover)
 import qualified Hat.Term.Pty
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
@@ -2459,9 +2460,6 @@ clientView st client = do
 
 -- The command engine ---------------------------------------------------------
 
-data Reply = ROutput Text | RErr Text
-    deriving (Eq, Show)
-
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
 runCommandText st mclient input = case parseCommandLine input of
     Left err -> pure [RErr err]
@@ -2507,8 +2505,6 @@ envAssignment = \case
         Just (c, cs) -> (isAlpha c || c == '_')
             && T.all (\x -> isAlphaNum x || x == '_') cs
         Nothing -> False
-
-type CommandImpl = ServerState -> Maybe Client -> [Text] -> IO [Reply]
 
 commandTable :: Map.Map Text CommandImpl
 commandTable = Map.fromList $ concatMap expand
@@ -2578,40 +2574,6 @@ commandTable = Map.fromList $ concatMap expand
     ]
   where
     expand (names, impl) = [(n, impl) | n <- names]
-
--- getopt-style flag parser: @spec@ lists the letters that take a
--- value. Bundled forms work like tmux: @-dsfoo@ is @-d -s foo@.
--- Returns (value flags as ("-s", value), boolean flags as "-d",
--- positional args).
-parseArgs :: [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
-parseArgs spec = go [] []
-  where
-    go opts flags = \case
-        [] -> (opts, flags, [])
-        ("--" : rest) -> (opts, flags, rest)   -- end-of-flags separator
-        (a : rest)
-            | Just bundle <- T.stripPrefix "-" a
-            , not (T.null bundle)
-            , not (isNumber a) ->
-                let (opts', flags', rest') = scanBundle bundle rest
-                in go (opts' <> opts) (flags' <> flags) rest'
-            | otherwise -> (opts, flags, a : rest)
-    scanBundle bundle rest = case T.uncons bundle of
-        Nothing -> ([], [], rest)
-        Just (c, more)
-            | c `elem` spec ->
-                let val = fromMaybe more (T.stripPrefix "=" more)
-                in case (T.null val, rest) of
-                    (False, _) -> ([(dash c, val)], [], rest)
-                    (True, v : rest') -> ([(dash c, v)], [], rest')
-                    (True, []) -> ([(dash c, "")], [], [])
-            | otherwise ->
-                let (opts', flags', rest') = scanBundle more rest
-                in (opts', dash c : flags', rest')
-    dash c = T.pack ['-', c]
-    isNumber a = case TR.signed TR.decimal a of
-        Right (_ :: Int, restT) -> T.null restT
-        Left _ -> False
 
 targetSession :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Session)
 targetSession st mclient mtarget = atomically $ do

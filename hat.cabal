@@ -86,6 +86,7 @@ library
         Hat.Server
         Hat.Server.ClientIO
         Hat.Server.ColorScheme
+        Hat.Server.Command.Types
         Hat.Server.CopyMode
         Hat.Server.Environ
         Hat.Server.Format
