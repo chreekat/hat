@@ -169,46 +169,6 @@ executable replay-reload
         hat,
         text        ^>= 2.1.3
 
--- Memory benches, run on demand (never in the fast unit suite); each Main's
--- header says what it measures. feed-mem: repro of a feed-scaled retention
--- under raw-bytes driving. scrollback-retain: regression guard on the fixed
--- teardown leak. scrollback-live: baseline-judged cost of held scrollback.
-benchmark feed-mem
-    import:             defaults, pedantry
-    type:               exitcode-stdio-1.0
-    hs-source-dirs:     bench
-    main-is:            FeedMem.hs
-    ghc-options:        -rtsopts "-with-rtsopts=-T"
-    build-depends:
-        base        ^>= 4.20.2.0,
-        bytestring  ^>= 0.12.2.0,
-        hat
-
--- -threaded is required: Pty.spawn's reaper does a blocking waitpid.
-benchmark scrollback-retain
-    import:             defaults, pedantry
-    type:               exitcode-stdio-1.0
-    hs-source-dirs:     bench
-    main-is:            ScrollbackRetain.hs
-    other-modules:      PaneSim
-    ghc-options:        -threaded -rtsopts "-with-rtsopts=-T"
-    build-depends:
-        base        ^>= 4.20.2.0,
-        bytestring  ^>= 0.12.2.0,
-        hat
-
-benchmark scrollback-live
-    import:             defaults, pedantry
-    type:               exitcode-stdio-1.0
-    hs-source-dirs:     bench
-    main-is:            ScrollbackLive.hs
-    other-modules:      PaneSim
-    ghc-options:        -threaded -rtsopts "-with-rtsopts=-T"
-    build-depends:
-        base        ^>= 4.20.2.0,
-        bytestring  ^>= 0.12.2.0,
-        hat
-
 test-suite hat-test
     import:             defaults, pedantry
     type:               exitcode-stdio-1.0
