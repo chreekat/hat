@@ -136,6 +136,7 @@ import Hat.Server.Reload
     , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
     , decodeHandover, encodeHandover)
 import qualified Hat.Term.Pty
+import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
@@ -1858,54 +1859,6 @@ commandTable = Map.fromList $ concatMap expand
     expand (names, impl) = [(n, impl) | n <- names]
 
 -- Command implementations.
-
-cmdBind :: CommandImpl
-cmdBind st _ args = do
-    let (opts, flags, pos) = parseArgs "TN" args
-        table
-            | "-n" `elem` flags = "root"
-            | Just t <- lookup "-T" opts = t
-            | otherwise = "prefix"
-    case pos of
-        (keyName : rest)
-            | Just key <- parseKeyName keyName
-            , not (null rest) -> do
-                let cmds = splitBinding rest
-                atomically $ modifyTVar' st.keymap $
-                    Map.insertWith Map.union table
-                        (Map.singleton key.name cmds)
-                pure []
-        (keyName : _) ->
-            pure [RErr ("bind: bad key or command: " <> keyName)]
-        _ -> pure [RErr "usage: bind [-n] [-T table] key command..."]
-
--- A binding's command part: one brace block to re-parse, or argv split
--- on ";" tokens (from escaped semicolons).
-splitBinding :: [Text] -> [[Text]]
-splitBinding = \case
-    [block] | T.any (\c -> c == ' ' || c == ';' || c == '\n') block ->
-        case parseConfig block of
-            Right cmds -> cmds
-            Left _ -> [[block]]
-    rest -> filter (not . null) (splitOnSemis rest)
-  where
-    splitOnSemis xs = case break (== ";") xs of
-        (before, []) -> [before]
-        (before, _ : after) -> before : splitOnSemis after
-
-cmdUnbind :: CommandImpl
-cmdUnbind st _ args = do
-    let (opts, flags, pos) = parseArgs "T" args
-        table
-            | "-n" `elem` flags = "root"
-            | Just t <- lookup "-T" opts = t
-            | otherwise = "prefix"
-    case pos of
-        [keyName] | Just key <- parseKeyName keyName -> do
-            atomically $ modifyTVar' st.keymap $
-                Map.adjust (Map.delete key.name) table
-            pure []
-        _ -> pure [RErr "usage: unbind [-n] [-T table] key"]
 
 -- | Whether @set@\/@set-option@ (session) or @setw@\/@set-window-option@
 -- (window) invoked the set: the default scope when no @-g@\/@-s@\/@-w@ picks
