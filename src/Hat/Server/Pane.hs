@@ -52,6 +52,7 @@ module Hat.Server.Pane
     , paneCommandName
     , globalSpawnEnv
     , createSession
+    , sessionSpawnEnv
     ) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -857,3 +858,11 @@ createSession st mname mrun environ dir sz = do
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
     pure sess
+
+-- | The env a new pane inherits: the global environment overlaid by the
+-- session's, hidden and cleared entries dropped (tmux's environ_for_session).
+sessionSpawnEnv :: ServerState -> Session -> IO [(Text, Text)]
+sessionSpawnEnv st sess = atomically $ do
+    g <- readTVar st.globalEnviron
+    s <- readTVar sess.environ
+    pure (environPairs (environMerge g s))

@@ -92,6 +92,7 @@ library
         Hat.Server.Command.Option
         Hat.Server.Command.Session
         Hat.Server.Command.Types
+        Hat.Server.Command.Window
         Hat.Server.CopyMode
         Hat.Server.Environ
         Hat.Server.Format

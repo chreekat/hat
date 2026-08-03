@@ -4,20 +4,25 @@
 module Hat.Server.FormatEnv
     ( windowFormatEnv
     , paneFormatEnv
+    , refreshAutoNames
+    , autoName
     ) where
 
 import Control.Concurrent.STM
+import Control.Monad (forM_, when)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
+import Data.Text (Text)
 import qualified Data.Text as T
 
 import Hat.Geometry
 import Hat.Model
+import Hat.Model.Options
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Pane (paneCommandName)
-import Hat.Server.View (WindowFlagState (..), sessionFormatEnv, windowFlags)
+import Hat.Server.View (WindowFlagState (..), expandFormat, sessionFormatEnv, windowFlags)
 import qualified Hat.Term.Emulator as Emu
 import qualified Hat.Term.Pty
 
@@ -76,3 +81,31 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_height", tshow sz.rows)
         , ("session_grouped", "0")  -- hat has no session groups
         ]) wenv
+
+refreshAutoNames :: ServerState -> IO ()
+refreshAutoNames st = do
+    fmt <- (.automaticRenameFormat) <$> readTVarIO st.options
+    sessions <- Map.elems <$> readTVarIO st.sessions
+    forM_ sessions $ \sess -> do
+        ws <- Map.toAscList <$> readTVarIO sess.windows
+        forM_ ws $ \(ix, win) -> do
+            auto <- readTVarIO win.autoRename
+            when auto $ do
+                mnew <- autoName st sess ix win fmt
+                forM_ mnew $ \newName -> atomically $ do
+                    cur <- readTVar win.name
+                    when (cur /= newName && not (T.null newName)) $ do
+                        writeTVar win.name newName
+                        bumpDirty st
+
+autoName :: ServerState -> Session -> Int -> Window -> Text -> IO (Maybe Text)
+autoName st sess ix win fmt = do
+    mpane <- atomically (activePane win)
+    case mpane of
+        Nothing -> pure Nothing
+        Just pane
+            | fmt == "#{pane_current_command}" -> Just <$> paneCommandName pane
+            | otherwise -> do
+                pbase <- (.paneBaseIndex) <$> readTVarIO st.options
+                env <- paneFormatEnv st sess ix win pbase pane
+                Just <$> expandFormat st env fmt
