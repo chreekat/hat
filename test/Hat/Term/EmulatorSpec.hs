@@ -6,6 +6,7 @@ import qualified Data.ByteString.Char8 as B8
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import System.Mem.StableName (makeStableName)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck hiding (resize)
@@ -35,6 +36,19 @@ instance Arbitrary PlainLine where
 
 spec :: Spec
 spec = do
+    it "interns equal cells to one shared heap object (peekShimCell)" $ do
+        e <- new80x24
+        _ <- feedStr e "hi"
+        scr <- snapshot e
+        let blanks =
+                [ c | row <- V.toList scr.cells, c <- V.toList row, c == blankCell ]
+        case blanks of
+            (a : b : _) -> do
+                sa <- makeStableName a
+                sb <- makeStableName b
+                (sa == sb) `shouldBe` True
+            _ -> expectationFailure "expected at least two blank cells"
+
     it "puts plain text on the first row" $ do
         e <- new80x24
         _ <- feedStr e "hello"

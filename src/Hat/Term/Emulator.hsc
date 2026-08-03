@@ -52,6 +52,8 @@ import qualified Data.ByteString.Unsafe as BU
 import Data.Char (chr)
 import Data.IORef
 import Data.List (intersperse)
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -59,8 +61,10 @@ import qualified Data.Vector as V
 import Foreign
 import qualified Foreign.Concurrent as FC
 import Foreign.C.Types
+import System.Mem.Weak (Weak)
 
 import Hat.Geometry
+import Hat.Intern (shareVals)
 import Hat.Term.Cell
 import Hat.Term.Emulator.Types
 import Hat.Term.HostProtocol
@@ -96,6 +100,9 @@ type BellFn     = Ptr CTerm -> Ptr () -> IO ()
 foreign import ccall "wrapper" wrapWritePty :: WritePtyFn -> IO (FunPtr WritePtyFn)
 foreign import ccall "wrapper" wrapBell     :: BellFn -> IO (FunPtr BellFn)
 
+-- | Per-emulator cell intern table; see 'peekShimCell'.
+type CellIntern = IORef (Map Cell (Weak Cell))
+
 data Emulator = Emulator
     { term    :: ForeignPtr CTerm
         -- ^ owns the libghostty terminal; freed by a finalizer once unreachable
@@ -104,6 +111,8 @@ data Emulator = Emulator
         --   grid only between them
     , sbLimit :: IORef Int
     , state   :: IORef EmulatorState
+    , cellIntern :: CellIntern
+        -- ^ shared representatives for cells read out of libghostty
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
@@ -152,7 +161,9 @@ newEmulator sz limit = do
         c_free t
         freeHaskellFunPtr writePtyW
         freeHaskellFunPtr bellW
-    pure Emulator { term = fp, lock = lk, sbLimit = lr, state = st }
+    ci <- newIORef Map.empty
+    pure Emulator
+        { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci }
 
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
@@ -261,16 +272,16 @@ resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
 -- | Take an immutable 'Screen' by reading the live grid straight from
 -- libghostty: its cols\/rows, cursor, and every active-area cell.
 snapshot :: Emulator -> IO Screen
-snapshot e = withMVar e.lock $ \_ -> withForeignPtr e.term readGrid
+snapshot e = withMVar e.lock $ \_ -> withForeignPtr e.term (readGrid e.cellIntern)
 
-readGrid :: Ptr CTerm -> IO Screen
-readGrid t = do
+readGrid :: CellIntern -> Ptr CTerm -> IO Screen
+readGrid ci t = do
     cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
     rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
     cx   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_X}
     cy   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_Y}
     vis  <- c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
-    grid <- V.generateM rows $ \r -> readRow t #{const GHOST_SHIM_ACTIVE} r cols
+    grid <- V.generateM rows $ \r -> readRow ci t #{const GHOST_SHIM_ACTIVE} r cols
     pure Screen
         { size = Size { rows = fromIntegral rows, cols = fromIntegral cols }
         , cells = grid
@@ -280,17 +291,19 @@ readGrid t = do
 
 -- | Read one row's @cols@ cells under a point tag (active or history) into a
 -- vector of 'Cell's.
-readRow :: Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
-readRow t tag y cols = allocaBytes #{size GhostShimCell} $ \cellp ->
+readRow :: CellIntern -> Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
+readRow ci t tag y cols = allocaBytes #{size GhostShimCell} $ \cellp ->
     V.generateM cols $ \c -> do
         _ <- c_cell t tag (fromIntegral c) (fromIntegral y) cellp
-        peekShimCell cellp
+        peekShimCell ci cellp
 
 -- | Marshal one 'GhostShimCell' the shim just filled into a 'Cell': a
 -- zero-width continuation renders as empty, a zero codepoint as a space, and
--- the flag bitmask and tagged colors decode as in the shim's header.
-peekShimCell :: Ptr () -> IO Cell
-peekShimCell p = do
+-- the flag bitmask and tagged colors decode as in the shim's header. The fresh
+-- cell is interned ('shareVals') so equal cells across the grid and scrollback
+-- collapse to one shared heap object.
+peekShimCell :: CellIntern -> Ptr () -> IO Cell
+peekShimCell ci p = do
     cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
     w     <- #{peek GhostShimCell, width} p :: IO CInt
     flags <- #{peek GhostShimCell, flags} p :: IO CUInt
@@ -303,7 +316,7 @@ peekShimCell p = do
             | cp == 0    = " "
             | otherwise  = T.singleton (chr (fromIntegral cp))
         has m = flags .&. m /= 0
-    pure $! Cell
+    shareVals ci $! Cell
         { text = txt
         , width = width
         , style = Style
@@ -375,7 +388,7 @@ currentPen :: Emulator -> IO Style
 currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     allocaBytes #{size GhostShimCell} $ \cellp -> do
         _ <- c_pen t cellp
-        (.style) <$> peekShimCell cellp
+        (.style) <$> peekShimCell e.cellIntern cellp
 
 -- Scrollback lives inside libghostty (the HISTORY point tag), so the row limit
 -- hat exposes is enforced here on the read side, over libghostty's byte-bounded
@@ -399,7 +412,7 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
         then pure Nothing
         else do
             cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
-            Just <$> readRow t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
+            Just <$> readRow e.cellIntern t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
 
 -- | Change the live row cap. Read-side only: libghostty already bounds the
 -- history's memory, so a lowered limit hides the oldest rows and a raised one
