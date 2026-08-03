@@ -82,6 +82,10 @@ paneFormatEnv st sess wix win pix pane = do
         , ("session_grouped", "0")  -- hat has no session groups
         ]) wenv
 
+-- | Recompute the names of every @automatic-rename@ window from its
+-- active pane's foreground command, bumping the render generation on any
+-- change. Driven by a periodic poll so no-output commands (an idle
+-- @less@, a waiting @cat@) still get picked up.
 refreshAutoNames :: ServerState -> IO ()
 refreshAutoNames st = do
     fmt <- (.automaticRenameFormat) <$> readTVarIO st.options
@@ -98,6 +102,9 @@ refreshAutoNames st = do
                         writeTVar win.name newName
                         bumpDirty st
 
+-- | The name an @automatic-rename@ window should currently take: the
+-- @automatic-rename-format@ expanded against the active pane. The default
+-- format is just @#{pane_current_command}@, so it takes a cheap path.
 autoName :: ServerState -> Session -> Int -> Window -> Text -> IO (Maybe Text)
 autoName st sess ix win fmt = do
     mpane <- atomically (activePane win)
