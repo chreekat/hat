@@ -135,6 +135,7 @@ import Hat.Server.Reload
 import qualified Hat.Term.Pty
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.Buffer
+import Hat.Server.Command.Interact
 import Hat.Server.Command.Option
 import Hat.Server.Command.Session
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
@@ -143,8 +144,7 @@ import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
     , reapMonitor, schemeReport, watcherFault, withRegisteredMonitor )
-import Hat.Server.Format (FormatEnv)
-import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
+import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout, layoutFromString)
@@ -2692,273 +2692,6 @@ nextZoom mz target
     | mz == Just target = Nothing
     | otherwise         = Just target
 
-cmdDetachClient :: CommandImpl
-cmdDetachClient _ mclient _ = do
-    forM_ mclient $ \client -> send client DetachOk
-    pure []
-
-cmdSendPrefix :: CommandImpl
-cmdSendPrefix st mclient _ = do
-    forM_ mclient $ \client -> do
-        opts <- readTVarIO st.options
-        forM_ (parseKeyName opts.prefix) $ \key -> do
-            mpane <- clientActivePane st client
-            forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty key.raw
-    pure []
-
-cmdSendKeys :: CommandImpl
-cmdSendKeys st mclient args = do
-    let (opts, flags, pos) = parseArgs "tN" args
-        literal = "-l" `elem` flags
-        modeCmd = "-X" `elem` flags
-    mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
-    case (mpicker, mclient) of
-        -- An open chooser owns send-keys: they drive its navigation/search
-        -- (this is how the config's @… \; send-keys /@ enters search).
-        (Just pk, Just client) | not modeCmd -> do
-            handlePickerInput st client pk
-                (concatMap (tokenizeKeys . argBytes literal) pos)
-            pure []
-        _ -> do
-            mpane <- targetPane st mclient (lookup "-t" opts)
-            forM_ mpane $ \pane ->
-                if modeCmd
-                    then case pos of
-                        (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
-                        [] -> pure ()
-                    else Hat.Term.Pty.writePty pane.pty
-                        (B.concat (map (argBytes literal) pos))
-            pure []
-  where
-    argBytes True a = TE.encodeUtf8 a
-    argBytes False a = case parseKeyName a of
-        Just k -> k.raw
-        Nothing -> TE.encodeUtf8 a
-
-runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO ()
-runCopyModeCommand st pane name cmdArgs = do
-    mmode <- readTVarIO pane.mode
-    case mmode of
-        Nothing -> pure ()  -- not in copy mode; -X is a no-op
-        Just pm
-            -- A digit key builds the @[count]@ prefix rather than running
-            -- a motion; @0@ with no count pending is @start-of-line@.
-            | name == "digit", Just d <- readDigit cmdArgs ->
-                atomically $ do
-                    writeTVar pane.mode
-                        (Just (reMode (CopyMode.pushDigit d state)))
-                    bumpDirty st
-            | otherwise -> case Map.lookup name CopyMode.handlers of
-                Nothing -> pure ()
-                Just h -> do
-                    -- Motions repeat [count] times; yanks never do. Every
-                    -- command clears the pending count.
-                    let count
-                            | name `elem` ["copy-selection", "copy-pipe"] = 1
-                            | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
-                    result <- applyN h (state { numPrefix = Nothing }) count
-                    result' <- traverse (scrollPaneToCursor pane) result
-                    atomically $ do
-                        writeTVar pane.mode (reMode <$> result')
-                        bumpDirty st
-          where
-            state = pm.copyState
-            reMode s = pm { copyState = s }
-  where
-    readDigit (a : _) = case TR.decimal a of
-        Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
-        _ -> Nothing
-    readDigit [] = Nothing
-    -- Run a handler @n@ times, threading the state and stopping early if
-    -- it exits copy mode (@Nothing@).
-    applyN _ s 0 = pure (Just s)
-    applyN h s n = do
-        r <- h st pane s cmdArgs
-        case r of
-            Nothing -> pure Nothing
-            Just s' -> applyN h s' (n - 1)
-
--- | Re-center a pane's copy-mode viewport on its cursor after a motion,
--- over the pane's frozen snapshot (a no-op when not in copy mode).
-scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
-scrollPaneToCursor pane s = do
-    mmode <- readTVarIO pane.mode
-    pure $ case mmode of
-        Just pm -> CopyMode.scrollToCursor pm.frozen.fgHsize pm.frozen.fgSy s
-        Nothing -> s
-
-cmdCopyMode :: CommandImpl
-cmdCopyMode st mclient args = do
-    let (opts, flags, _) = parseArgs "st" args
-        quit = "-q" `elem` flags
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    case mpane of
-        Nothing -> pure []
-        Just pane
-            | quit -> do
-                atomically $ do
-                    writeTVar pane.mode Nothing
-                    bumpDirty st
-                pure []
-            | otherwise -> do
-                scr <- Emu.snapshot pane.emulator
-                frozen <- CopyMode.freezeGrid pane.emulator
-                srvOpts <- readTVarIO st.options
-                let table = case srvOpts.modeKeys of
-                        KeysVi -> "copy-mode-vi"
-                        KeysEmacs -> "copy-mode"
-                    startRow = frozen.fgHsize + scr.cursor.row
-                    startCol = scr.cursor.col
-                    state = CopyModeState
-                        { cursorRow = startRow
-                        , cursorCol = startCol
-                        , selection = Nothing
-                        , keyTable = table
-                        , viewportOffY = 0
-                        , numPrefix = Nothing
-                        , pendingSearch = Nothing
-                        , lastSearch = Nothing
-                        , lastQuery = Nothing
-                        }
-                atomically $ do
-                    writeTVar pane.mode (Just PaneMode
-                        { frozen = frozen, copyState = state })
-                    bumpDirty st
-                pure []
-
--- | Open the interactive command prompt on the invoking client.
--- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line
--- editor; @-I@ pre-fills it (format-expanded, so @#W@ is the window name),
--- and a @template@ has the submitted line spliced in for @%%@. Backs the
--- @,@ rename binding: @command-prompt -I "#W" "rename-window '%%'"@.
-cmdCommandPrompt :: CommandImpl
-cmdCommandPrompt st mclient args = do
-    let (opts, _flags, pos) = parseArgs "Ip" args
-        tmpl = T.unwords pos
-        pfx = case lookup "-p" opts of
-            Just p -> p
-            Nothing
-                | T.null tmpl -> ":"
-                | otherwise -> "(" <> T.takeWhile (/= ' ') tmpl <> ") "
-    forM_ mclient $ \client -> do
-        initial <- case lookup "-I" opts of
-            Nothing -> pure ""
-            Just raw -> do
-                env <- clientPromptEnv st client
-                expandFormat st env raw
-        atomically $ do
-            writeTVar client.prompt (Just (Prompt.promptFor pfx initial tmpl))
-            bumpDirty st
-    pure []
-
--- | The format environment of a client's current window, for expanding a
--- @command-prompt -I@ initial string. Empty if the client has no window.
-clientPromptEnv :: ServerState -> Client -> IO FormatEnv
-clientPromptEnv st client = do
-    mv <- atomically (clientView st client)
-    case mv of
-        Nothing -> pure Map.empty
-        Just (sess, win) -> do
-            ix <- readTVarIO sess.currentIx
-            windowFormatEnv st sess ix win
-
--- | Open a chooser overlay on the invoking client.
-openPicker :: ServerState -> Client -> Text -> PickerFill -> [PickerNode] -> IO ()
-openPicker st client titleText fill picked = atomically $ do
-    writeTVar client.picker $ Just PickerState
-        { title = titleText
-        , roots = picked
-        , cursor = 0
-        , query = ""
-        , search = ""
-        , mode = Browsing
-        , fill = fill
-        }
-    bumpDirty st
-
--- | @choose-tree [-GswZ]@: a filterable tree of every session, its
--- windows and their panes; Enter switches to the chosen one. @-s@ opens
--- with sessions collapsed (sessions only), @-w@ with windows expanded but
--- panes collapsed, and neither fully expanded. The config opens it with
--- @… \; send-keys /@ to jump straight into search.
-cmdChooseTree :: CommandImpl
-cmdChooseTree st mclient args = do
-    let (_, flags, _) = parseArgs "" args
-        sessionsOnly = "-s" `elem` flags
-        windowsOnly  = "-w" `elem` flags
-        windowsExp = if sessionsOnly then Collapsed else Expanded
-        panesExp   = if sessionsOnly || windowsOnly then Collapsed else Expanded
-        fill = if "-Z" `elem` flags then FillWindow else PaneRegion
-    forM_ mclient $ \client -> do
-        picked <- buildTreeNodes st windowsExp panesExp
-        openPicker st client "choose a window" fill picked
-    pure []
-
--- Panes are shown under their window for visual context, but tmux can't name
--- them, so they carry no meaningful search text; the picker marks them
--- (via 'PreviewPane') as non-matching so search never targets them.
-buildTreeNodes :: ServerState -> Expansion -> Expansion -> IO [PickerNode]
-buildTreeNodes st windowsExp panesExp = do
-    sessions <- Map.elems <$> readTVarIO st.sessions
-    forM sessions $ \sess -> do
-        sname <- readTVarIO sess.name
-        ws <- Map.toAscList <$> readTVarIO sess.windows
-        winNodes <- forM ws $ \(ix, win) -> do
-            wname <- readTVarIO win.name
-            apid <- readTVarIO win.activeId
-            ordered <- Map.elems <$> readTVarIO win.panes
-            let winCmd = "switch-client -t " <> sname
-                    <> " ; select-window -t " <> sname <> ":" <> tshow ix
-                paneNodes =
-                    [ PickerNode
-                        { label = "pane " <> tshow pix
-                            <> (if pane.id == apid then "*" else "")
-                        , command = winCmd <> " ; select-pane -t " <> tshow pix
-                        , preview = Just (PreviewPane pane.id)
-                        , children = []
-                        , expanded = Collapsed }
-                    | (pix, pane) <- zip [0 :: Int ..] ordered ]
-            pure PickerNode
-                { label = tshow ix <> ":" <> wname
-                , command = winCmd
-                , preview = Just (PreviewWindow win.id)
-                , children = Picker.windowChildren paneNodes
-                , expanded = panesExp }
-        pure PickerNode
-            { label = sname
-            , command = "switch-client -t " <> sname
-            , preview = Just (PreviewSession sess.id)
-            , children = winNodes
-            , expanded = windowsExp }
-
--- | @choose-window <template>@: a list of the current session's windows;
--- selecting one runs @template@ with each @%%@ replaced by that window's
--- active pane id, so @choose-window 'join-pane -hs \"%%\"'@ joins it here.
-cmdChooseWindow :: CommandImpl
-cmdChooseWindow st mclient args = do
-    let (_, _, pos) = parseArgs "" args
-    case (mclient, pos) of
-        (Just client, template : _) -> do
-            picked <- buildWindowItems st client template
-            openPicker st client "choose a window" PaneRegion picked
-            pure []
-        _ -> pure [RErr "usage: choose-window template"]
-
-buildWindowItems :: ServerState -> Client -> Text -> IO [PickerNode]
-buildWindowItems st client template = do
-    sid <- readTVarIO client.session
-    msess <- Map.lookup sid <$> readTVarIO st.sessions
-    case msess of
-        Nothing -> pure []
-        Just sess -> do
-            ws <- Map.toAscList <$> readTVarIO sess.windows
-            forM ws $ \(ix, win) -> do
-                wname <- readTVarIO win.name
-                apid <- readTVarIO win.activeId
-                let target = "%" <> tshow (rawPane apid)
-                pure $ Picker.leaf (tshow ix <> ":" <> wname)
-                    (T.replace "%%" target template)
-
 -- | @restart-server [-C] [path]@: reload the server binary in place while every
 -- pane's program keeps running. @-C@ drops all scrollback across the reload
 -- (a memory cleanup). Serializes the live tree and its inherited fds
@@ -3194,3 +2927,84 @@ cmdKillServer st mclient _ = do
         writeTVar st.sessions Map.empty
         writeTVar st.everAttached True
     pure []
+
+cmdSendKeys :: CommandImpl
+cmdSendKeys st mclient args = do
+    let (opts, flags, pos) = parseArgs "tN" args
+        literal = "-l" `elem` flags
+        modeCmd = "-X" `elem` flags
+    mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
+    case (mpicker, mclient) of
+        -- An open chooser owns send-keys: they drive its navigation/search
+        -- (this is how the config's @… \; send-keys /@ enters search).
+        (Just pk, Just client) | not modeCmd -> do
+            handlePickerInput st client pk
+                (concatMap (tokenizeKeys . argBytes literal) pos)
+            pure []
+        _ -> do
+            mpane <- targetPane st mclient (lookup "-t" opts)
+            forM_ mpane $ \pane ->
+                if modeCmd
+                    then case pos of
+                        (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
+                        [] -> pure ()
+                    else Hat.Term.Pty.writePty pane.pty
+                        (B.concat (map (argBytes literal) pos))
+            pure []
+  where
+    argBytes True a = TE.encodeUtf8 a
+    argBytes False a = case parseKeyName a of
+        Just k -> k.raw
+        Nothing -> TE.encodeUtf8 a
+
+runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO ()
+runCopyModeCommand st pane name cmdArgs = do
+    mmode <- readTVarIO pane.mode
+    case mmode of
+        Nothing -> pure ()  -- not in copy mode; -X is a no-op
+        Just pm
+            -- A digit key builds the @[count]@ prefix rather than running
+            -- a motion; @0@ with no count pending is @start-of-line@.
+            | name == "digit", Just d <- readDigit cmdArgs ->
+                atomically $ do
+                    writeTVar pane.mode
+                        (Just (reMode (CopyMode.pushDigit d state)))
+                    bumpDirty st
+            | otherwise -> case Map.lookup name CopyMode.handlers of
+                Nothing -> pure ()
+                Just h -> do
+                    -- Motions repeat [count] times; yanks never do. Every
+                    -- command clears the pending count.
+                    let count
+                            | name `elem` ["copy-selection", "copy-pipe"] = 1
+                            | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
+                    result <- applyN h (state { numPrefix = Nothing }) count
+                    result' <- traverse (scrollPaneToCursor pane) result
+                    atomically $ do
+                        writeTVar pane.mode (reMode <$> result')
+                        bumpDirty st
+          where
+            state = pm.copyState
+            reMode s = pm { copyState = s }
+  where
+    readDigit (a : _) = case TR.decimal a of
+        Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
+        _ -> Nothing
+    readDigit [] = Nothing
+    -- Run a handler @n@ times, threading the state and stopping early if
+    -- it exits copy mode (@Nothing@).
+    applyN _ s 0 = pure (Just s)
+    applyN h s n = do
+        r <- h st pane s cmdArgs
+        case r of
+            Nothing -> pure Nothing
+            Just s' -> applyN h s' (n - 1)
+
+-- | Re-center a pane's copy-mode viewport on its cursor after a motion,
+-- over the pane's frozen snapshot (a no-op when not in copy mode).
+scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
+scrollPaneToCursor pane s = do
+    mmode <- readTVarIO pane.mode
+    pure $ case mmode of
+        Just pm -> CopyMode.scrollToCursor pm.frozen.fgHsize pm.frozen.fgSy s
+        Nothing -> s
