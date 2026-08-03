@@ -3,6 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # libghostty-vt is 0.1.0-unstable with an evolving C ABI (bug 17), so it is
+    # pinned to a fixed nixpkgs rev — decoupled from the rolling nixpkgs above —
+    # and a `nix flake update` cannot silently swap the emulator's ABI out from
+    # under a running deploy. Bump this rev deliberately to move libghostty-vt.
+    nixpkgs-ghostty.url = "github:NixOS/nixpkgs/d407951447dcd00442e97087bf374aad70c04cea";
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;
@@ -16,12 +21,20 @@
     };
   };
 
-  outputs = { self, nixpkgs, tmux-src, ... }:
+  outputs = { self, nixpkgs, nixpkgs-ghostty, tmux-src, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems
-          (system: f (import nixpkgs { inherit system; }));
+          (system: f (import nixpkgs {
+            inherit system;
+            # Take libghostty-vt from the pinned rev; everything else tracks
+            # nixpkgs above.
+            overlays = [ (final: prev: {
+              libghostty-vt =
+                (import nixpkgs-ghostty { inherit system; }).libghostty-vt;
+            }) ];
+          }));
     in
     {
       packages = forAllSystems (pkgs: rec {
