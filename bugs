@@ -1,14 +1,18 @@
 PERF what's the frame rate for hat? for instance when running 'yes' I see a lot of stuttering | id:012d9fdbbfdc269b6cce8f2379f2a108dced5770
 new-window -t sess:idx parsing: cmdNewWindow parses -t as a bare decimal, so a session-qualified target like W:9 fails to place the window at 9 (upstream window-ops.sh). Also missing -k / -b / -S semantics. | id:061b6c488084b046601899215164517072fe30b9
 FEAT wild and fun idea - gamer style dynamic slow rbg rainbow color theme | id:144affa661ec706da5e9c4e3191ceef2999bdc25
+copy-mode search should accept regex | id:228633eedb8f2dd4c5791d3168db103eb030c39d
 PERF explore haskell-specific, system-independent benchmarking based on peak memory stats and number of instructions | id:2518b27cc194e09aebf60748d20837579a2f8c92
 EXPLORE: domain-driven refactoring to split up big modules and also to make tests orthogonal | id:4af179b8f9927eaccc09c4d2677f6a380bc5a665
 BUG cursor is in wrong spot cursor panes after restart. buried in the bash prompt instead of where it's supposed to be. | id:4b9638d63df3252194b81bfe55b2457ffcb92d51
 [FEAT] restart-client followup: 'restart' -- server restart followed by client restart | id:4f8d0df7fa0b2e827bd557e6ad35b84280b19163
 zsh as a tier-1 supported shell: audit every place hat assumes bash/sh semantics and make zsh a first-class target. Known gap: restore's shellExecArgs fires bash PROMPT_COMMAND to load direnv/prompt hooks, but zsh uses precmd_functions/precmd, so zsh users get no per-directory env on restore. Sweep for other bash-isms (rc sourcing, -i/-c flags, PROMPT_COMMAND, /bin/sh -c usage) and add zsh coverage + tests. | id:53f11dd9215715652a8375728dc8af45dd1380fc
 emulator scroll-region/DECOM off-by-one: a plain capture of DECSTBM/IND/RI scroll cases is shifted up one row vs tmux (upstream input-scroll.sh origin/scrollup/scrolldown/ri). Isolate with a focused Emulator.snapshot unit test feeding ESC[2;3r etc. | id:5b0cf42e3c1cdc9b6c37dc4fb1f3a2a7c1bbec79
+FEAT [UI] when the prefix key is sent, give a quick animated 'flash' of the active pane -- maybe a fast color zoom effect. The goal is to orient the user to the active pane before doing more actions like moving or zooming. it should be unobtrusive, fast | id:6c7527840ee1409b2d41c1ac96a45cda18321a7c
 learn how to use ghcid for fast feedback in a general way (not just for hat) | id:7cf4a94b9747eecb4f55c578b56c2a57f732c5b2
+Followup to d8. direnv was just an example. I bigger example is that hitting Ctrl-z in vim should drop me to a real shell. | id:820e4ae0efa2beb0f2028cd7fc315e50b21bf7dc
 PERF design model benchmarks against tmux. neutralize the system confounder by running same test against tmux and hat as black boxes. but what is the test, and what gets measured? | id:86b9d0f2bf07f11ebd78d40c017a07d0caefce76
+BUG un-full-sizing the OS window (using my Mod+q binding in Notion) leaves a bunch of garbage in the UI -- sometimes. maybe after resizing the pane while the os window is full screen. | id:97fbf5aa408c66d1897bf47b4d0ee9b90516bd53
 BUG zooming a solo pane should be a no-op | id:9e13bafe07312c733c51107ec73b32938c5659eb
 FEAT store snapshot history / undo keep N historical snapshots so a bad overwrite can be rolled back. split from 99, whose overwrite-safeguard half is fixed: the persist mirror is pinned once kill-server saves | id:bb66505b500c7423e42f93147352db7e26bd7b21
 audit all tests and distingush those that were part of catching real bugs vs "speculative" bugs. The latter should be lightweight and minimal and really just test normal paths, since their main purpose is to explain code, not speculate | id:bc0376c6022fabe66cec1ab4cbba7a74465746b3
