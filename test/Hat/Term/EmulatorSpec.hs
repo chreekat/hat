@@ -335,12 +335,15 @@ spec = do
         evs <- feedStr e "\BEL"
         evs `shouldSatisfy` elem Bell
 
-    it "surfaces a vterm prop it does not handle (DECSCUSR cursor shape)" $ do
+    it "consumes DECSCUSR (cursor shape) without rendering it" $ do
         e <- new80x24
-        -- CSI 2 SP q sets the cursor shape (VTERM_PROP_CURSORSHAPE), which
-        -- hat does not act on; it must be surfaced, not silently dropped.
-        evs <- feedStr e "\ESC[2 q"
-        evs `shouldSatisfy` any (\case UnknownProp {} -> True; _ -> False)
+        -- CSI 2 SP q sets the cursor shape. libghostty handles it internally,
+        -- so unlike libvterm it raises no UnknownProp; the sequence is consumed,
+        -- not rendered.
+        evs <- feedStr e "\ESC[2 qX"
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "X"
+        evs `shouldSatisfy` all (\case UnknownProp {} -> False; _ -> True)
 
     it "answers cursor position reports" $ do
         e <- new80x24
@@ -468,13 +471,17 @@ spec = do
         Just line <- scrollbackLine e 0
         cellsText line `shouldBe` "line13"
 
+    -- The row limit is a non-destructive read-side cap over libghostty's
+    -- byte-bounded history: a lowered limit only hides the oldest rows, so
+    -- raising it again reveals every row still retained (14 here, where a
+    -- destructive per-row cap would have discarded a4/a5 and reported 12).
     it "honors a raised limit for future scrollback growth" $ do
         e <- newEmulator Size { rows = 5, cols = 20 } 3
         _ <- feedStr e (B8.intercalate "\r\n" ["a" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
         scrollbackLength e `shouldReturn` 3
         setScrollbackLimit e 100
         _ <- feedStr e (B8.intercalate "\r\n" ["b" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
-        scrollbackLength e `shouldReturn` 12
+        scrollbackLength e `shouldReturn` 14
 
     it "survives resize both ways" $ do
         e <- new80x24
@@ -544,15 +551,15 @@ spec = do
             rowText scr 0 `shouldBe` "foo"
             noEcho scr
 
-        -- Bug c28: the OSC 1 icon name (VTERM_PROP_ICONNAME, prop 5/str) is a
-        -- recognized emulator property, not an UnknownProp — it must not spam
-        -- the logs, and the emulator records it.
-        it "records an OSC 1 icon name without an UnknownProp event" $ do
+        -- libghostty consumes OSC 1 (icon/tab title) but does not surface the
+        -- icon name to hat; it must still be swallowed, not rendered, and raise
+        -- no UnknownProp so the logs stay quiet.
+        it "swallows an OSC 1 icon name without an UnknownProp event" $ do
             e <- new80x24
-            evs <- feedStr e "\ESC]1;my-icon\a"
+            evs <- feedStr e "\ESC]1;my-icon\aX"
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "X"
             evs `shouldSatisfy` all (\case UnknownProp {} -> False; _ -> True)
-            icon <- iconName e
-            icon `shouldBe` "my-icon"
 
         it "swallows an OSC 1 icon/tab title (ST)" $ do
             e <- new80x24

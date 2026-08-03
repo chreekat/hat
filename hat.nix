@@ -1,7 +1,7 @@
 { mkDerivation, aeson, array, async, base, bytestring, cborg
-, containers, directory, filepath, hspec, lib, megaparsec, network
-, process, QuickCheck, serialise, sqlite-simple, stm, text, time
-, unix, vector, vterm
+, containers, directory, filepath, hspec, lib, libghostty-vt
+, megaparsec, network, process, QuickCheck, serialise
+, sqlite-simple, stm, text, time, unix, vector
 }:
 mkDerivation {
   pname = "hat";
@@ -14,7 +14,7 @@ mkDerivation {
     filepath megaparsec network process serialise sqlite-simple stm
     text time unix vector
   ];
-  libraryPkgconfigDepends = [ vterm ];
+  libraryPkgconfigDepends = [ libghostty-vt ];
   executableHaskellDepends = [
     base bytestring directory network process text unix
   ];

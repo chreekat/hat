@@ -1,15 +1,14 @@
 {-# LANGUAGE StrictData #-}
 
--- | The terminal emulator, libghostty-vt backend (bug 17). Selected by the
--- @ghostty@ cabal flag in place of the libvterm backend; both present the same
--- interface (this module's exports mirror the vterm one) and share the pure
--- helpers in "Hat.Term.Emulator.Types".
+-- | The terminal emulator: libghostty-vt wrapped behind a narrow interface
+-- (bug 17). The event/mode vocabulary and the pure byte-synthesizers live in
+-- "Hat.Term.Emulator.Types".
 --
--- Unlike libvterm, libghostty owns the grid and the scrollback internally, so
--- there is no cell cache and no scrollback 'Seq' here: 'snapshot' reads the
--- live grid back through the scalar shim on demand. Each pane is touched by one
--- thread at a time; an internal lock also makes the terminal-touching
--- operations safe to call concurrently.
+-- libghostty owns the grid and the scrollback internally, so there is no cell
+-- cache and no scrollback 'Seq' here: 'snapshot' reads the live grid back
+-- through the scalar shim on demand, and history is read from libghostty's
+-- HISTORY point tag. Each pane is touched by one thread at a time; an internal
+-- lock also makes the terminal-touching operations safe to call concurrently.
 module Hat.Term.Emulator
     ( Emulator
     , Event (..)
@@ -38,7 +37,6 @@ module Hat.Term.Emulator
     , clearScrollback
     , screenRowText
     , screenCell
-    , iconName
     ) where
 
 #include <ghostty/vt.h>
@@ -109,13 +107,12 @@ data Emulator = Emulator
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
--- subscription hat tracks itself (?2031, not fed to the terminal), the
--- title\/icon-name hat scrubs out of the stream, and the two cross-chunk
--- scrubber states for tmux passthrough and screen\/tmux ESC k titles.
+-- subscription hat tracks itself (?2031, not fed to the terminal), the title
+-- hat scrubs out of the stream (ESC k), and the two cross-chunk scrubber states
+-- for tmux passthrough and screen\/tmux ESC k titles.
 data EmulatorState = EmulatorState
     { colorSub    :: Bool
     , title       :: Text
-    , iconName    :: Text
     , passthrough :: PassState
     , screenTitle :: StitleState
     , output      :: [ByteString]  -- ^ write_pty callback bytes, reversed
@@ -135,7 +132,6 @@ newEmulator sz limit = do
     st <- newIORef EmulatorState
         { colorSub = False
         , title = ""
-        , iconName = ""
         , passthrough = Outside ""
         , screenTitle = StOutside ""
         , output = []
@@ -370,13 +366,10 @@ encodeKey e key = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
             CursorEnd   -> "F"
     pure (intro <> final)
 
--- | The current window title, as scrubbed from the stream.
+-- | The current window title: an OSC 0\/2 title polled from libghostty, or a
+-- screen\/tmux ESC k title scrubbed from the stream.
 title :: Emulator -> IO Text
 title e = (.title) <$> readIORef e.state
-
--- | The current OSC 1 icon name.
-iconName :: Emulator -> IO Text
-iconName e = (.iconName) <$> readIORef e.state
 
 -- | The emulator's live pen: the style the next glyph would take. libghostty
 -- surfaces it only through the shim's formatter round-trip.

@@ -19,26 +19,9 @@
   outputs = { self, nixpkgs, tmux-src, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      # Patch the vendored libvterm: teach it the SGR 2 (faint/dim) attribute
-      # it otherwise drops (nix/libvterm-dim.patch), and stop its screen_resize
-      # from abort()ing the whole process when an extreme shrink of reflowed
-      # content leaves the cursor unresolved (nix/libvterm-resize-clamp.patch).
-      # hat is the canonical home for the patches; the NixOS deploy overlay
-      # references these same files by path.
-      overlay = final: prev: {
-        libvterm-neovim = prev.libvterm-neovim.overrideAttrs (o: {
-          patches = (o.patches or [ ]) ++ [
-            ./nix/libvterm-dim.patch
-            ./nix/libvterm-resize-clamp.patch
-          ];
-        });
-      };
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems
-          (system: f (import nixpkgs {
-            inherit system;
-            overlays = [ overlay ];
-          }));
+          (system: f (import nixpkgs { inherit system; }));
     in
     {
       packages = forAllSystems (pkgs: rec {
@@ -80,10 +63,9 @@
           buildInputs = [
             pkgs.cabal-install
             pkgs.cabal2nix
-            pkgs.libvterm-neovim
-            # libghostty-vt backs the emulator under `cabal build -fghostty`
-            # (bug 17). Its pkg-config files live in the dev output's
-            # share/pkgconfig, which the pkg-config setup hook adds to the path.
+            # libghostty-vt backs the terminal emulator (bug 17). Its pkg-config
+            # files live in the dev output's share/pkgconfig, which the
+            # pkg-config setup hook adds to the path.
             pkgs.libghostty-vt
             pkgs.haskellPackages.weeder
 

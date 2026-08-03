@@ -16,13 +16,6 @@ flag profiling
     default:     False
     manual:      True
 
-flag ghostty
-    description: Back the terminal emulator with libghostty-vt instead of the
-                 vendored libvterm (bug 17). The two backends present the same
-                 Hat.Term.Emulator interface; this selects which one compiles.
-    default:     False
-    manual:      True
-
 common defaults
     default-language:   GHC2021
     default-extensions:
@@ -110,19 +103,12 @@ library
         Hat.Transport.Socket
         Hat.Transport.Wire
     include-dirs:       cbits
-    -- Pty plumbing, independent of the emulator backend, so it is always built.
-    c-sources:          cbits/hat_spawn.c
-    -- The emulator backend is flag-selected (bug 17). Each backend supplies its
-    -- own Hat.Term.Emulator from its source dir, C shim, and pkg-config lib;
-    -- the shared Hat.Term.Emulator.Types stays in src.
-    if flag(ghostty)
-        hs-source-dirs:    src-ghostty
-        c-sources:         cbits/ghostty_shim.c
-        pkgconfig-depends: libghostty-vt
-    else
-        hs-source-dirs:    src-vterm
-        c-sources:         cbits/hat_shim.c
-        pkgconfig-depends: vterm
+    -- hat_spawn.c is pty plumbing; ghostty_shim.c is the emulator's libghostty-vt
+    -- FFI shim (bug 17).
+    c-sources:
+        cbits/hat_spawn.c
+        cbits/ghostty_shim.c
+    pkgconfig-depends:  libghostty-vt
     build-depends:
         aeson       ^>= 2.2.3.0,
         array       ^>= 0.5.8.0,

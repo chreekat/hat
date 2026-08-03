@@ -9,7 +9,7 @@
 #
 # The source is .gitignore-filtered so a callPackage on a live checkout
 # does not copy dist-newstyle into the store.
-{ haskell, haskellPackages, libvterm-neovim, nix-gitignore }:
+{ haskell, haskellPackages, libghostty-vt, nix-gitignore }:
 
 let
   # Checks and benchmarks stay enabled here so the package's test AND
@@ -26,7 +26,7 @@ let
   # tree so a callPackage on a live checkout does not copy dist-newstyle.
   withTests = haskell.lib.doBenchmark
     ((haskellPackages.callPackage ./hat.nix {
-      vterm = libvterm-neovim;
+      libghostty-vt = libghostty-vt;
     }).overrideAttrs (_: {
       src = nix-gitignore.gitignoreSource [ ] ./.;
     }));
