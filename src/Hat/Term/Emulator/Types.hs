@@ -1,10 +1,10 @@
 {-# LANGUAGE StrictData #-}
 
--- | The backend-agnostic surface of the terminal emulator: the event and mode
--- vocabulary every backend reports in, the immutable 'Screen' view, and the
--- pure byte-synthesizers that turn captured state back into the VT stream a
--- fresh emulator replays on reload. None of this touches libvterm or
--- libghostty; the stateful wrapper in "Hat.Term.Emulator" imports it.
+-- | The pure surface of the terminal emulator: the event and mode vocabulary
+-- it reports in, the immutable 'Screen' view, and the byte-synthesizers that
+-- turn captured state back into the VT stream a fresh emulator replays on
+-- reload. None of this touches libghostty; the stateful wrapper in
+-- "Hat.Term.Emulator" imports it.
 module Hat.Term.Emulator.Types
     ( Event (..)
     , PropKind (..)

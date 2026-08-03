@@ -9,7 +9,7 @@ specific to HAT.
 - Everything goes through `cabal` **inside the dev shell**: `nix develop -c
   cabal build`, `nix develop -c cabal test`, `nix develop -c cabal run hat`.
   Never call built binaries directly (stale artifacts) and never build outside
-  `nix develop` (libvterm and its `pkg-config` come from the shell).
+  `nix develop` (libghostty-vt and its `pkg-config` come from the shell).
 - `cabal test` runs the unit, property, and integration suites. The
   integration tests drive the real `hat` binary through a pty, so rebuild
   before trusting a repro. Keep the whole suite fast and green — a flaky test

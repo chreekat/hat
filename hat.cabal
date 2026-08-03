@@ -156,8 +156,7 @@ executable gen-fixtures
         text        ^>= 2.1.3
 
 -- Replays a preserved reload handover (<socket>.reload.last) through the
--- emulator restore + resize path, to reproduce the libvterm resize abort
--- offline. See tools/ReplayReload.hs.
+-- emulator restore + resize path offline. See tools/ReplayReload.hs.
 executable replay-reload
     import:             defaults, pedantry
     hs-source-dirs:     tools

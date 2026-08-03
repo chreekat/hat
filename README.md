@@ -1,6 +1,6 @@
 # HAT
 
-A Haskell-Adapted Terminal multiplexer. Haskell around libvterm; tmux-shaped
+A Haskell-Adapted Terminal multiplexer. Haskell around libghostty-vt; tmux-shaped
 commands, config, and key bindings. See ARCHITECTURE.md for the design and
 FEATURES.md for the scope.
 
@@ -48,7 +48,7 @@ cabal test                                # unit + property + integration
 ./tools/run-upstream-tests.sh ~/src/tmux  # tmux's regress suite (xfail-tracked)
 ```
 
-Both run inside `nix develop` — the devShell provides libvterm plus the
+Both run inside `nix develop` — the devShell provides libghostty-vt plus the
 coreutils/sed/awk/... that the upstream regress scripts assume in
 `/bin:/usr/bin`.
 

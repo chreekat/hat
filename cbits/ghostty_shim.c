@@ -1,8 +1,7 @@
-/* Scalar-only wrappers around libghostty-vt for the Haskell FFI, mirroring how
- * hat_shim.c flattens libvterm: GHC can't pass the tagged-union points, sized
- * structs, or opaque cell handles by value, so every one of those crossings
- * happens here in C and only scalars (and one flat GhostShimCell) reach
- * Haskell. See "Hat.Term.Emulator" (the ghostty backend). */
+/* Scalar-only wrappers around libghostty-vt for the Haskell FFI: GHC can't pass
+ * the tagged-union points, sized structs, or opaque cell handles by value, so
+ * every one of those crossings happens here in C and only scalars (and one flat
+ * GhostShimCell) reach Haskell. See "Hat.Term.Emulator". */
 #include <string.h>
 #include <ghostty/vt.h>
 

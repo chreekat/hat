@@ -62,7 +62,7 @@ spec = do
         cell.style.bold `shouldBe` True
 
     -- SGR 2 (faint/dim) is what Claude Code paints its ghost suggestions with;
-    -- the vendored libvterm is patched to carry it (bug 33/48).
+    -- libghostty carries it natively (it was bug 33/48 on the old libvterm).
     it "records the faint (SGR 2) attribute, and SGR 22 clears it" $ do
         e <- new80x24
         _ <- feedStr e "\ESC[2md\ESC[22mn"
@@ -253,8 +253,8 @@ spec = do
         cleared <- snapshot dst
         rowText cleared 0 `shouldBe` ""
 
-    -- Scrollback lives in the emulator (not libvterm), so reload restores it
-    -- by capturing the lines and seeding them into the fresh emulator.
+    -- libghostty owns scrollback, so reload restores it by capturing the lines
+    -- and re-seeding them (byte-replay) into the fresh emulator.
     it "round-trips scrollback through capture and seed" $ do
         src <- new80x24
         forM_ [1 .. 30 :: Int] $ \i ->
@@ -598,7 +598,7 @@ spec = do
     describe "screen/tmux ESC k title (hat advertises TERM=tmux-256color)" $ do
         -- Under a tmux/screen TERM, oh-my-zsh sets the title with the screen
         -- escape @ESC k <name> ST@ (name = the running command word) instead
-        -- of an OSC. libvterm doesn't know it, so hat swallows it here and
+        -- of an OSC. The emulator doesn't know it, so hat swallows it here and
         -- treats it as the pane title, exactly as it does OSC 0/2.
         let allText scr = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
 

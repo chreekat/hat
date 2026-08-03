@@ -931,7 +931,7 @@ readReload :: Logger -> FilePath -> IO (Maybe Handover)
 readReload lg hp = do
     r <- try (B.readFile hp)
     -- Keep the consumed blob as .last rather than deleting it: a resume that
-    -- crashes the process (e.g. a native abort in libvterm) leaves the exact
+    -- crashes the process (e.g. a native abort in the emulator) leaves the exact
     -- bytes that reproduce it on disk for offline replay.
     renameFile hp (hp <> ".last") `catch` \(_ :: IOException) -> pure ()
     case r of
@@ -1043,7 +1043,7 @@ adoptPane st sz histLimit rp = do
                               (fromIntegral rp.childPid)
     -- Adopt at the size the pane was CAPTURED at, not the session default:
     -- replaying a capture into a smaller grid wraps and clamps it into a
-    -- state whose later reflow-resize aborts inside libvterm ("screen_resize
+    -- state whose later reflow-resize aborts inside the emulator ("screen_resize
     -- failed to update cursor position", the 2026-07-28 field crash). The
     -- reconcile loop then resizes toward the layout as for any live pane.
     let esz = fromMaybe sz (captureSize rp.screen)
@@ -1750,7 +1750,7 @@ startPaneReader st sid win pane = do
                 Emu.ScreenChanged -> atomically $ do
                     markActivity st sid win
                     bumpDirty st
-                -- libvterm reported a terminal property hat does not act on;
+                -- the emulator reported a terminal property hat does not act on;
                 -- surface it as a warning rather than silently dropping it.
                 Emu.UnknownProp kind prop ->
                     logEvent st.logger UnknownTermProp
@@ -1769,7 +1769,7 @@ startPaneReader st sid win pane = do
                         }
             readLoop
 
--- | Name a vterm prop's value kind for the 'UnknownTermProp' log.
+-- | Name a terminal prop's value kind for the 'UnknownTermProp' log.
 propKindLabel :: Emu.PropKind -> Text
 propKindLabel = \case
     Emu.PropBool -> "bool"
@@ -2120,7 +2120,7 @@ reconcilePaneSizes st = do
             handle (\(e :: IOException) ->
                         logEvent st.logger PaneResizeFailed
                             { pane = rawPane pane.id, err = T.pack (show e) }) $ do
-                -- Flushed, not just queued: libvterm's resize can abort() the
+                -- Flushed, not just queued: the emulator's resize can abort() the
                 -- whole process (a native assertion), and this line is what
                 -- names the culprit pane and dimensions afterwards.
                 logEvent st.logger PaneResizing
@@ -2406,7 +2406,7 @@ runKeys st client keys = do
 -- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
 -- (@\ESC[A@ vs @\ESCOA@), so the pane's emulator encodes them. Home\/End are
 -- mode-independent in tmux-256color (@khome=\ESC[1~@, @kend=\ESC[4~@) but
--- libvterm would emit the xterm SS3 forms, so they are normalized to the
+-- the emulator would emit the xterm SS3 forms, so they are normalized to the
 -- terminfo bytes here — else a pager keyed off terminfo reads a bare @H@\/@F@
 -- (less opens its help).
 reencodeCursor :: Maybe Pane -> Key -> IO Key

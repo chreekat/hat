@@ -157,9 +157,8 @@ newEmulator sz limit = do
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
 -- OSC 10\/11 and DEC 2031 queries hat answers, OSC 9\/777 notifications) run
--- here exactly as on the libvterm backend — they are pure byte-scanning, blind
--- to which library owns the grid — and only the leftover bytes reach
--- libghostty. libghostty's own write_pty\/bell callbacks land the 'Output'
+-- here as pure byte-scanning above the grid engine, and only the leftover
+-- bytes reach libghostty. libghostty's own write_pty\/bell callbacks land the 'Output'
 -- (CPR\/DA replies) and 'Bell' events, and the OSC 0\/2 title is polled back
 -- after the write.
 feed :: Emulator -> ByteString -> IO [Event]
@@ -208,8 +207,7 @@ feedSegments e t = go
             sigEvs <- applySignal e sig
             ((outEvs <> sigEvs) <>) <$> go rest
     -- After feeding a segment, collect what libghostty wrote back to the pty
-    -- (a DA/CPR reply), dropping the spurious DECXCPR reply exactly as the
-    -- libvterm backend does.
+    -- (a DA/CPR reply), dropping any spurious DECXCPR reply.
     writeSeg seg
         | B.null seg = pure []
         | otherwise = do

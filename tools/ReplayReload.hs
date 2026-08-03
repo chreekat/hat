@@ -1,12 +1,12 @@
 -- | Replay a preserved reload handover through the emulator restore path.
 --
--- The field crash is a native abort in libvterm's @resize_buffer@ when the
--- server resizes a pane restored from a reload handover; the handover blob
--- (kept as @<socket>.reload.last@) is the exact reproducer. This replays
--- every pane in the blob: restore at the rebuild size (24x80), then resize
--- through a ladder of geometries — once against a fresh restore per size,
--- then chained on one emulator. Each step is printed before it runs, so an
--- abort names its pane and geometry on the last line.
+-- The handover blob (kept as @<socket>.reload.last@) reproduces a pane's
+-- restore-then-resize offline: this replays every pane in the blob — restore
+-- at the rebuild size (24x80), then resize through a ladder of geometries,
+-- once against a fresh restore per size, then chained on one emulator. Each
+-- step is printed before it runs, so a crash names its pane and geometry on
+-- the last line. (It was written to reproduce a native resize abort in the old
+-- libvterm backend, since replaced by libghostty-vt.)
 --
 -- Run from the repo root:
 -- @cabal run replay-reload -- /tmp/hat-1000/default.reload.last [ROWSxCOLS ...]@
@@ -38,7 +38,7 @@ historyLimit = 50000
 -- The geometries the reconcile daemon and a client attach actually drive
 -- (from the field logs' PaneResizing events). Extreme shrinks (5x20, 2x2)
 -- are opt-in via arguments, not part of the default reload validation; the
--- libvterm abort they once triggered is fixed (nix/libvterm-resize-clamp.patch).
+-- resize abort they once triggered on the old libvterm backend is long fixed.
 defaultLadder :: [Size]
 defaultLadder =
     [ Size 11 80, Size 23 80, Size 42 330, Size 85 330, Size 24 80 ]

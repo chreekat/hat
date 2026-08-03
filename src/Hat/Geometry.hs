@@ -18,8 +18,8 @@ data Pos = Pos
     }
     deriving (Eq, Ord, Show)
 
--- | Half-open on both ends, like libvterm's VTermRect: rows in
--- [startRow, endRow), cols in [startCol, endCol).
+-- | Half-open on both ends: rows in [startRow, endRow), cols in
+-- [startCol, endCol).
 data Rect = Rect
     { startRow :: Int
     , endRow   :: Int

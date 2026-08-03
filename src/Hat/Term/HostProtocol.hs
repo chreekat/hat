@@ -1,37 +1,36 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | The host-aware terminal protocol layer that sits above libvterm.
+-- | The host-aware terminal protocol layer that sits above the grid engine
+-- (libghostty-vt).
 --
--- libvterm is a pure screen-grid emulator: it owns what cells are where, and
+-- The grid engine is a pure screen emulator: it owns what cells are where, and
 -- nothing else. It has no operating system, no notion of an outer terminal,
 -- no multiplexer policy. So there is a class of escape sequences an inner app
--- sends that libvterm structurally /cannot/ answer correctly — the app asking
+-- sends that it structurally /cannot/ answer correctly — the app asking
 -- its terminal about the world around it: the OS light\/dark scheme, the real
 -- background color, whether unknown sequences should be tunnelled to the
 -- outer terminal.
 --
--- Those belong to hat, not libvterm, and this module owns them. It is the
--- deliberate seam between the two:
+-- Those belong to hat, and this module owns them. It is the deliberate seam
+-- between the two:
 --
---   * __libvterm__ owns the /screen/ — SGR, wide chars, scrollback, regions.
+--   * __the grid engine__ owns the /screen/ — SGR, wide chars, scrollback, regions.
 --   * __this layer__ owns the /host protocol/ — the app's questions about its
 --     environment that only the host (hat) can answer.
 --
--- It is not the beginning of replacing libvterm; the grid engine is exactly
--- where libvterm is excellent and where hat has no bugs. The charter test for
--- whether a sequence belongs here: /does answering it require knowledge
--- libvterm cannot have?/ The OS color scheme (OSC 10\/11, DEC mode 2031), the
--- multiplexer's passthrough policy (DCS @tmux;@), routing a desktop
--- notification (OSC 9\/777) out to the real terminal — yes. One neighbour,
--- 'dropDecxcprReply', is a different category: not host knowledge but a
--- libvterm quirk-correction (it answers a query real terminals ignore); it
--- lives here because it too is peripheral rewriting of the byte stream that
--- crosses the emulator boundary.
+-- The charter test for whether a sequence belongs here: /does answering it
+-- require knowledge the grid engine cannot have?/ The OS color scheme (OSC
+-- 10\/11, DEC mode 2031), the multiplexer's passthrough policy (DCS @tmux;@),
+-- routing a desktop notification (OSC 9\/777) out to the real terminal — yes.
+-- One neighbour, 'dropDecxcprReply', is a different category: peripheral
+-- rewriting of the byte stream that crosses the emulator boundary (it drops a
+-- DEC-private cursor report real terminals — and libghostty — ignore, a
+-- belt-and-suspenders left from when the old libvterm answered it).
 --
 -- Everything here is pure: bytes in, signals and rewritten bytes out. The
 -- 'Hat.Term.Emulator' 'Hat.Term.Emulator.feed' loop is the thin IO wiring
--- that runs these over libvterm; 'Hat.Server' is the host that answers the
--- signals with knowledge it holds (see 'Hat.Server.applyScheme').
+-- that runs these over the grid engine; 'Hat.Server' is the host that answers
+-- the signals with knowledge it holds (see 'Hat.Server.applyScheme').
 module Hat.Term.HostProtocol
     ( -- * OSC color-query vocabulary
       OscColorTarget (..)
@@ -79,13 +78,13 @@ data PassState
         --   payload accumulated so far
 
 -- | Strip DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's output
--- before libvterm parses it, returning the scrubbed bytes and each completed
+-- before the emulator parses it, returning the scrubbed bytes and each completed
 -- wrapper's rebuilt payload (ESC-undoubled) for the caller to honour.
 --
 -- A tmux-aware app (claude) sees $TMUX set and wraps sequences meant for the
--- outer terminal in this DCS; libvterm's parser aborts on the wrapper's
+-- outer terminal in this DCS; a VT parser mis-handles the wrapper's
 -- doubled inner ESCs and spills the payload onto the screen as text (the
--- \"11;?9;4;0;\" garbage). So the wrapper never reaches libvterm. tmux's
+-- \"11;?9;4;0;\" garbage). So the wrapper never reaches the emulator. tmux's
 -- default (@allow-passthrough off@) then discards the payload entirely; hat
 -- goes one step further and answers the host queries it recognises out of the
 -- payload (see 'honoredSignals'), discarding the rest. Framing only lives
@@ -108,7 +107,7 @@ scrubPassthrough st0 chunk = case st0 of
                     emit = B.take (B.length before - B.length held) before
                 in (Outside held, finish (emit : oacc), reverse payloads)
             | otherwise -> inside (before : oacc) payloads [] (B.drop (B.length intro) r)
-    -- Inside the wrapper nothing reaches libvterm; the payload is rebuilt
+    -- Inside the wrapper nothing reaches the emulator; the payload is rebuilt
     -- (un-doubling the ESCs the wrapper doubled) until the ST — a lone ESC
     -- followed by backslash — closes it and emits the completed payload.
     inside oacc payloads pacc bs = case B.elemIndex 0x1b bs of
@@ -140,9 +139,9 @@ data StitleState
         -- ^ carry: a trailing @ESC@ that may start the ST, and the name so far
 
 -- | Strip the screen/tmux window-title escape @ESC k <name> ST@ (also
--- accepting a BEL terminator) before libvterm parses it. hat advertises
+-- accepting a BEL terminator) before the emulator parses it. hat advertises
 -- @TERM=tmux-256color@, so tmux-aware apps set the title with this escape
--- instead of an OSC; libvterm does not know it and would spill the name onto
+-- instead of an OSC; the emulator does not know it and would spill the name onto
 -- the screen as text. Returns the scrubbed bytes and every completed name, in
 -- order. A title can span pty reads, so the state carries across 'feed' chunks.
 scrubStitle :: StitleState -> ByteString -> (StitleState, ByteString, [ByteString])
@@ -159,9 +158,9 @@ scrubStitle st0 chunk = case st0 of
                     emit = B.take (B.length before - B.length held) before
                 in (StOutside held, finish (emit : oacc), reverse titles)
             | otherwise -> inside (before : oacc) titles [] (B.drop (B.length intro) r)
-    -- Inside the wrapper nothing reaches libvterm; the name accumulates until
+    -- Inside the wrapper nothing reaches the emulator; the name accumulates until
     -- a BEL or an ST (a lone @ESC@ then backslash) closes it. An @ESC@ that is
-    -- not the ST ends the name and is left for libvterm from the ESC onward.
+    -- not the ST ends the name and is left for the emulator from the ESC onward.
     inside oacc titles nacc bs = case B.elemIndex 0x07 bs of
         Just j | maybe True (j <) (B.elemIndex 0x1b bs) ->
             outside oacc (finish (B.take j bs : nacc) : titles) (B.drop (j + 1) bs)
@@ -201,8 +200,8 @@ partitionPassthrough = go
 
 -- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
 -- emulator's replies. Most terminals — ghostty included — ignore
--- @CSI ? 6 n@, so libvterm's answer to it arrives unexpected at the shell
--- when the inner app exits or resumes, and the line editor spills its bare
+-- @CSI ? 6 n@; the old libvterm answered it, and that reply arrives unexpected
+-- at the shell when the inner app exits or resumes, and the line editor spills its bare
 -- parameters as visible \"9;4;0\" garbage. Plain CPR (@CSI … R@) and every
 -- other reply pass through untouched.
 dropDecxcprReply :: ByteString -> ByteString
@@ -220,7 +219,7 @@ dropDecxcprReply bs =
     isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b   -- 0-9 or ';'
 
 -- | A color control the inner app sent to its terminal, which hat answers
--- itself: neither libvterm nor the outer terminal knows the OS scheme hat
+-- itself: neither the emulator nor the outer terminal knows the OS scheme hat
 -- tracks (see 'Hat.Server.applyScheme').
 data QuerySignal
     = SigColor CsSignal              -- ^ DEC mode 2031 subscribe/query
@@ -235,8 +234,8 @@ data CsSignal = CsEnable | CsDisable | CsQuery
     deriving (Eq, Show)
 
 -- | Find the first sequence in a chunk that hat handles itself rather than
--- libvterm: a DEC 2031 control (only the standalone form; one folded into a
--- multi-parameter DECSET is left for libvterm), an OSC 10/11 color query
+-- the emulator: a DEC 2031 control (only the standalone form; one folded into a
+-- multi-parameter DECSET is left for the emulator), an OSC 10/11 color query
 -- (@OSC 1x ; ? BEL@ or @… ESC \\@; color *set* sequences like @OSC 11;rgb:…@
 -- are not queries and pass through untouched), or an OSC 9/777 desktop
 -- notification (captured whole to forward to the outer terminal). Returns
@@ -282,7 +281,7 @@ nextQuery bs = go 0
         ("996",  0x6e) -> Just CsQuery     -- 'n'
         _              -> Nothing
     -- Bytes after an OSC string terminator (BEL or ST), or Nothing if the
-    -- chunk ends before one — an unterminated notify is left for libvterm
+    -- chunk ends before one — an unterminated notify is left for the emulator
     -- (which drops it) rather than forwarded half-formed.
     afterTerminator r = case B.uncons r of
         Nothing -> Nothing

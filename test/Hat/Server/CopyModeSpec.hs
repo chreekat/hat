@@ -24,7 +24,7 @@ import qualified Data.Map.Strict as Map
 
 -- | The pane grid the upstream copy-mode tests build (40x10). The
 -- source file's leading TAB on row 1 reaches hat's grid as spaces
--- (libvterm expands tabs), so it is modelled as spaces here.
+-- (the emulator expands tabs), so it is modelled as spaces here.
 testRows :: [Text]
 testRows =
     [ "A line of words"

@@ -149,7 +149,7 @@ emptyReloadScreen = ReloadScreen
 data ReloadModes = ReloadModes
     { colorReport :: Bool  -- ^ ?2031 color-scheme reporting
     , focusReport :: Bool  -- ^ ?1004 focus reporting
-    , mouse       :: Int   -- ^ VTERM_PROP_MOUSE: 0 off, 1 click, 2 drag, 3 move
+    , mouse       :: Int   -- ^ mouse tracking: 0 off, 1 click, 2 drag, 3 move
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)

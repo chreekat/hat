@@ -43,13 +43,13 @@ data LogEvent
     | PaneSpawned     { pane :: Int, cmd :: Text }
     | PaneExited      { pane :: Int }
     | PaneResizeFailed { pane :: Int, err :: Text }
-    | PaneResizing    { pane :: Int, toRows :: Int, toCols :: Int }  -- ^ written (and flushed) just before the libvterm resize call, so a native crash there still leaves the culprit pane and dimensions in the log
+    | PaneResizing    { pane :: Int, toRows :: Int, toCols :: Int }  -- ^ written (and flushed) just before the emulator resize call, so a native crash there still leaves the culprit pane and dimensions in the log
     | DaemonFault     { daemon :: Text, err :: Text }  -- ^ a background loop hit an expected fault; logged, non-fatal
     | DaemonStopped   { daemon :: Text, reason :: Text }  -- ^ a background loop gave up for good (e.g. a missing dependency); logged, non-fatal
     | CommandRun      { client :: Int, command :: Text }
     | ConfigError     { file :: FilePath, err :: Text }
     | ProtocolError   { client :: Int, err :: Text }
-    | UnknownTermProp { pane :: Int, propKind :: Text, prop :: Int }  -- ^ libvterm reported a terminal property hat does not handle
+    | UnknownTermProp { pane :: Int, propKind :: Text, prop :: Int }  -- ^ the emulator reported a terminal property hat does not handle
     | UnhandledPassthrough { pane :: Int, payload :: Text }  -- ^ a tmux passthrough payload hat neither answers nor forwards (OSC 52\/12\/4, …), logged instead of silently dropped
     | ServerCrash     { err :: Text }
     | ServerFatal     { err :: Text }  -- ^ an exception escaped the server's main loop and is taking the process down; carries its 'displayException' (backtrace included)

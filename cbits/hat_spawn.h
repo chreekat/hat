@@ -10,8 +10,8 @@
  * executes in the child between fork and exec (avoiding the threaded-RTS
  * fork hazard under load). Returns the child pid, or -1 on fork failure.
  *
- * Pty plumbing, independent of the terminal-emulator backend, so it lives in
- * its own shim compiled under both the libvterm and libghostty builds. */
+ * Pty plumbing, unrelated to the terminal-emulator shim, so it lives in its
+ * own translation unit. */
 pid_t hat_spawn_pty(int master_fd, int slave_fd, const char *cwd,
                     const char *file, char *const argv[], char *const envp[]);
 

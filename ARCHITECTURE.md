@@ -45,7 +45,7 @@ load-bearing in design choices, not just in code review.
    bound threads only where a specific FFI or syscall demands it.
 5. **The terminal emulator is wrapped, not written from scratch (yet).**
    Strangler pattern: start by binding to a mature implementation in
-   another language (most likely `libvterm` via FFI), behind our own
+   another language (`libghostty-vt` via FFI), behind our own
    narrow Haskell interface. A pure-Haskell emulator can grow inside
    that interface later if and when it's worth it.
 6. **Megaparsec** for the config-language, command-language, and
@@ -199,10 +199,10 @@ delivery cooperative.
 **Bound threads (`forkOS`) — only where needed.** A bound thread is
 pinned to one OS thread for its lifetime. Use cases that *might* apply:
 
-- **FFI calls into libraries with thread-local state.** libvterm holds
-  all state on the `VTerm *` pointer, not in TLS — so plain green
-  threads are fine. **(verified by reading `vterm.h`; the API takes
-  the instance pointer everywhere, no `pthread_self()`-like calls.)**
+- **FFI calls into libraries with thread-local state.** libghostty-vt holds
+  all state on the terminal handle, not in TLS — so plain green
+  threads are fine. **(verified by reading the libghostty-vt headers; the
+  API takes the terminal handle everywhere, no `pthread_self()`-like calls.)**
 - **Signal handling that must run on the main OS thread.** GHC
   install-once handlers don't care, but if we ever sigwait or call
   `signal()` directly we want the main thread, which is bound by
@@ -211,7 +211,7 @@ pinned to one OS thread for its lifetime. Use cases that *might* apply:
   (GUI toolkits, mostly). N/A for HAT.
 
 `safe` FFI calls release the RTS so other green threads keep running;
-this is the default we want for `vterm_input_write` because callbacks
+this is the default we want for `ghostty_terminal_vt_write` because callbacks
 back into Haskell would otherwise deadlock on the capability lock.
 `unsafe` FFI is faster but blocks all green threads on that capability
 for the duration — only for very short C calls.
@@ -263,9 +263,9 @@ higher ones.
   +---------------------------------------+
   |  Hat.Model / .Ids / .Options          | -- sessions/windows/panes, IDs, options
   +---------------------------------------+
-  |  Hat.Term.Emulator (.hsc)             | -- libvterm FFI: parser + grid
+  |  Hat.Term.Emulator (.hsc)             | -- libghostty-vt FFI: parser + grid + scrollback
   |  Hat.Term.Cell                        | -- grid cell + style
-  |  Hat.Term.HostProtocol               | -- host-aware sequences libvterm can't answer
+  |  Hat.Term.HostProtocol               | -- host-aware sequences libghostty can't answer
   |  Hat.Term.Pty (.hsc)                  | -- forkpty, signals, resize
   +---------------------------------------+
   |  Hat.Transport.Wire                   | -- protocol types + CBOR framing
@@ -279,11 +279,11 @@ higher ones.
 
 Notable interface boundaries — these are where flexibility lives:
 
-- **`Hat.Term.Emulator`** hides libvterm behind `newEmulator` / `feed` /
+- **`Hat.Term.Emulator`** hides libghostty-vt behind `newEmulator` / `feed` /
   `resize` plus read-only snapshot accessors. The state machine is opaque;
-  getting it wrong means replacing one module. **(the seam held — see the
-  emulator section.)**
-- **`Hat.Term.HostProtocol`** owns the sequences libvterm *can't* answer
+  getting it wrong means replacing one module. **(the seam held — it survived
+  swapping the whole backend from libvterm to libghostty-vt, bug 17.)**
+- **`Hat.Term.HostProtocol`** owns the sequences libghostty *can't* answer
   because they need host knowledge (OSC 10/11 colors, mode 2031, tmux
   passthrough). Keeping them out of the emulator seam is what lets the
   emulator stay a pure wrap.
@@ -496,10 +496,15 @@ ecosystems. So: **we don't.** We wrap.
 **(verified — searched Hackage and GitHub directly.)** Nothing in the
 Haskell ecosystem meets the bar.
 
-**C — `libvterm` is the obvious choice.**
+**C — `libvterm` was the first binding; `libghostty-vt` is the current one
+(bug 17).** The rationale below is why a mature C library was chosen over
+writing our own or reaching for Rust; `libghostty-vt` (Ghostty's VT library,
+extracted as a standalone C-ABI lib) later replaced `libvterm` behind the same
+seam — it owns the grid *and* the scrollback, natively carries the SGR-2 faint
+and resize-safety that `libvterm` needed patches for, and exposes state through
+sized-struct accessors rather than a callback-per-cell.
 
-- Pure C99, no GUI, callback-driven. Hand it bytes, it calls back with
-  "move cursor", "set cell", "scroll", "set title", etc.
+- Pure C, no GUI. Hand it bytes; read the grid back through accessors.
 - Battle-tested in Neovim (where it now lives bundled at
   [`src/nvim/vterm`](https://github.com/neovim/neovim/tree/master/src/nvim/vterm))
   and emacs-libvterm.
@@ -533,14 +538,14 @@ Haskell ecosystem meets the bar.
 4. We can switch later. The whole point of the strangler interface is
    that the choice isn't load-bearing.
 
-**(confirmed: the FFI is written and links against `libvterm-neovim` on
-NixOS.)**
+**(confirmed twice over: the FFI was written against `libvterm-neovim`, then
+re-pointed at `libghostty-vt` — bug 17 — touching only this seam. Point 4 held.)**
 
 ### The Haskell interface we hide it behind
 
 The wrap interface is the seam. It's *ours*; the underlying emulator
-can be libvterm, a Rust crate, or eventually pure Haskell, without the
-rest of HAT noticing.
+can be libghostty-vt, libvterm, a Rust crate, or eventually pure Haskell,
+without the rest of HAT noticing.
 
 ```haskell
 -- Hat.Term.Emulator
@@ -548,7 +553,7 @@ rest of HAT noticing.
 newEmulator :: Rows -> Cols -> IO Emulator
 resize      :: Emulator -> Rows -> Cols -> IO ()
 feed        :: Emulator -> ByteString -> IO [EmulatorEvent]
--- ^ pure-looking from outside; libvterm calls our callbacks under the hood
+-- ^ pure-looking from outside; libghostty runs our callbacks and we read its grid
 
 data EmulatorEvent
   = TitleChanged Text
@@ -563,10 +568,9 @@ cursor :: Emulator -> IO (Row, Col, CursorStyle)
 mode   :: Emulator -> IO ModeFlags  -- alt-screen, mouse-on, etc.
 ```
 
-It's `IO` at this layer because libvterm holds mutable state behind a
-pointer. That's fine — it's a leaf, and we test it as a leaf.
-**(inferred — once we know whether libvterm or alacritty_terminal, the
-exact signatures will firm up.)**
+It's `IO` at this layer because libghostty-vt holds mutable state behind a
+pointer. That's fine — it's a leaf, and we test it as a leaf. **(the shipped
+signatures live in `Hat.Term.Emulator`; the sketch above is only indicative.)**
 
 ### Testing the wrap
 
@@ -574,52 +578,43 @@ Per architecture-defaults: don't fake the dependency, test the real
 thing. Integration tests feed canned byte streams (captured from vim,
 htop, fzf sessions) into the emulator and assert on the resulting grid
 snapshot. These tests are short, fast, and detect regressions in *our*
-wiring without trying to retest libvterm itself.
+wiring without trying to retest libghostty-vt itself.
 
 ### Threading and callback re-entrancy (resolved)
 
-From reading `include/vterm.h` in the Neovim fork:
+From the libghostty-vt headers:
 
-- `vterm_input_write(vt, bytes, len)` is the single byte-feed entry point.
-  Callbacks (parser, state, screen) fire **synchronously during this
-  call** — so re-entrancy means "don't call libvterm again from inside a
-  callback," which is trivial to arrange.
-- Damage callbacks can be **coalesced** with
-  `vterm_screen_set_damage_merge`, which we should use to avoid
-  per-cell wake-ups for big screen redraws.
-- After feeding a batch, the embedder calls
-  `vterm_screen_flush_damage` to drain pending damage callbacks.
-- Output bytes (mouse replies, query responses) flow either through an
-  output callback or a built-in buffer; we'll use the callback so the
-  PTY-writer thread can pick them up.
+- `ghostty_terminal_vt_write(t, bytes, len)` is the single byte-feed entry
+  point. Registered effect callbacks (write_pty, bell, title) fire
+  **synchronously during this call** — so re-entrancy means "don't call
+  vt_write again from inside a callback," which the interface arranges.
+- libghostty owns the grid *and* the scrollback; there is no per-cell damage
+  callback. After a feed, the snapshot reads the live grid back through
+  sized-struct accessors (`ghostty_terminal_grid_ref` / `ghostty_cell_get`),
+  and history through the HISTORY point tag.
+- Output bytes (mouse replies, CPR/DA responses) flow through the write_pty
+  callback, accumulated for the PTY-writer thread to pick up.
 
-**Concurrency rule for HAT:** each pane owns its libvterm instance and
-is touched by exactly one thread at a time. The PTY reader thread reads
-bytes, feeds them into libvterm (the callbacks land in a small
-thread-local accumulator — an `IORef` in the reader's stack, not STM),
-and only after `vterm_input_write` returns does it commit one
-`atomically` block to update the pane's `TVar`. Renderers see a
-consistent post-batch view; libvterm never observes concurrent access.
-
-**(the IORef-accumulator pattern is what shipped; it reads cleanly and the
-emulator is exercised hard by the golden tests.)**
+**Concurrency rule for HAT:** each pane owns its libghostty terminal and is
+touched by one thread at a time, guarded by an internal `MVar`. The PTY reader
+feeds bytes (callbacks land in a plain `IORef` accumulator inside the feed),
+and snapshot/render read the grid only between whole operations, so the
+terminal never observes concurrent access.
 
 ### Nix packaging (resolved)
 
-Nixpkgs has two relevant packages: `libvterm` (older, "apparently
-unmaintained") and **`libvterm-neovim`** (the actively-maintained fork
-that Neovim itself ships). Use `libvterm-neovim`. The Emacs vterm
-module on NixOS uses the same one, so the path is well-trodden.
-**(confirmed: `libvterm-neovim` is what the build links.)**
+`libghostty-vt` (Ghostty's VT library, packaged standalone in nixpkgs) backs
+the emulator. Its pkg-config files live in the `dev` output's
+`share/pkgconfig`, which the pkg-config setup hook adds to the path. It is
+pinned to a fixed nixpkgs rev in the flake — its pre-1.0 C ABI can drift, and
+the pin keeps a `nix flake update` from swapping it out silently.
 
-### When (if) we replace libvterm with pure Haskell
+### When (if) we replace libghostty-vt with pure Haskell
 
 Not before we have a working HAT. Maybe never. Triggers that would make
 us reconsider:
-- libvterm proves hard to drive from Haskell (signal interactions,
-  callback re-entrancy).
-- We want emulator behavior that libvterm doesn't expose (per-cell
-  hyperlink metadata, sixel, custom OSCs).
+- libghostty-vt proves hard to drive from Haskell.
+- We want emulator behavior that libghostty-vt doesn't expose.
 - FFI overhead becomes measurable on large bursts (unlikely; PTY
   bandwidth is modest).
 
@@ -783,7 +778,7 @@ direction, with read often disabled by default.
 **Decision:** a server option `clipboard-policy` with values
 `Disallow | AllowWrite | AllowReadWrite`. Default `AllowWrite`. The
 config command form follows tmux convention: `set -g clipboard-policy
-allow-write`. Map to libvterm's OSC handler — when policy denies, drop
+allow-write`. Map to the emulator's OSC handling — when policy denies, drop
 the sequence.
 
 Boolean-blindness avoidance applies; the type is
@@ -915,7 +910,7 @@ Realistic caveats:
   output. This is much stricter than "feature equivalent." Pass-rate
   is a *trajectory*, not a gate.
 - **Emulator divergence will surface.** Tests like `cursor-test1.sh`
-  assert specific cursor positions after a resize. libvterm and tmux's
+  assert specific cursor positions after a resize. libghostty-vt and tmux's
   `input.c` agree on most VT220/xterm behavior but not all; when they
   diverge, tmux's test is right by definition (the test was authored
   against tmux's emulator). We allowlist with a note per failure.
