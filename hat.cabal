@@ -94,6 +94,7 @@ library
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
+        Hat.Server.Pane
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt
