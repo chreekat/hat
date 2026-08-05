@@ -6,6 +6,7 @@ module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
     , reconcileLoop
+    , awaitReconcileTick
     , awaitReconciled
     , reconcilePaneSizes
     , paneSizeTargets
@@ -63,13 +64,22 @@ reconcileLoop :: ServerState -> IO ()
 reconcileLoop st = loop (-1)
   where
     loop lastGen = do
-        gen <- atomically $ do
-            g <- readTVar st.dirty
-            check (g /= lastGen)
-            pure g
+        gen <- atomically (awaitReconcileTick st lastGen)
         reconcilePaneSizes st
         atomically (writeTVar st.reconciled gen)
         loop gen
+
+-- | The next dirty generation 'reconcileLoop' sizes panes for: a newer one,
+-- but only once no user-command batch is open (@commandDepth@ back to zero), so
+-- a multi-command binding settles into a single layout before any pane is
+-- resized to a width in the middle of it. Blocks until such a generation
+-- exists.
+awaitReconcileTick :: ServerState -> Int -> STM Int
+awaitReconcileTick st lastGen = do
+    g <- readTVar st.dirty
+    depth <- readTVar st.commandDepth
+    check (g /= lastGen && depth == 0)
+    pure g
 
 -- | Block until 'reconcileLoop' has resized panes through the current dirty
 -- generation, so the caller observes a screen whose children have already

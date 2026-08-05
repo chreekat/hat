@@ -46,6 +46,7 @@ module Hat.Server
     , applySessionSize  -- ^ exported for the aggressive-resize test
     , reencodeCursor    -- ^ exported for the cursor-key encoding test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
+    , awaitReconcileTick  -- ^ exported for the command-batch gate test
     , detachPane  -- ^ exported for the pane-detach test
     , detachPanes  -- ^ exported for the multi-pane-detach test
     , detachPaneCurrent  -- ^ exported for the mobile-pane teardown test
@@ -80,8 +81,8 @@ import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-    (IOException, SomeException, bracket, catch, displayException, finally,
-     throwIO, try)
+    (IOException, SomeException, bracket, bracket_, catch, displayException,
+     finally, throwIO, try)
 import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
@@ -1625,7 +1626,8 @@ runKeys st client keys = do
                     forM_ actions $ \case
                         Passthrough raw ->
                             forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw
-                        RunCommands cmds -> forM_ cmds $ \argv -> do
+                        RunCommands cmds -> withCommandBatch st $
+                            forM_ cmds $ \argv -> do
                             replies <- runArgv st (Just client) argv
                             forM_ replies $ \case
                                 ROutput out -> showToast st client out
@@ -1701,7 +1703,17 @@ runCommandText st mclient input = case parseCommandLine input of
     Right cmds -> runCommands st mclient cmds
 
 runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
-runCommands st mclient cmds = concat <$> mapM (runArgv st mclient) cmds
+runCommands st mclient cmds =
+    withCommandBatch st (concat <$> mapM (runArgv st mclient) cmds)
+
+-- | Run a user action's whole command sequence as one batch: 'reconcileLoop'
+-- holds off sizing panes until every command has committed (see
+-- 'awaitReconcileTick'). Nestable — an @if-shell@ that runs more commands just
+-- deepens the count; only the outermost exit reopens reconciliation.
+withCommandBatch :: ServerState -> IO a -> IO a
+withCommandBatch st = bracket_
+    (atomically (modifyTVar' st.commandDepth (+ 1)))
+    (atomically (modifyTVar' st.commandDepth (subtract 1)))
 
 runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
 runArgv _ _ [] = pure []

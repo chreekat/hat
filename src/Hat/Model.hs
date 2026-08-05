@@ -100,6 +100,8 @@ data ServerState = ServerState
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , reconciled  :: TVar Int    -- ^ dirty generation reconcileLoop has resized
                                 --   panes through; see 'awaitReconciled'
+    , commandDepth :: TVar Int   -- ^ open user-command batches; see
+                                --   'Hat.Server.Resize.awaitReconcileTick'
     , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
@@ -416,6 +418,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0      -- dirty
     <*> newTVarIO 0      -- reconciled
+    <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
     <*> newTVarIO 0      -- livePanes
     <*> newTVarIO False  -- everAttached

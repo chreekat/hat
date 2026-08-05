@@ -25,7 +25,8 @@ import Hat.Model.Options
 import Hat.Server
     ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
-    , applySessionSize, attentionSeen, awaitReconciled, chooseActivePaneOnClose
+    , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
+    , chooseActivePaneOnClose
     , cmdAttachSession, chooseCurrentOnClose, cmdListClients, cmdRestartClient
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
@@ -700,6 +701,33 @@ spec = do
             atomically $ writeTVar st.reconciled 5
             caught <- timeout 1_000_000 (awaitReconciled st)
             caught `shouldBe` Just ()
+
+    describe "awaitReconcileTick (command-batch gate)" $ do
+        let freshState = do
+                lg <- newLogger "/dev/null"
+                newServerState Map.empty lg "/tmp/hat-batchgate.sock" Nothing
+            -- The generation reconcileLoop would size panes for now, or
+            -- 'Nothing' if it would block. 'orElse' reads the STM gate without
+            -- relying on timing.
+            tick st lastGen =
+                atomically
+                    ((Just <$> awaitReconcileTick st lastGen) `orElse` pure Nothing)
+
+        it "sizes a fresh generation when no command batch is open" $ do
+            st <- freshState
+            atomically (writeTVar st.dirty 5)
+            tick st (-1) `shouldReturn` Just 5
+
+        -- Bug 66: reconcile must not size a pane to a command batch's
+        -- intermediate layout, only to the layout it settles on.
+        it "defers sizing while a command batch holds the layout mid-change" $ do
+            st <- freshState
+            atomically $ do
+                writeTVar st.dirty 5
+                writeTVar st.commandDepth 1
+            tick st (-1) `shouldReturn` Nothing
+            atomically (writeTVar st.commandDepth 0)
+            tick st (-1) `shouldReturn` Just 5
 
     describe "awaitRenderable (render gate)" $ do
         let freshState = do
