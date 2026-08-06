@@ -134,7 +134,7 @@ buffers.sh                      # no -F/-f, buffer_* formats, set-buffer -n, buf
 pane-ops.sh                     # needs new-window -E/-I, respawn-pane -E, resize-pane -T, split -Z/-e/-s
 
 # windows / sessions / pipe / lifecycle
-window-ops.sh                   # link/unlink/swap/rotate-window absent; new-window -t sess:idx parse bug -- tracked in b
+window-ops.sh                   # unlink/swap/rotate-window and move-window -k/-a/-r absent
 session-ops.sh                  # grouped sessions, new-session -A/-t, detach-on-destroy, kill-session -a/-C/-f
 pipe-pane.sh                    # pipe-pane works but the test needs remain-on-exit (dead-pane model)
 lifecycle-deferred.sh           # needs detach-on-destroy + lifecycle hooks + control-mode + link/unlink-window

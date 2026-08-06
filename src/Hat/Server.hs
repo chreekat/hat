@@ -72,7 +72,12 @@ module Hat.Server
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
     , zoomTarget  -- ^ exported for the solo-pane zoom test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
-    , placeWindow  -- ^ exported for the base-index window-numbering test
+    , placeWindow  -- ^ exported for the new-window placement tests
+    , Insert (..)
+    , Replace (..)
+    , WindowPlacement (..)
+    , applyShifts
+    , selectNamed
     , CaptureOpts (..)  -- ^ exported for the capture-pane grid-dump tests
     , captureBounds
     , captureText

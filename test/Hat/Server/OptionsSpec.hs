@@ -22,7 +22,8 @@ import Hat.Model.Options
     )
 import Hat.Server
     ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
-    , listingLines, placeWindow
+    , Insert (..), WindowPlacement (..), Replace (..)
+    , applyShifts, listingLines, placeWindow, selectNamed
     )
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
@@ -257,18 +258,56 @@ spec = do
 
     describe "new-window index placement" $ do
         let ws = Map.fromList [(100 :: Int, ())]
+            run = Map.fromList [(i, ()) | i <- [0, 1, 2, 3, 9 :: Int]]
+            plain n = WindowPlacement { shifts = [], replaced = Nothing, index = n }
         it "numbers from the session-resolved base-index" $
             -- the base-index bug: with origin window 100 and base-index 200,
             -- the next window is 200, not 101 (upstream new-session-base-index.sh)
-            placeWindow Nothing False 100 200 ws `shouldBe` 200
+            placeWindow Nothing InsertAt NoReplace 100 200 ws
+                `shouldBe` Right (plain 200)
         it "falls to the next free slot when base-index itself is taken" $
-            placeWindow Nothing False 100 100 ws `shouldBe` 101
-        it "honors an explicit -t index verbatim" $
-            placeWindow (Just 5) False 100 100 ws `shouldBe` 5
-        it "-a places the window right after the current one" $
-            placeWindow Nothing True 100 100 ws `shouldBe` 101
-        it "a requested index that collides falls back to base-index" $
-            placeWindow (Just 100) False 100 200 ws `shouldBe` 200
+            placeWindow Nothing InsertAt NoReplace 100 100 ws
+                `shouldBe` Right (plain 101)
+        it "honors a free explicit -t index verbatim" $
+            placeWindow (Just 5) InsertAt NoReplace 100 100 ws
+                `shouldBe` Right (plain 5)
+        it "rejects an occupied -t index without -k (bug 06)" $
+            placeWindow (Just 100) InsertAt NoReplace 100 200 ws
+                `shouldBe` Left "create window failed: index 100 in use"
+        it "-k replaces the occupant of the -t index (bug 06)" $
+            placeWindow (Just 100) InsertAt Replace 100 200 ws
+                `shouldBe` Right WindowPlacement
+                    { shifts = [], replaced = Just 100, index = 100 }
+        it "-a lands after the target, shuffling the following run up (bug 06)" $
+            placeWindow (Just 1) InsertAfter NoReplace 0 0 run
+                `shouldBe` Right WindowPlacement
+                    { shifts = [(3, 4), (2, 3)], replaced = Nothing, index = 2 }
+        it "-a with no target inserts after the current window" $
+            placeWindow Nothing InsertAfter NoReplace 1 0 run
+                `shouldBe` Right WindowPlacement
+                    { shifts = [(3, 4), (2, 3)], replaced = Nothing, index = 2 }
+        it "-a on an absent -t index takes that index directly" $
+            placeWindow (Just 5) InsertAfter NoReplace 0 0 run
+                `shouldBe` Right (plain 5)
+        it "-b lands at the target, shuffling it and its followers up (bug 06)" $
+            placeWindow (Just 0) InsertBefore NoReplace 0 0 run
+                `shouldBe` Right WindowPlacement
+                    { shifts = [(3, 4), (2, 3), (1, 2), (0, 1)]
+                    , replaced = Nothing, index = 0 }
+        it "applyShifts renumbers highest-first without clobbering" $
+            applyShifts [(3, 4), (2, 3)]
+                (Map.fromList [(0, 'a'), (2, 'c'), (3, 'd')])
+                `shouldBe` Map.fromList [(0, 'a'), (3, 'c'), (4, 'd')]
+
+    describe "new-window -S window reuse" $ do
+        it "selects the lone window carrying the requested name (bug 06)" $
+            selectNamed "editor" [(0, "shell"), (3, "editor")]
+                `shouldBe` Right (Just 3)
+        it "creates normally when no window carries the name" $
+            selectNamed "editor" [(0, "shell")] `shouldBe` Right Nothing
+        it "rejects an ambiguous name (bug 06)" $
+            selectNamed "editor" [(0, "editor"), (3, "editor")]
+                `shouldBe` Left "multiple windows named editor"
 
     describe "config-load burn-down (real ~/.tmux.conf)" $
         it "rejects exactly the not-yet-implemented options" $ do

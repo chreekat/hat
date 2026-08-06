@@ -2,7 +2,12 @@
 -- activity), renaming, killing, moving, linking, and resizing windows.
 module Hat.Server.Command.Window
     ( nextFreeWindowIndex
+    , Insert (..)
+    , Replace (..)
+    , WindowPlacement (..)
     , placeWindow
+    , applyShifts
+    , selectNamed
     , cmdNewWindow
     , cmdSelectWindow
     , cmdNextWindow
@@ -24,6 +29,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
+import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
 
@@ -43,24 +49,77 @@ import qualified Hat.Server.Target as Target
 nextFreeWindowIndex :: Int -> Map.Map Int a -> Int
 nextFreeWindowIndex start ws = until (\i -> not (Map.member i ws)) (+ 1) start
 
--- | The index @new-window@ assigns: an explicit @-t@ index verbatim (or the
--- next free slot above it under @-a@), else the next free slot after the
--- current window (@-a@) or from @base-index@ — and a collision with a live
--- window always falls back to the next free slot from @base-index@. The
--- @base-index@ is the /session/-resolved one, so @set base-index@ takes effect
--- for that session (upstream new-session-base-index.sh).
-placeWindow :: Maybe Int -> Bool -> Int -> Int -> Map.Map Int a -> Int
-placeWindow requested afterCurrent cur base ws =
-    if Map.member ix ws then nextFreeFrom base else ix
-  where
-    nextFreeFrom n = nextFreeWindowIndex n ws
-    ix = case requested of
+-- | Where @new-window@ inserts relative to its target: at the target index
+-- itself, or shuffled in after (@-a@) \/ before (@-b@) the target window.
+data Insert = InsertAt | InsertAfter | InsertBefore
+    deriving (Eq, Show)
+
+-- | @-k@: whether an occupied target index is replaced or rejected.
+data Replace = Replace | NoReplace
+    deriving (Eq, Show)
+
+-- | The tree mutations that place a @new-window@: windows to renumber
+-- (highest source first — see 'applyShifts'), the occupant a @-k@ kills,
+-- and the index the new window lands at.
+data WindowPlacement = WindowPlacement
+    { shifts   :: [(Int, Int)]
+    , replaced :: Maybe Int
+    , index    :: Int
+    }
+    deriving (Eq, Show)
+
+-- | The placement @new-window@ performs: an explicit @-t@ index (occupied →
+-- error, or replaced under @-k@), a shuffle-up insertion after\/before the
+-- target window (@-a@\/@-b@, tmux's @winlink_shuffle_up@), or the next free
+-- slot from @base-index@ — the /session/-resolved one, so @set base-index@
+-- takes effect for that session (upstream new-session-base-index.sh).
+placeWindow
+    :: Maybe Int -> Insert -> Replace -> Int -> Int -> Map.Map Int a
+    -> Either Text WindowPlacement
+placeWindow requested insert replace cur base ws = case insert of
+    InsertAfter  -> Right (shuffleUp 1)
+    InsertBefore -> Right (shuffleUp 0)
+    InsertAt -> case requested of
         Just n
-            | afterCurrent -> nextFreeFrom (n + 1)
-            | otherwise    -> n
-        Nothing
-            | afterCurrent -> nextFreeFrom (cur + 1)
-            | otherwise    -> nextFreeFrom base
+            | Map.member n ws -> case replace of
+                Replace -> Right WindowPlacement
+                    { shifts = [], replaced = Just n, index = n }
+                NoReplace -> Left
+                    ("create window failed: index " <> tshow n <> " in use")
+            | otherwise -> Right (plain n)
+        Nothing -> Right (plain (nextFreeWindowIndex base ws))
+  where
+    plain n = WindowPlacement { shifts = [], replaced = Nothing, index = n }
+    -- Renumber the occupied run at the insertion point up by one; a @-t@
+    -- index with no live window is taken directly, as tmux does.
+    shuffleUp off = case requested of
+        Just n | not (Map.member n ws) -> plain n
+        mreq ->
+            let ix = fromMaybe cur mreq + off
+                free = nextFreeWindowIndex ix ws
+            in WindowPlacement
+                { shifts = [(i, i + 1) | i <- [free - 1, free - 2 .. ix]]
+                , replaced = Nothing
+                , index = ix
+                }
+
+-- | Apply a placement's renumberings; sources run highest-first so a shift
+-- never lands on a slot another shift has yet to vacate.
+applyShifts :: [(Int, Int)] -> Map.Map Int a -> Map.Map Int a
+applyShifts shifts ws = List.foldl' step ws shifts
+  where
+    step m (from, to) = case Map.lookup from m of
+        Just w -> Map.insert to w (Map.delete from m)
+        Nothing -> m
+
+-- | The window @new-window -S -n name@ reuses instead of creating:
+-- 'Nothing' when no window carries the name, its index when exactly one
+-- does, an error when several do.
+selectNamed :: Text -> [(Int, Text)] -> Either Text (Maybe Int)
+selectNamed nm named = case [ix | (ix, n) <- named, n == nm] of
+    []   -> Right Nothing
+    [ix] -> Right (Just ix)
+    _    -> Left ("multiple windows named " <> nm)
 
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args = do
@@ -69,6 +128,42 @@ cmdNewWindow st mclient args = do
     case res of
         Left e -> pure [RErr e]
         Right (sess, requested) -> do
+            reuse <- case (lookup "-n" opts, requested) of
+                (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
+                    ws <- readTVar sess.windows
+                    named <- mapM (\(ix, w) -> (,) ix <$> readTVar w.name)
+                        (Map.toList ws)
+                    pure (selectNamed nm named)
+                _ -> pure (Right Nothing)
+            case reuse of
+                Left e -> pure [RErr e]
+                Right (Just ix) -> do
+                    unless ("-d" `elem` flags) $ atomically (switchTo st sess ix)
+                    pure []
+                Right Nothing -> createWindow st sess opts flags pos requested
+
+-- | The creating body of @new-window@: reject an unusable @-t@ before
+-- spawning, spawn the pane, then place it in one transaction — only after
+-- which any @-k@ occupant (already displaced from the index map) is killed,
+-- so the session never passes through empty.
+createWindow
+    :: ServerState -> Session -> [(Text, Text)] -> [Text] -> [Text]
+    -> Maybe Int -> IO [Reply]
+createWindow st sess opts flags pos requested = do
+    let insert
+            | "-b" `elem` flags = InsertBefore
+            | "-a" `elem` flags = InsertAfter
+            | otherwise = InsertAt
+        replace = if "-k" `elem` flags then Replace else NoReplace
+        plan = do
+            ws <- readTVar sess.windows
+            cur <- readTVar sess.currentIx
+            sopts <- resolveForSession st sess
+            pure (placeWindow requested insert replace cur sopts.baseIndex ws)
+    precheck <- atomically plan
+    case precheck of
+        Left e -> pure [RErr e]
+        Right _ -> do
             eff <- readTVarIO sess.lastSize
             environ <- sessionSpawnEnv st sess
             let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
@@ -85,20 +180,45 @@ cmdNewWindow st mclient args = do
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False
-            atomically $ do
+            moccupant <- atomically $ do
                 ws <- readTVar sess.windows
                 cur <- readTVar sess.currentIx
-                sopts <- resolveForSession st sess
-                let ix' = placeWindow requested ("-a" `elem` flags) cur
-                        sopts.baseIndex ws
-                modifyTVar' sess.windows (Map.insert ix' win)
-                unless ("-d" `elem` flags) $ do
-                    writeTVar sess.lastIx (Just cur)
-                    writeTVar sess.currentIx ix'
+                mlast <- readTVar sess.lastIx
+                -- Replan on the live tree; a slot filled since the
+                -- pre-check falls to a free index rather than clobbering.
+                p <- either (const (freeSlot ws)) pure =<< plan
+                let remap i = fromMaybe i (List.lookup i p.shifts)
+                    wasCurrent = p.replaced == Just cur
+                    -- The killed occupant leaves the last-window slot.
+                    scrubbed = case remap <$> mlast of
+                        l | l == p.replaced -> Nothing
+                          | otherwise -> l
+                writeTVar sess.windows
+                    (Map.insert p.index win (applyShifts p.shifts ws))
+                -- A replaced current window always selects the new one
+                -- (tmux drops @-d@ there rather than leave a dead current).
+                if "-d" `elem` flags && not wasCurrent
+                    then do
+                        writeTVar sess.currentIx (remap cur)
+                        writeTVar sess.lastIx scrubbed
+                    else do
+                        writeTVar sess.lastIx
+                            (if wasCurrent then scrubbed else Just (remap cur))
+                        writeTVar sess.currentIx p.index
                 bumpDirty st
+                pure ((`Map.lookup` ws) =<< p.replaced)
+            forM_ moccupant $ \old -> do
+                ps <- readTVarIO old.panes
+                killPaneLocs st [(sess.id, old, p) | p <- Map.elems ps]
             startPaneReader st sess.id win pane
             applySessionSize st sess.id
             pure []
+  where
+    freeSlot ws = do
+        sopts <- resolveForSession st sess
+        pure WindowPlacement
+            { shifts = [], replaced = Nothing
+            , index = nextFreeWindowIndex sopts.baseIndex ws }
 
 cmdSelectWindow :: CommandImpl
 cmdSelectWindow st mclient args = do
