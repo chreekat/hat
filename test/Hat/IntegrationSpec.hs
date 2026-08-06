@@ -849,6 +849,51 @@ spec = parallel $ do
         c2 <- startClient h
         awaitScreen c2 "~"
 
+    -- bb: snapshot history is listable, and any generation restores by id.
+    it "lists snapshot generations and restores one by id" $
+        withHatPersist hatBin $ \h -> do
+        -- Seed a saved tree, as a previous run's kill-server would have.
+        let rect = sizeRect (Size { rows = 24, cols = 80 })
+            lay = emitLayout rect (Leaf (PaneId 0))
+            snap = Snapshot
+                { lastActiveSession = Nothing, sessions =
+                    [ SessionSnap
+                        { name = "bbsess", startCwd = "/tmp", currentIx = 0
+                        , lastIx = Nothing
+                        , windows =
+                            [ WindowSnap
+                                { ix = 0, name = "one", layout = lay
+                                , active = 0, lastActive = Nothing
+                                , autoRename = False
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                            ] } ] }
+        createDirectoryIfMissing True (takeDirectory (storeOf h))
+        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
+
+        -- Autostart restores the tree, archiving it as generation 1.
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        listed <- ctlOut h ["list-snapshots"]
+        lines listed `shouldSatisfy` any ("1: " `List.isPrefixOf`)
+
+        -- Restoring it again collides with the live restored session, so
+        -- the copy comes back under a fresh name.
+        out <- ctlOut h ["restore-snapshot", "1"]
+        out `shouldContain` "as 'bbsess-2'"
+        names <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        lines names `shouldSatisfy`
+            (\ns -> "bbsess" `elem` ns && "bbsess-2" `elem` ns)
+
+    -- bb: snapshot commands error, never silently no-op, without a store.
+    it "snapshot commands fail loudly when persistence is off" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        (_, _, errL) <- hatCtl h ["list-snapshots"]
+        errL `shouldContain` "persistence is disabled"
+        (_, _, errR) <- hatCtl h ["restore-snapshot", "1"]
+        errR `shouldContain` "persistence is disabled"
+
     it "splits panes, navigates, zooms, and kills" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

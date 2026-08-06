@@ -45,6 +45,7 @@ module Hat.Server
     , persistDecision  -- ^ exported for the store-pinning test
     , PersistDecision (..)
     , StorePin (..)
+    , uniquifySessionNames  -- ^ exported for the snapshot-restore naming test
     , windowFlags  -- ^ exported for the window-flags test
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
@@ -143,8 +144,9 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Path (expandTilde, hatPath, render, (</:>))
 import Hat.Server.Persist
-    (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
-    , archiveSnapshot, clearLive, loadSnapshot, saveSnapshot, withStore)
+    (Archived (..), PaneSnap (..), SessionSnap (..), Snapshot (..)
+    , WindowSnap (..), archiveSnapshot, clearLive, listArchived
+    , loadArchived, loadSnapshot, saveSnapshot, withStore)
 import Hat.Server.Reload
     (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
     , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
@@ -1905,6 +1907,8 @@ commandTable = Map.fromList $ concatMap expand
     , (["resize-window", "resizew"], cmdResizeWindow)
     , (["switch-client", "switchc"], cmdSwitchClient)
     , (["kill-server"], cmdKillServer)
+    , (["list-snapshots"], cmdListSnapshots)
+    , (["restore-snapshot"], cmdRestoreSnapshot)
     , (["restart-server"], cmdRestartServer)
     , (["restart-client"], cmdRestartClient)
     , (["restart"], cmdRestart)
@@ -2251,6 +2255,76 @@ cmdKillServer st mclient _ = do
         writeTVar st.sessions Map.empty
         writeTVar st.everAttached True
     pure []
+
+-- | @list-snapshots@: the store's history generations, newest first —
+-- one line each: generation, capture time, session\/window counts.
+cmdListSnapshots :: CommandImpl
+cmdListSnapshots st _ args = case (st.store, args) of
+    (_, _ : _) -> pure [RErr "usage: list-snapshots"]
+    (Nothing, _) -> pure [RErr "list-snapshots: persistence is disabled"]
+    (Just path, _) ->
+        (map (ROutput . describeArchived) <$> withStore path listArchived)
+            `catch` \(e :: SQLError) ->
+                pure [RErr ("list-snapshots: " <> tshow e)]
+  where
+    describeArchived a = tshow a.gen <> ": " <> a.savedAt
+        <> " (" <> tshow (length a.snapshot.sessions) <> " sessions, "
+        <> tshow (length (concatMap (.windows) a.snapshot.sessions))
+        <> " windows)"
+
+-- | @restore-snapshot generation@: recreate the sessions archived as that
+-- generation alongside the live tree, renaming any whose name is taken.
+cmdRestoreSnapshot :: CommandImpl
+cmdRestoreSnapshot st _ args = case args of
+    [t] | Right (g, rest) <- TR.decimal t, T.null rest ->
+        case st.store of
+            Nothing -> pure [RErr "restore-snapshot: persistence is disabled"]
+            Just path -> (do
+                msnap <- withStore path (\conn -> loadArchived conn g)
+                case msnap of
+                    Nothing -> pure [RErr ("no such snapshot: " <> t)]
+                    Just snap -> restoreArchived st snap)
+                `catch` \(e :: SQLError) ->
+                    pure [RErr ("restore-snapshot: " <> tshow e)]
+    _ -> pure [RErr "usage: restore-snapshot generation"]
+
+-- | Bring an archived tree back next to the live one: each saved session
+-- is recreated under a free name ('uniquifySessionNames'), reported one
+-- line per session.
+restoreArchived :: ServerState -> Snapshot -> IO [Reply]
+restoreArchived st snap = do
+    taken <- atomically $
+        mapM (readTVar . (.name)) . Map.elems =<< readTVar st.sessions
+    let olds = map (.name) snap.sessions
+        news = uniquifySessionNames taken olds
+        rename s n = SessionSnap
+            { name = n, startCwd = s.startCwd, currentIx = s.currentIx
+            , lastIx = s.lastIx, windows = s.windows }
+        renamed = zipWith rename snap.sessions news
+    restoreSnapshot st
+        Snapshot { sessions = renamed, lastActiveSession = Nothing }
+    pure [ ROutput (restoredLine old new) | (old, new) <- zip olds news ]
+  where
+    restoredLine old new
+        | old == new = "restored session '" <> old <> "'"
+        | otherwise = "restored session '" <> old <> "' as '" <> new <> "'"
+
+-- | Final names for restored sessions, in order: a saved name that a live
+-- session (or an earlier entry) already holds gets the first free @-2@,
+-- @-3@, … suffix.
+uniquifySessionNames :: [Text] -> [Text] -> [Text]
+uniquifySessionNames = go
+  where
+    go _ [] = []
+    go used (n : ns) =
+        let n' = freshName used n
+        in n' : go (n' : used) ns
+    freshName used n
+        | n `notElem` used = n
+        | otherwise = suffixed used n (2 :: Int)
+    suffixed used n k =
+        let cand = n <> "-" <> tshow k
+        in if cand `elem` used then suffixed used n (k + 1) else cand
 
 cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do

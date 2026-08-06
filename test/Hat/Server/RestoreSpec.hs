@@ -27,7 +27,7 @@ import Hat.Server
      captureReloadScreen, captureSize, cmdRestart, cmdRestartServer,
      defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
      rebuildReloadSession, reloadSchemePush, replayPane, restoreRun,
-     restoreShellExec, runCommands, startupGate)
+     restoreShellExec, runCommands, startupGate, uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
 import Hat.Server.LayoutString (emitLayout)
@@ -383,3 +383,10 @@ spec = do
 
         it "writes the first non-empty snapshot when nothing was written yet" $
             persistDecision Unpinned Nothing one `shouldBe` WriteSnapshot
+
+    -- bb: a restored snapshot's sessions must not steal a live session's
+    -- name; a collision gets the first free numeric suffix.
+    describe "uniquifySessionNames" $
+        it "dodges live and just-restored names with -2, -3, … suffixes" $
+            uniquifySessionNames ["main", "log"] ["main", "fresh", "main"]
+                `shouldBe` ["main-2", "fresh", "main-3"]
