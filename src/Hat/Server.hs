@@ -46,6 +46,7 @@ module Hat.Server
     , PersistDecision (..)
     , StorePin (..)
     , uniquifySessionNames  -- ^ exported for the snapshot-restore naming test
+    , snapshotHistoryLimit  -- ^ exported for the snapshot-limit option test
     , windowFlags  -- ^ exported for the window-flags test
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test

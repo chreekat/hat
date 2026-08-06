@@ -1,6 +1,6 @@
 module Hat.Server.RestoreSpec (spec) where
 
-import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
+import Control.Concurrent.STM (atomically, modifyTVar', readTVarIO, writeTVar)
 import Control.Exception (ErrorCall (..), bracket, throwIO)
 import Control.Monad (forM_)
 import qualified Data.ByteString.Char8 as B8
@@ -17,6 +17,7 @@ import Hat.Log (newLogger)
 import Hat.Model
     (PaneId (..), ServerState (..), Session (..), StartupPhase (..),
      newServerState)
+import Hat.Model.Options (OptionName (..), OptionValue (..), applyEntry)
 import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
@@ -27,7 +28,8 @@ import Hat.Server
      captureReloadScreen, captureSize, cmdRestart, cmdRestartServer,
      defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
      rebuildReloadSession, reloadSchemePush, replayPane, restoreRun,
-     restoreShellExec, runCommands, startupGate, uniquifySessionNames)
+     restoreShellExec, runCommands, snapshotHistoryLimit, startupGate,
+     uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
 import Hat.Server.LayoutString (emitLayout)
@@ -390,3 +392,19 @@ spec = do
         it "dodges live and just-restored names with -2, -3, … suffixes" $
             uniquifySessionNames ["main", "log"] ["main", "fresh", "main"]
                 `shouldBe` ["main-2", "fresh", "main-3"]
+
+    -- bb: @snapshot-limit drives the history depth; an unset or garbage
+    -- value means the default, never a silently different behavior.
+    describe "snapshotHistoryLimit" $ do
+        it "reads @snapshot-limit from the options" $ do
+            st <- testState
+            atomically $ modifyTVar' st.options
+                (applyEntry (OptUser "@snapshot-limit") (OVText "3"))
+            snapshotHistoryLimit st `shouldReturn` 3
+
+        it "defaults to 10, also for an unparsable value" $ do
+            st <- testState
+            snapshotHistoryLimit st `shouldReturn` 10
+            atomically $ modifyTVar' st.options
+                (applyEntry (OptUser "@snapshot-limit") (OVText "many"))
+            snapshotHistoryLimit st `shouldReturn` 10
