@@ -10,7 +10,8 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
 import System.Directory
-    (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive)
+    (createDirectoryIfMissing, createFileLink, doesFileExist,
+     removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hSetBuffering, BufferMode (..))
@@ -280,6 +281,17 @@ awaitPromptOpen :: Driver -> T.Text -> IO ()
 awaitPromptOpen d marker = awaitWith "command prompt to open" check d
   where
     check drv = not . T.isInfixOf marker <$> screenText drv
+
+-- | Poll a server-side observable to a bounded deadline (the pty-less
+-- sibling of 'awaitWith').
+awaitTrue :: String -> IO Bool -> IO ()
+awaitTrue what check = do
+    r <- timeout 10_000_000 go
+    maybe (expectationFailure ("timed out waiting for " <> what)) pure r
+  where
+    go = do
+        ok <- check
+        unless ok (threadDelay 20_000 >> go)
 
 awaitExit :: Driver -> IO ProcessStatus
 awaitExit d = do
@@ -2093,6 +2105,40 @@ spec = parallel $ do
         awaitPromptOpen c2 "0:sh*"
         typeInto c2 "switch-client -l\r"
         awaitScreen c2 "[0]"
+
+    -- `restart` = restart-server + restart-client: the attached client
+    -- re-execs and reattaches instead of exiting, so one command upgrades
+    -- both halves (bug 4f). The pane pid pins the server half; the same pty
+    -- client still delivering input pins the client half.
+    it "restart reloads the server and the attached client stays attached" $
+        withHat hatBin $ \h -> do
+        let digits = filter (\ch -> ch >= '0' && ch <= '9')
+        -- The re-exec'd client resolves `hat` on PATH: point it at THIS
+        -- build so the hop is deterministic (and never the system hat).
+        ambient <- testPath
+        let bindir = h.home </> "bin"
+        createDirectoryIfMissing True bindir
+        createFileLink h.bin (bindir </> "hat")
+        c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
+        awaitScreen c "$"
+        typeInto c "echo before-restart\r"
+        awaitScreen c "before-restart"
+        pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        pidBefore `shouldNotBe` ""
+        _ <- hatCtl h ["restart", h.bin]
+        -- Only type once the new image owns the ptys (the consumed handover)
+        -- and the re-exec'd client is attached to it, so no keystroke can
+        -- land in the old image's final instants.
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitTrue "the re-exec'd client to reattach" $
+            not . null . words <$> ctlOut h ["list-clients"]
+        -- "done-42" can only render if the reloaded server adopted the pane
+        -- AND the re-exec'd client reattached to shuttle the keystrokes.
+        typeInto c "echo done-$((21+21))\r"
+        awaitScreen c "done-42"
+        pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        pidAfter `shouldBe` pidBefore
 
     -- A typo'd binary path must be caught before anything is torn down, so the
     -- running session is untouched rather than half-dropped.
