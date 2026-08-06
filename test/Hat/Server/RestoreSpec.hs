@@ -1,18 +1,22 @@
 module Hat.Server.RestoreSpec (spec) where
 
 import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
-import Control.Exception (ErrorCall (..), throwIO)
+import Control.Exception (ErrorCall (..), bracket, throwIO)
 import Control.Monad (forM_)
 import qualified Data.ByteString.Char8 as B8
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
+import System.Posix.IO (closeFd)
+import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
 
-import Hat.Geometry (Size (..))
+import Hat.Geometry (Rect (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Model (ServerState (..), StartupPhase (..), newServerState)
+import Hat.Model
+    (PaneId (..), ServerState (..), Session (..), StartupPhase (..),
+     newServerState)
 import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
@@ -22,10 +26,15 @@ import Hat.Server
      StartupGate (..), StorePin (..),
      captureReloadScreen, captureSize, cmdRestartServer,
      defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
-     reloadSchemePush, replayPane, restoreRun, restoreShellExec, startupGate)
+     rebuildReloadSession, reloadSchemePush, replayPane, restoreRun,
+     restoreShellExec, startupGate)
 import Hat.Server.ColorScheme (ColorScheme (..))
+import Hat.Server.Layout (Layout (..))
+import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
-import Hat.Server.Reload (ReloadModes (..), ReloadPane (..), ReloadScreen (..))
+import Hat.Server.Reload
+    (ReloadModes (..), ReloadPane (..), ReloadScreen (..), ReloadSession (..),
+     ReloadWindow (..), emptyReloadScreen)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 
@@ -185,6 +194,31 @@ spec = do
             Emu.resize e (Size 11 80)
             scr <- Emu.snapshot e
             scr.size `shouldBe` Size 11 80
+
+    -- A reloaded session must come back at its captured window area, not a
+    -- 24x80 placeholder (bug 4b).
+    describe "reload session size" $
+        it "rebuilds a reloaded session at its captured window area" $
+            bracket openPseudoTerminal (\(m, s) -> closeFd m >> closeFd s) $
+                \(m, _) -> do
+            st <- testState
+            let lay = emitLayout
+                    Rect { startRow = 0, endRow = 30, startCol = 0, endCol = 100 }
+                    (Leaf (PaneId 0))
+                rp = ReloadPane
+                    { cwd = "/tmp", masterFd = fromIntegral m, childPid = 999999
+                    , modes = ReloadModes False False 0
+                    , screen = emptyReloadScreen }
+                rw = ReloadWindow
+                    { ix = 0, name = "sh", layout = lay, active = 0
+                    , lastActive = Nothing, autoRename = True, panes = [rp] }
+                rsess = ReloadSession
+                    { name = "0", startCwd = "/tmp", currentIx = 0
+                    , lastIx = Nothing, windows = [rw] }
+            rebuildReloadSession st rsess
+            sessMap <- readTVarIO st.sessions
+            szs <- mapM (readTVarIO . (.lastSize)) (Map.elems sessMap)
+            szs `shouldBe` [Size { rows = 30, cols = 100 }]
 
     -- Bug f3: a reload re-arms the ?2031 subscription (replayPane) but the
     -- surviving app never re-emits it, so without a re-push it renders the old

@@ -5,6 +5,7 @@
 module Hat.Server.LayoutString
     ( emitLayout
     , layoutFromString
+    , layoutSize
     , layoutChecksum
     ) where
 
@@ -19,7 +20,7 @@ import Text.Megaparsec
 import Text.Megaparsec.Char (char)
 import qualified Text.Megaparsec.Char.Lexer as L
 
-import Hat.Geometry (Rect (..))
+import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), Orientation (..), childRects)
 
@@ -80,6 +81,15 @@ layoutFromString str pids =
         Right node -> case toLayout node pids of
             Just (lay, _) -> Just lay
             Nothing -> Nothing
+
+-- | The window area a layout string was laid out in: its root node's
+-- dimensions, clamped to sane emulator bounds against a corrupt string.
+layoutSize :: Text -> Maybe Size
+layoutSize str = case parse (layoutP <* eof) "<layout>" str of
+    Left _ -> Nothing
+    Right node -> Just Size { rows = clamp node.h, cols = clamp node.w }
+  where
+    clamp n = fromIntegral (max 1 (min 1000 n))
 
 layoutP :: P LNode
 layoutP = do

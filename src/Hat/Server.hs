@@ -8,6 +8,7 @@ module Hat.Server
     , ScrollbackCarry (..)  -- ^ exported for the reload-screen round-trip test
     , replayPane           -- ^ exported for the reload-screen round-trip test
     , reloadSchemePush     -- ^ exported for the reload scheme re-push test
+    , rebuildReloadSession -- ^ exported for the reload session-size test
     , captureSize          -- ^ exported for the oversized-capture adopt test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
     , restartClientAction  -- ^ exported for the restart-client no-op test
@@ -151,7 +152,7 @@ import Hat.Server.ColorScheme
 import Hat.Server.FormatEnv (paneFormatEnv, refreshAutoNames)
 import Hat.Server.Keys
 import Hat.Server.Layout
-import Hat.Server.LayoutString (emitLayout, layoutFromString)
+import Hat.Server.LayoutString (emitLayout, layoutFromString, layoutSize)
 import Hat.Server.Locate
 import Hat.Server.Pane
 import qualified Hat.Server.Picker as Picker
@@ -920,9 +921,8 @@ readReload lg hp = do
             Right h -> pure (Just h)
 
 -- | Rebuild the tree from a reload handover, adopting each pane's inherited
--- pty and child rather than spawning. Emulators come up blank; the programs
--- repaint on their next output (a client attach resizes the panes, delivering
--- SIGWINCH, which prompts full-screen apps to redraw).
+-- pty and child rather than spawning; each pane's captured screen is replayed
+-- into its fresh emulator ('adoptPane').
 rebuildReload :: ServerState -> ReloadState -> IO ()
 rebuildReload st rs = do
     forM_ rs.sessions (rebuildReloadSession st)
@@ -945,7 +945,11 @@ rebuildReloadSession st rsess = do
     unless (null wins) $ do
         sid <- SessionId <$> atomically (freshId st.nextSession)
         env <- restoreEnv
-        let sz = Size { rows = 24, cols = 80 }  -- resized on client attach
+        -- The captured window area (every window was captured at the same
+        -- effective size), so the reconcile tick that runs before any client
+        -- attaches finds the adopted panes already at their layout size.
+        let sz = fromMaybe Size { rows = 24, cols = 80 }
+                (listToMaybe (mapMaybe (layoutSize . (.layout)) wins))
         built <- forM wins $ \rwin -> do
             (win, panes) <- rebuildReloadWindow st sz rwin
             pure (rwin.ix, win, panes)
