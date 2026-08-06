@@ -144,7 +144,7 @@ import Hat.Model.Options
 import Hat.Path (expandTilde, hatPath, render, (</:>))
 import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
-    , loadSnapshot, saveSnapshot, withStore)
+    , archiveSnapshot, clearLive, loadSnapshot, saveSnapshot, withStore)
 import Hat.Server.Reload
     (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
     , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
@@ -310,12 +310,11 @@ runServerWith path mconfig mhandover = do
                 logEvent lg ServerStopping { reason = "no sessions left" }
                 -- The daemons (the persist mirror included) are already torn
                 -- down, so no in-flight write can recreate the store after we
-                -- drop it. The tree drained (every window closed), so the next
-                -- start must be pristine — unless kill-server asked to keep the
-                -- tree for a restore.
+                -- retire it. The tree drained (every window closed), so the
+                -- next start must be pristine — unless kill-server asked to
+                -- keep the tree for a restore.
                 preserve <- readTVarIO st.preserveStore
-                unless preserve $ forM_ mstore $ \p ->
-                    removeFile p `catch` \(_ :: IOException) -> pure ()
+                unless preserve $ forM_ mstore (retireStore st)
                 removeFile path `catch` \(_ :: IOException) -> pure ()
 
 -- | Run @body@ with each daemon alive under 'withAsync', so all are cancelled
@@ -453,6 +452,24 @@ storePathFor sockPath = do
                     home <- fromMaybe "/tmp" <$> lookupEnv "HOME"
                     pure (hatPath home </:> ".local" </:> "share")
             pure (base </:> "hat")
+
+-- | Retire the store at a natural drain: archive the last mirrored tree,
+-- then clear the live tables so the next start is pristine while the
+-- history stays restorable. Falls back to deleting the store outright if
+-- it cannot be cleared (a stale tree must never resurrect); a store that
+-- was never created is left absent.
+retireStore :: ServerState -> FilePath -> IO ()
+retireStore st p = do
+    exists <- doesFileExist p
+    when exists $
+        (do limit <- snapshotHistoryLimit st
+            withStore p $ \conn -> do
+                archiveSnapshot conn limit =<< loadSnapshot conn
+                clearLive conn)
+        `catch` \(_ :: SQLError) -> tryRemove
+        `catch` \(_ :: IOException) -> tryRemove
+  where
+    tryRemove = removeFile p `catch` \(_ :: IOException) -> pure ()
 
 -- | Whether the store already holds an explicitly saved final tree.
 -- See 'persistDecision'.
@@ -714,10 +731,35 @@ reloadSchemePush rm mscheme
 -- failure yields an empty snapshot, i.e. a normal fresh start.
 restoreSaved :: ServerState -> FilePath -> IO ()
 restoreSaved st path = do
-    snap <- withStore path loadSnapshot
+    limit <- snapshotHistoryLimit st
+    snap <- (withStore path $ \conn -> do
+                s <- loadSnapshot conn
+                -- Archive the tree the previous run left before this run's
+                -- mirror can overwrite it; best-effort, never blocks restore.
+                archiveSnapshot conn limit s
+                    `catch` \(_ :: SQLError) -> pure ()
+                pure s)
         `catch` \(_ :: SomeException) ->
             pure (Snapshot { sessions = [], lastActiveSession = Nothing })
     restoreSnapshot st snap
+
+-- | How many history generations the store keeps: the @\@snapshot-limit@
+-- option (≤ 0 turns history off), defaulting to 10. An unparsable value
+-- is logged and treated as the default, never silently accepted.
+snapshotHistoryLimit :: ServerState -> IO Int
+snapshotHistoryLimit st = do
+    opts <- readTVarIO st.options
+    case Map.lookup "@snapshot-limit" opts.user of
+        Nothing -> pure defaultLimit
+        Just t -> case TR.signed TR.decimal t of
+            Right (n, rest) | T.null rest -> pure n
+            _ -> do
+                logEvent st.logger DaemonFault
+                    { daemon = "persist"
+                    , err = "invalid @snapshot-limit: " <> t }
+                pure defaultLimit
+  where
+    defaultLimit = 10
 
 -- | Recreate every session in the snapshot, spawning a fresh shell in
 -- each pane's saved working directory and reapplying the saved layout.

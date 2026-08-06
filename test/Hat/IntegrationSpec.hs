@@ -816,6 +816,11 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not exit"
 
+        -- bb: the drain wipes only the live tree; the history keeps it.
+        hist <- Persist.withStore (storeOf h) Persist.listArchived
+        [ s.name | a <- hist, s <- a.snapshot.sessions ]
+            `shouldContain` ["stale"]
+
         c2 <- startClient h
         awaitScreen c2 "$"
         names2 <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
