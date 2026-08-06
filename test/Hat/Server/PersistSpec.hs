@@ -2,6 +2,7 @@
 module Hat.Server.PersistSpec (spec) where
 
 import Control.Exception (finally)
+import Control.Monad (forM_)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Database.SQLite.Simple (Connection, close, execute_, open)
@@ -134,18 +135,6 @@ spec = do
     -- pins that current code still reads a shape an older or newer binary
     -- wrote. Extend it — never relax it — when the schema evolves.
     describe "schema compatibility" $ do
-        let oneSession nm cwd0 wnm lay pcwd = Snapshot
-                { lastActiveSession = Nothing, sessions =
-                    [ SessionSnap
-                        { name = nm, startCwd = cwd0, currentIx = 0
-                        , lastIx = Nothing
-                        , windows =
-                            [ WindowSnap { ix = 0, name = wnm, layout = lay
-                                , active = 0, lastActive = Nothing
-                                , autoRename = False
-                                , panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False }] }
-                            ] } ] }
-
         it "reads rows written before the extra column existed" $ do
             got <- withRaw $ \conn -> do
                 execute_ conn "CREATE TABLE session (seq INTEGER PRIMARY KEY, \
@@ -214,6 +203,111 @@ spec = do
                     \'{\"command\":[\"vim\"],\"shell_spawned\":true}')"
                 loadSnapshot conn
             paneShellSpawned got `shouldBe` [True]
+
+        -- bb: a store written before the snapshot table existed opens with
+        -- an empty, working history.
+        it "reads a store written before the snapshot table existed" $ do
+            (live, hist) <- withRaw $ \conn -> do
+                execute_ conn "CREATE TABLE session (seq INTEGER PRIMARY KEY, \
+                    \name TEXT, start_cwd TEXT, current_ix INTEGER, extra TEXT)"
+                execute_ conn "CREATE TABLE window (session_seq INTEGER, \
+                    \ix INTEGER, name TEXT, layout TEXT, active INTEGER, extra TEXT)"
+                execute_ conn "CREATE TABLE pane (session_seq INTEGER, \
+                    \window_ix INTEGER, ordinal INTEGER, cwd TEXT, extra TEXT)"
+                execute_ conn "INSERT INTO session VALUES (0, 'pre', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/h/x', '{}')"
+                bootstrap conn   -- additively adds the snapshot table
+                (,) <$> loadSnapshot conn <*> listArchived conn
+            live `shouldBe` oneSession "pre" "/h" "w" "lay" "/h/x"
+            hist `shouldBe` []
+
+        -- bb: the live tables, not the history, are what a plain load
+        -- reads, so a reader that predates the archive restores the newest.
+        it "keeps the live tables authoritative when history rows exist" $ do
+            got <- withStore ":memory:" $ \conn -> do
+                saveSnapshot conn (oneSession "old" "/h" "w" "lay" "/h/o")
+                archiveSnapshot conn 10 (oneSession "old" "/h" "w" "lay" "/h/o")
+                saveSnapshot conn (oneSession "new" "/h" "w" "lay" "/h/n")
+                loadSnapshot conn
+            got `shouldBe` oneSession "new" "/h" "w" "lay" "/h/n"
+
+        -- bb: a history row with unknown keys still decodes, defaulting
+        -- the absent fields.
+        it "reads a history row with unknown keys and absent fields" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO snapshot (saved_at, data, extra) \
+                    \VALUES ('2026-01-01T00:00:00Z', \
+                    \'{\"sessions\":[{\"name\":\"s\",\"start_cwd\":\"/h\",\
+                    \\"current_ix\":0,\"future_sess\":1,\"windows\":[{\"ix\":0,\
+                    \\"name\":\"w\",\"layout\":\"lay\",\"active\":0,\
+                    \\"future_win\":2,\"panes\":[{\"cwd\":\"/h/x\",\
+                    \\"future_pane\":3}]}]}],\"future\":4}', '{\"future\":5}')"
+                listArchived conn
+            map (.savedAt) got `shouldBe` ["2026-01-01T00:00:00Z"]
+            map (.snapshot) got `shouldBe` [oneSession "s" "/h" "w" "lay" "/h/x"]
+
+    -- bb: pruned snapshot history, so a bad overwrite can be rolled back.
+    describe "snapshot history" $ do
+        let snapOf nm = oneSession nm "/h" "w" "lay" ("/h/" <> nm)
+
+        prop "a non-empty snapshot round-trips through the archive" $ \snap ->
+            not (null (snap :: Snapshot).sessions) ==> ioProperty $ do
+                got <- withStore ":memory:" $ \conn -> do
+                    saveSnapshot conn snap
+                    archiveSnapshot conn 10 snap
+                    listArchived conn
+                pure (map (.snapshot) got === [snap])
+
+        it "archiving lists newest first and prunes to the limit" $ do
+            got <- withStore ":memory:" $ \conn -> do
+                forM_ ["a", "b", "c", "d"] $ \nm -> do
+                    saveSnapshot conn (snapOf nm)
+                    archiveSnapshot conn 3 (snapOf nm)
+                listArchived conn
+            map (.gen) got `shouldBe` [4, 3, 2]
+            map (.snapshot) got `shouldBe` map snapOf ["d", "c", "b"]
+
+        it "re-archiving an unchanged tree adds no generation" $ do
+            got <- withStore ":memory:" $ \conn -> do
+                saveSnapshot conn (snapOf "a")
+                archiveSnapshot conn 10 (snapOf "a")
+                archiveSnapshot conn 10 (snapOf "a")
+                listArchived conn
+            map (.gen) got `shouldBe` [1]
+
+        it "an empty tree is never archived" $ do
+            got <- withStore ":memory:" $ \conn -> do
+                archiveSnapshot conn 10
+                    (Snapshot { sessions = [], lastActiveSession = Nothing })
+                listArchived conn
+            got `shouldBe` []
+
+        it "a limit of zero disables history" $ do
+            got <- withStore ":memory:" $ \conn -> do
+                saveSnapshot conn (snapOf "a")
+                archiveSnapshot conn 0 (snapOf "a")
+                listArchived conn
+            got `shouldBe` []
+
+        it "loads a generation by id, or Nothing for an unknown one" $ do
+            (a, missing) <- withStore ":memory:" $ \conn -> do
+                forM_ ["a", "b"] $ \nm -> do
+                    saveSnapshot conn (snapOf nm)
+                    archiveSnapshot conn 10 (snapOf nm)
+                (,) <$> loadArchived conn 1 <*> loadArchived conn 99
+            a `shouldBe` Just (snapOf "a")
+            missing `shouldBe` Nothing
+
+        it "clearing the live tree keeps the history" $ do
+            (live, hist) <- withStore ":memory:" $ \conn -> do
+                saveSnapshot conn (snapOf "a")
+                archiveSnapshot conn 10 (snapOf "a")
+                clearLive conn
+                (,) <$> loadSnapshot conn <*> listArchived conn
+            live `shouldBe` Snapshot { sessions = [], lastActiveSession = Nothing }
+            map (.snapshot) hist `shouldBe` [snapOf "a"]
 
     -- b7: restore must preserve the last-active window and pane, not just
     -- the current ones. These fields used to be dropped by the codec.
@@ -287,6 +381,21 @@ spec = do
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         paneShellSpawned got `shouldBe` [True, False]
+
+-- A one-session, one-window, one-pane snapshot with every optional field
+-- at its default.
+oneSession :: Text -> Text -> Text -> Text -> Text -> Snapshot
+oneSession nm cwd0 wnm lay pcwd = Snapshot
+    { lastActiveSession = Nothing, sessions =
+        [ SessionSnap
+            { name = nm, startCwd = cwd0, currentIx = 0
+            , lastIx = Nothing
+            , windows =
+                [ WindowSnap { ix = 0, name = wnm, layout = lay
+                    , active = 0, lastActive = Nothing
+                    , autoRename = False
+                    , panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False }] }
+                ] } ] }
 
 -- Every pane's captured command, in load order.
 paneCommands :: Snapshot -> [Maybe [Text]]

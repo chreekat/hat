@@ -1,5 +1,7 @@
 -- | The on-disk store for continuous session persistence: a pure
--- 'Snapshot' of the session\/window\/pane tree and its SQLite codec.
+-- 'Snapshot' of the session\/window\/pane tree and its SQLite codec. The
+-- live tables mirror the newest tree; past trees are kept as pruned
+-- history generations (see 'archiveSnapshot').
 --
 -- The compatibility surface is the schema. Core columns never change
 -- meaning; evolving fields live in a per-row @extra@ JSON column, and DDL
@@ -16,6 +18,11 @@ module Hat.Server.Persist
     , bootstrap
     , saveSnapshot
     , loadSnapshot
+    , Archived (..)
+    , archiveSnapshot
+    , listArchived
+    , loadArchived
+    , clearLive
     ) where
 
 import Control.Exception (bracket)
@@ -29,6 +36,7 @@ import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import Database.SQLite.Simple
 
 -- | A point-in-time capture of the whole tree, in restore order:
@@ -210,6 +218,15 @@ bootstrap conn = do
         \ordinal INTEGER NOT NULL, cwd TEXT NOT NULL, \
         \extra TEXT NOT NULL DEFAULT '{}', \
         \PRIMARY KEY (session_seq, window_ix, ordinal))"
+    -- Each row is one frozen past tree; the live tables above always hold
+    -- the newest. AUTOINCREMENT keeps generation ids unique for good, so a
+    -- pruned id is never reused. See 'archiveSnapshot'.
+    execute_ conn
+        "CREATE TABLE IF NOT EXISTS snapshot \
+        \(gen INTEGER PRIMARY KEY AUTOINCREMENT, \
+        \saved_at TEXT NOT NULL DEFAULT '', \
+        \data TEXT NOT NULL, \
+        \extra TEXT NOT NULL DEFAULT '{}')"
     -- Additively upgrade a store written by an older binary that predates
     -- one of these columns. New columns default, so old rows stay valid.
     mapM_ (\t -> ensureColumn conn t "extra" "TEXT NOT NULL DEFAULT '{}'")
@@ -241,6 +258,12 @@ saveSnapshot conn snap = withTransaction conn $ do
         "INSERT INTO meta (key, value) VALUES ('last_active_session', ?) \
         \ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         (Only (fromMaybe "" snap.lastActiveSession))
+    -- Capture time; 'archiveSnapshot' stamps history rows with it.
+    now <- nowStamp
+    execute conn
+        "INSERT INTO meta (key, value) VALUES ('saved_at', ?) \
+        \ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        (Only now)
     mapM_ insertSession (zip [0 ..] snap.sessions)
   where
     insertSession :: (Int, SessionSnap) -> IO ()
@@ -300,3 +323,154 @@ loadSnapshot conn = do
             , lastActive = lastAct, autoRename = auto
             , panes = [ PaneSnap { cwd = c, command = mc, shellSpawned = shellSp }
                       | (c, ex) <- prows, let (mc, shellSp) = decodeExtra ex ] }
+
+-- Snapshot history --------------------------------------------------------
+
+-- | One history generation: its id (unique for the store's life), capture
+-- time (the store's ISO-8601 UTC timestamp format), and decoded tree.
+data Archived = Archived
+    { gen      :: Int
+    , savedAt  :: Text
+    , snapshot :: Snapshot
+    }
+    deriving (Eq, Show)
+
+-- | Append @snap@ to the history table as a new generation — stamped with
+-- the mirror's capture time — and prune to the newest @limit@ generations.
+-- Skipped for an empty tree, a tree identical to the newest generation
+-- (no churn across idle restarts), or a limit ≤ 0 (history off).
+archiveSnapshot :: Connection -> Int -> Snapshot -> IO ()
+archiveSnapshot conn limit snap
+    | limit <= 0 || null snap.sessions = pure ()
+    | otherwise = withTransaction conn $ do
+        newest <- query_ conn
+            "SELECT data FROM snapshot ORDER BY gen DESC LIMIT 1"
+            :: IO [Only Text]
+        let unchanged = case newest of
+                (Only d : _) -> decodeSnapshotJson d == Just snap
+                []           -> False
+        unless unchanged $ do
+            stamp <- metaValue conn "saved_at" >>= maybe nowStamp pure
+            execute conn
+                "INSERT INTO snapshot (saved_at, data) VALUES (?, ?)"
+                (stamp, encodeSnapshotJson snap)
+            execute conn
+                "DELETE FROM snapshot WHERE gen NOT IN \
+                \(SELECT gen FROM snapshot ORDER BY gen DESC LIMIT ?)"
+                (Only limit)
+
+-- | Every archived generation, newest first. A row whose payload no
+-- longer decodes is skipped, not fatal.
+listArchived :: Connection -> IO [Archived]
+listArchived conn = do
+    rows <- query_ conn
+        "SELECT gen, saved_at, data FROM snapshot ORDER BY gen DESC"
+        :: IO [(Int, Text, Text)]
+    pure [ Archived { gen = g, savedAt = at, snapshot = s }
+         | (g, at, d) <- rows, Just s <- [decodeSnapshotJson d] ]
+
+-- | One archived generation's tree, if it exists and decodes.
+loadArchived :: Connection -> Int -> IO (Maybe Snapshot)
+loadArchived conn g = do
+    rows <- query conn "SELECT data FROM snapshot WHERE gen = ?" (Only g)
+        :: IO [Only Text]
+    pure $ case rows of
+        (Only d : _) -> decodeSnapshotJson d
+        []           -> Nothing
+
+-- | Drop the live tree (a later 'loadSnapshot' is empty), leaving the
+-- history untouched.
+clearLive :: Connection -> IO ()
+clearLive conn = withTransaction conn $ do
+    execute_ conn "DELETE FROM pane"
+    execute_ conn "DELETE FROM window"
+    execute_ conn "DELETE FROM session"
+    execute conn "DELETE FROM meta WHERE key = ?"
+        (Only ("last_active_session" :: Text))
+
+-- | UTC wall-clock now in the store's timestamp format.
+nowStamp :: IO Text
+nowStamp =
+    T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" <$> getCurrentTime
+
+metaValue :: Connection -> Text -> IO (Maybe Text)
+metaValue conn key = do
+    rows <- query conn "SELECT value FROM meta WHERE key = ?" (Only key)
+        :: IO [Only Text]
+    pure $ case rows of
+        (Only v : _) -> Just v
+        []           -> Nothing
+
+-- The history row's @data@ payload: the whole tree as JSON, evolved the
+-- same way as the @extra@ columns — append optional keys, default the
+-- absent, ignore the unknown. Instances are written by hand (explicit
+-- keys, never derived layout).
+
+encodeSnapshotJson :: Snapshot -> Text
+encodeSnapshotJson = TE.decodeUtf8 . BL.toStrict . encode
+
+decodeSnapshotJson :: Text -> Maybe Snapshot
+decodeSnapshotJson = decode . BL.fromStrict . TE.encodeUtf8
+
+instance ToJSON Snapshot where
+    toJSON s = object $
+        ["sessions" .= s.sessions]
+        <> maybe [] (\n -> ["last_active_session" .= n]) s.lastActiveSession
+
+instance FromJSON Snapshot where
+    parseJSON = withObject "snapshot" $ \o -> do
+        ss <- fromMaybe [] <$> o .:? "sessions"
+        la <- o .:? "last_active_session"
+        pure Snapshot { sessions = ss, lastActiveSession = la }
+
+instance ToJSON SessionSnap where
+    toJSON s = object $
+        [ "name" .= s.name, "start_cwd" .= s.startCwd
+        , "current_ix" .= s.currentIx ]
+        <> maybe [] (\l -> ["last_ix" .= l]) s.lastIx
+        <> ["windows" .= s.windows]
+
+instance FromJSON SessionSnap where
+    parseJSON = withObject "session" $ \o -> do
+        nm    <- fromMaybe "" <$> o .:? "name"
+        cwd0  <- fromMaybe "" <$> o .:? "start_cwd"
+        curIx <- fromMaybe 0 <$> o .:? "current_ix"
+        lastI <- o .:? "last_ix"
+        ws    <- fromMaybe [] <$> o .:? "windows"
+        pure SessionSnap
+            { name = nm, startCwd = cwd0, currentIx = curIx
+            , lastIx = lastI, windows = ws }
+
+instance ToJSON WindowSnap where
+    toJSON w = object $
+        [ "ix" .= w.ix, "name" .= w.name, "layout" .= w.layout
+        , "active" .= w.active ]
+        <> maybe [] (\l -> ["last_active" .= l]) w.lastActive
+        <> ["auto_rename" .= True | w.autoRename]
+        <> ["panes" .= w.panes]
+
+instance FromJSON WindowSnap where
+    parseJSON = withObject "window" $ \o -> do
+        wix  <- fromMaybe 0 <$> o .:? "ix"
+        nm   <- fromMaybe "" <$> o .:? "name"
+        lay  <- fromMaybe "" <$> o .:? "layout"
+        act  <- fromMaybe 0 <$> o .:? "active"
+        la   <- o .:? "last_active"
+        auto <- fromMaybe False <$> o .:? "auto_rename"
+        ps   <- fromMaybe [] <$> o .:? "panes"
+        pure WindowSnap
+            { ix = wix, name = nm, layout = lay, active = act
+            , lastActive = la, autoRename = auto, panes = ps }
+
+instance ToJSON PaneSnap where
+    toJSON p = object $
+        ["cwd" .= p.cwd]
+        <> maybe [] (\argv -> ["command" .= argv]) p.command
+        <> ["shell_spawned" .= True | p.shellSpawned]
+
+instance FromJSON PaneSnap where
+    parseJSON = withObject "pane" $ \o -> do
+        c       <- fromMaybe "" <$> o .:? "cwd"
+        mc      <- o .:? "command"
+        shellSp <- fromMaybe False <$> o .:? "shell_spawned"
+        pure PaneSnap { cwd = c, command = mc, shellSpawned = shellSp }
