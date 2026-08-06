@@ -3,6 +3,7 @@
 -- scrollback, resizing, and zooming.
 module Hat.Server.Command.Pane
     ( CaptureOpts (..)
+    , CaptureRow (..)
     , captureBounds
     , captureText
     , cmdCapturePane
@@ -24,12 +25,13 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Read as TR
 import qualified Data.Vector as V
+import Numeric (showOct)
 
 import Hat.Geometry
 import Hat.Model
+import Hat.Server.Command.Buffer (storeBuffer)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Layout
 import Hat.Server.Locate (findTarget, locatePane, siblingPane, targetPane, withCurrentWindow)
@@ -40,15 +42,25 @@ import Hat.Server.View (expandFormat, sessionFormatEnv, windowArrange)
 import qualified Hat.Server.Target as Target
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator.Types (rtrimBlank)
 
--- Only @-p@ (print to stdout, plain text) is supported so far; escape,
--- range, and hyperlink flags are ignored — enough for the light-touch
--- @capturep -p@ uses in upstream tests.
 -- | Modifiers that shape a @capture-pane@ grid dump. See 'captureText'.
 data CaptureOpts = CaptureOpts
-    { captTrim   :: Bool  -- ^ trim trailing blanks (default; @-N@ turns it off)
+    { captJoin   :: Bool  -- ^ @-J@: join soft-wrapped rows
+    , captNoTrim :: Bool  -- ^ @-N@: keep trailing blanks
+    , captUsed   :: Bool  -- ^ @-T@: stop at the last used cell
     , captSeq    :: Bool  -- ^ @-e@: emit SGR escape sequences before styled runs
+    , captOctal  :: Bool  -- ^ @-C@: octal-escape controls and backslash
     , captNumber :: Bool  -- ^ @-L@: prefix each line with its screen-relative number
+    }
+    deriving stock (Eq, Show)
+
+-- | One captured grid row: its screen-relative line number (history rows
+-- negative), whether it soft-wraps onto the next row, and its cells.
+data CaptureRow = CaptureRow
+    { number  :: Int
+    , wrapped :: Bool
+    , cells   :: V.Vector Cell.Cell
     }
     deriving stock (Eq, Show)
 
@@ -76,64 +88,173 @@ captureBounds hsize sy sflag eflag =
         Right (n, rest) | T.null rest -> Just (n :: Int)
         _ -> Nothing
 
--- | Render captured rows into @capture-pane@ output. Each row is tagged with
--- its screen-relative line number (history lines negative), used by @-L@. A
--- wide character occupies one cell carrying its glyph; its continuation cell
--- carries empty text and is skipped. With @-e@, an SGR sequence precedes each
--- run whose style differs from the previous cell.
-captureText :: CaptureOpts -> [(Int, V.Vector Cell.Cell)] -> Text
-captureText opts = T.intercalate "\n" . map renderRow
+-- | Render captured rows exactly as tmux's @capture-pane@ does
+-- (@grid_string_cells@ over @cmd_capture_pane_history@): every row ends in a
+-- newline unless @-J@ joins a wrapped row into its successor; @-e@ diffs each
+-- cell's style against a pen carried across the whole capture
+-- ('styleDiffSgr'); trailing spaces are trimmed from the rendered bytes
+-- unless @-N@ or @-J@; @-T@ and @-J@ stop at the last used cell. A wide
+-- character occupies one cell carrying its glyph; its continuation cell is
+-- skipped.
+captureText :: CaptureOpts -> [CaptureRow] -> Text
+captureText opts = T.concat . go Cell.defaultStyle
   where
-    renderRow (n, r) = numberPrefix n <> rowText r
+    emptyCells = not opts.captJoin && not opts.captUsed
+    trimSpaces = not opts.captJoin && not opts.captNoTrim
+    go _ [] = []
+    go pen (r : rs) =
+        let (body, pen') = renderCells pen (visible r)
+            trimmed = if trimSpaces then T.dropWhileEnd (== ' ') body else body
+            nl = if opts.captJoin && r.wrapped then "" else "\n"
+        in (numberPrefix r.number <> trimmed <> nl) : go pen' rs
     numberPrefix n
         | opts.captNumber = tshow n <> " "
         | otherwise       = ""
-    rowText r =
-        let body = T.concat (go Cell.defaultStyle (V.toList r))
-        in if opts.captTrim then T.stripEnd body else body
-    go _ [] = []
-    go prev (cell : cs)
-        | cell.width == 0 = cell.text : go prev cs
+    -- tmux's cellused has no libghostty analogue: the used extent is
+    -- approximated as everything up to the last non-default cell, and a
+    -- wrapped row under @-J@ is fully used by construction.
+    visible r
+        | emptyCells || (opts.captJoin && r.wrapped) = V.toList r.cells
+        | otherwise = rtrimBlank (V.toList r.cells)
+    renderCells pen [] = ("", pen)
+    renderCells pen (cell : cls)
+        | cell.width == 0 = renderCells pen cls
         | otherwise =
-            let lead
-                    | opts.captSeq && cell.style /= prev =
-                        TE.decodeUtf8 (Emu.cellSgr cell.style)
-                    | otherwise = ""
-            in (lead <> cell.text) : go cell.style cs
+            let lead | opts.captSeq = styleDiffSgr opts.captOctal pen cell.style
+                     | otherwise    = ""
+                (rest, pen') = renderCells cell.style cls
+            in (lead <> cellText cell <> rest, pen')
+    cellText cell
+        | opts.captOctal = T.concatMap escapeOctal cell.text
+        | otherwise      = cell.text
+
+-- | The SGR bytes that move the pen from @old@ to @new@, exactly as tmux's
+-- @grid_string_cells_code@: a leading @0@ when any attribute drops, newly set
+-- attributes in one CSI, then a separate CSI per changed color channel; after
+-- a reset a default color needs no code. With @esc@ the introducer is the
+-- literal @\\033[@ (tmux's @-C@).
+styleDiffSgr :: Bool -> Cell.Style -> Cell.Style -> Text
+styleDiffSgr esc old new =
+    attrs <> code (fgParams old.fg) (fgParams new.fg)
+          <> code (bgParams old.bg) (bgParams new.bg)
+  where
+    oldA = attrCodes old
+    newA = attrCodes new
+    reset = any (`notElem` newA) oldA
+    slist = [0 | reset] <> filter (`notElem` (if reset then [] else oldA)) newA
+    attrs | null slist = ""
+          | otherwise  = csi slist
+    code oldP newP
+        | not reset && newP == oldP = ""
+        | reset && (newP == [39] || newP == [49]) = ""
+        | otherwise = csi newP
+    csi ps = intro <> T.intercalate ";" (map tshow ps) <> "m"
+    intro = if esc then "\\033[" else "\ESC["
+
+-- | The SGR codes for a style's set attributes, in tmux's emission order.
+attrCodes :: Cell.Style -> [Int]
+attrCodes st = concat
+    [ [1 | st.bold], [2 | st.faint], [3 | st.italic], [4 | st.underline]
+    , [5 | st.blink], [7 | st.reverse], [9 | st.strike] ]
+
+-- | tmux's @grid_string_cells_fg@\/@_bg@: one color channel's SGR parameters.
+fgParams, bgParams :: Cell.Color -> [Int]
+fgParams = colorParams 30 90 38 39
+bgParams = colorParams 40 100 48 49
+
+colorParams :: Int -> Int -> Int -> Int -> Cell.Color -> [Int]
+colorParams base bright ext def = \case
+    Cell.DefaultColor -> [def]
+    Cell.Indexed n
+        | n < 8     -> [base + fromIntegral n]
+        | n < 16    -> [bright + fromIntegral n - 8]
+        | otherwise -> [ext, 5, fromIntegral n]
+    Cell.RGB r g b ->
+        [ext, 2, fromIntegral r, fromIntegral g, fromIntegral b]
+
+-- | tmux's @-C@ escaping: backslash doubles, control characters become
+-- octal @\\ooo@.
+escapeOctal :: Char -> Text
+escapeOctal ch
+    | ch == '\\' = "\\\\"
+    | ch < ' ' || ch == '\DEL' = "\\" <> T.pack (pad (showOct (fromEnum ch) ""))
+    | otherwise = T.singleton ch
+  where
+    pad s = replicate (3 - length s) '0' <> s
 
 cmdCapturePane :: CommandImpl
 cmdCapturePane st mclient args = do
     let (opts, flags, _) = parseArgs "bESt" args
         has f = f `elem` flags
-        rejected = filter has
-            ["-J", "-F", "-H", "-R", "-M", "-a", "-P", "-T", "-C"]
-    case () of
-        _ | not (has "-p") ->
-                pure [RErr "capture-pane: only stdout capture (-p) is supported"]
-          | (bad : _) <- rejected ->
-                pure [RErr ("capture-pane: " <> bad <> " is not supported")]
-          | otherwise -> do
-                res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
-                case res of
-                    Left e -> pure [RErr e]
-                    Right (_, _, _, pane) -> do
-                        scr <- Emu.snapshot pane.emulator
-                        hsize <- Emu.scrollbackLength pane.emulator
-                        let sy = V.length scr.cells
-                            (top, bottom) =
-                                captureBounds hsize sy (lookup "-S" opts) (lookup "-E" opts)
-                        history <- mapM (Emu.scrollbackLine pane.emulator) [0 .. hsize - 1]
-                        let allRows = [ fromMaybe V.empty h | h <- history ]
-                                   <> V.toList scr.cells
-                            picked =
-                                [ (i - hsize, allRows !! i)
-                                | i <- [top .. bottom], i >= 0, i < length allRows ]
-                            copts = CaptureOpts
-                                { captTrim   = not (has "-N")
-                                , captSeq    = has "-e"
-                                , captNumber = has "-L"
-                                }
-                        pure [ROutput (captureText copts picked)]
+        copts = CaptureOpts
+            { captJoin   = has "-J"
+            , captNoTrim = has "-N"
+            , captUsed   = has "-T"
+            , captSeq    = has "-e"
+            , captOctal  = has "-C"
+            , captNumber = has "-L"
+            }
+    case filter has ["-F", "-H", "-P", "-R"] of
+        (bad : _) ->
+            pure [RErr ("capture-pane: " <> bad <> " is not implemented")]
+        [] -> do
+            res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+            case res of
+                Left e -> pure [RErr e]
+                Right (_, _, _, pane) -> do
+                    ecap <- capturePane pane copts (has "-a") (has "-q")
+                        (has "-M") (lookup "-S" opts) (lookup "-E" opts)
+                    case ecap of
+                        Left err -> pure [RErr err]
+                        Right txt
+                            | has "-p" -> pure
+                                [ROutput (fromMaybe txt (T.stripSuffix "\n" txt))]
+                            | otherwise -> [] <$ atomically
+                                (storeBuffer st (lookup "-b" opts) txt)
+
+-- | Capture a pane's rows per tmux's source selection: @-a@ asks for the
+-- screen saved behind an active alternate screen (which libghostty keeps
+-- unreadable, so it only yields tmux's @no alternate screen@ error, silenced
+-- by @-q@); @-M@ reads the copy-mode frozen grid when the pane is in copy
+-- mode; otherwise the live grid plus scrollback, with @-S@\/@-E@ resolved by
+-- 'captureBounds' and wrap flags read only when @-J@ needs them.
+capturePane
+    :: Pane -> CaptureOpts -> Bool -> Bool -> Bool -> Maybe Text -> Maybe Text
+    -> IO (Either Text Text)
+capturePane pane copts altFlag quiet copyFlag sflag eflag
+    | altFlag = do
+        m <- Emu.modes pane.emulator
+        pure $ if m.altScreen
+            then Left "capture-pane: -a is not implemented"
+            else if quiet then Right "" else Left "no alternate screen"
+    | otherwise = do
+        mmode <- if copyFlag then readTVarIO pane.mode else pure Nothing
+        case mmode of
+            Just pm
+                | copts.captJoin ->
+                    pure (Left "capture-pane: -J with -M is not implemented")
+                | otherwise -> do
+                    let fg = pm.frozen
+                        (top, bottom) = captureBounds fg.fgHsize fg.fgSy sflag eflag
+                    pure . Right . captureText copts $
+                        [ CaptureRow (i - fg.fgHsize) False
+                            (fromMaybe V.empty (fg.fgRows V.!? i))
+                        | i <- [top .. bottom] ]
+            Nothing -> do
+                scr <- Emu.snapshot pane.emulator
+                hsize <- Emu.scrollbackLength pane.emulator
+                let sy = V.length scr.cells
+                    (top, bottom) = captureBounds hsize sy sflag eflag
+                Right . captureText copts <$> mapM (liveRow hsize scr) [top .. bottom]
+  where
+    liveRow hsize scr i
+        | i < hsize = CaptureRow (i - hsize)
+            <$> wrapAt (Emu.scrollbackLineWrapped pane.emulator i)
+            <*> (fromMaybe V.empty <$> Emu.scrollbackLine pane.emulator i)
+        | otherwise = CaptureRow (i - hsize)
+            <$> wrapAt (Emu.screenRowWrapped pane.emulator (i - hsize))
+            <*> pure (fromMaybe V.empty (scr.cells V.!? (i - hsize)))
+    wrapAt act = if copts.captJoin then act else pure False
 
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args = do

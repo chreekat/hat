@@ -79,8 +79,10 @@ module Hat.Server
     , applyShifts
     , selectNamed
     , CaptureOpts (..)  -- ^ exported for the capture-pane grid-dump tests
+    , CaptureRow (..)
     , captureBounds
     , captureText
+    , cmdCapturePane
     ) where
 
 import Control.Concurrent (forkIO, threadDelay)
