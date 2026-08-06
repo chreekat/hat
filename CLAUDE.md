@@ -35,7 +35,7 @@ check, and **add a row whenever you introduce a new one**:
 | Boundary | Module | Evolution rule | Corpus |
 |---|---|---|---|
 | Client ↔ server wire | `Hat.Transport.Wire` | Versions exchanged, both speak `min` (`negotiate`); window = every version ≥ floor 4, forever. Append-only CBOR tags; leaves grow under a new dialect level, encoded per-peer. Unknown tag → skip; `Malformed` → fatal. | golden-byte + dialect corpus in `WireSpec` |
-| Persistence store | `Hat.Server.Persist` (SQLite) | Additive schema: core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent and ignore the unknown (never gate on `schema_version`). | `PersistSpec` "schema compatibility" |
+| Persistence store | `Hat.Server.Persist` (SQLite) | Additive schema: core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent and ignore the unknown (never gate on `schema_version`). The live tables always hold the newest tree; `snapshot` history rows carry whole trees as JSON evolved under the same tolerant rule. | `PersistSpec` "schema compatibility" |
 | Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload; a build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. | `ReloadSpec` corpus |
 
 Two valid mechanisms, both delivering the same guarantee (a new build reads old
