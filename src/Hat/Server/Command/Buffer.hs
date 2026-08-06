@@ -9,6 +9,7 @@ module Hat.Server.Command.Buffer
     , cmdSaveBuffer
     , cmdPasteBuffer
     , cmdPipePane
+    , storeBuffer
     ) where
 
 import Control.Concurrent.STM
@@ -47,21 +48,27 @@ cmdSetBuffer st _ args = do
         then pure [RErr "usage: set-buffer [-a] [-b name] data"]
         else atomically $ do
             bufs <- readTVar st.buffers
-            case mname of
-                Just name -> do
-                    let existing = lookupBuffer name bufs
-                        newBody = case (appendMode, existing) of
-                            (True, Just prev) -> prev <> body
-                            _ -> body
-                        others = Seq.filter ((/= name) . fst) bufs
-                    writeTVar st.buffers ((name, newBody) Seq.<| others)
-                Nothing -> do
-                    n <- readTVar st.nextBuffer
-                    writeTVar st.nextBuffer (n + 1)
-                    let name = "buffer" <> T.pack (show n)
-                    writeTVar st.buffers ((name, body) Seq.<| bufs)
-            bumpDirty st
+            let existing = mname >>= \name -> lookupBuffer name bufs
+                newBody = case (appendMode, existing) of
+                    (True, Just prev) -> prev <> body
+                    _ -> body
+            storeBuffer st mname newBody
             pure []
+
+-- | Push content onto the buffer stack: a named buffer replaces its
+-- namesake, an unnamed one takes the next automatic @bufferN@ name.
+storeBuffer :: ServerState -> Maybe Text -> Text -> STM ()
+storeBuffer st mname body = do
+    bufs <- readTVar st.buffers
+    case mname of
+        Just name ->
+            writeTVar st.buffers
+                ((name, body) Seq.<| Seq.filter ((/= name) . fst) bufs)
+        Nothing -> do
+            n <- readTVar st.nextBuffer
+            writeTVar st.nextBuffer (n + 1)
+            writeTVar st.buffers (("buffer" <> T.pack (show n), body) Seq.<| bufs)
+    bumpDirty st
 
 cmdListBuffers :: CommandImpl
 cmdListBuffers st _ _ = do
