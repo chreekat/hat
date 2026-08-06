@@ -129,6 +129,23 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
     return 1;
 }
 
+int ghost_shim_row_wrapped(void *t, int tag, uint32_t y) {
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = 0;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return 0;
+    GhosttyRow row;
+    if (ghostty_grid_ref_row(&ref, &row) != GHOSTTY_SUCCESS)
+        return 0;
+    bool wrapped = false;
+    if (ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &wrapped) != GHOSTTY_SUCCESS)
+        return 0;
+    return wrapped ? 1 : 0;
+}
+
 long ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen) {
     GhosttyString s = { 0 };
     if (ghostty_terminal_get((GhosttyTerminal)t, GHOSTTY_TERMINAL_DATA_TITLE, &s)

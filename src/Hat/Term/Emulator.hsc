@@ -33,6 +33,8 @@ module Hat.Term.Emulator
     , title
     , scrollbackLength
     , scrollbackLine
+    , scrollbackLineWrapped
+    , screenRowWrapped
     , setScrollbackLimit
     , clearScrollback
     , screenRowText
@@ -87,6 +89,8 @@ foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_cell"
     c_cell :: Ptr CTerm -> CInt -> CUShort -> CUInt -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_row_wrapped"
+    c_row_wrapped :: Ptr CTerm -> CInt -> CUInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_pen"
     c_pen :: Ptr CTerm -> Ptr () -> IO CInt
 foreign import ccall unsafe "ghostty_terminal_set"
@@ -413,6 +417,25 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
         else do
             cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
             Just <$> readRow e.cellIntern t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
+
+-- | Whether a scrollback row (indexed as 'scrollbackLine') soft-wraps onto
+-- the next row.
+scrollbackLineWrapped :: Emulator -> Int -> IO Bool
+scrollbackLineWrapped e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    lim <- readIORef e.sbLimit
+    phys <- physicalScrollback t
+    let exposed = min phys (max 0 lim)
+    if i < 0 || i >= exposed
+        then pure False
+        else (/= 0) <$> c_row_wrapped t #{const GHOST_SHIM_HISTORY}
+            (fromIntegral (phys - exposed + i))
+
+-- | Whether a live-screen row soft-wraps onto the next row.
+screenRowWrapped :: Emulator -> Int -> IO Bool
+screenRowWrapped e r = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    if r < 0
+        then pure False
+        else (/= 0) <$> c_row_wrapped t #{const GHOST_SHIM_ACTIVE} (fromIntegral r)
 
 -- | Change the live row cap. Read-side only: libghostty already bounds the
 -- history's memory, so a lowered limit hides the oldest rows and a raised one

@@ -84,6 +84,16 @@ spec = do
         (screenCell scr Pos { row = 0, col = 0 }).style.faint `shouldBe` True
         (screenCell scr Pos { row = 0, col = 1 }).style.faint `shouldBe` False
 
+    -- capture-pane -J joins on these flags (bug d2).
+    it "reports soft-wrap on screen and scrollback rows" $ do
+        e <- new80x24
+        _ <- feedStr e (B8.replicate 100 'x')
+        screenRowWrapped e 0 `shouldReturn` True
+        screenRowWrapped e 1 `shouldReturn` False
+        _ <- feedStr e (B8.concat (replicate 30 "\r\n"))
+        scrollbackLineWrapped e 0 `shouldReturn` True
+        scrollbackLineWrapped e 1 `shouldReturn` False
+
     it "tracks the alternate screen" $ do
         e <- new80x24
         m0 <- modes e

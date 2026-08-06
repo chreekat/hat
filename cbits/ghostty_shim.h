@@ -42,6 +42,10 @@ int   ghost_shim_mode(void *t, uint16_t mode_num, int ansi);
  * 0 when the ref or cell is unavailable (out is left zeroed). */
 int   ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out);
 
+/* Whether the row at y under a point tag soft-wraps onto the next row.
+ * Returns 1 wrapped, 0 not wrapped or unavailable. */
+int   ghost_shim_row_wrapped(void *t, int tag, uint32_t y);
+
 /* Copy the terminal title (DATA_TITLE, set by OSC 0/2) into buf, truncated to
  * buflen bytes. Returns the full title length, or -1 on failure. */
 long  ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen);
