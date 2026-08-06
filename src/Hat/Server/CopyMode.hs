@@ -53,6 +53,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, bracket, catch)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Array ((!))
+import Data.Char (toLower)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -61,7 +62,8 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
-import Text.Regex.TDFA (Regex, defaultCompOpt, defaultExecOpt, matchAll)
+import Text.Regex.TDFA
+    (CompOption (..), Regex, defaultCompOpt, defaultExecOpt, matchAll)
 import qualified Text.Regex.TDFA.Text as Regex
 import System.Process
     ( CreateProcess (..)
@@ -534,25 +536,45 @@ rowText g r = do
 
 -- | A compiled string-search pattern, ready to scan grid rows. Built by
 -- 'compilePattern'; consumed by 'findMatch'.
-data SearchPattern = PatText !Text | PatRegex !Regex
+data SearchPattern = PatText !QueryCase !Text | PatRegex !Regex
+
+-- | Smart-case verdict for a query: see 'compilePattern'.
+data QueryCase = MatchCase | IgnoreCase
 
 -- | Compile a search pattern per its kind: 'SearchRegex' as a POSIX
 -- extended regex (tmux's @regcomp@ flavor), 'SearchText' verbatim (never
--- fails). An invalid regex is a 'Left' the caller must surface.
+-- fails). Both kinds smart-case, per tmux: a query in which every
+-- character is its own 'toLower' image matches case-insensitively; any
+-- uppercase character makes the search exact. An invalid regex is a
+-- 'Left' the caller must surface.
 compilePattern :: SearchKind -> Text -> Either Text SearchPattern
-compilePattern SearchText query = Right (PatText query)
-compilePattern SearchRegex query =
-    case Regex.compile defaultCompOpt defaultExecOpt query of
-        Left err -> Left ("invalid regex: " <> T.pack err)
-        Right re -> Right (PatRegex re)
+compilePattern kind query = case kind of
+    SearchText -> Right $ case qcase of
+        MatchCase  -> PatText MatchCase query
+        IgnoreCase -> PatText IgnoreCase (T.map toLower query)
+    SearchRegex ->
+        case Regex.compile compOpt defaultExecOpt query of
+            Left err -> Left ("invalid regex: " <> T.pack err)
+            Right re -> Right (PatRegex re)
+  where
+    qcase
+        | T.all (\c -> c == toLower c) query = IgnoreCase
+        | otherwise = MatchCase
+    compOpt = case qcase of
+        MatchCase  -> defaultCompOpt
+        IgnoreCase -> defaultCompOpt { caseSensitive = False }
 
 -- | Every start column of the pattern within @txt@. Literal scans resume
 -- one cell past the previous start (overlapping matches found); regexes
 -- run over the whole line in one pass, so @^@ anchors only at column 0.
 matchCols :: SearchPattern -> Text -> [Int]
 matchCols (PatRegex re) = map (fst . (! 0)) . matchAll re
-matchCols (PatText query) = go 0
+matchCols (PatText qcase query) = go 0 . canon
   where
+    -- per-char lowering keeps columns aligned with the original row
+    canon = case qcase of
+        MatchCase  -> id
+        IgnoreCase -> T.map toLower
     go _ _ | T.null query = []
     go off txt = case T.breakOn query txt of
         (pre, rest)

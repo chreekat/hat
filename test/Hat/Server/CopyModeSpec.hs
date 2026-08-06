@@ -310,6 +310,18 @@ spec = do
         it "a -text search treats . literally" $
             find Forward (pat SearchText "line...") (from 0 0)
                 `shouldBe` Just (2, 8)
+        it "an all-lowercase regex matches uppercase text (bug 17)" $
+            find Forward (regex "another") (from 0 0) `shouldBe` Just (2, 0)
+        it "an all-lowercase -text query matches uppercase text (bug 17)" $
+            find Forward (pat SearchText "another") (from 0 0)
+                `shouldBe` Just (2, 0)
+        it "an uppercase character keeps a regex case-sensitive (bug 17)" $
+            find Forward (regex "ANOTHER") (from 0 0) `shouldBe` Nothing
+        it "an uppercase character keeps a -text query case-sensitive (bug 17)" $
+            find Forward (pat SearchText "ANOTHER") (from 0 0)
+                `shouldBe` Nothing
+        it "character classes work under smart-case (bug 17)" $
+            find Forward (regex "[a-z]nother") (from 0 0) `shouldBe` Just (2, 0)
         it "a pattern matching empty still terminates and advances" $
             find Forward (regex "z*") (from 0 0) `shouldBe` Just (0, 1)
         it "an invalid regex is a compile error, not a silent no-match" $
