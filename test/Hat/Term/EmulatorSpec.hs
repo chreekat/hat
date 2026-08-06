@@ -517,6 +517,36 @@ spec = do
         _ <- feedStr e (B8.intercalate "\r\n" ["b" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
         scrollbackLength e `shouldReturn` 14
 
+    -- bug 5b: DECSTBM/DECOM/IND/RI scroll cases must match tmux row-for-row.
+    describe "scroll regions (DECSTBM)" $ do
+        let capture e n = do
+                scr <- snapshot e
+                pure [rowText scr r | r <- [0 .. n - 1]]
+
+        it "writes at the region origin under DECOM" $ do
+            e <- newEmulator Size { rows = 4, cols = 6 } 1000
+            _ <- feedStr e "111111\r\n222222\r\n333333\r\n444444"
+            _ <- feedStr e "\ESC[2;3r\ESC[?6h\ESC[1;1HAA\ESC[?6l\ESC[r"
+            capture e 4 `shouldReturn` ["111111", "AA2222", "333333", "444444"]
+
+        it "scrolls the region up on LF at the bottom margin" $ do
+            e <- newEmulator Size { rows = 4, cols = 5 } 1000
+            _ <- feedStr e "11111\r\n22222\r\n33333\r\n44444"
+            _ <- feedStr e "\ESC[2;3r\ESC[3;1HAAAAA\r\nBBBBB\ESC[r"
+            capture e 4 `shouldReturn` ["11111", "AAAAA", "BBBBB", "44444"]
+
+        it "scrolls the region down on SD (CSI T)" $ do
+            e <- newEmulator Size { rows = 4, cols = 5 } 1000
+            _ <- feedStr e "11111\r\n22222\r\n33333\r\n44444"
+            _ <- feedStr e "\ESC[2;3r\ESC[2;1H\ESC[TZZZZZ\ESC[r"
+            capture e 4 `shouldReturn` ["11111", "ZZZZZ", "22222", "44444"]
+
+        it "scrolls the region down on RI at the top margin" $ do
+            e <- newEmulator Size { rows = 4, cols = 5 } 1000
+            _ <- feedStr e "11111\r\n22222\r\n33333\r\n44444"
+            _ <- feedStr e "\ESC[2;3r\ESC[2;1H\ESCMZZZZZ\ESC[r"
+            capture e 4 `shouldReturn` ["11111", "ZZZZZ", "22222", "44444"]
+
     it "survives resize both ways" $ do
         e <- new80x24
         _ <- feedStr e "stay"
