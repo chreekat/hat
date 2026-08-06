@@ -24,10 +24,10 @@ import Hat.Server
     (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
      Reply (..), ScrollbackCarry (..), SpawnOrigin (..),
      StartupGate (..), StorePin (..),
-     captureReloadScreen, captureSize, cmdRestartServer,
+     captureReloadScreen, captureSize, cmdRestart, cmdRestartServer,
      defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
      rebuildReloadSession, reloadSchemePush, replayPane, restoreRun,
-     restoreShellExec, startupGate)
+     restoreShellExec, runCommands, startupGate)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
 import Hat.Server.LayoutString (emitLayout)
@@ -92,6 +92,11 @@ spec = do
             startupGate LoadingConfig Joined cmds `shouldBe` Proceed
         it "never holds a restart-server batch (the guard must reject, not wait)" $ do
             let reload = [["restart-server", "/some/hat"]]
+            startupGate Restoring Autostarted reload `shouldBe` Proceed
+            startupGate LoadingConfig Autostarted reload `shouldBe` Proceed
+
+        it "never holds a restart batch either (4f)" $ do
+            let reload = [["restart", "/some/hat"]]
             startupGate Restoring Autostarted reload `shouldBe` Proceed
             startupGate LoadingConfig Autostarted reload `shouldBe` Proceed
 
@@ -259,6 +264,21 @@ spec = do
             st <- testState
             errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat"]
             errs `shouldSatisfy` any (T.isInfixOf "no such binary")
+
+    -- `restart` (bug 4f) rides the whole restart-server path — guard, flags,
+    -- target check — through the real command engine, so a bad reload is
+    -- rejected before any client is told to restart.
+    describe "restart" $ do
+        it "dispatches from the command table into the reload path (4f)" $ do
+            st <- testState
+            errs <- errStrings <$> runCommands st Nothing [["restart", "/no/such/hat"]]
+            errs `shouldSatisfy` any (T.isInfixOf "restart: no such binary")
+
+        it "shares the reload-in-progress guard (4f)" $ do
+            st <- testState
+            atomically (writeTVar st.startupPhase Restoring)
+            errs <- errStrings <$> cmdRestart st Nothing ["/no/such/hat"]
+            errs `shouldSatisfy` any (T.isInfixOf "in progress")
 
     describe "restart-server flags" $ do
         it "accepts -C, reaching the normal target check" $ do

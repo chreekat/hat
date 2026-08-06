@@ -5,6 +5,7 @@ import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Data.IORef (newIORef)
 import Data.Text (Text)
+import qualified Data.Text as T
 import System.Timeout (timeout)
 import qualified Data.Map.Strict as Map
 import Network.Socket
@@ -25,9 +26,11 @@ import Hat.Model.Options
 import Hat.Server
     ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
+    , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
     , chooseActivePaneOnClose
     , cmdAttachSession, chooseCurrentOnClose, cmdListClients, cmdRestartClient
+    , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
     , reencodeCursor, refreshSessionEnv, removePaneFromTree, welcome
@@ -226,6 +229,29 @@ spec = do
             -- would turn "no message" into EOF): force a collection to make
             -- that hazard deterministic, and hold the socket open past the
             -- read with touchSocket.
+            performGC
+            got <- timeout 100_000
+                (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))
+            touchSocket client.sock
+            got `shouldBe` Nothing
+
+    -- `restart` (bug 4f) composes restart-server with a client restart: the
+    -- reload's farewell tells attached clients to re-exec instead of exit.
+    describe "restart" $ do
+        it "re-execs attached clients and exits everyone else (4f)" $ do
+            reloadFarewell ServerAndClients Attached `shouldBe` RestartClient
+            reloadFarewell ServerAndClients Control `shouldBe` Exited
+            reloadFarewell ServerOnly Attached `shouldBe` Exited
+            reloadFarewell ServerOnly Control `shouldBe` Exited
+
+        it "aborts the client restart when the reload is rejected (4f)" $ do
+            (st, _) <- seedSession "/"
+            (client, peer) <- wiredClient st Attached
+            errs <- cmdRestart st (Just client) ["/no/such/hat"]
+            [e | RErr e <- errs] `shouldSatisfy`
+                any (T.isInfixOf "no such binary")
+            -- Nothing is queued (see the restart-client no-op test for the
+            -- GC/touchSocket choreography).
             performGC
             got <- timeout 100_000
                 (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))

@@ -11,6 +11,10 @@ module Hat.Server
     , rebuildReloadSession -- ^ exported for the reload session-size test
     , captureSize          -- ^ exported for the oversized-capture adopt test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
+    , cmdRestart           -- ^ exported for the restart failure-abort test
+    , ReloadScope (..)     -- ^ exported for the restart farewell test
+    , reloadFarewell       -- ^ exported for the restart farewell test
+    , runCommands          -- ^ exported for the restart dispatch test
     , restartClientAction  -- ^ exported for the restart-client no-op test
     , RestartClientOutcome (..)
     , cmdRestartClient     -- ^ exported for the restart-client delivery test
@@ -348,9 +352,10 @@ data StartupGate = Proceed | Hold
 -- if-shell-TERM.sh), while a client the config itself spawned (a nested
 -- @hat run@ in an @if-shell@ condition) must be served or config load
 -- deadlocks on its own child. 'Restoring' holds everyone: a command must
--- see the whole restored tree, not one mid-rebuild. A @restart-server@
--- batch always proceeds — 'cmdRestartServer' must REJECT an in-flight
--- reload, and holding it here would turn that reject into a silent wait.
+-- see the whole restored tree, not one mid-rebuild. A reload batch
+-- (@restart-server@/@restart@) always proceeds — 'cmdReload' must REJECT
+-- an in-flight reload, and holding it here would turn that reject into a
+-- silent wait.
 startupGate :: StartupPhase -> Autostart -> [[Text]] -> StartupGate
 startupGate phase origin cmds
     | any isReload cmds = Proceed
@@ -360,7 +365,7 @@ startupGate phase origin cmds
         (LoadingConfig, Autostarted) -> Hold
         (LoadingConfig, Joined) -> Proceed
   where
-    isReload (name : _) = name == "restart-server"
+    isReload (name : _) = name `elem` ["restart-server", "restart"]
     isReload []         = False
 
 -- | Park a command batch until 'startupGate' lets it through.
@@ -1860,6 +1865,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["kill-server"], cmdKillServer)
     , (["restart-server"], cmdRestartServer)
     , (["restart-client"], cmdRestartClient)
+    , (["restart"], cmdRestart)
     , (["display-message", "display"], cmdDisplayMessage)
     , (["run-shell", "run"], cmdRunShell)
     , (["if-shell", "if"], cmdIfShell)
@@ -1938,40 +1944,67 @@ refreshTitles st ref = do
 titleBudget :: Int
 titleBudget = 80
 
--- | @restart-server [-C] [path]@: reload the server binary in place while every
--- pane's program keeps running. @-C@ drops all scrollback across the reload
--- (a memory cleanup). Serializes the live tree and its inherited fds
--- to a handover file, drops the clients (they reconnect with @hat@), then
--- re-execs @path@ (default: the on-PATH @hat@, see 'resolveReloadTarget'),
--- which re-adopts the tree ('resumeServer'). The pane pty masters and the
--- listening socket survive the exec; clients' accepted sockets are
--- close-on-exec, so they drop and the users reattach. A missing target is
--- reported before anything is torn down, so a typo'd path is a harmless error
--- rather than a half-dropped server.
+-- | @restart-server [-C] [path]@: reload the server binary in place. See
+-- 'cmdReload'; dropped clients exit and the users reattach.
 cmdRestartServer :: CommandImpl
-cmdRestartServer st mclient args = do
+cmdRestartServer = cmdReload ServerOnly
+
+-- | @restart [-C] [path]@: @restart-server@ with the attached clients told to
+-- re-exec too ('reloadFarewell'), so one command upgrades both halves.
+cmdRestart :: CommandImpl
+cmdRestart = cmdReload ServerAndClients
+
+-- | Which halves a reload restarts: the server alone (@restart-server@), or
+-- the server and every attached client (@restart@). See 'reloadFarewell'.
+data ReloadScope = ServerOnly | ServerAndClients
+    deriving (Eq, Show)
+
+-- | The command name a reload reports its errors under.
+reloadName :: ReloadScope -> Text
+reloadName ServerOnly = "restart-server"
+reloadName ServerAndClients = "restart"
+
+-- | The farewell 'cmdReload' sends each client it is about to drop: under
+-- 'ServerAndClients' an attached client re-execs in place ('RestartClient',
+-- handled like @restart-client@); everyone else exits.
+reloadFarewell :: ReloadScope -> ClientRole -> ServerToClient
+reloadFarewell ServerAndClients Attached = RestartClient
+reloadFarewell _ _ = Exited
+
+-- | Reload the server binary in place while every pane's program keeps
+-- running. @-C@ drops all scrollback across the reload (a memory cleanup).
+-- Serializes the live tree and its inherited fds to a handover file, sends
+-- every client its 'reloadFarewell', then re-execs @path@ (default: the
+-- on-PATH @hat@, see 'resolveReloadTarget'), which re-adopts the tree
+-- ('resumeServer'). The pane pty masters and the listening socket survive the
+-- exec, so a farewelled client that reattaches immediately just waits in the
+-- accept backlog; the accepted sockets are close-on-exec, so dropped clients
+-- hang up cleanly. A missing target is reported before anything is torn down,
+-- so a typo'd path is a harmless error rather than a half-dropped server.
+cmdReload :: ReloadScope -> CommandImpl
+cmdReload scope st mclient args = do
     -- Fail loud rather than reload on top of an in-flight startup or
     -- reload: capturing a half-rebuilt tree and re-exec'ing through it is
     -- how a second restart-server strands the live programs. Startup lands
     -- at Ready the moment the tree is whole again.
     phase <- readTVarIO st.startupPhase
     if phase /= Ready
-        then pure [RErr "restart-server: startup or reload still in progress; try again shortly"]
-        else cmdRestartServer' st mclient args
+        then pure [RErr (reloadName scope <> ": startup or reload still in progress; try again shortly")]
+        else cmdReload' scope st mclient args
 
-cmdRestartServer' :: CommandImpl
-cmdRestartServer' st mclient args = do
+cmdReload' :: ReloadScope -> CommandImpl
+cmdReload' scope st mclient args = do
     let (_, flags, pos) = parseArgs "" args
         carry = if "-C" `elem` flags then DropScrollback else KeepScrollback
     case filter (/= "-C") flags of
-      (f : _) -> pure [RErr ("restart-server: unknown flag: " <> f)]
+      (f : _) -> pure [RErr (reloadName scope <> ": unknown flag: " <> f)]
       [] -> do
         target <- case pos of
             (p : _) -> pure (T.unpack p)    -- explicit binary path (deterministic)
             []      -> resolveReloadTarget  -- default: the on-PATH hat
         exists <- doesFileExist target
         if not exists
-            then pure [RErr ("restart-server: no such binary: " <> T.pack target)]
+            then pure [RErr (reloadName scope <> ": no such binary: " <> T.pack target)]
             else do
                 logEvent st.logger ServerReloading { target = target }
                 (cleanup, tree) <- captureReload carry st
@@ -1979,8 +2012,11 @@ cmdRestartServer' st mclient args = do
                 B.writeFile blobPath (encodeHandover cleanup tree)
                 keepOpenAcrossExec cleanup
                 sessions <- readTVarIO st.sessions
-                forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
-                forM_ mclient $ \client -> send client Exited
+                forM_ (Map.keys sessions) $ \sid -> do
+                    cs <- atomically (sessionClients st sid)
+                    forM_ cs $ \c -> send c (reloadFarewell scope c.role)
+                forM_ mclient $ \client ->
+                    send client (reloadFarewell scope client.role)
                 mconfig <- readTVarIO st.serverConfig
                 let argv = ["--server", st.sockPath]
                         <> maybe [] (: []) mconfig
