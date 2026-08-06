@@ -1671,18 +1671,15 @@ runKeys st client keys = do
 
 -- | Forward a recognized key as the pane's advertised terminal expects, not
 -- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
--- (@\ESC[A@ vs @\ESCOA@), so the pane's emulator encodes them. Home\/End are
--- mode-independent in tmux-256color (@khome=\ESC[1~@, @kend=\ESC[4~@) but
--- the emulator would emit the xterm SS3 forms, so they are normalized to the
--- terminfo bytes here — else a pager keyed off terminfo reads a bare @H@\/@F@
--- (less opens its help).
+-- (@\ESC[A@ vs @\ESCOA@), so the pane's emulator encodes them; every other
+-- named key forwards its tmux-256color terminfo bytes from 'namedKeys'.
+-- Unrecognized keys keep their raw bytes.
 reencodeCursor :: Maybe Pane -> Key -> IO Key
 reencodeCursor mpane key = case arrowOf key.name of
     Just ck | Just pane <- mpane -> do
         enc <- Emu.encodeKey pane.emulator ck
         pure key { raw = enc }
-    _ | key.name `elem` ["Home", "End"]
-      , Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
+    _ | Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
     _ -> pure key
   where
     arrowOf n = case n of

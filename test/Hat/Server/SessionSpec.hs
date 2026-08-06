@@ -842,3 +842,13 @@ spec = do
         it "normalizes End to kend (\\E[4~)" $
             ((.raw) <$> reencodeCursor Nothing (Key "End" "\ESCOF"))
                 `shouldReturn` "\ESC[4~"
+        it "normalizes F1-F4 to the SS3 kf1..kf4 forms from the legacy CSI" $ do
+            -- bug fad
+            ((.raw) <$> reencodeCursor Nothing (Key "F1" "\ESC[11~"))
+                `shouldReturn` "\ESCOP"
+            ((.raw) <$> reencodeCursor Nothing (Key "F4" "\ESC[14~"))
+                `shouldReturn` "\ESCOS"
+        it "leaves an unrecognized sequence's raw bytes alone" $
+            -- bug fad
+            ((.raw) <$> reencodeCursor Nothing (Key "Unknown" "\ESC[97~"))
+                `shouldReturn` "\ESC[97~"
