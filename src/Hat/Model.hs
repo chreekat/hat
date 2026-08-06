@@ -22,6 +22,7 @@ module Hat.Model
     , flipDirection
     , CharStop (..)
     , CharSearch (..)
+    , Toast (..)
     , PromptState (..)
     , PickerState (..)
     , PickerNode (..)
@@ -70,7 +71,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
 import qualified Data.Vector as V
-import Data.Word (Word16)
+import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
 import qualified System.Posix.Files as PFiles
 
@@ -297,6 +298,13 @@ data CharSearch = CharSearch
     }
     deriving (Eq, Show)
 
+-- | A display-message overlay.
+data Toast = Toast
+    { text     :: !Text
+    , deadline :: !(Maybe Word64)  -- ^ monotonic ns, from 'toastDeadline';
+                                   --   'Nothing' = until a key is pressed
+    }
+
 -- | Per-client command-prompt state: the line being edited, the cursor's
 -- index into it, and (when browsing) the position in command history.
 data PromptState = PromptState
@@ -403,7 +411,7 @@ data Client = Client
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool
-    , toast     :: TVar (Maybe Text)  -- ^ display-message overlay
+    , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
     , outerFocused :: TVar Bool

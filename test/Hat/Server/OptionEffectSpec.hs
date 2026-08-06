@@ -14,10 +14,13 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
+import Hat.Model (Toast (..))
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), Options (..)
     , StatusPosition (..), defaultOptions )
-import Hat.Server (deliversKey, escTiming, mainPaneRatio, resizeModeOf)
+import Hat.Server
+    ( deliversKey, escTiming, mainPaneRatio, resizeModeOf, toastDeadline
+    , toastExpired )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
@@ -44,6 +47,22 @@ spec = do
             it "on but pane never asked (?1004 off): still dropped" $
                 deliversKey (defaultOptions { focusEvents = True }) False focusIn
                     `shouldBe` False
+
+        -- display-time: a toast lives that many milliseconds; 0 keeps it up
+        -- until a key is pressed (bug ff).
+        describe "display-time bounds the toast's lifetime" $ do
+            let ms n = n * 1000000  -- monotonic clock is in ns
+                shownAt = ms 41000
+                toastFor opts =
+                    Toast { text = "hi", deadline = toastDeadline opts shownAt }
+            it "750: alive at t+700ms, expired at t+800ms" $ do
+                let toast = toastFor (defaultOptions { displayTime = 750 })
+                toastExpired (shownAt + ms 700) toast `shouldBe` False
+                toastExpired (shownAt + ms 800) toast `shouldBe` True
+            it "0: no deadline, never expires by time" $ do
+                let toast = toastFor (defaultOptions { displayTime = 0 })
+                toast.deadline `shouldBe` Nothing
+                toastExpired (shownAt + ms 3600000) toast `shouldBe` False
 
         -- main-pane-width/-height: an absolute cell count, realised as that
         -- many cells out of the window along the layout's axis.

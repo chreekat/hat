@@ -153,7 +153,7 @@ renderOnce st client = do
                         (Just pr, _) ->
                             pure (Just (fromMaybe bottomIx mStatusRowIx, promptCells pr w))
                         (Nothing, Just t) ->
-                            pure (Just (fromMaybe bottomIx mStatusRowIx, toastCells t w))
+                            pure (Just (fromMaybe bottomIx mStatusRowIx, toastCells t.text w))
                         (Nothing, Nothing) -> case mStatusRowIx of
                             Just ix -> Just . (,) ix <$> statusCells st sess w
                             Nothing -> pure Nothing

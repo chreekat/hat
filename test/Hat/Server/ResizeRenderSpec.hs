@@ -15,7 +15,7 @@ import Test.Hspec
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Model
+import Hat.Model hiding (Toast (..))
 import Hat.Server.Keys (EscPending (NoEscPending), PrefixState (NoPrefix))
 import Hat.Server.Render (Frame)
 import Hat.Server.View (renderOnce)
