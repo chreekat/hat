@@ -2,6 +2,7 @@ module Hat.Server.CopyModeSpec (spec) where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (forM)
+import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
@@ -13,7 +14,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..)
-    , SearchDirection (..), SelKind (SelChar, SelLine) )
+    , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
@@ -278,20 +279,47 @@ spec = do
     describe "string search (/ ? n N)" $ do
         -- "line" occurs at (0,2), (1,17) and (2,8) in the shared grid.
         let from r c = (start.sState) { cursorRow = r, cursorCol = c }
-            find dir q st =
-                runIdentity (findMatch grid dir q (st.cursorRow, st.cursorCol))
+            pat kind q = either (error . T.unpack) id (compilePattern kind q)
+            find dir p st =
+                runIdentity (findMatch grid dir p (st.cursorRow, st.cursorCol))
+            regex = pat SearchRegex
         it "/ finds the next match" $
-            find Forward "line" (from 0 0) `shouldBe` Just (0, 2)
+            find Forward (regex "line") (from 0 0) `shouldBe` Just (0, 2)
         it "n advances to the following match" $
-            find Forward "line" (from 0 2) `shouldBe` Just (1, 17)
+            find Forward (regex "line") (from 0 2) `shouldBe` Just (1, 17)
         it "forward search wraps to the first match" $
-            find Forward "line" (from 2 8) `shouldBe` Just (0, 2)
+            find Forward (regex "line") (from 2 8) `shouldBe` Just (0, 2)
         it "? / N find the previous match" $
-            find Backward "line" (from 2 8) `shouldBe` Just (1, 17)
+            find Backward (regex "line") (from 2 8) `shouldBe` Just (1, 17)
         it "backward search wraps to the last match" $
-            find Backward "line" (from 0 2) `shouldBe` Just (2, 8)
+            find Backward (regex "line") (from 0 2) `shouldBe` Just (2, 8)
         it "no match returns Nothing" $
-            find Forward "zzz" (from 0 0) `shouldBe` Nothing
+            find Forward (regex "zzz") (from 0 0) `shouldBe` Nothing
+        -- tmux >= 3.1: / and ? take a regex; -text variants are literal.
+        it "character classes and quantifiers match" $
+            find Forward (regex "[0-9]+xyz") (from 0 0) `shouldBe` Just (4, 4)
+        it "^ anchors to the start of a line" $
+            find Forward (regex "^Another") (from 0 0) `shouldBe` Just (2, 0)
+        it "$ anchors to the end of a line" $
+            find Forward (regex "words$") (from 0 0) `shouldBe` Just (0, 10)
+        it "alternation matches in reading order" $
+            find Forward (regex "Indented|Another") (from 0 0)
+                `shouldBe` Just (1, 8)
+        it "the default search treats . as a wildcard" $
+            find Forward (regex "line...") (from 0 0) `shouldBe` Just (0, 2)
+        it "a -text search treats . literally" $
+            find Forward (pat SearchText "line...") (from 0 0)
+                `shouldBe` Just (2, 8)
+        it "a pattern matching empty still terminates and advances" $
+            find Forward (regex "z*") (from 0 0) `shouldBe` Just (0, 1)
+        it "an invalid regex is a compile error, not a silent no-match" $
+            isLeft (compilePattern SearchRegex "[") `shouldBe` True
+        it "a -text pattern never fails to compile" $
+            isRight (compilePattern SearchText "[") `shouldBe` True
+        it "the literal -text command variants are wired" $
+            map (`Map.member` handlers)
+                ["search-forward-text", "search-backward-text"]
+                `shouldBe` [True, True]
 
     describe "paragraph motions" $ do
         -- Shared grid: rows 0..4 hold text, rows 5..9 are blank.

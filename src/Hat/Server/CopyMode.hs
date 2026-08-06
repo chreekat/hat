@@ -37,6 +37,8 @@ module Hat.Server.CopyMode
     , beginLineSelection
     , otherEnd
     , charSearch
+    , SearchPattern
+    , compilePattern
     , findMatch
     , extractSelection
     , yankSelection
@@ -50,6 +52,7 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, bracket, catch)
 import Control.Monad (forM, forM_, unless, void)
+import Data.Array ((!))
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -58,6 +61,8 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
+import Text.Regex.TDFA (Regex, defaultCompOpt, defaultExecOpt, matchAll)
+import qualified Text.Regex.TDFA.Text as Regex
 import System.Process
     ( CreateProcess (..)
     , StdStream (CreatePipe, UseHandle)
@@ -527,10 +532,26 @@ rowText g r = do
     len <- g.gLineLen r
     T.pack <$> mapM (g.gChar r) [0 .. len - 1]
 
--- | Every start column of @query@ within @txt@ (non-overlapping is fine;
--- advances by one so overlapping matches are still found).
-matchCols :: Text -> Text -> [Int]
-matchCols query = go 0
+-- | A compiled string-search pattern, ready to scan grid rows. Built by
+-- 'compilePattern'; consumed by 'findMatch'.
+data SearchPattern = PatText !Text | PatRegex !Regex
+
+-- | Compile a search pattern per its kind: 'SearchRegex' as a POSIX
+-- extended regex (tmux's @regcomp@ flavor), 'SearchText' verbatim (never
+-- fails). An invalid regex is a 'Left' the caller must surface.
+compilePattern :: SearchKind -> Text -> Either Text SearchPattern
+compilePattern SearchText query = Right (PatText query)
+compilePattern SearchRegex query =
+    case Regex.compile defaultCompOpt defaultExecOpt query of
+        Left err -> Left ("invalid regex: " <> T.pack err)
+        Right re -> Right (PatRegex re)
+
+-- | Every start column of the pattern within @txt@. Literal scans resume
+-- one cell past the previous start (overlapping matches found); regexes
+-- run over the whole line in one pass, so @^@ anchors only at column 0.
+matchCols :: SearchPattern -> Text -> [Int]
+matchCols (PatRegex re) = map (fst . (! 0)) . matchAll re
+matchCols (PatText query) = go 0
   where
     go _ _ | T.null query = []
     go off txt = case T.breakOn query txt of
@@ -540,20 +561,21 @@ matchCols query = go 0
                 let i = off + T.length pre
                 in i : go (i + 1) (T.drop (T.length pre + 1) txt)
 
--- | All matches of @query@ across the grid, in reading order.
-gridMatches :: Monad m => Grid m -> Text -> m [(Int, Int)]
-gridMatches g query =
+-- | All matches of the pattern across the grid, in reading order.
+gridMatches :: Monad m => Grid m -> SearchPattern -> m [(Int, Int)]
+gridMatches g p =
     fmap concat . forM [0 .. gBottom g] $ \r -> do
         txt <- rowText g r
-        pure [ (r, c) | c <- matchCols query txt ]
+        pure [ (r, c) | c <- matchCols p txt ]
 
--- | The next match of @query@ from @(row, col)@ in the given direction,
+-- | The next match of the pattern from @(row, col)@ in the given direction,
 -- wrapping around the grid. 'Nothing' when there are no matches at all.
 findMatch
     :: Monad m
-    => Grid m -> SearchDirection -> Text -> (Int, Int) -> m (Maybe (Int, Int))
-findMatch g dir query (row, col) = do
-    ms <- gridMatches g query
+    => Grid m -> SearchDirection -> SearchPattern -> (Int, Int)
+    -> m (Maybe (Int, Int))
+findMatch g dir p (row, col) = do
+    ms <- gridMatches g p
     pure $ case ms of
         [] -> Nothing
         (first : _)
@@ -764,14 +786,15 @@ runMotion g keys seps motion st = do
 -- Handler table
 
 -- | A copy-mode @-X@ handler. Receives the command's positional args
--- (e.g. the shell command for @copy-pipe@). 'Nothing' means \"exit copy
--- mode\".
+-- (e.g. the shell command for @copy-pipe@). 'Right Nothing' means \"exit
+-- copy mode\"; 'Left' is an error to show the client, mode unchanged.
 type Handler
-    = ServerState -> Pane -> CopyModeState -> [Text] -> IO (Maybe CopyModeState)
+    = ServerState -> Pane -> CopyModeState -> [Text]
+    -> IO (Either Text (Maybe CopyModeState))
 
 handlers :: Map Text Handler
 handlers = Map.fromList
-    [ ("cancel",            \_ _ _ _ -> pure Nothing)
+    [ ("cancel",            \_ _ _ _ -> pure (Right Nothing))
     , ("start-of-line",     pureH (\s -> s { cursorCol = 0 }))
     , ("history-top",       pureH (\s -> s { cursorRow = 0, cursorCol = 0 }))
     , ("begin-selection",   pureH beginSelection)
@@ -809,35 +832,39 @@ handlers = Map.fromList
     , ("jump-reverse",      gridH (jumpRepeat flipDir))
     , ("apply-search",      applySearchH)
     , ("cancel-search",     pureH (\s -> s { pendingSearch = Nothing }))
-    -- String search: / and ? submit a query via command-prompt; n/N repeat.
-    , ("search-forward",    searchStringH Forward)
-    , ("search-backward",   searchStringH Backward)
+    -- String search: / and ? submit a query via command-prompt; n/N
+    -- repeat. The default commands take a regex (tmux >= 3.1); the
+    -- -text variants match the pattern literally.
+    , ("search-forward",        searchStringH SearchRegex Forward)
+    , ("search-backward",       searchStringH SearchRegex Backward)
+    , ("search-forward-text",   searchStringH SearchText Forward)
+    , ("search-backward-text",  searchStringH SearchText Backward)
     , ("search-again",      searchRepeatH id)
     , ("search-reverse",    searchRepeatH flipDirection)
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s
-            >> pure (Just s { selection = Nothing }))
+            >> pure (Right (Just s { selection = Nothing })))
     , ("copy-selection-and-cancel",
-        \sst p s _ -> yankSelection sst p s >> pure Nothing)
+        \sst p s _ -> yankSelection sst p s >> pure (Right Nothing))
     , ("copy-pipe",            pipeH False)
     , ("copy-pipe-and-cancel", pipeH True)
     ]
   where
-    pureH f _ _ s _ = pure (Just (f s))
+    pureH f _ _ s _ = pure (Right (Just (f s)))
     motionH mk sst pane st _ = do
         opts <- readTVarIO sst.options
         g <- paneGrid pane
         st' <- runMotion g opts.modeKeys opts.wordSeparators
             (mk opts.wordSeparators) st
-        pure (Just st')
+        pure (Right (Just st'))
     gridH f _ pane st _ = do
         g <- paneGrid pane
-        Just <$> f g st
+        Right . Just <$> f g st
     endOfLineH sst pane st _ = do
         opts <- readTVarIO sst.options
         g <- paneGrid pane
-        Just <$> endOfLine opts.modeKeys g st
+        Right . Just <$> endOfLine opts.modeKeys g st
     armSearch dir stop' s = s { pendingSearch = Just (CharSearch dir stop') }
     flipDir cs = cs { direction = flipDirection cs.direction }
     jumpRepeat modify g st = case st.lastSearch of
@@ -848,24 +875,26 @@ handlers = Map.fromList
         (Just cs, a : _) | Just (c, _) <- T.uncons a -> do
             g <- paneGrid pane
             st' <- charSearch g cs c st
-            pure (Just st' { pendingSearch = Nothing, lastSearch = Just (cs, c) })
-        _ -> pure (Just st { pendingSearch = Nothing })
+            pure (Right (Just st'
+                { pendingSearch = Nothing, lastSearch = Just (cs, c) }))
+        _ -> pure (Right (Just st { pendingSearch = Nothing }))
     -- / and ? submit their query as the command args.
-    searchStringH dir _ pane st args = do
+    searchStringH kind dir _ pane st args = do
         let query = T.unwords args
-        if T.null query then pure (Just st) else do
-            g <- paneGrid pane
-            m <- findMatch g dir query (st.cursorRow, st.cursorCol)
-            let st' = st { lastQuery = Just (query, dir) }
-            pure . Just $ maybe st'
-                (\(r, c) -> st' { cursorRow = r, cursorCol = c }) m
+        if T.null query
+            then pure (Right (Just st))
+            else runSearch dir kind query pane
+                st { lastQuery = Just (query, dir, kind) }
     -- n repeats in the stored direction; N (flipDirection) reverses it.
     searchRepeatH reverseDir _ pane st _ = case st.lastQuery of
-        Nothing -> pure (Just st)
-        Just (query, dir) -> do
+        Nothing -> pure (Right (Just st))
+        Just (query, dir, kind) -> runSearch (reverseDir dir) kind query pane st
+    runSearch dir kind query pane st = case compilePattern kind query of
+        Left err -> pure (Left err)
+        Right p -> do
             g <- paneGrid pane
-            m <- findMatch g (reverseDir dir) query (st.cursorRow, st.cursorCol)
-            pure . Just $ maybe st
+            m <- findMatch g dir p (st.cursorRow, st.cursorCol)
+            pure . Right . Just $ maybe st
                 (\(r, c) -> st { cursorRow = r, cursorCol = c }) m
     -- copy-pipe [-flags] <shell command>: yank the selection into a
     -- buffer AND feed it to @sh -c <command>@ on stdin.
@@ -877,7 +906,8 @@ handlers = Map.fromList
         forM_ mtext $ \body -> do
             unless (T.null cmd) $ runPipeCommand (T.unpack cmd) body
             pushBuffer sst body
-        pure (if cancelAfter then Nothing else Just s { selection = Nothing })
+        pure . Right $
+            if cancelAfter then Nothing else Just s { selection = Nothing }
 
 -- | Feed a copy-mode selection to @sh -c cmd@ on stdin and return without
 -- waiting for the command to finish. The command's stdout and stderr are

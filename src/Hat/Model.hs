@@ -18,6 +18,7 @@ module Hat.Model
     , FrozenGrid (..)
     , PaneMode (..)
     , SearchDirection (..)
+    , SearchKind (..)
     , flipDirection
     , CharStop (..)
     , CharSearch (..)
@@ -233,9 +234,9 @@ data CopyModeState = CopyModeState
         -- ^ an @f@/@F@/@t@/@T@ awaiting its target character.
     , lastSearch    :: !(Maybe (CharSearch, Char))
         -- ^ the most recent char search, for @;@ (repeat) and @,@ (reverse).
-    , lastQuery     :: !(Maybe (Text, SearchDirection))
-        -- ^ the most recent string search (@/@ @?@): query + direction, for
-        -- @n@ (repeat) and @N@ (reverse).
+    , lastQuery     :: !(Maybe (Text, SearchDirection, SearchKind))
+        -- ^ the most recent string search (@/@ @?@): query + direction +
+        -- kind, for @n@ (repeat) and @N@ (reverse).
     }
     deriving (Eq, Show)
 
@@ -269,6 +270,12 @@ data SelKind = SelChar | SelWord | SelLine | SelRect
 -- | The direction a search runs: @/@ and @f@\/@t@ go 'Forward' (toward the
 -- end of the line / bottom of the grid); @?@ and @F@\/@T@ go 'Backward'.
 data SearchDirection = Forward | Backward
+    deriving (Eq, Show)
+
+-- | How a string search interprets its pattern: as a POSIX extended
+-- regex ('SearchRegex', the @search-forward@\/@search-backward@ default)
+-- or verbatim ('SearchText', the @-text@ command variants).
+data SearchKind = SearchRegex | SearchText
     deriving (Eq, Show)
 
 -- | Reverse a search direction, for @;@\/@,@ and @n@\/@N@ repeats.

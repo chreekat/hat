@@ -1657,7 +1657,8 @@ runKeys st client keys = do
         mmode <- readTVarIO pane.mode
         case mmode of
             Just s | Just _ <- s.copyState.pendingSearch -> do
-                if T.length key.name == 1
+                -- Neither command can fail, so the replies are empty.
+                void $ if T.length key.name == 1
                     then runCopyModeCommand st pane "apply-search" [key.name]
                     else runCopyModeCommand st pane "cancel-search" []
                 pure True
@@ -2149,35 +2150,36 @@ cmdSendKeys st mclient args = do
             pure []
         _ -> do
             mpane <- targetPane st mclient (lookup "-t" opts)
-            forM_ mpane $ \pane ->
-                if modeCmd
-                    then case pos of
+            case mpane of
+                Nothing -> pure []
+                Just pane
+                    | modeCmd -> case pos of
                         (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
-                        [] -> pure ()
-                    else Hat.Term.Pty.writePty pane.pty
+                        [] -> pure []
+                    | otherwise -> [] <$ Hat.Term.Pty.writePty pane.pty
                         (B.concat (map (argBytes literal) pos))
-            pure []
   where
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
 
-runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO ()
+runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
 runCopyModeCommand st pane name cmdArgs = do
     mmode <- readTVarIO pane.mode
     case mmode of
-        Nothing -> pure ()  -- not in copy mode; -X is a no-op
+        Nothing -> pure []  -- not in copy mode; -X is a no-op
         Just pm
             -- A digit key builds the @[count]@ prefix rather than running
             -- a motion; @0@ with no count pending is @start-of-line@.
-            | name == "digit", Just d <- readDigit cmdArgs ->
+            | name == "digit", Just d <- readDigit cmdArgs -> do
                 atomically $ do
                     writeTVar pane.mode
                         (Just (reMode (CopyMode.pushDigit d state)))
                     bumpDirty st
+                pure []
             | otherwise -> case Map.lookup name CopyMode.handlers of
-                Nothing -> pure ()
+                Nothing -> pure []
                 Just h -> do
                     -- Motions repeat [count] times; yanks never do. Every
                     -- command clears the pending count.
@@ -2185,10 +2187,15 @@ runCopyModeCommand st pane name cmdArgs = do
                             | name `elem` ["copy-selection", "copy-pipe"] = 1
                             | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
                     result <- applyN h (state { numPrefix = Nothing }) count
-                    result' <- traverse (scrollPaneToCursor pane) result
-                    atomically $ do
-                        writeTVar pane.mode (reMode <$> result')
-                        bumpDirty st
+                    case result of
+                        -- A failed command leaves the mode untouched.
+                        Left err -> pure [RErr err]
+                        Right r -> do
+                            r' <- traverse (scrollPaneToCursor pane) r
+                            atomically $ do
+                                writeTVar pane.mode (reMode <$> r')
+                                bumpDirty st
+                            pure []
           where
             state = pm.copyState
             reMode s = pm { copyState = s }
@@ -2198,13 +2205,14 @@ runCopyModeCommand st pane name cmdArgs = do
         _ -> Nothing
     readDigit [] = Nothing
     -- Run a handler @n@ times, threading the state and stopping early if
-    -- it exits copy mode (@Nothing@).
-    applyN _ s 0 = pure (Just s)
+    -- it errors or exits copy mode.
+    applyN _ s 0 = pure (Right (Just s))
     applyN h s n = do
         r <- h st pane s cmdArgs
         case r of
-            Nothing -> pure Nothing
-            Just s' -> applyN h s' (n - 1)
+            Left err -> pure (Left err)
+            Right Nothing -> pure (Right Nothing)
+            Right (Just s') -> applyN h s' (n - 1)
 
 -- | Re-center a pane's copy-mode viewport on its cursor after a motion,
 -- over the pane's frozen snapshot (a no-op when not in copy mode).
