@@ -30,7 +30,8 @@ import Hat.Server
     , cmdAttachSession, chooseCurrentOnClose, cmdListClients, cmdRestartClient
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
-    , reencodeCursor, refreshSessionEnv, removePaneFromTree, welcome )
+    , reencodeCursor, refreshSessionEnv, removePaneFromTree, welcome
+    , zoomTarget )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
@@ -525,6 +526,27 @@ spec = do
             -- bug 36: pane a is zoomed; Z targets alternate b. It must zoom
             -- b, not unzoom because *some* pane was zoomed.
             nextZoom (Just a) b `shouldBe` Just b
+
+    describe "zoomTarget" $ do
+        let windowWithPanes ns = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                mapM_ (\n -> do
+                    p <- stubPane n
+                    atomically $ modifyTVar' win.panes (Map.insert p.id p)) ns
+                pure (st, win)
+
+        it "leaves a solo pane unzoomed and the screen untouched (bug 9)" $ do
+            (st, win) <- windowWithPanes [0]
+            gen <- readTVarIO st.dirty
+            zoomTarget st Nothing Nothing
+            readTVarIO win.zoomed `shouldReturn` Nothing
+            readTVarIO st.dirty `shouldReturn` gen
+
+        it "zooms the active pane when the window has siblings" $ do
+            (st, win) <- windowWithPanes [0, 1]
+            zoomTarget st Nothing Nothing
+            readTVarIO win.zoomed `shouldReturn` Just (PaneId 0)
 
     describe "detachPane" $ do
         -- A pane's removal from the model is one atomic transaction,

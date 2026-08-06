@@ -14,6 +14,7 @@ module Hat.Server.Command.Pane
     , cmdClearHistory
     , cmdResizePane
     , nextZoom
+    , zoomTarget
     ) where
 
 import Control.Concurrent.STM
@@ -356,22 +357,24 @@ cmdResizePane st mclient args = do
 -- targeted pane becomes active first and the toggle keys off it, so
 -- @resize-pane -t ! -Z@ zooms the alternate pane even while another pane is
 -- already zoomed (as the config's @Z@ binding intends). See 'nextZoom'.
+-- A solo pane has nothing to zoom over: the window is left untouched.
 zoomTarget :: ServerState -> Maybe Client -> Maybe Text -> IO ()
 zoomTarget st mclient mtok = do
     mtarget <- targetPane st mclient mtok
     void . withCurrentWindow st mclient $ \sess win -> do
-        atomically $ do
+        toggled <- atomically $ do
             ps <- readTVar win.panes
-            forM_ mtarget $ \pane -> when (Map.member pane.id ps) $ do
-                active <- readTVar win.activeId
-                when (active /= pane.id) $ do
-                    writeTVar win.lastActive (Just active)
-                    writeTVar win.activeId pane.id
-            mz <- readTVar win.zoomed
-            newActive <- readTVar win.activeId
-            writeTVar win.zoomed (nextZoom mz newActive)
-            bumpDirty st
-        applySessionSize st sess.id
+            if Map.size ps < 2 then pure False else do
+                forM_ mtarget $ \pane -> when (Map.member pane.id ps) $ do
+                    active <- readTVar win.activeId
+                    when (active /= pane.id) $ do
+                        writeTVar win.lastActive (Just active)
+                        writeTVar win.activeId pane.id
+                mz <- readTVar win.zoomed
+                newActive <- readTVar win.activeId
+                writeTVar win.zoomed (nextZoom mz newActive)
+                True <$ bumpDirty st
+        when toggled $ applySessionSize st sess.id
         pure []
 
 -- | The zoom state after toggling zoom on a target pane: unzoom only when

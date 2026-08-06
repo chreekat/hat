@@ -69,6 +69,7 @@ module Hat.Server
     , cmdListClients      -- ^ exported for the attached-clients listing test
     , refreshSessionEnv   -- ^ exported for the attach -E test
     , nextZoom  -- ^ exported for the zoom-alternate-pane test
+    , zoomTarget  -- ^ exported for the solo-pane zoom test
     , nextFreeWindowIndex  -- ^ exported for the base-index window-numbering test
     , placeWindow  -- ^ exported for the base-index window-numbering test
     , CaptureOpts (..)  -- ^ exported for the capture-pane grid-dump tests
