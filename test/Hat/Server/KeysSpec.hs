@@ -42,6 +42,20 @@ spec = do
             map (.raw) (tokenizeKeys "\ESC[1;5B")
                 `shouldBe` ["\ESC[1;5B"]
 
+        it "reads alt arrows (CSI modifier 3) as M-arrows" $
+            -- bug 149: a terminal-sent CSI alt-arrow must match M-arrow bindings.
+            map (.name) (tokenizeKeys "\ESC[1;3A\ESC[1;3B\ESC[1;3C\ESC[1;3D")
+                `shouldBe` ["M-Up", "M-Down", "M-Right", "M-Left"]
+
+        it "reads every xterm modifier param, prefixes in tmux's C-M-S- order" $
+            map (.name) (tokenizeKeys
+                "\ESC[1;2A\ESC[1;4B\ESC[1;6C\ESC[1;7D\ESC[1;8A\ESC[1;3H\ESC[1;3F")
+                `shouldBe` ["S-Up", "M-S-Down", "C-S-Right", "C-M-Left",
+                            "C-M-S-Up", "M-Home", "M-End"]
+
+        it "keeps raw bytes for modified arrows" $
+            map (.raw) (tokenizeKeys "\ESC[1;3A") `shouldBe` ["\ESC[1;3A"]
+
         it "treats a lone trailing escape as Escape" $
             map (.name) (tokenizeKeys "a\ESC") `shouldBe` ["a", "Escape"]
 
@@ -111,6 +125,13 @@ spec = do
         it "runs root-table bindings without the prefix" $
             run NoPrefix "\ESC\ESC[A" `shouldBe`
                 (NoPrefix, [RunCommands [["resize-pane", "-U"]]])
+        it "fires a root-table M-Up binding on the CSI alt-arrow" $
+            -- bug 149
+            run NoPrefix "\ESC[1;3A" `shouldBe`
+                (NoPrefix, [RunCommands [["resize-pane", "-U"]]])
+        it "passes an unbound modified arrow through raw" $
+            run NoPrefix "\ESC[1;2A" `shouldBe`
+                (NoPrefix, [Passthrough "\ESC[1;2A"])
         it "swallows unbound prefixed keys" $
             run NoPrefix "\x00q after" `shouldBe`
                 (NoPrefix, [Passthrough " after"])
@@ -168,6 +189,10 @@ spec = do
             (.raw) <$> parseKeyName "C-Left" `shouldBe` Just "\ESC[1;5D"
         it "parses ctrl arrows case-insensitively" $
             (.name) <$> parseKeyName "C-down" `shouldBe` Just "C-Down"
+        it "parses modifier combos on arrows in any prefix order" $ do
+            (.name) <$> parseKeyName "S-M-Up" `shouldBe` Just "M-S-Up"
+            (.raw) <$> parseKeyName "C-M-S-Left" `shouldBe` Just "\ESC[1;8D"
+            (.raw) <$> parseKeyName "S-Up" `shouldBe` Just "\ESC[1;2A"
         it "parses meta keys" $
             (.raw) <$> parseKeyName "M-n" `shouldBe` Just "\ESCn"
         it "parses named keys" $ do
@@ -181,7 +206,9 @@ spec = do
         it "roundtrips through tokenization" $ do
             let names = ["C-b", "C-Space", "M-x", "Up", "Down", "Space",
                          "Enter", "Tab", "BSpace", "x", "%", "\"", "M-Up",
-                         "C-Up", "C-Down", "C-Left", "C-Right"]
+                         "C-Up", "C-Down", "C-Left", "C-Right", "S-Up",
+                         "M-S-Down", "C-S-Right", "C-M-Left", "C-M-S-Up",
+                         "M-Home", "M-End"]
             [k.name | Just k0 <- map parseKeyName names
                     , k <- tokenizeKeys k0.raw]
                 `shouldBe` names

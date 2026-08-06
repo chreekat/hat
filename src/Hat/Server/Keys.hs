@@ -26,6 +26,7 @@ module Hat.Server.Keys
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -75,8 +76,19 @@ csiNames =
     , ("[5~", "PgUp"), ("[6~", "PgDn"), ("[3~", "Delete")
     , ("[1~", "Home"), ("[4~", "End")
     , ("[I", "FocusIn"), ("[O", "FocusOut")
-    , ("[1;5A", "C-Up"), ("[1;5B", "C-Down")
-    , ("[1;5C", "C-Right"), ("[1;5D", "C-Left")
+    ] ++ modifiedCsiNames
+
+-- Cursor and Home/End keys with an xterm modifier parameter (@CSI 1;p F@),
+-- named with tmux's canonical @C-M-S-@ prefix order.
+modifiedCsiNames :: [(ByteString, Text)]
+modifiedCsiNames =
+    [ ("[1;" <> B8.pack (show p) <> fin, mods <> base)
+    | (p, mods) <-
+        [ (2 :: Int, "S-"), (3, "M-"), (4, "M-S-"), (5, "C-")
+        , (6, "C-S-"), (7, "C-M-"), (8, "C-M-S-") ]
+    , (fin, base) <-
+        [ ("A", "Up"), ("B", "Down"), ("C", "Right"), ("D", "Left")
+        , ("H", "Home"), ("F", "End") ]
     ]
 
 -- | @escape-time@ semantics for a lone trailing ESC. See 'feedKeys'.
@@ -250,6 +262,7 @@ routeKeys prefixName keymap modeTable = go
 parseKeyName :: Text -> Maybe Key
 parseKeyName t
     | Just (n, r) <- lookupNamed t = Just (mkKey n r)
+    | Just (n, r) <- lookupModified t = Just (mkKey n r)
     | Just rest <- T.stripPrefix "C-" t = ctrl rest
     | Just rest <- T.stripPrefix "^" t, not (T.null rest) = ctrl rest
     | Just rest <- T.stripPrefix "M-" t = do
@@ -260,7 +273,7 @@ parseKeyName t
   where
     ctrl rest
         | T.toLower rest == "space" = Just (mkKey "C-Space" "\NUL")
-        | Just (nm, r) <- lookupCtrlArrow rest = Just (mkKey nm r)
+        | Just (nm, r) <- lookupModified ("C-" <> rest) = Just (mkKey nm r)
         | T.length rest == 1
         , c <- toLowerAscii (T.head rest)
         , c >= 'a' && c <= 'z' =
@@ -271,20 +284,17 @@ parseKeyName t
         | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
         | otherwise = c
 
--- Ctrl+arrow keys as xterm CSI sequences with modifier 5. The names
--- match the @csiNames@ finals so name/raw round-trip between parse and
--- decode. The argument is the text after the @C-@ prefix (e.g. @Down@).
-lookupCtrlArrow :: Text -> Maybe (Text, ByteString)
-lookupCtrlArrow rest =
-    case [ pair | pair@(nm, _) <- ctrlArrows
-                , T.toLower nm == T.toLower ("C-" <> rest) ] of
+-- Case- and prefix-order-insensitive lookup of a modified CSI key,
+-- returning its canonical name and bytes.
+lookupModified :: Text -> Maybe (Text, ByteString)
+lookupModified t =
+    case [ (nm, "\ESC" <> pat)
+         | (pat, nm) <- modifiedCsiNames, norm nm == norm t ] of
         (pair : _) -> Just pair
         [] -> Nothing
   where
-    ctrlArrows =
-        [ ("C-Up", "\ESC[1;5A"), ("C-Down", "\ESC[1;5B")
-        , ("C-Right", "\ESC[1;5C"), ("C-Left", "\ESC[1;5D")
-        ]
+    norm s = let parts = T.splitOn "-" (T.toLower s)
+             in (sort (init parts), last parts)
 
 -- Case-insensitive lookup of a multi-character named key, returning its
 -- canonical name and bytes.
