@@ -56,6 +56,35 @@ spec = do
         it "keeps raw bytes for modified arrows" $
             map (.raw) (tokenizeKeys "\ESC[1;3A") `shouldBe` ["\ESC[1;3A"]
 
+        it "reads F1-F4 in both encodings (SS3 and legacy CSI)" $ do
+            -- bug fad
+            map (.name) (tokenizeKeys "\ESCOP\ESCOQ\ESCOR\ESCOS")
+                `shouldBe` ["F1", "F2", "F3", "F4"]
+            map (.name) (tokenizeKeys "\ESC[11~\ESC[12~\ESC[13~\ESC[14~")
+                `shouldBe` ["F1", "F2", "F3", "F4"]
+
+        it "reads F5-F12 (CSI tilde codes)" $
+            -- bug fad
+            map (.name) (tokenizeKeys
+                "\ESC[15~\ESC[17~\ESC[18~\ESC[19~\ESC[20~\ESC[21~\ESC[23~\ESC[24~")
+                `shouldBe` ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
+
+        it "reads Insert and BTab (Shift-Tab)" $
+            -- bug fad
+            map (.name) (tokenizeKeys "\ESC[2~\ESC[Z")
+                `shouldBe` ["Insert", "BTab"]
+
+        it "reads modified function keys and specials" $
+            -- bug fad
+            map (.name) (tokenizeKeys
+                "\ESC[1;2P\ESC[15;5~\ESC[2;3~\ESC[3;2~\ESC[5;5~\ESC[6;4~")
+                `shouldBe` ["S-F1", "C-F5", "M-Insert", "S-Delete",
+                            "C-PgUp", "M-S-PgDn"]
+
+        it "swallows a genuinely unknown CSI whole, raw bytes kept" $ do
+            map (.name) (tokenizeKeys "\ESC[97~x") `shouldBe` ["Unknown", "x"]
+            map (.raw) (tokenizeKeys "\ESC[97~x") `shouldBe` ["\ESC[97~", "x"]
+
         it "treats a lone trailing escape as Escape" $
             map (.name) (tokenizeKeys "a\ESC") `shouldBe` ["a", "Escape"]
 
@@ -203,12 +232,37 @@ spec = do
             -- as a bare H/F by a pager keyed off terminfo (less opens help).
             (.raw) <$> parseKeyName "Home" `shouldBe` Just "\ESC[1~"
             (.raw) <$> parseKeyName "End"  `shouldBe` Just "\ESC[4~"
+        it "parses F1-F12 with tmux-256color terminfo bytes (kf1..kf12)" $ do
+            -- bug fad
+            (.raw) <$> parseKeyName "F1" `shouldBe` Just "\ESCOP"
+            (.raw) <$> parseKeyName "F4" `shouldBe` Just "\ESCOS"
+            (.raw) <$> parseKeyName "F5" `shouldBe` Just "\ESC[15~"
+            (.name) <$> parseKeyName "f12" `shouldBe` Just "F12"
+            (.raw) <$> parseKeyName "f12" `shouldBe` Just "\ESC[24~"
+        it "parses Insert and BTab" $ do
+            -- bug fad
+            (.raw) <$> parseKeyName "Insert" `shouldBe` Just "\ESC[2~"
+            (.raw) <$> parseKeyName "BTab" `shouldBe` Just "\ESC[Z"
+        it "resolves tmux's alternate spellings to the canonical name" $ do
+            -- bug fad
+            (.name) <$> parseKeyName "IC" `shouldBe` Just "Insert"
+            (.name) <$> parseKeyName "DC" `shouldBe` Just "Delete"
+            (.name) <$> parseKeyName "PageUp" `shouldBe` Just "PgUp"
+            (.name) <$> parseKeyName "NPage" `shouldBe` Just "PgDn"
+            (.name) <$> parseKeyName "S-IC" `shouldBe` Just "S-Insert"
+        it "parses modified function keys and specials" $ do
+            -- bug fad
+            (.raw) <$> parseKeyName "S-F1" `shouldBe` Just "\ESC[1;2P"
+            (.raw) <$> parseKeyName "C-F5" `shouldBe` Just "\ESC[15;5~"
+            (.raw) <$> parseKeyName "M-Insert" `shouldBe` Just "\ESC[2;3~"
         it "roundtrips through tokenization" $ do
             let names = ["C-b", "C-Space", "M-x", "Up", "Down", "Space",
                          "Enter", "Tab", "BSpace", "x", "%", "\"", "M-Up",
                          "C-Up", "C-Down", "C-Left", "C-Right", "S-Up",
                          "M-S-Down", "C-S-Right", "C-M-Left", "C-M-S-Up",
-                         "M-Home", "M-End"]
+                         "M-Home", "M-End", "F1", "F4", "F5", "F12",
+                         "Insert", "BTab", "S-F1", "C-F5", "M-Insert",
+                         "S-Delete"]
             [k.name | Just k0 <- map parseKeyName names
                     , k <- tokenizeKeys k0.raw]
                 `shouldBe` names

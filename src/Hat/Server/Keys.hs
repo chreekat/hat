@@ -64,6 +64,26 @@ namedKeys =
     , ("PgUp", "\ESC[5~")
     , ("PgDn", "\ESC[6~")
     , ("Delete", "\ESC[3~")
+    , ("Insert", "\ESC[2~")
+    , ("BTab", "\ESC[Z")
+    -- tmux-256color kf1..kf4 are the SS3 forms.
+    , ("F1", "\ESCOP"), ("F2", "\ESCOQ"), ("F3", "\ESCOR"), ("F4", "\ESCOS")
+    ] ++ [ (nm, "\ESC[" <> code <> "~") | (code, nm) <- fkeyTildes ]
+
+-- CSI tilde codes for F5-F12 (tmux-256color kf5..kf12).
+fkeyTildes :: [(ByteString, Text)]
+fkeyTildes =
+    [ ("15", "F5"), ("17", "F6"), ("18", "F7"), ("19", "F8")
+    , ("20", "F9"), ("21", "F10"), ("23", "F11"), ("24", "F12")
+    ]
+
+-- | Alternate spellings tmux accepts, each resolving to the canonical
+-- 'namedKeys' name. Compared lowercased.
+keyAliases :: [(Text, Text)]
+keyAliases =
+    [ ("ic", "insert"), ("dc", "delete")
+    , ("npage", "pgdn"), ("pagedown", "pgdn")
+    , ("ppage", "pgup"), ("pageup", "pgup")
     ]
 
 -- CSI/SS3 finals for the cursor keys in both keypad modes.
@@ -75,20 +95,33 @@ csiNames =
     , ("OH", "Home"), ("OF", "End")
     , ("[5~", "PgUp"), ("[6~", "PgDn"), ("[3~", "Delete")
     , ("[1~", "Home"), ("[4~", "End")
+    , ("[2~", "Insert"), ("[Z", "BTab")
+    , ("OP", "F1"), ("OQ", "F2"), ("OR", "F3"), ("OS", "F4")
+    -- legacy xterm CSI forms of F1-F4
+    , ("[11~", "F1"), ("[12~", "F2"), ("[13~", "F3"), ("[14~", "F4")
     , ("[I", "FocusIn"), ("[O", "FocusOut")
-    ] ++ modifiedCsiNames
+    ]
+    ++ [ ("[" <> code <> "~", nm) | (code, nm) <- fkeyTildes ]
+    ++ modifiedCsiNames
 
--- Cursor and Home/End keys with an xterm modifier parameter (@CSI 1;p F@),
--- named with tmux's canonical @C-M-S-@ prefix order.
+-- Special keys with an xterm modifier parameter (@CSI 1;p F@ and
+-- @CSI n;p ~@), named with tmux's canonical @C-M-S-@ prefix order.
 modifiedCsiNames :: [(ByteString, Text)]
 modifiedCsiNames =
-    [ ("[1;" <> B8.pack (show p) <> fin, mods <> base)
+    [ (pre <> B8.pack (show p) <> post, mods <> base)
     | (p, mods) <-
         [ (2 :: Int, "S-"), (3, "M-"), (4, "M-S-"), (5, "C-")
         , (6, "C-S-"), (7, "C-M-"), (8, "C-M-S-") ]
-    , (fin, base) <-
-        [ ("A", "Up"), ("B", "Down"), ("C", "Right"), ("D", "Left")
-        , ("H", "Home"), ("F", "End") ]
+    , (pre, post, base) <-
+        [ ("[1;", "A", "Up"), ("[1;", "B", "Down")
+        , ("[1;", "C", "Right"), ("[1;", "D", "Left")
+        , ("[1;", "H", "Home"), ("[1;", "F", "End")
+        , ("[1;", "P", "F1"), ("[1;", "Q", "F2")
+        , ("[1;", "R", "F3"), ("[1;", "S", "F4")
+        , ("[2;", "~", "Insert"), ("[3;", "~", "Delete")
+        , ("[5;", "~", "PgUp"), ("[6;", "~", "PgDn")
+        ]
+        ++ [ ("[" <> code <> ";", "~", nm) | (code, nm) <- fkeyTildes ]
     ]
 
 -- | @escape-time@ semantics for a lone trailing ESC. See 'feedKeys'.
@@ -294,12 +327,17 @@ lookupModified t =
         [] -> Nothing
   where
     norm s = let parts = T.splitOn "-" (T.toLower s)
-             in (sort (init parts), last parts)
+             in (sort (init parts), canonBase (last parts))
 
 -- Case-insensitive lookup of a multi-character named key, returning its
 -- canonical name and bytes.
 lookupNamed :: Text -> Maybe (Text, ByteString)
 lookupNamed t =
-    case [ pair | pair@(n, _) <- namedKeys, T.toLower n == T.toLower t ] of
+    case [ pair | pair@(n, _) <- namedKeys
+         , T.toLower n == canonBase (T.toLower t) ] of
         (pair : _) -> Just pair
         [] -> Nothing
+
+-- Resolve a lowercased key name through 'keyAliases'.
+canonBase :: Text -> Text
+canonBase s = maybe s id (lookup s keyAliases)
