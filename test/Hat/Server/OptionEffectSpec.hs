@@ -2,9 +2,6 @@
 -- prefix-style effect test that sets a non-default value and asserts the
 -- observable behavior the value controls, so a silent no-op (or wrong
 -- semantics) fails a test instead of needing another manual audit.
---
--- Options whose consumer still needs a pure seam extracted (see the audit's
--- @needs seam@ column) are not yet here.
 module Hat.Server.OptionEffectSpec (spec) where
 
 import Test.Hspec

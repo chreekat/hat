@@ -8,23 +8,16 @@ unimplemented / easiest to pick off next": read this table, pick a row, fix it.
 ## What the verdicts mean
 
 - **implemented** — a consumer reads the field and produces the tmux behavior
-  the value controls. Only rows with a ✅ *test* column are behavior-verified;
-  the rest are consumer-verified (a real consumer exists and looks right) but
-  not yet pinned by a behavior test, so a subtle read-but-partial bug could
-  still hide there.
+  the value controls, pinned by a behavior test (the ✅ *tested* mark).
 - **defect: no consumer** — the field is stored and read by nothing. Setting it
   does nothing.
 - **defect: wrong semantics** — a consumer reads it, but not the way tmux means
   it, so the observable effect is wrong.
 
-The **seam** column is how a row is (or would be) behavior-verified: `pure` = an
-exported pure function takes the value, tested prefix-style in `OptionEffectSpec`;
+The **seam** column is how a row is behavior-verified: `pure` = an exported
+pure function takes the value, tested prefix-style in `OptionEffectSpec`;
 `integration` = exercised end-to-end in `IntegrationSpec`; `rendered` = a format
-string the FormatSpec-verified `renderFormat` expands; `plumbed` = handed
-straight to a sink with no branching logic, so there is nothing to unit-test —
-verified by inspection, **not yet pinned by a behavior test**; `needs seam` = the
-consumer is an IO function over `ServerState` whose pure core is not yet
-extracted (the `deliversKey` pattern).
+string the FormatSpec-verified `renderFormat` expands.
 
 ## Method
 
@@ -63,8 +56,8 @@ spot-read of each suspect consumer.
 | `pane-border-indicators` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
 | `escape-time` | `escTiming`/`feedKeys`/`flushEscape` (Server.hs, Keys.hs) | implemented ✅ tested | pure |
-| `display-time` | toast duration (Server.hs) | implemented | plumbed |
-| `focus-events` | `deliversKey` (Server.hs:1595) | implemented | pure |
+| `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
+| `focus-events` | `deliversKey` (Server.hs:1595) | implemented ✅ tested | pure |
 | `aggressive-resize` | `resizeModeOf` (Server.hs) | implemented ✅ tested | pure |
 | `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
@@ -107,24 +100,12 @@ spot-read of each suspect consumer.
   clamps only to leave the other panes room), and a `%`-suffixed percentage
   value isn't parsed.
 
-## Turning consumer-verified into behavior-verified: the sweep
+## The effect-test sweep
 
-The catalog above is a consumer trace; only `prefix` is pinned by a behavior
-test. The durable way to close the gap — and to catch any remaining
-read-but-partial bug — is a prefix-style **effect test per option**: set a
-non-default value, drive the consumer, assert the *observable* result.
-
-- Behavior-verified so far are the ✅ rows in the table above (via
-  `OptionEffectSpec`, `CopyModeSpec`, `KeysSpec`, `FormatSpec`, or
-  `IntegrationSpec`). The only row without a behavior test is the `plumbed`
-  option `display-time` (its effect is a timed toast dismissal, not
-  synchronously observable without a sleep).
-- Every `needs seam` option first needs a pure core extracted from its
-  `ServerState`-IO consumer (e.g. `statusCells` → a pure
-  `Options -> … -> [Cell]`). Each extraction is a small, self-contained step;
-  the resulting effect test is the permanent regression guard *and* flips the
-  row to behavior-verified.
-
-This sweep is the milestone that makes the audit self-maintaining: once every
-row has a passing effect test, a future silent no-op (or wrong-semantics) option
-fails a test instead of needing another manual audit.
+Every row is pinned by a prefix-style **effect test**: set a non-default value,
+drive the consumer, assert the *observable* result. This is what keeps the
+audit self-maintaining: a silent no-op (or wrong-semantics) option fails a test
+instead of needing another manual audit. An option whose consumer is
+`ServerState`-IO gets its decision extracted as an exported pure function first
+(the `deliversKey` pattern); a new option is not done until its row lands here
+with a ✅.
