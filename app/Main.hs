@@ -144,7 +144,7 @@ attach path mconfig setup = do
             exitFailure
         _ -> pure ()
     (sock, origin) <- connectOrStart path mconfig
-    reason <- runClient (connectTo path) sock origin setup
+    reason <- runClient sock origin setup
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
@@ -186,7 +186,7 @@ control path mconfig cmds = do
             hPutStrLn stderr "hat: no server running"
             exitFailure
         Just (sock, origin) -> do
-            reason <- runControl (connectTo path) sock origin cmds
+            reason <- runControl sock origin cmds
             case reason of
                 -- Bare, like tmux: scripts match on the exact error text
                 -- (e.g. @duplicate session: NAME@), so no @hat: @ prefix.

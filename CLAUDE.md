@@ -76,8 +76,7 @@ When you add or change any such format, the rules are:
    leaves evolve by tolerant append under a **new dialect level**: new readers
    default what shorter lists omit, the server writes each client's negotiated
    level (`encodeServerMessageAt`), and every historical level's bytes stay
-   pinned in the `WireSpec` dialect corpus. (`Hat.Client.stepDown` is a one-time
-   shim for the last pre-negotiation server; delete it after that hop.)
+   pinned in the `WireSpec` dialect corpus.
 
 If you can't tell whether a change is compatible, it isn't: add the version, the
 migration, and a corpus vector.

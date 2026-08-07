@@ -65,30 +65,16 @@ hello v origin intent = do
         , autostarted = origin == Autostarted
         }
 
--- One-time migration shim — DELETE once no strict-equality (pre-negotiation)
--- server is left running: that server rejects any version but its own 4, so
--- on its rejection reconnect once speaking 4.
-stepDown
-    :: IO (Maybe Socket) -> (Word16 -> Socket -> IO ExitReason)
-    -> Socket -> IO ExitReason
-stepDown reconnect run sock = do
-    r <- run protocolVersion sock
-    case r of
-        Rejected e | "protocol mismatch" `T.isInfixOf` e ->
-            reconnect >>= maybe (pure r) (run 4)
-        _ -> pure r
-
 -- | Attach to the server and shuttle bytes until detach or death. The
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
 -- shell) run server-side to establish which session we render.
--- @reconnect@ serves 'stepDown' only.
-runClient :: IO (Maybe Socket) -> Socket -> Autostart -> [[Text]] -> IO ExitReason
-runClient reconnect sock origin setup = do
+runClient :: Socket -> Autostart -> [[Text]] -> IO ExitReason
+runClient sock origin setup = do
     inp <- probeTerminal stdInput
     out <- probeTerminal stdOutput
     case diagnoseTerminal inp out of
         Just msg -> pure (Rejected msg)
-        Nothing -> stepDown reconnect (\v s -> attachClient v s origin setup) sock
+        Nothing -> attachClient protocolVersion sock origin setup
 
 attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
 attachClient v sock origin setup = do
@@ -154,9 +140,8 @@ shuttle sock = do
 
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell.
-runControl :: IO (Maybe Socket) -> Socket -> Autostart -> [[Text]] -> IO ExitReason
-runControl reconnect sock origin cmds =
-    stepDown reconnect (\v s -> controlAt v s origin cmds) sock
+runControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
+runControl sock origin cmds = controlAt protocolVersion sock origin cmds
 
 controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
 controlAt v sock origin cmds = do
