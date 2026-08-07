@@ -184,6 +184,7 @@ stubPane n = do
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV
+        , pendingInput = Nothing
         }
 
 spec :: Spec

@@ -35,8 +35,7 @@ module Hat.Server
     , PaneStart (..)  -- ^ exported for the restore-argv test
     , SpawnOrigin (..)  -- ^ exported for the restore-argv test
     , restoreRun      -- ^ exported for the restore-argv test
-    , restoreShellExec  -- ^ exported for the shell-relaunch test
-    , DirenvAvailable (..)  -- ^ exported for the shell-relaunch test
+    , shellLine       -- ^ exported for the typed-command test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
     , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
     , chooseActivePaneOnClose  -- ^ exported for the close-to-last-pane test
@@ -1106,7 +1105,7 @@ adoptPane st sz histLimit rp = do
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
             , options = optionsVar
-            , pipe = pipeVar, readerTid = readerVar }
+            , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the
     -- pre-reload scheme until the OS scheme next changes (bug f3).

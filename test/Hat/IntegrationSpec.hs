@@ -828,7 +828,7 @@ spec = parallel $ do
         wl <- ctlOut h ["list-windows", "-a", "-F", "#{window_name}"]
         length (lines wl) `shouldBe` 1
 
-    it "restores a whitelisted running command (vim), not a bare shell" $
+    it "restores a whitelisted running command (vim) under a live shell" $
         withHatPersist hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
@@ -848,6 +848,16 @@ spec = parallel $ do
         -- because restore re-runs bare `vim`, whose vimrc may suppress it.
         c2 <- startClient h
         awaitScreen c2 "~"
+
+        -- 82: vim comes back as a JOB of a live shell (typed in, not exec'd in
+        -- place), so Ctrl-z suspends it back to a real prompt that still runs
+        -- commands. Sync on the shell reclaiming the foreground before typing,
+        -- so the keystrokes can't land in a still-foreground vim.
+        awaitForeground h "vim"
+        typeInto c2 "\x1a"                          -- Ctrl-Z: suspend vim
+        awaitForeground h "sh"
+        typeInto c2 "echo dropped-to-$((3*7))\r"
+        awaitScreen c2 "dropped-to-21"
 
     -- bb: snapshot history is listable, and any generation restores by id.
     it "lists snapshot generations and restores one by id" $

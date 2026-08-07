@@ -6,7 +6,6 @@
 module Hat.Server.Pane
     ( PaneStart (..)
     , SpawnOrigin (..)
-    , DirenvAvailable (..)
     , DetachResult (..)
     , SessionFate (..)
     , OutputTap (..)
@@ -17,7 +16,7 @@ module Hat.Server.Pane
     , restoreRun
     , resumeArgv
     , commandName
-    , restoreShellExec
+    , shellLine
     , shellStart
     , spawnPane
     , newWindowWithPane
@@ -69,8 +68,9 @@ import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import System.Directory (findExecutable)
+import Data.Char (isAlphaNum)
 import System.Environment (getEnvironment)
 import System.IO (Handle, hFlush)
 import System.Posix.Process (getProcessID)
@@ -122,8 +122,9 @@ restoreRun whitelist origin mcmd = case mcmd of
     Just argv@(prog : _) | commandName prog `elem` whitelist ->
         let resumed = resumeArgv (commandName prog) argv
         in case origin of
-            -- Started from the pane's shell: bring its per-directory env back.
-            ShellSpawned -> ShellExecArgv resumed
+            -- Started from the pane's shell: type it into a fresh shell, which
+            -- stays as the live parent (its rc runs; Ctrl-z drops back to it).
+            ShellSpawned -> ShellInject resumed
             -- Launched directly: exec bare, so @vim "Foo Bar.txt"@ isn't re-split.
             Direct       -> ExecArgv resumed
     _ -> FreshShell
@@ -197,9 +198,8 @@ data PaneStart
                          --   (@new-window@\/@split-window@ with an argument)
     | ExecArgv [Text]    -- ^ exec this argv directly, no shell. See
                          --   'restoreRun'.
-    | ShellExecArgv [Text]
-                         -- ^ relaunch this argv with the pane's per-directory
-                         --   env restored. See 'restoreShellExec'.
+    | ShellInject [Text] -- ^ spawn a fresh interactive shell and type this
+                         --   argv into it as a command line. See 'restoreRun'.
     deriving (Eq, Show)
 
 -- | Where a captured program was running: as a child of the pane's
@@ -213,22 +213,16 @@ data SpawnOrigin = ShellSpawned | Direct
 shellStart :: Maybe Text -> PaneStart
 shellStart = maybe FreshShell ShellCommand
 
--- | Whether @direnv@ is on the server's PATH. See 'restoreShellExec'.
-data DirenvAvailable = DirenvOnPath | DirenvAbsent
-    deriving (Eq, Show)
-
--- | How to relaunch a shell-spawned restored program so its pane's
--- per-directory env loads before it runs. @argv@ rides as separate arguments,
--- never spliced into a command string, so an argument with spaces stays one.
-restoreShellExec
-    :: DirenvAvailable -> FilePath -> FilePath -> [Text] -> (String, [String])
--- direnv execs the program directly with the cwd's @.envrc@ loaded, so the env
--- is restored the same under any shell — no rc, no shell-specific prompt hook.
-restoreShellExec DirenvOnPath _shell cwd argv =
-    ("direnv", ["exec", cwd] <> map T.unpack argv)
--- Without direnv, a login shell sources the user's rc (aliases, PATH) first.
-restoreShellExec DirenvAbsent shellCmd _cwd argv =
-    (shellCmd, ["-i", "-c", "exec \"$@\"", "hat-restore"] <> map T.unpack argv)
+-- | Render an argv as one shell command line: each argument quoted so a single
+-- round of shell word-splitting reproduces it exactly (a filename with spaces
+-- stays one argument). See 'startPaneReader', which types the result.
+shellLine :: [Text] -> Text
+shellLine = T.unwords . map shellQuote
+  where
+    shellQuote arg
+        | not (T.null arg) && T.all safe arg = arg
+        | otherwise = "'" <> T.replace "'" "'\\''" arg <> "'"
+    safe c = isAlphaNum c || c `elem` ("_-./:=@%+," :: String)
 
 spawnPane
     :: ServerState -> PaneId -> SessionId -> FilePath -> PaneStart
@@ -236,8 +230,6 @@ spawnPane
 spawnPane st pid sid shellCmd mrun dir environ sz = do
     serverPid <- getProcessID
     opts <- readTVarIO st.options
-    direnv <- maybe DirenvAbsent (const DirenvOnPath)
-        <$> findExecutable "direnv"
     let cleanEnv =
             [ (T.unpack k, T.unpack v)
             | (k, v) <- environ
@@ -258,8 +250,12 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             ShellCommand run       -> ("/bin/sh", ["-c", T.unpack run])
             ExecArgv (p:rest)      -> (T.unpack p, map T.unpack rest)
             ExecArgv []            -> (shellCmd, [])
-            ShellExecArgv []       -> (shellCmd, [])
-            ShellExecArgv argv     -> restoreShellExec direnv shellCmd dir argv
+            -- A fresh shell like any other pane; the argv rides as pending
+            -- input the reader types once the shell prints (see startPaneReader).
+            ShellInject _          -> (shellCmd, [])
+        pending = case mrun of
+            ShellInject argv@(_ : _) -> Just (shellLine argv)
+            _                        -> Nothing
     pty <- Hat.Term.Pty.spawn Hat.Term.Pty.Spawn
         { cmd = cmd
         , args = args
@@ -287,6 +283,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , options = optionsVar
         , pipe = pipeVar
         , readerTid = readerVar
+        , pendingInput = pending
         }
 
 -- | The reader thread owns a pane's lifetime: it pumps pty output into
@@ -309,13 +306,20 @@ startPaneReader st sid win pane = do
     void . forkIO $ do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
-        readLoop
+        readLoop pane.pendingInput
             `finally` closePane st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
-    readLoop = do
+    -- @pending@ is a one-shot: a restored program's command line, typed into
+    -- the pane the moment its shell first prints (so readline is up to read
+    -- it), then dropped. Enter is a bare CR, as a real keyboard sends.
+    readLoop pending = do
         bs <- Hat.Term.Pty.readPty pane.pty
         unless (B8.null bs) $ do
+            pending' <- case pending of
+                Just line -> Nothing <$
+                    Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
+                Nothing   -> pure Nothing
             forwardToPipe pane bs
             events <- Emu.feed pane.emulator bs
             forM_ events $ \case
@@ -366,7 +370,7 @@ startPaneReader st sid win pane = do
                         { pane = rawPane pane.id
                         , payload = T.pack (show raw)
                         }
-            readLoop
+            readLoop pending'
 
 -- | Name a terminal prop's value kind for the 'UnknownTermProp' log.
 propKindLabel :: Emu.PropKind -> Text

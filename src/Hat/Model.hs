@@ -209,6 +209,9 @@ data Pane = Pane
     , readerTid :: TVar (Maybe ThreadId)
         -- ^ the pane's output-reader thread, stored by the thread itself;
         -- 'Nothing' only in the spawn race before it runs. See 'hangupPane'.
+    , pendingInput :: Maybe Text
+        -- ^ a one-shot command line the reader types into the pane once its
+        -- shell first prints; see 'startPaneReader'. 'Nothing' for a plain pane.
     }
 
 -- | A live @pipe-pane@. Pane output is forwarded to 'toStdin' (@-O@) on the

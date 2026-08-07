@@ -22,13 +22,13 @@ import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
 import Hat.Server
-    (DirenvAvailable (..), PaneStart (..), PersistDecision (..),
+    (PaneStart (..), PersistDecision (..),
      Reply (..), ScrollbackCarry (..), SpawnOrigin (..),
      StartupGate (..), StorePin (..),
      captureReloadScreen, captureSize, cmdRestart, cmdRestartServer,
      defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
      rebuildReloadSession, reloadSchemePush, replayPane, restoreRun,
-     restoreShellExec, runCommands, snapshotHistoryLimit, startupGate,
+     runCommands, shellLine, snapshotHistoryLimit, startupGate,
      uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
@@ -309,35 +309,19 @@ spec = do
         it "drops to a fresh shell when nothing was captured" $
             restoreRun whitelist Direct Nothing `shouldBe` FreshShell
 
-        -- d: a whitelisted program that was originally started from inside the
-        -- pane's interactive shell comes back through that shell (so the shell
-        -- init — direnv, per-dir env, PATH — runs), not exec'd bare.
-        it "runs a shell-spawned whitelisted program through the shell" $
+        -- d/82: a whitelisted program that was originally started from inside
+        -- the pane's interactive shell comes back typed INTO a fresh shell (so
+        -- the shell stays as the pane's live parent — its rc runs, and Ctrl-z
+        -- drops to it), not exec'd bare in place of the shell.
+        it "types a shell-spawned whitelisted program into a fresh shell" $
             restoreRun whitelist ShellSpawned (Just ["vim", "Foo Bar.txt"])
-                `shouldBe` ShellExecArgv ["vim", "Foo Bar.txt"]
+                `shouldBe` ShellInject ["vim", "Foo Bar.txt"]
 
         -- A shell-spawned but non-whitelisted program still just drops to a
         -- fresh shell — the whitelist gate comes first.
         it "drops a shell-spawned non-whitelisted program to a fresh shell" $
             restoreRun whitelist ShellSpawned (Just ["bash", "-l"])
                 `shouldBe` FreshShell
-
-        -- a2: direnv present → `direnv exec <cwd> <argv>`, so the per-directory
-        -- env loads under any shell; argv stays unsplit.
-        it "wraps a shell-spawned program as direnv exec when direnv is present" $
-            restoreShellExec DirenvOnPath "/bin/bash" "/work/dir"
-                ["vim", "Foo Bar.txt"]
-                `shouldBe`
-                    ("direnv", ["exec", "/work/dir", "vim", "Foo Bar.txt"])
-
-        -- a2: no direnv → login-shell relaunch (-i sources rc), argv unsplit.
-        it "falls back to a shell relaunch when direnv is absent" $
-            restoreShellExec DirenvAbsent "/bin/bash" "/work/dir"
-                ["vim", "Foo Bar.txt"]
-                `shouldBe`
-                    ( "/bin/bash"
-                    , [ "-i", "-c", "exec \"$@\""
-                      , "hat-restore", "vim", "Foo Bar.txt" ] )
 
         -- df: a restored claude pane must resume the same conversation, so
         -- whatever argv was saved (claude, claude -r foo, …), it comes back
@@ -353,10 +337,22 @@ spec = do
                     ExecArgv ["/nix/store/abc/bin/.claude-wrapped", "--continue"]
 
         -- The --continue rewrite carries through the shell wrapper too, so a
-        -- shell-spawned claude both resumes and picks up direnv.
+        -- shell-spawned claude both resumes and picks up its rc.
         it "rewrites a shell-spawned claude to --continue through the shell" $
             restoreRun defaultRestoreCommands ShellSpawned (Just ["claude", "-r", "foo"])
-                `shouldBe` ShellExecArgv ["claude", "--continue"]
+                `shouldBe` ShellInject ["claude", "--continue"]
+
+    -- 82: the typed command line quotes each argument so one round of shell
+    -- parsing reproduces the exact argv — a filename with spaces stays one arg.
+    describe "shellLine" $ do
+        it "leaves shell-safe arguments bare" $
+            shellLine ["claude", "--continue"] `shouldBe` "claude --continue"
+
+        it "single-quotes an argument with spaces" $
+            shellLine ["vim", "Foo Bar.txt"] `shouldBe` "vim 'Foo Bar.txt'"
+
+        it "escapes an embedded single quote" $
+            shellLine ["echo", "it's"] `shouldBe` "echo 'it'\\''s'"
 
     describe "persistDecision" $ do
         let one = sampleSnapshot "one"
