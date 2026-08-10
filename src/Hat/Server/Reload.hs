@@ -35,6 +35,7 @@ import Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
 import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Control.Monad (replicateM_, unless)
 import Data.ByteString (ByteString)
+import Data.Maybe (maybeToList)
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -62,7 +63,7 @@ data ReloadSession = ReloadSession
     { name      :: Text
     , startCwd  :: Text
     , currentIx :: Int
-    , lastIx    :: Maybe Int
+    , windowHist :: [Int]  -- ^ MRU window indices, head first; see 'Hat.Server.Mru'
     , windows   :: [ReloadWindow]
     }
     deriving (Eq, Show, Generic)
@@ -73,7 +74,7 @@ data ReloadWindow = ReloadWindow
     , name       :: Text
     , layout     :: Text  -- ^ tmux @window_layout@ string
     , active     :: Int   -- ^ ordinal of the active pane
-    , lastActive :: Maybe Int
+    , paneHist   :: [Int]  -- ^ MRU pane ordinals, head first
     , autoRename :: Bool
     , panes      :: [ReloadPane]
     }
@@ -180,7 +181,7 @@ data Handover = Handover
 -- misdecode. The golden-byte test pins the encoding, so a shape change that
 -- forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 6
+reloadEra = 7
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -238,24 +239,22 @@ decodeReloadTree e payload
     | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
         Right t  -> Right t
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
-    -- Eras 4 and 5 differ from era 6 only by additive leaves (era 4 lacks
-    -- 'Style.faint', era 5 lacks 'ReloadScreen.pen'); the hand-written Style
-    -- and ReloadScreen decoders default the missing fields, so both decode
-    -- into the current tree with no positional migration.
-    | e == 5 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right t  -> Right t
-        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
-    | e == 4 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right t  -> Right t
+    -- Eras 4, 5 and 6 share the session/window shape (a single-Int "last", not
+    -- the MRU stack). They differ only by additive leaves (era 4 lacks
+    -- 'Style.faint', era 5 lacks 'ReloadScreen.pen'), which the hand-written
+    -- Style and ReloadScreen decoders default, so one 'ReloadStateV6' mirror
+    -- decodes all three; 'migrateV6' lifts the single "last" into a stack.
+    | e == 6 || e == 5 || e == 4 = case deserialiseOrFail (BL.fromStrict payload) of
+        Right v  -> Right (migrateV6 v)
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 3 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV3 v)
+        Right v  -> Right (migrateV6 (migrateV3 v))
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 2 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV3 (migrateV2 v))
+        Right v  -> Right (migrateV6 (migrateV3 (migrateV2 v)))
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e == 1 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV3 (migrateV2 (migrateV1 v)))
+        Right v  -> Right (migrateV6 (migrateV3 (migrateV2 (migrateV1 v))))
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
     | e > reloadEra =
         Left ("reload handover from a newer hat (era " <> T.pack (show e)
@@ -310,19 +309,42 @@ migrateV2 :: ReloadStateV2 -> ReloadStateV3
 migrateV2 (ReloadStateV2 sess cur) = ReloadStateV3 (map migSession sess) cur
   where
     migSession (ReloadSessionV2 nm cwd' ci li wins) =
-        ReloadSession nm cwd' ci li (map migWindow wins)
+        ReloadSessionV6 nm cwd' ci li (map migWindow wins)
     migWindow (ReloadWindowV2 ix' nm lay act la ar ps) =
-        ReloadWindow ix' nm lay act la ar (map migPane ps)
+        ReloadWindowV6 ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV2 cwd' mfd cpid ms) =
         ReloadPane cwd' mfd cpid ms emptyReloadScreen
 
--- Era-3 top-level shape, frozen: the tree carried no alternate session. Its
--- nested types are today's, unchanged since era 3; only 'ReloadState' grew a
--- field, so this positional mirror decodes an era-3 blob. See 'decodeReloadTree'.
-data ReloadStateV3 = ReloadStateV3 [ReloadSession] (Maybe Text)
+-- Era-3 top-level shape, frozen: the tree carried no alternate session, over
+-- the era 3–6 session/window shape ('ReloadSessionV6'). See 'decodeReloadTree'.
+data ReloadStateV3 = ReloadStateV3 [ReloadSessionV6] (Maybe Text)
     deriving (Generic) deriving anyclass (Serialise)
 
 -- | Carry an era-3 tree forward: it gains an empty alternate session, since an
 -- era-3 image never recorded one. See 'decodeReloadTree'.
-migrateV3 :: ReloadStateV3 -> ReloadState
-migrateV3 (ReloadStateV3 sess cur) = ReloadState sess cur Nothing
+migrateV3 :: ReloadStateV3 -> ReloadStateV6
+migrateV3 (ReloadStateV3 sess cur) = ReloadStateV6 sess cur Nothing
+
+-- Era 3–6 session/window shapes, frozen: a single-Int "last", not the MRU
+-- stack. The nested 'ReloadPane' is today's, so its tolerant leaf decoders
+-- default era-4's missing faint and era-5's missing pen. See 'decodeReloadTree'.
+data ReloadSessionV6 = ReloadSessionV6 Text Text Int (Maybe Int) [ReloadWindowV6]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadWindowV6 =
+    ReloadWindowV6 Int Text Text Int (Maybe Int) Bool [ReloadPane]
+    deriving (Generic) deriving anyclass (Serialise)
+
+-- Era-6 top-level shape, frozen: it carried the alternate session (gained at
+-- era 4) but still a single-Int "last" per session/window. See 'decodeReloadTree'.
+data ReloadStateV6 = ReloadStateV6 [ReloadSessionV6] (Maybe Text) (Maybe Text)
+    deriving (Generic) deriving anyclass (Serialise)
+
+-- | Carry an era-4/5/6 tree forward: each session's and window's single
+-- last-active becomes a one-deep MRU stack. See 'decodeReloadTree'.
+migrateV6 :: ReloadStateV6 -> ReloadState
+migrateV6 (ReloadStateV6 sess cur lst) = ReloadState (map migSession sess) cur lst
+  where
+    migSession (ReloadSessionV6 nm cwd' ci li wins) =
+        ReloadSession nm cwd' ci (maybeToList li) (map migWindow wins)
+    migWindow (ReloadWindowV6 ix' nm lay act la ar ps) =
+        ReloadWindow ix' nm lay act (maybeToList la) ar ps

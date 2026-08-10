@@ -51,7 +51,7 @@ instance Arbitrary ReloadSession where
     shrink s =
         [ ReloadSession (T.pack nm) (T.pack c) i li ws
         | (nm, c, i, li, ws) <-
-            shrink (T.unpack s.name, T.unpack s.startCwd, s.currentIx, s.lastIx, s.windows) ]
+            shrink (T.unpack s.name, T.unpack s.startCwd, s.currentIx, s.windowHist, s.windows) ]
 
 instance Arbitrary ReloadWindow where
     arbitrary = ReloadWindow
@@ -61,7 +61,7 @@ instance Arbitrary ReloadWindow where
         [ ReloadWindow i (T.pack nm) (T.pack lay) act la auto ps
         | ((i, nm, lay), (act, la, auto, ps)) <-
             shrink ( (w.ix, T.unpack w.name, T.unpack w.layout)
-                   , (w.active, w.lastActive, w.autoRename, w.panes) ) ]
+                   , (w.active, w.paneHist, w.autoRename, w.panes) ) ]
 
 instance Arbitrary ReloadPane where
     arbitrary = ReloadPane
@@ -150,11 +150,11 @@ treeWith :: Maybe T.Text -> ReloadModes -> ReloadScreen -> ReloadState
 treeWith mlast ms sc = ReloadState
     { sessions =
         [ ReloadSession
-            { name = "work", startCwd = "/home", currentIx = 0, lastIx = Nothing
+            { name = "work", startCwd = "/home", currentIx = 0, windowHist = []
             , windows =
                 [ ReloadWindow
                     { ix = 0, name = "w", layout = "L", active = 0
-                    , lastActive = Nothing, autoRename = True
+                    , paneHist = [], autoRename = True
                     , panes =
                         [ ReloadPane
                             { cwd = "/tmp", masterFd = 7, childPid = 100
@@ -222,6 +222,14 @@ corpus =
       , fixedCleanup, fixedTree )
     , ( 6
       , "851a4841545206039f82071864ff587c84009f860064776f726b\
+        \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
+        \0718648400f5f4028800f50102f59f9f84006178018a0082010181\
+        \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
+        \f4f4f4ffff8a0081008100f4f4f4f4f4f4f4ffffff8164776f726b\
+        \816470726576"
+      , fixedCleanup, fixedTree )
+    , ( 7
+      , "851a4841545207039f82071864ff587c84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
         \0718648400f5f4028800f50102f59f9f84006178018a0082010181\
         \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\

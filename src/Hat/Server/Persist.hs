@@ -31,7 +31,7 @@ import Data.Aeson
     ( FromJSON (..), ToJSON (..), Value (String), decode, encode, object
     , withObject, (.:?), (.=) )
 import qualified Data.ByteString.Lazy as BL
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, maybeToList)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -55,10 +55,10 @@ data SessionSnap = SessionSnap
     { name      :: Text    -- ^ session name
     , startCwd  :: Text    -- ^ default working directory for new windows
     , currentIx :: Int     -- ^ index of the current window
-    , lastIx    :: Maybe Int
-                           -- ^ index of the last-active window (the one
-                           --   @last-window@ returns to), if any; carried in
-                           --   the session row's @extra@ JSON.
+    , windowHist :: [Int]
+                           -- ^ MRU window indices, head = last-active (the one
+                           --   @last-window@ returns to); carried in the session
+                           --   row's @extra@ JSON. See 'Hat.Server.Mru'.
     , windows   :: [WindowSnap]
     }
     deriving (Eq, Show)
@@ -68,10 +68,10 @@ data WindowSnap = WindowSnap
     , name       :: Text
     , layout     :: Text   -- ^ tmux @window_layout@ string ('Hat.Server.LayoutString.emitLayout')
     , active     :: Int    -- ^ ordinal (in 'panes' order) of the active pane
-    , lastActive :: Maybe Int
-                           -- ^ ordinal (in 'panes' order) of the last-active
-                           --   pane (@last-pane@ returns to it), if any;
-                           --   carried in the window row's @extra@ JSON.
+    , paneHist   :: [Int]
+                           -- ^ MRU pane ordinals (in 'panes' order), head =
+                           --   last-active (@last-pane@ returns to it); carried
+                           --   in the window row's @extra@ JSON.
     , autoRename :: Bool   -- ^ whether the window is in automatic-rename
                            --   state (its name tracks the active pane) rather
                            --   than manually named; carried in the window
@@ -101,47 +101,59 @@ data PaneSnap = PaneSnap
 
 -- | The session row's @extra@ JSON payload. Evolving, optional fields live
 -- here rather than in core columns, so old and new binaries interoperate.
-newtype SessionExtra = SessionExtra (Maybe Int)  -- ^ last-active window index
+newtype SessionExtra = SessionExtra [Int]  -- ^ MRU window indices, head first
 
+-- @last_ix@ mirrors the head for readers predating the stack; @last_stack@
+-- carries the whole history. A reader prefers the stack, else lifts the head.
 instance ToJSON SessionExtra where
-    toJSON (SessionExtra ml) = object (maybe [] (\l -> ["last_ix" .= l]) ml)
+    toJSON (SessionExtra hist) = object $
+        ["last_ix" .= h | h <- take 1 hist]
+        ++ ["last_stack" .= hist | not (null hist)]
 
 instance FromJSON SessionExtra where
-    parseJSON = withObject "session extra" $ \o ->
-        SessionExtra <$> o .:? "last_ix"
+    parseJSON = withObject "session extra" $ \o -> do
+        stack  <- o .:? "last_stack"
+        legacy <- o .:? "last_ix"
+        pure (SessionExtra (fromMaybe (maybeToList legacy) stack))
 
-encodeSessionExtra :: Maybe Int -> Text
-encodeSessionExtra ml =
-    TE.decodeUtf8 (BL.toStrict (encode (SessionExtra ml)))
+encodeSessionExtra :: [Int] -> Text
+encodeSessionExtra hist =
+    TE.decodeUtf8 (BL.toStrict (encode (SessionExtra hist)))
 
-decodeSessionExtra :: Text -> Maybe Int
+decodeSessionExtra :: Text -> [Int]
 decodeSessionExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
-    Just (SessionExtra ml) -> ml
-    Nothing                -> Nothing
+    Just (SessionExtra hist) -> hist
+    Nothing                  -> []
 
 -- | The window row's @extra@ JSON payload: the last-active pane ordinal and
 -- the automatic-rename flag. A store written before @auto_rename@ existed
 -- omits the key; it defaults to 'False', matching the old restore behavior
 -- of pinning a restored window's name.
-data WindowExtra = WindowExtra (Maybe Int) Bool
+data WindowExtra = WindowExtra [Int] Bool  -- ^ MRU pane ordinals (head first)
 
+-- @last_active@ mirrors the head for readers predating the stack;
+-- @last_active_stack@ carries the whole history. See 'SessionExtra'.
 instance ToJSON WindowExtra where
-    toJSON (WindowExtra ml auto) =
-        object (maybe [] (\l -> ["last_active" .= l]) ml
+    toJSON (WindowExtra hist auto) =
+        object (["last_active" .= h | h <- take 1 hist]
+                ++ ["last_active_stack" .= hist | not (null hist)]
                 ++ ["auto_rename" .= auto | auto])
 
 instance FromJSON WindowExtra where
-    parseJSON = withObject "window extra" $ \o ->
-        WindowExtra <$> o .:? "last_active" <*> (fromMaybe False <$> o .:? "auto_rename")
+    parseJSON = withObject "window extra" $ \o -> do
+        stack  <- o .:? "last_active_stack"
+        legacy <- o .:? "last_active"
+        auto   <- fromMaybe False <$> o .:? "auto_rename"
+        pure (WindowExtra (fromMaybe (maybeToList legacy) stack) auto)
 
-encodeWindowExtra :: Maybe Int -> Bool -> Text
-encodeWindowExtra ml auto =
-    TE.decodeUtf8 (BL.toStrict (encode (WindowExtra ml auto)))
+encodeWindowExtra :: [Int] -> Bool -> Text
+encodeWindowExtra hist auto =
+    TE.decodeUtf8 (BL.toStrict (encode (WindowExtra hist auto)))
 
-decodeWindowExtra :: Text -> (Maybe Int, Bool)
+decodeWindowExtra :: Text -> ([Int], Bool)
 decodeWindowExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
-    Just (WindowExtra ml auto) -> (ml, auto)
-    Nothing                    -> (Nothing, False)
+    Just (WindowExtra hist auto) -> (hist, auto)
+    Nothing                      -> ([], False)
 
 -- | The pane row's @extra@ JSON payload: the captured command and whether it
 -- was spawned from inside the pane's interactive shell. Evolving, optional
@@ -271,14 +283,14 @@ saveSnapshot conn snap = withTransaction conn $ do
         execute conn
             "INSERT INTO session (seq, name, start_cwd, current_ix, extra) \
             \VALUES (?, ?, ?, ?, ?)"
-            (sseq, s.name, s.startCwd, s.currentIx, encodeSessionExtra s.lastIx)
+            (sseq, s.name, s.startCwd, s.currentIx, encodeSessionExtra s.windowHist)
         mapM_ (insertWindow sseq) s.windows
     insertWindow :: Int -> WindowSnap -> IO ()
     insertWindow sseq w = do
         execute conn
             "INSERT INTO window (session_seq, ix, name, layout, active, extra) \
             \VALUES (?, ?, ?, ?, ?, ?)"
-            (sseq, w.ix, w.name, w.layout, w.active, encodeWindowExtra w.lastActive w.autoRename)
+            (sseq, w.ix, w.name, w.layout, w.active, encodeWindowExtra w.paneHist w.autoRename)
         mapM_ (insertPane sseq w.ix) (zip [0 ..] w.panes)
     insertPane :: Int -> Int -> (Int, PaneSnap) -> IO ()
     insertPane sseq wix (ord, p) =
@@ -310,17 +322,17 @@ loadSnapshot conn = do
         ws <- mapM (loadWindow sseq) wrows
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
-            , lastIx = decodeSessionExtra sex, windows = ws }
+            , windowHist = decodeSessionExtra sex, windows = ws }
     loadWindow :: Int -> (Int, Text, Text, Int, Text) -> IO WindowSnap
     loadWindow sseq (wix, nm, lay, act, wex) = do
         prows <- query conn
             "SELECT cwd, extra FROM pane \
             \WHERE session_seq = ? AND window_ix = ? ORDER BY ordinal"
             (sseq, wix) :: IO [(Text, Text)]
-        let (lastAct, auto) = decodeWindowExtra wex
+        let (paneOrds, auto) = decodeWindowExtra wex
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
-            , lastActive = lastAct, autoRename = auto
+            , paneHist = paneOrds, autoRename = auto
             , panes = [ PaneSnap { cwd = c, command = mc, shellSpawned = shellSp }
                       | (c, ex) <- prows, let (mc, shellSp) = decodeExtra ex ] }
 
@@ -427,40 +439,44 @@ instance ToJSON SessionSnap where
     toJSON s = object $
         [ "name" .= s.name, "start_cwd" .= s.startCwd
         , "current_ix" .= s.currentIx ]
-        <> maybe [] (\l -> ["last_ix" .= l]) s.lastIx
+        <> ["last_ix" .= h | h <- take 1 s.windowHist]
+        <> ["last_stack" .= s.windowHist | not (null s.windowHist)]
         <> ["windows" .= s.windows]
 
 instance FromJSON SessionSnap where
     parseJSON = withObject "session" $ \o -> do
-        nm    <- fromMaybe "" <$> o .:? "name"
-        cwd0  <- fromMaybe "" <$> o .:? "start_cwd"
-        curIx <- fromMaybe 0 <$> o .:? "current_ix"
-        lastI <- o .:? "last_ix"
-        ws    <- fromMaybe [] <$> o .:? "windows"
+        nm     <- fromMaybe "" <$> o .:? "name"
+        cwd0   <- fromMaybe "" <$> o .:? "start_cwd"
+        curIx  <- fromMaybe 0 <$> o .:? "current_ix"
+        stack  <- o .:? "last_stack"
+        legacy <- o .:? "last_ix"
+        ws     <- fromMaybe [] <$> o .:? "windows"
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
-            , lastIx = lastI, windows = ws }
+            , windowHist = fromMaybe (maybeToList legacy) stack, windows = ws }
 
 instance ToJSON WindowSnap where
     toJSON w = object $
         [ "ix" .= w.ix, "name" .= w.name, "layout" .= w.layout
         , "active" .= w.active ]
-        <> maybe [] (\l -> ["last_active" .= l]) w.lastActive
+        <> ["last_active" .= h | h <- take 1 w.paneHist]
+        <> ["last_active_stack" .= w.paneHist | not (null w.paneHist)]
         <> ["auto_rename" .= True | w.autoRename]
         <> ["panes" .= w.panes]
 
 instance FromJSON WindowSnap where
     parseJSON = withObject "window" $ \o -> do
-        wix  <- fromMaybe 0 <$> o .:? "ix"
-        nm   <- fromMaybe "" <$> o .:? "name"
-        lay  <- fromMaybe "" <$> o .:? "layout"
-        act  <- fromMaybe 0 <$> o .:? "active"
-        la   <- o .:? "last_active"
-        auto <- fromMaybe False <$> o .:? "auto_rename"
-        ps   <- fromMaybe [] <$> o .:? "panes"
+        wix    <- fromMaybe 0 <$> o .:? "ix"
+        nm     <- fromMaybe "" <$> o .:? "name"
+        lay    <- fromMaybe "" <$> o .:? "layout"
+        act    <- fromMaybe 0 <$> o .:? "active"
+        stack  <- o .:? "last_active_stack"
+        legacy <- o .:? "last_active"
+        auto   <- fromMaybe False <$> o .:? "auto_rename"
+        ps     <- fromMaybe [] <$> o .:? "panes"
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
-            , lastActive = la, autoRename = auto, panes = ps }
+            , paneHist = fromMaybe (maybeToList legacy) stack, autoRename = auto, panes = ps }
 
 instance ToJSON PaneSnap where
     toJSON p = object $

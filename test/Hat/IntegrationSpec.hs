@@ -758,14 +758,14 @@ spec = parallel $ do
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
                         { name = "restored", startCwd = "/tmp", currentIx = 0
-                        , lastIx = Nothing
+                        , windowHist = []
                         , windows =
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
                                           , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
@@ -792,11 +792,11 @@ spec = parallel $ do
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
                         { name = "stale", startCwd = "/tmp", currentIx = 0
-                        , lastIx = Nothing
+                        , windowHist = []
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
@@ -869,11 +869,11 @@ spec = parallel $ do
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
                         { name = "bbsess", startCwd = "/tmp", currentIx = 0
-                        , lastIx = Nothing
+                        , windowHist = []
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }

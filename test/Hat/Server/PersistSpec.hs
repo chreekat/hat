@@ -38,11 +38,11 @@ genWindow wix = do
     npane <- choose (1, 3)
     ps    <- vectorOf npane arbitrary
     act   <- choose (0, npane - 1)
-    la    <- oneof [pure Nothing, Just <$> choose (0, npane - 1)]
+    hist  <- sublistOf (filter (/= act) [0 .. npane - 1])
     auto  <- arbitrary
     pure WindowSnap
         { ix = wix, name = nm, layout = lay, active = act
-        , lastActive = la, autoRename = auto, panes = ps }
+        , paneHist = hist, autoRename = auto, panes = ps }
 
 instance Arbitrary Snapshot where
     arbitrary = do
@@ -70,13 +70,13 @@ instance Arbitrary SessionSnap where
         ixs   <- distinctAscending nwin
         ws    <- mapM genWindow ixs
         curIx <- elements (map (.ix) ws)
-        lastI <- oneof [pure Nothing, Just <$> elements (map (.ix) ws)]
+        winHist <- sublistOf (filter (/= curIx) (map (.ix) ws))
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
-            , lastIx = lastI, windows = ws }
+            , windowHist = winHist, windows = ws }
     shrink s =
         [ s { windows = ws } | ws <- shrinkList shrink s.windows, not (null ws) ]
-        ++ [ s { lastIx = Nothing } | s.lastIx /= Nothing ]
+        ++ [ s { windowHist = h } | h <- shrinkList (const []) s.windowHist ]
         ++ [ s { startCwd = c } | c <- shrinkText s.startCwd ]
 
 instance Arbitrary WindowSnap where
@@ -85,7 +85,7 @@ instance Arbitrary WindowSnap where
     -- them would preserve, and holding them keeps sibling ix distinct.
     shrink w =
         [ w { panes = ps } | ps <- shrinkList shrink w.panes, not (null ps) ]
-        ++ [ w { lastActive = Nothing } | w.lastActive /= Nothing ]
+        ++ [ w { paneHist = h } | h <- shrinkList (const []) w.paneHist ]
         ++ [ w { autoRename = False } | w.autoRename ]
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
@@ -204,6 +204,26 @@ spec = do
                 loadSnapshot conn
             paneShellSpawned got `shouldBe` [True]
 
+        -- A store written before the MRU stack existed carries only the
+        -- single last_ix/last_active keys; each lifts to a one-deep history.
+        it "lifts a legacy single last-* key into a one-deep history" $ do
+            snap <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn
+                    "INSERT INTO session VALUES (0, 's', '/h', 0, '{\"last_ix\":2}')"
+                execute_ conn "INSERT INTO window \
+                    \VALUES (0, 0, 'w', 'lay', 0, '{\"last_active\":1}')"
+                execute_ conn "INSERT INTO window VALUES (0, 2, 'w2', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/h', '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 1, '/h', '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 2, 0, '/h', '{}')"
+                loadSnapshot conn
+            case snap.sessions of
+                [s] -> do
+                    s.windowHist `shouldBe` [2]
+                    map (.paneHist) s.windows `shouldBe` [[1], []]
+                _ -> expectationFailure "expected exactly one restored session"
+
         -- bb: a store written before the snapshot table existed opens with
         -- an empty, working history.
         it "reads a store written before the snapshot table existed" $ do
@@ -315,14 +335,14 @@ spec = do
         let snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 2
-                        , lastIx = Just 0
+                        , windowHist = [0]
                         , windows =
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
-                                , active = 1, lastActive = Just 0
+                                , active = 1, paneHist = [0]
                                 , autoRename = False
                                 , panes =
                                     [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }
@@ -337,12 +357,12 @@ spec = do
     -- window keeps its pinned name. The codec used to drop this flag.
     it "round-trips each window's automatic-rename status" $ do
         let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
-                , active = 0, lastActive = Nothing, autoRename = auto
+                , active = 0, paneHist = [], autoRename = auto
                 , panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
-                        , lastIx = Nothing
+                        , windowHist = []
                         , windows = [win 0 True, win 1 False] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
@@ -353,10 +373,10 @@ spec = do
         let snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
-                        , lastIx = Nothing
+                        , windowHist = []
                         , windows =
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [ PaneSnap { cwd = "/h"
                                     , command = Just ["vim", "Foo Bar.txt"]
@@ -372,10 +392,10 @@ spec = do
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
-                        , lastIx = Nothing
+                        , windowHist = []
                         , windows =
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
-                                , active = 0, lastActive = Nothing
+                                , active = 0, paneHist = []
                                 , autoRename = False
                                 , panes = [pane True, pane False] } ] } ] }
         got <- withStore ":memory:" $ \conn ->
@@ -389,10 +409,10 @@ oneSession nm cwd0 wnm lay pcwd = Snapshot
     { lastActiveSession = Nothing, sessions =
         [ SessionSnap
             { name = nm, startCwd = cwd0, currentIx = 0
-            , lastIx = Nothing
+            , windowHist = []
             , windows =
                 [ WindowSnap { ix = 0, name = wnm, layout = lay
-                    , active = 0, lastActive = Nothing
+                    , active = 0, paneHist = []
                     , autoRename = False
                     , panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False }] }
                 ] } ] }

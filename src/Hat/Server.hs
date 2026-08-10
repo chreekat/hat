@@ -104,7 +104,7 @@ import Data.Char (isAlpha, isAlphaNum)
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe, maybeToList)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -564,42 +564,42 @@ data WindowStruct = WindowStruct
     , wsName       :: Text
     , wsLayout     :: Text
     , wsActive     :: Int
-    , wsLastActive :: Maybe Int
+    , wsLastActive :: [Int]  -- ^ MRU pane ordinals, head first
     , wsAutoRename :: Bool
     , wsPanes      :: [Pane]
     }
 
 captureSession :: Session -> IO SessionSnap
 captureSession s = do
-    (nm, cwd, curIx, lastI, wstructs) <- atomically $ do
+    (nm, cwd, curIx, winHist, wstructs) <- atomically $ do
         nm    <- readTVar s.name
         cwd   <- readTVar s.startCwd
         curIx <- readTVar s.currentIx
-        lastI <- listToMaybe <$> readTVar s.windowHist
+        winHist <- readTVar s.windowHist
         eff   <- readTVar s.lastSize
         ws    <- Map.toAscList <$> readTVar s.windows
         wstructs <- mapM (windowStruct eff) ws
-        pure (nm, cwd, curIx, lastI, wstructs)
+        pure (nm, cwd, curIx, winHist, wstructs)
     wsnaps <- mapM captureWindow wstructs
     pure SessionSnap
         { name = nm, startCwd = T.pack cwd
-        , currentIx = curIx, lastIx = lastI, windows = wsnaps }
+        , currentIx = curIx, windowHist = winHist, windows = wsnaps }
 
 windowStruct :: Size -> (Int, Window) -> STM WindowStruct
 windowStruct eff (wix, w) = do
     nm       <- readTVar w.name
     lay      <- readTVar w.layout
     activeId <- readTVar w.activeId
-    lastAId  <- listToMaybe <$> readTVar w.paneHist
+    hist     <- readTVar w.paneHist
     auto     <- readTVar w.autoRename
     paneMap  <- readTVar w.panes
     let order = layoutPanes lay
         activeOrd = fromMaybe 0 (List.elemIndex activeId order)
-        lastOrd = lastAId >>= \pid -> List.elemIndex pid order
+        lastOrds = mapMaybe (`List.elemIndex` order) hist
     pure WindowStruct
         { wsIx = wix, wsName = nm
         , wsLayout = emitLayout (sizeRect (eff)) lay
-        , wsActive = activeOrd, wsLastActive = lastOrd
+        , wsActive = activeOrd, wsLastActive = lastOrds
         , wsAutoRename = auto
         , wsPanes = mapMaybe (`Map.lookup` paneMap) order }
 
@@ -616,7 +616,7 @@ captureWindow ws = do
         pure PaneSnap { cwd = T.pack dir, command = argv, shellSpawned = shellSp }
     pure WindowSnap
         { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
-        , active = ws.wsActive, lastActive = ws.wsLastActive
+        , active = ws.wsActive, paneHist = ws.wsLastActive
         , autoRename = ws.wsAutoRename, panes = psnaps }
 
 -- Color scheme -----------------------------------------------------------
@@ -789,14 +789,14 @@ restoreSession st ssnap = do
         let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
             curIx | Map.member ssnap.currentIx winMap = ssnap.currentIx
                   | otherwise = maybe ssnap.currentIx fst (Map.lookupMin winMap)
-            -- Keep the last-active window only if it survived and isn't the
-            -- current one; otherwise there is no meaningful "last" to return to.
-            lastI = ssnap.lastIx >>= \l ->
-                if l /= curIx && Map.member l winMap then Just l else Nothing
+            -- Keep the MRU history to surviving windows other than the current
+            -- one; nothing else is a meaningful "last" to return to.
+            winHist = List.nub
+                [l | l <- ssnap.windowHist, l /= curIx, Map.member l winMap]
         nameVar    <- newTVarIO ssnap.name
         windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
-        windowHistVar <- newTVarIO (maybeToList lastI)
+        windowHistVar <- newTVarIO winHist
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
@@ -823,17 +823,17 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
         lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
                         (layoutFromString wsnap.layout pids)
         activePid = pids !! max 0 (min (length pids - 1) wsnap.active)
-        -- Keep the last-active pane only if its ordinal is in range and it
-        -- isn't the active pane (nothing to return to otherwise).
-        lastActivePid = wsnap.lastActive >>= \o ->
-            if o >= 0 && o < length pids && pids !! o /= activePid
-                then Just (pids !! o) else Nothing
+        -- Map the MRU history's ordinals back to surviving pane ids, dropping
+        -- the active pane and any out-of-range ordinal; keep order, drop dups.
+        paneHistPids = List.nub
+            [ pids !! o | o <- wsnap.paneHist
+            , o >= 0, o < length pids, pids !! o /= activePid ]
     nameVar       <- newTVarIO wsnap.name
     layoutVar     <- newTVarIO lay
     layoutNameVar <- newTVarIO Nothing
     panesVar      <- newTVarIO paneMap
     activeVar     <- newTVarIO activePid
-    paneHistVar   <- newTVarIO (maybeToList lastActivePid)
+    paneHistVar   <- newTVarIO paneHistPids
     bellVar       <- newTVarIO False
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing
@@ -895,17 +895,17 @@ captureReload carry st = do
 
 captureReloadSession :: ScrollbackCarry -> Session -> IO ReloadSession
 captureReloadSession carry s = do
-    (nm, cwd, curIx, lastI, wstructs) <- atomically $ do
+    (nm, cwd, curIx, winHist, wstructs) <- atomically $ do
         nm    <- readTVar s.name
         cwd   <- readTVar s.startCwd
         curIx <- readTVar s.currentIx
-        lastI <- listToMaybe <$> readTVar s.windowHist
+        winHist <- readTVar s.windowHist
         eff   <- readTVar s.lastSize
         ws    <- Map.toAscList <$> readTVar s.windows
         wstructs <- mapM (windowStruct eff) ws
-        pure (nm, cwd, curIx, lastI, wstructs)
+        pure (nm, cwd, curIx, winHist, wstructs)
     rwins <- mapM (captureReloadWindow carry) wstructs
-    pure (ReloadSession nm (T.pack cwd) curIx lastI rwins)
+    pure (ReloadSession nm (T.pack cwd) curIx winHist rwins)
 
 captureReloadWindow :: ScrollbackCarry -> WindowStruct -> IO ReloadWindow
 captureReloadWindow carry ws = do
@@ -1014,12 +1014,12 @@ rebuildReloadSession st rsess = do
         let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
             curIx | Map.member rsess.currentIx winMap = rsess.currentIx
                   | otherwise = maybe rsess.currentIx fst (Map.lookupMin winMap)
-            lastI = rsess.lastIx >>= \l ->
-                if l /= curIx && Map.member l winMap then Just l else Nothing
+            winHist = List.nub
+                [l | l <- rsess.windowHist, l /= curIx, Map.member l winMap]
         nameVar    <- newTVarIO rsess.name
         windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
-        windowHistVar <- newTVarIO (maybeToList lastI)
+        windowHistVar <- newTVarIO winHist
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack rsess.startCwd)
@@ -1043,15 +1043,15 @@ rebuildReloadWindow st sz rwin = do
         lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
                         (layoutFromString rwin.layout pids)
         activePid = pids !! max 0 (min (length pids - 1) rwin.active)
-        lastActivePid = rwin.lastActive >>= \o ->
-            if o >= 0 && o < length pids && pids !! o /= activePid
-                then Just (pids !! o) else Nothing
+        paneHistPids = List.nub
+            [ pids !! o | o <- rwin.paneHist
+            , o >= 0, o < length pids, pids !! o /= activePid ]
     nameVar       <- newTVarIO rwin.name
     layoutVar     <- newTVarIO lay
     layoutNameVar <- newTVarIO Nothing
     panesVar      <- newTVarIO paneMap
     activeVar     <- newTVarIO activePid
-    paneHistVar   <- newTVarIO (maybeToList lastActivePid)
+    paneHistVar   <- newTVarIO paneHistPids
     bellVar       <- newTVarIO False
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing
@@ -2297,7 +2297,7 @@ restoreArchived st snap = do
         news = uniquifySessionNames taken olds
         rename s n = SessionSnap
             { name = n, startCwd = s.startCwd, currentIx = s.currentIx
-            , lastIx = s.lastIx, windows = s.windows }
+            , windowHist = s.windowHist, windows = s.windows }
         renamed = zipWith rename snap.sessions news
     restoreSnapshot st
         Snapshot { sessions = renamed, lastActiveSession = Nothing }

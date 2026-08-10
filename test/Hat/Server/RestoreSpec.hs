@@ -48,7 +48,7 @@ sampleSnapshot nm = Snapshot
     { sessions =
         [ SessionSnap
             { name = nm, startCwd = "/tmp"
-            , currentIx = 0, lastIx = Nothing, windows = [] } ]
+            , currentIx = 0, windowHist = [], windows = [] } ]
     , lastActiveSession = Nothing }
 
 emptySnapshot :: Snapshot
@@ -218,10 +218,10 @@ spec = do
                     , screen = emptyReloadScreen }
                 rw = ReloadWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
-                    , lastActive = Nothing, autoRename = True, panes = [rp] }
+                    , paneHist = [], autoRename = True, panes = [rp] }
                 rsess = ReloadSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
-                    , lastIx = Nothing, windows = [rw] }
+                    , windowHist = [], windows = [rw] }
             rebuildReloadSession st rsess
             sessMap <- readTVarIO st.sessions
             szs <- mapM (readTVarIO . (.lastSize)) (Map.elems sessMap)
