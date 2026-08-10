@@ -21,6 +21,7 @@ import qualified Hat.Server.FormatSpec
 import qualified Hat.Server.KeysSpec
 import qualified Hat.Server.LayoutSpec
 import qualified Hat.Server.LayoutStringSpec
+import qualified Hat.Server.MruSpec
 import qualified Hat.Server.OptionEffectSpec
 import qualified Hat.Server.OptionsSpec
 import qualified Hat.Server.PickerSpec
@@ -60,6 +61,7 @@ main = hspec $ do
     describe "Hat.Server.Session" Hat.Server.SessionSpec.spec
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
     describe "Hat.Server.LayoutString" Hat.Server.LayoutStringSpec.spec
+    describe "Hat.Server.Mru" Hat.Server.MruSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
