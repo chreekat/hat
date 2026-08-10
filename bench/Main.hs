@@ -26,20 +26,21 @@ import Hat.Bench.RtsStats
 main :: IO ()
 main = do
     bin <- hatBinary
-    lines' <- scrollbackLines <$> getArgs
+    args <- getArgs
     dir <- mkdtemp "/tmp/hat-bench-"
-    run bin dir lines' `finally` removeDirectoryRecursive dir
+    run bin dir (scrollbackLines args) ("--reload" `elem` args)
+        `finally` removeDirectoryRecursive dir
 
 -- | How many scrollback lines to generate; @--lines N@, default 20000.
 scrollbackLines :: [String] -> Int
-scrollbackLines = \case
-    ("--lines" : n : _) | [(v, "")] <- reads n -> v
+scrollbackLines args = case dropWhile (/= "--lines") args of
+    (_ : n : _) | [(v, "")] <- reads n -> v
     _ -> 20000
 
 -- | One measured server lifetime: spawn, fill a pane's scrollback, exit,
 -- report what the RTS charged for it.
-run :: FilePath -> FilePath -> Int -> IO ()
-run bin dir n = do
+run :: FilePath -> FilePath -> Int -> Bool -> IO ()
+run bin dir n reload = do
     let sock = dir <> "/socket"
         conf = dir <> "/hat.conf"
         stats = dir <> "/rts.txt"
@@ -56,12 +57,28 @@ run bin dir n = do
     filled <- await 3000 (marker `isInfixOf'` ctl bin sock dir ["capture-pane", "-p"])
     unless filled (die "pane never finished generating scrollback")
     pid <- P.getPid server
-    rss <- traverse residentKb pid
+    filledRss <- traverse residentKb pid
+    reloadRss <- if reload then Just <$> restartAndSettle bin sock dir pid else pure Nothing
     _ <- ctl bin sock dir ["kill-server"]
     _ <- P.waitForProcess server
-    putStrLn (show n <> " scrollback lines")
-    mapM_ (\kb -> putStrLn ("resident at settle: " <> show kb <> " kB")) rss
+    putStrLn (show n <> " scrollback lines" <> if reload then ", reloaded" else "")
+    mapM_ (say "resident after fill") filledRss
+    mapM_ (mapM_ (say "resident after reload")) reloadRss
     report stats
+  where
+    say label kb = putStrLn (label <> ": " <> show kb <> " kB")
+
+-- | Reload the server in place and wait for the pane it adopted to show the
+-- screen again. The PID survives the @execve@, so the same @\/proc@ entry
+-- measures both sides of the restart; the RTS stats, by contrast, are written
+-- only by the image that exits, which is the reloaded one.
+restartAndSettle
+    :: FilePath -> FilePath -> FilePath -> Maybe P.Pid -> IO (Maybe Integer)
+restartAndSettle bin sock dir pid = do
+    _ <- ctl bin sock dir ["restart-server"]
+    back <- await 3000 (marker `isInfixOf'` ctl bin sock dir ["capture-pane", "-p"])
+    unless back (die "server never came back from restart-server")
+    traverse residentKb pid
 
 -- | The pane program: deterministic styled lines, a marker the driver can
 -- wait on, then a sleep so the pane is still live at measurement time.
