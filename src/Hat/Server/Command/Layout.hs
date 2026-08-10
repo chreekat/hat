@@ -25,6 +25,7 @@ import Hat.Server.Command.Window (nextFreeWindowIndex)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
 import Hat.Server.Locate (targetPane, withCurrentWindow)
+import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane (removePaneFromTree, wrapPaneInWindow)
 import Hat.Server.Resize (applySessionSize)
 
@@ -47,7 +48,7 @@ cmdBreakPane st mclient args = do
                     modifyTVar' sess.windows (Map.insert ix win2)
                     unless ("-d" `elem` flags) $ do
                         cur <- readTVar sess.currentIx
-                        writeTVar sess.lastIx (Just cur)
+                        modifyTVar' sess.windowHist (recordVisit cur ix)
                         writeTVar sess.currentIx ix
                     bumpDirty st
                 applySessionSize st sess.id
@@ -74,7 +75,7 @@ cmdJoinPane st mclient args = do
                     modifyTVar' dstWin.panes (Map.insert src.id src)
                     modifyTVar' dstWin.layout
                         (splitLeaf dstActive orient placement src.id)
-                    writeTVar dstWin.lastActive (Just dstActive)
+                    modifyTVar' dstWin.paneHist (recordVisit dstActive src.id)
                     writeTVar dstWin.activeId src.id
                     writeTVar dstWin.zoomed Nothing
                     bumpDirty st

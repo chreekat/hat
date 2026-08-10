@@ -31,7 +31,7 @@ mkClient = do
     sizeV   <- newTVarIO sz
     activeV <- newTVarIO 0
     sessV   <- newTVarIO (SessionId 0)
-    lastV   <- newTVarIO Nothing
+    lastV   <- newTVarIO []
     readyV  <- newTVarIO False
     keyV    <- newIORef NoPrefix
     escV    <- newIORef NoEscPending
@@ -48,7 +48,7 @@ mkClient = do
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a, wireLevel = protocolVersion
             , sendLock = lock, size = sizeV
             , lastActive = activeV
-            , session = sessV, lastSession = lastV, ready = readyV
+            , session = sessV, sessionHist = lastV, ready = readyV
             , keyState = keyV, escState = escV, lastFrame = frameV, lastCursor = curV
             , lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, prompt = promptV

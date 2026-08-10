@@ -27,7 +27,7 @@ import Control.Monad (foldM, forM, void, when)
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -650,7 +650,7 @@ statusCells st sess width = do
     entries <- do
         ws <- readTVarIO sess.windows
         cur <- readTVarIO sess.currentIx
-        mlast <- readTVarIO sess.lastIx
+        mlast <- listToMaybe <$> readTVarIO sess.windowHist
         clientCount <- length <$> atomically (sessionClients st sess.id)
         forM (Map.toAscList ws) $ \(ix, win) -> do
             (wname, bell, act, zoom) <- atomically $ (,,,)

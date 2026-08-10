@@ -43,8 +43,6 @@ module Hat.Server.Pane
     , reapPane
     , detachPanes
     , killPaneLocs
-    , chooseCurrentOnClose
-    , chooseActivePaneOnClose
     , pickActivityTarget
     , removePaneFromTree
     , wrapPaneInWindow
@@ -64,7 +62,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -88,6 +86,7 @@ import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Locate (locatePane)
+import Hat.Server.Mru (popOnClose, scrub)
 import Hat.Server.Resize (applySessionSize)
 import qualified Hat.Term.Emulator as Emu
 import qualified Hat.Term.Pty
@@ -166,7 +165,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     layoutVar <- newTVarIO (Leaf pane.id)
     panesVar <- newTVarIO (Map.singleton pane.id pane)
     activeVar <- newTVarIO pane.id
-    lastActiveVar <- newTVarIO Nothing
+    paneHistVar <- newTVarIO []
     bellVar <- newTVarIO False
     activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
@@ -180,7 +179,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , layoutName = layoutNameVar
             , panes = panesVar
             , activeId = activeVar
-            , lastActive = lastActiveVar
+            , paneHist = paneHistVar
             , bellFlag = bellVar
             , activity = activityVar
             , zoomed = zoomVar
@@ -518,12 +517,15 @@ detachPane st sid win pane = do
         case removeLeaf pane.id lay of
             Just lay' -> do
                 writeTVar win.layout lay'
+                let survivors = layoutPanes lay'
                 active <- readTVar win.activeId
-                when (active == pane.id) $ do
-                    mlast <- readTVar win.lastActive
-                    forM_ (chooseActivePaneOnClose (layoutPanes lay') mlast) $ \next -> do
-                        writeTVar win.activeId next
-                        writeTVar win.lastActive Nothing
+                hist <- readTVar win.paneHist
+                if active == pane.id
+                    then forM_ (popOnClose (`elem` survivors) (listToMaybe survivors) hist) $
+                            \(next, hist') -> do
+                                writeTVar win.activeId next
+                                writeTVar win.paneHist hist'
+                    else writeTVar win.paneHist (scrub (/= pane.id) hist)
                 bumpDirty st
                 pure (Detached SessionSurvives)
             Nothing -> do
@@ -540,11 +542,16 @@ detachPane st sid win pane = do
                                 pure (Detached SessionEmptied)
                             else do
                                 cur <- readTVar sess.currentIx
-                                mlast <- readTVar sess.lastIx
+                                hist <- readTVar sess.windowHist
                                 let survivors = Map.keysSet ws'
-                                forM_ (chooseCurrentOnClose survivors cur mlast) $ \ix -> do
-                                    writeTVar sess.currentIx ix
-                                    writeTVar sess.lastIx Nothing
+                                if Set.member cur survivors
+                                    then writeTVar sess.windowHist
+                                            (scrub (`Set.member` survivors) hist)
+                                    else forM_ (popOnClose (`Set.member` survivors)
+                                                    (Set.lookupMin survivors) hist) $
+                                            \(ix, hist') -> do
+                                                writeTVar sess.currentIx ix
+                                                writeTVar sess.windowHist hist'
                                 bumpDirty st
                                 pure (Detached SessionSurvives)
 
@@ -596,35 +603,6 @@ killPaneLocs st locs = do
     forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
     forM_ (List.nub emptied) $ \sid -> broadcast st sid Exited
     forM_ locs $ \(_, _, pane) -> hangupPane pane
-
--- | Pick the window to make current after one is closed. 'Nothing' means
--- leave the current window as-is (it survived the close). Otherwise, when
--- the current window is gone, prefer the session's last-active window (as
--- tmux does), falling back to the lowest-numbered survivor when there is
--- no last-active window or it too has been closed.
-chooseCurrentOnClose
-    :: Set.Set Int   -- ^ indices of the windows that remain
-    -> Int           -- ^ the current window index
-    -> Maybe Int     -- ^ the last-active window index, if any
-    -> Maybe Int
-chooseCurrentOnClose survivors cur mlast
-    | Set.member cur survivors = Nothing
-    | Just lastIx <- mlast, Set.member lastIx survivors = Just lastIx
-    | otherwise = Set.lookupMin survivors
-
--- | Pick the pane to make active after the active one is closed. Prefer the
--- window's last-active pane (as tmux does), falling back to the first
--- surviving pane in layout order when there is no last-active pane or it too
--- has been closed. 'Nothing' means no panes remain.
-chooseActivePaneOnClose
-    :: [PaneId]        -- ^ surviving panes, in layout order
-    -> Maybe PaneId    -- ^ the last-active pane, if any
-    -> Maybe PaneId
-chooseActivePaneOnClose survivors mlast
-    | Just lastP <- mlast, lastP `elem` survivors = Just lastP
-    | otherwise = case survivors of
-        (next : _) -> Just next
-        []         -> Nothing
 
 -- | Where @<leader> a@ should jump. An activity-marked window takes
 -- priority: pick the first one in the same cyclic scan @next-window -a@
@@ -686,7 +664,7 @@ wrapPaneInWindow st pane = do
     layoutVar <- newTVarIO (Leaf pane.id)
     panesVar <- newTVarIO (Map.singleton pane.id pane)
     activeVar <- newTVarIO pane.id
-    lastActiveVar <- newTVarIO Nothing
+    paneHistVar <- newTVarIO []
     bellVar <- newTVarIO False
     activityVar <- newTVarIO False
     zoomVar <- newTVarIO Nothing
@@ -700,7 +678,7 @@ wrapPaneInWindow st pane = do
         , layoutName = layoutNameVar
         , panes = panesVar
         , activeId = activeVar
-        , lastActive = lastActiveVar
+        , paneHist = paneHistVar
         , bellFlag = bellVar
         , activity = activityVar
         , zoomed = zoomVar
@@ -843,7 +821,7 @@ createSession st mname mrun environ dir sz = do
     nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
-    lastVar <- newTVarIO Nothing
+    windowHistVar <- newTVarIO []
     sizeVar <- newTVarIO sz
     environVar <- newTVarIO (environFromPairs environ)
     cwdVar <- newTVarIO dir
@@ -853,7 +831,7 @@ createSession st mname mrun environ dir sz = do
             , name = nameVar
             , windows = windowsVar
             , currentIx = currentVar
-            , lastIx = lastVar
+            , windowHist = windowHistVar
             , lastSize = sizeVar
             , environ = environVar
             , startCwd = cwdVar

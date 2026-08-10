@@ -24,7 +24,7 @@ seedServer = do
         <$> newTVarIO "s"
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
-        <*> newTVarIO Nothing
+        <*> newTVarIO []
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"

@@ -37,8 +37,6 @@ module Hat.Server
     , restoreRun      -- ^ exported for the restore-argv test
     , shellLine       -- ^ exported for the typed-command test
     , defaultRestoreCommands  -- ^ exported for the restore-argv test
-    , chooseCurrentOnClose  -- ^ exported for the close-to-last-window test
-    , chooseActivePaneOnClose  -- ^ exported for the close-to-last-pane test
     , pickActivityTarget  -- ^ exported for the activity-jump test
     , pickAttachSession  -- ^ exported for the attach-to-last-active test
     , persistDecision  -- ^ exported for the store-pinning test
@@ -106,7 +104,7 @@ import Data.Char (isAlpha, isAlphaNum)
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -577,7 +575,7 @@ captureSession s = do
         nm    <- readTVar s.name
         cwd   <- readTVar s.startCwd
         curIx <- readTVar s.currentIx
-        lastI <- readTVar s.lastIx
+        lastI <- listToMaybe <$> readTVar s.windowHist
         eff   <- readTVar s.lastSize
         ws    <- Map.toAscList <$> readTVar s.windows
         wstructs <- mapM (windowStruct eff) ws
@@ -592,7 +590,7 @@ windowStruct eff (wix, w) = do
     nm       <- readTVar w.name
     lay      <- readTVar w.layout
     activeId <- readTVar w.activeId
-    lastAId  <- readTVar w.lastActive
+    lastAId  <- listToMaybe <$> readTVar w.paneHist
     auto     <- readTVar w.autoRename
     paneMap  <- readTVar w.panes
     let order = layoutPanes lay
@@ -798,14 +796,14 @@ restoreSession st ssnap = do
         nameVar    <- newTVarIO ssnap.name
         windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
-        lastVar    <- newTVarIO lastI
+        windowHistVar <- newTVarIO (maybeToList lastI)
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
         optionsVar <- newTVarIO emptyDelta
         let sess = Session
                 { id = sid, name = nameVar, windows = windowsVar
-                , currentIx = currentVar, lastIx = lastVar
+                , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
                 , startCwd = cwdVar, options = optionsVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
@@ -835,7 +833,7 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
     layoutNameVar <- newTVarIO Nothing
     panesVar      <- newTVarIO paneMap
     activeVar     <- newTVarIO activePid
-    lastActiveVar <- newTVarIO lastActivePid
+    paneHistVar   <- newTVarIO (maybeToList lastActivePid)
     bellVar       <- newTVarIO False
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing
@@ -848,7 +846,7 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
-            , lastActive = lastActiveVar, bellFlag = bellVar
+            , paneHist = paneHistVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
             , autoRename = autoRenameVar, options = optionsVar }
     pure (win, panes)
@@ -901,7 +899,7 @@ captureReloadSession carry s = do
         nm    <- readTVar s.name
         cwd   <- readTVar s.startCwd
         curIx <- readTVar s.currentIx
-        lastI <- readTVar s.lastIx
+        lastI <- listToMaybe <$> readTVar s.windowHist
         eff   <- readTVar s.lastSize
         ws    <- Map.toAscList <$> readTVar s.windows
         wstructs <- mapM (windowStruct eff) ws
@@ -1021,14 +1019,14 @@ rebuildReloadSession st rsess = do
         nameVar    <- newTVarIO rsess.name
         windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
-        lastVar    <- newTVarIO lastI
+        windowHistVar <- newTVarIO (maybeToList lastI)
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack rsess.startCwd)
         optionsVar <- newTVarIO emptyDelta
         let sess = Session
                 { id = sid, name = nameVar, windows = windowsVar
-                , currentIx = currentVar, lastIx = lastVar
+                , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
                 , startCwd = cwdVar, options = optionsVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
@@ -1053,7 +1051,7 @@ rebuildReloadWindow st sz rwin = do
     layoutNameVar <- newTVarIO Nothing
     panesVar      <- newTVarIO paneMap
     activeVar     <- newTVarIO activePid
-    lastActiveVar <- newTVarIO lastActivePid
+    paneHistVar   <- newTVarIO (maybeToList lastActivePid)
     bellVar       <- newTVarIO False
     activityVar   <- newTVarIO False
     zoomVar       <- newTVarIO Nothing
@@ -1063,7 +1061,7 @@ rebuildReloadWindow st sz rwin = do
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
-            , lastActive = lastActiveVar, bellFlag = bellVar
+            , paneHist = paneHistVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
             , autoRename = autoRenameVar, options = optionsVar }
     pure (win, panes)
@@ -1377,7 +1375,7 @@ attachSetup st client [] = do
         -- @switch-client -l@ still returns to it. See 'switchClientTo'.
         gLast <- readTVar st.lastSession
         forM_ gLast $ \g -> when (g /= sess.id) $
-            writeTVar client.lastSession (Just g)
+            writeTVar client.sessionHist [g]
     pure Nothing
 attachSetup st client cmds = do
     replies <- runCommands st (Just client) cmds
@@ -1396,7 +1394,7 @@ newClient st conn h = do
     sizeVar <- newTVarIO h.size
     activeVar <- newTVarIO 0
     sessVar <- newTVarIO (SessionId (-1))
-    lastSessVar <- newTVarIO Nothing
+    sessionHistVar <- newTVarIO []
     keyVar <- newIORef NoPrefix
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame h.size)
@@ -1421,7 +1419,7 @@ newClient st conn h = do
         , size = sizeVar
         , lastActive = activeVar
         , session = sessVar
-        , lastSession = lastSessVar
+        , sessionHist = sessionHistVar
         , ready = readyVar
         , keyState = keyVar
         , escState = escVar

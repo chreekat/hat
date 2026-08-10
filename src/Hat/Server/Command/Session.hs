@@ -18,7 +18,7 @@ module Hat.Server.Command.Session
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
 import System.Environment (getEnvironment)
@@ -26,6 +26,7 @@ import System.Environment (getEnvironment)
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.Locate (findTarget, targetSession, withTargetSession)
@@ -86,7 +87,7 @@ switchClientTo st client sess = do
     old <- readTVarIO client.session
     atomically $ do
         when (old /= sess.id) $ do
-            writeTVar client.lastSession (Just old)
+            modifyTVar' client.sessionHist (recordVisit old sess.id)
             writeTVar st.lastSession (Just old)
             writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
@@ -270,11 +271,12 @@ cmdSwitchClient st mclient args = do
         Nothing -> pure [RErr "no client"]
         Just client
             | "-l" `elem` flags -> do
-                mlast <- readTVarIO client.lastSession
+                hist <- readTVarIO client.sessionHist
                 sessions <- readTVarIO st.sessions
-                case mlast >>= (`Map.lookup` sessions) of
-                    Nothing -> pure [RErr "no last session"]
-                    Just sess -> switchClientTo st client sess >> pure []
+                -- Skip any sessions killed since they were visited.
+                case mapMaybe (`Map.lookup` sessions) hist of
+                    []         -> pure [RErr "no last session"]
+                    (sess : _) -> switchClientTo st client sess >> pure []
             | otherwise ->
                 withTargetSession st mclient (lookup "-t" opts) $ \sess ->
                     switchClientTo st client sess >> pure []

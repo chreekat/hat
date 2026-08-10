@@ -11,7 +11,7 @@ module Hat.Server.FormatEnv
 import Control.Concurrent.STM
 import Control.Monad (forM_, when)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -32,7 +32,7 @@ windowFormatEnv st sess ix win = do
     eff <- readTVarIO sess.lastSize
     (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
-        <*> readTVar sess.currentIx <*> readTVar sess.lastIx
+        <*> readTVar sess.currentIx <*> (listToMaybe <$> readTVar sess.windowHist)
         <*> readTVar win.bellFlag <*> readTVar win.activity
         <*> readTVar win.autoRename <*> readTVar win.zoomed
     ps <- readTVarIO win.panes

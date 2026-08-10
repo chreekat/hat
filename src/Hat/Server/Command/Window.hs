@@ -27,7 +27,7 @@ import Control.Concurrent.STM
 import Control.Monad (foldM, forM_, unless, when)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -36,6 +36,7 @@ import qualified Data.Text.Read as TR
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
@@ -183,16 +184,15 @@ createWindow st sess opts flags pos requested = do
             moccupant <- atomically $ do
                 ws <- readTVar sess.windows
                 cur <- readTVar sess.currentIx
-                mlast <- readTVar sess.lastIx
+                hist <- readTVar sess.windowHist
                 -- Replan on the live tree; a slot filled since the
                 -- pre-check falls to a free index rather than clobbering.
                 p <- either (const (freeSlot ws)) pure =<< plan
                 let remap i = fromMaybe i (List.lookup i p.shifts)
                     wasCurrent = p.replaced == Just cur
-                    -- The killed occupant leaves the last-window slot.
-                    scrubbed = case remap <$> mlast of
-                        l | l == p.replaced -> Nothing
-                          | otherwise -> l
+                    -- The killed occupant leaves the history; survivors shift
+                    -- with the insertion.
+                    scrubbed = filter (\l -> Just l /= p.replaced) (map remap hist)
                 writeTVar sess.windows
                     (Map.insert p.index win (applyShifts p.shifts ws))
                 -- A replaced current window always selects the new one
@@ -200,10 +200,11 @@ createWindow st sess opts flags pos requested = do
                 if "-d" `elem` flags && not wasCurrent
                     then do
                         writeTVar sess.currentIx (remap cur)
-                        writeTVar sess.lastIx scrubbed
+                        writeTVar sess.windowHist scrubbed
                     else do
-                        writeTVar sess.lastIx
-                            (if wasCurrent then scrubbed else Just (remap cur))
+                        writeTVar sess.windowHist
+                            (if wasCurrent then scrubbed
+                                           else recordVisit (remap cur) p.index scrubbed)
                         writeTVar sess.currentIx p.index
                 bumpDirty st
                 pure ((`Map.lookup` ws) =<< p.replaced)
@@ -239,7 +240,7 @@ switchTo st sess ix = do
     ws <- readTVar sess.windows
     cur <- readTVar sess.currentIx
     when (ix /= cur) $ forM_ (Map.lookup ix ws) $ \win -> do
-        writeTVar sess.lastIx (Just cur)
+        modifyTVar' sess.windowHist (recordVisit cur ix)
         writeTVar sess.currentIx ix
         writeTVar win.bellFlag False
         writeTVar win.activity False
@@ -254,8 +255,8 @@ cmdPrevWindow st mclient _ = cycleWindow st mclient (-1)
 cmdLastWindow st mclient _ =
     withTargetSession st mclient Nothing $ \sess -> do
         atomically $ do
-            mlast <- readTVar sess.lastIx
-            forM_ mlast (switchTo st sess)
+            hist <- readTVar sess.windowHist
+            forM_ (listToMaybe hist) (switchTo st sess)
         pure []
 
 -- | @next-window -a@: switch to the next window (cyclically) that has an
@@ -281,7 +282,7 @@ jumpToActivity st mclient fallback =
             ws <- readTVar sess.windows
             cur <- readTVar sess.currentIx
             mfallback <- case fallback of
-                WithLastFallback -> readTVar sess.lastIx
+                WithLastFallback -> listToMaybe <$> readTVar sess.windowHist
                 WithoutLastFallback -> pure Nothing
             flagged <- foldM (\acc (ix, win) -> do
                 a <- readTVar win.activity
@@ -427,7 +428,7 @@ cmdLinkWindow st mclient args = do
                         modifyTVar' dstSess.windows (Map.insert dstIx win)
                         unless ("-d" `elem` flags) $ do
                             cur <- readTVar dstSess.currentIx
-                            writeTVar dstSess.lastIx (Just cur)
+                            modifyTVar' dstSess.windowHist (recordVisit cur dstIx)
                             writeTVar dstSess.currentIx dstIx
                         bumpDirty st
                         pure (Right ())

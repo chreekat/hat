@@ -33,7 +33,7 @@ mkClient sz lastFrame = do
     sizeV   <- newTVarIO sz
     activeV <- newTVarIO 0
     sessV   <- newTVarIO (SessionId 0)
-    lastV   <- newTVarIO Nothing
+    lastV   <- newTVarIO []
     readyV  <- newTVarIO True
     keyV    <- newIORef NoPrefix
     escV    <- newIORef NoEscPending
@@ -49,7 +49,7 @@ mkClient sz lastFrame = do
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a
             , wireLevel = protocolVersion, sendLock = lock, size = sizeV
-            , lastActive = activeV, session = sessV, lastSession = lastV
+            , lastActive = activeV, session = sessV, sessionHist = lastV
             , ready = readyV, keyState = keyV, escState = escV
             , lastFrame = frameV, lastCursor = curV, lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, prompt = promptV

@@ -22,7 +22,7 @@ import Control.Concurrent.STM
 import Control.Monad (forM_, unless, void, when)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
@@ -35,6 +35,7 @@ import Hat.Server.Command.Buffer (storeBuffer)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Layout
 import Hat.Server.Locate (findTarget, locatePane, siblingPane, targetPane, withCurrentWindow)
+import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     (killPaneLocs, sessionSpawnEnv, shellStart, spawnPane, startPaneReader)
 import Hat.Server.Resize (applySessionSize)
@@ -301,7 +302,7 @@ cmdSplitWindow st mclient args = do
                                 then splitFull orient placement pane.id
                                 else splitLeaf active.id orient placement pane.id
                             lastA <- readTVar win.activeId
-                            writeTVar win.lastActive (Just lastA)
+                            modifyTVar' win.paneHist (recordVisit lastA pane.id)
                             writeTVar win.activeId pane.id
                             writeTVar win.zoomed Nothing
                             bumpDirty st
@@ -347,7 +348,7 @@ cmdSelectPane st mclient args = do
                         active <- readTVar win.activeId
                         forM_ (resolvePaneIndex idx order active) $ \next ->
                             when (next /= active) $ do
-                                writeTVar win.lastActive (Just active)
+                                modifyTVar' win.paneHist (recordVisit active next)
                                 writeTVar win.activeId next
                                 bumpDirty st
                     pure []
@@ -361,7 +362,7 @@ cmdSelectPane st mclient args = do
                         atomically $ do
                             active <- readTVar win.activeId
                             when (pane.id /= active) $ do
-                                writeTVar win.lastActive (Just active)
+                                modifyTVar' win.paneHist (recordVisit active pane.id)
                                 writeTVar win.activeId pane.id
                                 bumpDirty st
                         pure []
@@ -372,7 +373,7 @@ cmdSelectPane st mclient args = do
                 lay <- readTVar win.layout
                 active <- readTVar win.activeId
                 forM_ (directionalTarget (eff) lay active dir) $ \next -> do
-                    writeTVar win.lastActive (Just active)
+                    modifyTVar' win.paneHist (recordVisit active next)
                     writeTVar win.activeId next
                     -- Leaving a zoomed pane cancels the zoom (bug 5).
                     writeTVar win.zoomed Nothing
@@ -383,11 +384,11 @@ cmdLastPane :: CommandImpl
 cmdLastPane st mclient _ =
     withCurrentWindow st mclient $ \_ win -> do
         atomically $ do
-            mlast <- readTVar win.lastActive
+            hist <- readTVar win.paneHist
             ps <- readTVar win.panes
-            forM_ mlast $ \lastP -> when (Map.member lastP ps) $ do
+            forM_ (listToMaybe hist) $ \lastP -> when (Map.member lastP ps) $ do
                 cur <- readTVar win.activeId
-                writeTVar win.lastActive (Just cur)
+                writeTVar win.paneHist (recordVisit cur lastP hist)
                 writeTVar win.activeId lastP
                 bumpDirty st
         pure []
@@ -427,7 +428,7 @@ cmdSwapPane st mclient args = do
                     when (Map.member src.id ps && Map.member dst.id ps) $ do
                         modifyTVar' win.layout (swapLeaves src.id dst.id)
                         unless keepActive $ do
-                            writeTVar win.lastActive (Just src.id)
+                            modifyTVar' win.paneHist (recordVisit src.id dst.id)
                             writeTVar win.activeId dst.id
                         writeTVar win.zoomed Nothing
                         bumpDirty st
@@ -489,7 +490,7 @@ zoomTarget st mclient mtok = do
                 forM_ mtarget $ \pane -> when (Map.member pane.id ps) $ do
                     active <- readTVar win.activeId
                     when (active /= pane.id) $ do
-                        writeTVar win.lastActive (Just active)
+                        modifyTVar' win.paneHist (recordVisit active pane.id)
                         writeTVar win.activeId pane.id
                 mz <- readTVar win.zoomed
                 newActive <- readTVar win.activeId

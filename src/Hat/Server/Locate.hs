@@ -88,12 +88,12 @@ targetWorld st mclient = do
     entries <- forM (Map.toAscList sessMap) $ \(sid, sess) -> do
         (nm, cur, lastIx, eff) <- atomically $ (,,,)
             <$> readTVar sess.name <*> readTVar sess.currentIx
-            <*> readTVar sess.lastIx <*> readTVar sess.lastSize
+            <*> (listToMaybe <$> readTVar sess.windowHist) <*> readTVar sess.lastSize
         ws <- readTVarIO sess.windows
         wentries <- forM (Map.toAscList ws) $ \(ix, win) -> do
             (wname, lay, act, lastP, ps) <- atomically $ (,,,,)
                 <$> readTVar win.name <*> readTVar win.layout
-                <*> readTVar win.activeId <*> readTVar win.lastActive
+                <*> readTVar win.activeId <*> (listToMaybe <$> readTVar win.paneHist)
                 <*> readTVar win.panes
             let warea = eff
                 rects = fst (arrange (sizeRect warea) lay)
@@ -200,8 +200,8 @@ targetPane st mclient mtok = case parsePaneTarget mtok of
                 ps <- readTVar win.panes
                 case tgt of
                     PaneLast -> do
-                        ml <- readTVar win.lastActive
-                        pure (ml >>= (`Map.lookup` ps))
+                        hist <- readTVar win.paneHist
+                        pure (listToMaybe hist >>= (`Map.lookup` ps))
                     _ -> do
                         a <- readTVar win.activeId
                         pure (Map.lookup a ps)

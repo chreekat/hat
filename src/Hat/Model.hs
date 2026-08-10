@@ -167,7 +167,7 @@ data Session = Session
     , name     :: TVar Text
     , windows  :: TVar (Map Int Window)  -- ^ keyed by window index (sparse)
     , currentIx :: TVar Int
-    , lastIx   :: TVar (Maybe Int)
+    , windowHist :: TVar [Int]  -- ^ MRU window indices; see 'Hat.Server.Mru'
     , lastSize :: TVar Size              -- ^ the window's pane area; see 'sessionWindowArea'
     , environ  :: TVar Environ           -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
@@ -182,7 +182,7 @@ data Window = Window
         -- ^ the last named layout applied, if any; see 'cmdNextLayout'.
     , panes      :: TVar (Map PaneId Pane)
     , activeId   :: TVar PaneId
-    , lastActive :: TVar (Maybe PaneId)
+    , paneHist   :: TVar [PaneId]  -- ^ MRU pane ids; see 'Hat.Server.Mru'
     , bellFlag   :: TVar Bool
     , activity   :: TVar Bool  -- ^ output since last viewed (monitor-activity)
     , zoomed     :: TVar (Maybe PaneId)
@@ -405,7 +405,7 @@ data Client = Client
     , size      :: TVar Size
     , lastActive :: TVar Int  -- ^ activity stamp; see 'markActive'
     , session   :: TVar SessionId
-    , lastSession :: TVar (Maybe SessionId)
+    , sessionHist :: TVar [SessionId]  -- ^ MRU sessions (@switch-client -l@); see 'Hat.Server.Mru'
     , ready     :: TVar Bool  -- ^ the client's Welcome greeting has been sent.
                              --   See 'send'.
     , keyState  :: IORef PrefixState  -- input thread only

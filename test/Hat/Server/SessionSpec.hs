@@ -28,8 +28,7 @@ import Hat.Server
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
-    , chooseActivePaneOnClose
-    , cmdAttachSession, chooseCurrentOnClose, cmdListClients, cmdRestartClient
+    , cmdAttachSession, cmdListClients, cmdRestartClient
     , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
@@ -53,7 +52,7 @@ addSession st n = do
         <$> newTVarIO "s"
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
-        <*> newTVarIO Nothing
+        <*> newTVarIO []
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
@@ -71,7 +70,7 @@ seedSession start = do
         <$> newTVarIO "work"
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
-        <*> newTVarIO Nothing
+        <*> newTVarIO []
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO start
@@ -89,7 +88,7 @@ addWindow sess n = do
         <*> newTVarIO Nothing
         <*> newTVarIO Map.empty
         <*> newTVarIO (PaneId n)
-        <*> newTVarIO Nothing
+        <*> newTVarIO []
         <*> newTVarIO False
         <*> newTVarIO False
         <*> newTVarIO Nothing
@@ -110,7 +109,7 @@ addClient st sid sz stamp = do
         <$> newTVarIO sz
         <*> newTVarIO stamp
         <*> newTVarIO sid
-        <*> newTVarIO Nothing
+        <*> newTVarIO []
         <*> newTVarIO True
         <*> newIORef NoPrefix
         <*> newIORef NoEscPending
@@ -144,7 +143,7 @@ wiredClientEnv st clientRole clientEnv = do
         <$> newTVarIO (Size 24 80)
         <*> newTVarIO 0
         <*> newTVarIO (SessionId 0)
-        <*> newTVarIO Nothing
+        <*> newTVarIO []
         <*> newTVarIO True    -- ready
         <*> newIORef NoPrefix
         <*> newIORef NoEscPending
@@ -445,48 +444,6 @@ spec = do
             attentionSeen False True `shouldBe` False
             attentionSeen False False `shouldBe` False
 
-    describe "chooseCurrentOnClose" $ do
-        -- Closing the current window should jump to the last-active window,
-        -- mirroring tmux, not to the lowest-numbered survivor.
-        let remaining = Set.fromList [0, 2, 3]
-
-        it "keeps the current window when it survives the close" $
-            -- current still present (some other window closed): no change.
-            chooseCurrentOnClose remaining 2 (Just 0) `shouldBe` Nothing
-
-        it "jumps to the last-active window when the current is gone" $
-            -- current window 1 was closed; last-active was 3, still alive.
-            chooseCurrentOnClose remaining 1 (Just 3) `shouldBe` Just 3
-
-        it "falls back to the lowest survivor when there is no last-active" $
-            chooseCurrentOnClose remaining 1 Nothing `shouldBe` Just 0
-
-        it "falls back to the lowest survivor when the last-active is also gone" $
-            -- last-active pointed at window 5, which no longer exists.
-            chooseCurrentOnClose remaining 1 (Just 5) `shouldBe` Just 0
-
-    describe "chooseActivePaneOnClose" $ do
-        -- Closing the active pane should reactivate the window's last-active
-        -- pane, mirroring tmux, not an arbitrary surviving neighbour.
-        let survivors = map PaneId [2, 5, 7]
-
-        it "reactivates the last-active pane when it survives the close" $
-            -- active pane 5 was closed; last-active was 7, still alive.
-            chooseActivePaneOnClose survivors (Just (PaneId 7))
-                `shouldBe` Just (PaneId 7)
-
-        it "falls back to the first surviving pane when there is no last-active" $
-            chooseActivePaneOnClose survivors Nothing
-                `shouldBe` Just (PaneId 2)
-
-        it "falls back to the first survivor when the last-active is also gone" $
-            -- last-active pointed at pane 9, which no longer exists.
-            chooseActivePaneOnClose survivors (Just (PaneId 9))
-                `shouldBe` Just (PaneId 2)
-
-        it "has no choice when no panes remain" $
-            chooseActivePaneOnClose [] (Just (PaneId 7)) `shouldBe` Nothing
-
     describe "pickActivityTarget" $ do
         -- The @<leader> a@ jump: an activity-marked window wins, chosen in
         -- the same cyclic next-window order used by @next-window -a@; with no
@@ -633,6 +590,37 @@ spec = do
             r `shouldBe` Detached SessionEmptied
             (Map.member (SessionId 0) <$> readTVarIO st.sessions)
                 `shouldReturn` False
+
+        it "pops the window history so a new last-window remains after a close" $ do
+            (st, sess) <- seedSession "/"
+            _  <- addWindow sess 0
+            _  <- addWindow sess 1
+            w2 <- addWindow sess 2
+            pa <- stubPane 2
+            atomically $ do
+                writeTVar w2.layout (Leaf pa.id)
+                writeTVar w2.panes (Map.singleton pa.id pa)
+                writeTVar sess.currentIx 2
+                writeTVar sess.windowHist [1, 0]  -- visited 0, then 1, then 2
+            _ <- atomically (detachPane st (SessionId 0) w2 pa)
+            readTVarIO sess.currentIx `shouldReturn` 1
+            readTVarIO sess.windowHist `shouldReturn` [0]
+
+        it "pops the pane history so a new last-pane remains after a close" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            [pa, pb, pc] <- mapM stubPane [1, 2, 3]
+            atomically $ do
+                writeTVar win.layout
+                    (Split LeftRight 0.5 (Leaf pa.id)
+                        (Split LeftRight 0.5 (Leaf pb.id) (Leaf pc.id)))
+                writeTVar win.panes
+                    (Map.fromList [(p.id, p) | p <- [pa, pb, pc]])
+                writeTVar win.activeId pc.id
+                writeTVar win.paneHist [pb.id, pa.id]
+            _ <- atomically (detachPane st (SessionId 0) win pc)
+            readTVarIO win.activeId `shouldReturn` pb.id
+            readTVarIO win.paneHist `shouldReturn` [pa.id]
 
     describe "detachPanes" $ do
         -- kill-window/-session detach a whole set of panes in one
