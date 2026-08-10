@@ -71,6 +71,7 @@ library
     hs-source-dirs:     src
     exposed-modules:
         Hat.Bench.Residency
+        Hat.Bench.RtsStats
         Hat.Client
         Hat.Client.Draw
         Hat.Command.Parser
@@ -202,6 +203,7 @@ test-suite hat-test
     build-tool-depends: hat:hat
     other-modules:
         Hat.Bench.ResidencySpec
+        Hat.Bench.RtsStatsSpec
         Hat.Client.DrawSpec
         Hat.Client.TtySpec
         Hat.Command.ParserSpec

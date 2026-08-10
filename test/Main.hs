@@ -1,6 +1,7 @@
 import Test.Hspec
 
 import qualified Hat.Bench.ResidencySpec
+import qualified Hat.Bench.RtsStatsSpec
 import qualified Hat.Client.DrawSpec
 import qualified Hat.Client.TtySpec
 import qualified Hat.Command.ParserSpec
@@ -44,6 +45,7 @@ main :: IO ()
 main = hspec $ do
     describe "Hat.Path" Hat.PathSpec.spec
     describe "Hat.Bench.Residency" Hat.Bench.ResidencySpec.spec
+    describe "Hat.Bench.RtsStats" Hat.Bench.RtsStatsSpec.spec
     describe "Hat.Intern" Hat.InternSpec.spec
     describe "Hat.Log" Hat.LogSpec.spec
     describe "Hat.Transport.Socket" Hat.Transport.SocketSpec.spec
