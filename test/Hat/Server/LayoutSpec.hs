@@ -272,12 +272,42 @@ spec = do
 
     describe "resizeSplit" $ do
         let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
-        it "grows the active pane toward the divider" $ do
-            let lay' = resizeSplit (PaneId 0) DirRight 10 windowRect two
-                (rects, _) = arrange windowRect lay'
-            case List.lookup (PaneId 0) rects of
-                Nothing -> expectationFailure "pane 0 has no rect"
-                Just r0 -> (r0.endCol - r0.startCol) `shouldSatisfy` (> 59)
+            column = Split TopBottom 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
+            paneRect pid lay = List.lookup pid (fst (arrange windowRect lay))
+            widthOf pid lay = fmap (\r -> r.endCol - r.startCol) (paneRect pid lay)
+            heightOf pid lay = fmap (\r -> r.endRow - r.startRow) (paneRect pid lay)
+        it "moves the divider right from either side of it" $ do
+            widthOf (PaneId 0) (resizeSplit (PaneId 0) DirRight 10 windowRect two)
+                `shouldBe` Just 70
+            widthOf (PaneId 0) (resizeSplit (PaneId 1) DirRight 10 windowRect two)
+                `shouldBe` Just 70
+        it "moves the divider left from either side of it" $ do
+            widthOf (PaneId 0) (resizeSplit (PaneId 0) DirLeft 10 windowRect two)
+                `shouldBe` Just 50
+            widthOf (PaneId 0) (resizeSplit (PaneId 1) DirLeft 10 windowRect two)
+                `shouldBe` Just 50
+        it "moves the divider down from either side of it" $ do
+            heightOf (PaneId 0) (resizeSplit (PaneId 0) DirDown 10 windowRect column)
+                `shouldBe` Just 30
+            heightOf (PaneId 0) (resizeSplit (PaneId 1) DirDown 10 windowRect column)
+                `shouldBe` Just 30
+        it "moves the divider up from either side of it" $ do
+            heightOf (PaneId 0) (resizeSplit (PaneId 0) DirUp 10 windowRect column)
+                `shouldBe` Just 10
+            heightOf (PaneId 0) (resizeSplit (PaneId 1) DirUp 10 windowRect column)
+                `shouldBe` Just 10
+        it "moves the pane's own right border, not a divider inside its subtree" $ do
+            -- L | M | R, with L|M nested inside the outer split.
+            let nested = Split LeftRight (1 % 2)
+                    (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
+                    (Leaf (PaneId 2))
+                lay' = resizeSplit (PaneId 1) DirRight 10 windowRect nested
+            case lay' of
+                Split LeftRight outer (Split LeftRight inner _ _) (Leaf _) -> do
+                    outer `shouldBe` (1 % 2 + 10 % 119)
+                    inner `shouldBe` (1 % 2)
+                _ -> expectationFailure "resize reshaped the tree"
+            fmap (.startCol) (paneRect (PaneId 2) lay') `shouldBe` Just 71
         it "keeps every pane at least one cell wide" $ do
             let lay' = iterate (resizeSplit (PaneId 0) DirRight 30 windowRect) two !! 10
                 (rects, _) = arrange windowRect lay'

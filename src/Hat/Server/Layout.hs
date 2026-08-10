@@ -30,8 +30,10 @@ module Hat.Server.Layout
     , childRects
     ) where
 
+import Control.Applicative ((<|>))
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe)
 import Data.Ord (clamp, comparing)
 import Data.Ratio ((%))
 import Data.Text (Text)
@@ -412,46 +414,68 @@ neighbor rects from dir = do
     rowOverlap a b = min a.endRow b.endRow - max a.startRow b.startRow
     colOverlap a b = min a.endCol b.endCol - max a.startCol b.startCol
 
--- | Move the divider nearest the target pane along the given axis by
--- @delta@ cells (grows the pane in that direction).
+-- | Which child of a split a descent takes.
+data Side = FirstChild | SecondChild
+    deriving (Eq)
+
+-- | One split on the root-to-target descent.
+data Step = Step Orientation Side
+
+-- | Move one divider by @delta@ cells: @DirRight@\/@DirDown@ move it right\/
+-- down and @DirLeft@\/@DirUp@ left\/up, whichever side of it the target sits
+-- on. The divider moved is the target's own right\/bottom border — the
+-- deepest ancestor split of the direction's orientation holding the target in
+-- its first child — falling back to the target's left\/top border when it
+-- hugs that edge of the window. Every pane keeps at least one cell.
 resizeSplit :: PaneId -> Direction -> Int -> Rect -> Layout -> Layout
-resizeSplit target dir delta rect layout =
-    snd (go rect layout)
+resizeSplit target dir delta rect layout = case pathTo layout of
+    Nothing -> layout
+    Just steps -> case divider steps of
+        Nothing -> layout
+        Just n -> rewrite rect n steps layout
   where
     wantOrient = case dir of
         DirLeft -> LeftRight
         DirRight -> LeftRight
         DirUp -> TopBottom
         DirDown -> TopBottom
-    -- Returns (found target in subtree, adjusted subtree). Adjusts the
-    -- deepest matching-orientation split that contains the target.
-    go :: Rect -> Layout -> (Bool, Layout)
-    go _ (Leaf p) = (p == target, Leaf p)
-    go r (Split o ratio a b) =
-        let (ra, rb) = childRects r o ratio
-            (inA, a') = go ra a
-            (inB, b') = go rb b
-            found = inA || inB
-            adjusted
-                | o == wantOrient && (adjustedInA inA || adjustedInB inB) =
-                    Split o (newRatio r o ratio (inA, inB)) a' b'
-                | otherwise = Split o ratio a' b'
-            -- only adjust here if the child subtree didn't already
-            adjustedInA ina = ina && not (childAdjusted a a')
-            adjustedInB inb = inb && not (childAdjusted b b')
-        in (found, adjusted)
-    childAdjusted old new = old /= new
-    newRatio r o ratio (inA, _) =
+    pathTo :: Layout -> Maybe [Step]
+    pathTo = \case
+        Leaf p
+            | p == target -> Just []
+            | otherwise -> Nothing
+        Split o _ a b -> case pathTo a of
+            Just steps -> Just (Step o FirstChild : steps)
+            Nothing -> (Step o SecondChild :) <$> pathTo b
+    -- How many steps to descend before reaching the split to adjust.
+    divider steps = deepest FirstChild <|> deepest SecondChild
+      where
+        deepest side = listToMaybe
+            [ n
+            | (n, Step o s) <- reverse (zip [0 :: Int ..] steps)
+            , o == wantOrient
+            , s == side
+            ]
+    rewrite :: Rect -> Int -> [Step] -> Layout -> Layout
+    rewrite r n steps lay = case (lay, steps) of
+        (Split o ratio a b, Step _ side : rest)
+            | n <= 0 -> Split o (newRatio r o ratio) a b
+            | otherwise ->
+                let (ra, rb) = childRects r o ratio
+                in case side of
+                    FirstChild -> Split o ratio (rewrite ra (n - 1) rest a) b
+                    SecondChild -> Split o ratio a (rewrite rb (n - 1) rest b)
+        _ -> lay
+    newRatio r o ratio =
         let avail = fromIntegral $ case o of
                 LeftRight -> (r.endCol - r.startCol) - 1
                 TopBottom -> (r.endRow - r.startRow) - 1
             step = fromIntegral delta / max 1 avail
-            growFirst = case dir of
-                DirRight -> inA
-                DirDown -> inA
-                DirLeft -> not inA
-                DirUp -> not inA
-            r' = if growFirst then ratio + step else ratio - step
+            r' = case dir of
+                DirRight -> ratio + step
+                DirDown -> ratio + step
+                DirLeft -> ratio - step
+                DirUp -> ratio - step
             minR = 1 / max 2 avail
         in clamp (minR, 1 - minR) r'
 
