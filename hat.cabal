@@ -195,6 +195,21 @@ executable replay-reload
         text        ^>= 2.1.3,
         vector      ^>= 0.13.2.0
 
+benchmark hat-mem
+    import:             defaults, pedantry
+    type:               exitcode-stdio-1.0
+    hs-source-dirs:     bench
+    main-is:            Main.hs
+    build-tool-depends: hat:hat
+    ghc-options:        -threaded
+    build-depends:
+        base        ^>= 4.20.2.0,
+        directory   ^>= 1.3.8.5,
+        hat,
+        process     ^>= 1.6.26.1,
+        text        ^>= 2.1.3,
+        unix        ^>= 2.8.7.0
+
 test-suite hat-test
     import:             defaults, pedantry
     type:               exitcode-stdio-1.0
