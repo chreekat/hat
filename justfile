@@ -24,3 +24,7 @@ time_profile +ARGS:
 profiled_hat:
     @cabal build --enable-profiling --profiling-detail=late --builddir=dist-prof exe:hat >/dev/null
     @cabal list-bin --builddir=dist-prof exe:hat
+
+# Memory benchmark: fixed workload, profiling knobs via --build and --rts
+mem_bench *ARGS:
+    ./tools/bench/hat_mem {{ARGS}}

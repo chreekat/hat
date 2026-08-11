@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Memory benchmark with a fixed workload and freely varied profiling: fill one
+# pane's scrollback, optionally reload the server in place, and report what the
+# RTS charged. Black box throughout -- the real binary, the real --server path,
+# the real restart-server -- so it measures the code the app actually runs.
+#
+# The workload is the constant. Vary the knobs instead:
+#   --build "--enable-profiling --profiling-detail=late"   build flags
+#   --rts "-hT -i0.1"                                      extra RTS flags
+# Build flags go to their own dist dir, so the ordinary build (and cabal test)
+# keep their unprofiled artifacts.
+#
+#   -t<file> --machine-readable  always on; this is what the report parses.
+#   -po<prefix>                  always on, so .hp/.prof land in the out dir
+#                                rather than the caller's cwd.
+
+LINES=20000
+RELOAD=0
+KEEP=0
+EXTRA_RTS=""
+BUILD_FLAGS=""
+BIN=""
+OUT="$PWD/bench-out"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lines) LINES="$2"; shift 2 ;;
+        --reload) RELOAD=1; shift ;;
+        --keep) KEEP=1; shift ;;
+        --rts) EXTRA_RTS="$2"; shift 2 ;;
+        --build) BUILD_FLAGS="$2"; shift 2 ;;
+        --bin) BIN="$2"; shift 2 ;;
+        --out) OUT="$2"; shift 2 ;;
+        *) echo "hat_mem: unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+mkdir -p "$OUT"
+
+if [ -z "$BIN" ]; then
+    if [ -n "$BUILD_FLAGS" ]; then
+        # shellcheck disable=SC2086
+        nix develop -c cabal build --builddir=dist-bench $BUILD_FLAGS exe:hat
+        BIN=$(nix develop -c cabal list-bin --builddir=dist-bench exe:hat)
+    else
+        nix develop -c cabal build exe:hat
+        BIN=$(nix develop -c cabal list-bin exe:hat)
+    fi
+fi
+nix develop -c cabal build -v0 bench-report
+REPORT=$(nix develop -c cabal list-bin bench-report)
+
+WORK=$(mktemp -d /tmp/hat-mem-XXXXXX)
+SOCK="$WORK/socket"
+STATS="$OUT/rts.txt"
+
+# The server is the only process that gets GHCRTS: hat's client invocations
+# are the same binary and would overwrite the same stats file.
+ctl() { env -u GHCRTS HOME="$WORK" "$BIN" -S "$SOCK" "$@"; }
+
+cleanup() {
+    if [ "$KEEP" = 1 ]; then
+        echo ">>> server left running on $SOCK (attach: hat -S $SOCK attach)"
+        echo ">>> its HOME is $WORK; remove it when done"
+        return
+    fi
+    ctl kill-server >/dev/null 2>&1 || true
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# A history limit above the generated count, or the scrollback under
+# measurement is just the default 2000 lines.
+printf 'set -g history-limit %d\n' "$((LINES * 2))" > "$WORK/hat.conf"
+
+MARKER=HAT-BENCH-FILLED
+# Deterministic styled lines, a marker the driver waits on, then a sleep so
+# the pane is still live when the measurement is taken.
+cat > "$WORK/gen.sh" <<EOF
+awk 'BEGIN{for(i=0;i<$LINES;i++) printf "\033[3%dm%06d the quick brown fox jumps over the lazy dog %s\033[0m\n", i%8, i, i%2?"~~~":"..."}'
+echo $MARKER
+exec sleep 1000000
+EOF
+
+GHCRTS="-t$STATS --machine-readable -po$OUT/hat $EXTRA_RTS" \
+    HOME="$WORK" "$BIN" --server "$SOCK" "$WORK/hat.conf" >/dev/null 2>&1 &
+SERVER=$!
+
+# Sync on observable state, never a fixed sleep.
+await() {
+    local n=$1; shift
+    while [ "$n" -gt 0 ]; do
+        if "$@" >/dev/null 2>&1; then return 0; fi
+        n=$((n - 1))
+        sleep 0.02
+    done
+    return 1
+}
+socket_up() { [ -S "$SOCK" ]; }
+filled() { ctl capture-pane -p | grep -q "$MARKER"; }
+resident() { awk '/^VmRSS:/ {print $2 * 1024}' "/proc/$SERVER/status"; }
+
+await 250 socket_up || { echo "hat_mem: server never created its socket" >&2; exit 1; }
+ctl new-session -d -x 200 -y 50 "sh $WORK/gen.sh" >/dev/null
+await 3000 filled || { echo "hat_mem: pane never finished generating" >&2; exit 1; }
+
+echo "$LINES scrollback lines$([ "$RELOAD" = 1 ] && echo ', reloaded')"
+echo "resident after fill: $(resident) B"
+
+if [ "$RELOAD" = 1 ]; then
+    # The PID survives the execve, so one /proc entry spans both sides; the
+    # RTS stats, by contrast, are written only by the image that exits.
+    ctl restart-server >/dev/null
+    await 3000 filled || { echo "hat_mem: server never came back" >&2; exit 1; }
+    echo "resident after reload: $(resident) B"
+fi
+
+if [ "$KEEP" = 1 ]; then
+    echo ">>> stopping here with the server alive; no RTS stats until it exits"
+    exit 0
+fi
+
+# The RTS writes its stats only on a clean shutdown, never under SIGKILL.
+ctl kill-server >/dev/null 2>&1 || true
+wait "$SERVER" 2>/dev/null || true
+"$REPORT" "$STATS"
+echo ">>> artifacts in $OUT"

@@ -1,6 +1,8 @@
 dist-newstyle/
 dist-ghostty/
 dist-prof/
+dist-bench/
+bench-out/
 cabal.project.local
 result
 result-*
