@@ -1,7 +1,7 @@
 module Hat.Server.ConfigSpec (spec) where
 
 import Control.Concurrent.STM (readTVarIO)
-import Control.Exception (bracket, finally)
+import Control.Exception (bracket)
 import qualified Data.ByteString as B
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -33,8 +33,8 @@ spec = do
     -- regardless of locale and never throw on a malformed byte.
     describe "readConfigUtf8" $
         it "decodes UTF-8 locale-independently and survives bad bytes" $ do
-            dir <- mkdtemp "/tmp/hat-config-"
-            flip finally (removeDirectoryRecursive dir) $ do
+            bracket (mkdtemp "/tmp/hat-config-")
+                    removeDirectoryRecursive $ \dir -> do
                 let p = dir <> "/c"
                 -- ".·" then a lone 0xFF (invalid UTF-8) then newline.
                 B.writeFile p (B.pack [0x2e, 0xc2, 0xb7, 0xff, 0x0a])
@@ -50,8 +50,8 @@ spec = do
     -- doesFileExist, which is always False, so the file was never read.
     describe "source-file" $
         it "expands a ~/ path so a reload actually re-reads the file" $ do
-            dir <- mkdtemp "/tmp/hat-source-"
-            flip finally (removeDirectoryRecursive dir) $ withHome dir $ do
+            bracket (mkdtemp "/tmp/hat-source-")
+                    removeDirectoryRecursive $ \dir -> withHome dir $ do
                 writeFile (dir <> "/reload.conf")
                     "set -g status-left RELOADED\n"
                 lg <- newLogger "/dev/null"
@@ -64,8 +64,8 @@ spec = do
     -- sets a global environment variable, %hidden NAME=value a hidden one.
     describe "config assignment forms" $
         it "NAME=value and %hidden NAME=value set global variables" $ do
-            dir <- mkdtemp "/tmp/hat-envconf-"
-            flip finally (removeDirectoryRecursive dir) $ do
+            bracket (mkdtemp "/tmp/hat-envconf-")
+                    removeDirectoryRecursive $ \dir -> do
                 writeFile (dir <> "/env.conf")
                     "CFGVAR=fromconfig\n%hidden CFGHID=hiddencfg\n"
                 lg <- newLogger "/dev/null"

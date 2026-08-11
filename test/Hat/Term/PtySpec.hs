@@ -1,7 +1,7 @@
 module Hat.Term.PtySpec (spec) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (finally)
+import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
 import System.Directory (removeDirectoryRecursive, removePathForcibly)
@@ -62,6 +62,11 @@ retryFor n act ok = do
         then pure v
         else threadDelay 20000 >> retryFor (n - 1) act ok
 
+-- One test's pty, always closed. 'closePty' tolerates a child that has
+-- already exited, so a test may still close early to make one exit.
+withPty :: Spawn -> (PtyHandle -> IO a) -> IO a
+withPty s = bracket (spawn s) closePty
+
 spec :: Spec
 spec = do
     home <- runIO (mkdtemp "/tmp/hat-pty-home-")
@@ -79,78 +84,70 @@ specWith base home = do
             parseCmdline "" `shouldBe` Nothing
 
     it "reads a live pane's foreground argv from /proc" $ do
-        pty <- spawn base { args = ["-c", "exec sleep 30"] }
-        argv <- retryFor 50 (foregroundArgv pty) (== Just ["sleep", "30"])
-        closePty pty
-        _ <- waitExit pty
+        argv <- withPty base { args = ["-c", "exec sleep 30"] } $ \pty -> do
+            argv <- retryFor 50 (foregroundArgv pty) (== Just ["sleep", "30"])
+            closePty pty
+            argv <$ waitExit pty
         argv `shouldBe` Just ["sleep", "30"]
 
     it "keeps the test shells' HOME away from the real one" $ do
         realHome <- getEnv "HOME"
-        pty <- spawn base { args = ["-c", "echo home=$HOME"] }
-        out <- drainPty pty
-        _ <- waitExit pty
+        out <- withPty base { args = ["-c", "echo home=$HOME"] } $ \pty ->
+            drainPty pty <* waitExit pty
         out `shouldSatisfy` B8.isInfixOf (B8.pack ("home=" <> home))
         home `shouldNotBe` realHome
 
     it "spawns a shell and captures its output" $ do
-        pty <- spawn base { args = ["-c", "echo hat-pty-works"] }
-        out <- drainPty pty
-        status <- waitExit pty
+        (out, status) <- withPty base { args = ["-c", "echo hat-pty-works"] } $
+            \pty -> (,) <$> drainPty pty <*> waitExit pty
         out `shouldSatisfy` B8.isInfixOf "hat-pty-works"
         status `shouldBe` Just (Exited ExitSuccess)
 
     it "sets the initial window size on the pty" $ do
-        pty <- spawn base
+        out <- withPty base
             { args = ["-c", "stty size"]
             , size = Size { rows = 30, cols = 100 }
-            }
-        out <- drainPty pty
-        _ <- waitExit pty
+            } $ \pty -> drainPty pty <* waitExit pty
         out `shouldSatisfy` B8.isInfixOf "30 100"
 
     it "propagates resize to the child" $ do
-        pty <- spawn base { args = ["-c", "read _line; stty size"] }
-        resize pty Size { rows = 40, cols = 120 }
-        writePty pty "\n"
-        out <- drainPty pty
-        _ <- waitExit pty
+        out <- withPty base { args = ["-c", "read _line; stty size"] } $ \pty -> do
+            resize pty Size { rows = 40, cols = 120 }
+            writePty pty "\n"
+            drainPty pty <* waitExit pty
         out `shouldSatisfy` B8.isInfixOf "40 120"
 
     it "runs the child in the given working directory" $ do
-        pty <- spawn base { args = ["-c", "pwd"], cwd = Just "/tmp" }
-        out <- drainPty pty
-        _ <- waitExit pty
+        out <- withPty base { args = ["-c", "pwd"], cwd = Just "/tmp" } $ \pty ->
+            drainPty pty <* waitExit pty
         out `shouldSatisfy` B8.isInfixOf "/tmp"
 
     -- M0 demo: a live shell driven interactively over the pty.
     it "round-trips an interactive shell session" $ do
-        pty <- spawn base
-        writePty pty "echo a$((1+1))b\n"
-        out <- readUntil pty "a2b"
+        (out, status) <- withPty base $ \pty -> do
+            writePty pty "echo a$((1+1))b\n"
+            out <- readUntil pty "a2b"
+            writePty pty "exit\n"
+            (,) out <$> waitExit pty
         out `shouldSatisfy` B8.isInfixOf "a2b"
-        writePty pty "exit\n"
-        status <- waitExit pty
         status `shouldBe` Just (Exited ExitSuccess)
 
     -- The foreground command follows a child running under the shell, not
     -- the shell itself: 'sleep' owns the terminal's foreground process
     -- group while it runs.
     it "reports the pane's foreground command, not the shell" $ do
-        pty <- spawn base
-        writePty pty "sleep 5\n"
-        cmd <- retryFor 100 (foregroundCommand pty) (== Just (T.pack "sleep"))
+        cmd <- withPty base $ \pty -> do
+            writePty pty "sleep 5\n"
+            retryFor 100 (foregroundCommand pty) (== Just (T.pack "sleep"))
         cmd `shouldBe` Just (T.pack "sleep")
-        closePty pty
 
     -- NixOS wrappers exec the real binary as @.<name>-wrapped@ but keep
     -- the public name in argv[0] (bash's @exec -a@). The foreground
     -- command must be argv[0] — what tmux reports — not the executable's
     -- comm, which leaks the wrapper decoration (and truncates at 15
     -- bytes besides).
-    it "reports a wrapped foreground command by argv[0], not its comm" $ do
-        dir <- mkdtemp "/tmp/hat-pty-"
-        flip finally (removeDirectoryRecursive dir) $ do
+    it "reports a wrapped foreground command by argv[0], not its comm" $
+        bracket (mkdtemp "/tmp/hat-pty-") removeDirectoryRecursive $ \dir -> do
             -- A copy of bash stands in for the real binary: unlike the
             -- coreutils multi-call binary, it does not dispatch on
             -- argv[0]. The trailing `:` stops bash exec'ing the sleep,
@@ -160,36 +157,31 @@ specWith base home = do
             -- windows and makes the exec below flake with ETXTBSY.
             let wrapped = dir <> "/.sleepish-wrapped"
             callProcess "cp" ["/bin/sh", wrapped]
-            pty <- spawn base
-            writePty pty (B8.pack
-                ("exec -a sleepish " <> wrapped <> " -c 'sleep 5; :'\n"))
-            cmd <- retryFor 100 (foregroundCommand pty)
-                (== Just (T.pack "sleepish"))
+            cmd <- withPty base $ \pty -> do
+                writePty pty (B8.pack
+                    ("exec -a sleepish " <> wrapped <> " -c 'sleep 5; :'\n"))
+                retryFor 100 (foregroundCommand pty)
+                    (== Just (T.pack "sleepish"))
             cmd `shouldBe` Just (T.pack "sleepish")
-            closePty pty
 
     -- An orphaned pane that kept hat's listening socket open outlived
     -- `pkill hat` and made the next start's connect() hang. The child
     -- must inherit only its stdio: a forced-inheritable fd here must not
     -- survive into it.
-    it "hands the pane child a clean fd table" $ do
-        (r, w) <- createPipe
-        setFdOption w CloseOnExec False
-        let Fd n = w
-        pty <- spawn base
-            { args = ["-c", "[ -e /proc/self/fd/" ++ show n
-                             ++ " ] && echo LEAK || echo CLEAN"] }
-        out <- drainPty pty
-        _ <- waitExit pty
-        closeFd r
-        closeFd w
-        out `shouldSatisfy` B8.isInfixOf "CLEAN"
-        out `shouldNotSatisfy` B8.isInfixOf "LEAK"
+    it "hands the pane child a clean fd table" $
+        bracket createPipe (\(r, w) -> closeFd r >> closeFd w) $ \(_, w) -> do
+            setFdOption w CloseOnExec False
+            let Fd n = w
+            out <- withPty base
+                { args = ["-c", "[ -e /proc/self/fd/" ++ show n
+                                 ++ " ] && echo LEAK || echo CLEAN"] } $ \pty ->
+                drainPty pty <* waitExit pty
+            out `shouldSatisfy` B8.isInfixOf "CLEAN"
+            out `shouldNotSatisfy` B8.isInfixOf "LEAK"
 
     it "reports a nonzero exit" $ do
-        pty <- spawn base { args = ["-c", "exit 3"] }
-        _ <- drainPty pty
-        status <- waitExit pty
+        status <- withPty base { args = ["-c", "exit 3"] } $ \pty ->
+            drainPty pty *> waitExit pty
         status `shouldBe` Just (Exited (ExitFailure 3))
 
     -- Milestone A: the post-exec image re-adopts a pane it inherited across
@@ -197,16 +189,16 @@ specWith base home = do
     -- rather than spawning a fresh one. The adopted handle must read and
     -- write the same live child.
     it "adopts an inherited pty fd and child, and drives it" $ do
-        pty <- spawn base
-        -- Production adopts a master fd inherited across exec, with no other
-        -- Handle on it. Duplicate the fd here so the adopted handle owns a
-        -- distinct one rather than a second GHC Handle racing the original
-        -- over the same fd's IO-manager registration.
-        dupd <- dup (masterFd pty)
-        pty2 <- adopt dupd (pid pty)
-        writePty pty2 "echo a$((3+4))b\n"
-        out <- readUntil pty2 "a7b"
-        writePty pty2 "exit\n"
-        _ <- drainPty pty2
-        _ <- waitExit pty
+        out <- withPty base $ \pty -> do
+            -- Production adopts a master fd inherited across exec, with no
+            -- other Handle on it. Duplicate the fd here so the adopted handle
+            -- owns a distinct one rather than a second GHC Handle racing the
+            -- original over the same fd's IO-manager registration.
+            dupd <- dup (masterFd pty)
+            bracket (adopt dupd (pid pty)) closePty $ \pty2 -> do
+                writePty pty2 "echo a$((3+4))b\n"
+                out <- readUntil pty2 "a7b"
+                writePty pty2 "exit\n"
+                _ <- drainPty pty2
+                out <$ waitExit pty
         out `shouldSatisfy` B8.isInfixOf "a7b"

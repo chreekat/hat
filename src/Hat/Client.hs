@@ -10,7 +10,7 @@ module Hat.Client
 
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, catch, finally)
+import Control.Exception (SomeException, catch, bracket_)
 import Control.Monad (forever)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -85,8 +85,10 @@ attachClient v sock origin setup = do
             -- withRawMode also owns the stdio buffering switch; see the
             -- ordering note there.
             withRawMode $
-                (B.hPut stdout enterAltScreen >> shuttle sock)
-                    `finally` B.hPut stdout leaveAltScreen
+                bracket_
+                    (B.hPut stdout enterAltScreen)
+                    (B.hPut stdout leaveAltScreen)
+                    (shuttle sock)
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)

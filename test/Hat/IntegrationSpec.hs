@@ -3,7 +3,8 @@ module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (IOException, SomeException, catch, evaluate, finally, throwIO, try)
+import Control.Exception
+    (IOException, SomeException, bracket, catch, evaluate, throwIO, try)
 import Control.Monad (forM, unless, void, when)
 import qualified Data.List as List
 import qualified Data.ByteString as B
@@ -89,12 +90,12 @@ withHatPersist hatBin = withHatOn hatBin True "socket"
 -- | 'withHat' with a custom socket path relative to the temp HOME (used
 -- by the test that needs the socket's parent dirs to not exist yet).
 withHatOn :: FilePath -> Bool -> FilePath -> (Hat -> IO a) -> IO a
-withHatOn hatBin persistOn sockRel action = do
-    dir <- mkdtemp "/tmp/hat-test-"
-    let h = Hat
-            { bin = hatBin, home = dir
-            , sock = dir <> "/" <> sockRel, persist = persistOn }
-    action h `finally` teardown h
+withHatOn hatBin persistOn sockRel action =
+    bracket (mkdtemp "/tmp/hat-test-") (teardown . hatFor) (action . hatFor)
+  where
+    hatFor dir = Hat
+        { bin = hatBin, home = dir
+        , sock = dir <> "/" <> sockRel, persist = persistOn }
 
 -- Kill the server (harmless if already gone) and remove the temp dir.
 teardown :: Hat -> IO ()

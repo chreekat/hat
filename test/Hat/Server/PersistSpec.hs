@@ -1,7 +1,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 module Hat.Server.PersistSpec (spec) where
 
-import Control.Exception (finally)
+import Control.Exception (bracket)
 import Control.Monad (forM_)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -429,6 +429,4 @@ paneShellSpawned snap =
 
 -- Run an action against a fresh in-memory database.
 withRaw :: (Connection -> IO a) -> IO a
-withRaw act = do
-    conn <- open ":memory:"
-    act conn `finally` close conn
+withRaw = bracket (open ":memory:") close
