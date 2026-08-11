@@ -8,7 +8,7 @@
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (finally)
+import Control.Exception (bracket)
 import Control.Monad (unless)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
@@ -27,9 +27,12 @@ main :: IO ()
 main = do
     bin <- hatBinary
     args <- getArgs
-    dir <- mkdtemp "/tmp/hat-bench-"
-    run bin dir (scrollbackLines args) ("--reload" `elem` args)
-        `finally` removeDirectoryRecursive dir
+    bracket
+        (mkdtemp "/tmp/hat-bench-")
+        removeDirectoryRecursive $
+        \dir ->
+            run bin dir (scrollbackLines args)
+                ("--reload" `elem` args) ("--census" `elem` args)
 
 -- | How many scrollback lines to generate; @--lines N@, default 20000.
 scrollbackLines :: [String] -> Int
@@ -39,8 +42,8 @@ scrollbackLines args = case dropWhile (/= "--lines") args of
 
 -- | One measured server lifetime: spawn, fill a pane's scrollback, exit,
 -- report what the RTS charged for it.
-run :: FilePath -> FilePath -> Int -> Bool -> IO ()
-run bin dir n reload = do
+run :: FilePath -> FilePath -> Int -> Bool -> Bool -> IO ()
+run bin dir n reload census = do
     let sock = dir <> "/socket"
         conf = dir <> "/hat.conf"
         stats = dir <> "/rts.txt"
@@ -49,7 +52,7 @@ run bin dir n reload = do
     -- measurement is just the default 2000 lines.
     writeFile conf ("set -g history-limit " <> show (n * 2) <> "\n")
     writeFile gen (generator n)
-    server <- spawnServer bin sock conf stats dir
+    server <- spawnServer bin sock conf stats dir census
     up <- await 250 (fileExist sock)
     unless up (die "server never created its socket")
     _ <- ctl bin sock dir
@@ -57,7 +60,7 @@ run bin dir n reload = do
     filled <- await 3000 (marker `isInfixOf'` ctl bin sock dir ["capture-pane", "-p"])
     unless filled (die "pane never finished generating scrollback")
     pid <- P.getPid server
-    filledRss <- traverse residentKb pid
+    filledRss <- traverse residentBytes pid
     reloadRss <- if reload then Just <$> restartAndSettle bin sock dir pid else pure Nothing
     _ <- ctl bin sock dir ["kill-server"]
     _ <- P.waitForProcess server
@@ -65,8 +68,25 @@ run bin dir n reload = do
     mapM_ (say "resident after fill") filledRss
     mapM_ (mapM_ (say "resident after reload")) reloadRss
     report stats
+    if census then censusSummary (dir <> "/heap.hp") else pure ()
   where
-    say label kb = putStrLn (label <> ": " <> show kb <> " kB")
+    say label b = putStrLn (label <> ": " <> show b <> " B")
+
+-- | Live bytes at each heap census, so a peak can be told from a plateau.
+censusSummary :: FilePath -> IO ()
+censusSummary hp = do
+    raw <- readFile' hp
+    let samples = totals (lines raw) :: [Integer]
+    putStrLn ("heap census samples (bytes live): " <> show samples)
+  where
+    totals = go 0 False
+    go _ _ [] = []
+    go acc inside (l : ls)
+        | "BEGIN_SAMPLE" `isPrefixOf'` l = go 0 True ls
+        | "END_SAMPLE" `isPrefixOf'` l = acc : go 0 False ls
+        | inside, [_, v] <- words l, [(b, "")] <- reads v = go (acc + b) True ls
+        | otherwise = go acc inside ls
+    isPrefixOf' p l = take (length p) l == p
 
 -- | Reload the server in place and wait for the pane it adopted to show the
 -- screen again. The PID survives the @execve@, so the same @\/proc@ entry
@@ -78,7 +98,7 @@ restartAndSettle bin sock dir pid = do
     _ <- ctl bin sock dir ["restart-server"]
     back <- await 3000 (marker `isInfixOf'` ctl bin sock dir ["capture-pane", "-p"])
     unless back (die "server never came back from restart-server")
-    traverse residentKb pid
+    traverse residentBytes pid
 
 -- | The pane program: deterministic styled lines, a marker the driver can
 -- wait on, then a sleep so the pane is still live at measurement time.
@@ -95,14 +115,15 @@ generator n = unlines
 marker :: String
 marker = "HAT-BENCH-FILLED"
 
--- | Resident kB of a live process, the figure @atop@ shows. Read strictly:
--- the entry vanishes with the process, and a lazy read would be forced after
--- the server is already gone.
-residentKb :: P.Pid -> IO Integer
-residentKb pid = do
+-- | Resident bytes of a live process, the figure @atop@ shows. @VmRSS@ is
+-- reported in KiB; scaled here so every figure the benchmark prints is in
+-- bytes. Read strictly: the entry vanishes with the process, and a lazy read
+-- would be forced after the server is already gone.
+residentBytes :: P.Pid -> IO Integer
+residentBytes pid = do
     raw <- readFile' ("/proc/" <> show pid <> "/status")
     pure $! case [ws | l <- lines raw, ("VmRSS:" : ws) <- [words l]] of
-        ((kb : _) : _) | [(v, "")] <- reads kb -> v
+        ((kb : _) : _) | [(v, "")] <- reads kb -> v * 1024
         _ -> 0
 
 -- | The server as production runs it: foreground @--server@, its own HOME so
@@ -110,9 +131,9 @@ residentKb pid = do
 -- every client below is the same binary and would otherwise overwrite the
 -- same stats file.
 spawnServer
-    :: FilePath -> FilePath -> FilePath -> FilePath -> FilePath
+    :: FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> Bool
     -> IO P.ProcessHandle
-spawnServer bin sock conf stats home = do
+spawnServer bin sock conf stats home census = do
     path <- getEnv "PATH"
     devNull <- openFile "/dev/null" WriteMode
     (_, _, _, h) <- P.createProcess
@@ -120,7 +141,8 @@ spawnServer bin sock conf stats home = do
             { P.env = Just
                 [ ("HOME", home)
                 , ("PATH", path)
-                , ("GHCRTS", "-t" <> stats <> " --machine-readable")
+                , ("GHCRTS", "-t" <> stats <> " --machine-readable"
+                    <> (if census then " -hT -i0.1 -po" <> home <> "/heap" else ""))
                 ]
             , P.std_out = P.UseHandle devNull
             , P.std_err = P.UseHandle devNull
