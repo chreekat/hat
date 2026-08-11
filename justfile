@@ -1,5 +1,3 @@
-set positional-arguments
-
 scrollback_leak_benchmark:
     ./tools/bench/scrollback_leak_benchmark
     @echo -e "\n>>> Open $(pwd)/hat-server.eventlog.html"
@@ -27,8 +25,13 @@ profiled_hat:
     @cabal build --enable-profiling --profiling-detail=late --builddir=dist-prof exe:hat >/dev/null
     @cabal list-bin --builddir=dist-prof exe:hat
 
-# Memory benchmark; run `just mem_bench --help` for the knobs
-mem_bench *ARGS:
+# Memory benchmark: fixed workload; reload/keep take 'yes', build/rts take flags
+mem_bench lines='20000' reload='no' build='' rts='' keep='no':
     #!/usr/bin/env bash
     set -Eeuo pipefail
-    ./tools/bench/hat_mem "$@"
+    args=(--lines '{{lines}}')
+    if [ '{{reload}}' = yes ]; then args+=(--reload); fi
+    if [ '{{keep}}' = yes ]; then args+=(--keep); fi
+    if [ -n '{{build}}' ]; then args+=(--build '{{build}}'); fi
+    if [ -n '{{rts}}' ]; then args+=(--rts '{{rts}}'); fi
+    ./tools/bench/hat_mem "${args[@]}"
