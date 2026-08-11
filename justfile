@@ -5,3 +5,22 @@ scrollback_leak_benchmark:
 reload_rehydrate_profile blob='/tmp/hat-1000/default.reload.last':
     ./tools/bench/reload_rehydrate_profile {{blob}}
     @echo -e "\n>>> Open $(pwd)/reload-rehydrate.eventlog.html"
+
+# Time-profile the hat binary under an ad-hoc workload
+time_profile +ARGS:
+    #!/usr/bin/env bash
+    # e.g. just time_profile -S /tmp/hat-1000/default ls-sessions
+    # Its own dist dir keeps the ordinary build, and cabal test, unprofiled.
+    set -euo pipefail
+    cabal build --enable-profiling --profiling-detail=late --builddir=dist-prof exe:hat
+    bin=$(cabal list-bin --builddir=dist-prof exe:hat)
+    # A profiled workload may exit non-zero (a killed server does); the
+    # profile is still written and is still what we came for.
+    GHCRTS="-p -po$PWD/hat-time" "$bin" {{ARGS}} || echo "(workload exited $?)"
+    sed -n '1,30p' hat-time.prof
+    echo -e "\n>>> Full profile in $PWD/hat-time.prof"
+
+# Path to the profiled binary, to drive by hand
+profiled_hat:
+    @cabal build --enable-profiling --profiling-detail=late --builddir=dist-prof exe:hat >/dev/null
+    @cabal list-bin --builddir=dist-prof exe:hat

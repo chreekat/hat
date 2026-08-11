@@ -1,5 +1,6 @@
 dist-newstyle/
 dist-ghostty/
+dist-prof/
 cabal.project.local
 result
 result-*
@@ -7,5 +8,6 @@ result-*
 *.o
 .direnv/
 *.eventlog
+*.prof
 *.eventlog.html
 *.hp
