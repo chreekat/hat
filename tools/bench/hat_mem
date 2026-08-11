@@ -25,6 +25,22 @@ BUILD_FLAGS=""
 BIN=""
 OUT="$PWD/bench-out"
 
+usage() {
+    cat <<'USAGE'
+usage: hat_mem [options]
+
+  --lines N          scrollback lines to generate (default 20000)
+  --reload           restart-server in place, and measure that too
+  --keep             stop with the server alive; prints its socket
+  --rts "FLAGS"      extra RTS flags, e.g. "-hT -i0.1" or "-p"
+  --build "FLAGS"    cabal build flags, e.g. "--enable-profiling"
+  --bin PATH         measure this binary instead of building one
+  --out DIR          where artifacts land (default ./bench-out)
+
+The workload is fixed so runs stay comparable; vary --build and --rts.
+USAGE
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --lines) LINES="$2"; shift 2 ;;
@@ -34,7 +50,8 @@ while [ $# -gt 0 ]; do
         --build) BUILD_FLAGS="$2"; shift 2 ;;
         --bin) BIN="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
-        *) echo "hat_mem: unknown option: $1" >&2; exit 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "hat_mem: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
