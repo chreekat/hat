@@ -18,6 +18,7 @@ claude's prompt suggestions render as normal text, not dim -- REOPENED: aa4c67e 
 BUG leader + Z "zoom alternate pane" doesn't zoom the alternate pane | id:36d863d67c5ca6766dbed3849c036a3de83bc002
 a window with only one pane shouldn't show a tree of panes in choose-tree - collapse it to just the window | id:3758a4886be0fe361f7ba5f87981ca5abe1f5102
 <leader> a should jump to a window with the activity marker as priority | id:3776e884d7517bf930479027ae1f0aeab9d00778
+select-pane -L/-R/-U/-D wraps to the wrong pane past a middle column: the wrap picks the biggest perpendicular overlap first, so in a 3-column layout (right column split top/bottom) prefix+h ping-pongs between the two left columns and the right column is unreachable. The wrap must land on the far EDGE first, overlap only breaking ties. | id:3b7c6316535fc743203185f71fd8b088d044e809
 when closing windows, hat should choose the "last" window as the new active window. recursively. | id:3ba37f902e1b540bc1645f22fcb8747cf4d6e8c6
 BUG history should be reflowed and redrawn on resize. right now shrinking erases and growing leaves empty space | id:3e9a994bd98d44a5eb62a8e382b66c5ec8acaca4
 streams of readTVarIO foo >> readTVarIO bar are a bad smell. are those varibales all truly independent, or should their reads be synchronized ever | id:46c6f19b503ccfbd5c540355622251157ed94c6a
