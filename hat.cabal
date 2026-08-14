@@ -89,6 +89,7 @@ library
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
         Hat.Server.Command.Buffer
+        Hat.Server.Command.CopyMode
         Hat.Server.Command.Interact
         Hat.Server.Command.Layout
         Hat.Server.Command.Option

@@ -33,6 +33,7 @@ module Hat.Model
     , SelKind (..)
     , newServerState
     , bumpDirty
+    , withCommandBatch
     , markActive
     , freshId
     , resolveGlobal
@@ -58,7 +59,7 @@ import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM)
 import Data.IORef (IORef)
 import qualified Data.List as List
@@ -468,6 +469,15 @@ newServerState defaultKeymap lg path storePath = ServerState
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
+
+-- | Run a user action's whole command sequence as one batch: 'reconcileLoop'
+-- holds off sizing panes until every command has committed (see
+-- 'awaitReconcileTick'). Nestable — an @if-shell@ that runs more commands just
+-- deepens the count; only the outermost exit reopens reconciliation.
+withCommandBatch :: ServerState -> IO a -> IO a
+withCommandBatch st = bracket_
+    (atomically (modifyTVar' st.commandDepth (+ 1)))
+    (atomically (modifyTVar' st.commandDepth (subtract 1)))
 
 -- | Stamp a client as the most-recently-active on its session: advance the
 -- server's activity clock and record the new value on the client, so

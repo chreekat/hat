@@ -95,7 +95,7 @@ import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-    (IOException, SomeException, bracket, bracket_, catch, displayException,
+    (IOException, SomeException, bracket, catch, displayException,
      finally, throwIO, try)
 import Control.Monad (forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
@@ -109,7 +109,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
-import qualified Data.Text.Read as TR
 import qualified Network.Socket as N
 import System.Directory
     (doesFileExist, findExecutable, removeFile)
@@ -138,6 +137,7 @@ import Hat.Path (expandTilde, hatPath, render, (</:>))
 import Hat.Server.Reload (Handover (..), ReloadCleanup (..), encodeHandover)
 import qualified Hat.Term.Pty
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
+import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
@@ -146,7 +146,6 @@ import Hat.Server.Command.Pane
 import Hat.Server.Command.Session
 import Hat.Server.Command.Window
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
-import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
@@ -949,15 +948,6 @@ runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
 runCommands st mclient cmds =
     withCommandBatch st (concat <$> mapM (runArgv st mclient) cmds)
 
--- | Run a user action's whole command sequence as one batch: 'reconcileLoop'
--- holds off sizing panes until every command has committed (see
--- 'awaitReconcileTick'). Nestable — an @if-shell@ that runs more commands just
--- deepens the count; only the outermost exit reopens reconciliation.
-withCommandBatch :: ServerState -> IO a -> IO a
-withCommandBatch st = bracket_
-    (atomically (modifyTVar' st.commandDepth (+ 1)))
-    (atomically (modifyTVar' st.commandDepth (subtract 1)))
-
 runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
 runArgv _ _ [] = pure []
 runArgv st mclient (name : args) = do
@@ -1433,62 +1423,3 @@ cmdSendKeys st mclient args = do
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
-
-runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
-runCopyModeCommand st pane name cmdArgs = do
-    mmode <- readTVarIO pane.mode
-    case mmode of
-        Nothing -> pure []  -- not in copy mode; -X is a no-op
-        Just pm
-            -- A digit key builds the @[count]@ prefix rather than running
-            -- a motion; @0@ with no count pending is @start-of-line@.
-            | name == "digit", Just d <- readDigit cmdArgs -> do
-                atomically $ do
-                    writeTVar pane.mode
-                        (Just (reMode (CopyMode.pushDigit d state)))
-                    bumpDirty st
-                pure []
-            | otherwise -> case Map.lookup name CopyMode.handlers of
-                Nothing -> pure []
-                Just h -> do
-                    -- Motions repeat [count] times; yanks never do. Every
-                    -- command clears the pending count.
-                    let count
-                            | name `elem` ["copy-selection", "copy-pipe"] = 1
-                            | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
-                    result <- applyN h (state { numPrefix = Nothing }) count
-                    case result of
-                        -- A failed command leaves the mode untouched.
-                        Left err -> pure [RErr err]
-                        Right r -> do
-                            r' <- traverse (scrollPaneToCursor pane) r
-                            atomically $ do
-                                writeTVar pane.mode (reMode <$> r')
-                                bumpDirty st
-                            pure []
-          where
-            state = pm.copyState
-            reMode s = pm { copyState = s }
-  where
-    readDigit (a : _) = case TR.decimal a of
-        Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
-        _ -> Nothing
-    readDigit [] = Nothing
-    -- Run a handler @n@ times, threading the state and stopping early if
-    -- it errors or exits copy mode.
-    applyN _ s 0 = pure (Right (Just s))
-    applyN h s n = do
-        r <- h st pane s cmdArgs
-        case r of
-            Left err -> pure (Left err)
-            Right Nothing -> pure (Right Nothing)
-            Right (Just s') -> applyN h s' (n - 1)
-
--- | Re-center a pane's copy-mode viewport on its cursor after a motion,
--- over the pane's frozen snapshot (a no-op when not in copy mode).
-scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
-scrollPaneToCursor pane s = do
-    mmode <- readTVarIO pane.mode
-    pure $ case mmode of
-        Just pm -> CopyMode.scrollToCursor pm.frozen.fgHsize pm.frozen.fgSy s
-        Nothing -> s
