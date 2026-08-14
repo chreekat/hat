@@ -98,6 +98,7 @@ library
         Hat.Server.Command.Types
         Hat.Server.Command.Window
         Hat.Server.CopyMode
+        Hat.Server.Dispatch
         Hat.Server.Environ
         Hat.Server.Format
         Hat.Server.FormatEnv
