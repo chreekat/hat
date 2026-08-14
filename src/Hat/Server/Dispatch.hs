@@ -235,7 +235,8 @@ cmdSourceFile st mclient args = case pos of
   where
     (_, flags, pos) = parseArgs "" args
 
-
+-- | @restart-server [-C] [path]@: reload the server binary in place. See
+-- 'cmdReload'; dropped clients exit and the users reattach.
 cmdRestartServer :: CommandImpl
 cmdRestartServer = cmdReload ServerOnly
 
