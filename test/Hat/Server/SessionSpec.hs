@@ -32,7 +32,8 @@ import Hat.Server
     , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
-    , reencodeCursor, refreshSessionEnv, removePaneFromTree, welcome
+    , dispatch, reencodeCursor, refreshSessionEnv, removePaneFromTree
+    , welcome
     , zoomTarget )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
@@ -199,7 +200,7 @@ spec = do
                     , term = "xterm", env = [], size = Size 24 80
                     , cwd = "/", intent = ControlIntent
                     , autostarted = False }
-            withAsync (welcome st server h) $ \_ -> do
+            withAsync (welcome dispatch st server h) $ \_ -> do
                 Just (Known (Welcome _)) <- recvMessage client
                 Just (Known (ServerVersion v)) <- recvMessage client
                 v `shouldBe` protocolVersion
