@@ -262,6 +262,24 @@ spec = do
         it "stays put with a single pane" $
             neighbor [(PaneId 5, windowRect)] (PaneId 5) DirLeft `shouldBe` Nothing
 
+        -- +---+---+---+
+        -- |   |   | 2 |
+        -- | 0 | 1 +---+
+        -- |   |   | 3 |
+        -- +---+---+---+
+        -- Bug 3b: a wrap crosses the whole window, so every column stays
+        -- reachable by repeating the same direction.
+        let columns = Split LeftRight (1 % 3)
+                (Leaf (PaneId 0))
+                (Split LeftRight 0.5
+                    (Leaf (PaneId 1))
+                    (Split TopBottom 0.5 (Leaf (PaneId 2)) (Leaf (PaneId 3))))
+            (colRects, _) = arrange windowRect columns
+        it "wraps past a middle column to the far column" $
+            neighbor colRects (PaneId 0) DirLeft `shouldBe` Just (PaneId 2)
+        it "wraps past a middle column back to the near column" $
+            neighbor colRects (PaneId 2) DirRight `shouldBe` Just (PaneId 0)
+
     describe "directionalTarget" $ do
         -- Resolving against the full layout (not a zoom-collapsed one) is
         -- what lets prefix+hjkl move away from a zoomed pane. See bug 5.
