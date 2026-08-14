@@ -113,10 +113,12 @@ library
         Hat.Server.Reload
         Hat.Server.Render
         Hat.Server.Resize
+        Hat.Server.Snapshot
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Title
         Hat.Server.View
+        Hat.Server.WindowStruct
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.Emulator.Types
