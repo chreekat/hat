@@ -458,7 +458,13 @@ resizeSplit target dir delta rect layout = case pathTo layout of
     rewrite :: Rect -> Int -> [Step] -> Layout -> Layout
     rewrite r n steps lay = case (lay, steps) of
         (Split o ratio a b, Step _ side : rest)
-            | n <= 0 -> Split o (newRatio r o ratio) a b
+            | n <= 0 ->
+                let ratio' = newRatio r o ratio
+                    (oldA, oldB) = childRects r o ratio
+                    (newA, newB) = childRects r o ratio'
+                in Split o ratio'
+                    (pinDividers o HighEdge oldA newA a)
+                    (pinDividers o LowEdge oldB newB b)
             | otherwise ->
                 let (ra, rb) = childRects r o ratio
                 in case side of
@@ -477,6 +483,42 @@ resizeSplit target dir delta rect layout = case pathTo layout of
                 DirUp -> ratio - step
             minR = 1 / max 2 avail
         in clamp (minR, 1 - minR) r'
+
+-- | Which border of a rect a resize moved: the low (left\/top) or the high
+-- (right\/bottom) one. The opposite border stays where it is.
+data MovedEdge = LowEdge | HighEdge
+    deriving (Eq)
+
+-- | Restate a subtree's ratios so its dividers hold the absolute positions
+-- they had while its rect changed along @axis@: the pane against the moved
+-- edge absorbs the whole change, every other pane keeps its size. Ratios are
+-- relative, so without this a resize of an outer split drags every divider
+-- nested inside it. See 'resizeSplit'.
+pinDividers :: Orientation -> MovedEdge -> Rect -> Rect -> Layout -> Layout
+pinDividers axis edge old new lay
+    | old == new = lay
+    | otherwise = case lay of
+        Leaf p -> Leaf p
+        Split o ratio a b ->
+            let ratio' = if o == axis then anchored ratio o old new else ratio
+                (oldA, oldB) = childRects old o ratio
+                (newA, newB) = childRects new o ratio'
+            in Split o ratio'
+                (pinDividers axis edge oldA newA a)
+                (pinDividers axis edge oldB newB b)
+  where
+    -- The share that leaves the fixed-side child exactly the cells it had.
+    anchored ratio o oldR newR =
+        let (oldA, oldB) = childRects oldR o ratio
+            avail = fromIntegral (extent newR - 1)
+            minR = 1 / max 2 avail
+            keep n = fromIntegral n / avail
+        in clamp (minR, 1 - minR) $ case edge of
+            HighEdge -> keep (extent oldA)
+            LowEdge -> 1 - keep (extent oldB)
+    extent r = case axis of
+        LeftRight -> r.endCol - r.startCol
+        TopBottom -> r.endRow - r.startRow
 
 childRects :: Rect -> Orientation -> Rational -> (Rect, Rect)
 childRects rect o ratio = case o of

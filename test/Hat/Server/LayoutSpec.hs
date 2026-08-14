@@ -321,11 +321,29 @@ spec = do
                     (Leaf (PaneId 2))
                 lay' = resizeSplit (PaneId 1) DirRight 10 windowRect nested
             case lay' of
-                Split LeftRight outer (Split LeftRight inner _ _) (Leaf _) -> do
+                Split LeftRight outer (Split LeftRight _ _ _) (Leaf _) ->
                     outer `shouldBe` (1 % 2 + 10 % 119)
-                    inner `shouldBe` (1 % 2)
                 _ -> expectationFailure "resize reshaped the tree"
             fmap (.startCol) (paneRect (PaneId 2) lay') `shouldBe` Just 71
+            map (`widthOf` lay') [PaneId 0, PaneId 1, PaneId 2]
+                `shouldBe` [Just 30, Just 39, Just 49]
+        -- Bug a1: a resize moves one border. Ratios are relative, so a naive
+        -- outer-split change rescales the dividers nested inside it.
+        it "leaves the dividers inside the neighbouring subtree where they were" $ do
+            -- A | B | C, with A|B nested inside the outer split.
+            let nested = Split LeftRight (1 % 2)
+                    (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
+                    (Leaf (PaneId 2))
+                grown = resizeSplit (PaneId 2) DirLeft 10 windowRect nested
+                shrunk = resizeSplit (PaneId 2) DirRight 10 windowRect nested
+            map (`widthOf` nested) [PaneId 0, PaneId 1, PaneId 2]
+                `shouldBe` [Just 30, Just 29, Just 59]
+            -- C grows leftward: only its neighbour B pays for it.
+            map (`widthOf` grown) [PaneId 0, PaneId 1, PaneId 2]
+                `shouldBe` [Just 30, Just 19, Just 69]
+            -- C shrinks: only B takes the space back.
+            map (`widthOf` shrunk) [PaneId 0, PaneId 1, PaneId 2]
+                `shouldBe` [Just 30, Just 39, Just 49]
         it "keeps every pane at least one cell wide" $ do
             let lay' = iterate (resizeSplit (PaneId 0) DirRight 30 windowRect) two !! 10
                 (rects, _) = arrange windowRect lay'
