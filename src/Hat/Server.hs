@@ -101,7 +101,6 @@ import Control.Monad (forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.IORef
-import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
@@ -145,21 +144,21 @@ import Hat.Server.Command.Option
 import Hat.Server.Command.Pane
 import Hat.Server.Command.Session
 import Hat.Server.Command.Window
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Command.Types
+    (CommandImpl, Dispatch (..), Reply (..), parseArgs)
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
     , reapMonitor, watcherFault, withRegisteredMonitor )
 import Hat.Server.FormatEnv (paneFormatEnv, refreshAutoNames)
 import Hat.Server.Handover
+import Hat.Server.Overlay
 import Hat.Server.Startup
 import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.Keys
 import Hat.Server.Locate
 import Hat.Server.Pane
-import qualified Hat.Server.Picker as Picker
-import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.Render
 import Hat.Server.Snapshot
 import Hat.Server.Resize
@@ -755,70 +754,9 @@ handleInput st client bs = do
     mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
     case (mpicker, mprompt) of
-        (Just pk, _) -> handlePickerInput st client pk (tokenizeKeys bs)
-        (_, Just pr) -> handlePromptInput st client pr bs
+        (Just pk, _) -> handlePickerInput dispatch st client pk (tokenizeKeys bs)
+        (_, Just pr) -> handlePromptInput dispatch st client pr bs
         _            -> handleKeys st client bs
-
--- | While a chooser is open it owns every keystroke: navigate/search
--- until Enter (run the item's command and close) or Escape (close).
-handlePickerInput
-    :: ServerState -> Client -> PickerState -> [Key] -> IO ()
-handlePickerInput _ _ _ [] = pure ()
-handlePickerInput st client pk0 keys = do
-    let step acc k = case acc of
-            Picker.PickerStay pk -> Picker.editPicker pk k
-            done -> done
-        result = List.foldl' step (Picker.PickerStay pk0) keys
-    case result of
-        Picker.PickerStay pk -> atomically $ do
-            writeTVar client.picker (Just pk)
-            bumpDirty st
-        Picker.PickerCancel -> closePicker st client
-        Picker.PickerRun line -> do
-            closePicker st client
-            replies <- runCommandText st (Just client) line
-            forM_ replies $ \case
-                ROutput out -> showToast st client out
-                RErr e -> showToast st client ("error: " <> e)
-
-closePicker :: ServerState -> Client -> IO ()
-closePicker st client = atomically $ do
-    writeTVar client.picker Nothing
-    bumpDirty st
-
--- | While the command prompt is open it owns every keystroke: the line
--- editor consumes them until Enter (run and close) or Escape (close).
-handlePromptInput
-    :: ServerState -> Client -> PromptState -> B.ByteString -> IO ()
-handlePromptInput st client pr0 bs = do
-    history <- readTVarIO st.cmdHistory
-    let step acc k = case acc of
-            Prompt.Editing pr -> Prompt.editPrompt history pr k
-            done -> done
-        result = List.foldl' step (Prompt.Editing pr0) (tokenizeKeys bs)
-    case result of
-        Prompt.Editing pr -> atomically $ do
-            writeTVar client.prompt (Just pr)
-            bumpDirty st
-        Prompt.Cancel -> atomically $ do
-            writeTVar client.prompt Nothing
-            bumpDirty st
-        Prompt.Submit line -> do
-            let templated = not (T.null pr0.template)
-                cmd = Prompt.applyTemplate pr0.template line
-            atomically $ do
-                writeTVar client.prompt Nothing
-                -- Templated prompts (rename-window, …) keep the : history
-                -- clean; only bare command lines are remembered.
-                unless templated $
-                    modifyTVar' st.cmdHistory (Prompt.pushHistory line)
-                bumpDirty st
-            -- A blank submission cancels: never rename a window to "".
-            unless (T.null (T.strip line)) $ do
-                replies <- runCommandText st (Just client) cmd
-                forM_ replies $ \case
-                    ROutput out -> showToast st client out
-                    RErr e -> showToast st client ("error: " <> e)
 
 -- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
 -- its copy-mode table before each. A key that enters or leaves copy mode
@@ -885,11 +823,9 @@ runKeys st client keys = do
                         Passthrough raw ->
                             forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw
                         RunCommands cmds -> withCommandBatch st $
-                            forM_ cmds $ \argv -> do
-                            replies <- runArgv st (Just client) argv
-                            forM_ replies $ \case
-                                ROutput out -> showToast st client out
-                                RErr e -> showToast st client ("error: " <> e)
+                            forM_ cmds $ \argv ->
+                                toastReplies st client
+                                    =<< runArgv st (Just client) argv
                     loop kst' rest
     st0 <- readIORef client.keyState
     loop st0 keys
@@ -938,6 +874,12 @@ reencodeCursor mpane key = case arrowOf key.name of
         _       -> Nothing
 
 -- The command engine ---------------------------------------------------------
+
+dispatch :: Dispatch
+dispatch = Dispatch
+    { runArgv = runArgv
+    , runCommands = runCommands
+    , runCommandText = runCommandText }
 
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
 runCommandText st mclient input = case parseCommandLine input of
@@ -1405,7 +1347,7 @@ cmdSendKeys st mclient args = do
         -- An open chooser owns send-keys: they drive its navigation/search
         -- (this is how the config's @… \; send-keys /@ enters search).
         (Just pk, Just client) | not modeCmd -> do
-            handlePickerInput st client pk
+            handlePickerInput dispatch st client pk
                 (concatMap (tokenizeKeys . argBytes literal) pos)
             pure []
         _ -> do

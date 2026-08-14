@@ -108,6 +108,7 @@ library
         Hat.Server.LayoutString
         Hat.Server.Locate
         Hat.Server.Mru
+        Hat.Server.Overlay
         Hat.Server.Pane
         Hat.Server.Persist
         Hat.Server.Picker

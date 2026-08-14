@@ -2,6 +2,7 @@
 -- with the timer that clears it.
 module Hat.Server.Toast
     ( showToast
+    , toastReplies
     , expireToast
     , dismissToast
     , toastDeadline
@@ -17,6 +18,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 
 import Hat.Model
 import Hat.Model.Options (Options (..))
+import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Locate (clientOptions)
 
 showToast :: ServerState -> Client -> Text -> IO ()
@@ -62,3 +64,11 @@ dismissToast st client = atomically $ do
     forM_ cur $ \_ -> do
         writeTVar client.toast Nothing
         bumpDirty st
+
+-- | Show a command's replies to the client that asked for it, errors marked.
+-- Only the last line survives on screen; a command that means to report more
+-- than one line has a pager, not a toast.
+toastReplies :: ServerState -> Client -> [Reply] -> IO ()
+toastReplies st client replies = forM_ replies $ \case
+    ROutput out -> showToast st client out
+    RErr e -> showToast st client ("error: " <> e)

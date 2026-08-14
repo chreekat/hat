@@ -4,6 +4,7 @@
 module Hat.Server.Command.Types
     ( Reply (..)
     , CommandImpl
+    , Dispatch (..)
     , parseArgs
     ) where
 
@@ -21,6 +22,16 @@ data Reply = ROutput Text | RErr Text
 -- | A command handler: the server, the issuing client (if any), and the
 -- command's argument words, producing reply lines.
 type CommandImpl = ServerState -> Maybe Client -> [Text] -> IO [Reply]
+
+-- | The command engine's entry points, in the three shapes a caller has a
+-- command in: one argv, a batch of them, or an unparsed line. Carrying them
+-- as a value is what lets a client path run a command while knowing nothing
+-- of the dispatch table.
+data Dispatch = Dispatch
+    { runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
+    , runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
+    , runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
+    }
 
 -- getopt-style flag parser: @spec@ lists the letters that take a
 -- value. Bundled forms work like tmux: @-dsfoo@ is @-d -s foo@.
