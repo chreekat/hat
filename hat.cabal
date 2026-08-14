@@ -115,9 +115,11 @@ library
         Hat.Server.Render
         Hat.Server.Resize
         Hat.Server.Snapshot
+        Hat.Server.Startup
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Title
+        Hat.Server.Toast
         Hat.Server.View
         Hat.Server.WindowStruct
         Hat.Term.Cell
