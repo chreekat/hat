@@ -22,10 +22,6 @@
 -- require knowledge the grid engine cannot have?/ The OS color scheme (OSC
 -- 10\/11, DEC mode 2031), the multiplexer's passthrough policy (DCS @tmux;@),
 -- routing a desktop notification (OSC 9\/777) out to the real terminal — yes.
--- One neighbour, 'dropDecxcprReply', is a different category: peripheral
--- rewriting of the byte stream that crosses the emulator boundary (it drops a
--- DEC-private cursor report real terminals — and libghostty — ignore, a
--- belt-and-suspenders left from when the old libvterm answered it).
 --
 -- Everything here is pure: bytes in, signals and rewritten bytes out. The
 -- 'Hat.Term.Emulator' 'Hat.Term.Emulator.feed' loop is the thin IO wiring
@@ -41,8 +37,6 @@ module Hat.Term.HostProtocol
       -- * screen/tmux window title
     , StitleState (..)
     , scrubStitle
-      -- * DEC private-mode cursor reports
-    , dropDecxcprReply
       -- * Color queries answered by the host
     , QuerySignal (..)
     , CsSignal (..)
@@ -197,26 +191,6 @@ partitionPassthrough = go
             let (sigs, rest) = go more
             in (sig : sigs, before <> rest)
         Nothing -> ([], bs)
-
--- | Strip DEC-private cursor reports (DECXCPR, @CSI ? … R@) from the
--- emulator's replies. Most terminals — ghostty included — ignore
--- @CSI ? 6 n@; the old libvterm answered it, and that reply arrives unexpected
--- at the shell when the inner app exits or resumes, and the line editor spills its bare
--- parameters as visible \"9;4;0\" garbage. Plain CPR (@CSI … R@) and every
--- other reply pass through untouched.
-dropDecxcprReply :: ByteString -> ByteString
-dropDecxcprReply bs =
-    case B.breakSubstring "\ESC[?" bs of
-        (before, rest)
-            | B.null rest -> bs
-            | otherwise ->
-                let afterIntro = B.drop 3 rest            -- past ESC [ ?
-                    (_params, tailB) = B.span isParam afterIntro
-                in case B.uncons tailB of
-                    Just (0x52, more) -> before <> dropDecxcprReply more
-                    _ -> before <> "\ESC[?" <> dropDecxcprReply afterIntro
-  where
-    isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b   -- 0-9 or ';'
 
 -- | A color control the inner app sent to its terminal, which hat answers
 -- itself: neither the emulator nor the outer terminal knows the OS scheme hat

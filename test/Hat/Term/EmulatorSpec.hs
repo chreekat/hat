@@ -470,11 +470,9 @@ spec = do
         evs <- feedStr e "\ESCPtmux;\ESC\ESC[?996n\ESC\\"
         evs `shouldContain` [ColorSchemeQuery]
 
-    -- Bug f: ghostty (like most terminals) ignores DECXCPR (CSI ? 6 n), but
-    -- libvterm answers it with a DEC-private cursor report (CSI ? row;col R).
-    -- Under a multiplexer that unexpected reply reaches the shell on the app's
-    -- exit/resume, where the line editor spills its bare parameters as "9;4;0"
-    -- garbage. Match the real terminal: keep plain CPR, stay silent on DECXCPR.
+    -- Bug f: plain CPR is answered, DECXCPR (CSI ? 6 n) is not — a
+    -- DEC-private cursor report reaches the shell as visible garbage. Nothing
+    -- filters the reply any more, so this pins libghostty's own silence.
     it "answers plain CPR but not DECXCPR (CSI ? 6 n)" $ do
         e <- new80x24
         cpr  <- feedStr e "\ESC[6n"

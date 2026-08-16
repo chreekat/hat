@@ -222,7 +222,7 @@ feedSegments e t = go
             sigEvs <- applySignal e sig
             ((outEvs <> sigEvs) <>) <$> go rest
     -- After feeding a segment, collect what libghostty wrote back to the pty
-    -- (a DA/CPR reply), dropping any spurious DECXCPR reply.
+    -- (a DA/CPR reply).
     writeSeg seg
         | B.null seg = pure []
         | otherwise = do
@@ -230,7 +230,7 @@ feedSegments e t = go
                 c_write t (castPtr p) (fromIntegral n)
             s <- readIORef e.state
             writeIORef e.state (s { output = [] })
-            let outs = dropDecxcprReply (B.concat (reverse s.output))
+            let outs = B.concat (reverse s.output)
             pure [Output outs | not (B.null outs)]
 
 -- | Turn a host query hat answers itself into its 'Event', recording the DEC
