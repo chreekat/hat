@@ -76,6 +76,7 @@ library
         Hat.Client.Draw
         Hat.Command.Parser
         Hat.Client.Tty
+        Hat.Debug
         Hat.FuzzyMatch
         Hat.Geometry
         Hat.Intern
@@ -227,6 +228,7 @@ test-suite hat-test
         Hat.Client.DrawSpec
         Hat.Client.TtySpec
         Hat.Command.ParserSpec
+        Hat.DebugSpec
         Hat.FuzzyMatchSpec
         Hat.InternSpec
         Hat.IntegrationSpec

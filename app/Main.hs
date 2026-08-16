@@ -15,6 +15,7 @@ import System.Process
 
 import Hat.Client
 import Hat.Command.Parser (parseArgv)
+import Hat.Debug (prepareDebugSocket)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
 import Hat.Transport.Socket (connectTo, defaultSocketPath)
@@ -53,19 +54,25 @@ main = do
                     (cfg : _) -> Just cfg
                     _ -> Nothing
             in case mhandover of
-                Just h -> withServerDebug (resumeServer path mconfig h)
-                Nothing -> withServerDebug (runServer path mconfig)
+                Just h -> withServerDebug path (resumeServer path mconfig h)
+                Nothing -> withServerDebug path (runServer path mconfig)
         _ -> clientMain =<< resolveConfig (parseCli args)
 
--- | Under @-fghc-debug@, run the server wrapped in
--- 'GHC.Debug.Stub.withGhcDebug' so ghc-debug-brick can attach to the live
--- process; the identity otherwise. Only the long-lived server is a debuggee —
--- one-shot client invocations are left alone.
-withServerDebug :: IO () -> IO ()
+-- | Run the server as a ghc-debug debuggee on the socket 'prepareDebugSocket'
+-- pins, so ghc-debug-brick can attach to the live process. Only the long-lived
+-- server is a debuggee — one-shot client invocations are left alone, and so is
+-- a server whose socket path would not fit an address. Without @-fghc-debug@
+-- the stub is not linked and nothing listens, but the inherited sockets are
+-- still released.
+withServerDebug :: FilePath -> IO () -> IO ()
+withServerDebug sock act = do
+    mpath <- prepareDebugSocket sock
+    maybe act (const (debuggee act)) mpath
+  where
 #ifdef GHC_DEBUG
-withServerDebug = GHC.Debug.Stub.withGhcDebug
+    debuggee = GHC.Debug.Stub.withGhcDebug
 #else
-withServerDebug = id
+    debuggee = id
 #endif
 
 -- | Pull @--reload-handover PATH@ (the in-place reload marker
