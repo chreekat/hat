@@ -24,12 +24,20 @@ let
   # pre-commit hook in scripts/); callPackage on it avoids the IFD a live
   # callCabal2nix would incur. src is overridden to the gitignore-filtered
   # tree so a callPackage on a live checkout does not copy dist-newstyle.
+  # -fghc-debug: the server always opens a ghc-debug socket, so a live server
+  # can be attached to with ghc-debug-brick without rebuilding and restarting
+  # it first. cabal2nix reads hat.cabal's flag defaults, so the stub dependency
+  # the flag pulls in is absent from hat.nix and is added here alongside it.
   withTests = haskell.lib.doBenchmark
-    ((haskellPackages.callPackage ./hat.nix {
-      libghostty-vt = libghostty-vt;
-    }).overrideAttrs (_: {
-      src = nix-gitignore.gitignoreSource [ ] ./.;
-    }));
+    (haskell.lib.addBuildDepend
+      (haskell.lib.enableCabalFlag
+        ((haskellPackages.callPackage ./hat.nix {
+          libghostty-vt = libghostty-vt;
+        }).overrideAttrs (_: {
+          src = nix-gitignore.gitignoreSource [ ] ./.;
+        }))
+        "ghc-debug")
+      haskellPackages.ghc-debug-stub);
   # dontCheck: the test suite locates the hat binary via `cabal list-bin`
   # and drives it through real ptys alongside dev tools (vim, htop, …) —
   # it runs in the dev shell (`cabal test`), not in the build sandbox.

@@ -56,12 +56,7 @@
         # haskellPackages.ghc carries only boot libraries, so vector and the
         # other non-boot deps would be absent.
         default = pkgs.haskellPackages.shellFor {
-          # ghc-debug-stub is added to the shell's db (not to package.nix) so a
-          # `cabal build -fghc-debug` resolves it while production stays clean.
-          packages = p: [
-            (pkgs.haskell.lib.addBuildDepend
-              (pkgs.callPackage ./package.nix { }).withTests p.ghc-debug-stub)
-          ];
+          packages = _: [ (pkgs.callPackage ./package.nix { }).withTests ];
           nativeBuildInputs = [ pkgs.pkg-config ];
           # Installs the pre-commit hook that guards hat.nix against drift
           # from hat.cabal (see scripts/check-hat-nix.sh). Idempotent, and
@@ -91,6 +86,7 @@
             # pkg-config setup hook adds to the path.
             pkgs.libghostty-vt
             pkgs.haskellPackages.weeder
+            pkgs.haskellPackages.ghc-debug-brick
 
             # Upstream tmux regress/ scripts need FHS-ish utilities on PATH.
             pkgs.coreutils

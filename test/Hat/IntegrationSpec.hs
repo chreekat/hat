@@ -15,7 +15,7 @@ import System.Directory
      removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hSetBuffering, BufferMode (..))
+import System.IO (Handle, hSetBuffering, BufferMode (..), readFile')
 import System.Posix.IO (fdToHandle, handleToFd)
 import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Temp (mkdtemp)
@@ -33,6 +33,7 @@ import qualified Data.Vector as V
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
+import Hat.Debug (boundSocketInodes, debugSocketDir)
 import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
@@ -127,6 +128,14 @@ hatCtl h args = do
 -- Stdout of a hat control command.
 ctlOut :: Hat -> [String] -> IO String
 ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
+
+-- The ghc-debug sockets this Hat's server currently holds open. The private
+-- HOME gives the server a private XDG data dir, so nothing else on the box
+-- binds under it.
+debugSockets :: Hat -> IO [Int]
+debugSockets h =
+    boundSocketInodes (debugSocketDir (h.home </> ".local" </> "share"))
+        <$> readFile' "/proc/net/unix"
 
 -- Where the server writes its persistence store for this isolated Hat,
 -- matching the HAT_STORE_DIR the harness hands it in 'persistEnv'.
@@ -2141,6 +2150,23 @@ spec = parallel $ do
         _ <- awaitExit c2
         c3 <- startClient h
         awaitScreen c3 "BEACON-ONE"
+
+    -- A reload must leave exactly one ghc-debug socket behind, not one per
+    -- generation ('Hat.Debug.prepareDebugSocket').
+    it "restart-server does not leak the previous image's ghc-debug socket" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        opened <- debugSockets h
+        length opened `shouldBe` 1
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c
+        -- Serving a client again proves the new image is past the point where
+        -- it binds its own debug socket.
+        c2 <- startClient h
+        awaitScreen c2 "$"
+        reopened <- debugSockets h
+        length reopened `shouldBe` 1
 
     -- Bug cb: a reload must not forget the alternate session, so a reattached
     -- client's `switch-client -l` still toggles back to where it came from. The
