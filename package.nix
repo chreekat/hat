@@ -9,9 +9,25 @@
 #
 # The source is .gitignore-filtered so a callPackage on a live checkout
 # does not copy dist-newstyle into the store.
-{ haskell, haskellPackages, libghostty-vt, nix-gitignore }:
+#
+# ghcDebug links the ghc-debug stub so the server opens a debug socket
+# ('Hat.Debug'), and turns on the info-table maps that name closures in it. Off
+# here: it is a deployment choice, made by whoever wants their servers
+# attachable without a rebuild-and-restart first.
+{ haskell, haskellPackages, libghostty-vt, nix-gitignore, ghcDebug ? false }:
 
 let
+  # The flag has to go on the Haskell derivation, not the one this file
+  # returns: callPackage's .override takes THIS file's arguments, so
+  # enableCabalFlag cannot reach the cabal flags from outside. cabal2nix reads
+  # hat.cabal's flag defaults, so the stub the flag pulls in is absent from
+  # hat.nix and is added here alongside it.
+  withGhcDebug = drv:
+    if ghcDebug
+    then haskell.lib.addBuildDepend
+      (haskell.lib.enableCabalFlag drv "ghc-debug")
+      haskellPackages.ghc-debug-stub
+    else drv;
   # Checks and benchmarks stay enabled here so the package's test AND
   # benchmark dependencies are part of its build-input closure; the flake
   # devShell derives its GHC from this via shellFor and needs them to run
@@ -24,20 +40,12 @@ let
   # pre-commit hook in scripts/); callPackage on it avoids the IFD a live
   # callCabal2nix would incur. src is overridden to the gitignore-filtered
   # tree so a callPackage on a live checkout does not copy dist-newstyle.
-  # -fghc-debug: the server always opens a ghc-debug socket, so a live server
-  # can be attached to with ghc-debug-brick without rebuilding and restarting
-  # it first. cabal2nix reads hat.cabal's flag defaults, so the stub dependency
-  # the flag pulls in is absent from hat.nix and is added here alongside it.
-  withTests = haskell.lib.doBenchmark
-    (haskell.lib.addBuildDepend
-      (haskell.lib.enableCabalFlag
-        ((haskellPackages.callPackage ./hat.nix {
-          libghostty-vt = libghostty-vt;
-        }).overrideAttrs (_: {
-          src = nix-gitignore.gitignoreSource [ ] ./.;
-        }))
-        "ghc-debug")
-      haskellPackages.ghc-debug-stub);
+  withTests = haskell.lib.doBenchmark (withGhcDebug
+    ((haskellPackages.callPackage ./hat.nix {
+      libghostty-vt = libghostty-vt;
+    }).overrideAttrs (_: {
+      src = nix-gitignore.gitignoreSource [ ] ./.;
+    })));
   # dontCheck: the test suite locates the hat binary via `cabal list-bin`
   # and drives it through real ptys alongside dev tools (vim, htop, …) —
   # it runs in the dev shell (`cabal test`), not in the build sandbox.

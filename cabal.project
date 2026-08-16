@@ -1,10 +1,5 @@
 packages: .
 
--- The ghc-debug socket is on by default, so a running server can always be
--- attached to with ghc-debug-brick without a rebuild-and-restart first. The
--- flag stays in hat.cabal so a consumer can build the shim out.
-flags: +ghc-debug
-
 -- Build against the GHC global package db only; no Hackage fetches.
 active-repositories: :none
 
