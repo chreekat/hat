@@ -30,6 +30,7 @@ import Control.Monad (forM, forM_, unless, void)
 import qualified Data.ByteString as B
 import Data.Char (isAlpha, isAlphaNum)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -42,6 +43,7 @@ import System.Posix.Process (executeFile)
 import System.Posix.Signals (sigHUP, signalProcess)
 import System.Posix.Types (Fd (..))
 import System.Process
+import Text.Read (readMaybe)
 import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Log
 import Hat.Server.Environ
@@ -340,17 +342,30 @@ resolveReloadTarget = do
     onPath <- findExecutable "hat"
     maybe getExecutablePath pure onPath
 
--- Clear close-on-exec on the fds the reload must carry into the new image:
--- the listening socket and every pane's pty master. They are not marked
--- close-on-exec today, but a libc that set the flag would otherwise slam them
--- shut on the exec and hang up every program.
+-- Decide what crosses the execve. The fds the reload names — the listening
+-- socket and every pane's pty master — are cleared of close-on-exec, since a
+-- libc that set the flag would slam them shut and hang up every program.
+-- Everything else is marked close-on-exec: the successor image opens its own
+-- log, store and debug socket, so an inherited one is a leak that rides every
+-- future reload too. The standard streams stay, or the new image would find
+-- 0, 1 and 2 free for the kernel to hand out as something else.
 keepOpenAcrossExec :: ReloadCleanup -> IO ()
 keepOpenAcrossExec cleanup = do
-    clear cleanup.listenFd
-    forM_ cleanup.live $ \(fd, _pid) -> clear fd
+    forM_ keep (setCloseOnExec False)
+    held <- openFds
+    forM_ (filter (`notElem` std <> keep) held) (setCloseOnExec True)
   where
-    clear fd = PIO.setFdOption (Fd (fromIntegral fd)) PIO.CloseOnExec False
-        `catch` \(_ :: IOException) -> pure ()
+    keep = cleanup.listenFd : map fst cleanup.live
+    std = [0, 1, 2]
+    setCloseOnExec on fd =
+        PIO.setFdOption (Fd (fromIntegral fd)) PIO.CloseOnExec on
+            `catch` \(_ :: IOException) -> pure ()
+
+-- The fds this process holds. The directory handle the listing itself opens is
+-- closed by the time the list is read back, so it lands as a stale entry.
+openFds :: IO [Int]
+openFds = (mapMaybe readMaybe <$> listDirectory "/proc/self/fd")
+    `catch` \(_ :: IOException) -> pure []
 
 -- Release fds a reload inherited but cannot use — an incompatible or corrupt
 -- payload. Closing a pane master hangs its child up (and SIGHUP makes sure),

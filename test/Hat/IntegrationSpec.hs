@@ -11,11 +11,12 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.IORef
 import System.Directory
-    (createDirectoryIfMissing, createFileLink, doesFileExist,
+    (createDirectoryIfMissing, createFileLink, doesFileExist, listDirectory,
      removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hSetBuffering, BufferMode (..), readFile')
+import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (fdToHandle, handleToFd)
 import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Temp (mkdtemp)
@@ -26,11 +27,12 @@ import System.Process (readProcess)
 import qualified System.Process as P
 import System.Timeout (timeout)
 import Test.Hspec
+import Text.Read (readMaybe)
 
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Debug (boundSocketInodes, debugSocketDir)
@@ -136,6 +138,26 @@ debugSockets :: Hat -> IO [Int]
 debugSockets h =
     boundSocketInodes (debugSocketDir (h.home </> ".local" </> "share"))
         <$> readFile' "/proc/net/unix"
+
+-- This Hat's server pid, found by the socket path in its argv — the same
+-- handle 'teardown' reaps by.
+serverPid :: Hat -> IO Int
+serverPid h = do
+    (_, out, _) <- P.readProcessWithExitCode
+        "pgrep" ["-f", "--", "--server " <> h.sock] ""
+    case mapMaybe readMaybe (lines out) of
+        (p : _) -> pure p
+        [] -> fail ("no server running on " <> h.sock)
+
+-- How many fds the server holds on one path.
+fdsOn :: Hat -> FilePath -> IO Int
+fdsOn h path = do
+    pid <- serverPid h
+    let dir = "/proc/" <> show pid <> "/fd"
+    entries <- listDirectory dir
+    links <- forM entries $ \e ->
+        readSymbolicLink (dir </> e) `catch` \(_ :: IOException) -> pure ""
+    pure (length (filter (== path) links))
 
 -- Where the server writes its persistence store for this isolated Hat,
 -- matching the HAT_STORE_DIR the harness hands it in 'persistEnv'.
@@ -2167,6 +2189,18 @@ spec = parallel $ do
         awaitScreen c2 "$"
         reopened <- debugSockets h
         length reopened `shouldBe` 1
+
+    -- Bug 8a: only the fds a reload names may cross the execve; the log handle
+    -- stands in for every fd the successor image reopens for itself.
+    it "restart-server leaves the fds it does not name behind" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c
+        c2 <- startClient h
+        awaitScreen c2 "$"
+        fdsOn h (h.home </> "server.log") `shouldReturn` 1
 
     -- Bug cb: a reload must not forget the alternate session, so a reattached
     -- client's `switch-client -l` still toggles back to where it came from. The
