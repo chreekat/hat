@@ -33,6 +33,17 @@
             overlays = [ (final: prev: {
               libghostty-vt =
                 (import nixpkgs-ghostty { inherit system; }).libghostty-vt;
+              # ghc-debug-brick renders every unnamed attribute dim, which in a
+              # terminal that honours SGR 2 (hat does) leaves the whole UI
+              # low-contrast. Its attribute map is hardcoded — no theme file,
+              # no flag — so readable colours mean patching it.
+              # extend composes with the set's existing overrides; the
+              # `override { overrides = … }` spelling replaces them.
+              haskellPackages = prev.haskellPackages.extend (_: hprev: {
+                ghc-debug-brick =
+                  prev.haskell.lib.appendPatch hprev.ghc-debug-brick
+                    ./nix/ghc-debug-brick-contrast.patch;
+              });
             }) ];
           }));
     in
