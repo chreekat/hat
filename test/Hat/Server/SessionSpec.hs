@@ -15,6 +15,8 @@ import System.Mem (performGC)
 import Test.Hspec
 
 import qualified Data.Set as Set
+import qualified Data.Vector as V
+import qualified Hat.Term.Cell as Cell
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
@@ -44,7 +46,7 @@ import Hat.Transport.Wire
     , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
-import Hat.Server.View (awaitRenderable)
+import Hat.Server.View (awaitRenderable, statusCells)
 
 -- A bare session with the given id inserted into an existing server.
 addSession :: ServerState -> Int -> IO Session
@@ -354,6 +356,25 @@ spec = do
             b <- atomically (resolveForSession st sessB)
             a.prefix `shouldBe` "C-a"   -- session A's own set
             b.prefix `shouldBe` "C-b"   -- B falls through to the global
+
+    describe "window_active_clients" $ do
+        it "counts a client viewing a window linked into another session" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-eyes.sock" Nothing
+            sessA <- addSession st 0
+            sessB <- addSession st 1
+            shared <- addWindow sessA 1
+            _ <- addWindow sessA 2
+            atomically $ do
+                modifyTVar' sessB.windows (Map.insert 1 shared)
+                writeTVar sessA.currentIx 2   -- A looks at its own window
+                writeTVar sessB.currentIx 1   -- B looks at the shared one
+                modifyTVar' st.options $ \o ->
+                    o { windowStatusFormat = "#I#{?window_active_clients,<eyes>,}" }
+            _ <- addClient st sessB.id (Size { rows = 24, cols = 80 }) 1
+            row <- statusCells st sessA 80
+            T.concat (map (.text) (V.toList row))
+                `shouldSatisfy` T.isInfixOf "1<eyes>"
 
     describe "current-window attention flags" $ do
         let small = Size { rows = 24, cols = 80 }

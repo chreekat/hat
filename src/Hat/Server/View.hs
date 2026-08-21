@@ -27,7 +27,7 @@ import Control.Monad (foldM, forM, void, when)
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -499,6 +499,19 @@ promptCells pr width = lineCells promptStyle width (pr.promptLabel <> pr.input)
 promptCursorCol :: PromptState -> Int
 promptCursorCol pr = T.length pr.promptLabel + pr.cursor
 
+-- | tmux's @window_active_clients@, per window: a client counts for the window
+-- its session currently shows, keyed by window identity so a window linked
+-- into several sessions counts the viewers of every one.
+activeClientCounts :: ServerState -> STM (Map.Map WindowId Int)
+activeClientCounts st = do
+    cs <- Map.elems <$> readTVar st.clients
+    sessions <- readTVar st.sessions
+    fmap (Map.fromListWith (+) . catMaybes) . forM cs $ \c -> do
+        sid <- readTVar c.session
+        case Map.lookup sid sessions of
+            Nothing -> pure Nothing
+            Just sess -> fmap (\w -> (w.id, 1)) <$> currentWindow sess
+
 -- Session-level format environment for the active window and pane.
 sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
 sessionFormatEnv st sess = do
@@ -508,12 +521,15 @@ sessionFormatEnv st sess = do
         mwin <- currentWindow sess
         cur <- readTVar sess.currentIx
         nwindows <- Map.size <$> readTVar sess.windows
+        counts <- activeClientCounts st
         wEnv <- case mwin of
             Nothing -> pure []
             Just win -> do
                 wname <- readTVar win.name
                 pure [ ("window_index", tshow cur)
                      , ("window_name", wname)
+                     , ( "window_active_clients"
+                       , tshow (Map.findWithDefault 0 win.id counts) )
                      ]
         mactive <- maybe (pure Nothing) activePane mwin
         cs <- sessionClients st sess.id
@@ -539,7 +555,7 @@ sessionFormatEnv st sess = do
         , ("session_attached", tshow nclients)
         , ("session_windows", tshow nwindows)
         , ("host", T.pack hostname)
-        , ("window_active_clients", tshow nclients)
+        , ("window_active_clients", "0")
         , ("window_width", tshow sz.cols)
         , ("window_height", tshow sz.rows)
         , ("color_scheme", maybe "" schemeName msch)
@@ -651,7 +667,7 @@ statusCells st sess width = do
         ws <- readTVarIO sess.windows
         cur <- readTVarIO sess.currentIx
         mlast <- listToMaybe <$> readTVarIO sess.windowHist
-        clientCount <- length <$> atomically (sessionClients st sess.id)
+        counts <- atomically (activeClientCounts st)
         forM (Map.toAscList ws) $ \(ix, win) -> do
             (wname, bell, act, zoom) <- atomically $ (,,,)
                 <$> readTVar win.name <*> readTVar win.bellFlag
@@ -663,9 +679,7 @@ statusCells st sess width = do
                     , flagActivity = act
                     , flagZoomed = isJust zoom
                     }
-                -- A session's clients all view its current window, so only
-                -- that window has active clients; the rest have none.
-                activeClients = if ix == cur then clientCount else 0
+                activeClients = Map.findWithDefault 0 win.id counts
                 wenv = Map.union (Map.fromList
                     [ ("window_index", tshow ix)
                     , ("window_name", wname)
