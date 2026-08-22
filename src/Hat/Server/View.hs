@@ -648,18 +648,20 @@ data WindowFlagState = WindowFlagState
     , flagLast     :: Bool
     , flagBell     :: Bool
     , flagActivity :: Bool
+    , flagSilence  :: Bool
     , flagZoomed   :: Bool
     }
 
 -- | Render the window-status flags in tmux's order: current (@*@) or
--- last (@-@), then bell (@!@) and activity (@#@), and finally zoom
--- (@Z@) when the window has a pane zoomed to fill it.
+-- last (@-@), then bell (@!@), activity (@#@) and silence (@~@), and
+-- finally zoom (@Z@) when the window has a pane zoomed to fill it.
 windowFlags :: WindowFlagState -> Text
 windowFlags s = T.concat
     [ if s.flagCurrent then "*"
       else if s.flagLast then "-" else ""
     , if s.flagBell then "!" else ""
     , if s.flagActivity then "#" else ""
+    , if s.flagSilence then "~" else ""
     , if s.flagZoomed then "Z" else ""
     ]
 
@@ -675,14 +677,16 @@ statusCells st sess width = do
         mlast <- listToMaybe <$> readTVarIO sess.windowHist
         counts <- atomically (activeClientCounts st)
         forM (Map.toAscList ws) $ \(ix, win) -> do
-            (wname, bell, act, zoom) <- atomically $ (,,,)
+            (wname, bell, act, sil, zoom) <- atomically $ (,,,,)
                 <$> readTVar win.name <*> readTVar win.bellFlag
-                <*> readTVar win.activity <*> readTVar win.zoomed
+                <*> readTVar win.activity <*> readTVar win.silenceFlag
+                <*> readTVar win.zoomed
             let flags = windowFlags WindowFlagState
                     { flagCurrent = ix == cur
                     , flagLast = Just ix == mlast
                     , flagBell = bell
                     , flagActivity = act
+                    , flagSilence = sil
                     , flagZoomed = isJust zoom
                     }
                 activeClients = Map.findWithDefault 0 win.id counts

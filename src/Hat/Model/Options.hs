@@ -6,6 +6,8 @@ module Hat.Model.Options
     ( Options (..)
     , StatusPosition (..)
     , ModeKeys (..)
+    , AlertAction (..)
+    , alertAllows
     , BorderLines (..)
     , BorderIndicators (..)
     , Keymap
@@ -55,6 +57,19 @@ data StatusPosition = StatusTop | StatusBottom
 data ModeKeys = KeysVi | KeysEmacs
     deriving (Eq, Show)
 
+-- | @bell-action@: which windows' bells raise the alert hook.
+data AlertAction = AlertAny | AlertNone | AlertCurrent | AlertOther
+    deriving (Eq, Show)
+
+-- | Whether an alert in a (non-)current window fires its hook under an
+-- action setting.
+alertAllows :: AlertAction -> Bool -> Bool
+alertAllows action isCurrent = case action of
+    AlertAny -> True
+    AlertNone -> False
+    AlertCurrent -> isCurrent
+    AlertOther -> not isCurrent
+
 -- | @pane-border-lines@: which box-drawing glyph set draws pane borders.
 data BorderLines = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
     deriving (Eq, Show)
@@ -97,6 +112,9 @@ data Options = Options
     , focusEvents            :: Bool
     , aggressiveResize       :: Bool
     , monitorActivity        :: Bool
+    , monitorBell            :: Bool
+    , monitorSilence         :: Int   -- ^ seconds of quiet before alert-silence; 0 disables
+    , bellAction             :: AlertAction
     , automaticRename        :: Bool   -- ^ windows track their foreground command
     , remainOnExit           :: Bool   -- ^ a dead pane stays until killed; see 'Hat.Server.Pane.paneEof'
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
@@ -146,6 +164,9 @@ defaultOptions = Options
     , focusEvents = False
     , aggressiveResize = False
     , monitorActivity = False
+    , monitorBell = True
+    , monitorSilence = 0
+    , bellAction = AlertAny
     , automaticRename = True
     , remainOnExit = False
     , automaticRenameFormat = "#{pane_current_command}"
@@ -199,6 +220,9 @@ data OptionName
     | OptFocusEvents
     | OptAggressiveResize
     | OptMonitorActivity
+    | OptMonitorBell
+    | OptMonitorSilence
+    | OptBellAction
     | OptAutomaticRename
     | OptRemainOnExit
     | OptAutomaticRenameFormat
@@ -223,6 +247,7 @@ data OptionValue
     | OVStyle Cell.Style
     | OVBorderLines BorderLines
     | OVBorderIndicators BorderIndicators
+    | OVAlertAction AlertAction
     | OVIndexed (Map Int Text)  -- ^ an array option's entries, by index
     deriving (Eq, Show)
 
@@ -307,6 +332,9 @@ applyEntry name val o = case (name, val) of
     (OptFocusEvents, OVBool b) -> o { focusEvents = b }
     (OptAggressiveResize, OVBool b) -> o { aggressiveResize = b }
     (OptMonitorActivity, OVBool b) -> o { monitorActivity = b }
+    (OptMonitorBell, OVBool b) -> o { monitorBell = b }
+    (OptMonitorSilence, OVInt n) -> o { monitorSilence = n }
+    (OptBellAction, OVAlertAction a) -> o { bellAction = a }
     (OptAutomaticRename, OVBool b) -> o { automaticRename = b }
     (OptRemainOnExit, OVBool b) -> o { remainOnExit = b }
     (OptAutomaticRenameFormat, OVText t) -> o { automaticRenameFormat = t }
@@ -336,6 +364,8 @@ optionScopeClass = \case
     OptWordSeparators -> WindowOption
     OptAggressiveResize -> WindowOption
     OptMonitorActivity -> WindowOption
+    OptMonitorBell -> WindowOption
+    OptMonitorSilence -> WindowOption
     OptAutomaticRename -> WindowOption
     OptRemainOnExit -> WindowOption
     OptAutomaticRenameFormat -> WindowOption
@@ -396,7 +426,8 @@ allOptionNames =
     , OptPaneBorderLines, OptPaneBorderIndicators, OptCursorColour
     , OptSetTitles
     , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
-    , OptMonitorActivity, OptAutomaticRename, OptAutomaticRenameFormat
+    , OptMonitorActivity, OptMonitorBell, OptMonitorSilence, OptBellAction
+    , OptAutomaticRename, OptAutomaticRenameFormat
     , OptRemainOnExit
     , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
     , OptCommandAlias
@@ -488,6 +519,9 @@ optionNameText = \case
     OptFocusEvents -> "focus-events"
     OptAggressiveResize -> "aggressive-resize"
     OptMonitorActivity -> "monitor-activity"
+    OptMonitorBell -> "monitor-bell"
+    OptMonitorSilence -> "monitor-silence"
+    OptBellAction -> "bell-action"
     OptAutomaticRename -> "automatic-rename"
     OptRemainOnExit -> "remain-on-exit"
     OptAutomaticRenameFormat -> "automatic-rename-format"
@@ -535,6 +569,9 @@ optionValueOf o = \case
     OptFocusEvents -> Just (OVBool o.focusEvents)
     OptAggressiveResize -> Just (OVBool o.aggressiveResize)
     OptMonitorActivity -> Just (OVBool o.monitorActivity)
+    OptMonitorBell -> Just (OVBool o.monitorBell)
+    OptMonitorSilence -> Just (OVInt o.monitorSilence)
+    OptBellAction -> Just (OVAlertAction o.bellAction)
     OptAutomaticRename -> Just (OVBool o.automaticRename)
     OptRemainOnExit -> Just (OVBool o.remainOnExit)
     OptAutomaticRenameFormat -> Just (OVText o.automaticRenameFormat)
@@ -568,6 +605,11 @@ formatOptionValue = \case
         BorderHeavy -> "heavy"
         BorderDouble -> "double"
         BorderSimple -> "simple"
+    OVAlertAction a -> case a of
+        AlertAny -> "any"
+        AlertNone -> "none"
+        AlertCurrent -> "current"
+        AlertOther -> "other"
     OVBorderIndicators i -> case i of
         IndicatorsOff -> "off"
         IndicatorsColour -> "colour"

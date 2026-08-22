@@ -678,6 +678,14 @@ scalarOptionEntry mode opts name value = case name of
     "focus-events" -> withOnOff OptFocusEvents
     "aggressive-resize" -> withOnOff OptAggressiveResize
     "monitor-activity" -> withOnOff OptMonitorActivity
+    "monitor-bell" -> withOnOff OptMonitorBell
+    "monitor-silence" -> withInt OptMonitorSilence
+    "bell-action" -> case value of
+        "any" -> Right (OptBellAction, OVAlertAction AlertAny)
+        "none" -> Right (OptBellAction, OVAlertAction AlertNone)
+        "current" -> Right (OptBellAction, OVAlertAction AlertCurrent)
+        "other" -> Right (OptBellAction, OVAlertAction AlertOther)
+        _ -> Left "bell-action: any, none, current, or other"
     "automatic-rename" -> withOnOff OptAutomaticRename
     "remain-on-exit" -> withOnOff OptRemainOnExit
     "automatic-rename-format" -> Right (OptAutomaticRenameFormat, OVText value)

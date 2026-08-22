@@ -5,6 +5,7 @@
 -- format-expanded before parsing, so @#{hook_value}@ works without @-F@.
 module Hat.Server.HookMonitor
     ( parseMonitorSpec
+    , silenceSweep
     , monitorTargetText
     , addMonitor
     , removeMonitor
@@ -16,7 +17,7 @@ module Hat.Server.HookMonitor
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, catch)
-import Control.Monad (forM_, forever)
+import Control.Monad (forM_, forever, when)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
@@ -92,13 +93,45 @@ monitorsAt st scope = do
     monitors <- readTVarIO st.hooks.monitors
     pure [ (n, m) | ((sc, n), m) <- Map.toAscList monitors, sc == scope ]
 
--- | The sampling daemon; see 'sampleMonitors'.
+-- | The sampling daemon: format monitors ('sampleMonitors') and the
+-- monitor-silence timers ('silenceSweep').
 monitorLoop :: ServerState -> IO ()
 monitorLoop st = forever $ do
     threadDelay 400_000
-    sampleMonitors st `catch` \(e :: SomeException) ->
+    (sampleMonitors st >> silenceSweep st) `catch` \(e :: SomeException) ->
         logEvent st.logger DaemonFault
             { daemon = "hook-monitor", err = tshow e }
+
+-- | Raise the silence flag (and, for a non-current window, alert-silence)
+-- on every monitored window quiet past its @monitor-silence@ interval; the
+-- hook fires once per raise, and activity restarts the timer.
+silenceSweep :: ServerState -> IO ()
+silenceSweep st = do
+    now <- getPOSIXTime
+    sessions <- readTVarIO st.sessions
+    forM_ (Map.elems sessions) $ \sess -> do
+        ws <- readTVarIO sess.windows
+        forM_ (Map.toList ws) $ \(ix, win) -> do
+            mfire <- atomically $ do
+                opts <- resolveForWindow st sess win
+                if opts.monitorSilence <= 0 then pure Nothing else do
+                    lastAct <- readTVar win.activityAt
+                    flagged <- readTVar win.silenceFlag
+                    if flagged
+                        || now - lastAct < fromIntegral opts.monitorSilence
+                        then pure Nothing
+                        else do
+                            writeTVar win.silenceFlag True
+                            bumpDirty st
+                            cur <- readTVar sess.currentIx
+                            sname <- readTVar sess.name
+                            wname <- readTVar win.name
+                            pure (Just (cur /= ix, sname, wname))
+            forM_ mfire $ \(allowed, sname, wname) ->
+                when allowed $ notify st "alert-silence"
+                    (NotifyTarget (Just sess.id) (Just win.id) Nothing)
+                    [ ("session", PSessionRef sess.id sname)
+                    , ("window", PWindowRef win.id wname) ]
 
 -- | Sample every monitor once, firing those whose value changed since the
 -- previous sample (the first sample only records).

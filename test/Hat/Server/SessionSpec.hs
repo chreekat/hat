@@ -94,6 +94,8 @@ addWindow sess n = do
         <*> newTVarIO []
         <*> newTVarIO False
         <*> newTVarIO False
+        <*> newTVarIO False
+        <*> newTVarIO 0
         <*> newTVarIO Nothing
         <*> newTVarIO True
         <*> newTVarIO emptyDelta

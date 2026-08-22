@@ -10,6 +10,7 @@ noFlags = WindowFlagState
     , flagLast = False
     , flagBell = False
     , flagActivity = False
+    , flagSilence = False
     , flagZoomed = False
     }
 
@@ -34,8 +35,9 @@ spec = do
             , flagLast = False
             , flagBell = True
             , flagActivity = True
+            , flagSilence = True
             , flagZoomed = True
-            } `shouldBe` "*!#Z"
+            } `shouldBe` "*!#~Z"
 
     it "does not render Z when the window is not zoomed" $
         windowFlags noFlags { flagCurrent = True } `shouldBe` "*"

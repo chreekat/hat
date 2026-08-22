@@ -33,6 +33,7 @@ module Hat.Server.Pane
     , attentionSeen
     , windowSeen
     , markActivity
+    , windowActivity
     , markBell
     , noteOuterFocus
     , paneExitWaitMicros
@@ -68,6 +69,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
@@ -178,6 +180,8 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     layoutNameVar <- newTVarIO Nothing
     optionsVar    <- newTVarIO emptyDelta
+    silenceVar    <- newTVarIO False
+    activityAtVar <- newTVarIO =<< getPOSIXTime
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -188,6 +192,8 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , paneHist = paneHistVar
             , bellFlag = bellVar
             , activity = activityVar
+            , silenceFlag = silenceVar
+            , activityAt = activityAtVar
             , zoomed = zoomVar
             , autoRename = autoRenameVar
             , options = optionsVar
@@ -353,14 +359,18 @@ startPaneReader st sid win pane = do
                     notifyPane st "pane-title-changed" pane
                         [ ("new_title", PText t) ]
                 Emu.Bell -> do
-                    atomically $ do
-                        markBell st sid win
+                    fires <- atomically $ do
+                        r <- bellAlerts st win
                         bumpDirty st
+                        pure r
                     broadcast st sid RingBell
                     notifyPane st "pane-bell" pane []
-                Emu.ScreenChanged -> atomically $ do
-                    markActivity st sid win
-                    bumpDirty st
+                    forM_ fires $ \(osid, sname, wname) ->
+                        notify st "alert-bell"
+                            (NotifyTarget (Just osid) (Just win.id) Nothing)
+                            [ ("session", PSessionRef osid sname)
+                            , ("window", PWindowRef win.id wname) ]
+                Emu.ScreenChanged -> windowActivity st sid win
                 -- the emulator reported a terminal property hat does not act on;
                 -- surface it as a warning rather than silently dropping it.
                 Emu.UnknownProp kind prop ->
@@ -411,6 +421,70 @@ windowSeen st sess win = do
     cs <- sessionClients st sess.id
     anyFocused <- or <$> mapM (readTVar . (.outerFocused)) cs
     pure (attentionSeen current anyFocused)
+
+-- | Register activity on a window: restart its silence timer, raise the
+-- activity flag, and fire alert-activity when the flag newly rose on a
+-- non-current window. Output and window creation both land here.
+windowActivity :: ServerState -> SessionId -> Window -> IO ()
+windowActivity st sid win = do
+    now <- getPOSIXTime
+    mfire <- atomically $ do
+        writeTVar win.activityAt now
+        r <- activityAlert st sid win
+        bumpDirty st
+        pure r
+    forM_ mfire $ \(sname, wname) ->
+        notify st "alert-activity"
+            (NotifyTarget (Just sid) (Just win.id) Nothing)
+            [ ("session", PSessionRef sid sname)
+            , ("window", PWindowRef win.id wname) ]
+
+-- | 'markBell' plus the alert decision, once per session holding the
+-- window: the sessions whose @alert-bell@ should fire (monitor-bell on and
+-- bell-action admits the window there). Bells are not deduplicated — every
+-- bell reports.
+bellAlerts :: ServerState -> Window -> STM [(SessionId, Text, Text)]
+bellAlerts st win = do
+    sessions <- Map.toAscList <$> readTVar st.sessions
+    fmap concat . forM sessions $ \(osid, sess) -> do
+        ws <- readTVar sess.windows
+        if not (any (\w -> w.id == win.id) (Map.elems ws))
+            then pure []
+            else do
+                wopts <- resolveForWindow st sess win
+                if not wopts.monitorBell then pure [] else do
+                    seen <- windowSeen st sess win
+                    unless seen $ writeTVar win.bellFlag True
+                    isCur <- isCurrentWindow sess win
+                    if alertAllows wopts.bellAction isCur
+                        then do
+                            sname <- readTVar sess.name
+                            wname <- readTVar win.name
+                            pure [(osid, sname, wname)]
+                        else pure []
+
+-- | 'markActivity' plus the alert decision: names when @alert-activity@
+-- should fire — only on the flag's off-to-on transition, and never for the
+-- current window (tmux's default @activity-action other@).
+activityAlert :: ServerState -> SessionId -> Window -> STM (Maybe (Text, Text))
+activityAlert st sid win = do
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Nothing -> pure Nothing
+        Just sess -> do
+            wopts <- resolveForWindow st sess win
+            if not wopts.monitorActivity then pure Nothing else do
+                was <- readTVar win.activity
+                seen <- windowSeen st sess win
+                unless seen $ writeTVar win.activity True
+                nowSet <- readTVar win.activity
+                isCur <- isCurrentWindow sess win
+                if not was && nowSet && not isCur
+                    then do
+                        sname <- readTVar sess.name
+                        wname <- readTVar win.name
+                        pure (Just (sname, wname))
+                    else pure Nothing
 
 -- | Flag a window as having activity, when @monitor-activity@ is on. A
 -- window being watched ('windowSeen') is exempt — no attention marker
@@ -797,6 +871,8 @@ wrapPaneInWindow st pane = do
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     layoutNameVar <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
+    silenceVar <- newTVarIO False
+    activityAtVar <- newTVarIO =<< getPOSIXTime
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -807,6 +883,8 @@ wrapPaneInWindow st pane = do
         , paneHist = paneHistVar
         , bellFlag = bellVar
         , activity = activityVar
+        , silenceFlag = silenceVar
+        , activityAt = activityAtVar
         , zoomed = zoomVar
         , autoRename = autoRenameVar
         , options = optionsVar

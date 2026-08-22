@@ -23,6 +23,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import System.Directory
@@ -256,12 +257,15 @@ rebuildReloadWindow st sz rwin = do
     zoomVar       <- newTVarIO Nothing
     autoRenameVar <- newTVarIO rwin.autoRename
     optionsVar    <- newTVarIO emptyDelta
+    silenceVar    <- newTVarIO False
+    activityAtVar <- newTVarIO =<< getPOSIXTime
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
             , paneHist = paneHistVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
+            , silenceFlag = silenceVar, activityAt = activityAtVar
             , autoRename = autoRenameVar, options = optionsVar }
     pure (win, panes)
 

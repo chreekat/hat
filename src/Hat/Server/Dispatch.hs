@@ -36,6 +36,7 @@ import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Read as TR
 import qualified Data.Text.Encoding.Error as TEE
 import System.Directory
 import System.Environment (getExecutablePath)
@@ -620,6 +621,7 @@ cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do
     let (opts, flags, pos) = parseArgs "tN" args
         literal = "-l" `elem` flags
+        hexBytes = "-H" `elem` flags
         modeCmd = "-X" `elem` flags
     mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
     case (mpicker, mclient) of
@@ -630,13 +632,27 @@ cmdSendKeys st mclient args = do
                 (concatMap (tokenizeKeys . argBytes literal) pos)
             pure []
         _ -> do
-            mpane <- targetPane st mclient (lookup "-t" opts)
+            -- A full pane target (sess:win.N) resolves through cmd-find;
+            -- the special pane tokens (%N, !, {marked}) keep the old path.
+            let mtok = lookup "-t" opts
+            mpane <- case Target.parsePaneTarget mtok of
+                Target.PaneCurrent | Just t <- mtok -> do
+                    res <- findTarget st mclient Target.FindPane (Just t)
+                    pure $ case res of
+                        Right (_, _, _, p) -> Just p
+                        Left _ -> Nothing
+                _ -> targetPane st mclient mtok
             case mpane of
                 Nothing -> pure []
                 Just pane
                     | modeCmd -> case pos of
                         (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
                         [] -> pure []
+                    -- -H: each argument is one hex byte.
+                    | hexBytes -> case mapM hexByte pos of
+                        Just bytes ->
+                            [] <$ Hat.Term.Pty.writePty pane.pty (B.pack bytes)
+                        Nothing -> pure [RErr "send-keys -H: bad hex byte"]
                     | otherwise -> [] <$ Hat.Term.Pty.writePty pane.pty
                         (B.concat (map (argBytes literal) pos))
   where
@@ -644,3 +660,7 @@ cmdSendKeys st mclient args = do
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
+    hexByte t = case TR.hexadecimal t of
+        Right (n, rest) | T.null rest, n >= 0, n <= 255 ->
+            Just (fromIntegral (n :: Int))
+        _ -> Nothing

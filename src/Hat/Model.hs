@@ -71,6 +71,7 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.POSIX (POSIXTime)
 import qualified Data.Vector as V
 import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
@@ -190,6 +191,8 @@ data Window = Window
     , paneHist   :: TVar [PaneId]  -- ^ MRU pane ids; see 'Hat.Server.Mru'
     , bellFlag   :: TVar Bool
     , activity   :: TVar Bool  -- ^ output since last viewed (monitor-activity)
+    , silenceFlag :: TVar Bool  -- ^ quiet past monitor-silence; see 'Hat.Server.HookMonitor.silenceSweep'
+    , activityAt :: TVar POSIXTime  -- ^ when output last arrived (the silence timer's anchor)
     , zoomed     :: TVar (Maybe PaneId)
     , autoRename :: TVar Bool
         -- ^ when set, the name tracks the active pane's foreground command

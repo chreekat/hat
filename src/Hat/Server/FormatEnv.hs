@@ -37,12 +37,14 @@ windowFormatEnv st sess ix win = do
         <*> readTVar sess.currentIx <*> (listToMaybe <$> readTVar sess.windowHist)
         <*> readTVar win.bellFlag <*> readTVar win.activity
         <*> readTVar win.autoRename <*> readTVar win.zoomed
+    sil <- readTVarIO win.silenceFlag
     ps <- readTVarIO win.panes
     let flags = windowFlags WindowFlagState
             { flagCurrent = ix == cur
             , flagLast = Just ix == mlast
             , flagBell = bell
             , flagActivity = act
+            , flagSilence = sil
             , flagZoomed = isJust zoom
             }
     pure $ Map.union (Map.fromList
@@ -54,6 +56,9 @@ windowFormatEnv st sess ix win = do
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))
         , ("window_zoomed_flag", if isJust zoom then "1" else "0")
+        , ("window_bell_flag", if bell then "1" else "0")
+        , ("window_activity_flag", if act then "1" else "0")
+        , ("window_silence_flag", if sil then "1" else "0")
         , ("automatic_rename", if auto then "1" else "0")
         ]) base
 

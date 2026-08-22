@@ -47,7 +47,7 @@ import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
-    , pickActivityTarget, sessionSpawnEnv, startPaneReader )
+    , pickActivityTarget, sessionSpawnEnv, startPaneReader, windowActivity )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.View (expandFormat, sessionFormatEnv)
 import qualified Hat.Server.Target as Target
@@ -220,6 +220,8 @@ createWindow st sess opts flags pos requested = do
                 killPaneLocs st [(sess.id, old, p) | p <- Map.elems ps]
             startPaneReader st sess.id win pane
             applySessionSize st sess.id
+            -- Creation counts as activity for a monitored window.
+            windowActivity st sess.id win
             sname <- readTVarIO sess.name
             notifyWindow st "window-created" (Just sess.id) win []
             notifyWindow st "window-linked" (Just sess.id) win
@@ -263,7 +265,12 @@ switchToInfo st sess ix = do
             modifyTVar' sess.windowHist (recordVisit cur ix)
             writeTVar sess.currentIx ix
             writeTVar win.bellFlag False
-            writeTVar win.activity False
+            writeTVar win.silenceFlag False
+            -- On a detached session the selection itself counts as
+            -- activity, so a monitored window's flag stays raised.
+            attached <- not . null <$> sessionClients st sess.id
+            wopts <- resolveForWindow st sess win
+            writeTVar win.activity (not attached && wopts.monitorActivity)
             bumpDirty st
             pure (Just (cur, Map.lookup cur ws, ix, win))
 

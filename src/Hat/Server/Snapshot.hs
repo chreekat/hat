@@ -30,6 +30,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
 import System.Directory
@@ -333,12 +334,15 @@ restoreWindow st sid shellCmd env sz whitelist wsnap = do
     -- keeps its pinned name.
     autoRenameVar <- newTVarIO wsnap.autoRename
     optionsVar    <- newTVarIO emptyDelta
+    silenceVar    <- newTVarIO False
+    activityAtVar <- newTVarIO =<< getPOSIXTime
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
             , panes = panesVar, activeId = activeVar
             , paneHist = paneHistVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
+            , silenceFlag = silenceVar, activityAt = activityAtVar
             , autoRename = autoRenameVar, options = optionsVar }
     pure (win, panes)
 

@@ -4,10 +4,12 @@ module Hat.Client
     ( ExitReason (..)
     , Autostart (..)  -- ^ re-exported for 'Main.connectOrStart'
     , runClient
+    , runClientControl
     , runControl
     , nestsOwnServer
     ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, catch, bracket_)
@@ -139,6 +141,45 @@ shuttle sock = do
     sender outbox = forever $ do
         msg <- atomically (readTQueue outbox)
         sendMessage sock msg
+
+-- | A control-mode attach (@hat -C attach@): a real attached client with
+-- no terminal — frames are discarded, and stdin's EOF is the detach. Just
+-- enough of tmux's control mode for scripts that need a scripted attached
+-- client.
+runClientControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
+runClientControl sock origin setup = do
+    sendMessage sock =<< hello protocolVersion origin (AttachIntent setup)
+    greeting <- recvMessage sock
+    case greeting of
+        Just (Known (Welcome _)) -> do
+            r <- race (receiver `catch` \(_ :: SomeException) -> pure ServerDied)
+                      stdinUntilEof
+            pure (either id id r)
+        Just (Known (ServerError e)) -> pure (Rejected e)
+        Just (Known _) -> pure (Rejected "unexpected greeting")
+        Just (UnknownTag _) -> pure (Rejected versionMismatch)
+        Just (Malformed _) -> pure (Rejected versionMismatch)
+        Nothing -> pure ServerDied
+  where
+    receiver = do
+        m <- recvMessage sock
+        case m of
+            Nothing -> pure ServerDied
+            Just (Malformed _) -> pure ServerDied
+            Just (UnknownTag _) -> receiver
+            Just (Known msg) -> case msg of
+                DetachOk -> pure Detached
+                Exited -> pure SessionEnded
+                RestartClient -> pure Detached
+                ServerError e -> pure (Rejected e)
+                _ -> receiver
+    stdinUntilEof = do
+        bs <- B.hGetSome stdin 4096
+        if B.null bs
+            then Detached <$ sendMessage sock Detach <* awaitClose
+            else stdinUntilEof
+    -- After Detach, wait for the receiver to see DetachOk (race ends there).
+    awaitClose = forever (threadDelay 1_000_000)
 
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell.
