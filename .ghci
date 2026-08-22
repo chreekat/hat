@@ -1,0 +1,4 @@
+-- Interactive-context warnings are errors under the cabal -Werror and
+-- stall ghcid's load; :seti suppresses them for the interactive context
+-- only, so loaded modules stay strict.
+:seti -Wno-prepositive-qualified-module
