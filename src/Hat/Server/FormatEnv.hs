@@ -51,6 +51,7 @@ windowFormatEnv st sess ix win = do
         , ("window_active", if ix == cur then "1" else "0")
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))
+        , ("window_zoomed_flag", if isJust zoom then "1" else "0")
         , ("automatic_rename", if auto then "1" else "0")
         ]) base
 
