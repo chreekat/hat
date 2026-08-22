@@ -4,6 +4,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time.LocalTime (utc, utcToZonedTime)
 import Test.Hspec
 
 import Hat.Server.Format
@@ -25,9 +26,13 @@ eval = evaluate env (\cmd -> "OUT:" <> cmd)
 -- Render through the real server seam. %t (tab) is time-independent, so the
 -- epoch stands in for "now" without affecting the result.
 render :: Text -> Text
-render = renderFormat env resolver (posixSecondsToUTCTime 0)
+render = renderFormat env resolver (utcToZonedTime utc (posixSecondsToUTCTime 0))
   where
     resolver cmd = maybe "" id (T.stripPrefix "echo " cmd)
+
+renderZoned :: Map.Map Text Text -> Text -> Text
+renderZoned e =
+    renderFormat e (const "") (utcToZonedTime utc (posixSecondsToUTCTime 45000))
 
 spec :: Spec
 spec = do
@@ -66,6 +71,28 @@ spec = do
 
     it "truncates with =N:" $
         eval "#{=2:session_name}" `shouldBe` "wo"
+
+    it "compares strings with ==: and !=:" $ do
+        eval "#{==:#{session_name},work}" `shouldBe` "1"
+        eval "#{==:#{session_name},play}" `shouldBe` "0"
+        eval "#{!=:a,b}" `shouldBe` "1"
+        eval "#{!=:a,a}" `shouldBe` "0"
+
+    it "compares percent-bearing values literally" $
+        evaluate (Map.singleton "pane" "%5") (const "")
+            "#{==:#{pane},%5}" `shouldBe` "1"
+
+    it "matches globs with m:" $ do
+        eval "#{m:client-*,client-5}" `shouldBe` "1"
+        eval "#{m:client-*,work}" `shouldBe` "0"
+        eval "#{m:w?rk,work}" `shouldBe` "1"
+
+    it "renders a recent epoch with t/p as HH:MM" $
+        renderZoned (Map.singleton "fire" "44100") "#{t/p:fire}"
+            `shouldBe` "12:15"
+
+    it "renders t/p empty for an absent key" $
+        renderZoned Map.empty "#{t/p:fire}" `shouldBe` ""
 
     it "delegates #() to the shell resolver" $
         eval "a #(uptime -p) b" `shouldBe` "a OUT:uptime -p b"

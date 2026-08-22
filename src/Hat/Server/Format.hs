@@ -5,6 +5,7 @@
 module Hat.Server.Format
     ( FormatEnv
     , evaluate
+    , evaluateAt
     , renderFormat
     ) where
 
@@ -13,19 +14,26 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
-import Data.Time.Format (FormatTime, defaultTimeLocale, formatTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Time.LocalTime
+    (ZonedTime, utcToZonedTime, zonedTimeToUTC, zonedTimeZone)
 
 type FormatEnv = Map Text Text
 
 -- | Fully render a format string: run 'evaluate', then the strftime pass
 -- over the result. Because 'evaluate' escapes expansion percents, only the
 -- template's own @%@ sequences reach strftime.
-renderFormat :: FormatTime t => FormatEnv -> (Text -> Text) -> t -> Text -> Text
+renderFormat :: FormatEnv -> (Text -> Text) -> ZonedTime -> Text -> Text
 renderFormat env shellRes t fmt =
-    T.pack (formatTime defaultTimeLocale (T.unpack (evaluate env shellRes fmt)) t)
+    T.pack (formatTime defaultTimeLocale
+        (T.unpack (evaluateAt (Just t) env shellRes fmt)) t)
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
-evaluate env shellRes = go
+evaluate = evaluateAt Nothing
+
+evaluateAt :: Maybe ZonedTime -> FormatEnv -> (Text -> Text) -> Text -> Text
+evaluateAt mnow env shellRes = go
   where
     go t = case T.breakOn "#" t of
         (pre, rest)
@@ -59,9 +67,40 @@ evaluate env shellRes = go
 
     expand inner
         | Just rest <- T.stripPrefix "?" inner = conditional rest
-        | Just rest <- T.stripPrefix "=" inner = truncation rest
         | Just rest <- T.stripPrefix "e|" inner = arith rest
+        | Just rest <- T.stripPrefix "==:" inner = strCmp (==) rest
+        | Just rest <- T.stripPrefix "!=:" inner = strCmp (/=) rest
+        | Just rest <- T.stripPrefix "m:" inner = globCmp rest
+        | Just rest <- T.stripPrefix "t/p:" inner = prettyTime rest
+        | Just rest <- T.stripPrefix "=" inner = truncation rest
         | otherwise = var inner
+
+    -- Comparisons work on unescaped values, so a literal @%5@ argument
+    -- equals a variable that expanded to @%5@.
+    plain t = T.replace "%%" "%" (go t)
+
+    strCmp op rest = case splitTop rest of
+        [aT, bT] -> bool (plain aT `op` plain bT)
+        _ -> ""
+
+    globCmp rest = case splitTop rest of
+        [patT, strT] -> bool (glob (plain patT) (plain strT))
+        _ -> ""
+
+    -- tmux's @t/p@ time modifier: a recent epoch renders as HH:MM, older
+    -- ones coarser (day, then date, then month-year).
+    prettyTime name = case (mnow, decimalMaybe (Map.findWithDefault "" name env)) of
+        (Just now, Just (secs, "")) ->
+            let fireUtc = posixSecondsToUTCTime (fromIntegral secs)
+                fireLocal = utcToZonedTime (zonedTimeZone now) fireUtc
+                age = utcTimeToPOSIXSeconds (zonedTimeToUTC now)
+                    - fromIntegral secs
+                fmt | age < 24 * 3600 = "%H:%M"
+                    | age < 28 * 24 * 3600 = "%a%d"
+                    | age < 365 * 24 * 3600 = "%d%b"
+                    | otherwise = "%h%y"
+            in T.pack (formatTime defaultTimeLocale fmt fireLocal)
+        _ -> ""
 
     conditional rest = case splitTop rest of
         (cond : thenPart : elseParts) ->
@@ -113,6 +152,19 @@ evaluate env shellRes = go
     decimalMaybe t = case TR.decimal t of
         Right (n, restT) -> Just (n :: Int, restT)
         Left _ -> Nothing
+
+-- fnmatch-style glob: @*@ any run, @?@ any one character.
+glob :: Text -> Text -> Bool
+glob pat str = case T.uncons pat of
+    Nothing -> T.null str
+    Just ('*', pr) ->
+        any (glob pr) (T.tails str)
+    Just ('?', pr) -> case T.uncons str of
+        Just (_, sr) -> glob pr sr
+        Nothing -> False
+    Just (c, pr) -> case T.uncons str of
+        Just (s, sr) -> c == s && glob pr sr
+        Nothing -> False
 
 -- Split on top-level commas, ignoring commas inside #{...} and #(...).
 splitTop :: Text -> [Text]
