@@ -43,6 +43,9 @@ module Hat.Server.Pane
     , reapPane
     , detachPanes
     , killPaneLocs
+    , killPaneLocsWith
+    , LifecycleNotify (..)
+    , WindowFate (..)
     , pickActivityTarget
     , removePaneFromTree
     , wrapPaneInWindow
@@ -57,12 +60,12 @@ import Control.Concurrent.Async (Async, async, cancel)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, catch, finally, try)
-import Control.Monad (forM_, forever, unless, void, when)
+import Control.Monad (forM, forM_, forever, unless, void, when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -86,7 +89,8 @@ import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Hooks
-    (NotifyTarget (..), PayloadItem (..), notify)
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyPane
+    , sessionTarget )
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Mru (popOnClose, scrub)
 import Hat.Server.Resize (applySessionSize)
@@ -308,7 +312,7 @@ startPaneReader st sid win pane = do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
         readLoop pane.pendingInput
-            `finally` closePane st pane
+            `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
     -- @pending@ is a one-shot: a restored program's command line, typed into
@@ -470,6 +474,28 @@ hangupPane pane = do
         Just tid -> killThread tid
         Nothing  -> Hat.Term.Pty.closePty pane.pty
 
+-- | The reader saw EOF: with @remain-on-exit@ on, the pane stays in the
+-- tree showing its last screen (reaped, @pane-died@ fired) until a kill;
+-- otherwise it is torn down ('closePane').
+paneEof :: ServerState -> Pane -> IO ()
+paneEof st pane = do
+    keep <- do
+        mloc <- atomically (locatePane st pane.id)
+        case mloc of
+            Nothing -> pure False
+            Just (sid, win) -> do
+                msess <- Map.lookup sid <$> readTVarIO st.sessions
+                case msess of
+                    Nothing -> pure False
+                    Just sess -> (.remainOnExit)
+                        <$> atomically (resolveForPane st sess win pane)
+    if keep
+        then do
+            reapPane st pane
+            atomically (writeTVar pane.readerTid Nothing)
+            notifyPane st "pane-died" pane []
+        else closePane st pane
+
 -- | The model half of the reader thread's teardown: detach the pane from the
 -- window it lives in NOW. A pane is mobile — break-pane, join-pane, and
 -- swap-pane re-parent a live pane after its reader started — so teardown must
@@ -493,21 +519,39 @@ closePane :: ServerState -> Pane -> IO ()
 closePane st pane = do
     mctx <- atomically $ do
         mloc <- locatePane st pane.id
-        traverse (\(sid, win) -> (,,) sid win <$> readTVar win.name) mloc
+        traverse
+            (\(sid, win) -> do
+                wname <- readTVar win.name
+                msess <- Map.lookup sid <$> readTVar st.sessions
+                sname <- maybe (pure "") (\sess -> readTVar sess.name) msess
+                pure (sid, sname, win, wname))
+            mloc
     (msid, r) <- atomically (detachPaneCurrent st pane)
     forM_ msid $ \sid -> when (r /= AlreadyDetached) $ applySessionSize st sid
-    -- pane-exited fires only when the reader's own teardown detached the
-    -- pane — a killing command detached it first, and kills fire no exit.
-    when (r /= AlreadyDetached) $ case mctx of
-        Just (sid, win, wname) -> notify st "pane-exited"
-            (NotifyTarget (Just sid) (Just win.id) (Just pane.id))
-            [ ("pane", PPaneRef pane.id)
-            , ("window", PWindowRef win.id wname) ]
-        Nothing -> notify st "pane-exited"
+    -- End-of-life hooks fire only when the reader's own teardown detached
+    -- the pane — a killing command detached it first, and kills fire their
+    -- own notifications ('killPaneLocs'). Order: pane, window, session.
+    case (r, mctx) of
+        (Detached wf sf, Just (sid, sname, win, wname)) -> do
+            notify st "pane-exited"
+                (NotifyTarget (Just sid) (Just win.id) (Just pane.id))
+                [ ("pane", PPaneRef pane.id)
+                , ("window", PWindowRef win.id wname) ]
+            when (wf == WindowRemoved) $ notify st "window-unlinked"
+                (sessionTarget sid)
+                [ ("session", PSessionRef sid sname)
+                , ("window", PWindowRef win.id wname) ]
+            when (sf == SessionEmptied) $ notify st "session-closed"
+                noTarget
+                [ ("session", PSessionRef sid sname) ]
+        (Detached _ _, Nothing) -> notify st "pane-exited"
             (NotifyTarget Nothing Nothing (Just pane.id))
             [ ("pane", PPaneRef pane.id) ]
+        (AlreadyDetached, _) -> pure ()
     reapPane st pane
-    forM_ msid $ \sid -> when (r == Detached SessionEmptied) $ broadcast st sid Exited
+    forM_ msid $ \sid ->
+        when (r == Detached WindowRemoved SessionEmptied) $
+            broadcast st sid Exited
 
 -- | The model half of a pane's teardown, in one atomic transaction: drop
 -- the pane from its window's map and layout, reactivate a surviving pane,
@@ -542,11 +586,11 @@ detachPane st sid win pane = do
                                 writeTVar win.paneHist hist'
                     else writeTVar win.paneHist (scrub (/= pane.id) hist)
                 bumpDirty st
-                pure (Detached SessionSurvives)
+                pure (Detached WindowSurvives SessionSurvives)
             Nothing -> do
                 msess <- Map.lookup sid <$> readTVar st.sessions
                 case msess of
-                    Nothing -> pure (Detached SessionSurvives)
+                    Nothing -> pure (Detached WindowRemoved SessionSurvives)
                     Just sess -> do
                         ws <- readTVar sess.windows
                         let ws' = Map.filter (\w -> w.id /= win.id) ws
@@ -554,7 +598,7 @@ detachPane st sid win pane = do
                         if Map.null ws'
                             then do
                                 modifyTVar' st.sessions (Map.delete sid)
-                                pure (Detached SessionEmptied)
+                                pure (Detached WindowRemoved SessionEmptied)
                             else do
                                 cur <- readTVar sess.currentIx
                                 hist <- readTVar sess.windowHist
@@ -568,10 +612,14 @@ detachPane st sid win pane = do
                                                 writeTVar sess.currentIx ix
                                                 writeTVar sess.windowHist hist'
                                 bumpDirty st
-                                pure (Detached SessionSurvives)
+                                pure (Detached WindowRemoved SessionSurvives)
 
 -- | What 'detachPane' did. See 'detachPane'.
-data DetachResult = AlreadyDetached | Detached SessionFate
+data DetachResult = AlreadyDetached | Detached WindowFate SessionFate
+    deriving (Eq, Show)
+
+-- | Whether a detach removed the pane's whole window. See 'detachPane'.
+data WindowFate = WindowSurvives | WindowRemoved
     deriving (Eq, Show)
 
 -- | Whether a detach emptied the pane's whole session. See 'detachPane'.
@@ -599,12 +647,13 @@ reapPane st pane = do
 -- sessions the detach emptied (their clients need an @Exited@). The model
 -- primitive behind kill-window\/-session\/-server; see 'killPaneLocs' for
 -- the surrounding OS teardown and 'detachPane' for the per-pane guard.
-detachPanes :: ServerState -> [(SessionId, Window, Pane)] -> STM [SessionId]
-detachPanes st = fmap catMaybes . mapM detach
+detachPanes
+    :: ServerState -> [(SessionId, Window, Pane)]
+    -> STM [((SessionId, Window), DetachResult)]
+detachPanes st = mapM detach
   where
-    detach (sid, win, pane) = do
-        r <- detachPane st sid win pane
-        pure (if r == Detached SessionEmptied then Just sid else Nothing)
+    detach (sid, win, pane) =
+        (,) (sid, win) <$> detachPane st sid win pane
 
 -- | Kill a set of located panes: detach them from the model in one
 -- transaction (the reflow is synchronous with the command and never waits
@@ -613,10 +662,44 @@ detachPanes st = fmap catMaybes . mapM detach
 -- the children up for their reader threads to reap ('closePane'). The one
 -- IO primitive behind kill-pane\/-window\/-session.
 killPaneLocs :: ServerState -> [(SessionId, Window, Pane)] -> IO ()
-killPaneLocs st locs = do
-    emptied <- atomically (detachPanes st locs)
+killPaneLocs st = killPaneLocsWith NotifyLifecycle st
+
+-- | Whether a kill announces the windows and sessions it destroys.
+-- @kill-session@ orders its own notifications (session first), so it kills
+-- quietly. See 'killPaneLocsWith'.
+data LifecycleNotify = NotifyLifecycle | QuietLifecycle
+    deriving (Eq, Show)
+
+killPaneLocsWith
+    :: LifecycleNotify -> ServerState -> [(SessionId, Window, Pane)] -> IO ()
+killPaneLocsWith mode st locs = do
+    (results, names) <- atomically $ do
+        names <- forM locs $ \(sid, win, _) -> do
+            msess <- Map.lookup sid <$> readTVar st.sessions
+            sname <- maybe (pure "") (\sess -> readTVar sess.name) msess
+            wname <- readTVar win.name
+            pure ((sid, win.id), (sname, wname))
+        rs <- detachPanes st locs
+        pure (rs, Map.fromList names)
     forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
-    forM_ (List.nub emptied) $ \sid -> broadcast st sid Exited
+    let removedWindows = List.nubBy (\(s1, w1) (s2, w2) ->
+                s1 == s2 && w1.id == w2.id)
+            [ (sid, win) | ((sid, win), Detached WindowRemoved _) <- results ]
+        emptied = List.nub
+            [ sid | ((sid, _), Detached _ SessionEmptied) <- results ]
+    when (mode == NotifyLifecycle) $ do
+        forM_ removedWindows $ \(sid, win) -> do
+            let (sname, wname) =
+                    Map.findWithDefault ("", "") (sid, win.id) names
+            notify st "window-unlinked" (sessionTarget sid)
+                [ ("session", PSessionRef sid sname)
+                , ("window", PWindowRef win.id wname) ]
+        forM_ emptied $ \sid -> do
+            let sname = maybe "" fst (List.lookup sid
+                    [ (s, nm) | ((s, _), nm) <- Map.toList names ])
+            notify st "session-closed" noTarget
+                [ ("session", PSessionRef sid sname) ]
+    forM_ emptied $ \sid -> broadcast st sid Exited
     forM_ locs $ \(_, _, pane) -> hangupPane pane
 
 -- | Where @<leader> a@ should jump. An activity-marked window takes

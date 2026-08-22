@@ -98,6 +98,7 @@ data Options = Options
     , aggressiveResize       :: Bool
     , monitorActivity        :: Bool
     , automaticRename        :: Bool   -- ^ windows track their foreground command
+    , remainOnExit           :: Bool   -- ^ a dead pane stays until killed; see 'Hat.Server.Pane.paneEof'
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
@@ -146,6 +147,7 @@ defaultOptions = Options
     , aggressiveResize = False
     , monitorActivity = False
     , automaticRename = True
+    , remainOnExit = False
     , automaticRenameFormat = "#{pane_current_command}"
     , updateEnvironment =
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
@@ -198,6 +200,7 @@ data OptionName
     | OptAggressiveResize
     | OptMonitorActivity
     | OptAutomaticRename
+    | OptRemainOnExit
     | OptAutomaticRenameFormat
     | OptUpdateEnvironment
     | OptMainPaneWidth
@@ -305,6 +308,7 @@ applyEntry name val o = case (name, val) of
     (OptAggressiveResize, OVBool b) -> o { aggressiveResize = b }
     (OptMonitorActivity, OVBool b) -> o { monitorActivity = b }
     (OptAutomaticRename, OVBool b) -> o { automaticRename = b }
+    (OptRemainOnExit, OVBool b) -> o { remainOnExit = b }
     (OptAutomaticRenameFormat, OVText t) -> o { automaticRenameFormat = t }
     (OptUpdateEnvironment, OVTextList ts) -> o { updateEnvironment = ts }
     (OptMainPaneWidth, OVInt n) -> o { mainPaneWidth = n }
@@ -333,6 +337,7 @@ optionScopeClass = \case
     OptAggressiveResize -> WindowOption
     OptMonitorActivity -> WindowOption
     OptAutomaticRename -> WindowOption
+    OptRemainOnExit -> WindowOption
     OptAutomaticRenameFormat -> WindowOption
     OptMainPaneWidth -> WindowOption
     OptMainPaneHeight -> WindowOption
@@ -392,6 +397,7 @@ allOptionNames =
     , OptSetTitles
     , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
     , OptMonitorActivity, OptAutomaticRename, OptAutomaticRenameFormat
+    , OptRemainOnExit
     , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
     , OptCommandAlias
     ]
@@ -483,6 +489,7 @@ optionNameText = \case
     OptAggressiveResize -> "aggressive-resize"
     OptMonitorActivity -> "monitor-activity"
     OptAutomaticRename -> "automatic-rename"
+    OptRemainOnExit -> "remain-on-exit"
     OptAutomaticRenameFormat -> "automatic-rename-format"
     OptUpdateEnvironment -> "update-environment"
     OptMainPaneWidth -> "main-pane-width"
@@ -529,6 +536,7 @@ optionValueOf o = \case
     OptAggressiveResize -> Just (OVBool o.aggressiveResize)
     OptMonitorActivity -> Just (OVBool o.monitorActivity)
     OptAutomaticRename -> Just (OVBool o.automaticRename)
+    OptRemainOnExit -> Just (OVBool o.remainOnExit)
     OptAutomaticRenameFormat -> Just (OVText o.automaticRenameFormat)
     OptUpdateEnvironment -> Just (OVTextList o.updateEnvironment)
     OptMainPaneWidth -> Just (OVInt o.mainPaneWidth)

@@ -29,15 +29,19 @@ import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
-import Hat.Server.Locate (findTarget, targetSession, withTargetSession)
-import Hat.Server.Pane (createSession, killPaneLocs)
+import Hat.Server.ClientIO (broadcast)
+import Hat.Server.Hooks (PayloadItem (..), noTarget, notify)
+import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
+import Hat.Server.Pane
+    (LifecycleNotify (..), createSession, killPaneLocsWith)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.View (expandFormat, sessionFormatEnv)
 import qualified Hat.Server.Target as Target
+import Hat.Transport.Wire (ServerToClient (Exited))
 
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args = do
-    let (opts, flags, pos) = parseArgs "sctnxy" args
+    let (opts, flags, pos) = parseArgs "sctnxyF" args
         mname = lookup "-s" opts
         mrun = case pos of
             [] -> Nothing
@@ -80,7 +84,26 @@ cmdNewSession st mclient args = do
                         writeTVar w.autoRename False
             unless ("-d" `elem` flags) $
                 forM_ mclient $ \client -> switchClientTo st client sess
-            pure []
+            if "-P" `elem` flags
+                then do
+                    mctx <- atomically $ do
+                        mwin <- currentWindow sess
+                        case mwin of
+                            Nothing -> pure Nothing
+                            Just win -> do
+                                cur <- readTVar sess.currentIx
+                                mpane <- activePane win
+                                pure ((,,) cur win <$> mpane)
+                    case mctx of
+                        Nothing -> pure []
+                        Just (wix, win, pane) -> do
+                            let fmt = fromMaybe "#{session_name}:"
+                                    (lookup "-F" opts)
+                            pix <- paneIndexOf st win pane
+                            env <- paneFormatEnv st sess wix win pix pane
+                            out <- expandFormat st env fmt
+                            pure [ROutput out]
+                else pure []
 
 switchClientTo :: ServerState -> Client -> Session -> IO ()
 switchClientTo st client sess = do
@@ -118,16 +141,38 @@ cmdAttachSession st mclient args = do
                 | isJust (lookup "-c" opts) -> pure []
                 | otherwise -> pure [RErr "no client to attach"]
 
+-- | @kill-session@: remove the session, then announce in tmux's order —
+-- session-closed first, then window-unlinked per window. A window still
+-- linked into another session is only unlinked; its panes survive.
 cmdKillSession :: CommandImpl
 cmdKillSession st mclient args = do
     let (opts, _, _) = parseArgs "t" args
     withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
-        locs <- atomically $ do
-            ws <- Map.elems <$> readTVar sess.windows
-            fmap concat . forM ws $ \win -> do
+        (sname, winInfo) <- atomically $ do
+            sname <- readTVar sess.name
+            allSess <- readTVar st.sessions
+            ws <- Map.toAscList <$> readTVar sess.windows
+            winInfo <- forM ws $ \(_, win) -> do
+                wname <- readTVar win.name
+                shared <- fmap Prelude.or . forM
+                    [ other | (osid, other) <- Map.toList allSess
+                    , osid /= sess.id ] $ \other -> do
+                        ows <- readTVar other.windows
+                        pure (any (\w -> w.id == win.id) (Map.elems ows))
                 ps <- Map.elems <$> readTVar win.panes
-                pure [(sess.id, win, p) | p <- ps]
-        killPaneLocs st locs
+                pure (win, wname, shared, ps)
+            writeTVar st.sessions (Map.delete sess.id allSess)
+            pure (sname, winInfo)
+        notify st "session-closed" noTarget
+            [ ("session", PSessionRef sess.id sname) ]
+        forM_ winInfo $ \(win, wname, _, _) ->
+            notify st "window-unlinked" noTarget
+                [ ("session", PSessionRef sess.id sname)
+                , ("window", PWindowRef win.id wname) ]
+        killPaneLocsWith QuietLifecycle st
+            [ (sess.id, win, p)
+            | (win, _, shared, ps) <- winInfo, not shared, p <- ps ]
+        broadcast st sess.id Exited
         pure []
 
 -- | @has-session -t target@: resolve strictly and report cmd-find's
@@ -211,24 +256,31 @@ cmdListWindows st mclient args = do
     let (opts, flags, _) = parseArgs "Ft" args
         mfmt = lookup "-F" opts
         allSessions = "-a" `elem` flags
-    sessions <- if allSessions
-        then Map.elems <$> readTVarIO st.sessions
+    esessions <- if allSessions
+        then Right . Map.elems <$> readTVarIO st.sessions
         else do
             msess <- targetSession st mclient (lookup "-t" opts)
-            pure (maybe [] pure msess)
-    fmap (map ROutput . concat) . forM sessions $ \sess -> do
-        ws <- Map.toAscList <$> readTVarIO sess.windows
-        cur <- readTVarIO sess.currentIx
-        forM ws $ \(ix, win) -> case mfmt of
-            Just fmt -> do
-                env <- windowFormatEnv st sess ix win
-                expandFormat st env fmt
-            Nothing -> atomically $ do
-                nm <- readTVar win.name
-                ps <- readTVar win.panes
-                let mark = if ix == cur then "*" else ""
-                pure $ tshow ix <> ": " <> nm <> mark
-                    <> " (" <> tshow (Map.size ps) <> " panes)"
+            pure $ case (msess, lookup "-t" opts) of
+                (Just sess, _) -> Right [sess]
+                -- An explicit target that resolves nowhere fails loud.
+                (Nothing, Just t) -> Left ("no such session: " <> t)
+                (Nothing, Nothing) -> Right []
+    case esessions of
+      Left e -> pure [RErr e]
+      Right sessions ->
+        fmap (map ROutput . concat) . forM sessions $ \sess -> do
+            ws <- Map.toAscList <$> readTVarIO sess.windows
+            cur <- readTVarIO sess.currentIx
+            forM ws $ \(ix, win) -> case mfmt of
+                Just fmt -> do
+                    env <- windowFormatEnv st sess ix win
+                    expandFormat st env fmt
+                Nothing -> atomically $ do
+                    nm <- readTVar win.name
+                    ps <- readTVar win.panes
+                    let mark = if ix == cur then "*" else ""
+                    pure $ tshow ix <> ": " <> nm <> mark
+                        <> " (" <> tshow (Map.size ps) <> " panes)"
 
 cmdListPanes :: CommandImpl
 cmdListPanes st mclient args = do

@@ -57,6 +57,7 @@ module Hat.Server
     , detachPaneCurrent  -- ^ exported for the mobile-pane teardown test
     , removePaneFromTree  -- ^ exported for the mobile-pane teardown test
     , DetachResult (..)
+    , WindowFate (..)
     , SessionFate (..)
     , serverIdle  -- ^ exported for the idle-predicate test
     , IdleInputs (..)

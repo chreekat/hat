@@ -135,6 +135,17 @@ cmdSet def st mclient args = do
     spelled n midx = optionNameText n
         <> maybe "" (\i -> "[" <> T.pack (show i) <> "]") midx
 
+-- | The window a @-w@ option scope acts on: a full window target
+-- (@sess:ix@) via the cmd-find grammar, else the target session's current
+-- window.
+targetWindowScoped
+    :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Window)
+targetWindowScoped st mclient mtarget = do
+    res <- findTarget st mclient Target.FindWindow mtarget
+    case res of
+        Right (_, _, win, _) -> pure (Just win)
+        Left _ -> targetCurrentWindow st mclient mtarget
+
 -- | The environment a @set -F@ value expands against: the target pane's
 -- (the hook context's pane when a hook command has no explicit target),
 -- degrading to the target session's.
@@ -195,7 +206,7 @@ clearPaneCopies
     -> IO ()
 clearPaneCopies st mclient mtarget scope n = case scope of
     SetLocalWindow -> do
-        mwin <- targetCurrentWindow st mclient mtarget
+        mwin <- targetWindowScoped st mclient mtarget
         forM_ mwin $ \win -> atomically $ do
             clearWindow win
             bumpDirty st
@@ -225,7 +236,7 @@ scopeTargetVar st mclient mtarget = \case
         msess <- targetSession st mclient mtarget
         pure (orNoSuch "session" ((.options) <$> msess))
     SetLocalWindow -> do
-        mwin <- targetCurrentWindow st mclient mtarget
+        mwin <- targetWindowScoped st mclient mtarget
         pure (orNoSuch "window" ((.options) <$> mwin))
     SetLocalPane -> do
         mpane <- targetPaneScoped st mclient mtarget
@@ -323,7 +334,7 @@ showScopeValue st mclient mtarget withParents scope n = case scope of
             Nothing -> pure (Left (noSuchTarget "session" mtarget))
             Just sess -> ownOr sess.options (resolveGlobal st)
     SetLocalWindow -> do
-        mwin <- targetCurrentWindow st mclient mtarget
+        mwin <- targetWindowScoped st mclient mtarget
         case mwin of
             Nothing -> pure (Left (noSuchTarget "window" mtarget))
             Just win -> ownOr win.options (resolveGlobal st)
@@ -398,7 +409,7 @@ showListing st mclient mtarget flags = do
                         Nothing -> pure [gw]
                     pure (Right (own, parents))
         | hasW = do
-            mwin <- targetCurrentWindow st mclient mtarget
+            mwin <- targetWindowScoped st mclient mtarget
             case mwin of
                 Nothing -> pure (Left (noSuchTarget "window" mtarget))
                 Just win -> do
@@ -668,6 +679,7 @@ scalarOptionEntry mode opts name value = case name of
     "aggressive-resize" -> withOnOff OptAggressiveResize
     "monitor-activity" -> withOnOff OptMonitorActivity
     "automatic-rename" -> withOnOff OptAutomaticRename
+    "remain-on-exit" -> withOnOff OptRemainOnExit
     "automatic-rename-format" -> Right (OptAutomaticRenameFormat, OVText value)
     "update-environment" ->
         Right (OptUpdateEnvironment, OVTextList (T.words value))

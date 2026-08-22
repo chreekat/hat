@@ -60,7 +60,6 @@ control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-ch
 control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-lifecycle.sh              # needs remain-on-exit/pane-died + end-of-life hook ordering
 hooks-notify.sh                 # needs many notify sites + control mode + respawn-pane/unlink-window
 alerts.sh                       # monitor-bell/-silence/-activity + alert hooks unimplemented
 
