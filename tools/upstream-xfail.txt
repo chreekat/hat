@@ -5,7 +5,6 @@
 am-terminal.sh
 border-arrows.sh
 capture-pane-hyperlink.sh
-capture-pane-sgr0.sh
 check-names.sh
 combine-test.sh
 command-alias.sh
