@@ -13,7 +13,7 @@ import qualified Data.Text.Read as TR
 import Hat.Model
 import Hat.Server.Command.Types (Reply (..))
 import qualified Hat.Server.CopyMode as CopyMode
-import Hat.Server.Hooks (notifyPane)
+import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 
 runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
 runCopyModeCommand st pane name cmdArgs = do
@@ -47,8 +47,12 @@ runCopyModeCommand st pane name cmdArgs = do
                                 writeTVar pane.mode (reMode <$> r')
                                 bumpDirty st
                             case r' of
-                                Nothing ->
+                                Nothing -> do
                                     notifyPane st "pane-mode-changed" pane []
+                                    notifyPane st "pane-mode-exited" pane
+                                        [ ("mode_entered", PInt 0)
+                                        , ("current_mode", PText "")
+                                        , ("previous_mode", PText "copy-mode") ]
                                 Just _ -> pure ()
                             pure []
           where

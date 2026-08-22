@@ -281,6 +281,7 @@ commandSpecs =
     , (["rename-window", "renamew"], cmdRenameWindow)
     , (["move-window", "movew"], cmdMoveWindow)
     , (["link-window", "linkw"], cmdLinkWindow)
+    , (["unlink-window", "unlinkw"], cmdUnlinkWindow)
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)

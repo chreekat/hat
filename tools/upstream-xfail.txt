@@ -60,7 +60,7 @@ control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-ch
 control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # needs many notify sites + control mode + respawn-pane/unlink-window
+hooks-notify.sh                 # needs session groups + control mode + respawn-pane + title stack
 alerts.sh                       # monitor-bell/-silence/-activity + alert hooks unimplemented
 
 # interactive mode-screens: choose-*/customize/display-panes/modal

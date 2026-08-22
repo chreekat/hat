@@ -349,12 +349,15 @@ startPaneReader st sid win pane = do
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.
-                Emu.TitleChanged _ -> pure ()
+                Emu.TitleChanged t ->
+                    notifyPane st "pane-title-changed" pane
+                        [ ("new_title", PText t) ]
                 Emu.Bell -> do
                     atomically $ do
                         markBell st sid win
                         bumpDirty st
                     broadcast st sid RingBell
+                    notifyPane st "pane-bell" pane []
                 Emu.ScreenChanged -> atomically $ do
                     markActivity st sid win
                     bumpDirty st
@@ -537,10 +540,13 @@ closePane st pane = do
                 (NotifyTarget (Just sid) (Just win.id) (Just pane.id))
                 [ ("pane", PPaneRef pane.id)
                 , ("window", PWindowRef win.id wname) ]
-            when (wf == WindowRemoved) $ notify st "window-unlinked"
-                (sessionTarget sid)
-                [ ("session", PSessionRef sid sname)
-                , ("window", PWindowRef win.id wname) ]
+            when (wf == WindowRemoved) $ do
+                notify st "window-unlinked"
+                    (sessionTarget sid)
+                    [ ("session", PSessionRef sid sname)
+                    , ("window", PWindowRef win.id wname) ]
+                notify st "window-closed" (sessionTarget sid)
+                    [ ("window", PWindowRef win.id wname) ]
             when (sf == SessionEmptied) $ notify st "session-closed"
                 noTarget
                 [ ("session", PSessionRef sid sname) ]
@@ -673,14 +679,16 @@ data LifecycleNotify = NotifyLifecycle | QuietLifecycle
 killPaneLocsWith
     :: LifecycleNotify -> ServerState -> [(SessionId, Window, Pane)] -> IO ()
 killPaneLocsWith mode st locs = do
-    (results, names) <- atomically $ do
+    (results, names, preActive) <- atomically $ do
         names <- forM locs $ \(sid, win, _) -> do
             msess <- Map.lookup sid <$> readTVar st.sessions
             sname <- maybe (pure "") (\sess -> readTVar sess.name) msess
             wname <- readTVar win.name
             pure ((sid, win.id), (sname, wname))
+        pre <- forM locs $ \(_, win, _) ->
+            (,) win.id <$> readTVar win.activeId
         rs <- detachPanes st locs
-        pure (rs, Map.fromList names)
+        pure (rs, Map.fromList names, Map.fromList pre)
     forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
     let removedWindows = List.nubBy (\(s1, w1) (s2, w2) ->
                 s1 == s2 && w1.id == w2.id)
@@ -694,11 +702,31 @@ killPaneLocsWith mode st locs = do
             notify st "window-unlinked" (sessionTarget sid)
                 [ ("session", PSessionRef sid sname)
                 , ("window", PWindowRef win.id wname) ]
+            notify st "window-closed" (sessionTarget sid)
+                [ ("window", PWindowRef win.id wname) ]
         forM_ emptied $ \sid -> do
             let sname = maybe "" fst (List.lookup sid
                     [ (s, nm) | ((s, _), nm) <- Map.toList names ])
             notify st "session-closed" noTarget
                 [ ("session", PSessionRef sid sname) ]
+    -- A surviving window whose active pane was killed reports the switch.
+    when (mode == NotifyLifecycle) $ do
+        let survivors = List.nubBy (\(_, w1) (_, w2) -> w1.id == w2.id)
+                [ (sid, win)
+                | ((sid, win), Detached WindowSurvives _) <- results ]
+        forM_ survivors $ \(sid, win) -> do
+            newActive <- readTVarIO win.activeId
+            forM_ (Map.lookup win.id preActive) $ \old ->
+                when (old /= newActive) $ do
+                    let wname = maybe "" snd
+                            (Map.lookup (sid, win.id) names)
+                    notify st "window-pane-changed"
+                        (NotifyTarget (Just sid) (Just win.id)
+                            (Just newActive))
+                        [ ("window", PWindowRef win.id wname)
+                        , ("pane", PPaneRef newActive)
+                        , ("old_pane", PPaneRef old)
+                        , ("new_pane", PPaneRef newActive) ]
     forM_ emptied $ \sid -> broadcast st sid Exited
     forM_ locs $ \(_, _, pane) -> hangupPane pane
 

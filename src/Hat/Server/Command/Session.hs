@@ -30,7 +30,7 @@ import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (broadcast)
-import Hat.Server.Hooks (PayloadItem (..), noTarget, notify)
+import Hat.Server.Hooks (PayloadItem (..), noTarget, notify, sessionTarget)
 import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     (LifecycleNotify (..), createSession, killPaneLocsWith)
@@ -40,7 +40,11 @@ import qualified Hat.Server.Target as Target
 import Hat.Transport.Wire (ServerToClient (Exited))
 
 cmdNewSession :: CommandImpl
-cmdNewSession st mclient args = do
+cmdNewSession st mclient args
+    | Just t <- lookup "-t" (fst3 (parseArgs "sctnxyF" args)) =
+        pure [RErr ("new-session -t " <> t
+            <> ": session groups not supported")]
+    | otherwise = do
     let (opts, flags, pos) = parseArgs "sctnxyF" args
         mname = lookup "-s" opts
         mrun = case pos of
@@ -205,8 +209,13 @@ cmdRenameSession st mclient args = do
                     atomically $ do
                         writeTVar sess.name nm
                         bumpDirty st
+                    notify st "session-renamed" (sessionTarget sess.id)
+                        [ ("session", PSessionRef sess.id nm) ]
                     pure []
         _ -> pure [RErr "usage: rename-session [-t target] name"]
+
+fst3 :: (a, b, c) -> a
+fst3 (a, _, _) = a
 
 -- | tmux @list-clients@: one line per attached client (control connections
 -- are not clients), filtered by @-t@ and shaped by @-F@.
