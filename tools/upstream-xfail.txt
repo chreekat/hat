@@ -26,7 +26,6 @@ cursor-test3.sh                 # window-size manual
 cursor-test4.sh                 # window-size manual
 decrqm-sync.sh                  # remain-on-exit
 floating-pane-geometry.sh
-format-strings.sh               # tmux's full format-parser escaping semantics
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh

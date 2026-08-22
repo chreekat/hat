@@ -24,7 +24,7 @@ import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
-    , defaultOptions, emptyDelta, singletonDelta)
+    , defaultOptions, emptyDelta, insertDelta, singletonDelta)
 import Hat.Server
     ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
@@ -46,6 +46,7 @@ import Hat.Transport.Wire
     , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
+import Hat.Server.FormatEnv (sessionFormatEnv)
 import Hat.Server.View (awaitRenderable, statusCells)
 
 -- A bare session with the given id inserted into an existing server.
@@ -191,6 +192,19 @@ stubPane n = do
 
 spec :: Spec
 spec = do
+    -- User options resolve per scope: a session-local @set @v@ is visible
+    -- to formats and shadows the global value (upstream format-strings.sh).
+    describe "user options in formats" $
+        it "a session-local @option shadows the global for #{@v}" $ do
+            (st, sess) <- seedSession "/"
+            atomically $ do
+                modifyTVar' st.options $ \o ->
+                    o { user = Map.singleton "@v" "global" }
+                modifyTVar' sess.options
+                    (insertDelta (OptUser "@v") (OVText "local"))
+            env <- sessionFormatEnv st sess
+            Map.lookup "@v" env `shouldBe` Just "local"
+
     -- Any client at or above the floor is welcomed and told the server's
     -- version (after Welcome, which old clients validate strictly).
     describe "handshake" $
