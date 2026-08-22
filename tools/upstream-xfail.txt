@@ -2,11 +2,11 @@
 # One per line. When a script starts passing, the runner exits
 # nonzero (XPASS) until its line is removed - keep this list honest.
 # Baseline recorded 2026-07-08: everything fails (CLI compat is young).
-am-terminal.sh
-border-arrows.sh
-capture-pane-hyperlink.sh
-check-names.sh
-combine-test.sh
+am-terminal.sh                  # terminal-overrides option unimplemented
+border-arrows.sh                # wontfix: hat deliberately draws triangle indicators, not tmux's ACS arrows
+capture-pane-hyperlink.sh       # per-cell OSC 8 hyperlink tracking (shim + capture formatter) unimplemented
+check-names.sh                  # allow-rename/allow-set-title behavior + UTF-8 name validation + OSC-2 sanitizing + buffer -F listing
+combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
 control-client-sanity.sh
 control-client-size.sh
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
@@ -20,19 +20,19 @@ copy-mode-test-emacs.sh
 # it means to check. Unblock by implementing window-size (manual/largest/
 # smallest/latest) plus `new -x/-y`.
 copy-mode-test-vi.sh
-cursor-test1.sh
-cursor-test2.sh
-cursor-test3.sh
-cursor-test4.sh
-decrqm-sync.sh
+cursor-test1.sh                 # window-size manual (see copy-mode-test-vi note)
+cursor-test2.sh                 # window-size manual
+cursor-test3.sh                 # window-size manual
+cursor-test4.sh                 # window-size manual
+decrqm-sync.sh                  # remain-on-exit
 floating-pane-geometry.sh
-format-strings.sh
+format-strings.sh               # tmux's full format-parser escaping semantics
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh
 prompt-keys.sh
 prompt-mechanics.sh
-run-shell-output.sh
+run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
 screen-redraw-cache.sh
 screen-redraw-floating.sh
@@ -43,11 +43,11 @@ screen-redraw-scrollbars.sh
 screen-redraw-status.sh
 screen-redraw-tiled.sh
 screen-redraw-window-style.sh
-session-group-resize.sh
+session-group-resize.sh         # control mode
 style-trim.sh
-tty-draw-line.sh
+tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
-utf8-test.sh
+utf8-test.sh                    # remain-on-exit
 
 # Baseline re-recorded 2026-07-31 against the pinned tmux master corpus
 # (flake input tmux-src). Each reason names the unimplemented subsystem
