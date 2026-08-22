@@ -59,15 +59,11 @@ control-client-wait-exit.sh     # no wait-exit / %exit lifecycle
 control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-changed
 control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
-# hooks / set-hook / wait-for: no hook engine
-hooks.sh                        # set-hook is an unknown command
-hooks-after.sh                  # after-* / command-error hooks unimplemented
-hooks-lifecycle.sh              # lifecycle hooks unimplemented
-hooks-notify.sh                 # notify hooks unimplemented
-set-hook-B.sh                   # set-hook / show-hooks unimplemented
-set-hook-E.sh                   # set-hook + wait-for unimplemented
-set-hook-R.sh                   # set-hook unimplemented
-wait-for-E.sh                   # wait-for command unimplemented
+# hooks / set-hook / wait-for: gaps beyond the hook engine
+hooks-lifecycle.sh              # needs remain-on-exit/pane-died + end-of-life hook ordering
+hooks-notify.sh                 # needs many notify sites + control mode + respawn-pane/unlink-window
+set-hook-B.sh                   # set-hook -B format monitors unimplemented
+wait-for-E.sh                   # set-hook -B format monitors unimplemented
 alerts.sh                       # monitor-bell/-silence/-activity + alert hooks unimplemented
 
 # interactive mode-screens: choose-*/customize/display-panes/modal

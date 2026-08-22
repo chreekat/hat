@@ -34,7 +34,8 @@ import Hat.Model
 import Hat.Server.Command.Buffer (storeBuffer)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Layout
-import Hat.Server.Locate (findTarget, locatePane, siblingPane, targetPane, withCurrentWindow)
+import Hat.Server.FormatEnv (paneFormatEnv)
+import Hat.Server.Locate (findTarget, locatePane, paneIndexOf, siblingPane, targetPane, withCurrentWindow)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     (killPaneLocs, sessionSpawnEnv, shellStart, spawnPane, startPaneReader)
@@ -259,20 +260,24 @@ capturePane pane copts altFlag quiet copyFlag sflag eflag
 
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args = do
-    let (opts, flags, pos) = parseArgs "ctlp" args
+    let (opts, flags, pos) = parseArgs "ctlpeF" args
         orient
             | "-h" `elem` flags = LeftRight
             | otherwise = TopBottom
         placement = if "-b" `elem` flags then Before else After
         -- @-f@: split spans the whole window, not just the active pane.
         full = "-f" `elem` flags
+        stay = "-d" `elem` flags
+        envPairs = reverse
+            [ (n, T.drop 1 v)
+            | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
         mrun = case pos of
             [] -> Nothing
             ws -> Just (T.unwords ws)
     res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
     case res of
         Left e -> pure [RErr e]
-        Right (sess, _, win, active) -> do
+        Right (sess, wix, win, active) -> do
                 eff <- readTVarIO sess.lastSize
                 (rects, _) <- atomically (windowArrange (eff) win)
                 let mrect = List.lookup active.id rects
@@ -291,8 +296,9 @@ cmdSplitWindow st mclient args = do
                                 env <- sessionFormatEnv st sess
                                 T.unpack <$> expandFormat st env d
                             Nothing -> paneCurrentPath active
-                        environ <- sessionSpawnEnv st sess
-                        let shellCmd = maybe "/bin/sh" T.unpack
+                        environ0 <- sessionSpawnEnv st sess
+                        let environ = environ0 <> envPairs
+                            shellCmd = maybe "/bin/sh" T.unpack
                                 (List.lookup "SHELL" environ)
                         pane <- spawnPane st pid sess.id shellCmd (shellStart mrun)
                             dir environ (eff)
@@ -301,14 +307,24 @@ cmdSplitWindow st mclient args = do
                             modifyTVar' win.layout $ if full
                                 then splitFull orient placement pane.id
                                 else splitLeaf active.id orient placement pane.id
-                            lastA <- readTVar win.activeId
-                            modifyTVar' win.paneHist (recordVisit lastA pane.id)
-                            writeTVar win.activeId pane.id
+                            unless stay $ do
+                                lastA <- readTVar win.activeId
+                                modifyTVar' win.paneHist
+                                    (recordVisit lastA pane.id)
+                                writeTVar win.activeId pane.id
                             writeTVar win.zoomed Nothing
                             bumpDirty st
                         startPaneReader st sess.id win pane
                         applySessionSize st sess.id
-                        pure []
+                        if "-P" `elem` flags
+                            then do
+                                let fmt = fromMaybe "#{session_name}:#{window_index}.#{pane_index}"
+                                        (lookup "-F" opts)
+                                pix <- paneIndexOf st win pane
+                                env <- paneFormatEnv st sess wix win pix pane
+                                out <- expandFormat st env fmt
+                                pure [ROutput out]
+                            else pure []
 
 cmdSelectPane :: CommandImpl
 cmdSelectPane st mclient args = do

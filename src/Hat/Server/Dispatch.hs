@@ -30,6 +30,7 @@ import Control.Exception
 import Control.Monad (forM, forM_, unless, void)
 import qualified Data.ByteString as B
 import Data.Char (isAlpha, isAlphaNum)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
@@ -49,15 +50,15 @@ import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
-import Hat.Model.Options (lookupCommandAlias)
+import Hat.Model.Options (lookupCommandAlias, quoteIfNeeded)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import qualified Hat.Term.Pty
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
-import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks)
+import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
 import Hat.Server.Command.Wait (cmdWaitFor)
-import Hat.Server.Hooks (installHookEngine)
+import Hat.Server.Hooks (PayloadItem (..), inHook, installHookEngine, notify)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
@@ -138,13 +139,94 @@ runAlias st mclient body args = case parseCommandLine body of
     run [] = pure []
     run (n : as) = runBuiltin st mclient n as
 
--- | Dispatch one command through the builtin table.
+-- | Dispatch one command through the builtin table, then fire its
+-- @after-*@ hook (on success) or @command-error@ (on failure).
 runBuiltin :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
 runBuiltin st mclient name args = case Map.lookup name commandTable of
     Nothing -> pure [RErr ("unknown command: " <> name)]
-    Just impl -> impl st mclient args
-        `catch` \(e :: SomeException) ->
-            pure [RErr (name <> ": " <> T.pack (show e))]
+    Just impl -> do
+        replies <- impl st mclient args
+            `catch` \(e :: SomeException) ->
+                pure [RErr (name <> ": " <> T.pack (show e))]
+        fireCommandHooks st mclient name args replies
+        pure replies
+
+-- Commands run from inside a hook fire nothing (tmux's NOHOOKS state).
+fireCommandHooks
+    :: ServerState -> Maybe Client -> Text -> [Text] -> [Reply] -> IO ()
+fireCommandHooks st mclient name args replies = do
+    suppressed <- inHook st
+    unless suppressed $ do
+        let canonical = Map.findWithDefault name name canonicalNames
+            spec = hookArgSpec canonical
+            failed = not (null [ e | RErr e <- replies ])
+            (optsRev, boolFlags, pos) = parseArgs spec args
+        tgt <- resolveHookTarget st mclient (lookup "-t" optsRev)
+        notify st (if failed then "command-error" else "after-" <> canonical)
+            tgt (argsPayload (reverse optsRev) boolFlags pos)
+
+-- | Canonical spelling for every command alias, so @renamew@ fires
+-- @after-rename-window@.
+canonicalNames :: Map.Map Text Text
+canonicalNames = Map.fromList
+    [ (alias, canon)
+    | (names, _) <- commandSpecs
+    , canon : _ <- [names]
+    , alias <- names ]
+
+-- The value-taking flags each command's own parser uses, for rebuilding
+-- its argument payload; commands not listed only take @-t@.
+hookArgSpec :: Text -> [Char]
+hookArgSpec = \case
+    "new-session" -> "sctnxy"
+    "attach-session" -> "tc"
+    "new-window" -> "nct"
+    "split-window" -> "ctlpeF"
+    "capture-pane" -> "bESt"
+    "select-pane" -> "tT"
+    "copy-mode" -> "st"
+    "swap-pane" -> "st"
+    "move-window" -> "st"
+    "link-window" -> "st"
+    "resize-window" -> "txy"
+    "send-keys" -> "tN"
+    "set-buffer" -> "bn"
+    "save-buffer" -> "bt"
+    "list-clients" -> "tF"
+    "list-sessions" -> "F"
+    "list-windows" -> "Ft"
+    "list-panes" -> "Ft"
+    "bind-key" -> "TN"
+    "unbind-key" -> "T"
+    "command-prompt" -> "Ip"
+    "set-hook" -> "tB"
+    "show-hooks" -> "tF"
+    "wait-for" -> "Fw"
+    _ -> "t"
+
+-- tmux's args_print payload: the whole argument list (flags in flag order,
+-- then positionals), each positional, and each flag's value(s).
+argsPayload :: [(Text, Text)] -> [Text] -> [Text] -> [(Text, PayloadItem)]
+argsPayload opts boolFlags pos =
+    ("arguments", PText printed)
+    : [ ("argument_" <> tshow i, PText a) | (i, a) <- zip [0 :: Int ..] pos ]
+    <> concatMap flagItems flagChars
+  where
+    flagChars = List.sort . List.nub $
+        [ c | (f, _) <- opts, Just (_, c) <- [T.unsnoc f] ]
+        <> [ c | f <- boolFlags, Just (_, c) <- [T.unsnoc f] ]
+    valsOf c = [ v | (f, v) <- opts, f == dash c ]
+    dash c = T.pack ['-', c]
+    flagItems c = case valsOf c of
+        [] -> [("flag_" <> T.singleton c, PText "1")]
+        vs -> ("flag_" <> T.singleton c, PText (last vs))
+            : [ ("flag_" <> T.singleton c <> "_" <> tshow i, PText v)
+              | (i, v) <- zip [0 :: Int ..] vs ]
+    printed = T.unwords (concatMap flagTokens flagChars <> map quoteArg pos)
+    flagTokens c = case valsOf c of
+        [] -> [dash c]
+        vs -> concat [ [dash c, quoteArg v] | v <- vs ]
+    quoteArg = quoteIfNeeded
 
 -- | The config assignment forms (tmux's environ_put): a bare @NAME=value@
 -- line sets a global environment variable, @%hidden NAME=value@ a hidden

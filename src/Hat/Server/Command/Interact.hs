@@ -28,7 +28,8 @@ import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (notifyPane)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientActivePane, clientView, targetPane)
+import Hat.Server.Locate (clientActivePane, clientView, findTarget)
+import qualified Hat.Server.Target as Target
 import qualified Hat.Server.Picker as Picker
 import qualified Hat.Server.Prompt as Prompt
 import Hat.Server.View (expandFormat)
@@ -54,10 +55,10 @@ cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
     let (opts, flags, _) = parseArgs "st" args
         quit = "-q" `elem` flags
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    case mpane of
-        Nothing -> pure []
-        Just pane
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left _ -> pure []
+        Right (_, _, _, pane)
             | quit -> do
                 was <- atomically $ do
                     old <- readTVar pane.mode
