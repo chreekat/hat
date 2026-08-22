@@ -61,7 +61,18 @@ results="$work/results"
 run_one() {
     name=$1
     tdir=$(mktemp -d)
-    trap 'rm -rf "$tdir"' EXIT
+    # Teardown is the trap's job, not the script's: every server spawned in
+    # here carries this private $tdir in its argv, so the pattern kill reaps
+    # exactly our servers and can never match anyone else's.
+    reap() {
+        pkill -TERM -f -- "--server $tdir/" 2>/dev/null
+        for _ in $(seq 20); do
+            pgrep -f -- "--server $tdir/" >/dev/null || break
+            sleep 0.1
+        done
+        pkill -KILL -f -- "--server $tdir/" 2>/dev/null
+    }
+    trap 'reap; rm -rf "$tdir"' EXIT
     # Copy the script and its shared includes, stripping the hardcoded
     # PATH=/bin:/usr/bin (no coreutils there on NixOS) so both inherit the
     # devShell PATH. Includes are sourced cwd-relative (. ./input-common.inc),
