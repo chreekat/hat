@@ -32,7 +32,7 @@ import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.Locate (findTarget, targetSession, withTargetSession)
 import Hat.Server.Pane (createSession, killPaneLocs)
 import Hat.Server.Resize (applySessionSize)
-import Hat.Server.View (expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import qualified Hat.Server.Target as Target
 
 cmdNewSession :: CommandImpl

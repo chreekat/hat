@@ -30,7 +30,7 @@ import Hat.Server.Keys
 import Hat.Server.Locate (clientActivePane, clientView, targetPane)
 import qualified Hat.Server.Picker as Picker
 import qualified Hat.Server.Prompt as Prompt
-import Hat.Server.View (expandFormat)
+import Hat.Server.FormatEnv (expandFormat)
 import qualified Hat.Term.Emulator as Emu
 import qualified Hat.Term.Pty
 import Hat.Transport.Wire

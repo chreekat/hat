@@ -133,7 +133,8 @@ import Hat.Server.ClientIO (broadcast)
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
     , watcherFault, withRegisteredMonitor )
-import Hat.Server.FormatEnv (refreshAutoNames)
+import Hat.Server.FormatEnv
+    (WindowFlagState (..), refreshAutoNames, windowFlags)
 import Hat.Server.Handover
 import Hat.Server.Conn
 import Hat.Server.Dispatch
@@ -144,8 +145,6 @@ import Hat.Server.Pane
 import Hat.Server.Snapshot
 import Hat.Server.Resize
 import Hat.Server.Title (TitleParts (..), composeTitle)
-import Hat.Server.View
-    (WindowFlagState (..), windowFlags)
 import Hat.Transport.Socket (ensureSocketDir, listenOn)
 import qualified Hat.Term.Emulator as Emu
 import Hat.Transport.Wire

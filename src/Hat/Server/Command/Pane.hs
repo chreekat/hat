@@ -39,7 +39,8 @@ import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     (killPaneLocs, sessionSpawnEnv, shellStart, spawnPane, startPaneReader)
 import Hat.Server.Resize (applySessionSize)
-import Hat.Server.View (expandFormat, sessionFormatEnv, windowArrange)
+import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
+import Hat.Server.Resize (windowArrange)
 import qualified Hat.Server.Target as Target
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu

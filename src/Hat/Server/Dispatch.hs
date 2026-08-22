@@ -64,7 +64,7 @@ import Hat.Server.Command.Window
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
-import Hat.Server.FormatEnv (paneFormatEnv)
+import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
 import Hat.Server.Keys
@@ -73,7 +73,6 @@ import Hat.Server.Locate
 import Hat.Server.Pane
 import Hat.Server.Snapshot
 import qualified Hat.Server.Target as Target
-import Hat.Server.View
 import Hat.Transport.Wire
 
 -- | Read a config file as UTF-8, independent of the process locale and

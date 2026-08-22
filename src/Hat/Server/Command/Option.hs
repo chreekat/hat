@@ -37,7 +37,7 @@ import Hat.Server.Locate
     ( currentResolved, locatePane, noSuchTarget, targetCurrentWindow
     , targetPaneScoped, targetSession )
 import Hat.Server.Style (parseColor, parseStyle)
-import Hat.Server.View (expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 
