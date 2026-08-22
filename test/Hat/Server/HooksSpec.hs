@@ -18,7 +18,7 @@ import System.Timeout (timeout)
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Model.Options (Options (..), emptyDelta)
+import Hat.Model.Options (AlertAction (..), Options (..), alertAllows, emptyDelta)
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Command.Wait (cmdWaitFor)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks)
@@ -139,6 +139,15 @@ spec = describe "hooks engine" $ do
         st <- newState
         fireUserEvent st "@nobody" noTarget []
         userOpt st "@seen" `shouldReturn` Nothing
+
+    it "alertAllows follows tmux's action table" $ do
+        alertAllows AlertAny True `shouldBe` True
+        alertAllows AlertAny False `shouldBe` True
+        alertAllows AlertNone True `shouldBe` False
+        alertAllows AlertCurrent True `shouldBe` True
+        alertAllows AlertCurrent False `shouldBe` False
+        alertAllows AlertOther True `shouldBe` False
+        alertAllows AlertOther False `shouldBe` True
 
     describe "-B monitors" $ do
         it "parses a monitor spec into name, target, and format" $ do
