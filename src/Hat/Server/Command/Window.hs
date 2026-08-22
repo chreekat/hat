@@ -42,7 +42,7 @@ import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane (killPaneLocs, newWindowWithPane, pickActivityTarget, sessionSpawnEnv, startPaneReader)
 import Hat.Server.Resize (applySessionSize)
-import Hat.Server.View (expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import qualified Hat.Server.Target as Target
 
 -- | The first index at or above @start@ not already taken by a window, so a

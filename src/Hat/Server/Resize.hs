@@ -11,6 +11,7 @@ module Hat.Server.Resize
     , reconcilePaneSizes
     , paneSizeTargets
     , rectSize
+    , windowArrange
     ) where
 
 import Control.Concurrent.STM
@@ -24,7 +25,6 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Layout
-import Hat.Server.View (windowArrange)
 import qualified Hat.Term.Emulator as Emu
 import qualified Hat.Term.Pty
 
@@ -153,3 +153,13 @@ rectSize r = Size
     { rows = fromIntegral (max 1 (r.endRow - r.startRow))
     , cols = fromIntegral (max 1 (r.endCol - r.startCol))
     }
+
+-- | Pane rects and borders for a window, honoring zoom.
+windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
+windowArrange eff win = do
+    mz <- readTVar win.zoomed
+    lay <- readTVar win.layout
+    ps <- readTVar win.panes
+    pure $ case mz of
+        Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
+        _ -> arrange (sizeRect eff) lay

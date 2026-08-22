@@ -26,7 +26,6 @@ cursor-test3.sh                 # window-size manual
 cursor-test4.sh                 # window-size manual
 decrqm-sync.sh                  # remain-on-exit
 floating-pane-geometry.sh
-format-strings.sh               # tmux's full format-parser escaping semantics
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh
@@ -85,11 +84,10 @@ copy-mode-redraw.sh             # needs status + copy-mode-position-format/line-
 copy-mode-scroll-exit.sh        # needs window-size + copy-mode -e + send-keys -N + selection/scroll formats
 copy-mode-selection-scroll.sh   # needs window-size + copy-mode scroll/selection subcommands + mouse wheel
 
-# format engine: modifiers/vars beyond ?/=N/e|op| unimplemented
+# formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-animation.sh             # #{A/n:...} animation modifier + window-size
-format-fuzzy.sh                 # #{m/z:} / #{m/p:} fuzzy-match modifiers
-format-modifiers.sh             # most FORMATS modifiers (m,s/,b,d,q,t,c,p,n,w,a,...)
+format-modifiers.sh             # new-pane floating panes (P/z order) + -C control-mode attach (L loop)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 

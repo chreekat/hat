@@ -1,16 +1,9 @@
 -- | The per-client rendering and presentation layer: turns the model
 -- tree into frames, the status line, and the chooser\/copy-mode overlays.
 module Hat.Server.View
-    ( windowArrange
-    , renderLoop
+    ( renderLoop
     , awaitRenderable
     , renderOnce
-    , sessionFormatEnv
-    , paneModeEnv
-    , resolveShell
-    , expandFormat
-    , WindowFlagState (..)
-    , windowFlags
     , statusCells
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
@@ -20,48 +13,31 @@ module Hat.Server.View
     , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
-import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
-import Control.Monad (foldM, forM, void, when)
+import Control.Monad (foldM, forM, when)
 import Data.IORef
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Data.Time.Clock (diffUTCTime, getCurrentTime)
-import Data.Time.LocalTime (getZonedTime)
 import qualified Data.Vector as V
-import System.Exit (ExitCode (..))
-import System.Posix.Unistd (SystemID (nodeName), getSystemID)
-import System.Process
-    (CreateProcess (..), readCreateProcessWithExitCode, shell)
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (send)
-import Hat.Server.ColorScheme (schemeName)
-import Hat.Server.Format (FormatEnv, renderFormat)
-import Hat.Server.Layout (arrange, sizeRect)
+import Hat.Server.FormatEnv
+    (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
+     windowFlags)
+import Hat.Server.Resize (windowArrange)
 import qualified Hat.Server.Picker as Picker
 import Hat.Server.Render
 import qualified Hat.Term.Cell as Cell
 import qualified Hat.Term.Emulator as Emu
 import Hat.Transport.Wire
-
--- Pane rects and borders for a window, honoring zoom.
-windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
-windowArrange eff win = do
-    mz <- readTVar win.zoomed
-    lay <- readTVar win.layout
-    ps <- readTVar win.panes
-    pure $ case mz of
-        Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
-        _ -> arrange (sizeRect eff) lay
 
 -- Rendering ---------------------------------------------------------------
 
@@ -498,164 +474,6 @@ promptCells pr width = lineCells promptStyle width (pr.promptLabel <> pr.input)
 -- | The screen column of the prompt's edit cursor.
 promptCursorCol :: PromptState -> Int
 promptCursorCol pr = T.length pr.promptLabel + pr.cursor
-
--- | tmux's @window_active_clients@, per window: a client counts for the window
--- its session currently shows, keyed by window identity so a window linked
--- into several sessions counts the viewers of every one.
-activeClientCounts :: ServerState -> STM (Map.Map WindowId Int)
-activeClientCounts st = do
-    cs <- Map.elems <$> readTVar st.clients
-    sessions <- readTVar st.sessions
-    fmap (Map.fromListWith (+) . catMaybes) . forM cs $ \c -> do
-        sid <- readTVar c.session
-        case Map.lookup sid sessions of
-            Nothing -> pure Nothing
-            Just sess -> fmap (\w -> (w.id, 1)) <$> currentWindow sess
-
--- Session-level format environment for the active window and pane.
-sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
-sessionFormatEnv st sess = do
-    hostname <- nodeName <$> getSystemID
-    (sname, wEnv, mactive, nclients, nwindows) <- atomically $ do
-        sname <- readTVar sess.name
-        mwin <- currentWindow sess
-        cur <- readTVar sess.currentIx
-        nwindows <- Map.size <$> readTVar sess.windows
-        counts <- activeClientCounts st
-        wEnv <- case mwin of
-            Nothing -> pure []
-            Just win -> do
-                wname <- readTVar win.name
-                pure [ ("window_index", tshow cur)
-                     , ("window_name", wname)
-                     , ( "window_active_clients"
-                       , tshow (Map.findWithDefault 0 win.id counts) )
-                     ]
-        mactive <- maybe (pure Nothing) activePane mwin
-        cs <- sessionClients st sess.id
-        pure (sname, wEnv, mactive, length cs, nwindows)
-    pEnv <- case mactive of
-        Nothing -> pure []
-        Just pane -> do
-            dir <- paneCurrentPath pane
-            title <- Emu.title pane.emulator
-            modeEnv <- paneModeEnv pane
-            pure $ [ ("pane_current_path", T.pack dir)
-                   , ("pane_title", title)
-                   , ("pane_id", "%" <> tshow (rawPane pane.id))
-                   ] <> modeEnv
-    sz <- readTVarIO sess.lastSize
-    -- @-options are readable as #{@foo}, so if-shell theme conditionals
-    -- (@#{@pane-theme}@) resolve.
-    userOpts <- (.user) <$> readTVarIO st.options
-    msch <- readTVarIO st.colorScheme
-    pure . Map.union userOpts . Map.fromList $
-        [ ("session_name", sname)
-        , ("session_id", "$" <> tshow (rawSession sess.id))
-        , ("session_attached", tshow nclients)
-        , ("session_windows", tshow nwindows)
-        , ("host", T.pack hostname)
-        , ("window_active_clients", "0")
-        , ("window_width", tshow sz.cols)
-        , ("window_height", tshow sz.rows)
-        , ("color_scheme", maybe "" schemeName msch)
-        ]
-        <> wEnv <> pEnv
-
--- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
--- plus @copy_cursor_{x,y,line}@ while in mode.
-paneModeEnv :: Pane -> IO [(Text, Text)]
-paneModeEnv pane = do
-    mmode <- readTVarIO pane.mode
-    case mmode of
-        Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
-        Just pm -> do
-            let s = pm.copyState
-                top = pm.frozen.fgHsize - s.viewportOffY
-            pure [ ("pane_in_mode", "1")
-                 , ("pane_mode", "copy-mode")
-                 , ("copy_cursor_x", tshow s.cursorCol)
-                 , ("copy_cursor_y", tshow (s.cursorRow - top))
-                 , ("copy_cursor_line", tshow s.cursorRow)
-                 ]
-
--- Resolve #(cmd) through a 15-second cache; refreshes happen in the
--- background so the status line never blocks on a slow script.
-resolveShell :: ServerState -> Text -> IO Text
-resolveShell st cmdText = do
-    now <- getCurrentTime
-    cache <- readTVarIO st.shellCache
-    case Map.lookup cmdText cache of
-        Just (at, val)
-            | diffUTCTime now at < 15 -> pure val
-            | otherwise -> refresh now val
-        Nothing -> refresh now ""
-  where
-    refresh now oldVal = do
-        -- Optimistically bump the timestamp so only one refresh runs.
-        atomically $ modifyTVar' st.shellCache
-            (Map.insert cmdText (now, oldVal))
-        void . forkIO $ do
-            r <- try (readCreateProcessWithExitCode
-                (shell (T.unpack cmdText)) { close_fds = True } "")
-            let val = case r of
-                    Right (ExitSuccess, out, _) ->
-                        T.strip (T.takeWhile (/= '\n') (T.pack out))
-                    Right (ExitFailure _, _, _) -> ""
-                    Left (_ :: SomeException) -> ""
-            done <- getCurrentTime
-            atomically $ modifyTVar' st.shellCache
-                (Map.insert cmdText (done, val))
-            atomically (bumpDirty st)
-        pure oldVal
-
--- | Expand a format string fully: #{...}, cached #(...), then strftime.
-expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
-expandFormat st env fmt = do
-    -- Pre-resolve shell segments so `evaluate` stays pure.
-    resolved <- newIORef Map.empty
-    let collect t = case T.breakOn "#(" t of
-            (_, rest) | T.null rest -> pure ()
-            (_, rest) -> do
-                let inner = fst (breakBalanced (T.drop 2 rest))
-                val <- resolveShell st inner
-                modifyIORef' resolved (Map.insert inner val)
-                collect (T.drop (2 + T.length inner + 1) rest)
-    collect fmt
-    vals <- readIORef resolved
-    now <- getZonedTime
-    pure (renderFormat env (\c -> Map.findWithDefault "" c vals) now fmt)
-  where
-    breakBalanced = go (0 :: Int) ""
-      where
-        go depth acc t = case T.uncons t of
-            Nothing -> (acc, "")
-            Just (')', rest) | depth == 0 -> (acc, rest)
-            Just (c, rest)
-                | c == '(' -> go (depth + 1) (acc <> T.singleton c) rest
-                | c == ')' -> go (depth - 1) (acc <> T.singleton c) rest
-                | otherwise -> go depth (acc <> T.singleton c) rest
-
--- | The conditions that produce a window's @#{window_flags}@ string.
-data WindowFlagState = WindowFlagState
-    { flagCurrent  :: Bool
-    , flagLast     :: Bool
-    , flagBell     :: Bool
-    , flagActivity :: Bool
-    , flagZoomed   :: Bool
-    }
-
--- | Render the window-status flags in tmux's order: current (@*@) or
--- last (@-@), then bell (@!@) and activity (@#@), and finally zoom
--- (@Z@) when the window has a pane zoomed to fill it.
-windowFlags :: WindowFlagState -> Text
-windowFlags s = T.concat
-    [ if s.flagCurrent then "*"
-      else if s.flagLast then "-" else ""
-    , if s.flagBell then "!" else ""
-    , if s.flagActivity then "#" else ""
-    , if s.flagZoomed then "Z" else ""
-    ]
 
 statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
 statusCells st sess width = do
