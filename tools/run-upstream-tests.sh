@@ -72,6 +72,15 @@ run_one() {
         [ -e "$inc" ] || continue
         sed '/^PATH=\/bin:\/usr\/bin$/d' "$inc" > "$tdir/$(basename "$inc")"
     done
+    # Scripts read fixtures (*.result, *.txt, conf, screen-redraw-results)
+    # from their cwd; copy everything that is not a script alongside them.
+    # --no-preserve=mode: the source may be a read-only nix store path.
+    for f in "$regress"/*; do
+        case $(basename "$f") in
+        *.sh|*.inc|Makefile) continue ;;
+        esac
+        cp -r --no-preserve=mode "$f" "$tdir/"
+    done
     (
         cd "$tdir"
         TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" HAT_PERSIST=0 \
