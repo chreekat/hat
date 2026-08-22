@@ -3,7 +3,6 @@
 # nonzero (XPASS) until its line is removed - keep this list honest.
 # Baseline recorded 2026-07-08: everything fails (CLI compat is young).
 am-terminal.sh
-border-arrows.sh
 capture-pane-hyperlink.sh
 check-names.sh
 combine-test.sh
