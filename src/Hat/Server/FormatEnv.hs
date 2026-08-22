@@ -4,6 +4,7 @@
 module Hat.Server.FormatEnv
     ( windowFormatEnv
     , paneFormatEnv
+    , paneEnvById
     , refreshAutoNames
     , autoName
     , activeClientCounts
@@ -15,7 +16,7 @@ module Hat.Server.FormatEnv
     , windowFlags
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, forM_, void, when)
@@ -39,9 +40,10 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format (FormatCtx (..), FormatEnv, formatCtx, renderFormatCtx)
-import Hat.Server.Locate (locatePane, paneIndexOf)
+import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
+import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.Pane (paneCommandName)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -55,12 +57,14 @@ windowFormatEnv st sess ix win = do
         <*> readTVar sess.currentIx <*> (listToMaybe <$> readTVar sess.windowHist)
         <*> readTVar win.bellFlag <*> readTVar win.activity
         <*> readTVar win.autoRename <*> readTVar win.zoomed
+    sil <- readTVarIO win.silenceFlag
     ps <- readTVarIO win.panes
     let flags = windowFlags WindowFlagState
             { flagCurrent = ix == cur
             , flagLast = Just ix == mlast
             , flagBell = bell
             , flagActivity = act
+            , flagSilence = sil
             , flagZoomed = isJust zoom
             }
     winUser <- deltaUserVars <$> readTVarIO win.options
@@ -73,6 +77,9 @@ windowFormatEnv st sess ix win = do
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))
         , ("window_zoomed_flag", if isJust zoom then "1" else "0")
+        , ("window_bell_flag", if bell then "1" else "0")
+        , ("window_activity_flag", if act then "1" else "0")
+        , ("window_silence_flag", if sil then "1" else "0")
         , ("automatic_rename", if auto then "1" else "0")
         ]) base
 
@@ -104,6 +111,31 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_height", tshow sz.rows)
         , ("session_grouped", "0")  -- hat has no session groups
         ]) wenv
+
+-- | 'paneFormatEnv' for a pane named only by id: locate its window and
+-- session first.
+paneEnvById :: ServerState -> PaneId -> IO (Maybe FormatEnv)
+paneEnvById st pid = do
+    mctx <- atomically $ do
+        mloc <- locatePane st pid
+        case mloc of
+            Nothing -> pure Nothing
+            Just (sid, win) -> do
+                msess <- Map.lookup sid <$> readTVar st.sessions
+                case msess of
+                    Nothing -> pure Nothing
+                    Just sess -> do
+                        ws <- readTVar sess.windows
+                        ps <- readTVar win.panes
+                        let mwix = listToMaybe
+                                [ i | (i, w) <- Map.toList ws, w.id == win.id ]
+                        pure $ (,,,) sess <$> mwix <*> Just win
+                            <*> Map.lookup pid ps
+    case mctx of
+        Nothing -> pure Nothing
+        Just (sess, wix, win, pane) -> do
+            pix <- paneIndexOf st win pane
+            Just <$> paneFormatEnv st sess wix win pix pane
 
 -- | Recompute the names of every @automatic-rename@ window from its
 -- active pane's foreground command, bumping the render generation on any
@@ -252,8 +284,13 @@ resolveShell st cmdText = do
         pure oldVal
 
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
+-- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)
+-- overlay the caller's environment.
 expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
-expandFormat st env fmt = do
+expandFormat st env0 fmt = do
+    tid <- myThreadId
+    mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+    let env = maybe env0 (\amb -> Map.union amb.formats env0) mamb
     -- Pre-resolve shell segments so the evaluator stays pure.
     resolved <- newIORef Map.empty
     let collect t = case T.breakOn "#(" t of
@@ -298,18 +335,20 @@ data WindowFlagState = WindowFlagState
     , flagLast     :: Bool
     , flagBell     :: Bool
     , flagActivity :: Bool
+    , flagSilence  :: Bool
     , flagZoomed   :: Bool
     }
 
 -- | Render the window-status flags in tmux's order: current (@*@) or
--- last (@-@), then bell (@!@) and activity (@#@), and finally zoom
--- (@Z@) when the window has a pane zoomed to fill it.
+-- last (@-@), then bell (@!@), activity (@#@) and silence (@~@), and
+-- finally zoom (@Z@) when the window has a pane zoomed to fill it.
 windowFlags :: WindowFlagState -> Text
 windowFlags s = T.concat
     [ if s.flagCurrent then "*"
       else if s.flagLast then "-" else ""
     , if s.flagBell then "!" else ""
     , if s.flagActivity then "#" else ""
+    , if s.flagSilence then "~" else ""
     , if s.flagZoomed then "Z" else ""
     ]
 

@@ -57,6 +57,7 @@ module Hat.Server
     , detachPaneCurrent  -- ^ exported for the mobile-pane teardown test
     , removePaneFromTree  -- ^ exported for the mobile-pane teardown test
     , DetachResult (..)
+    , WindowFate (..)
     , SessionFate (..)
     , serverIdle  -- ^ exported for the idle-predicate test
     , IdleInputs (..)
@@ -138,6 +139,7 @@ import Hat.Server.FormatEnv
 import Hat.Server.Handover
 import Hat.Server.Conn
 import Hat.Server.Dispatch
+import Hat.Server.HookMonitor (monitorLoop)
 import Hat.Server.Startup
 import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
@@ -179,6 +181,7 @@ runServerWith path mconfig mhandover = do
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
+    installHooks st
     -- On a reload, read the handover the outgoing image left. An era match
     -- yields the tree to adopt (and the socket fd to reuse); an incompatible
     -- or corrupt payload yields only the cleanup core, so we hang the
@@ -258,6 +261,7 @@ runServerWith path mconfig mhandover = do
                 , reconcileLoop st                -- pane sizes track the layout
                 , titleDaemon
                 , watchColorScheme st             -- follow the desktop theme
+                , monitorLoop st                  -- set-hook -B format monitors
                 ] <> [ persistLoop st p | p <- maybe [] pure mstore ]
         -- Last-resort trace: an exception escaping the accept loop or a linked
         -- daemon takes the process down (e.g. a reload's resume fault), and

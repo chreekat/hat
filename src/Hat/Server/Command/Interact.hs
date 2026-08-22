@@ -26,8 +26,10 @@ import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
+import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientActivePane, clientView, targetPane)
+import Hat.Server.Locate (clientActivePane, clientView, findTarget)
+import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.FormatEnv (expandFormat)
@@ -53,14 +55,22 @@ cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
     let (opts, flags, _) = parseArgs "st" args
         quit = "-q" `elem` flags
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    case mpane of
-        Nothing -> pure []
-        Just pane
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left _ -> pure []
+        Right (_, _, _, pane)
             | quit -> do
-                atomically $ do
+                was <- atomically $ do
+                    old <- readTVar pane.mode
                     writeTVar pane.mode Nothing
                     bumpDirty st
+                    pure old
+                forM_ was $ \_ -> do
+                    notifyPane st "pane-mode-changed" pane []
+                    notifyPane st "pane-mode-exited" pane
+                        [ ("mode_entered", PInt 0)
+                        , ("current_mode", PText "")
+                        , ("previous_mode", PText "copy-mode") ]
                 pure []
             | otherwise -> do
                 scr <- Emu.snapshot pane.emulator
@@ -86,6 +96,11 @@ cmdCopyMode st mclient args = do
                     writeTVar pane.mode (Just PaneMode
                         { frozen = frozen, copyState = state })
                     bumpDirty st
+                notifyPane st "pane-mode-changed" pane []
+                notifyPane st "pane-mode-entered" pane
+                    [ ("mode_entered", PInt 1)
+                    , ("current_mode", PText "copy-mode")
+                    , ("previous_mode", PText "") ]
                 pure []
 
 -- | Open the interactive command prompt on the invoking client.

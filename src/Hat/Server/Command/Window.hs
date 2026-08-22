@@ -21,10 +21,12 @@ module Hat.Server.Command.Window
     , cmdRenameWindow
     , cmdMoveWindow
     , cmdLinkWindow
+    , cmdUnlinkWindow
+    , switchTo
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM, forM_, unless, when)
+import Control.Monad (foldM, forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -38,9 +40,14 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Hooks
+    ( NotifyTarget (..), PayloadItem (..), notify, notifyWindow
+    , sessionTarget )
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
-import Hat.Server.Pane (killPaneLocs, newWindowWithPane, pickActivityTarget, sessionSpawnEnv, startPaneReader)
+import Hat.Server.Pane
+    ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
+    , pickActivityTarget, sessionSpawnEnv, startPaneReader, windowActivity )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -139,7 +146,7 @@ cmdNewWindow st mclient args = do
             case reuse of
                 Left e -> pure [RErr e]
                 Right (Just ix) -> do
-                    unless ("-d" `elem` flags) $ atomically (switchTo st sess ix)
+                    unless ("-d" `elem` flags) $ switchToWindow st sess ix
                     pure []
                 Right Nothing -> createWindow st sess opts flags pos requested
 
@@ -213,6 +220,12 @@ createWindow st sess opts flags pos requested = do
                 killPaneLocs st [(sess.id, old, p) | p <- Map.elems ps]
             startPaneReader st sess.id win pane
             applySessionSize st sess.id
+            -- Creation counts as activity for a monitored window.
+            windowActivity st sess.id win
+            sname <- readTVarIO sess.name
+            notifyWindow st "window-created" (Just sess.id) win []
+            notifyWindow st "window-linked" (Just sess.id) win
+                [ ("session", PSessionRef sess.id sname) ]
             pure []
   where
     freeSlot ws = do
@@ -232,19 +245,55 @@ cmdSelectWindow st mclient args = do
     case res of
         Left e -> pure [RErr e]
         Right (sess, ix, _, _) -> do
-            atomically (switchTo st sess ix)
+            switchToWindow st sess ix
             pure []
 
 switchTo :: ServerState -> Session -> Int -> STM ()
-switchTo st sess ix = do
+switchTo st sess ix = void (switchToInfo st sess ix)
+
+-- Like 'switchTo', reporting the change for session-window-changed:
+-- (old index, old window, new index, new window).
+switchToInfo
+    :: ServerState -> Session -> Int
+    -> STM (Maybe (Int, Maybe Window, Int, Window))
+switchToInfo st sess ix = do
     ws <- readTVar sess.windows
     cur <- readTVar sess.currentIx
-    when (ix /= cur) $ forM_ (Map.lookup ix ws) $ \win -> do
-        modifyTVar' sess.windowHist (recordVisit cur ix)
-        writeTVar sess.currentIx ix
-        writeTVar win.bellFlag False
-        writeTVar win.activity False
-        bumpDirty st
+    if ix == cur then pure Nothing else case Map.lookup ix ws of
+        Nothing -> pure Nothing
+        Just win -> do
+            modifyTVar' sess.windowHist (recordVisit cur ix)
+            writeTVar sess.currentIx ix
+            writeTVar win.bellFlag False
+            writeTVar win.silenceFlag False
+            -- On a detached session the selection itself counts as
+            -- activity, so a monitored window's flag stays raised.
+            attached <- not . null <$> sessionClients st sess.id
+            wopts <- resolveForWindow st sess win
+            writeTVar win.activity (not attached && wopts.monitorActivity)
+            bumpDirty st
+            pure (Just (cur, Map.lookup cur ws, ix, win))
+
+-- | 'switchTo' plus its session-window-changed notification.
+switchToWindow :: ServerState -> Session -> Int -> IO ()
+switchToWindow st sess ix = do
+    minfo <- atomically (switchToInfo st sess ix)
+    forM_ minfo $ \(oldIx, mold, newIx, win) -> do
+        sname <- readTVarIO sess.name
+        wname <- readTVarIO win.name
+        oldRef <- case mold of
+            Nothing -> pure []
+            Just old -> do
+                oname <- readTVarIO old.name
+                pure [ ("old_window", PWindowRef old.id oname)
+                     , ("old_window_index", PInt oldIx) ]
+        notify st "session-window-changed"
+            (NotifyTarget (Just sess.id) (Just win.id) Nothing)
+            ([ ("session", PSessionRef sess.id sname)
+             , ("window", PWindowRef win.id wname)
+             , ("new_window", PWindowRef win.id wname)
+             , ("new_window_index", PInt newIx)
+             ] <> oldRef)
 
 cmdNextWindow, cmdPrevWindow, cmdLastWindow :: CommandImpl
 cmdNextWindow st mclient args
@@ -254,9 +303,8 @@ cmdNextWindow st mclient args
 cmdPrevWindow st mclient _ = cycleWindow st mclient (-1)
 cmdLastWindow st mclient _ =
     withTargetSession st mclient Nothing $ \sess -> do
-        atomically $ do
-            hist <- readTVar sess.windowHist
-            forM_ (listToMaybe hist) (switchTo st sess)
+        mix <- atomically (listToMaybe <$> readTVar sess.windowHist)
+        forM_ mix (switchToWindow st sess)
         pure []
 
 -- | @next-window -a@: switch to the next window (cyclically) that has an
@@ -314,7 +362,10 @@ cmdResizeWindow st mclient args = do
         parseInt t = case TR.decimal t of
             Right (n, rest) | T.null rest -> Just n
             _ -> Nothing
-    withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
+    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+    case res of
+      Left e -> pure [RErr e]
+      Right (sess, _, win, _) -> do
         current <- readTVarIO sess.lastSize
         let sz = current
                 { cols = fromMaybe current.cols (parseInt =<< lookup "-x" opts)
@@ -322,6 +373,11 @@ cmdResizeWindow st mclient args = do
                 }
         atomically $ writeTVar sess.lastSize sz
         applySessionSize st sess.id
+        notifyWindow st "window-resized" (Just sess.id) win
+            [ ("old_width", PInt (fromIntegral current.cols))
+            , ("old_height", PInt (fromIntegral current.rows))
+            , ("width", PInt (fromIntegral sz.cols))
+            , ("height", PInt (fromIntegral sz.rows)) ]
         pure []
 
 cmdKillWindow :: CommandImpl
@@ -342,17 +398,20 @@ cmdRenameWindow st mclient args = do
         [nm] -> do
             res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
             case res of
-                Right (_, _, win, _) -> do
+                Right (sess, _, win, _) -> do
                     -- An empty name hands the window back to
                     -- automatic-rename; a real name pins it.
                     if T.null nm
                         then do
                             atomically (writeTVar win.autoRename True)
                             refreshAutoNames st
-                        else atomically $ do
-                            writeTVar win.name nm
-                            writeTVar win.autoRename False
-                            bumpDirty st
+                        else do
+                            atomically $ do
+                                writeTVar win.name nm
+                                writeTVar win.autoRename False
+                                bumpDirty st
+                            notifyWindow st "window-renamed"
+                                (Just sess.id) win []
                     pure []
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
@@ -431,9 +490,56 @@ cmdLinkWindow st mclient args = do
                             modifyTVar' dstSess.windowHist (recordVisit cur dstIx)
                             writeTVar dstSess.currentIx dstIx
                         bumpDirty st
-                        pure (Right ())
+                        sname <- readTVar dstSess.name
+                        pure (Right sname)
             case res of
                 Left e -> pure [RErr e]
-                Right () -> applySessionSize st dstSess.id >> pure []
+                Right sname -> do
+                    applySessionSize st dstSess.id
+                    notifyWindow st "window-linked" (Just dstSess.id) win
+                        [ ("session", PSessionRef dstSess.id sname) ]
+                    pure []
         (Left e, _) -> pure [RErr e]
         (_, Left e) -> pure [RErr e]
+
+-- | @unlink-window [-k] -t target@: remove the window from its session
+-- without killing it, provided it stays linked somewhere (or @-k@ kills).
+cmdUnlinkWindow :: CommandImpl
+cmdUnlinkWindow st mclient args = do
+    let (opts, flags, _) = parseArgs "t" args
+    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, wix, win, _) -> do
+            elsewhere <- atomically $ do
+                allSess <- readTVar st.sessions
+                fmap Prelude.or . forM
+                    [ other | (osid, other) <- Map.toList allSess
+                    , osid /= sess.id ] $ \other -> do
+                        ows <- readTVar other.windows
+                        pure (any (\w -> w.id == win.id) (Map.elems ows))
+            if not elsewhere && "-k" `notElem` flags
+                then pure [RErr "window only linked to one session"]
+                else do
+                    (sname, wname) <- atomically $ do
+                        sname <- readTVar sess.name
+                        wname <- readTVar win.name
+                        ws <- readTVar sess.windows
+                        let ws' = Map.delete wix ws
+                        writeTVar sess.windows ws'
+                        cur <- readTVar sess.currentIx
+                        when (cur == wix) $
+                            forM_ (Map.lookupMin ws') $ \(ix, _) ->
+                                writeTVar sess.currentIx ix
+                        modifyTVar' sess.windowHist (filter (/= wix))
+                        bumpDirty st
+                        pure (sname, wname)
+                    notify st "window-unlinked" (sessionTarget sess.id)
+                        [ ("session", PSessionRef sess.id sname)
+                        , ("window", PWindowRef win.id wname) ]
+                    when (not elsewhere) $ do
+                        ps <- readTVarIO win.panes
+                        killPaneLocsWith QuietLifecycle st
+                            [ (sess.id, win, p) | p <- Map.elems ps ]
+                    applySessionSize st sess.id
+                    pure []

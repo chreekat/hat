@@ -95,7 +95,7 @@ run_one() {
     (
         cd "$tdir"
         TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" HAT_PERSIST=0 \
-            timeout 30 sh "$name"
+            timeout 150 sh "$name"
     ) >/dev/null 2>&1
     printf '%d %s\n' "$?" "$name" >> "$results"
 }

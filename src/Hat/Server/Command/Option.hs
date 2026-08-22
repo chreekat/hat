@@ -33,9 +33,14 @@ import Hat.Model.Options
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Environ
 import Hat.Server.Keys
+import Hat.Server.Format (FormatEnv)
+import Hat.Server.FormatEnv (paneEnvById, paneFormatEnv)
+import Hat.Server.HookTypes (HookAmbient (..))
+import Hat.Server.Hooks (ambientFor)
 import Hat.Server.Locate
-    ( currentResolved, locatePane, noSuchTarget, targetCurrentWindow
-    , targetPaneScoped, targetSession )
+    ( currentResolved, findTarget, locatePane, noSuchTarget, paneIndexOf
+    , targetCurrentWindow, targetPaneScoped, targetSession )
+import Hat.Server.Target qualified as Target
 import Hat.Server.Style (parseColor, parseStyle)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Term.Cell qualified as Cell
@@ -116,14 +121,58 @@ cmdSet def st mclient args = do
                                 pure []
                             | otherwise -> do
                                 curOpts <- currentResolved st mclient mtarget
+                                value <- if "-F" `elem` flags
+                                    then do
+                                        env <- setFormatEnv st mclient mtarget
+                                        expandFormat st env (T.unwords rest)
+                                    else pure (T.unwords rest)
                                 case setOptionEntry mode curOpts
-                                        (spelled n midx) (T.unwords rest) of
+                                        (spelled n midx) value of
                                     Left err -> pure [RErr err]
                                     Right (n', v) -> writeScoped st deltaVar n' v
         [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
   where
     spelled n midx = optionNameText n
         <> maybe "" (\i -> "[" <> T.pack (show i) <> "]") midx
+
+-- | The window a @-w@ option scope acts on: a full window target
+-- (@sess:ix@) via the cmd-find grammar, else the target session's current
+-- window.
+targetWindowScoped
+    :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Window)
+targetWindowScoped st mclient mtarget = do
+    res <- findTarget st mclient Target.FindWindow mtarget
+    case res of
+        Right (_, _, win, _) -> pure (Just win)
+        Left _ -> targetCurrentWindow st mclient mtarget
+
+-- | The environment a @set -F@ value expands against: the target pane's
+-- (the hook context's pane when a hook command has no explicit target),
+-- degrading to the target session's.
+setFormatEnv :: ServerState -> Maybe Client -> Maybe Text -> IO FormatEnv
+setFormatEnv st mclient mtarget = do
+    mamb <- ambientFor st
+    let mambPane = case mclient of
+            Just _ -> Nothing
+            Nothing -> mamb >>= (.targetPane)
+    menv <- case (mtarget, mambPane) of
+        (Nothing, Just pid) -> paneEnvById st pid
+        _ -> do
+            res <- findTarget st mclient Target.FindPane mtarget
+            case res of
+                Right (sess, wix, win, pane) -> do
+                    pix <- paneIndexOf st win pane
+                    Just <$> paneFormatEnv st sess wix win pix pane
+                Left _ -> pure Nothing
+    case menv of
+        Just env -> pure env
+        Nothing -> do
+            msess <- targetSession st mclient mtarget
+            case msess of
+                Just sess -> sessionFormatEnv st sess
+                -- No session yet: user options still resolve as #{@foo}.
+                Nothing -> (.user) <$> readTVarIO st.options
+
 
 -- | Insert a resolved entry into its scope's overlay, refresh the cached
 -- global resolution ('ServerState.options'), and push a changed
@@ -157,7 +206,7 @@ clearPaneCopies
     -> IO ()
 clearPaneCopies st mclient mtarget scope n = case scope of
     SetLocalWindow -> do
-        mwin <- targetCurrentWindow st mclient mtarget
+        mwin <- targetWindowScoped st mclient mtarget
         forM_ mwin $ \win -> atomically $ do
             clearWindow win
             bumpDirty st
@@ -187,7 +236,7 @@ scopeTargetVar st mclient mtarget = \case
         msess <- targetSession st mclient mtarget
         pure (orNoSuch "session" ((.options) <$> msess))
     SetLocalWindow -> do
-        mwin <- targetCurrentWindow st mclient mtarget
+        mwin <- targetWindowScoped st mclient mtarget
         pure (orNoSuch "window" ((.options) <$> mwin))
     SetLocalPane -> do
         mpane <- targetPaneScoped st mclient mtarget
@@ -285,7 +334,7 @@ showScopeValue st mclient mtarget withParents scope n = case scope of
             Nothing -> pure (Left (noSuchTarget "session" mtarget))
             Just sess -> ownOr sess.options (resolveGlobal st)
     SetLocalWindow -> do
-        mwin <- targetCurrentWindow st mclient mtarget
+        mwin <- targetWindowScoped st mclient mtarget
         case mwin of
             Nothing -> pure (Left (noSuchTarget "window" mtarget))
             Just win -> ownOr win.options (resolveGlobal st)
@@ -360,7 +409,7 @@ showListing st mclient mtarget flags = do
                         Nothing -> pure [gw]
                     pure (Right (own, parents))
         | hasW = do
-            mwin <- targetCurrentWindow st mclient mtarget
+            mwin <- targetWindowScoped st mclient mtarget
             case mwin of
                 Nothing -> pure (Left (noSuchTarget "window" mtarget))
                 Just win -> do
@@ -629,7 +678,16 @@ scalarOptionEntry mode opts name value = case name of
     "focus-events" -> withOnOff OptFocusEvents
     "aggressive-resize" -> withOnOff OptAggressiveResize
     "monitor-activity" -> withOnOff OptMonitorActivity
+    "monitor-bell" -> withOnOff OptMonitorBell
+    "monitor-silence" -> withInt OptMonitorSilence
+    "bell-action" -> case value of
+        "any" -> Right (OptBellAction, OVAlertAction AlertAny)
+        "none" -> Right (OptBellAction, OVAlertAction AlertNone)
+        "current" -> Right (OptBellAction, OVAlertAction AlertCurrent)
+        "other" -> Right (OptBellAction, OVAlertAction AlertOther)
+        _ -> Left "bell-action: any, none, current, or other"
     "automatic-rename" -> withOnOff OptAutomaticRename
+    "remain-on-exit" -> withOnOff OptRemainOnExit
     "automatic-rename-format" -> Right (OptAutomaticRenameFormat, OVText value)
     "update-environment" ->
         Right (OptUpdateEnvironment, OVTextList (T.words value))

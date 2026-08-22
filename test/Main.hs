@@ -22,6 +22,7 @@ import Hat.Server.CopyModeSpec qualified
 import Hat.Server.EnvironSpec qualified
 import Hat.Server.FlagsSpec qualified
 import Hat.Server.FormatSpec qualified
+import Hat.Server.HooksSpec qualified
 import Hat.Server.KeysSpec qualified
 import Hat.Server.LayoutSpec qualified
 import Hat.Server.LayoutStringSpec qualified
@@ -87,5 +88,6 @@ main = hspec $ do
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec
     describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
+    describe "Hat.Server.Hooks" Hat.Server.HooksSpec.spec
     describe "Hat.Server.Flags" Hat.Server.FlagsSpec.spec
     describe "integration" Hat.IntegrationSpec.spec

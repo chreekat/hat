@@ -9,6 +9,7 @@ module Hat.Server.Dispatch
     , runCommands
     , runCommandText
     , commandTable
+    , installHooks
     , readConfigUtf8
     , cleanupInherited
     , cmdSourceFile
@@ -29,12 +30,14 @@ import Control.Exception
 import Control.Monad (forM, forM_, unless, void)
 import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error qualified as TEE
+import Data.Text.Read qualified as TR
 import System.Directory
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
@@ -48,12 +51,15 @@ import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
-import Hat.Model.Options (lookupCommandAlias)
+import Hat.Model.Options (lookupCommandAlias, quoteIfNeeded)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import Hat.Term.Pty qualified
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
+import Hat.Server.Command.Wait (cmdWaitFor)
+import Hat.Server.Hooks (PayloadItem (..), inHook, installHookEngine, notify)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
@@ -133,13 +139,94 @@ runAlias st mclient body args = case parseCommandLine body of
     run [] = pure []
     run (n : as) = runBuiltin st mclient n as
 
--- | Dispatch one command through the builtin table.
+-- | Dispatch one command through the builtin table, then fire its
+-- @after-*@ hook (on success) or @command-error@ (on failure).
 runBuiltin :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
 runBuiltin st mclient name args = case Map.lookup name commandTable of
     Nothing -> pure [RErr ("unknown command: " <> name)]
-    Just impl -> impl st mclient args
-        `catch` \(e :: SomeException) ->
-            pure [RErr (name <> ": " <> T.pack (show e))]
+    Just impl -> do
+        replies <- impl st mclient args
+            `catch` \(e :: SomeException) ->
+                pure [RErr (name <> ": " <> T.pack (show e))]
+        fireCommandHooks st mclient name args replies
+        pure replies
+
+-- Commands run from inside a hook fire nothing (tmux's NOHOOKS state).
+fireCommandHooks
+    :: ServerState -> Maybe Client -> Text -> [Text] -> [Reply] -> IO ()
+fireCommandHooks st mclient name args replies = do
+    suppressed <- inHook st
+    unless suppressed $ do
+        let canonical = Map.findWithDefault name name canonicalNames
+            spec = hookArgSpec canonical
+            failed = not (null [ e | RErr e <- replies ])
+            (optsRev, boolFlags, pos) = parseArgs spec args
+        tgt <- resolveHookTarget st mclient (lookup "-t" optsRev)
+        notify st (if failed then "command-error" else "after-" <> canonical)
+            tgt (argsPayload (reverse optsRev) boolFlags pos)
+
+-- | Canonical spelling for every command alias, so @renamew@ fires
+-- @after-rename-window@.
+canonicalNames :: Map.Map Text Text
+canonicalNames = Map.fromList
+    [ (alias, canon)
+    | (names, _) <- commandSpecs
+    , canon : _ <- [names]
+    , alias <- names ]
+
+-- The value-taking flags each command's own parser uses, for rebuilding
+-- its argument payload; commands not listed only take @-t@.
+hookArgSpec :: Text -> [Char]
+hookArgSpec = \case
+    "new-session" -> "sctnxy"
+    "attach-session" -> "tc"
+    "new-window" -> "nct"
+    "split-window" -> "ctlpeF"
+    "capture-pane" -> "bESt"
+    "select-pane" -> "tT"
+    "copy-mode" -> "st"
+    "swap-pane" -> "st"
+    "move-window" -> "st"
+    "link-window" -> "st"
+    "resize-window" -> "txy"
+    "send-keys" -> "tN"
+    "set-buffer" -> "bn"
+    "save-buffer" -> "bt"
+    "list-clients" -> "tF"
+    "list-sessions" -> "F"
+    "list-windows" -> "Ft"
+    "list-panes" -> "Ft"
+    "bind-key" -> "TN"
+    "unbind-key" -> "T"
+    "command-prompt" -> "Ip"
+    "set-hook" -> "tB"
+    "show-hooks" -> "tF"
+    "wait-for" -> "Fw"
+    _ -> "t"
+
+-- tmux's args_print payload: the whole argument list (flags in flag order,
+-- then positionals), each positional, and each flag's value(s).
+argsPayload :: [(Text, Text)] -> [Text] -> [Text] -> [(Text, PayloadItem)]
+argsPayload opts boolFlags pos =
+    ("arguments", PText printed)
+    : [ ("argument_" <> tshow i, PText a) | (i, a) <- zip [0 :: Int ..] pos ]
+    <> concatMap flagItems flagChars
+  where
+    flagChars = List.sort . List.nub $
+        [ c | (f, _) <- opts, Just (_, c) <- [T.unsnoc f] ]
+        <> [ c | f <- boolFlags, Just (_, c) <- [T.unsnoc f] ]
+    valsOf c = [ v | (f, v) <- opts, f == dash c ]
+    dash c = T.pack ['-', c]
+    flagItems c = case valsOf c of
+        [] -> [("flag_" <> T.singleton c, PText "1")]
+        vs -> ("flag_" <> T.singleton c, PText (last vs))
+            : [ ("flag_" <> T.singleton c <> "_" <> tshow i, PText v)
+              | (i, v) <- zip [0 :: Int ..] vs ]
+    printed = T.unwords (concatMap flagTokens flagChars <> map quoteArg pos)
+    flagTokens c = case valsOf c of
+        [] -> [dash c]
+        vs -> concat [ [dash c, quoteArg v] | v <- vs ]
+    quoteArg = quoteIfNeeded
 
 -- | The config assignment forms (tmux's environ_put): a bare @NAME=value@
 -- line sets a global environment variable, @%hidden NAME=value@ a hidden
@@ -161,8 +248,22 @@ envAssignment = \case
             && T.all (\x -> isAlphaNum x || x == '_') cs
         Nothing -> False
 
+-- | Wire the hooks engine to this command table: hook commands run
+-- clientless through 'runCommandText', and @after-*@ hook names validate
+-- against the canonical command names.
+installHooks :: ServerState -> IO ()
+installHooks st = installHookEngine st
+    (\txt -> void (runCommandText st Nothing txt))
+    (expandFormat st)
+    [ n | (n : _, _) <- commandSpecs ]
+
 commandTable :: Map.Map Text CommandImpl
-commandTable = Map.fromList $ concatMap expand
+commandTable = Map.fromList (concatMap expand commandSpecs)
+  where
+    expand (names, impl) = [(n, impl) | n <- names]
+
+commandSpecs :: [([Text], CommandImpl)]
+commandSpecs =
     [ (["bind-key", "bind"], cmdBind)
     , (["unbind-key", "unbind"], cmdUnbind)
     , (["set-option", "set"], cmdSet DefaultSession)
@@ -181,6 +282,7 @@ commandTable = Map.fromList $ concatMap expand
     , (["rename-window", "renamew"], cmdRenameWindow)
     , (["move-window", "movew"], cmdMoveWindow)
     , (["link-window", "linkw"], cmdLinkWindow)
+    , (["unlink-window", "unlinkw"], cmdUnlinkWindow)
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
@@ -229,9 +331,10 @@ commandTable = Map.fromList $ concatMap expand
     , (["display-message", "display"], cmdDisplayMessage)
     , (["run-shell", "run"], cmdRunShell)
     , (["if-shell", "if"], cmdIfShell)
+    , (["set-hook"], cmdSetHook)
+    , (["show-hooks"], cmdShowHooks)
+    , (["wait-for", "wait"], cmdWaitFor)
     ]
-  where
-    expand (names, impl) = [(n, impl) | n <- names]
 
 -- Command implementations.
 
@@ -518,6 +621,7 @@ cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do
     let (opts, flags, pos) = parseArgs "tN" args
         literal = "-l" `elem` flags
+        hexBytes = "-H" `elem` flags
         modeCmd = "-X" `elem` flags
     mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
     case (mpicker, mclient) of
@@ -528,13 +632,27 @@ cmdSendKeys st mclient args = do
                 (concatMap (tokenizeKeys . argBytes literal) pos)
             pure []
         _ -> do
-            mpane <- targetPane st mclient (lookup "-t" opts)
+            -- A full pane target (sess:win.N) resolves through cmd-find;
+            -- the special pane tokens (%N, !, {marked}) keep the old path.
+            let mtok = lookup "-t" opts
+            mpane <- case Target.parsePaneTarget mtok of
+                Target.PaneCurrent | Just t <- mtok -> do
+                    res <- findTarget st mclient Target.FindPane (Just t)
+                    pure $ case res of
+                        Right (_, _, _, p) -> Just p
+                        Left _ -> Nothing
+                _ -> targetPane st mclient mtok
             case mpane of
                 Nothing -> pure []
                 Just pane
                     | modeCmd -> case pos of
                         (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
                         [] -> pure []
+                    -- -H: each argument is one hex byte.
+                    | hexBytes -> case mapM hexByte pos of
+                        Just bytes ->
+                            [] <$ Hat.Term.Pty.writePty pane.pty (B.pack bytes)
+                        Nothing -> pure [RErr "send-keys -H: bad hex byte"]
                     | otherwise -> [] <$ Hat.Term.Pty.writePty pane.pty
                         (B.concat (map (argBytes literal) pos))
   where
@@ -542,3 +660,7 @@ cmdSendKeys st mclient args = do
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
+    hexByte t = case TR.hexadecimal t of
+        Right (n, rest) | T.null rest, n >= 0, n <= 255 ->
+            Just (fromIntegral (n :: Int))
+        _ -> Nothing

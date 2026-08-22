@@ -71,6 +71,7 @@ import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Vector qualified as V
 import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
@@ -84,6 +85,7 @@ import Hat.Model.Options
     ( Keymap, Options, OptionsDelta, applyDelta, defaultOptions, emptyDelta
     , resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
+import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
@@ -161,6 +163,9 @@ data ServerState = ServerState
         -- ^ the live @gsettings monitor@ child, killed before a reload's
         --   execve so it is not orphaned. See 'Hat.Server.cmdRestartServer'
         --   and 'Hat.Server.ColorScheme.reapMonitor'.
+    , hooks :: HooksState
+        -- ^ hook bindings, monitors, and wait-for channels; see
+        --   'Hat.Server.Hooks'.
     }
 
 data Session = Session
@@ -186,6 +191,8 @@ data Window = Window
     , paneHist   :: TVar [PaneId]  -- ^ MRU pane ids; see 'Hat.Server.Mru'
     , bellFlag   :: TVar Bool
     , activity   :: TVar Bool  -- ^ output since last viewed (monitor-activity)
+    , silenceFlag :: TVar Bool  -- ^ quiet past monitor-silence; see 'Hat.Server.HookMonitor.silenceSweep'
+    , activityAt :: TVar POSIXTime  -- ^ when output last arrived (the silence timer's anchor)
     , zoomed     :: TVar (Maybe PaneId)
     , autoRename :: TVar Bool
         -- ^ when set, the name tracks the active pane's foreground command
@@ -466,6 +473,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Nothing  -- listenFd
     <*> newTVarIO Nothing  -- serverConfig
     <*> newMonitorRegistry
+    <*> newHooksState
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

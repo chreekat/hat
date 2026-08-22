@@ -6,6 +6,8 @@ module Hat.Model.Options
     ( Options (..)
     , StatusPosition (..)
     , ModeKeys (..)
+    , AlertAction (..)
+    , alertAllows
     , BorderLines (..)
     , BorderIndicators (..)
     , Keymap
@@ -55,6 +57,19 @@ data StatusPosition = StatusTop | StatusBottom
 data ModeKeys = KeysVi | KeysEmacs
     deriving (Eq, Show)
 
+-- | @bell-action@: which windows' bells raise the alert hook.
+data AlertAction = AlertAny | AlertNone | AlertCurrent | AlertOther
+    deriving (Eq, Show)
+
+-- | Whether an alert in a (non-)current window fires its hook under an
+-- action setting.
+alertAllows :: AlertAction -> Bool -> Bool
+alertAllows action isCurrent = case action of
+    AlertAny -> True
+    AlertNone -> False
+    AlertCurrent -> isCurrent
+    AlertOther -> not isCurrent
+
 -- | @pane-border-lines@: which box-drawing glyph set draws pane borders.
 data BorderLines = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
     deriving (Eq, Show)
@@ -97,7 +112,11 @@ data Options = Options
     , focusEvents            :: Bool
     , aggressiveResize       :: Bool
     , monitorActivity        :: Bool
+    , monitorBell            :: Bool
+    , monitorSilence         :: Int   -- ^ seconds of quiet before alert-silence; 0 disables
+    , bellAction             :: AlertAction
     , automaticRename        :: Bool   -- ^ windows track their foreground command
+    , remainOnExit           :: Bool   -- ^ a dead pane stays until killed; see 'Hat.Server.Pane.paneEof'
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
@@ -145,7 +164,11 @@ defaultOptions = Options
     , focusEvents = False
     , aggressiveResize = False
     , monitorActivity = False
+    , monitorBell = True
+    , monitorSilence = 0
+    , bellAction = AlertAny
     , automaticRename = True
+    , remainOnExit = False
     , automaticRenameFormat = "#{pane_current_command}"
     , updateEnvironment =
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
@@ -197,7 +220,11 @@ data OptionName
     | OptFocusEvents
     | OptAggressiveResize
     | OptMonitorActivity
+    | OptMonitorBell
+    | OptMonitorSilence
+    | OptBellAction
     | OptAutomaticRename
+    | OptRemainOnExit
     | OptAutomaticRenameFormat
     | OptUpdateEnvironment
     | OptMainPaneWidth
@@ -220,6 +247,7 @@ data OptionValue
     | OVStyle Cell.Style
     | OVBorderLines BorderLines
     | OVBorderIndicators BorderIndicators
+    | OVAlertAction AlertAction
     | OVIndexed (Map Int Text)  -- ^ an array option's entries, by index
     deriving (Eq, Show)
 
@@ -304,7 +332,11 @@ applyEntry name val o = case (name, val) of
     (OptFocusEvents, OVBool b) -> o { focusEvents = b }
     (OptAggressiveResize, OVBool b) -> o { aggressiveResize = b }
     (OptMonitorActivity, OVBool b) -> o { monitorActivity = b }
+    (OptMonitorBell, OVBool b) -> o { monitorBell = b }
+    (OptMonitorSilence, OVInt n) -> o { monitorSilence = n }
+    (OptBellAction, OVAlertAction a) -> o { bellAction = a }
     (OptAutomaticRename, OVBool b) -> o { automaticRename = b }
+    (OptRemainOnExit, OVBool b) -> o { remainOnExit = b }
     (OptAutomaticRenameFormat, OVText t) -> o { automaticRenameFormat = t }
     (OptUpdateEnvironment, OVTextList ts) -> o { updateEnvironment = ts }
     (OptMainPaneWidth, OVInt n) -> o { mainPaneWidth = n }
@@ -332,7 +364,10 @@ optionScopeClass = \case
     OptWordSeparators -> WindowOption
     OptAggressiveResize -> WindowOption
     OptMonitorActivity -> WindowOption
+    OptMonitorBell -> WindowOption
+    OptMonitorSilence -> WindowOption
     OptAutomaticRename -> WindowOption
+    OptRemainOnExit -> WindowOption
     OptAutomaticRenameFormat -> WindowOption
     OptMainPaneWidth -> WindowOption
     OptMainPaneHeight -> WindowOption
@@ -391,7 +426,9 @@ allOptionNames =
     , OptPaneBorderLines, OptPaneBorderIndicators, OptCursorColour
     , OptSetTitles
     , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
-    , OptMonitorActivity, OptAutomaticRename, OptAutomaticRenameFormat
+    , OptMonitorActivity, OptMonitorBell, OptMonitorSilence, OptBellAction
+    , OptAutomaticRename, OptAutomaticRenameFormat
+    , OptRemainOnExit
     , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
     , OptCommandAlias
     ]
@@ -482,7 +519,11 @@ optionNameText = \case
     OptFocusEvents -> "focus-events"
     OptAggressiveResize -> "aggressive-resize"
     OptMonitorActivity -> "monitor-activity"
+    OptMonitorBell -> "monitor-bell"
+    OptMonitorSilence -> "monitor-silence"
+    OptBellAction -> "bell-action"
     OptAutomaticRename -> "automatic-rename"
+    OptRemainOnExit -> "remain-on-exit"
     OptAutomaticRenameFormat -> "automatic-rename-format"
     OptUpdateEnvironment -> "update-environment"
     OptMainPaneWidth -> "main-pane-width"
@@ -528,7 +569,11 @@ optionValueOf o = \case
     OptFocusEvents -> Just (OVBool o.focusEvents)
     OptAggressiveResize -> Just (OVBool o.aggressiveResize)
     OptMonitorActivity -> Just (OVBool o.monitorActivity)
+    OptMonitorBell -> Just (OVBool o.monitorBell)
+    OptMonitorSilence -> Just (OVInt o.monitorSilence)
+    OptBellAction -> Just (OVAlertAction o.bellAction)
     OptAutomaticRename -> Just (OVBool o.automaticRename)
+    OptRemainOnExit -> Just (OVBool o.remainOnExit)
     OptAutomaticRenameFormat -> Just (OVText o.automaticRenameFormat)
     OptUpdateEnvironment -> Just (OVTextList o.updateEnvironment)
     OptMainPaneWidth -> Just (OVInt o.mainPaneWidth)
@@ -560,6 +605,11 @@ formatOptionValue = \case
         BorderHeavy -> "heavy"
         BorderDouble -> "double"
         BorderSimple -> "simple"
+    OVAlertAction a -> case a of
+        AlertAny -> "any"
+        AlertNone -> "none"
+        AlertCurrent -> "current"
+        AlertOther -> "other"
     OVBorderIndicators i -> case i of
         IndicatorsOff -> "off"
         IndicatorsColour -> "colour"
@@ -608,9 +658,10 @@ quoteIfNeeded t
         '\\' -> "\\\\"
         _ -> T.singleton c
 
--- | tmux's hook names. hat runs no hooks (setting one fails loud), but
--- @show-options -H@ lists them — empty, exactly as an unconfigured tmux
--- does (upstream options-scope.sh greps @show -gH@ for @alert-bell@).
+-- | tmux's built-in hook names (its options table's @IS_HOOK@ entries,
+-- minus the per-command @after-*@ family). @show-options -H@ lists them;
+-- they are also the names @set-hook@ and @wait-for -E@ accept — see
+-- 'Hat.Server.Hooks'.
 hookNames :: [Text]
 hookNames =
     [ "alert-activity", "alert-bell", "alert-silence"
@@ -618,7 +669,16 @@ hookNames =
     , "client-dark-theme", "client-detached", "client-focus-in"
     , "client-focus-out", "client-light-theme", "client-resized"
     , "client-session-changed", "command-error", "marked-pane-changed"
+    , "pane-activity", "pane-bell", "pane-command-finished"
+    , "pane-command-started", "pane-created", "pane-died", "pane-exited"
+    , "pane-focus-in", "pane-focus-out", "pane-mode-changed"
+    , "pane-mode-entered", "pane-mode-exited", "pane-moved"
+    , "pane-prompt-closed", "pane-prompt-opened", "pane-resized"
+    , "pane-set-clipboard", "pane-shell-prompt", "pane-title-changed"
     , "session-added-to-group", "session-closed", "session-created"
     , "session-removed-from-group", "session-renamed"
-    , "session-window-changed", "window-linked", "window-unlinked"
+    , "session-window-changed", "window-closed", "window-created"
+    , "window-layout-changed", "window-linked", "window-pane-changed"
+    , "window-renamed", "window-resized", "window-unlinked"
+    , "window-unzoomed", "window-zoomed"
     ]

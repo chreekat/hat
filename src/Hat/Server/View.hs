@@ -487,14 +487,16 @@ statusCells st sess width = do
         mlast <- listToMaybe <$> readTVarIO sess.windowHist
         counts <- atomically (activeClientCounts st)
         forM (Map.toAscList ws) $ \(ix, win) -> do
-            (wname, bell, act, zoom) <- atomically $ (,,,)
+            (wname, bell, act, sil, zoom) <- atomically $ (,,,,)
                 <$> readTVar win.name <*> readTVar win.bellFlag
-                <*> readTVar win.activity <*> readTVar win.zoomed
+                <*> readTVar win.activity <*> readTVar win.silenceFlag
+                <*> readTVar win.zoomed
             let flags = windowFlags WindowFlagState
                     { flagCurrent = ix == cur
                     , flagLast = Just ix == mlast
                     , flagBell = bell
                     , flagActivity = act
+                    , flagSilence = sil
                     , flagZoomed = isJust zoom
                     }
                 activeClients = Map.findWithDefault 0 win.id counts

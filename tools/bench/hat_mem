@@ -63,15 +63,15 @@ rm -f "$OUT/rts.txt" "$OUT/hat.hp" "$OUT/hat.prof" "$OUT/hat.eventlog" "$OUT/ser
 if [ -z "$BIN" ]; then
     if [ -n "$BUILD_FLAGS" ]; then
         # shellcheck disable=SC2086
-        nix develop -c cabal build --builddir=dist-bench $BUILD_FLAGS exe:hat
-        BIN=$(nix develop -c cabal list-bin --builddir=dist-bench exe:hat)
+        cabal build --builddir=dist-bench $BUILD_FLAGS exe:hat
+        BIN=$(cabal list-bin --builddir=dist-bench exe:hat)
     else
-        nix develop -c cabal build exe:hat
-        BIN=$(nix develop -c cabal list-bin exe:hat)
+        cabal build exe:hat
+        BIN=$(cabal list-bin exe:hat)
     fi
 fi
-nix develop -c cabal build -v0 bench-report
-REPORT=$(nix develop -c cabal list-bin bench-report)
+cabal build -v0 bench-report
+REPORT=$(cabal list-bin bench-report)
 
 WORK=$(mktemp -d /tmp/hat-mem-XXXXXX)
 SOCK="$WORK/socket"

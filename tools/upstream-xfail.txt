@@ -58,16 +58,8 @@ control-client-wait-exit.sh     # no wait-exit / %exit lifecycle
 control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-changed
 control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
-# hooks / set-hook / wait-for: no hook engine
-hooks.sh                        # set-hook is an unknown command
-hooks-after.sh                  # after-* / command-error hooks unimplemented
-hooks-lifecycle.sh              # lifecycle hooks unimplemented
-hooks-notify.sh                 # notify hooks unimplemented
-set-hook-B.sh                   # set-hook / show-hooks unimplemented
-set-hook-E.sh                   # set-hook + wait-for unimplemented
-set-hook-R.sh                   # set-hook unimplemented
-wait-for-E.sh                   # wait-for command unimplemented
-alerts.sh                       # monitor-bell/-silence/-activity + alert hooks unimplemented
+# hooks / set-hook / wait-for: gaps beyond the hook engine
+hooks-notify.sh                 # needs session groups + control mode + respawn-pane + title stack
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
 choose-buffer.sh                # choose-buffer + mode-screen rendering unimplemented
@@ -99,7 +91,7 @@ new-pane-mouse.sh               # mouse/default-command options + list-keys + ne
 # option engine breadth: flat scalar table, global-only read-back
 options-array.sh                # array options (option[key], -a append, ordering) unmodeled
 options-values.sh               # most option names fail-loud + no typed value-validation table
-show-options-output.sh          # needs hooks (set-hook -B/-H, show-hooks) + array-index output
+show-options-output.sh          # needs status-format + string array keys + hook-aware show -g/-H filtering
 
 # capture-pane's grid dump (-p/-N/-e/-L/-S/-E) is implemented; the raw cell
 # dump (-pR) and the -J/-F wrapped-line flags are not. The grid-path scripts
@@ -133,7 +125,7 @@ pane-ops.sh                     # needs new-window -E/-I, respawn-pane -E, resiz
 window-ops.sh                   # unlink/swap/rotate-window and move-window -k/-a/-r absent
 session-ops.sh                  # grouped sessions, new-session -A/-t, detach-on-destroy, kill-session -a/-C/-f
 pipe-pane.sh                    # pipe-pane works but the test needs remain-on-exit (dead-pane model)
-lifecycle-deferred.sh           # needs detach-on-destroy + lifecycle hooks + control-mode + link/unlink-window
+lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + window-size manual + status off + floating panes

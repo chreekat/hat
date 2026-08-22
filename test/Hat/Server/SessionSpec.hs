@@ -26,7 +26,7 @@ import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
     , defaultOptions, emptyDelta, insertDelta, singletonDelta)
 import Hat.Server
-    ( DetachResult (..), SessionFate (..), IdleInputs (..), serverIdle
+    ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
@@ -95,6 +95,8 @@ addWindow sess n = do
         <*> newTVarIO []
         <*> newTVarIO False
         <*> newTVarIO False
+        <*> newTVarIO False
+        <*> newTVarIO 0
         <*> newTVarIO Nothing
         <*> newTVarIO True
         <*> newTVarIO emptyDelta
@@ -589,7 +591,7 @@ spec = do
         it "removes the pane and reactivates a survivor in one transaction" $ do
             (st, _, win, pa, pb) <- twoPaneWindow
             r <- atomically (detachPane st (SessionId 0) win pa)
-            r `shouldBe` Detached SessionSurvives
+            r `shouldBe` Detached WindowSurvives SessionSurvives
             readTVarIO win.layout `shouldReturn` Leaf pb.id
             (Map.member pa.id <$> readTVarIO win.panes) `shouldReturn` False
             readTVarIO win.activeId `shouldReturn` pb.id
@@ -612,7 +614,7 @@ spec = do
                 writeTVar win.layout (Leaf pa.id)
                 writeTVar win.panes (Map.singleton pa.id pa)
             r <- atomically (detachPane st (SessionId 0) win pa)
-            r `shouldBe` Detached SessionSurvives
+            r `shouldBe` Detached WindowRemoved SessionSurvives
             (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` False
 
         it "reports the session emptied by its last pane" $ do
@@ -623,7 +625,7 @@ spec = do
                 writeTVar win.layout (Leaf pa.id)
                 writeTVar win.panes (Map.singleton pa.id pa)
             r <- atomically (detachPane st (SessionId 0) win pa)
-            r `shouldBe` Detached SessionEmptied
+            r `shouldBe` Detached WindowRemoved SessionEmptied
             (Map.member (SessionId 0) <$> readTVarIO st.sessions)
                 `shouldReturn` False
 
@@ -675,9 +677,10 @@ spec = do
             pb <- paneIn w0 2
             atomically $ writeTVar w0.layout
                 (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
-            emptied <- atomically $ detachPanes st
+            results <- atomically $ detachPanes st
                 [(SessionId 0, w0, pa), (SessionId 0, w0, pb)]
-            emptied `shouldBe` []
+            [ sid | ((sid, _), Detached _ SessionEmptied) <- results ]
+                `shouldBe` []
             (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` False
             (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` True
 
@@ -690,9 +693,10 @@ spec = do
             atomically $ do
                 writeTVar w0.layout (Leaf pa.id)
                 writeTVar w1.layout (Leaf pb.id)
-            emptied <- atomically $ detachPanes st
+            results <- atomically $ detachPanes st
                 [(SessionId 0, w0, pa), (SessionId 0, w1, pb)]
-            emptied `shouldBe` [SessionId 0]
+            [ sid | ((sid, _), Detached _ SessionEmptied) <- results ]
+                `shouldBe` [SessionId 0]
             (Map.member (SessionId 0) <$> readTVarIO st.sessions)
                 `shouldReturn` False
 
@@ -722,7 +726,7 @@ spec = do
                 writeTVar w1.activeId pa.id
             (msid, r) <- atomically (detachPaneCurrent st pa)
             msid `shouldBe` Just (SessionId 0)
-            r `shouldBe` Detached SessionSurvives
+            r `shouldBe` Detached WindowRemoved SessionSurvives
             -- w1 (pa's current window) collapsed; w0 survives with pb.
             (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` False
             (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` True

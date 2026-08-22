@@ -25,6 +25,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Layout
+import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
@@ -131,6 +132,11 @@ reconcilePaneSizes st = do
                 atomically $ do
                     writeTVar pane.size sz
                     bumpDirty st
+                notifyPane st "pane-resized" pane
+                    [ ("old_width", PInt (fromIntegral old.cols))
+                    , ("old_height", PInt (fromIntegral old.rows))
+                    , ("width", PInt (fromIntegral sz.cols))
+                    , ("height", PInt (fromIntegral sz.rows)) ]
 
 -- | The size the current layout assigns to every live pane across all
 -- sessions. See 'reconcilePaneSizes'.

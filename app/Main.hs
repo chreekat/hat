@@ -28,6 +28,7 @@ data Cli = Cli
     { socketName :: String
     , socketPathOverride :: Maybe FilePath
     , configFile :: Maybe FilePath
+    , controlMode :: Bool
     , command :: [String]
     }
 
@@ -91,11 +92,13 @@ parseCli = go Cli
     { socketName = "default"
     , socketPathOverride = Nothing
     , configFile = Nothing
+    , controlMode = False
     , command = []
     }
   where
     go cli = \case
         [] -> cli
+        ("-C" : rest) -> go cli { controlMode = True } rest
         ("-L" : name : rest) -> go cli { socketName = name } rest
         ("-S" : path : rest) -> go cli { socketPathOverride = Just path } rest
         ("-f" : path : rest) -> go cli { configFile = Just path } rest
@@ -113,13 +116,34 @@ clientMain :: Cli -> IO ()
 clientMain cli = do
     path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
     let cmds = parseArgv cli.command
-    case cli.command of
-        [] -> attach path cli.configFile []
-        ["attach"] -> attach path cli.configFile []
-        ["attach-session"] -> attach path cli.configFile []
-        _ -> case terminalMode cmds of
-            GrabsTerminal -> attach path cli.configFile cmds
-            FireAndForget -> control path cli.configFile cmds
+    if cli.controlMode
+        then case cmds of
+            ((verb : _) : _)
+                | verb `elem` ["attach-session", "attach"] ->
+                    attachControl path cli.configFile cmds
+            _ -> do
+                hPutStrLn stderr "hat: -C supports only attach"
+                exitFailure
+        else case cli.command of
+            [] -> attach path cli.configFile []
+            ["attach"] -> attach path cli.configFile []
+            ["attach-session"] -> attach path cli.configFile []
+            _ -> case terminalMode cmds of
+                GrabsTerminal -> attach path cli.configFile cmds
+                FireAndForget -> control path cli.configFile cmds
+
+-- | @-C attach@: a scripted attached client with no terminal; stdin EOF
+-- detaches. See 'Hat.Client.runClientControl'.
+attachControl :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
+attachControl path mconfig setup = do
+    (sock, origin) <- connectOrStart path mconfig
+    reason <- runClientControl sock origin setup
+    case reason of
+        Rejected e -> do
+            hPutStrLn stderr ("hat: " <> T.unpack e)
+            exitWith (ExitFailure 1)
+        ServerDied -> exitWith (ExitFailure 1)
+        _ -> pure ()
 
 -- | Whether a command line grabs this terminal to render, or runs and exits.
 data TerminalMode
