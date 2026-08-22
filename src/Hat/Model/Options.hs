@@ -30,6 +30,10 @@ module Hat.Model.Options
     , allowedAtPane
     , optionNameText
     , resolveOptionName
+    , splitArrayIndex
+    , isArrayOption
+    , resolveIndexedName
+    , lookupCommandAlias
     , optionValueOf
     , formatOptionValue
     , quoteIfNeeded
@@ -38,8 +42,10 @@ module Hat.Model.Options
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Read as TR
 
 import qualified Hat.Term.Cell as Cell
 
@@ -96,6 +102,7 @@ data Options = Options
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
     , mainPaneHeight         :: Int
+    , commandAlias    :: Map Int Text   -- ^ array of @name=command@ entries; see 'lookupCommandAlias'
     , user            :: Map Text Text  -- ^ @\@foo@ options
     }
     deriving (Eq, Show)
@@ -145,6 +152,10 @@ defaultOptions = Options
         , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]
     , mainPaneWidth = 80
     , mainPaneHeight = 24
+    -- tmux's default aliases, minus the ones naming commands hat lacks.
+    , commandAlias = Map.fromList
+        [ (0, "split-pane=split-window")
+        , (1, "splitp=split-window") ]
     , user = Map.empty
     }
   where
@@ -191,6 +202,7 @@ data OptionName
     | OptUpdateEnvironment
     | OptMainPaneWidth
     | OptMainPaneHeight
+    | OptCommandAlias
     | OptUser Text   -- ^ the option name, including its @\@@ prefix
     deriving (Eq, Ord, Show)
 
@@ -208,6 +220,7 @@ data OptionValue
     | OVStyle Cell.Style
     | OVBorderLines BorderLines
     | OVBorderIndicators BorderIndicators
+    | OVIndexed (Map Int Text)  -- ^ an array option's entries, by index
     deriving (Eq, Show)
 
 -- | The options a @set@ at one scope carries: only the fields it actually set,
@@ -296,6 +309,7 @@ applyEntry name val o = case (name, val) of
     (OptUpdateEnvironment, OVTextList ts) -> o { updateEnvironment = ts }
     (OptMainPaneWidth, OVInt n) -> o { mainPaneWidth = n }
     (OptMainPaneHeight, OVInt n) -> o { mainPaneHeight = n }
+    (OptCommandAlias, OVIndexed m) -> o { commandAlias = m }
     (OptUser k, OVText t) -> o { user = Map.insert k t o.user }
     -- Unreachable: the parser never pairs a name with a foreign value.
     _ -> o
@@ -313,6 +327,7 @@ optionScopeClass :: OptionName -> ScopeClass
 optionScopeClass = \case
     OptDefaultTerminal -> ServerOption
     OptEscapeTime -> ServerOption
+    OptCommandAlias -> ServerOption
     OptModeKeys -> WindowOption
     OptWordSeparators -> WindowOption
     OptAggressiveResize -> WindowOption
@@ -378,6 +393,7 @@ allOptionNames =
     , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
     , OptMonitorActivity, OptAutomaticRename, OptAutomaticRenameFormat
     , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
+    , OptCommandAlias
     ]
 
 -- | Resolve a user-typed option name as tmux does: @\@foo@ passes through,
@@ -393,6 +409,44 @@ resolveOptionName t
         _        -> Left ("ambiguous option: " <> t)
   where
     table = [(optionNameText n, n) | n <- allOptionNames]
+
+-- | Split an option spelling from its array index: @command-alias[100]@
+-- becomes @(command-alias, Just 100)@. A malformed index fails loud.
+splitArrayIndex :: Text -> Either Text (Text, Maybe Int)
+splitArrayIndex t = case T.breakOn "[" t of
+    (base, idx)
+        | T.null idx -> Right (t, Nothing)
+        | Just inner <- T.stripSuffix "]" (T.drop 1 idx)
+        , Right (i, rest) <- TR.decimal inner
+        , T.null rest, i >= (0 :: Int) -> Right (base, Just i)
+        | otherwise -> Left ("bad array index: " <> t)
+
+-- | Whether an option holds an indexed array of strings ('OVIndexed').
+isArrayOption :: OptionName -> Bool
+isArrayOption = \case
+    OptCommandAlias -> True
+    _ -> False
+
+-- | Resolve a possibly-indexed option spelling ('splitArrayIndex' +
+-- 'resolveOptionName'); an index demands an array option.
+resolveIndexedName :: Text -> Either Text (OptionName, Maybe Int)
+resolveIndexedName spelled = do
+    (baseT, midx) <- splitArrayIndex spelled
+    n <- resolveOptionName baseT
+    case midx of
+        Just _ | not (isArrayOption n) ->
+            Left (optionNameText n <> " is not an array option")
+        _ -> Right (n, midx)
+
+-- | The command a name aliases, if any: the first @name=command@ entry in
+-- index order, as tmux's @cmd_get_alias@ resolves it. See
+-- 'Hat.Server.Dispatch.runArgv' for when aliases apply.
+lookupCommandAlias :: Options -> Text -> Maybe Text
+lookupCommandAlias o wanted = listToMaybe
+    [ T.drop 1 rhs
+    | (_, entry) <- Map.toAscList o.commandAlias
+    , let (nm, rhs) = T.breakOn "=" entry
+    , not (T.null rhs), nm == wanted ]
 
 optionNameText :: OptionName -> Text
 optionNameText = \case
@@ -433,6 +487,7 @@ optionNameText = \case
     OptUpdateEnvironment -> "update-environment"
     OptMainPaneWidth -> "main-pane-width"
     OptMainPaneHeight -> "main-pane-height"
+    OptCommandAlias -> "command-alias"
     OptUser k -> k
 
 -- | Project one option back out of a resolved 'Options' (inverse of
@@ -478,6 +533,7 @@ optionValueOf o = \case
     OptUpdateEnvironment -> Just (OVTextList o.updateEnvironment)
     OptMainPaneWidth -> Just (OVInt o.mainPaneWidth)
     OptMainPaneHeight -> Just (OVInt o.mainPaneHeight)
+    OptCommandAlias -> Just (OVIndexed o.commandAlias)
     OptUser k -> OVText <$> Map.lookup k o.user
 
 -- | Render an option value the way tmux's @show-options -v@ does: the raw
@@ -509,6 +565,9 @@ formatOptionValue = \case
         IndicatorsColour -> "colour"
         IndicatorsArrows -> "arrows"
         IndicatorsBoth -> "both"
+    -- Scalar contexts join an array with the assign separator; listings
+    -- print one indexed line per entry instead ('listingLines').
+    OVIndexed m -> T.intercalate "," (Map.elems m)
 
 -- | Display form of a parsed style (a set never round-trips its original
 -- spelling; this is for @show-options@ output only).

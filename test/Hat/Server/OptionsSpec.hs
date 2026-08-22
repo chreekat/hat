@@ -19,6 +19,7 @@ import Hat.Model.Options
     , OptionName (..), OptionValue (..), ScopeClass (..)
     , emptyDelta, singletonDelta, deleteDelta, mergeDeltas, resolveOptions
     , optionScopeClass, validateScope, resolveOptionName
+    , lookupCommandAlias
     )
 import Hat.Server
     ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
@@ -94,6 +95,55 @@ spec = do
                 opts0 = set Assign defaultOptions "status-right" "a"
                 opts1 = set Append opts0 "status-right" "b" :: Options
             (opts1.statusRight :: Text) `shouldBe` "ab"
+
+        it "sets one command-alias index, keeping the other entries" $ do
+            let r = setOption Assign defaultOptions
+                        "command-alias[100]" "zoom=resize-pane -Z"
+            fmap (Map.lookup 100 . (.commandAlias)) r
+                `shouldBe` Right (Just "zoom=resize-pane -Z")
+            fmap (Map.lookup 1 . (.commandAlias)) r
+                `shouldBe` Right (Just "splitp=split-window")
+
+        it "appends onto one array index with -a" $ do
+            let set mode opts name v =
+                    either (const opts) id (setOption mode opts name v)
+                opts0 = set Assign defaultOptions
+                    "command-alias[7]" "zoom=resize-pane"
+                opts1 = set Append opts0 "command-alias[7]" " -Z" :: Options
+            Map.lookup 7 opts1.commandAlias `shouldBe` Just "zoom=resize-pane -Z"
+
+        it "whole-array assign replaces the array, split on commas" $
+            fmap (.commandAlias)
+                (setOption Assign defaultOptions "command-alias" "a=b,c=d")
+                `shouldBe` Right (Map.fromList [(0, "a=b"), (1, "c=d")])
+
+        it "whole-array append continues after the highest index" $
+            -- the defaults occupy 0 and 1
+            fmap (Map.lookup 2 . (.commandAlias))
+                (setOption Append defaultOptions "command-alias" "x=y")
+                `shouldBe` Right (Just "x=y")
+
+        it "rejects an index on a non-array option" $
+            setOption Assign defaultOptions "status-left[0]" "x"
+                `shouldBe` Left "status-left is not an array option"
+
+        it "rejects a malformed array index" $
+            setOption Assign defaultOptions "command-alias[x]" "v"
+                `shouldBe` Left "bad array index: command-alias[x]"
+
+    describe "lookupCommandAlias" $ do
+        it "resolves the first name= match in index order" $ do
+            let opts = defaultOptions
+                    { commandAlias =
+                        Map.fromList [(2, "z=first"), (5, "z=second")] }
+            lookupCommandAlias opts "z" `shouldBe` Just "first"
+
+        it "resolves the default splitp alias" $
+            lookupCommandAlias defaultOptions "splitp"
+                `shouldBe` Just "split-window"
+
+        it "answers Nothing for a name no entry aliases" $
+            lookupCommandAlias defaultOptions "zoom" `shouldBe` Nothing
 
     describe "resolveOptionName" $ do
         it "resolves an exact name" $
@@ -255,6 +305,13 @@ spec = do
                 (singletonDelta OptStatusLeft (OVText "[#{session_name}] "))
                 []
                 `shouldBe` ["status-left \"[#{session_name}] \""]
+
+        it "prints one indexed line per array entry" $
+            listingLines False
+                (singletonDelta OptCommandAlias
+                    (OVIndexed (Map.fromList [(0, "a=b"), (100, "z=y x")])))
+                []
+                `shouldBe` ["command-alias[0] a=b", "command-alias[100] \"z=y x\""]
 
     describe "new-window index placement" $ do
         let ws = Map.fromList [(100 :: Int, ())]

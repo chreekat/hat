@@ -6,18 +6,24 @@ module Hat.Server.OptionEffectSpec (spec) where
 
 import Test.Hspec
 
+import Control.Concurrent.STM (readTVarIO)
+import Control.Exception (bracket)
+import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import System.Directory (removeDirectoryRecursive)
+import System.Posix.Temp (mkdtemp)
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
-import Hat.Model (Toast (..))
+import Hat.Log (newLogger)
+import Hat.Model (ServerState (..), Toast (..), newServerState)
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), Options (..)
     , StatusPosition (..), defaultOptions )
 import Hat.Server
-    ( deliversKey, escTiming, mainPaneRatio, resizeModeOf, toastDeadline
-    , toastExpired )
+    ( Reply (..), deliversKey, escTiming, mainPaneRatio, resizeModeOf
+    , runCommands, toastDeadline, toastExpired )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
@@ -227,3 +233,36 @@ spec = do
                 map (.name) (feed opts held "x").escKeys `shouldBe` ["M-x"]
             it "non-zero: a held ESC flushes to Escape on timeout" $
                 map (.name) (flushEscape EscPending) `shouldBe` ["Escape"]
+
+        -- command-alias: a matching entry re-routes dispatch to its
+        -- expansion, with the invocation's own arguments appended.
+        describe "command-alias re-routes dispatch" $ do
+            let withState body =
+                    bracket (mkdtemp "/tmp/hat-alias-")
+                            removeDirectoryRecursive $ \dir -> do
+                        lg <- newLogger "/dev/null"
+                        st <- newServerState Map.empty lg
+                            (dir <> "/s.sock") Nothing
+                        body st
+            it "an alias runs its expansion with the args appended" $
+                withState $ \st -> do
+                    _ <- runCommands st Nothing
+                        [ [ "set", "-s", "command-alias[100]"
+                          , "et=set -s escape-time" ]
+                        , ["et", "123"] ]
+                    opts <- readTVarIO st.options
+                    opts.escapeTime `shouldBe` 123
+            it "an alias beats the builtin table, as in tmux" $
+                withState $ \st -> do
+                    _ <- runCommands st Nothing
+                        [ [ "set", "-s", "command-alias[100]"
+                          , "start-server=set -s escape-time 9" ]
+                        , ["start-server"] ]
+                    opts <- readTVarIO st.options
+                    opts.escapeTime `shouldBe` 9
+            it "an alias expansion never re-expands (no recursion)" $
+                withState $ \st -> do
+                    _ <- runCommands st Nothing
+                        [["set", "-s", "command-alias[100]", "loop=loop"]]
+                    rs <- runCommands st Nothing [["loop"]]
+                    rs `shouldBe` [RErr "unknown command: loop"]

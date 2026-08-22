@@ -6,7 +6,6 @@ am-terminal.sh
 capture-pane-hyperlink.sh
 check-names.sh
 combine-test.sh
-command-alias.sh
 control-client-sanity.sh
 control-client-size.sh
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands

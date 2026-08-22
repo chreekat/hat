@@ -21,6 +21,7 @@ module Hat.Server.Command.Option
 import Control.Concurrent.STM
 import Control.Monad (forM_, when)
 import qualified Data.List as List
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
@@ -90,9 +91,9 @@ cmdSet def st mclient args = do
         unsetPanes = "-U" `elem` flags
         unset = "-u" `elem` flags || unsetPanes
     case pos of
-        (nameT : rest) -> case resolveOptionName nameT of
+        (nameT : rest) -> case resolveIndexedName nameT of
             Left err -> pure [RErr err | not quiet]
-            Right n -> case chooseScope def flags n of
+            Right (n, midx) -> case chooseScope def flags n of
                 Left err -> pure [RErr err]
                 Right scope -> do
                     etv <- scopeTargetVar st mclient mtarget scope
@@ -101,6 +102,13 @@ cmdSet def st mclient args = do
                         Right deltaVar
                             | unset, (v : _) <- rest ->
                                 pure [RErr ("value passed to unset option: " <> v)]
+                            | unset, Just i <- midx -> do
+                                curOpts <- currentResolved st mclient mtarget
+                                case optionValueOf curOpts n of
+                                    Just (OVIndexed m) -> writeScoped st
+                                        deltaVar n (OVIndexed (Map.delete i m))
+                                    _ -> pure [RErr (optionNameText n
+                                        <> " is not an array option")]
                             | unset -> do
                                 unsetScoped st deltaVar n
                                 when unsetPanes $
@@ -109,10 +117,13 @@ cmdSet def st mclient args = do
                             | otherwise -> do
                                 curOpts <- currentResolved st mclient mtarget
                                 case setOptionEntry mode curOpts
-                                        (optionNameText n) (T.unwords rest) of
+                                        (spelled n midx) (T.unwords rest) of
                                     Left err -> pure [RErr err]
                                     Right (n', v) -> writeScoped st deltaVar n' v
         [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
+  where
+    spelled n midx = optionNameText n
+        <> maybe "" (\i -> "[" <> T.pack (show i) <> "]") midx
 
 -- | Insert a resolved entry into its scope's overlay, refresh the cached
 -- global resolution ('ServerState.options'), and push a changed
@@ -233,19 +244,29 @@ cmdShow st mclient args = do
         withParents = "-A" `elem` flags
     case pos of
         [] -> showListing st mclient mtarget flags
-        [nameT] -> case resolveOptionName nameT of
+        [nameT] -> case resolveIndexedName nameT of
             Left err -> pure [RErr err | not quiet]
-            Right n -> case chooseScope DefaultSession flags n of
+            Right (n, midx) -> case chooseScope DefaultSession flags n of
                 Left err -> pure [RErr err]
                 Right scope -> do
                     ev <- showScopeValue st mclient mtarget withParents scope n
                     pure $ case ev of
                         Left err -> [RErr err]
                         Right Nothing -> []
-                        Right (Just (v, inherited)) -> [ROutput $ if valueOnly
-                            then v
-                            else optionNameText n <> (if inherited then "*" else "")
-                                <> " " <> quoteIfNeeded v]
+                        Right (Just (v, inherited)) ->
+                            let render nm t = ROutput $ if valueOnly
+                                    then t
+                                    else nm <> (if inherited then "*" else "")
+                                        <> " " <> quoteIfNeeded t
+                            in case (v, midx) of
+                                (OVIndexed m, Just i) ->
+                                    [ render (indexedName n i) t
+                                    | Just t <- [Map.lookup i m] ]
+                                (OVIndexed m, Nothing) ->
+                                    [ render (indexedName n i) t
+                                    | (i, t) <- Map.toAscList m ]
+                                _ -> [render (optionNameText n)
+                                        (formatOptionValue v)]
         _ -> pure [RErr "usage: show-options [-AgHpqsvw] [-t target] [option]"]
 
 -- | One option's value at one scope: 'Nothing' when the scope does not set
@@ -253,7 +274,7 @@ cmdShow st mclient args = do
 -- 'Bool' is the @-A@ inherited marker. See 'cmdShow'.
 showScopeValue
     :: ServerState -> Maybe Client -> Maybe Text -> Bool -> SetScope
-    -> OptionName -> IO (Either Text (Maybe (Text, Bool)))
+    -> OptionName -> IO (Either Text (Maybe (OptionValue, Bool)))
 showScopeValue st mclient mtarget withParents scope n = case scope of
     SetServer -> globalAnswer
     SetGlobalSession -> globalAnswer
@@ -295,8 +316,8 @@ showScopeValue st mclient mtarget withParents scope n = case scope of
                     resolved <- atomically parentChain
                     pure (Right (asInherited <$> optionValueOf resolved n))
                 | otherwise -> pure (Right Nothing)
-    asOwn v = (formatOptionValue v, False)
-    asInherited v = (formatOptionValue v, True)
+    asOwn v = (v, False)
+    asInherited v = (v, True)
 
 -- | The no-name form of @show-options@: list the scope's own table (plus,
 -- under @-A@, the parent tables' unshadowed entries). See 'cmdShow'.
@@ -358,7 +379,7 @@ showListing st mclient mtarget flags = do
 -- | Format a scope's entries plus unshadowed parent entries (marked @*@),
 -- name-ordered, as @show-options@ prints them.
 listingLines :: Bool -> OptionsDelta -> [OptionsDelta] -> [Text]
-listingLines valueOnly own parents = map line (List.sortOn name entries)
+listingLines valueOnly own parents = concatMap lines' (List.sortOn name entries)
   where
     parentMerged = mergeDeltas parents
     entries = deltaEntries own <>
@@ -366,10 +387,19 @@ listingLines valueOnly own parents = map line (List.sortOn name entries)
         , Nothing <- [lookupDelta n own] ]
     name (n, _) = optionNameText n
     inherited (n, _) = deltaMember n parentMerged && not (deltaMember n own)
-    line e@(n, v)
-        | valueOnly = formatOptionValue v
-        | otherwise = optionNameText n <> (if inherited e then "*" else "")
-            <> " " <> quoteIfNeeded (formatOptionValue v)
+    lines' e@(n, v) = case v of
+        -- An array prints one line per entry, index in the name.
+        OVIndexed m ->
+            [ line e (indexedName n i) t | (i, t) <- Map.toAscList m ]
+        _ -> [ line e (optionNameText n) (formatOptionValue v) ]
+    line e nm v
+        | valueOnly = v
+        | otherwise = nm <> (if inherited e then "*" else "")
+            <> " " <> quoteIfNeeded v
+
+-- | @show-options@'s spelling of one array entry: @command-alias[0]@.
+indexedName :: OptionName -> Int -> Text
+indexedName n i = optionNameText n <> "[" <> T.pack (show i) <> "]"
 
 -- | The environment store a command's flags address: the global scope under
 -- @-g@, else the target session's. Like tmux, @-g@ ignores any @-t@.
@@ -486,7 +516,43 @@ setOption mode opts name value = do
 setOptionEntry
     :: SetMode -> Options -> Text -> Text
     -> Either Text (OptionName, OptionValue)
-setOptionEntry mode opts name value = case name of
+setOptionEntry mode opts spelledName value = do
+    (name, midx) <- splitArrayIndex spelledName
+    case midx of
+        Just i -> indexedOptionEntry mode opts name i value
+        Nothing -> scalarOptionEntry mode opts name value
+
+-- | A single-index array set: @command-alias[100] zoom=…@ replaces (or, with
+-- @-a@, extends) just that entry of the current array.
+indexedOptionEntry
+    :: SetMode -> Options -> Text -> Int -> Text
+    -> Either Text (OptionName, OptionValue)
+indexedOptionEntry mode opts name i value = case name of
+    "command-alias" -> Right
+        (OptCommandAlias, OVIndexed (Map.alter place i opts.commandAlias))
+    _ -> Left (name <> " is not an array option")
+  where
+    place old = Just $ case (mode, old) of
+        (Append, Just prev) -> prev <> value
+        _ -> value
+
+-- | A whole-array set: values split on tmux's @,@ separator; an append
+-- continues after the highest existing index.
+arrayEntries :: SetMode -> Map Int Text -> Text -> Map Int Text
+arrayEntries mode current value = case mode of
+    Assign -> Map.fromList (zip [0 ..] items)
+    Append -> Map.union current (Map.fromList (zip [next ..] items))
+  where
+    items = if T.null value then [] else T.splitOn "," value
+    next = maybe 0 ((+ 1) . fst) (Map.lookupMax current)
+
+scalarOptionEntry
+    :: SetMode -> Options -> Text -> Text
+    -> Either Text (OptionName, OptionValue)
+scalarOptionEntry mode opts name value = case name of
+    "command-alias" ->
+        Right (OptCommandAlias,
+            OVIndexed (arrayEntries mode opts.commandAlias value))
     "prefix" -> case parseKeyName value of
         Just k -> Right (OptPrefix, OVText k.name)
         Nothing -> Left ("bad prefix key: " <> value)

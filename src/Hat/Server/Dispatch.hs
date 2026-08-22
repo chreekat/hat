@@ -48,6 +48,7 @@ import Hat.Command.Parser (parseCommandLine, parseConfig)
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
+import Hat.Model.Options (lookupCommandAlias)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import qualified Hat.Term.Pty
@@ -112,11 +113,34 @@ runArgv st mclient (name : args) = do
     case envAssignment (name : args) of
         Just (vis, n, v) -> [] <$ atomically
             (modifyTVar' st.globalEnviron (environSet vis n v))
-        Nothing -> case Map.lookup name commandTable of
-            Nothing -> pure [RErr ("unknown command: " <> name)]
-            Just impl -> impl st mclient args
-                `catch` \(e :: SomeException) ->
-                    pure [RErr (name <> ": " <> T.pack (show e))]
+        Nothing -> do
+            -- Like tmux, a command-alias match beats the builtin table.
+            opts <- readTVarIO st.options
+            case lookupCommandAlias opts name of
+                Just body -> runAlias st mclient body args
+                Nothing -> runBuiltin st mclient name args
+
+-- | Run an alias expansion: the body parses as a command sequence, the
+-- invocation's own arguments append to its last command, and the expanded
+-- names resolve as builtins only, so an alias never recurses.
+runAlias :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
+runAlias st mclient body args = case parseCommandLine body of
+    Left err -> pure [RErr err]
+    Right [] -> pure []
+    Right cmds -> do
+        let expanded = init cmds <> [last cmds <> args]
+        concat <$> mapM run expanded
+  where
+    run [] = pure []
+    run (n : as) = runBuiltin st mclient n as
+
+-- | Dispatch one command through the builtin table.
+runBuiltin :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
+runBuiltin st mclient name args = case Map.lookup name commandTable of
+    Nothing -> pure [RErr ("unknown command: " <> name)]
+    Just impl -> impl st mclient args
+        `catch` \(e :: SomeException) ->
+            pure [RErr (name <> ": " <> T.pack (show e))]
 
 -- | The config assignment forms (tmux's environ_put): a bare @NAME=value@
 -- line sets a global environment variable, @%hidden NAME=value@ a hidden
