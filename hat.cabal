@@ -70,6 +70,7 @@ library
     import:             defaults, pedantry
     hs-source-dirs:     src
     exposed-modules:
+        Hat.Bench.Linear
         Hat.Bench.PerfStat
         Hat.Bench.Residency
         Hat.Bench.RtsStats
@@ -224,6 +225,7 @@ test-suite hat-test
     main-is:            Main.hs
     build-tool-depends: hat:hat
     other-modules:
+        Hat.Bench.LinearSpec
         Hat.Bench.PerfStatSpec
         Hat.Bench.ResidencySpec
         Hat.Bench.RtsStatsSpec
