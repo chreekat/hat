@@ -103,6 +103,8 @@ library
         Hat.Server.Dispatch
         Hat.Server.Environ
         Hat.Server.Format
+        Hat.Server.Format.Colour
+        Hat.Server.Format.Fuzzy
         Hat.Server.FormatEnv
         Hat.Server.Handover
         Hat.Server.Keymap
@@ -127,6 +129,7 @@ library
         Hat.Server.Toast
         Hat.Server.View
         Hat.Server.WindowStruct
+        Hat.TextWidth
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.Emulator.Types
