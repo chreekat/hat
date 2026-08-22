@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# CPU-cost benchmark: run one high-churn pane workload at several sizes N
+# under `perf stat` (instructions retired), for hat and for tmux, and fit
+# instructions = slope*N + intercept per series. The slope is the marginal
+# per-line cost; the intercept absorbs startup. Server and attached client
+# are measured as separate series. Black box throughout -- the real binary,
+# the real --server path, a real attached client on a pty.
+#
+# The server runs in the foreground under perf and exits on its own
+# kill-server, so each perf count brackets exactly one server lifetime.
+
+SIZES="2000 4000 8000 16000"
+MUXES="hat tmux"
+TMUX_BIN=tmux
+BIN=""
+OUT="$PWD/bench-out"
+KEEP=0
+
+usage() {
+    cat <<'USAGE'
+usage: hat_perf [options]
+
+  --sizes "N N ..."  workload sizes, lines per run (default "2000 4000 8000 16000")
+  --mux "M M ..."    which multiplexers to measure: hat, tmux (default both)
+  --tmux BIN         the tmux binary to compare against (default: tmux)
+  --bin PATH         measure this hat binary instead of building one
+  --out DIR          where perf CSVs land (default ./bench-out)
+  --keep             keep each run's scratch HOME for debugging
+
+The workload is fixed so runs stay comparable; vary only the sizes.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --sizes) SIZES="$2"; shift 2 ;;
+        --mux) MUXES="$2"; shift 2 ;;
+        --tmux) TMUX_BIN="$2"; shift 2 ;;
+        --bin) BIN="$2"; shift 2 ;;
+        --out) OUT="$2"; shift 2 ;;
+        --keep) KEEP=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "hat_perf: unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+mkdir -p "$OUT"
+
+if [ -z "$BIN" ]; then
+    nix develop -c cabal build exe:hat
+    BIN=$(nix develop -c cabal list-bin exe:hat)
+fi
+nix develop -c cabal build -v0 bench-report
+REPORT=$(nix develop -c cabal list-bin bench-report)
+PERF=$(nix develop -c sh -c 'command -v perf')
+
+MARKER=HAT-PERF-FILLED
+SOCKNAME="hat-perf-$$"
+
+WORK=""
+CTL=()
+cleanup() {
+    # End whichever server the current run started; its socket dies with it.
+    if [ "${#CTL[@]}" -gt 0 ]; then
+        "${CTL[@]}" kill-server >/dev/null 2>&1 || true
+    fi
+    [ "$KEEP" = 1 ] || { [ -n "$WORK" ] && rm -rf "$WORK"; }
+}
+trap cleanup EXIT
+
+# Sync on observable state, never a fixed sleep.
+await() {
+    local n=$1; shift
+    while [ "$n" -gt 0 ]; do
+        if "$@" >/dev/null 2>&1; then return 0; fi
+        n=$((n - 1))
+        sleep 0.02
+    done
+    return 1
+}
+
+# one_run MUX N: measure server + client CSVs for one workload size.
+one_run() {
+    local mux=$1 lines=$2
+    WORK=$(mktemp -d "/tmp/hat-perf-XXXXXX")
+    local sock="$WORK/socket"
+    local server_csv="$OUT/$mux-server-$lines.csv"
+    local client_csv="$OUT/$mux-client-$lines.csv"
+
+    # Same conf for both muxes: room for the lines, no status-line churn.
+    printf 'set -g history-limit %d\nset -g status off\n' \
+        "$((lines * 2))" > "$WORK/conf"
+
+    # The pane prints its lines, leaves a marker, and stays alive until the
+    # driver's kill-server; awk's pty writes block, pacing it to the server.
+    cat > "$WORK/work.sh" <<EOF
+awk 'BEGIN{for(i=0;i<$lines;i++) printf "\033[3%dm%06d the quick brown fox jumps over the lazy dog %s\033[0m\n", i%8, i, i%2?"~~~":"..."}'
+echo $MARKER
+exec sleep 1000000
+EOF
+
+    # The measured server, foreground under perf; everything else is a
+    # plain unmeasured client.
+    local server client
+    case "$mux" in
+        hat)
+            server=("$BIN" --server "$sock" "$WORK/conf")
+            client=("$BIN" -S "$sock")
+            ;;
+        tmux)
+            sock="$WORK/tmux-$(id -u)/$SOCKNAME"
+            server=("$TMUX_BIN" -D -L "$SOCKNAME" -f "$WORK/conf")
+            client=("$TMUX_BIN" -L "$SOCKNAME")
+            ;;
+        *) echo "hat_perf: unknown mux: $mux" >&2; exit 2 ;;
+    esac
+    CTL=(env "HOME=$WORK" "TMUX_TMPDIR=$WORK" "${client[@]}")
+
+    env "HOME=$WORK" "TMUX_TMPDIR=$WORK" \
+        "$PERF" stat -x, -e instructions -o "$server_csv" -- \
+        "${server[@]}" > "$WORK/server.log" 2>&1 &
+    local server_job=$!
+
+    socket_up() { [ -S "$sock" ]; }
+    await 250 socket_up || {
+        echo "hat_perf: $mux server never created its socket; log:" >&2
+        cat "$WORK/server.log" >&2
+        exit 1
+    }
+
+    # The measured client: attached on its own pty, created by script(1),
+    # sized before the mux starts so both muxes render the same screen.
+    script -qefc "stty rows 50 cols 200; \
+        exec env HOME='$WORK' TMUX_TMPDIR='$WORK' TERM=xterm-256color \
+        '$PERF' stat -x, -e instructions -o '$client_csv' -- \
+        $(printf '%q ' "${client[@]}") new-session 'sh $WORK/work.sh'" \
+        /dev/null > "$WORK/client.log" 2>&1 &
+    local client_job=$!
+
+    filled() { "${CTL[@]}" capture-pane -p | grep -q "$MARKER"; }
+    await 3000 filled || {
+        echo "hat_perf: $mux pane never finished generating; logs:" >&2
+        tail -5 "$WORK/server.log" "$WORK/client.log" >&2
+        exit 1
+    }
+
+    # kill-server is the workload's final step: the server exits on its own
+    # and perf writes its count; the client follows when the server goes.
+    "${CTL[@]}" kill-server >/dev/null 2>&1 || true
+    wait "$server_job" 2>/dev/null || true
+    wait "$client_job" 2>/dev/null || true
+    CTL=()
+
+    [ "$KEEP" = 1 ] && echo ">>> $mux N=$lines scratch kept in $WORK" \
+        || rm -rf "$WORK"
+    WORK=""
+}
+
+for mux in $MUXES; do
+    for lines in $SIZES; do
+        one_run "$mux" "$lines"
+    done
+done
+
+for mux in $MUXES; do
+    for role in server client; do
+        series=()
+        for lines in $SIZES; do
+            series+=("$lines=$OUT/$mux-$role-$lines.csv")
+        done
+        "$REPORT" perf "$mux $role" "${series[@]}"
+    done
+done
+echo ">>> artifacts in $OUT"
