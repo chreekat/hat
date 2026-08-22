@@ -364,10 +364,10 @@ onPerimeter r p =
 -- pointing inward.
 edgeArrows :: Rect -> Map.Map Pos Char
 edgeArrows r = Map.fromList $ concat
-    [ vEdge (r.startCol - 1) '\x2192'  -- → on the left border
-    , vEdge r.endCol         '\x2190'  -- ← on the right border
-    , hEdge (r.startRow - 1) '\x2193'  -- ↓ on the top border
-    , hEdge r.endRow         '\x2191'  -- ↑ on the bottom border
+    [ vEdge (r.startCol - 1) '\x25b6'  -- ▶ on the left border
+    , vEdge r.endCol         '\x25c0'  -- ◀ on the right border
+    , hEdge (r.startRow - 1) '\x25bc'  -- ▼ on the top border
+    , hEdge r.endRow         '\x25b2'  -- ▲ on the bottom border
     ]
   where
     vEdge col arr = case midOf [r.startRow .. r.endRow - 1] of

@@ -119,7 +119,7 @@ spec = do
                     (borderCells (defaultOptions { paneBorderIndicators = ind })
                         (Just rect) 0 [ (arrowPos, '\x2502') ])
             it "arrows: the active edge shows an arrow" $
-                glyphWith IndicatorsArrows `shouldBe` Just "\x2192"  -- →
+                glyphWith IndicatorsArrows `shouldBe` Just "\x25b6"  -- ▶
             it "off: the active edge keeps the plain line" $
                 glyphWith IndicatorsOff `shouldBe` Just "\x2502"  -- │
 
