@@ -20,7 +20,7 @@ module Hat.Server.View
     , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (foldM, forM, void, when)
@@ -46,6 +46,7 @@ import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format (FormatEnv, renderFormat)
+import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout (arrange, sizeRect)
 import qualified Hat.Server.Picker as Picker
 import Hat.Server.Render
@@ -610,8 +611,13 @@ resolveShell st cmdText = do
         pure oldVal
 
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
+-- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)
+-- overlay the caller's environment.
 expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
-expandFormat st env fmt = do
+expandFormat st env0 fmt = do
+    tid <- myThreadId
+    mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+    let env = maybe env0 (\amb -> Map.union amb.formats env0) mamb
     -- Pre-resolve shell segments so `evaluate` stays pure.
     resolved <- newIORef Map.empty
     let collect t = case T.breakOn "#(" t of

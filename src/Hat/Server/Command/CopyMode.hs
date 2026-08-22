@@ -13,6 +13,7 @@ import qualified Data.Text.Read as TR
 import Hat.Model
 import Hat.Server.Command.Types (Reply (..))
 import qualified Hat.Server.CopyMode as CopyMode
+import Hat.Server.Hooks (notifyPane)
 
 runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
 runCopyModeCommand st pane name cmdArgs = do
@@ -45,6 +46,10 @@ runCopyModeCommand st pane name cmdArgs = do
                             atomically $ do
                                 writeTVar pane.mode (reMode <$> r')
                                 bumpDirty st
+                            case r' of
+                                Nothing ->
+                                    notifyPane st "pane-mode-changed" pane []
+                                Just _ -> pure ()
                             pure []
           where
             state = pm.copyState

@@ -9,6 +9,7 @@ module Hat.Server.Dispatch
     , runCommands
     , runCommandText
     , commandTable
+    , installHooks
     , readConfigUtf8
     , cleanupInherited
     , cmdSourceFile
@@ -54,6 +55,9 @@ import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import qualified Hat.Term.Pty
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks)
+import Hat.Server.Command.Wait (cmdWaitFor)
+import Hat.Server.Hooks (installHookEngine)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
@@ -162,8 +166,21 @@ envAssignment = \case
             && T.all (\x -> isAlphaNum x || x == '_') cs
         Nothing -> False
 
+-- | Wire the hooks engine to this command table: hook commands run
+-- clientless through 'runCommandText', and @after-*@ hook names validate
+-- against the canonical command names.
+installHooks :: ServerState -> IO ()
+installHooks st = installHookEngine st
+    (\txt -> void (runCommandText st Nothing txt))
+    [ n | (n : _, _) <- commandSpecs ]
+
 commandTable :: Map.Map Text CommandImpl
-commandTable = Map.fromList $ concatMap expand
+commandTable = Map.fromList (concatMap expand commandSpecs)
+  where
+    expand (names, impl) = [(n, impl) | n <- names]
+
+commandSpecs :: [([Text], CommandImpl)]
+commandSpecs =
     [ (["bind-key", "bind"], cmdBind)
     , (["unbind-key", "unbind"], cmdUnbind)
     , (["set-option", "set"], cmdSet DefaultSession)
@@ -230,9 +247,10 @@ commandTable = Map.fromList $ concatMap expand
     , (["display-message", "display"], cmdDisplayMessage)
     , (["run-shell", "run"], cmdRunShell)
     , (["if-shell", "if"], cmdIfShell)
+    , (["set-hook"], cmdSetHook)
+    , (["show-hooks"], cmdShowHooks)
+    , (["wait-for", "wait"], cmdWaitFor)
     ]
-  where
-    expand (names, impl) = [(n, impl) | n <- names]
 
 -- Command implementations.
 

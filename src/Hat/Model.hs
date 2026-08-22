@@ -84,6 +84,7 @@ import Hat.Model.Options
     ( Keymap, Options, OptionsDelta, applyDelta, defaultOptions, emptyDelta
     , resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
+import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
@@ -161,6 +162,9 @@ data ServerState = ServerState
         -- ^ the live @gsettings monitor@ child, killed before a reload's
         --   execve so it is not orphaned. See 'Hat.Server.cmdRestartServer'
         --   and 'Hat.Server.ColorScheme.reapMonitor'.
+    , hooks :: HooksState
+        -- ^ hook bindings, monitors, and wait-for channels; see
+        --   'Hat.Server.Hooks'.
     }
 
 data Session = Session
@@ -466,6 +470,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Nothing  -- listenFd
     <*> newTVarIO Nothing  -- serverConfig
     <*> newMonitorRegistry
+    <*> newHooksState
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

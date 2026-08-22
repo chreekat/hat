@@ -180,6 +180,7 @@ runServerWith path mconfig mhandover = do
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
+    installHooks st
     -- On a reload, read the handover the outgoing image left. An era match
     -- yields the tree to adopt (and the socket fd to reuse); an incompatible
     -- or corrupt payload yields only the cleanup core, so we hang the

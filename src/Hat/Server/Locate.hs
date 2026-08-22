@@ -24,6 +24,7 @@ module Hat.Server.Locate
     ) where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (myThreadId)
 import Control.Concurrent.STM
 import Control.Monad (forM)
 import qualified Data.List as List
@@ -35,6 +36,7 @@ import qualified Data.Text.Read as TR
 
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Layout
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
@@ -58,9 +60,11 @@ clientActivePane st client = atomically $ do
         Just (_, win) -> activePane win
 
 targetSession :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Session)
-targetSession st mclient mtarget = atomically $ do
-    sessions <- readTVar st.sessions
-    case mtarget of
+targetSession st mclient mtarget = do
+    mambSid <- ambientSession st mclient
+    atomically $ do
+      sessions <- readTVar st.sessions
+      case mtarget of
         Just t -> do
             let stripped = fromMaybe t (T.stripSuffix ":" t)
             found <- forM (Map.elems sessions) $ \sess -> do
@@ -76,7 +80,29 @@ targetSession st mclient mtarget = atomically $ do
                 case Map.lookup sid sessions of
                     Just sess -> pure (Just sess)
                     Nothing -> pure (snd <$> Map.lookupMax sessions)
-            Nothing -> pure (snd <$> Map.lookupMax sessions)
+            Nothing -> case mambSid >>= (`Map.lookup` sessions) of
+                Just sess -> pure (Just sess)
+                Nothing -> pure (snd <$> Map.lookupMax sessions)
+
+-- | The hook context's target session, for clientless resolution: a hook
+-- command with no client and no -t acts on the event's session.
+ambientSession :: ServerState -> Maybe Client -> IO (Maybe SessionId)
+ambientSession st = \case
+    Just _ -> pure Nothing
+    Nothing -> do
+        tid <- myThreadId
+        mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+        pure (mamb >>= (.targetSession))
+
+-- | Like 'ambientSession', for the event's window and pane.
+ambientWindowPane
+    :: ServerState -> Maybe Client -> IO (Maybe WindowId, Maybe PaneId)
+ambientWindowPane st = \case
+    Just _ -> pure (Nothing, Nothing)
+    Nothing -> do
+        tid <- myThreadId
+        mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+        pure (mamb >>= (.targetWindow), mamb >>= (.targetPane))
 
 -- | Snapshot the server tree for the pure cmd-find core
 -- ('Hat.Server.Target.resolveTarget'). The current state is the client's
@@ -193,18 +219,22 @@ targetPane st mclient mtok = case parsePaneTarget mtok of
         mpid <- readTVar st.markedPane
         maybe (pure Nothing) (findPaneById st . rawPane) mpid
     tgt -> do
-        mwin <- currentWindowOf st mclient
-        case mwin of
-            Nothing -> pure Nothing
-            Just win -> atomically $ do
-                ps <- readTVar win.panes
-                case tgt of
-                    PaneLast -> do
-                        hist <- readTVar win.paneHist
-                        pure (listToMaybe hist >>= (`Map.lookup` ps))
-                    _ -> do
-                        a <- readTVar win.activeId
-                        pure (Map.lookup a ps)
+        (_, mambPane) <- ambientWindowPane st mclient
+        case (mtok, mambPane) of
+          (Nothing, Just pid) -> atomically (findPaneById st (rawPane pid))
+          _ -> do
+            mwin <- currentWindowOf st mclient
+            case mwin of
+                Nothing -> pure Nothing
+                Just win -> atomically $ do
+                    ps <- readTVar win.panes
+                    case tgt of
+                        PaneLast -> do
+                            hist <- readTVar win.paneHist
+                            pure (listToMaybe hist >>= (`Map.lookup` ps))
+                        _ -> do
+                            a <- readTVar win.activeId
+                            pure (Map.lookup a ps)
 
 -- | The window a command acts in: the caller's current window, or (for
 -- a clientless control command) the current window of the most-recent
@@ -215,10 +245,17 @@ currentWindowOf st mclient = do
     case mv of
         Just (_, win) -> pure (Just win)
         Nothing -> do
-            msess <- targetSession st mclient Nothing
-            case msess of
+            (mambWin, _) <- ambientWindowPane st mclient
+            mw <- case mambWin of
+                Just wid -> atomically (findWindowById st wid)
                 Nothing -> pure Nothing
-                Just sess -> atomically (currentWindow sess)
+            case mw of
+                Just win -> pure (Just win)
+                Nothing -> do
+                    msess <- targetSession st mclient Nothing
+                    case msess of
+                        Nothing -> pure Nothing
+                        Just sess -> atomically (currentWindow sess)
 
 -- | The current window of the target session (or the client's).
 targetCurrentWindow

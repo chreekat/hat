@@ -85,6 +85,8 @@ import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
+import Hat.Server.Hooks
+    (NotifyTarget (..), PayloadItem (..), notify)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Mru (popOnClose, scrub)
 import Hat.Server.Resize (applySessionSize)
@@ -839,6 +841,10 @@ createSession st mname mrun environ dir sz = do
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
+    sname <- readTVarIO nameVar
+    notify st "session-created"
+        (NotifyTarget (Just sess.id) (Just win.id) (Just pane.id))
+        [("session", PSessionRef sess.id sname)]
     pure sess
 
 -- | The env a new pane inherits: the global environment overlaid by the

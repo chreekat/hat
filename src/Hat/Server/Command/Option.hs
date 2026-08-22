@@ -33,9 +33,14 @@ import Hat.Model.Options
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Environ
 import Hat.Server.Keys
+import Hat.Server.Format (FormatEnv)
+import Hat.Server.FormatEnv (paneFormatEnv)
+import Hat.Server.HookTypes (HookAmbient (..))
+import Hat.Server.Hooks (ambientFor)
 import Hat.Server.Locate
-    ( currentResolved, locatePane, noSuchTarget, targetCurrentWindow
-    , targetPaneScoped, targetSession )
+    ( currentResolved, findTarget, locatePane, noSuchTarget, paneIndexOf
+    , targetCurrentWindow, targetPaneScoped, targetSession )
+import qualified Hat.Server.Target as Target
 import Hat.Server.Style (parseColor, parseStyle)
 import Hat.Server.View (expandFormat, sessionFormatEnv)
 import qualified Hat.Term.Cell as Cell
@@ -116,14 +121,71 @@ cmdSet def st mclient args = do
                                 pure []
                             | otherwise -> do
                                 curOpts <- currentResolved st mclient mtarget
+                                value <- if "-F" `elem` flags
+                                    then do
+                                        env <- setFormatEnv st mclient mtarget
+                                        expandFormat st env (T.unwords rest)
+                                    else pure (T.unwords rest)
                                 case setOptionEntry mode curOpts
-                                        (spelled n midx) (T.unwords rest) of
+                                        (spelled n midx) value of
                                     Left err -> pure [RErr err]
                                     Right (n', v) -> writeScoped st deltaVar n' v
         [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
   where
     spelled n midx = optionNameText n
         <> maybe "" (\i -> "[" <> T.pack (show i) <> "]") midx
+
+-- | The environment a @set -F@ value expands against: the target pane's
+-- (the hook context's pane when a hook command has no explicit target),
+-- degrading to the target session's.
+setFormatEnv :: ServerState -> Maybe Client -> Maybe Text -> IO FormatEnv
+setFormatEnv st mclient mtarget = do
+    mamb <- ambientFor st
+    let mambPane = case mclient of
+            Just _ -> Nothing
+            Nothing -> mamb >>= (.targetPane)
+    menv <- case (mtarget, mambPane) of
+        (Nothing, Just pid) -> paneEnvById st pid
+        _ -> do
+            res <- findTarget st mclient Target.FindPane mtarget
+            case res of
+                Right (sess, wix, win, pane) -> do
+                    pix <- paneIndexOf st win pane
+                    Just <$> paneFormatEnv st sess wix win pix pane
+                Left _ -> pure Nothing
+    case menv of
+        Just env -> pure env
+        Nothing -> do
+            msess <- targetSession st mclient mtarget
+            case msess of
+                Just sess -> sessionFormatEnv st sess
+                -- No session yet: user options still resolve as #{@foo}.
+                Nothing -> (.user) <$> readTVarIO st.options
+
+-- | 'paneFormatEnv' for a pane named only by id: locate its window and
+-- session first.
+paneEnvById :: ServerState -> PaneId -> IO (Maybe FormatEnv)
+paneEnvById st pid = do
+    mctx <- atomically $ do
+        mloc <- locatePane st pid
+        case mloc of
+            Nothing -> pure Nothing
+            Just (sid, win) -> do
+                msess <- Map.lookup sid <$> readTVar st.sessions
+                case msess of
+                    Nothing -> pure Nothing
+                    Just sess -> do
+                        ws <- readTVar sess.windows
+                        ps <- readTVar win.panes
+                        let mwix = listToMaybe
+                                [ i | (i, w) <- Map.toList ws, w.id == win.id ]
+                        pure $ (,,,) sess <$> mwix <*> Just win
+                            <*> Map.lookup pid ps
+    case mctx of
+        Nothing -> pure Nothing
+        Just (sess, wix, win, pane) -> do
+            pix <- paneIndexOf st win pane
+            Just <$> paneFormatEnv st sess wix win pix pane
 
 -- | Insert a resolved entry into its scope's overlay, refresh the cached
 -- global resolution ('ServerState.options'), and push a changed

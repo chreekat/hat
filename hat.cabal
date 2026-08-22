@@ -91,12 +91,14 @@ library
         Hat.Server.Command.Bind
         Hat.Server.Command.Buffer
         Hat.Server.Command.CopyMode
+        Hat.Server.Command.Hook
         Hat.Server.Command.Interact
         Hat.Server.Command.Layout
         Hat.Server.Command.Option
         Hat.Server.Command.Pane
         Hat.Server.Command.Session
         Hat.Server.Command.Types
+        Hat.Server.Command.Wait
         Hat.Server.Command.Window
         Hat.Server.Conn
         Hat.Server.CopyMode
@@ -105,6 +107,8 @@ library
         Hat.Server.Format
         Hat.Server.FormatEnv
         Hat.Server.Handover
+        Hat.Server.HookTypes
+        Hat.Server.Hooks
         Hat.Server.Keymap
         Hat.Server.Keys
         Hat.Server.Layout
@@ -244,6 +248,7 @@ test-suite hat-test
         Hat.Server.EnvironSpec
         Hat.Server.FlagsSpec
         Hat.Server.FormatSpec
+        Hat.Server.HooksSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec

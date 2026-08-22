@@ -26,6 +26,7 @@ import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import qualified Hat.Server.CopyMode as CopyMode
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
+import Hat.Server.Hooks (notifyPane)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientActivePane, clientView, targetPane)
 import qualified Hat.Server.Picker as Picker
@@ -58,9 +59,12 @@ cmdCopyMode st mclient args = do
         Nothing -> pure []
         Just pane
             | quit -> do
-                atomically $ do
+                was <- atomically $ do
+                    old <- readTVar pane.mode
                     writeTVar pane.mode Nothing
                     bumpDirty st
+                    pure old
+                forM_ was (const (notifyPane st "pane-mode-changed" pane []))
                 pure []
             | otherwise -> do
                 scr <- Emu.snapshot pane.emulator
@@ -86,6 +90,7 @@ cmdCopyMode st mclient args = do
                     writeTVar pane.mode (Just PaneMode
                         { frozen = frozen, copyState = state })
                     bumpDirty st
+                notifyPane st "pane-mode-changed" pane []
                 pure []
 
 -- | Open the interactive command prompt on the invoking client.

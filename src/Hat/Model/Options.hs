@@ -608,9 +608,10 @@ quoteIfNeeded t
         '\\' -> "\\\\"
         _ -> T.singleton c
 
--- | tmux's hook names. hat runs no hooks (setting one fails loud), but
--- @show-options -H@ lists them — empty, exactly as an unconfigured tmux
--- does (upstream options-scope.sh greps @show -gH@ for @alert-bell@).
+-- | tmux's built-in hook names (its options table's @IS_HOOK@ entries,
+-- minus the per-command @after-*@ family). @show-options -H@ lists them;
+-- they are also the names @set-hook@ and @wait-for -E@ accept — see
+-- 'Hat.Server.Hooks'.
 hookNames :: [Text]
 hookNames =
     [ "alert-activity", "alert-bell", "alert-silence"
@@ -618,7 +619,16 @@ hookNames =
     , "client-dark-theme", "client-detached", "client-focus-in"
     , "client-focus-out", "client-light-theme", "client-resized"
     , "client-session-changed", "command-error", "marked-pane-changed"
+    , "pane-activity", "pane-bell", "pane-command-finished"
+    , "pane-command-started", "pane-created", "pane-died", "pane-exited"
+    , "pane-focus-in", "pane-focus-out", "pane-mode-changed"
+    , "pane-mode-entered", "pane-mode-exited", "pane-moved"
+    , "pane-prompt-closed", "pane-prompt-opened", "pane-resized"
+    , "pane-set-clipboard", "pane-shell-prompt", "pane-title-changed"
     , "session-added-to-group", "session-closed", "session-created"
     , "session-removed-from-group", "session-renamed"
-    , "session-window-changed", "window-linked", "window-unlinked"
+    , "session-window-changed", "window-closed", "window-created"
+    , "window-layout-changed", "window-linked", "window-pane-changed"
+    , "window-renamed", "window-resized", "window-unlinked"
+    , "window-unzoomed", "window-zoomed"
     ]

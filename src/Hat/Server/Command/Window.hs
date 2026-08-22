@@ -38,6 +38,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Hooks (notifyWindow)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane (killPaneLocs, newWindowWithPane, pickActivityTarget, sessionSpawnEnv, startPaneReader)
@@ -342,17 +343,20 @@ cmdRenameWindow st mclient args = do
         [nm] -> do
             res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
             case res of
-                Right (_, _, win, _) -> do
+                Right (sess, _, win, _) -> do
                     -- An empty name hands the window back to
                     -- automatic-rename; a real name pins it.
                     if T.null nm
                         then do
                             atomically (writeTVar win.autoRename True)
                             refreshAutoNames st
-                        else atomically $ do
-                            writeTVar win.name nm
-                            writeTVar win.autoRename False
-                            bumpDirty st
+                        else do
+                            atomically $ do
+                                writeTVar win.name nm
+                                writeTVar win.autoRename False
+                                bumpDirty st
+                            notifyWindow st "window-renamed"
+                                (Just sess.id) win []
                     pure []
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
