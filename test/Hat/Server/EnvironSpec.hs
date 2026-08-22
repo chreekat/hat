@@ -4,7 +4,7 @@
 module Hat.Server.EnvironSpec (spec) where
 
 import Control.Concurrent.STM
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Test.Hspec
 

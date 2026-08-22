@@ -24,14 +24,14 @@ module Hat.Server.Keys
     ) where
 
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.List (sort)
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 
 data Key = Key
     { name :: Text        -- ^ canonical name, as written in configs

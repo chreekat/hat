@@ -1,7 +1,7 @@
 module Hat.Server.LayoutStringSpec (spec) where
 
 import Data.Ratio ((%))
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Test.Hspec
 
 import Hat.Geometry (Rect (..))

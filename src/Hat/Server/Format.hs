@@ -14,17 +14,17 @@ module Hat.Server.Format
     , renderFormatCtx
     ) where
 
-import qualified Data.Array as A
-import qualified Data.ByteString as BS
+import Data.Array qualified as A
+import Data.ByteString qualified as BS
 import Data.Char (chr, digitToInt, isAlpha, isAlphaNum, isAscii, isDigit, isPrint, isSpace, toLower)
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.Read qualified as TR
 import Data.Time.Clock.POSIX (POSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime
@@ -32,7 +32,7 @@ import Data.Time.LocalTime
 import Numeric (showFFloat)
 import Text.Regex.TDFA
     (CompOption (..), MatchArray, Regex, defaultCompOpt, defaultExecOpt, matchOnce)
-import qualified Text.Regex.TDFA.Text as RT
+import Text.Regex.TDFA.Text qualified as RT
 
 import Hat.Server.Format.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)

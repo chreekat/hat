@@ -54,15 +54,13 @@ common pedantry
         -Wno-unsafe
         -Wno-missing-deriving-strategies
         -Wno-missing-kind-signatures
+        -Wno-implicit-prelude
         -Wno-error=unticked-promoted-constructors
         -Wno-error=deprecations
         -Wno-error=identities
         -Wno-error=orphans
         -Wno-error=type-equality-out-of-scope
         -Wno-error=unused-type-patterns
-        -- Stylistic and repo-wide; enforcing either is pure churn.
-        -Wno-implicit-prelude
-        -Wno-prepositive-qualified-module
         -- Needed for ghcid
         -Wno-missing-export-lists
 

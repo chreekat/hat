@@ -26,16 +26,16 @@ import Control.Exception
 import GHC.IO.Exception (IOException)
 import System.IO.Error (isDoesNotExistError)
 import System.Process (ProcessHandle, terminateProcess, waitForProcess)
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Word (Word8)
 import System.Exit (ExitCode)
 
 import Hat.Model.Options
     ( OptionName (..), OptionValue (..), OptionsDelta
     , emptyDelta, insertDelta )
-import qualified Hat.Term.Cell as Cell
+import Hat.Term.Cell qualified as Cell
 
 data ColorScheme = SchemeLight | SchemeDark
     deriving (Eq, Show)

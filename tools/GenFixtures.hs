@@ -7,14 +7,14 @@ module Main (main) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
-import qualified Data.ByteString as B
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
+import Data.ByteString qualified as B
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import System.Environment (getEnvironment)
 
 import Hat.Geometry
 import Hat.Term.Pty
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 
 captureSize :: Size
 captureSize = Size { rows = 24, cols = 80 }

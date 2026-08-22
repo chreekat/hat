@@ -6,11 +6,11 @@
 module Hat.Server.OptionsSpec (spec) where
 
 import Data.Either (isLeft, lefts)
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Test.Hspec
 
 import Hat.Command.Parser (parseConfig)

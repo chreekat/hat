@@ -6,13 +6,13 @@ module Hat.Server.Command.CopyMode
     ) where
 
 import Control.Concurrent.STM
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import Hat.Model
 import Hat.Server.Command.Types (Reply (..))
-import qualified Hat.Server.CopyMode as CopyMode
+import Hat.Server.CopyMode qualified as CopyMode
 
 runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
 runCopyModeCommand st pane name cmdArgs = do

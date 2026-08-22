@@ -2,8 +2,8 @@ module Hat.Term.PtySpec (spec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
-import qualified Data.ByteString.Char8 as B8
-import qualified Data.Text as T
+import Data.ByteString.Char8 qualified as B8
+import Data.Text qualified as T
 import System.Directory (removeDirectoryRecursive, removePathForcibly)
 import System.Environment (getEnv)
 import System.Exit (ExitCode (..))

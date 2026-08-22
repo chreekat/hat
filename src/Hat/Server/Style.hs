@@ -6,13 +6,13 @@ module Hat.Server.Style
     ) where
 
 import Data.Char (digitToInt, isHexDigit)
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import Data.Word (Word8)
 
-import qualified Hat.Term.Cell as Cell
+import Hat.Term.Cell qualified as Cell
 
 -- | Fold a comma-separated style string onto the default style.
 parseStyle :: Text -> Cell.Style

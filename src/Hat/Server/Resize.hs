@@ -17,16 +17,16 @@ module Hat.Server.Resize
 import Control.Concurrent.STM
 import Control.Exception (IOException, handle)
 import Control.Monad (forM, forM_, when)
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 
 import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Layout
-import qualified Hat.Term.Emulator as Emu
-import qualified Hat.Term.Pty
+import Hat.Term.Emulator qualified as Emu
+import Hat.Term.Pty qualified
 
 -- | The resize mode @aggressive-resize@ selects: on, follow the active
 -- client; off, fit the smallest. See 'resizeModeFor'.

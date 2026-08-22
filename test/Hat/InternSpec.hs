@@ -2,7 +2,7 @@ module Hat.InternSpec (spec) where
 
 import Data.IORef (IORef, newIORef, readIORef)
 import Data.Map (Map)
-import qualified Data.Map as Map
+import Data.Map qualified as Map
 import System.Mem.StableName (makeStableName)
 import System.Mem.Weak (Weak)
 import Test.Hspec

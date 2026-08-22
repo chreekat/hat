@@ -14,25 +14,25 @@ module Hat.Server.Command.Interact
 
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (send)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
-import qualified Hat.Server.CopyMode as CopyMode
+import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientActivePane, clientView, targetPane)
-import qualified Hat.Server.Picker as Picker
-import qualified Hat.Server.Prompt as Prompt
+import Hat.Server.Picker qualified as Picker
+import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.FormatEnv (expandFormat)
-import qualified Hat.Term.Emulator as Emu
-import qualified Hat.Term.Pty
+import Hat.Term.Emulator qualified as Emu
+import Hat.Term.Pty qualified
 import Hat.Transport.Wire
 
 cmdDetachClient :: CommandImpl

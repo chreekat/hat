@@ -20,13 +20,13 @@ module Hat.Server.Command.Option
 
 import Control.Concurrent.STM
 import Control.Monad (forM_, when)
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Model
 import Hat.Model.Options
@@ -38,8 +38,8 @@ import Hat.Server.Locate
     , targetPaneScoped, targetSession )
 import Hat.Server.Style (parseColor, parseStyle)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 
 data SetDefault = DefaultSession | DefaultWindow
     deriving (Eq, Show)

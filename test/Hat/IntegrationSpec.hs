@@ -6,9 +6,9 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception
     (IOException, SomeException, bracket, catch, evaluate, throwIO, try)
 import Control.Monad (forM, unless, void, when)
-import qualified Data.List as List
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
+import Data.List qualified as List
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.IORef
 import System.Directory
     (createDirectoryIfMissing, createFileLink, doesFileExist, listDirectory,
@@ -24,13 +24,13 @@ import System.Posix.Terminal
     ( TerminalMode (..), TerminalState (Immediately), getTerminalAttributes
     , openPseudoTerminal, setTerminalAttributes, terminalMode )
 import System.Process (readProcess)
-import qualified System.Process as P
+import System.Process qualified as P
 import System.Timeout (timeout)
 import Test.Hspec
 import Text.Read (readMaybe)
 
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
@@ -38,13 +38,13 @@ import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
-import qualified Hat.Server.Persist as Persist
+import Hat.Server.Persist qualified as Persist
 import Hat.Term.Pty (setWinsize)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Color (..), Style (..))
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
 -- reads any ambient config) and a private socket. See 'withHat'.

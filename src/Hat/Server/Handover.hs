@@ -17,14 +17,14 @@ import Control.Concurrent.STM
 import Control.Exception
     (IOException, catch, try)
 import Control.Monad (filterM, forM, forM_, unless)
-import qualified Data.ByteString as B
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.ByteString qualified as B
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import System.Directory
     (renameFile)
 import System.Posix.Types (Fd (..))
@@ -38,15 +38,15 @@ import Hat.Server.Reload
     (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
     , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
     , decodeHandover)
-import qualified Hat.Term.Pty
+import Hat.Term.Pty qualified
 import Hat.Server.ColorScheme
     ( ColorScheme, schemeReport )
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString, layoutSize)
 import Hat.Server.Pane
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 
 -- | The color-scheme report a reload must re-push into an adopted pane so a
 -- surviving app reacts to the OS scheme immediately, not only on its next

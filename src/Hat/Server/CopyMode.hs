@@ -56,15 +56,15 @@ import Data.Array ((!))
 import Data.Char (toLower)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import qualified Data.Sequence as Seq
+import Data.Sequence qualified as Seq
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
 import Text.Regex.TDFA
     (CompOption (..), Regex, defaultCompOpt, defaultExecOpt, matchAll)
-import qualified Text.Regex.TDFA.Text as Regex
+import Text.Regex.TDFA.Text qualified as Regex
 import System.Process
     ( CreateProcess (..)
     , StdStream (CreatePipe, UseHandle)
@@ -72,13 +72,13 @@ import System.Process
     , shell
     , waitForProcess
     )
-import qualified Data.Vector as V
+import Data.Vector qualified as V
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 
 -- ---------------------------------------------------------------------
 -- Grid abstraction

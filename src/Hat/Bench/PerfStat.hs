@@ -9,10 +9,10 @@ module Hat.Bench.PerfStat
     ) where
 
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import Data.Word (Word64)
 
 -- | One run's events, keyed by perf's own names (modifier suffix included,

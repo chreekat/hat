@@ -12,9 +12,9 @@ module Hat.Server.Render
     , fullRedraw
     ) where
 
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Data.Vector qualified as V
 
 import Hat.Geometry
 import Hat.Term.Cell

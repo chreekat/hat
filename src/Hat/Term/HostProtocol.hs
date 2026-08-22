@@ -47,7 +47,7 @@ module Hat.Term.HostProtocol
 
 import Control.Applicative ((<|>))
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 
 -- | Which color an OSC query asks about: OSC 10 (foreground) or 11
 -- (background).

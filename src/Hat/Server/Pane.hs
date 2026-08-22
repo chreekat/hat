@@ -58,16 +58,16 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, catch, finally, try)
 import Control.Monad (forM_, forever, unless, void, when)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.IO as TIO
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
 import Data.Char (isAlphaNum)
 import System.Environment (getEnvironment)
 import System.IO (Handle, hFlush)
@@ -88,8 +88,8 @@ import Hat.Server.Layout
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Mru (popOnClose, scrub)
 import Hat.Server.Resize (applySessionSize)
-import qualified Hat.Term.Emulator as Emu
-import qualified Hat.Term.Pty
+import Hat.Term.Emulator qualified as Emu
+import Hat.Term.Pty qualified
 import Hat.Transport.Wire
 
 -- The server's own environment seeds restored panes; spawnPane strips and

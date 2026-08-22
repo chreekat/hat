@@ -13,7 +13,7 @@ module Hat.Server.Prompt
 
 import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 import Hat.Model (PromptState (..))
 import Hat.Server.Keys (Key (..))

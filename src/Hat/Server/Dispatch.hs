@@ -27,18 +27,18 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (forM, forM_, unless, void)
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.Encoding.Error as TEE
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.Encoding.Error qualified as TEE
 import System.Directory
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
-import qualified System.Posix.IO as PIO
+import System.Posix.IO qualified as PIO
 import System.Posix.Process (executeFile)
 import System.Posix.Signals (sigHUP, signalProcess)
 import System.Posix.Types (Fd (..))
@@ -51,7 +51,7 @@ import Hat.Model
 import Hat.Model.Options (lookupCommandAlias)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
-import qualified Hat.Term.Pty
+import Hat.Term.Pty qualified
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Buffer
@@ -72,7 +72,7 @@ import Hat.Server.Overlay (handlePickerInput)
 import Hat.Server.Locate
 import Hat.Server.Pane
 import Hat.Server.Snapshot
-import qualified Hat.Server.Target as Target
+import Hat.Server.Target qualified as Target
 import Hat.Transport.Wire
 
 -- | Read a config file as UTF-8, independent of the process locale and

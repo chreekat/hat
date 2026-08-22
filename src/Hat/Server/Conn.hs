@@ -21,19 +21,19 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (forM_, forever, void, when)
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 import Data.IORef
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Network.Socket as N
+import Data.Text qualified as T
+import Network.Socket qualified as N
 import Hat.Geometry
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
 import Hat.Model.Options
-import qualified Hat.Term.Pty
+import Hat.Term.Pty qualified
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
@@ -46,7 +46,7 @@ import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
 import Hat.Server.View
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
 
 

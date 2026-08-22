@@ -10,8 +10,8 @@ module Hat.Server.Command.Types
 
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Model (Client, ServerState)
 

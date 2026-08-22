@@ -47,21 +47,21 @@ module Hat.Term.Emulator
 import Control.Concurrent.MVar
 import Control.Monad (unless)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Unsafe as BU
+import Data.ByteString qualified as B
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Unsafe qualified as BU
 import Data.Char (chr)
 import Data.IORef
 import Data.List (intersperse)
 import Data.Map (Map)
-import qualified Data.Map as Map
+import Data.Map qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Vector qualified as V
 import Foreign
-import qualified Foreign.Concurrent as FC
+import Foreign.Concurrent qualified as FC
 import Foreign.C.Types
 import System.Mem.Weak (Weak)
 

@@ -4,8 +4,8 @@
 -- and @tools\/bench\/hat_perf@; this only reads their artifacts.
 module Main (main) where
 
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 

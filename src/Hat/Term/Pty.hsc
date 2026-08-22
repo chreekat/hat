@@ -37,12 +37,12 @@ import Control.Concurrent.MVar
 import Control.Exception (IOException, catch, try)
 import Control.Monad (when)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.Encoding.Error as TEE
-import qualified Data.Text.IO as TIO
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.Encoding.Error qualified as TEE
+import Data.Text.IO qualified as TIO
 import Foreign
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types

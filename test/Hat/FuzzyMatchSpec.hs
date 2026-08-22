@@ -1,7 +1,7 @@
 module Hat.FuzzyMatchSpec (spec) where
 
 import Data.Maybe (fromJust, isJust)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Test.Hspec
 
 import Hat.FuzzyMatch (score)

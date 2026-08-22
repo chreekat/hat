@@ -8,7 +8,7 @@ module Hat.TextWidth
 
 import Data.Char (GeneralCategory (..), generalCategory, ord)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 -- | Columns a character occupies in a terminal: 0 for controls, combining
 -- marks and zero-width characters; 2 for East Asian wide\/fullwidth and

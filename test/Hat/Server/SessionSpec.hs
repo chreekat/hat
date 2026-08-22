@@ -5,18 +5,18 @@ import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Data.IORef (newIORef)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import System.Timeout (timeout)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
     , socketPair, touchSocket )
 import System.Mem (performGC)
 import Test.Hspec
 
-import qualified Data.Set as Set
-import qualified Data.Vector as V
-import qualified Hat.Term.Cell as Cell
+import Data.Set qualified as Set
+import Data.Vector qualified as V
+import Hat.Term.Cell qualified as Cell
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)

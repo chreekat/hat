@@ -9,11 +9,11 @@ module Hat.Server.Format.Fuzzy
     ) where
 
 import Data.Char (isAsciiUpper, toLower)
-import qualified Data.IntSet as IntSet
-import qualified Data.List as List
+import Data.IntSet qualified as IntSet
+import Data.List qualified as List
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 
 import Hat.TextWidth (charWidth)
 

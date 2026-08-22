@@ -9,7 +9,7 @@ module Hat.FuzzyMatch
 import Data.Array (Array, listArray, (!))
 import Data.Char (isAlphaNum, isLower, isUpper, toLower)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 -- | Fuzzy-match @query@ against @candidate@. 'Nothing' if @query@ is not a
 -- subsequence of @candidate@ (compared case-insensitively); otherwise 'Just'

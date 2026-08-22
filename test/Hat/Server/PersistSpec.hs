@@ -4,7 +4,7 @@ module Hat.Server.PersistSpec (spec) where
 import Control.Exception (bracket)
 import Control.Monad (forM_)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, close, execute_, open)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)

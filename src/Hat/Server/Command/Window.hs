@@ -25,13 +25,13 @@ module Hat.Server.Command.Window
 
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM_, unless, when)
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Geometry
 import Hat.Model
@@ -43,7 +43,7 @@ import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane (killPaneLocs, newWindowWithPane, pickActivityTarget, sessionSpawnEnv, startPaneReader)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
-import qualified Hat.Server.Target as Target
+import Hat.Server.Target qualified as Target
 
 -- | The first index at or above @start@ not already taken by a window, so a
 -- fresh window numbers from @base-index@ exactly like @new-window@ does.

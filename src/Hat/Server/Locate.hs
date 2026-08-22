@@ -26,19 +26,19 @@ module Hat.Server.Locate
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Monad (forM)
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Layout
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
-import qualified Hat.Server.Target as Target
+import Hat.Server.Target qualified as Target
 
 clientView :: ServerState -> Client -> STM (Maybe (Session, Window))
 clientView st client = do

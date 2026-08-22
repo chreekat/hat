@@ -12,12 +12,12 @@ import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, catch, bracket_)
 import Control.Monad (forever)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
 import Data.Word (Word16)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Network.Socket (Socket)
 import System.Directory (getCurrentDirectory)
 import System.Environment (getEnvironment, lookupEnv)

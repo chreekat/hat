@@ -6,9 +6,9 @@ module Hat.Server.Command.Bind
     ) where
 
 import Control.Concurrent.STM (atomically, modifyTVar')
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 import Hat.Command.Parser (parseConfig)
 import Hat.Model

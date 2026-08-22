@@ -25,13 +25,13 @@ import Control.Exception
     (IOException, SomeException, catch)
 import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, forM, forM_, unless, when)
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import System.Directory
     (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Environment (lookupEnv)
@@ -47,7 +47,7 @@ import Hat.Server.Persist
     (Archived (..), PaneSnap (..), SessionSnap (..), Snapshot (..)
     , WindowSnap (..), archiveSnapshot, clearLive, listArchived
     , loadArchived, loadSnapshot, saveSnapshot, withStore)
-import qualified Hat.Term.Pty
+import Hat.Term.Pty qualified
 import Hat.Server.Command.Types (CommandImpl, Reply (..))
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
 import Hat.Server.Layout

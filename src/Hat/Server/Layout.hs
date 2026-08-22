@@ -31,14 +31,14 @@ module Hat.Server.Layout
     ) where
 
 import Control.Applicative ((<|>))
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Ord (clamp, comparing)
 import Data.Ratio ((%))
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)

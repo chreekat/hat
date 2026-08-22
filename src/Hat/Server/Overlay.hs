@@ -9,15 +9,15 @@ module Hat.Server.Overlay
 
 import Control.Concurrent.STM
 import Control.Monad (unless)
-import qualified Data.ByteString as B
-import qualified Data.List as List
-import qualified Data.Text as T
+import Data.ByteString qualified as B
+import Data.List qualified as List
+import Data.Text qualified as T
 
 import Hat.Model
 import Hat.Server.Command.Types (Dispatch (..))
 import Hat.Server.Keys (Key, tokenizeKeys)
-import qualified Hat.Server.Picker as Picker
-import qualified Hat.Server.Prompt as Prompt
+import Hat.Server.Picker qualified as Picker
+import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.Toast (toastReplies)
 
 -- | While a chooser is open it owns every keystroke: navigate/search

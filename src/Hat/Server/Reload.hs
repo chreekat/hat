@@ -36,13 +36,13 @@ import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Control.Monad (replicateM_, unless)
 import Data.ByteString (ByteString)
 import Data.Maybe (maybeToList)
-import qualified Data.ByteString.Lazy as BL
+import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import GHC.Generics (Generic)
 
 import Hat.Term.Cell (Cell, Style)
-import qualified Hat.Term.Cell as Cell
+import Hat.Term.Cell qualified as Cell
 
 -- | The tree an era-matched reload rebuilds by adopting each pane's inherited
 -- pty and child. This is the EVOLVING payload: any change to its shape (or its

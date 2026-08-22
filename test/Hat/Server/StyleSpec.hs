@@ -2,7 +2,7 @@ module Hat.Server.StyleSpec (spec) where
 
 import Test.Hspec
 
-import qualified Hat.Term.Cell as Cell
+import Hat.Term.Cell qualified as Cell
 import Hat.Server.Style
 
 spec :: Spec

@@ -10,7 +10,7 @@ module Hat.Client.Tty
 import Control.Exception (bracket, displayException, try)
 import Data.Bifunctor (bimap)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import GHC.IO.Exception (IOException)
 import System.IO (BufferMode (NoBuffering), hSetBuffering, stdin, stdout)
 import System.Posix.IO (stdInput, stdOutput)

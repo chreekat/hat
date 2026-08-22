@@ -1,8 +1,8 @@
 module Hat.Server.FormatSpec (spec) where
 
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (utc, utcToZonedTime)
 import Test.Hspec

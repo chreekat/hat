@@ -1,7 +1,7 @@
 module Hat.Server.PromptSpec (spec) where
 
 import Data.Text (Text)
-import qualified Data.Text.Encoding as TE
+import Data.Text.Encoding qualified as TE
 import Test.Hspec
 
 import Hat.Model (PromptState (..))

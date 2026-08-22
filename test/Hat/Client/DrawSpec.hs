@@ -1,6 +1,6 @@
 module Hat.Client.DrawSpec (spec) where
 
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 import Test.Hspec
 
 import Hat.Client.Draw

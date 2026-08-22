@@ -26,8 +26,8 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket)
 import Control.Concurrent.STM
 import Data.Aeson (ToJSON, (.=))
-import qualified Data.Aeson as Aeson
-import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.Aeson qualified as Aeson
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import GHC.Generics (Generic)

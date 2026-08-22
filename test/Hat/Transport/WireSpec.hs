@@ -7,16 +7,16 @@ import Codec.Serialise (DeserialiseFailure, deserialiseOrFail)
 import Control.Concurrent.Async (concurrently)
 import Data.Either (isLeft)
 import Data.Bits (shiftR)
-import qualified Data.Bits as Bits
-import qualified Data.ByteString as B
-import qualified Data.List as List
+import Data.Bits qualified as Bits
+import Data.ByteString qualified as B
+import Data.List qualified as List
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word8)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Network.Socket
     (Family (AF_UNIX), SocketType (Stream), close, socketPair)
-import qualified Network.Socket.ByteString.Lazy as SBL
-import qualified Data.ByteString.Lazy as BL
+import Network.Socket.ByteString.Lazy qualified as SBL
+import Data.ByteString.Lazy qualified as BL
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck

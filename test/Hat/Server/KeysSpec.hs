@@ -2,7 +2,7 @@ module Hat.Server.KeysSpec (spec) where
 
 import Test.Hspec
 
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 
 import Hat.Server.Keys
 

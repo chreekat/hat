@@ -5,7 +5,7 @@ module Hat.Server.Keymap
     ( defaultKeymap
     ) where
 
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 
 import Hat.Model (tshow)
 import Hat.Model.Options (Keymap)

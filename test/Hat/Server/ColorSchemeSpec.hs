@@ -16,7 +16,7 @@ import Hat.Model.Options
     ( Options (..), OptionName (..), OptionValue (..)
     , resolveOptions, singletonDelta )
 import Hat.Server.ColorScheme
-import qualified Hat.Term.Cell as Cell
+import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
 spec = do

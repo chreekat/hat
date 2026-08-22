@@ -13,12 +13,12 @@ import Data.Bits (shiftL, shiftR, (.&.))
 import Data.Char (ord)
 import Data.Ratio ((%))
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Void (Void)
 import Numeric (showHex)
 import Text.Megaparsec
 import Text.Megaparsec.Char (char)
-import qualified Text.Megaparsec.Char.Lexer as L
+import Text.Megaparsec.Char.Lexer qualified as L
 
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model.Ids (PaneId (..))

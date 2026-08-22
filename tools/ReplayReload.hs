@@ -15,10 +15,10 @@
 module Main (main) where
 
 import Control.Monad (forM)
-import qualified Data.ByteString as B
+import Data.ByteString qualified as B
 import Data.Maybe (fromMaybe)
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
@@ -27,7 +27,7 @@ import Hat.Geometry
 import Hat.Server (captureSize, replayPane)
 import Hat.Server.Reload
 import Hat.Term.Emulator (Screen (cells))
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 
 -- The fallback size 'adoptPane' uses for a blank capture; a real capture is
 -- adopted at its own size ('captureSize'), which this tool mirrors.

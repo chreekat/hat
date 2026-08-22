@@ -20,13 +20,13 @@ module Hat.Server.Command.Pane
 
 import Control.Concurrent.STM
 import Control.Monad (forM_, unless, void, when)
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
+import Data.Vector qualified as V
 import Numeric (showOct)
 
 import Hat.Geometry
@@ -41,9 +41,9 @@ import Hat.Server.Pane
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowArrange)
-import qualified Hat.Server.Target as Target
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Server.Target qualified as Target
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Emulator.Types (rtrimBlank)
 
 -- | Modifiers that shape a @capture-pane@ grid dump. See 'captureText'.

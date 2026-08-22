@@ -2,9 +2,9 @@ module Hat.Server.ConfigSpec (spec) where
 
 import Control.Concurrent.STM (readTVarIO)
 import Control.Exception (bracket)
-import qualified Data.ByteString as B
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
+import Data.ByteString qualified as B
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 import System.Directory (removeDirectoryRecursive)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Posix.Temp (mkdtemp)

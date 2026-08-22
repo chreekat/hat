@@ -3,7 +3,7 @@
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Network.Socket (Socket)
 import System.Directory (doesFileExist, findExecutable)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
@@ -21,7 +21,7 @@ import Hat.Server (resumeServer, runServer)
 import Hat.Transport.Socket (connectTo, defaultSocketPath)
 
 #ifdef GHC_DEBUG
-import qualified GHC.Debug.Stub
+import GHC.Debug.Stub qualified
 #endif
 
 data Cli = Cli

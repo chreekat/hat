@@ -1,11 +1,11 @@
 module Hat.Term.EmulatorSpec (spec) where
 
 import Control.Monad (forM_)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.Maybe (catMaybes)
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import System.Mem.StableName (makeStableName)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)

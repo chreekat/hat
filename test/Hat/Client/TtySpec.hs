@@ -1,6 +1,6 @@
 module Hat.Client.TtySpec (spec) where
 
-import qualified Data.Text as T
+import Data.Text qualified as T
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
 import Test.Hspec
 

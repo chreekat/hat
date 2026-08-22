@@ -20,11 +20,11 @@ module Hat.Server.Environ
     , globMatch
     ) where
 
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 -- | Whether an entry shows in plain output and spawned panes' environments,
 -- or only under @show-environment -h@.

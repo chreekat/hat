@@ -16,27 +16,27 @@ module Hat.Server.View
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, when)
 import Data.IORef
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Vector qualified as V
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
-import qualified Hat.Server.CopyMode as CopyMode
+import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
      windowFlags)
 import Hat.Server.Resize (windowArrange)
-import qualified Hat.Server.Picker as Picker
+import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
 
 -- Rendering ---------------------------------------------------------------

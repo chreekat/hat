@@ -7,9 +7,9 @@ module Hat.Server.Title
     ) where
 
 import Data.Char (isDigit)
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 data TitleParts = TitleParts
     { session :: Text

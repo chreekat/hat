@@ -99,19 +99,19 @@ import Control.Exception
      throwIO, try)
 import Control.Monad (forM_, forever, unless, void, when)
 import Data.IORef
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import qualified Network.Socket as N
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import Network.Socket qualified as N
 import System.Directory
     (doesFileExist, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
-import qualified System.Posix.IO as PIO
+import System.Posix.IO qualified as PIO
 import System.Process
     (CreateProcess (..), StdStream (..), proc,
      readCreateProcess, withCreateProcess)
@@ -146,7 +146,7 @@ import Hat.Server.Snapshot
 import Hat.Server.Resize
 import Hat.Server.Title (TitleParts (..), composeTitle)
 import Hat.Transport.Socket (ensureSocketDir, listenOn)
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
 
 runServer :: FilePath -> Maybe FilePath -> IO ()

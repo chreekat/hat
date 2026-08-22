@@ -1,7 +1,7 @@
 module Hat.Server.RenderSpec (spec) where
 
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck

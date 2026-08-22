@@ -17,10 +17,10 @@ module Hat.Server.Command.Session
 
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_, unless, when)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import System.Environment (getEnvironment)
 
 import Hat.Geometry
@@ -33,7 +33,7 @@ import Hat.Server.Locate (findTarget, targetSession, withTargetSession)
 import Hat.Server.Pane (createSession, killPaneLocs)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
-import qualified Hat.Server.Target as Target
+import Hat.Server.Target qualified as Target
 
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args = do

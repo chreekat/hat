@@ -2,10 +2,10 @@
 
 module Hat.Server.LayoutSpec (spec) where
 
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Ratio ((%))
-import qualified Data.Set as Set
-import qualified Data.Text as T
+import Data.Set qualified as Set
+import Data.Text qualified as T
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck

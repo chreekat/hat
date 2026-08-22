@@ -13,7 +13,7 @@ module Hat.Server.Command.Layout
 
 import Control.Concurrent.STM
 import Control.Monad (unless)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
 import Data.Text (Text)
 

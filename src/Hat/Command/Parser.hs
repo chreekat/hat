@@ -12,7 +12,7 @@ module Hat.Command.Parser
 
 import Data.Char (isSpace)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Void (Void)
 import Text.Megaparsec
 import Text.Megaparsec.Char

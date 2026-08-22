@@ -30,12 +30,12 @@ import Control.Monad (unless)
 import Data.Aeson
     ( FromJSON (..), ToJSON (..), Value (String), decode, encode, object
     , withObject, (.:?), (.=) )
-import qualified Data.ByteString.Lazy as BL
+import Data.ByteString.Lazy qualified as BL
 import Data.Maybe (fromMaybe, maybeToList)
 import Data.String (fromString)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import Database.SQLite.Simple
 

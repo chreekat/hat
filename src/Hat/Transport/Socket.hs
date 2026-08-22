@@ -10,7 +10,7 @@ module Hat.Transport.Socket
 
 import Control.Exception (bracketOnError, try, SomeException)
 import Control.Monad (when)
-import qualified Network.Socket as N
+import Network.Socket qualified as N
 import System.Directory
     (createDirectoryIfMissing, doesPathExist, removeFile)
 import System.Environment (lookupEnv)

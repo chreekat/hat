@@ -20,11 +20,11 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.IORef
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
@@ -32,7 +32,7 @@ import System.Posix.Unistd (SystemID (nodeName), getSystemID)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Process
     (CreateProcess (..), readCreateProcessWithExitCode, shell)
-import qualified Data.Vector as V
+import Data.Vector qualified as V
 
 import Hat.Geometry
 import Hat.Model
@@ -43,8 +43,8 @@ import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Pane (paneCommandName)
-import qualified Hat.Term.Emulator as Emu
-import qualified Hat.Term.Pty
+import Hat.Term.Emulator qualified as Emu
+import Hat.Term.Pty qualified
 
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = do

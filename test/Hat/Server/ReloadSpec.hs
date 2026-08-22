@@ -5,11 +5,11 @@ module Hat.Server.ReloadSpec (spec) where
 import Codec.Serialise (encode, serialise)
 import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Codec.CBOR.Write (toStrictByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
+import Data.ByteString qualified as B
+import Data.ByteString.Lazy qualified as BL
 import Data.Either (isLeft)
 import Data.Word (Word8)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck

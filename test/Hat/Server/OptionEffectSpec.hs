@@ -8,10 +8,10 @@ import Test.Hspec
 
 import Control.Concurrent.STM (readTVarIO)
 import Control.Exception (bracket)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import System.Directory (removeDirectoryRecursive)
 import System.Posix.Temp (mkdtemp)
 
@@ -33,7 +33,7 @@ import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
 import Hat.Server.View
     ( assembleStatusRow, borderCells, mapGlyph, statusLayout
     , windowEntryFormat, windowEntryStyle )
-import qualified Hat.Term.Cell as Cell
+import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
 spec = do

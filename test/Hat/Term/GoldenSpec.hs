@@ -1,12 +1,12 @@
 module Hat.Term.GoldenSpec (spec) where
 
-import qualified Data.ByteString as B
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
+import Data.ByteString qualified as B
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Test.Hspec
 
 import Hat.Geometry
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 
 -- Fixtures are captured from real programs by @cabal run gen-fixtures@.
 golden :: String -> Spec

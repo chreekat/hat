@@ -7,8 +7,8 @@ module Hat.Server.WindowStruct
     ) where
 
 import Control.Concurrent.STM
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 

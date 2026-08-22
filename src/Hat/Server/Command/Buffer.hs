@@ -17,18 +17,18 @@ import Control.Exception (IOException, try)
 import Control.Monad (when)
 import Data.Maybe (isJust)
 import Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
+import Data.Sequence qualified as Seq
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.IO as TIO
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
 
 import Hat.Path (expandTilde)
 import Hat.Model
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Locate (targetPane)
 import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe)
-import qualified Hat.Term.Pty
+import Hat.Term.Pty qualified
 
 cmdShowBuffer :: CommandImpl
 cmdShowBuffer st _ args = do

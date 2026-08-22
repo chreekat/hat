@@ -6,8 +6,8 @@ import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import System.IO (hIsClosed)
 import Test.Hspec
 
@@ -19,9 +19,9 @@ import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
 import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle)
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Emulator qualified as Emu
 
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 
 -- | The pane grid the upstream copy-mode tests build (40x10). The
 -- source file's leading TAB on row 1 reaches hat's grid as spaces

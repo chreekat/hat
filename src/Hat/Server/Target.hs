@@ -23,8 +23,8 @@ module Hat.Server.Target
 import Data.List (find)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model.Ids (PaneId (..), SessionId (..), WindowId (..))

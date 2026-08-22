@@ -62,24 +62,24 @@ import Control.Concurrent.STM
 import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM)
 import Data.IORef (IORef)
-import qualified Data.List as List
+import Data.List qualified as List
 import System.IO (Handle)
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
+import Data.Sequence qualified as Seq
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Time.Clock (UTCTime)
-import qualified Data.Vector as V
+import Data.Vector qualified as V
 import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
-import qualified System.Posix.Files as PFiles
+import System.Posix.Files qualified as PFiles
 
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
-import qualified Hat.Term.Pty
+import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( Keymap, Options, OptionsDelta, applyDelta, defaultOptions, emptyDelta
     , resolveOptions )
@@ -89,8 +89,8 @@ import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
 import Hat.Server.Render (Frame)
 import Hat.Transport.Wire (Autostart)
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 
 data ServerState = ServerState
     { sessions    :: TVar (Map SessionId Session)

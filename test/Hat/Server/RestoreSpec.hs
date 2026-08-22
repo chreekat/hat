@@ -3,11 +3,11 @@ module Hat.Server.RestoreSpec (spec) where
 import Control.Concurrent.STM (atomically, modifyTVar', readTVarIO, writeTVar)
 import Control.Exception (ErrorCall (..), bracket, throwIO)
 import Control.Monad (forM_)
-import qualified Data.ByteString.Char8 as B8
+import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Map.Strict as Map
-import qualified Data.Vector as V
+import Data.Text qualified as T
+import Data.Map.Strict qualified as Map
+import Data.Vector qualified as V
 import System.Posix.IO (closeFd)
 import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
@@ -37,8 +37,8 @@ import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
     (ReloadModes (..), ReloadPane (..), ReloadScreen (..), ReloadSession (..),
      ReloadWindow (..), emptyReloadScreen)
-import qualified Hat.Term.Cell as Cell
-import qualified Hat.Term.Emulator as Emu
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 
 -- A minimal non-empty tree: one named session with no windows is enough
 -- for the mirror's write decision, which only inspects emptiness and

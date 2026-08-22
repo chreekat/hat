@@ -5,9 +5,9 @@ module Hat.Server.ResizeRenderSpec (spec) where
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM (newTVarIO)
 import Data.IORef (newIORef)
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
-import qualified Data.Vector as V
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import Network.Socket
     (Family (AF_UNIX), SocketType (Stream), Socket, close, socketPair)
 import System.Timeout (timeout)

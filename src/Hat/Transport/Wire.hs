@@ -69,15 +69,15 @@ import Codec.Serialise.Encoding
 import Control.Monad (replicateM_)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
+import Data.ByteString qualified as B
+import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
 import Network.Socket (Socket)
-import qualified Network.Socket.ByteString as SB
-import qualified Network.Socket.ByteString.Lazy as SBL
+import Network.Socket.ByteString qualified as SB
+import Network.Socket.ByteString.Lazy qualified as SBL
 
 import Hat.Geometry
 import Hat.Term.Cell

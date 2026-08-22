@@ -9,10 +9,10 @@ module Hat.Server.Format.Colour
     ) where
 
 import Data.Char (digitToInt, isHexDigit)
-import qualified Data.List as List
+import Data.List qualified as List
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Read as TR
+import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 import Numeric (showHex)
 
 -- | A parsed tmux colour. 'CBase' holds the classic SGR index (0-7 or the

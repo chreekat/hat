@@ -8,9 +8,9 @@ module Hat.Client.Draw
     ) where
 
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.Text.Encoding as TE
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Lazy qualified as BL
+import Data.Text.Encoding qualified as TE
 
 import Hat.Geometry
 import Hat.Term.Cell

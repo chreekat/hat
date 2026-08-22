@@ -23,7 +23,7 @@ import Data.List (findIndex, sortOn)
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 import Hat.FuzzyMatch (score)
 import Hat.Geometry (Rect (..), Size (..))
