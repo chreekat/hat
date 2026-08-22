@@ -88,7 +88,6 @@ copy-mode-selection-scroll.sh   # needs window-size + copy-mode scroll/selection
 # format engine: modifiers/vars beyond ?/=N/e|op| unimplemented
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-animation.sh             # #{A/n:...} animation modifier + window-size
-format-fuzzy.sh                 # #{m/z:} / #{m/p:} fuzzy-match modifiers
 format-modifiers.sh             # most FORMATS modifiers (m,s/,b,d,q,t,c,p,n,w,a,...)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars

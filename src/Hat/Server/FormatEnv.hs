@@ -24,18 +24,22 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Read as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Process
     (CreateProcess (..), readCreateProcessWithExitCode, shell)
+import qualified Data.Vector as V
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
-import Hat.Server.Format (FormatEnv, renderFormat)
+import Hat.Server.Format (FormatCtx (..), FormatEnv, formatCtx, renderFormatCtx)
+import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Pane (paneCommandName)
@@ -247,7 +251,7 @@ resolveShell st cmdText = do
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
 expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
 expandFormat st env fmt = do
-    -- Pre-resolve shell segments so `evaluate` stays pure.
+    -- Pre-resolve shell segments so the evaluator stays pure.
     resolved <- newIORef Map.empty
     let collect t = case T.breakOn "#(" t of
             (_, rest) | T.null rest -> pure ()
@@ -259,7 +263,21 @@ expandFormat st env fmt = do
     collect fmt
     vals <- readIORef resolved
     now <- getZonedTime
-    pure (renderFormat env (\c -> Map.findWithDefault "" c vals) now fmt)
+    -- Loop/search context, gathered only when the format demands it; the
+    -- strict return keeps every deferred read inside this call.
+    sessionItems <- unsafeInterleaveIO (loopSessionEnvs st)
+    windowItems <- unsafeInterleaveIO (loopWindowEnvs st env)
+    paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
+    clientItems <- unsafeInterleaveIO (loopClientEnvs st)
+    visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
+    let ctx = (formatCtx env (\c -> Map.findWithDefault "" c vals) now)
+            { sessions = sessionItems
+            , windows = windowItems
+            , panes = paneItems
+            , clients = clientItems
+            , paneLines = visibleLines
+            }
+    pure $! renderFormatCtx ctx fmt
   where
     breakBalanced = go (0 :: Int) ""
       where
@@ -292,3 +310,78 @@ windowFlags s = T.concat
     , if s.flagZoomed then "Z" else ""
     ]
 
+-- One env per session, for the S loop and N/s.
+loopSessionEnvs :: ServerState -> IO [FormatEnv]
+loopSessionEnvs st = do
+    ss <- Map.elems <$> readTVarIO st.sessions
+    mapM (sessionFormatEnv st) ss
+
+-- The target session's windows, for the W loop and N/w.
+loopWindowEnvs :: ServerState -> FormatEnv -> IO [FormatEnv]
+loopWindowEnvs st env = do
+    msess <- targetSessionOf st env
+    case msess of
+        Nothing -> pure []
+        Just sess -> do
+            ws <- Map.toAscList <$> readTVarIO sess.windows
+            mapM (\(ix, win) -> windowFormatEnv st sess ix win) ws
+
+-- The target window's panes in creation order, for the P loop.
+loopPaneEnvs :: ServerState -> FormatEnv -> IO [FormatEnv]
+loopPaneEnvs st env = do
+    mwin <- targetWindowOf st env
+    case mwin of
+        Nothing -> pure []
+        Just (sess, wix, win) -> do
+            ps <- Map.elems <$> readTVarIO win.panes
+            mapM (\pane -> do
+                pix <- paneIndexOf st win pane
+                paneFormatEnv st sess wix win pix pane) ps
+
+-- One env per attached client, for the L loop.
+loopClientEnvs :: ServerState -> IO [FormatEnv]
+loopClientEnvs st = do
+    cs <- Map.elems <$> readTVarIO st.clients
+    pure [ Map.fromList [("client_name", "client" <> tshow (rawClient c.id))]
+         | c <- cs, c.role == Attached ]
+
+-- The target pane's visible lines, for the C search modifier.
+targetPaneLines :: ServerState -> FormatEnv -> IO [Text]
+targetPaneLines st env = case idNum '%' "pane_id" env of
+    Nothing -> pure []
+    Just n -> do
+        mloc <- atomically (locatePane st (PaneId n))
+        case mloc of
+            Nothing -> pure []
+            Just (_, win) -> do
+                ps <- readTVarIO win.panes
+                case Map.lookup (PaneId n) ps of
+                    Nothing -> pure []
+                    Just pane -> do
+                        scr <- Emu.snapshot pane.emulator
+                        pure [ Emu.screenRowText scr r
+                             | r <- [0 .. V.length scr.cells - 1] ]
+
+targetSessionOf :: ServerState -> FormatEnv -> IO (Maybe Session)
+targetSessionOf st env = case idNum '$' "session_id" env of
+    Nothing -> pure Nothing
+    Just n -> Map.lookup (SessionId n) <$> readTVarIO st.sessions
+
+targetWindowOf :: ServerState -> FormatEnv -> IO (Maybe (Session, Int, Window))
+targetWindowOf st env = do
+    msess <- targetSessionOf st env
+    case (msess, idNum '@' "window_id" env) of
+        (Just sess, Just wid) -> do
+            ws <- Map.toAscList <$> readTVarIO sess.windows
+            pure (listToMaybe
+                [ (sess, ix, win) | (ix, win) <- ws, win.id == WindowId wid ])
+        _ -> pure Nothing
+
+-- A "$N"/"@N"/"%N" id variable's number.
+idNum :: Char -> Text -> FormatEnv -> Maybe Int
+idNum pre key env = do
+    v <- Map.lookup key env
+    rest <- T.stripPrefix (T.singleton pre) v
+    case TR.decimal rest of
+        Right (n, "") -> Just n
+        _ -> Nothing
