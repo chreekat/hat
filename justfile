@@ -35,3 +35,6 @@ mem_bench lines='20000' reload='no' build='' rts='' keep='no':
     if [ -n '{{build}}' ]; then args+=(--build '{{build}}'); fi
     if [ -n '{{rts}}' ]; then args+=(--rts '{{rts}}'); fi
     ./tools/bench/hat_mem "${args[@]}"
+
+ghcid:
+    ghcid -c 'cabal repl --repl-options=-fno-code --repl-options=-fno-break-on-exception --repl-options=-fno-break-on-error --repl-options=-v1 --repl-options=-ferror-spans --repl-options=-j --enable-multi-repl --enable-tests --enable-benchmarks all' -o errors.err --restart hat.cabal --restart src/Hat/Term/Emulator.hsc
