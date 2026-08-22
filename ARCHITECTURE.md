@@ -38,8 +38,8 @@ load-bearing in design choices, not just in code review.
    "Wire protocol shape" for the CBOR proposal) — not tmux-compatible
    on the wire, but with explicit back-/forward-compat machinery from
    day one.
-3. **STM for the session/window/pane tree**, with broadcast TChans for
-   change notifications.
+3. **STM for the session/window/pane tree**, with a global
+   render-generation `TVar` that renderers wait on (STM `retry`).
 4. **One reader thread per PTY, one reader thread per client connection,
    one renderer thread per attached client.** Green threads by default;
    bound threads only where a specific FFI or syscall demands it.
@@ -72,10 +72,13 @@ fleshing-out phase — HAT should support:
 These are explicit big-picture goals, not v1 goals. They drive two
 concrete decisions we make *now* so we don't have to retrofit later:
 
-1. The wire protocol carries a version envelope on every connection
-   greeting, and the encoding (CBOR — see "Wire protocol shape") has
-   built-in unknown-field tolerance. New optional fields are additive,
-   not breaking.
+1. Every connection greeting exchanges wire versions and both peers
+   speak `min` of the two (`negotiate` in `Hat.Transport.Wire`); the
+   acceptance window is every version ≥ the floor (4), forever, in both
+   directions. The encoding (CBOR — see "Wire protocol shape") has
+   built-in unknown-tag tolerance; leaves evolve by tolerant append
+   under dialect levels, and the server encodes at each client's
+   negotiated level (`encodeServerMessageAt`).
 2. We avoid load-bearing wire features that can't be downgraded
    silently. If a new command needs new event types, the server
    negotiates capabilities at handshake and falls back when the
@@ -92,7 +95,8 @@ boundary where one binary version's bytes are read by another gets the same
 treatment from the day it is introduced:
 
 - **Client↔server wire** (`Hat.Transport.Wire`): append-only CBOR tags,
-  unknown-tag tolerance, golden-byte tests as the contract.
+  unknown-tag tolerance, min-version dialect negotiation, golden-byte +
+  dialect corpus tests as the contract.
 - **Persistence store** (`Hat.Server.Persist`): additive columns, per-row
   `extra` JSON, reads default anything absent — see "Compatibility is the
   schema" below.
@@ -155,12 +159,15 @@ Almost no logic lives there. **(inferred.)**
 
 Haskell's strength here. The shape:
 
-- **Server state** lives in a small set of `TVar`s under a top-level
-  `Server` record. Sessions, windows, panes, options, key bindings,
-  paste buffers — all under STM.
+- **Server state** lives in `TVar`s under a top-level `ServerState`
+  record. Sessions, windows, panes, options, key bindings, paste
+  buffers — all under STM.
 - **Each pane has its own PTY reader thread** that reads bytes off the
   PTY master fd and feeds them into that pane's emulator. The emulator
-  update happens inside STM so renderers see consistent grid state.
+  is *not* under STM: libghostty holds the grid behind a per-pane
+  `MVar` lock (see "Threading and callback re-entrancy"), so a feed is
+  atomic and snapshots read only between whole operations. The reader
+  bumps the `dirty` generation after each feed.
 - **Each pane has its own writer fd** — when the input router decides a
   keystroke goes to a pane, it writes to that PTY directly. No queue
   needed; the OS pipe is the queue.
@@ -169,7 +176,15 @@ Haskell's strength here. The shape:
   requests) and executes any commands synchronously, and a *renderer*
   (`renderLoop`) that wakes on a single global `dirty` generation `TVar`
   (STM `retry`, not a per-client broadcast `TChan`) and re-renders the
-  visible panes + status line + overlays into output bytes.
+  visible panes + status line + overlays into output bytes. The wake
+  gate is `awaitRenderable`: a renderer runs only once `reconciled`
+  has caught up to `dirty` and no user-command batch is open
+  (`commandDepth`), so it never paints a frame whose panes the resize
+  pass hasn't reached yet.
+- **One server-wide reconcile loop** (`Hat.Server.Resize`) is the sole
+  writer of `pane.size`: it walks the layouts after each dirty bump,
+  resizes emulator before PTY, and advances `reconciled`. Commands that
+  must observe a completed resize wait on the same generation.
 - **Threads are the queues.** Tmux has per-client command queues plus a
   global one for the config (`cmd-queue.c`, `cfg.c`), with `if-shell`
   parking its queue item on a job callback. HAT gets the same semantics
@@ -222,14 +237,16 @@ threads needed.)**
 
 ### STM granularity
 
-Start coarse: one `TVar` per pane's grid+scrollback, one `TVar` per
-session, one `TVar` for the global options map. Refine only if
-contention shows up in practice. **(speculative — we may need finer
-locking around the grid; the alternative is per-row TVars or a
-mutable array under STM.)**
+Shipped fine-grained: each mutable field of `ServerState` / `Session` /
+`Window` / `Pane` is its own `TVar` (name, layout, active pane, MRU
+stacks, option overlays, …), so a transaction touches exactly what it
+reads. The grid never entered STM at all — it lives in libghostty on
+the other side of the FFI, guarded by the emulator's `MVar`.
 
 ### What lives outside STM
 
+- The emulator itself: the libghostty terminal handle, one `MVar`-locked
+  handle per pane.
 - PTY reader and writer fds (file handles are themselves stateful).
 - Socket connection handles.
 - The renderer's last-frame cache (per client — for delta encoding).
@@ -237,44 +254,55 @@ mutable array under STM.)**
 
 ## Module map
 
-The layering below is what shipped. The sketch this section first held
-predicted many small server modules (`CommandEngine`, `Input`, `Status`,
-`Hooks`) and one model module per entity (`Session`, `Window`, `Pane`).
-Reality consolidated: the server is one large `Hat.Server` with pure
-feature helpers factored out beside it, and the whole model lives in
-`Hat.Model`. The *layering discipline* held — pure lower layers, an `IO`
-server on top, the emulator and wire behind narrow seams — but the module
-boundaries landed coarser than drawn. Modules at lower layers don't import
-higher ones.
+The layering below is what shipped. The server grew in two moves: first
+it consolidated into one large `Hat.Server`, then it was cut into a
+family of parallel `Hat.Server.*` siblings around a thin `Hat.Server`
+top (accept loop, lifecycle, spawn/attach orchestration). The *layering
+discipline* held throughout — pure lower layers, an `IO` server on top,
+the emulator and wire behind narrow seams. Modules at lower layers don't
+import higher ones, and two siblings carry an extra rule: `Conn` and
+`Dispatch` never import each other — a key binding reaches the command
+engine through a `Dispatch` record of handles, which is what breaks the
+keys→commands cycle.
 
 ```
-  Main (app/Main.hs)                        -- CLI entry, server vs client mode
-  +---------------------------------------+
-  |  Hat.Server                           | -- state tree, command engine, dispatch,
-  |                                       |    status, render orchestration, persistence
-  +---------------------------------------+
-  |  Hat.Server.Render                    | -- panes + status -> DrawOps
-  |  Hat.Server.Format                    | -- #{...} #(...) engine
-  |  Hat.Server.Layout / .LayoutString    | -- pane geometry + layout-string codec
-  |  Hat.Server.CopyMode / .Picker        | -- copy mode; choose-tree overlay
-  |  Hat.Server.Prompt / .Keys / .Target  | -- command prompt; key names; target lookup
-  |  Hat.Server.Style / .ColorScheme      | -- style strings; light/dark palette
-  |  Hat.Server.Persist / .Title          | -- SQLite snapshot; title formatting
-  +---------------------------------------+
-  |  Hat.Model / .Ids / .Options          | -- sessions/windows/panes, IDs, options
-  +---------------------------------------+
-  |  Hat.Term.Emulator (.hsc)             | -- libghostty-vt FFI: parser + grid + scrollback
-  |  Hat.Term.Cell                        | -- grid cell + style
-  |  Hat.Term.HostProtocol               | -- host-aware sequences libghostty can't answer
-  |  Hat.Term.Pty (.hsc)                  | -- forkpty, signals, resize
-  +---------------------------------------+
-  |  Hat.Transport.Wire                   | -- protocol types + CBOR framing
-  |  Hat.Transport.Socket                 | -- Unix socket open/listen/accept
-  |  Hat.Client / .Draw / .Tty            | -- client loop; DrawOps -> escapes; raw mode
-  +---------------------------------------+
-  |  Hat.Command.Parser                   | -- pure (megaparsec)
-  |  Hat.Geometry                         | -- Size, Pos
-  |  Hat.Log                              | -- structured JSON events
+  Main (app/Main.hs)                          -- CLI entry, server vs client mode
+  +-----------------------------------------+
+  |  Hat.Server                             | -- wiring: accept loop, lifecycle,
+  |                                         |    spawn/attach orchestration
+  +-----------------------------------------+
+  |  Hat.Server.Conn / .ClientIO            | -- a connection's life; output choke point
+  |  Hat.Server.Dispatch / .Command.*       | -- command table + per-area impls
+  |  Hat.Server.View / .Render / .Toast     | -- tree -> frames -> DrawOps; toasts
+  |  Hat.Server.Pane / .Resize              | -- pane lifecycle; the reconcile loop
+  |  Hat.Server.Overlay / .Picker / .Prompt | -- keyboard-grabbing overlays
+  |  Hat.Server.CopyMode                    | -- copy mode over a frozen snapshot
+  |  Hat.Server.Format / .FormatEnv         | -- #{...} engine; env construction
+  |  Hat.Server.Layout / .LayoutString      | -- pane geometry + layout-string codec
+  |  Hat.Server.Keys / .Keymap /            | -- key names; default binds;
+  |    .Target / .Locate                    |    target lookup over the live tree
+  |  Hat.Server.Style / .ColorScheme /      | -- style strings; light/dark palette;
+  |    .Title                               |    title formatting
+  |  Hat.Server.Snapshot / .Persist /       | -- persistence: capture+mirror+rebuild,
+  |    .WindowStruct                        |    SQLite codec, shared tree-reader
+  |  Hat.Server.Reload / .Handover          | -- in-place reload payload; adopt
+  |  Hat.Server.Startup / .Mru / .Environ   | -- startup phases; MRU stacks; environ
+  +-----------------------------------------+
+  |  Hat.Model / .Ids / .Options            | -- sessions/windows/panes, IDs, options
+  +-----------------------------------------+
+  |  Hat.Term.Emulator (.hsc) / .Types      | -- libghostty-vt FFI: parser+grid+scrollback
+  |  Hat.Term.Cell                          | -- grid cell + style
+  |  Hat.Term.HostProtocol                  | -- host-aware sequences libghostty can't answer
+  |  Hat.Term.Pty (.hsc)                    | -- forkpty, signals, resize
+  +-----------------------------------------+
+  |  Hat.Transport.Wire                     | -- protocol types + CBOR framing
+  |  Hat.Transport.Socket                   | -- Unix socket open/listen/accept
+  |  Hat.Client / .Draw / .Tty              | -- client loop; DrawOps -> escapes; raw mode
+  +-----------------------------------------+
+  |  Hat.Command.Parser                     | -- pure (megaparsec)
+  |  Hat.Geometry / .Path / .Intern         | -- Size/Pos; path building; interning
+  |  Hat.FuzzyMatch / .Debug                | -- fuzzy scorer; ghc-debug socket
+  |  Hat.Log                                | -- structured JSON events
 ```
 
 Notable interface boundaries — these are where flexibility lives:
@@ -302,13 +330,14 @@ Handy when cross-referencing behavior against upstream:
 | HAT module                         | tmux file(s)                                  |
 | ---------------------------------- | --------------------------------------------- |
 | `Main` / `Hat.Client`              | `tmux.c`, `client.c`                          |
-| `Hat.Server` (command engine)      | `cmd.c`, `cmd-queue.c`, all `cmd-*.c`         |
-| `Hat.Server.Format`                | `format.c`, `format-draw.c`                   |
-| `Hat.Server.Render`                | `screen-redraw.c`, `tty-draw.c`               |
-| `Hat.Server.Keys` (+ `Hat.Server`) | `input-keys.c`, `key-bindings.c`, `key-string.c` |
+| `Hat.Server.Dispatch` / `.Command.*` | `cmd.c`, `cmd-queue.c`, all `cmd-*.c`       |
+| `Hat.Server.Format` / `.FormatEnv` | `format.c`, `format-draw.c`                   |
+| `Hat.Server.View` / `.Render`      | `screen-redraw.c`, `tty-draw.c`, `status.c`   |
+| `Hat.Server.Keys` / `.Keymap` (+ `.Conn`) | `input-keys.c`, `key-bindings.c`, `key-string.c` |
 | `Hat.Server.Layout` / `.LayoutString` | `layout.c`, `layout-set.c`, `layout-custom.c` |
-| `Hat.Server` (status)              | `status.c`                                    |
-| `Hat.Server.Persist`               | (no tmux analogue — native, vs. resurrect)    |
+| `Hat.Server.Target` / `.Locate`    | `cmd-find.c`                                  |
+| `Hat.Server.Environ`               | `environ.c`                                   |
+| `Hat.Server.Snapshot` / `.Persist` | (no tmux analogue — native, vs. resurrect)    |
 | `Hat.Model` / `.Options`           | `session.c`, `window.c`, `options.c`          |
 | `Hat.Term.Emulator`                | `input.c`, `grid.c`, `grid-view.c`            |
 | `Hat.Term.Cell` / `Hat.Server.Style` | `style.c`, `attributes.c`, `colour.c`      |
@@ -339,37 +368,47 @@ ergonomic access path. A type that must protect an invariant earns
 privacy the normal way — an explicit module export list that hides its
 constructor — never by leaning on these pragmas.
 
+The shipped shapes (`Hat.Model`), abbreviated — the "grow on demand"
+rule held, and each record has grown far past the original sketch:
+
 ```haskell
-data Server = Server
-  { sessions :: TVar (Map SessionId Session)
-  , options  :: TVar GlobalOptions
-  , keymap   :: TVar Keymap
-  , clients  :: TVar (Map ClientId Client)
-  , socket   :: Socket
-  , logger   :: LogHandle
+data ServerState = ServerState        -- ~30 fields now: MRU state, startup
+  { sessions   :: TVar (Map SessionId Session)   -- phase, reload plumbing,
+  , clients    :: TVar (Map ClientId Client)     -- option scopes, buffers, …
+  , dirty      :: TVar Int    -- render generation; renderers wait on it
+  , reconciled :: TVar Int    -- generation the reconcile loop has resized through
+  , options    :: TVar Options
+  , keymap     :: TVar Keymap
+  , logger     :: Logger
+  , ...
   }
 
 data Session = Session
-  { id       :: SessionId
-  , name     :: Text
-  , windows  :: TVar (Seq Window)           -- ordered, indexable
-  , current  :: TVar WindowIx
-  , options  :: TVar SessionOptions
+  { id         :: SessionId
+  , name       :: TVar Text
+  , windows    :: TVar (Map Int Window)   -- keyed by window index (sparse)
+  , currentIx  :: TVar Int
+  , windowHist :: TVar [Int]              -- MRU; see Hat.Server.Mru
+  , ...
   }
 
 data Window = Window
-  { id      :: WindowId
-  , name    :: Text
-  , layout  :: TVar Layout                  -- tree of panes
-  , active  :: TVar PaneId
+  { id       :: WindowId
+  , layout   :: TVar Layout
+  , panes    :: TVar (Map PaneId Pane)
+  , activeId :: TVar PaneId
+  , paneHist :: TVar [PaneId]             -- MRU
+  , zoomed   :: TVar (Maybe PaneId)
+  , ...
   }
 
 data Pane = Pane
   { id       :: PaneId
   , pty      :: PtyHandle
-  , emulator :: TVar Emulator               -- grid + cursor + scrollback
-  , size     :: TVar (Rows, Cols)
-  , path     :: TVar FilePath               -- pane_current_path
+  , emulator :: Emu.Emulator    -- libghostty handle, own MVar — not STM
+  , size     :: TVar Size
+  , mode     :: TVar (Maybe PaneMode)     -- Just = copy mode
+  , ...
   }
 
 newtype SessionId = SessionId Int   deriving (Eq, Ord, Show)  -- prints as "$N"
@@ -377,13 +416,9 @@ newtype WindowId  = WindowId  Int   deriving (Eq, Ord, Show)  -- prints as "@N"
 newtype PaneId    = PaneId    Int   deriving (Eq, Ord, Show)  -- prints as "%N"
 ```
 
-These are deliberately minimal. We'll add fields as functions demand
-them (`focus-events` state, bell flag, active-clients count for the 👀
-emoji, etc.) — not preemptively.
-
 **Boolean blindness avoidance** (CLAUDE.md rule): `aggressive-resize`
-gets `data ResizePolicy = SizeToSession | SizeToSmallestAttached`, not a
-`Bool`. `mode-keys` is `data ModeKeys = Emacs | Vi`.
+resolves to `data ResizeMode = SmallestClient | ActiveClient`, not a
+`Bool`. `mode-keys` is `data ModeKeys = KeysVi | KeysEmacs`.
 
 ## Wire protocol shape
 
@@ -405,7 +440,7 @@ Why CBOR over alternatives:
   not great), and a heavier dep tree, in exchange for cross-language
   capability we don't need. If that need ever appears, the wire shape
   here (envelope `{ version, payload }`) lets us swap encodings
-  inside `Hat.Wire.Codec` without touching call sites.
+  inside `Hat.Transport.Wire` without touching call sites.
 - **vs. Cap'n Proto**: zero-copy reads are overkill at PTY message
   rates; the schema-and-tooling overhead isn't justified.
 - **vs. MessagePack**: very similar to CBOR; CBOR has an RFC and
@@ -435,17 +470,26 @@ data ServerToClient
   | CommandDone                  -- all replies for one Command were sent
   | ServerError Text
   | Exited                       -- the client's session is gone
+  | ServerVersion Word16         -- the server's own wire version; see negotiate
+  | RestartClient                -- re-exec yourself in place, keeping the attachment
 ```
 
 Explicit non-goals — and where reality went further:
 - No streaming JSON. Binary CBOR. Latency matters and the message set is
   fixed. **(held.)**
-- The `Hello` greeting carries a single protocol version, as planned. But
-  the codecs went past "rev both ends": each top-level message type has an
-  append-only tag registry and decodes into
+- The `Hello` greeting carries the client's protocol version, and the
+  server answers with its own (`ServerVersion`); both then speak
+  `min(client, server)` — `negotiate` accepts every version ≥ the floor
+  (4), forever, in both directions, so version skew never breaks
+  `restart-server`. Each top-level message type has an append-only tag
+  registry and decodes into
   `Inbound a = Known a | UnknownTag Word | Malformed String`, so a build
-  tolerates a newer peer's unknown messages instead of dying on them. The
-  forward/backward-compat substrate promised under "Stability and
+  tolerates a newer peer's unknown messages instead of dying on them.
+  Leaves (e.g. `Style`) evolve by tolerant append under *dialect levels*:
+  new readers default what shorter lists omit, the server writes each
+  client's negotiated level (`encodeServerMessageAt`), and every
+  historical level's bytes stay pinned in the `WireSpec` dialect corpus.
+  The forward/backward-compat substrate promised under "Stability and
   compatibility" is in the wire from day one, not deferred.
 
 `DrawOp` was the deepest interface decision in this layer. The options
@@ -632,10 +676,12 @@ Architecture:
    and the command prompt. Megaparsec also drives the format-string
    parser in `Hat.Server.Format` — one parsing toolkit across the
    project.
-2. **The command engine** lives in `Hat.Server` (`runCommands` over a
-   `commandTable` that maps each name — and its aliases — to an impl
-   function). No giant case statement; a name lookup dispatches. **(shipped
-   as a lookup table, close to how tmux registers commands.)**
+2. **The command engine** lives in `Hat.Server.Dispatch` (`runCommands`
+   over a `commandTable` that maps each name — and its aliases — to an
+   impl function), with the implementations grouped by area under
+   `Hat.Server.Command.*`. No giant case statement; a name lookup
+   dispatches. **(shipped as a lookup table, close to how tmux registers
+   commands.)**
 3. **Execution is inline within a flow; startup ordering is the gate.**
    The socket-reader thread calls `runCommands` and blocks until they
    finish; `if-shell` runs its chosen branch in the same call. Per-flow
@@ -707,9 +753,11 @@ start, so killing the server (or `kill-server`) and relaunching brings the
 whole arrangement back — the Firefox model, not a manual save/restore
 keybinding.
 
-`Hat.Persist` holds the pure `Snapshot` (sessions > windows > panes) and
-the SQLite codec (`withStore`/`bootstrap`/`saveSnapshot`/`loadSnapshot`);
-capture and restore live in `Hat.Server`. The store is
+`Hat.Server.Persist` holds the pure `Snapshot` (sessions > windows >
+panes) and the SQLite codec; capture, the mirror loop, and rebuild live
+in `Hat.Server.Snapshot`, with `Hat.Server.WindowStruct` as the shared
+tree-reader that the persistence mirror and the reload handover both
+consume. The store is
 `$HAT_STORE_DIR/<socket>.db` if that is set, else
 `$XDG_DATA_HOME/hat/<socket>.db` — reboot-surviving and keyed per socket. A
 poll thread rewrites it on any structural or working-directory change;
@@ -720,11 +768,17 @@ Restore runs at startup after the config loads, building the tree directly
 geometry); a `restoring` flag armed before the accept loop makes a bare
 attach wait so it joins the restored tree instead of racing a fresh one.
 
+Besides the live mirror, the store keeps **snapshot history**: retiring
+a tree (`archiveSnapshot`) appends it to a history table as a whole-tree
+JSON generation, capped by a configurable limit, so an accidentally
+killed arrangement can be rebuilt from an archived generation on demand.
+
 **Compatibility is the schema.** Core columns never change meaning;
 evolving fields ride a per-row `extra` JSON column; DDL is additive only
 (`bootstrap` adds missing columns to a store written by an older binary);
 reads default anything absent. A new binary reads an old store and vice
-versa.
+versa. History rows carry whole trees as JSON evolved under the same
+tolerant rule.
 
 **Running commands** come back too, when worthwhile: each pane's
 foreground command is captured, and on restore it is re-run if its program
@@ -738,6 +792,28 @@ The tmux-resurrect substrate still exists for anyone who wants the script
 (`run-shell`, `list-panes -aF` / `list-windows -aF` with the resurrect
 format strings, the construction commands), but native persistence is the
 default and needs no configuration.
+
+## In-place reload (`restart-server`)
+
+The server upgrades itself without killing anyone's programs: it
+serializes a handover payload, `execve`s its own (new) binary, and the
+incoming image adopts what the old one held. OS handles survive the exec
+— pane PTY fds, the listening socket fd, child pids — while the heap
+does not, so the payload (`Hat.Server.Reload`) carries the tree
+structure plus each pane's screen + scrollback, and the incoming image
+rebuilds a pane by *byte replay*: it synthesizes the escape-sequence
+stream that reconstructs the carried grid and feeds it to a fresh
+emulator (`Hat.Server.Handover` captures and adopts). `restart-server
+-C` drops scrollback from the handover as a memory-relief valve.
+
+Compatibility follows the versioned-migration mechanism: a frozen
+envelope (magic, `reloadEra`, and a version-independent cleanup core of
+fds) around an era-tagged payload. A build decodes and migrates every
+era `1..current`; a newer or undecodable payload triggers a clean
+restart — the cleanup core still lets it hang up the inherited handles,
+so processes are never orphaned. The `ReloadSpec` corpus pins one
+serialized vector per era. Attached clients ride through via
+`RestartClient`: each re-execs itself in place, keeping the attachment.
 
 ## Options persistence (resolved)
 
@@ -764,8 +840,10 @@ resolution, refreshed in the same transaction as every global-scope write.
 
 No OSC 52 path exists in the alpha: local `xclip` (via `copy-pipe` and
 `pipe-pane -I`) covers ~99% of the copy/paste use, and FEATURES.md tags
-OSC 52 as P2, for the rare remote case. When it is built, this is the
-shape:
+OSC 52 as P2, for the rare remote case. Per the fail-loud rule, a
+tmux-passthrough payload hat neither answers nor forwards (OSC 52 among
+them) is logged (`UnhandledPassthrough`), not silently dropped. When
+the real path is built, this is the shape:
 
 OSC 52 is the escape sequence apps use to write (and optionally read)
 the system clipboard. It is a known footgun: any program that can write
@@ -862,27 +940,23 @@ run by `cabal test`:
   the set of pane IDs.
 - Grid: scrollback and resize preserve content invariants.
 
-**Integration tests — real PTYs, real sockets.** A scripted harness:
-
-- Spawn `hat-server` against a temp socket.
-- Spawn `hat client` against it, with a *fake terminal* on the other
-  side (just a pair of pipes the test owns).
-- Run a scripted shell command (`echo hello`), assert the rendered
-  output contains `hello`.
-- Detach, reattach, assert state survives.
-
-These live in `test/integration/` and are committed alongside the
-features they verify, per CLAUDE.md ("the final tests SHOULD be
-scripted and included in the repo").
+**Integration tests — real PTYs, real sockets.** `IntegrationSpec` (in
+the one `hat-test` suite under `test/`) drives the *real* `hat` binary
+through a pty via a `withHat` harness: a private `HOME` and socket per
+test, guaranteed teardown, commands delivered through `hatCtl`. Tests
+run in parallel — the suite's time budget (~5s for everything) depends
+on it. Scope discipline: integration tests exist only for
+external-reality wiring (the emulator, the kernel pty layer, the
+socket); feature logic gets fast unit tests instead.
 
 **No test-only typeclasses.** If something's awkward to test because
 it's tangled with I/O, extract pure functions. The emulator core is
 the canonical example.
 
 **Upstream tmux's regression suite — borrowed verbatim.** Tmux's
-`regress/` directory is ~60 POSIX shell scripts that drive a binary
-through the `tmux` CLI and compare output to fixtures or string
-literals. Each script begins:
+`regress/` directory is ~120 POSIX shell scripts (122 at the pinned
+commit) that drive a binary through the `tmux` CLI and compare output
+to fixtures or string literals. Each script begins:
 
 ```sh
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
@@ -918,9 +992,10 @@ Realistic caveats:
   env will need to advertise `screen` (or `tmux`) until we ship our
   own terminfo entry.
 - **License hygiene.** Tmux is ISC. We do **not** vendor `regress/`
-  into HAT's repo. The runner takes a path to a checked-out tmux
-  source (or a Nix flake input pinning a commit) so we stay clearly on
-  the "use" side of the line and can track upstream as it adds tests.
+  into HAT's repo. The tmux source is a flake input (`tmux-src`, pinned
+  to a commit), exposed to the dev shell as `$HAT_TMUX_SRC`, so we stay
+  clearly on the "use" side of the line and can track upstream as it
+  adds tests.
 - **`regress/Makefile` uses BSD make's `!=`.** POSIX `make` won't
   parse it. We invoke scripts directly via `sh`, ignore the Makefile.
 
@@ -930,6 +1005,8 @@ Concrete shape:
 tools/
   run-upstream-tests.sh        # iterate, record outcomes, summarize
   upstream-xfail.txt           # known-failing tests, one per line, with reason
+test-upstream/                 # cabal test-suite `hat-upstream`: wraps the
+                               # runner; skips unless HAT_UPSTREAM=1
 ```
 
 Each script run produces one of four outcomes:
@@ -942,19 +1019,19 @@ Each script run produces one of four outcomes:
 | **FAIL**            | no              | non-zero      | failure      |
 
 XPASS is the important one: when a test we'd marked as known-failing
-starts passing, CI fails until someone removes its entry from
+starts passing, the runner fails until someone removes its entry from
 `xfail.txt`. This keeps the file from rotting into a stale list of
 "we tried once and gave up." Every promotion to PASS is recorded as a
-real change; every regression to FAIL is caught at the next CI run.
+real change; every regression to FAIL is caught at the next run.
 
-CI runs it. The pass count over time is a real progress signal —
-better than any feature checklist, because the tests were written by
-people who know tmux better than we ever will.
-
-**(speculative on pass-rate prediction.** Early on we expect <30%
-passing — even `new-session-base-index.sh` exercises a deep slice
-of the system. The graph going up over months is the design intent,
-not a single-PR gate.)
+The suite is **opt-in** (`HAT_UPSTREAM=1`), not part of the default
+`cabal test` or CI run (`scripts/ci.sh` runs build + `cabal test` +
+`nix build`). Each run spawns one real hat server per script — ~122 of
+them — so it is run deliberately and never in a loop. The pass count
+over time is still the progress signal it was meant to be (as of
+August 2026 the xfail list stands at ~100 of the 122 scripts — CLI
+byte-fidelity is a high bar), because the tests were written by people
+who know tmux better than we ever will.
 
 ## What flexibility costs us, and where we draw the line
 
