@@ -25,7 +25,7 @@ flag ghc-debug
     manual:      True
 
 common defaults
-    default-language:   GHC2021
+    default-language:   GHC2024
     default-extensions:
         DerivingStrategies
         DuplicateRecordFields
