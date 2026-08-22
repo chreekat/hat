@@ -16,6 +16,8 @@ import Data.Time.Clock.POSIX (POSIXTime)
 import Hat.Model
 import Hat.Model.Options (quoteIfNeeded)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.HookMonitor
+    (addMonitor, monitorTargetText, monitorsAt, parseMonitorSpec, removeMonitor)
 import Hat.Server.HookTypes
 import Hat.Server.Hooks
 import Hat.Server.Locate (findTarget, targetPaneScoped, targetSession)
@@ -59,8 +61,7 @@ cmdSetHook st mclient args = do
     let (opts, flags, pos) = parseArgs "tB" args
         mtarget = lookup "-t" opts
     case (lookup "-B" opts, flags, pos) of
-        (Just _, _, _) ->
-            pure [RErr "set-hook: -B monitors not yet implemented"]
+        (Just spec, _, _) -> monitorCmd st mclient mtarget flags pos spec
         (_, _, [name]) | "-E" `elem` flags -> fireEventCmd st mclient mtarget name
         (_, _, [name]) | "-R" `elem` flags -> do
             tgt <- resolveHookTarget st mclient mtarget
@@ -83,6 +84,37 @@ withValidName :: ServerState -> Text -> IO [Reply] -> IO [Reply]
 withValidName st name act = do
     ok <- validSetHookName st name
     if ok then act else pure [RErr ("invalid option: " <> name)]
+
+-- | @set-hook -B@: register (or with @-u@ remove) a format monitor; a
+-- command argument also binds the hook the monitor fires at this scope.
+monitorCmd
+    :: ServerState -> Maybe Client -> Maybe Text -> [Text] -> [Text] -> Text
+    -> IO [Reply]
+monitorCmd st mclient mtarget flags pos spec
+    | "-u" `elem` flags = do
+        let name = case parseMonitorSpec spec of
+                Right (n, _, _) -> n
+                Left _ -> spec
+        withScope $ \scope -> [] <$ removeMonitor st scope name
+    | otherwise = case parseMonitorSpec spec of
+        Left e -> pure [RErr e]
+        Right (name, target, fmt)
+            | not ("@" `T.isPrefixOf` name) ->
+                pure [RErr "monitor hook name must start with @"]
+            | otherwise -> withScope $ \scope -> do
+                case pos of
+                    [cmd] -> setHook st scope name False cmd
+                    [] -> pure ()
+                    _ -> pure ()
+                msid <- if "-g" `elem` flags
+                    then pure Nothing
+                    else (.session) <$> resolveHookTarget st mclient mtarget
+                addMonitor st scope name target fmt msid
+                pure []
+  where
+    withScope body = do
+        escope <- hookScopeOf st mclient flags mtarget
+        either (pure . (: []) . RErr) body escope
 
 -- | @set-hook -E@: fire a user event carrying the target as its payload.
 fireEventCmd :: ServerState -> Maybe Client -> Maybe Text -> Text -> IO [Reply]
@@ -112,7 +144,16 @@ cmdShowHooks st mclient args = do
         mtarget = lookup "-t" opts
         mfmt = lookup "-F" opts
     if "-B" `elem` flags
-        then pure [RErr "show-hooks: -B monitors not yet implemented"]
+        then do
+            escope <- hookScopeOf st mclient flags mtarget
+            case escope of
+                Left e -> pure [RErr e]
+                Right scope -> do
+                    mons0 <- monitorsAt st scope
+                    let mons = case pos of
+                            [name] -> [ m | m@(n, _) <- mons0, n == name ]
+                            _ -> mons0
+                    concat <$> mapM (printMonitor st mclient mtarget mfmt) mons
         else do
             escope <- hookScopeOf st mclient flags mtarget
             case escope of
@@ -127,6 +168,34 @@ cmdShowHooks st mclient args = do
                             (\(n, e) -> printEntry st mclient mtarget mfmt n e)
                             $ Map.toAscList entries
                         _ -> pure [RErr "usage: show-hooks [-Bgpw] [-F format] [-t target] [hook]"]
+
+-- A monitor prints as its spec (@name:target:format@), or through @-F@
+-- with the monitor formats.
+printMonitor
+    :: ServerState -> Maybe Client -> Maybe Text -> Maybe Text
+    -> (Text, Monitor) -> IO [Reply]
+printMonitor st mclient mtarget mfmt (name, mon) = do
+    let targetText = monitorTargetText mon.target
+        specText = name <> ":" <> targetText <> ":" <> mon.format
+    case mfmt of
+        Nothing -> pure [ROutput specText]
+        Just fmt -> do
+            count <- readTVarIO mon.fireCount
+            mtime <- readTVarIO mon.fireTime
+            msess <- targetSession st mclient mtarget
+            base <- maybe (pure Map.empty) (sessionFormatEnv st) msess
+            let env = Map.union (Map.fromList $
+                    [ ("option_name", name)
+                    , ("option_value", specText)
+                    , ("option_is_hook", "1")
+                    , ("option_is_user", "1")
+                    , ("hook_monitor_target", targetText)
+                    , ("hook_monitor_format", mon.format)
+                    , ("hook_fire_count", tshow count)
+                    ] <> [ ("hook_fire_time", epochText t)
+                         | Just t <- [mtime] ]) base
+            out <- expandFormat st env fmt
+            pure [ROutput out]
 
 -- One line per bound command: user hooks print bare (@name value@), built-in
 -- hooks print each array item (@name[i] command@); @-F@ substitutes the

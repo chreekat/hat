@@ -18,11 +18,13 @@ import System.Timeout (timeout)
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Model.Options (Options (..))
+import Hat.Model.Options (Options (..), emptyDelta)
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Command.Wait (cmdWaitFor)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks)
 import Hat.Server.Dispatch (installHooks, runCommandText)
+import Hat.Server.Environ (emptyEnviron)
+import Hat.Server.HookMonitor (addMonitor, parseMonitorSpec, sampleMonitors)
 import Hat.Server.HookTypes
 import Hat.Server.Hooks
 import Hat.Server.Keys (EscPending (..), PrefixState (..))
@@ -138,6 +140,50 @@ spec = describe "hooks engine" $ do
         fireUserEvent st "@nobody" noTarget []
         userOpt st "@seen" `shouldReturn` Nothing
 
+    describe "-B monitors" $ do
+        it "parses a monitor spec into name, target, and format" $ do
+            parseMonitorSpec "@x::#{session_name}"
+                `shouldBe` Right ("@x", MonSession, "#{session_name}")
+            parseMonitorSpec "@x:%5:#{f}"
+                `shouldBe` Right ("@x", MonPane 5, "#{f}")
+            parseMonitorSpec "@x:%*:#{f}"
+                `shouldBe` Right ("@x", MonAllPanes, "#{f}")
+            parseMonitorSpec "bare" `shouldBe`
+                Left "invalid subscription: bare"
+
+        it "fires its exact-scope hook when the sampled value changes" $ do
+            st <- newState
+            sess <- fakeSession
+            atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
+            addMonitor st HookGlobal "@m" MonSession "#{@value}" Nothing
+            setHook st HookGlobal "@m" False
+                "set -g @seen \"#{hook_last}->#{hook_value}\""
+            _ <- runCommandText st Nothing "set -g @value one"
+            sampleMonitors st          -- first sample only records
+            userOpt st "@seen" `shouldReturn` Nothing
+            sampleMonitors st          -- unchanged: no fire
+            userOpt st "@seen" `shouldReturn` Nothing
+            _ <- runCommandText st Nothing "set -g @value two"
+            sampleMonitors st
+            userOpt st "@seen" `shouldReturn` Just "one->two"
+
+        it "a monitor change wakes wait-for -E waiters on its name" $ do
+            st <- newState
+            sess <- fakeSession
+            atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
+            client <- fakeClient st
+            addMonitor st HookGlobal "@m" MonSession "#{@value}" Nothing
+            sampleMonitors st
+            done <- newEmptyTMVarIO
+            _ <- forkIO $ do
+                r <- cmdWaitFor st (Just client) ["-E", "@m"]
+                atomically (putTMVar done r)
+            awaitEventWaiters st "@m"
+            _ <- runCommandText st Nothing "set -g @value new"
+            sampleMonitors st
+            r <- timeout 1_000_000 (atomically (takeTMVar done))
+            r `shouldBe` Just []
+
     describe "wait-for" $ do
         it "signal then wait returns immediately" $ do
             st <- newState
@@ -176,6 +222,29 @@ spec = describe "hooks engine" $ do
             st <- newState
             rs <- cmdWaitFor st Nothing ["-E", "foobar"]
             rs `shouldBe` [RErr "invalid event: foobar"]
+
+-- A monitor needs a session to sample in; an empty one will do.
+fakeSession :: IO Session
+fakeSession = do
+    nameVar <- newTVarIO "s"
+    windowsVar <- newTVarIO Map.empty
+    currentVar <- newTVarIO 0
+    histVar <- newTVarIO []
+    sizeVar <- newTVarIO (Size 80 24)
+    environVar <- newTVarIO emptyEnviron
+    cwdVar <- newTVarIO "/"
+    optionsVar <- newTVarIO emptyDelta
+    pure Session
+        { id = SessionId 9
+        , name = nameVar
+        , windows = windowsVar
+        , currentIx = currentVar
+        , windowHist = histVar
+        , lastSize = sizeVar
+        , environ = environVar
+        , startCwd = cwdVar
+        , options = optionsVar
+        }
 
 -- A waiter needs a client only for its name; the lightest real one will do.
 fakeClient :: ServerState -> IO Client

@@ -491,8 +491,21 @@ detachPaneCurrent st pane = do
 -- its finalizer.)
 closePane :: ServerState -> Pane -> IO ()
 closePane st pane = do
+    mctx <- atomically $ do
+        mloc <- locatePane st pane.id
+        traverse (\(sid, win) -> (,,) sid win <$> readTVar win.name) mloc
     (msid, r) <- atomically (detachPaneCurrent st pane)
     forM_ msid $ \sid -> when (r /= AlreadyDetached) $ applySessionSize st sid
+    -- pane-exited fires only when the reader's own teardown detached the
+    -- pane — a killing command detached it first, and kills fire no exit.
+    when (r /= AlreadyDetached) $ case mctx of
+        Just (sid, win, wname) -> notify st "pane-exited"
+            (NotifyTarget (Just sid) (Just win.id) (Just pane.id))
+            [ ("pane", PPaneRef pane.id)
+            , ("window", PWindowRef win.id wname) ]
+        Nothing -> notify st "pane-exited"
+            (NotifyTarget Nothing Nothing (Just pane.id))
+            [ ("pane", PPaneRef pane.id) ]
     reapPane st pane
     forM_ msid $ \sid -> when (r == Detached SessionEmptied) $ broadcast st sid Exited
 

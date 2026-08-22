@@ -107,6 +107,7 @@ library
         Hat.Server.Format
         Hat.Server.FormatEnv
         Hat.Server.Handover
+        Hat.Server.HookMonitor
         Hat.Server.HookTypes
         Hat.Server.Hooks
         Hat.Server.Keymap

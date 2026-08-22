@@ -4,6 +4,7 @@
 module Hat.Server.FormatEnv
     ( windowFormatEnv
     , paneFormatEnv
+    , paneEnvById
     , refreshAutoNames
     , autoName
     ) where
@@ -21,6 +22,7 @@ import Hat.Model.Options
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
+import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.Pane (paneCommandName)
 import Hat.Server.View (WindowFlagState (..), expandFormat, sessionFormatEnv, windowFlags)
 import qualified Hat.Term.Emulator as Emu
@@ -82,6 +84,31 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_height", tshow sz.rows)
         , ("session_grouped", "0")  -- hat has no session groups
         ]) wenv
+
+-- | 'paneFormatEnv' for a pane named only by id: locate its window and
+-- session first.
+paneEnvById :: ServerState -> PaneId -> IO (Maybe FormatEnv)
+paneEnvById st pid = do
+    mctx <- atomically $ do
+        mloc <- locatePane st pid
+        case mloc of
+            Nothing -> pure Nothing
+            Just (sid, win) -> do
+                msess <- Map.lookup sid <$> readTVar st.sessions
+                case msess of
+                    Nothing -> pure Nothing
+                    Just sess -> do
+                        ws <- readTVar sess.windows
+                        ps <- readTVar win.panes
+                        let mwix = listToMaybe
+                                [ i | (i, w) <- Map.toList ws, w.id == win.id ]
+                        pure $ (,,,) sess <$> mwix <*> Just win
+                            <*> Map.lookup pid ps
+    case mctx of
+        Nothing -> pure Nothing
+        Just (sess, wix, win, pane) -> do
+            pix <- paneIndexOf st win pane
+            Just <$> paneFormatEnv st sess wix win pix pane
 
 -- | Recompute the names of every @automatic-rename@ window from its
 -- active pane's foreground command, bumping the render generation on any

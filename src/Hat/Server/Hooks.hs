@@ -12,6 +12,7 @@ module Hat.Server.Hooks
     , notify
     , notifyPane
     , notifyWindow
+    , fireMonitorHook
     , runHookNow
     , fireUserEvent
     , eventPayloadLines
@@ -39,13 +40,14 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 
 import Hat.Model
 import Hat.Model.Options (hookNames)
-import Hat.Server.Format (evaluate)
+import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.HookTypes
 import Hat.Server.Locate (locatePane)
+import Hat.Server.View (expandFormat)
 
 -- | The object an event happened to, as the scope-chain lookup and the
 -- hook commands' ambient context see it.
@@ -251,24 +253,48 @@ fireHook st name tgt formats = do
                 chain
         case hit of
             Nothing -> pure Nothing
-            Just sc -> do
-                let bump e = HookEntry
-                        { commands = e.commands
-                        , fireCount = e.fireCount + 1
-                        , fireTime = Just now }
-                writeTVar st.hooks.table
-                    (Map.adjust (Map.adjust bump name) sc tbl)
-                pure ((.commands) <$>
-                    Map.lookup name (Map.findWithDefault Map.empty sc tbl))
+            Just sc -> takeEntry st sc name now
     forM_ mcmds $ \cmds -> do
         run <- readTVarIO st.hooks.runner
-        let amb = HookAmbient
-                { formats = formats
-                , targetSession = tgt.session
-                , targetWindow = tgt.window
-                , targetPane = tgt.pane
-                }
-        withAmbient st amb (mapM_ run cmds)
+        withAmbient st (ambientOf tgt formats) (mapM_ run cmds)
+
+-- Bump one scope's entry and return its commands.
+takeEntry :: ServerState -> HookScope -> Text -> POSIXTime -> STM (Maybe [Text])
+takeEntry st sc name now = do
+    tbl <- readTVar st.hooks.table
+    case Map.lookup name (Map.findWithDefault Map.empty sc tbl) of
+        Nothing -> pure Nothing
+        Just e -> do
+            let bumped = HookEntry
+                    { commands = e.commands
+                    , fireCount = e.fireCount + 1
+                    , fireTime = Just now }
+            writeTVar st.hooks.table
+                (Map.adjust (Map.insert name bumped) sc tbl)
+            pure (Just e.commands)
+
+ambientOf :: NotifyTarget -> Map Text Text -> HookAmbient
+ambientOf tgt formats = HookAmbient
+    { formats = formats
+    , targetSession = tgt.session
+    , targetWindow = tgt.window
+    , targetPane = tgt.pane
+    }
+
+-- | A monitor's change event: wake waiters, then run only the hook bound
+-- at the monitor's own scope, pre-expanding each command in the change's
+-- context (payload formats included) before it is parsed.
+fireMonitorHook
+    :: ServerState -> HookScope -> Text -> NotifyTarget
+    -> [(Text, PayloadItem)] -> FormatEnv -> IO ()
+fireMonitorHook st scope name tgt payload env = do
+    wakeEventWaiters st name (barePayload name payload)
+    now <- getPOSIXTime
+    mcmds <- atomically (takeEntry st scope name now)
+    forM_ mcmds $ \cmds -> do
+        run <- readTVarIO st.hooks.runner
+        withAmbient st (ambientOf tgt (hookFormats name payload)) $
+            mapM_ (\c -> expandFormat st env c >>= run) cmds
 
 -- Event waiters ---------------------------------------------------------
 
