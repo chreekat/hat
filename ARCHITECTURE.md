@@ -704,33 +704,37 @@ substitution. Start with the subset your status line uses
 `#{e|>:a,b}`, `#{=N:s}`, `#{pane_current_path}`,
 `#{window_active_clients}`, `#{host}`, plus date `%V %a %d %b %Y %H:%M`).
 
-## Hooks (designed, not yet built)
+## Hooks
 
-The design below is settled, but as of alpha there is no `Hat.Server.Hooks`
-and no `set-hook` command — hooks are still on the "not there yet" list.
-Native persistence (see "Save and restore") removed the one hard
-dependency: resurrect needed hooks to autosave, and HAT autosaves without
-them. The model to build when a real use appears:
+HAT copies tmux's hook model directly: hooks are named command lists bound
+with `set-hook` at a scope, and server code fires explicit
+`Hat.Server.Hooks.notify` calls at the events tmux defines. No event bus,
+no publish/subscribe layer.
 
-Tmux's hook model (from `notify.c`):
-
-- Each hook is just an option name (`client-attached`, `pane-died`,
-  `session-renamed`, `window-linked`, `pane-mode-changed`, `paste-buffer-changed`,
-  paste-buffer-deleted, etc., plus user-named `@my-hook`).
-- The option's value is a parsed command list bound by the user with
-  `set-hook -g client-attached '...'`.
-- Server-side code that detects an event calls a
-  `notify_<scope>(name, scope_obj)` function. That helper builds a
-  `cmd_find_state` snapshot of "the current client/session/window/pane,"
-  looks up the hook option walking pane → window → session → global
-  scope, and queues the resulting commands onto the command queue
-  *after the current item*.
-
-**Decision: copy this model directly.** A single
-`Hat.Server.Hooks.notify :: Server -> HookScope -> HookName -> IO ()`
-function does the lookup and enqueue. Call sites in the server emit
-explicit `notify` calls at the events tmux defines. No event bus, no
-publish/subscribe layer.
+- `Hat.Server.Hooks` is the engine: `notify` builds the event's payload
+  formats (`#{hook}`, `#{hook_pane}`, …), wakes any `wait-for -E` waiters,
+  looks the hook up along session → global → pane → window (tmux's
+  `hooks_insert` order), and runs the bound commands under an ambient
+  context — the payload formats plus the event's target, keyed by thread —
+  which `expandFormat` and clientless target resolution consult, and whose
+  presence suppresses hooks fired from inside a hook (tmux's `NOHOOKS`).
+- `Hat.Server.HookTypes` holds the state (`HookScope` is the sum type
+  `HookGlobal | HookSession _ | HookWindow _ | HookPane _`); it all lives
+  in TVars, rebuilt by re-sourcing the config — nothing crosses the wire,
+  persistence, or reload boundaries.
+- `Hat.Server.Command.Hook` implements `set-hook`/`show-hooks` (`-a`
+  append, `-u` unset, `-R` run now, `-E` fire a user event, `-B` format
+  monitors) and `Hat.Server.Command.Wait` implements `wait-for` (channels,
+  `-S`/`-L`/`-U`, `-l`/`-w`, and `-E` event waits with `-F` filters); a
+  blocked waiter leaves its command batch so reconciliation keeps running.
+- `Hat.Server.HookMonitor` samples `-B` monitors (and the
+  `monitor-silence` timers) every 400ms; a changed value fires the
+  monitor's name as an event and runs only the hook bound at the monitor's
+  own scope, pre-expanding its commands in the change's context.
+- `after-<command>` fires on every successful command with tmux's args
+  payload, `command-error` on failure (`Hat.Server.Dispatch`); the alert
+  hooks (`alert-bell`/`-activity`/`-silence`) fire from the bell/activity/
+  silence machinery in `Hat.Server.Pane` and `HookMonitor`.
 
 Why this and not a more general bus:
 
@@ -739,10 +743,6 @@ Why this and not a more general bus:
 - The set of hook names is closed and known. We don't need late binding.
 - It matches tmux exactly, so config compatibility (a user pasting
   `set-hook -g client-attached ...` from tmux docs) just works.
-
-`HookScope` is a sum type (`HookGlobal | HookSession SessionId | HookWindow
-WindowId | HookPane PaneId | HookClient ClientId`) — boolean-blindness
-avoidance per CLAUDE.md.
 
 ## Save and restore (session persistence)
 
