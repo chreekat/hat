@@ -56,7 +56,7 @@ module Hat.Server.Pane
     , sessionSpawnEnv
     ) where
 
-import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
+import Control.Concurrent (forkIOWithUnmask, killThread, myThreadId, threadDelay)
 import Control.Concurrent.Async (Async, async, cancel)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
@@ -314,10 +314,12 @@ startPaneReader st sid win pane = do
     -- reader is scheduled still finds it counted and 'waitIdle' waits for
     -- its reap. Decremented once the reader (and its 'reapPane') is done.
     atomically $ modifyTVar' st.livePanes (+ 1)
-    void . forkIO $ do
+    -- Masked until the @finally@ chain is armed: once the tid is
+    -- published, a 'hangupPane' kill must always reach the cleanup.
+    void $ forkIOWithUnmask $ \unmask -> do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
-        readLoop pane.pendingInput
+        unmask (readLoop pane.pendingInput)
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
