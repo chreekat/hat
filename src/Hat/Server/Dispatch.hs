@@ -20,6 +20,8 @@ module Hat.Server.Dispatch
     , cmdSendKeys
     , ReloadScope (..)
     , reloadFarewell
+    , ReloadRequest (..)   -- ^ exported for the reload argument-parse test
+    , parseReloadArgs      -- ^ exported for the reload argument-parse test
     , RestartClientOutcome (..)
     , restartClientAction
     ) where
@@ -32,7 +34,7 @@ import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -411,22 +413,39 @@ cmdReload scope st mclient args = do
         then pure [RErr (reloadName scope <> ": startup or reload still in progress; try again shortly")]
         else cmdReload' scope st mclient args
 
+-- | What a reload invocation asks for: the scrollback it carries, and the
+-- binary it names (none: the on-PATH @hat@, see 'resolveReloadTarget').
+data ReloadRequest = ReloadRequest
+    { carry  :: ScrollbackCarry
+    , target :: Maybe FilePath
+    }
+    deriving (Eq, Show)
+
+-- | Parse a reload's @[-C] [path]@ under the command name @name@. An unknown
+-- flag, a second path, or a flag written after the path is an error, so a
+-- request the reload would not act on never looks accepted.
+parseReloadArgs :: Text -> [Text] -> Either Text ReloadRequest
+parseReloadArgs name args = case (filter (/= "-C") flags, pos) of
+    (f : _, _) -> Left (name <> ": unknown flag: " <> f)
+    (_, _ : _ : _) -> Left ("usage: " <> name <> " [-C] [path]")
+    _ -> Right ReloadRequest
+        { carry = if "-C" `elem` flags then DropScrollback else KeepScrollback
+        , target = T.unpack <$> listToMaybe pos }
+  where
+    (_, flags, pos) = parseArgs "" args
+
 cmdReload' :: ReloadScope -> CommandImpl
-cmdReload' scope st mclient args = do
-    let (_, flags, pos) = parseArgs "" args
-        carry = if "-C" `elem` flags then DropScrollback else KeepScrollback
-    case filter (/= "-C") flags of
-      (f : _) -> pure [RErr (reloadName scope <> ": unknown flag: " <> f)]
-      [] -> do
-        target <- case pos of
-            (p : _) -> pure (T.unpack p)    -- explicit binary path (deterministic)
-            []      -> resolveReloadTarget  -- default: the on-PATH hat
+cmdReload' scope st mclient args =
+    case parseReloadArgs (reloadName scope) args of
+      Left err -> pure [RErr err]
+      Right req -> do
+        target <- maybe resolveReloadTarget pure req.target
         exists <- doesFileExist target
         if not exists
             then pure [RErr (reloadName scope <> ": no such binary: " <> T.pack target)]
             else do
                 logEvent st.logger ServerReloading { target = target }
-                (cleanup, tree) <- captureReload carry st
+                (cleanup, tree) <- captureReload req.carry st
                 let blobPath = st.sockPath <> ".reload"
                 B.writeFile blobPath (encodeHandover cleanup tree)
                 keepOpenAcrossExec cleanup

@@ -14,6 +14,8 @@ module Hat.Server
     , cmdRestart           -- ^ exported for the restart failure-abort test
     , ReloadScope (..)     -- ^ exported for the restart farewell test
     , reloadFarewell       -- ^ exported for the restart farewell test
+    , ReloadRequest (..)   -- ^ exported for the reload argument-parse test
+    , parseReloadArgs      -- ^ exported for the reload argument-parse test
     , runCommands          -- ^ exported for the restart dispatch test
     , restartClientAction  -- ^ exported for the restart-client no-op test
     , RestartClientOutcome (..)

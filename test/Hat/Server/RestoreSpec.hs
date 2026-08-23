@@ -22,13 +22,13 @@ import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
 import Hat.Server
-    (PaneStart (..), PersistDecision (..),
+    (PaneStart (..), PersistDecision (..), ReloadRequest (..),
      Reply (..), ScrollbackCarry (..), SpawnOrigin (..),
      StartupGate (..), StorePin (..),
      captureReloadScreen, captureSize, cmdRestart, cmdRestartServer,
-     defaultRestoreCommands, finallyReady, persistDecision, phaseAfterConfig,
-     rebuildReloadSession, reloadSchemePush, replayPane, restoreRun,
-     runCommands, shellLine, snapshotHistoryLimit, startupGate,
+     defaultRestoreCommands, finallyReady, parseReloadArgs, persistDecision,
+     phaseAfterConfig, rebuildReloadSession, reloadSchemePush, replayPane,
+     restoreRun, runCommands, shellLine, snapshotHistoryLimit, startupGate,
      uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
@@ -293,6 +293,38 @@ spec = do
             st <- testState
             errs <- errStrings <$> cmdRestartServer st Nothing ["-X", "/no/such/hat"]
             errs `shouldSatisfy` any (T.isInfixOf "unknown flag")
+
+        it "rejects a -C written after the path, never reloading with it dropped (f1)" $ do
+            st <- testState
+            errs <- errStrings <$> cmdRestartServer st Nothing ["/no/such/hat", "-C"]
+            errs `shouldSatisfy` any (T.isInfixOf "usage")
+
+        it "rejects the same trailing -C under restart (f1)" $ do
+            st <- testState
+            errs <- errStrings <$> cmdRestart st Nothing ["/no/such/hat", "-C"]
+            errs `shouldSatisfy` any (T.isInfixOf "usage")
+
+    -- Both reload spellings read their arguments through one parse, so -C
+    -- means the same thing to `restart` as to `restart-server` (f1).
+    describe "parseReloadArgs" $ do
+        it "keeps the scrollback when -C is absent" $
+            parseReloadArgs "restart" []
+                `shouldBe` Right ReloadRequest
+                    { carry = KeepScrollback, target = Nothing }
+
+        it "drops the scrollback on -C, with or without a named binary" $ do
+            parseReloadArgs "restart" ["-C"]
+                `shouldBe` Right ReloadRequest
+                    { carry = DropScrollback, target = Nothing }
+            parseReloadArgs "restart-server" ["-C", "/some/hat"]
+                `shouldBe` Right ReloadRequest
+                    { carry = DropScrollback, target = Just "/some/hat" }
+
+        it "names the issuing command in its errors" $ do
+            parseReloadArgs "restart" ["-X"]
+                `shouldBe` Left "restart: unknown flag: -X"
+            parseReloadArgs "restart-server" ["/some/hat", "-C"]
+                `shouldBe` Left "usage: restart-server [-C] [path]"
 
     describe "restoreRun" $ do
         let whitelist = ["vim", "less"]
