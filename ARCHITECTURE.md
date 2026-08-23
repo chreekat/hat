@@ -803,8 +803,9 @@ does not, so the payload (`Hat.Server.Reload`) carries the tree
 structure plus each pane's screen + scrollback, and the incoming image
 rebuilds a pane by *byte replay*: it synthesizes the escape-sequence
 stream that reconstructs the carried grid and feeds it to a fresh
-emulator (`Hat.Server.Handover` captures and adopts). `restart-server
--C` drops scrollback from the handover as a memory-relief valve.
+emulator (`Hat.Server.Handover` captures and adopts). `-C` — on either
+spelling, `restart-server` and `restart` — drops scrollback from the
+handover as a memory-relief valve.
 
 Compatibility follows the versioned-migration mechanism: a frozen
 envelope (magic, `reloadEra`, and a version-independent cleanup core of
