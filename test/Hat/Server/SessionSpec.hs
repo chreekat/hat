@@ -30,7 +30,7 @@ import Hat.Server
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
-    , cmdAttachSession, cmdListClients, cmdRestartClient
+    , cmdAttachSession, cmdListClients, cmdMoveWindow, cmdRestartClient
     , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
@@ -391,6 +391,27 @@ spec = do
             row <- statusCells st sessA 80
             T.concat (map (.text) (V.toList row))
                 `shouldSatisfy` T.isInfixOf "1<eyes>"
+
+    describe "move-window -r" $
+        it "renumbers the -t session alone, current and last-window following" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-renumber.sock" Nothing
+            sessA <- addSession st 0
+            sessB <- addSession st 1
+            mapM_ (addWindow sessA) [0, 5]
+            mapM_ (addWindow sessB) [0, 3, 7]
+            atomically $ do
+                writeTVar sessB.name "other"
+                writeTVar sessB.currentIx 3
+                writeTVar sessB.windowHist [7, 0]
+            [] <- cmdMoveWindow st Nothing ["-r", "-t", "other"]
+            wsB <- readTVarIO sessB.windows
+            map (fmap (.id)) (Map.toList wsB) `shouldBe`
+                [(0, WindowId 0), (1, WindowId 3), (2, WindowId 7)]
+            readTVarIO sessB.currentIx `shouldReturn` 1
+            readTVarIO sessB.windowHist `shouldReturn` [2, 0]
+            wsA <- readTVarIO sessA.windows
+            Map.keys wsA `shouldBe` [0, 5]
 
     describe "current-window attention flags" $ do
         let small = Size { rows = 24, cols = 80 }

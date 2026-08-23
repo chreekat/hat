@@ -1,3 +1,5 @@
+{-# LANGUAGE RoleAnnotations #-}
+
 -- | The window commands: creating, selecting, navigating (next\/prev\/last\/
 -- activity), renaming, killing, moving, linking, and resizing windows.
 module Hat.Server.Command.Window
@@ -5,6 +7,8 @@ module Hat.Server.Command.Window
     , Insert (..)
     , Replace (..)
     , WindowPlacement (..)
+    , Renumbered (..)
+    , renumberSession
     , placeWindow
     , applyShifts
     , selectNamed
@@ -29,7 +33,7 @@ import Control.Concurrent.STM
 import Control.Monad (foldM, forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -119,6 +123,30 @@ applyShifts shifts ws = List.foldl' step ws shifts
     step m (from, to) = case Map.lookup from m of
         Just w -> Map.insert to w (Map.delete from m)
         Nothing -> m
+
+-- | A session's window state after a renumber: the re-keyed window map,
+-- the current window's new index, and the remapped last-window stack.
+type role Renumbered representational
+data Renumbered a = Renumbered
+    { windows :: Map.Map Int a
+    , current :: Int
+    , history :: [Int]
+    }
+    deriving (Eq, Show)
+
+-- | @move-window -r@'s repack of a session: the windows keep their order
+-- and take consecutive indices from @base-index@, closing every gap. The
+-- current window and the last-window stack follow their windows; a history
+-- entry naming no window drops out rather than aliasing a renumbered one.
+renumberSession :: Int -> [Int] -> Int -> Map.Map Int a -> Renumbered a
+renumberSession cur hist base ws = Renumbered
+    { windows = Map.fromList (zip fresh (Map.elems ws))
+    , current = Map.findWithDefault cur cur remap
+    , history = mapMaybe (`Map.lookup` remap) hist
+    }
+  where
+    fresh = [base ..]
+    remap = Map.fromList (zip (Map.keys ws) fresh)
 
 -- | The window @new-window -S -n name@ reuses instead of creating:
 -- 'Nothing' when no window carries the name, its index when exactly one
@@ -418,40 +446,55 @@ cmdRenameWindow st mclient args = do
 
 -- | @move-window -s src -t dst@: renumber (or relocate) a window to the
 -- destination index, possibly in another session. Restore replays this
--- to place windows at their saved indices.
+-- to place windows at their saved indices. Under @-r@ it instead repacks
+-- the whole session named by @-t@, which is then a session and not a
+-- window.
 cmdMoveWindow :: CommandImpl
-cmdMoveWindow st mclient args = do
-    let (opts, _, _) = parseArgs "st" args
-    esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
-    edst <- findWindowIndexTarget st mclient (lookup "-t" opts)
-    case (esrc, edst) of
-        (Right (srcSess, srcIx, _, _), Right (dstSess, mdstIx)) -> do
-            res <- atomically $ do
-                sws <- readTVar srcSess.windows
-                dws <- readTVar dstSess.windows
-                sopts <- resolveForSession st dstSess
-                let dstIx = fromMaybe
-                        (until (`Map.notMember` dws) (+ 1) sopts.baseIndex)
-                        mdstIx
-                case Map.lookup srcIx sws of
-                    Nothing -> pure (Right ())  -- nothing to move
-                    Just win
-                        | srcSess.id == dstSess.id, srcIx == dstIx ->
-                            pure (Right ())  -- already there
-                        | otherwise -> do
-                            if Map.member dstIx dws
-                                then pure (Left ("can't move window: "
-                                    <> tshow dstIx <> " in use"))
-                                else do
-                                    modifyTVar' srcSess.windows (Map.delete srcIx)
-                                    modifyTVar' dstSess.windows (Map.insert dstIx win)
-                                    followFocus srcSess dstSess srcIx dstIx
-                                    bumpDirty st
-                                    pure (Right ())
-            pure [RErr e | Left e <- [res]]
-        (Left e, _) -> pure [RErr e]
-        (_, Left e) -> pure [RErr e]
+cmdMoveWindow st mclient args
+    | "-r" `elem` flags =
+        withTargetSession st mclient (lookup "-t" opts) (([] <$) . renumber)
+    | otherwise = do
+        esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
+        edst <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        case (esrc, edst) of
+            (Right (srcSess, srcIx, _, _), Right (dstSess, mdstIx)) -> do
+                res <- atomically $ do
+                    sws <- readTVar srcSess.windows
+                    dws <- readTVar dstSess.windows
+                    sopts <- resolveForSession st dstSess
+                    let dstIx = fromMaybe
+                            (until (`Map.notMember` dws) (+ 1) sopts.baseIndex)
+                            mdstIx
+                    case Map.lookup srcIx sws of
+                        Nothing -> pure (Right ())  -- nothing to move
+                        Just win
+                            | srcSess.id == dstSess.id, srcIx == dstIx ->
+                                pure (Right ())  -- already there
+                            | otherwise ->
+                                if Map.member dstIx dws
+                                    then pure (Left ("can't move window: "
+                                        <> tshow dstIx <> " in use"))
+                                    else do
+                                        modifyTVar' srcSess.windows (Map.delete srcIx)
+                                        modifyTVar' dstSess.windows (Map.insert dstIx win)
+                                        followFocus srcSess dstSess srcIx dstIx
+                                        bumpDirty st
+                                        pure (Right ())
+                pure [RErr e | Left e <- [res]]
+            (Left e, _) -> pure [RErr e]
+            (_, Left e) -> pure [RErr e]
   where
+    (opts, flags, _) = parseArgs "st" args
+    renumber sess = atomically $ do
+        ws <- readTVar sess.windows
+        cur <- readTVar sess.currentIx
+        hist <- readTVar sess.windowHist
+        sopts <- resolveForSession st sess
+        let r = renumberSession cur hist sopts.baseIndex ws
+        writeTVar sess.windows r.windows
+        writeTVar sess.currentIx r.current
+        writeTVar sess.windowHist r.history
+        bumpDirty st
     -- The moved window keeps the focus: within a session the current
     -- index follows it to the destination; across sessions the source
     -- session falls back to its lowest remaining window.

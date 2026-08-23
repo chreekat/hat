@@ -87,6 +87,9 @@ module Hat.Server
     , WindowPlacement (..)
     , applyShifts
     , selectNamed
+    , Renumbered (..)   -- ^ exported for the move-window -r renumbering tests
+    , renumberSession
+    , cmdMoveWindow     -- ^ exported for the move-window -r wiring test
     , CaptureOpts (..)  -- ^ exported for the capture-pane grid-dump tests
     , CaptureRow (..)
     , captureBounds

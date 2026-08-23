@@ -24,6 +24,7 @@ import Hat.Model.Options
 import Hat.Server
     ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
     , Insert (..), WindowPlacement (..), Replace (..)
+    , Renumbered (..), renumberSession
     , applyShifts, listingLines, placeWindow, selectNamed
     )
 
@@ -365,6 +366,21 @@ spec = do
         it "rejects an ambiguous name (bug 06)" $
             selectNamed "editor" [(0, "editor"), (3, "editor")]
                 `shouldBe` Left "multiple windows named editor"
+
+    describe "move-window -r renumbering" $ do
+        let gappy = Map.fromList [(0, 'a'), (3, 'c'), (7, 'd')]
+        it "packs the windows into consecutive indices, keeping their order" $
+            (renumberSession 0 [] 0 gappy).windows
+                `shouldBe` Map.fromList [(0, 'a'), (1, 'c'), (2, 'd')]
+        it "numbers from base-index" $
+            (renumberSession 0 [] 1 gappy).windows
+                `shouldBe` Map.fromList [(1, 'a'), (2, 'c'), (3, 'd')]
+        it "the current window follows to its new index" $
+            (renumberSession 3 [] 0 gappy).current `shouldBe` 1
+        it "the last-window stack follows its windows" $
+            (renumberSession 3 [7, 0] 0 gappy).history `shouldBe` [2, 0]
+        it "drops a history entry naming no window" $
+            (renumberSession 0 [5, 3] 0 gappy).history `shouldBe` [1]
 
     describe "config-load burn-down (real ~/.tmux.conf)" $
         it "rejects exactly the not-yet-implemented options" $ do
