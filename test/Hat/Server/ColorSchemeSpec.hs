@@ -151,6 +151,32 @@ spec = do
             -- options the user did not set still adapt
             dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
 
+    describe "previewLabelStyle" $ do
+        it "bars a stacked window preview's label in a scheme-tracking blue" $ do
+            let dark = previewLabelStyle (Just SchemeDark)
+                light = previewLabelStyle (Just SchemeLight)
+                darkOpts = resolveOptions [applyPalette SchemeDark]
+                lightOpts = resolveOptions [applyPalette SchemeLight]
+            -- blue is the one accent the green/amber chrome leaves free, so
+            -- a divider never reads as a status bar or a copy-mode selection
+            dark.bg `shouldBe` Cell.Indexed 24
+            dark.fg `shouldBe` Cell.Indexed 153
+            light.bg `shouldBe` Cell.Indexed 153
+            light.fg `shouldBe` Cell.Indexed 24
+            dark.bg `shouldNotBe` darkOpts.statusStyle.bg
+            dark.bg `shouldNotBe` darkOpts.modeStyle.bg
+            light.bg `shouldNotBe` lightOpts.statusStyle.bg
+            light.bg `shouldNotBe` lightOpts.modeStyle.bg
+
+        it "falls back to basic blue when no scheme is detected" $
+            -- no scheme means no 256-color palette to assume, but the label
+            -- must still read as a bar
+            previewLabelStyle Nothing `shouldBe`
+                (Cell.defaultStyle
+                    { Cell.fg = Cell.Indexed 15
+                    , Cell.bg = Cell.Indexed 4
+                    , Cell.bold = True })
+
 -- Poll a process handle until it has exited; used under a bounded 'timeout'
 -- so a monitor that reapMonitor failed to kill fails the test rather than
 -- hanging it.

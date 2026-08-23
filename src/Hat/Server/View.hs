@@ -27,6 +27,7 @@ import Data.Vector qualified as V
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.ColorScheme (previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.FormatEnv
@@ -231,22 +232,23 @@ windowCompositeCells st win size = do
                   pure (overlayGrid acc rect cells)) base rects
 
 -- | Preview a session as a vertical stack of its windows: each window's
--- index\/name on a label row, then a thumbnail of that window's composited
--- split layout. Windows that do not fit are omitted (the list still names
+-- index\/name on a coloured label bar dividing it from the window above,
+-- then a thumbnail of that window's composited split layout. Windows that do not fit are omitted (the list still names
 -- them).
 sessionPreviewCells
     :: ServerState -> Session -> Size -> IO (V.Vector (V.Vector Cell.Cell))
 sessionPreviewCells st sess size = do
     wins <- Map.toAscList <$> readTVarIO sess.windows
+    labelStyle <- previewLabelStyle <$> readTVarIO st.colorScheme
     let slices = Picker.stackThumbnails (fromIntegral size.rows) (length wins)
-    foldM place (blankFrame size) (zip wins slices)
+    foldM (place labelStyle) (blankFrame size) (zip wins slices)
   where
-    place acc ((ix, win), (labelRow, bodyTop, bodyH)) = do
+    place labelStyle acc ((ix, win), (labelRow, bodyTop, bodyH)) = do
         wname <- readTVarIO win.name
         thumb <- windowCompositeCells st win
             (Size { rows = fromIntegral bodyH, cols = size.cols })
         let width = fromIntegral size.cols
-            label = lineCells pickerStyle width (tshow ix <> ":" <> wname)
+            label = lineCells labelStyle width (tshow ix <> ":" <> wname)
             body  = Rect { startRow = bodyTop, endRow = bodyTop + bodyH
                          , startCol = 0, endCol = width }
         pure (overlayGrid (acc V.// [(labelRow, label)]) body thumb)

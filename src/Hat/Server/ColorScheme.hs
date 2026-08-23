@@ -9,6 +9,7 @@ module Hat.Server.ColorScheme
     , schemeName
     , schemeReport
     , applyPalette
+    , previewLabelStyle
     , WatcherFault (..)
     , watcherFault
     , MonitorRegistry
@@ -181,6 +182,7 @@ data Palette = Palette
     , border       :: Cell.Style
     , activeBorder :: Cell.Style
     , mode         :: Cell.Style
+    , previewLabel :: Cell.Style
     }
 
 palette :: ColorScheme -> Palette
@@ -191,6 +193,7 @@ palette SchemeDark = Palette
     , border       = onlyFg 65
     , activeBorder = (onlyFg 10) { Cell.bold = True }
     , mode         = fgBg 0 179
+    , previewLabel = (fgBg 153 24) { Cell.bold = True }
     }
 palette SchemeLight = Palette
     { bar          = fgBg 22 151
@@ -199,7 +202,17 @@ palette SchemeLight = Palette
     , border       = onlyFg 250
     , activeBorder = (onlyFg 22) { Cell.bold = True }
     , mode         = fgBg 0 222
+    , previewLabel = (fgBg 24 153) { Cell.bold = True }
     }
+
+-- | The bar heading each window in a chooser's stacked session preview, for
+-- the scheme in force. Blue: the one accent the green\/amber chrome leaves
+-- free, so a bar dividing two thumbnails never reads as a status bar or a
+-- copy-mode selection. With no scheme detected it falls back to basic blue,
+-- the palette a bare terminal still has.
+previewLabelStyle :: Maybe ColorScheme -> Cell.Style
+previewLabelStyle (Just scheme) = (palette scheme).previewLabel
+previewLabelStyle Nothing = (fgBg 15 4) { Cell.bold = True }
 
 fgBg :: Word8 -> Word8 -> Cell.Style
 fgBg f b = Cell.defaultStyle
