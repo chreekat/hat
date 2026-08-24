@@ -12,11 +12,17 @@
 -- incompatible version — so a mismatch hangs the inherited processes up
 -- cleanly instead of orphaning them. This mirrors the compatibility discipline
 -- of the wire protocol and the SQLite store (see CLAUDE.md).
+--
+-- The payload carries only the HOT state — fds, pids, emulator modes and
+-- screens. The tree itself rides as the store's tolerant snapshot JSON
+-- ('encodeSnapshotJson'), so a tree-shape change is an additive edit under the
+-- store's rules and the era gates the hot core alone.
 module Hat.Server.Reload
-    ( ReloadState (..)
-    , ReloadSession (..)
-    , ReloadWindow (..)
-    , ReloadPane (..)
+    ( ReloadHot (..)
+    , HotPane (..)
+    , ReloadTree (..)
+    , HotSession (..)
+    , HotWindow (..)
     , ReloadModes (..)
     , ReloadScreen (..)
     , emptyReloadScreen
@@ -35,65 +41,108 @@ import Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
 import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Control.Monad (replicateM_, unless)
 import Data.ByteString (ByteString)
+import Data.List (mapAccumL)
 import Data.Maybe (maybeToList)
 import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Generics (Generic)
 
+import Hat.Server.Persist
+    (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
+    , decodeSnapshotJson)
 import Hat.Term.Cell (Cell, Style)
 import Hat.Term.Cell qualified as Cell
 
--- | The tree an era-matched reload rebuilds by adopting each pane's inherited
--- pty and child. This is the EVOLVING payload: any change to its shape (or its
--- nested types) requires bumping 'reloadEra', because an image only decodes a
--- payload whose era equals its own.
-data ReloadState = ReloadState
-    { sessions       :: [ReloadSession]
-    , currentSession :: Maybe Text  -- ^ name of the focused session at capture
-    , lastSession    :: Maybe Text  -- ^ name of the alternate session
-                                    --   (@switch-client -l@ returns to it), if
-                                    --   any; a reattaching client adopts it. See
-                                    --   'Hat.Server.rebuildReload'.
+-- | What an era-matched reload hands over: the captured tree as the store's
+-- snapshot JSON, and beside it the state that has nowhere durable to live.
+-- This is the EVOLVING payload — a change to its shape (or 'HotPane'\'s)
+-- requires bumping 'reloadEra'. Fields INSIDE the tree JSON do not: they
+-- evolve under the store's additive rule.
+data ReloadHot = ReloadHot
+    { tree        :: Text       -- ^ 'Hat.Server.Persist.encodeSnapshotJson'
+                                --   of the captured tree
+    , hot         :: [HotPane]  -- ^ one per pane in 'tree', in tree order
+    , lastSession :: Maybe Text -- ^ name of the alternate session
+                                --   (@switch-client -l@ returns to it), if
+                                --   any; a reattaching client adopts it. See
+                                --   'Hat.Server.rebuildReload'.
     }
-    deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
+    deriving (Eq, Show)
 
-data ReloadSession = ReloadSession
-    { name      :: Text
-    , startCwd  :: Text
-    , currentIx :: Int
-    , windowHist :: [Int]  -- ^ MRU window indices, head first; see 'Hat.Server.Mru'
-    , windows   :: [ReloadWindow]
-    }
-    deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
-
-data ReloadWindow = ReloadWindow
-    { ix         :: Int
-    , name       :: Text
-    , layout     :: Text  -- ^ tmux @window_layout@ string
-    , active     :: Int   -- ^ ordinal of the active pane
-    , paneHist   :: [Int]  -- ^ MRU pane ordinals, head first
-    , autoRename :: Bool
-    , panes      :: [ReloadPane]
-    }
-    deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
-
--- | A pane's working directory and the live OS handles the incoming image
--- adopts (see 'Hat.Term.Pty.adopt') instead of spawning fresh.
-data ReloadPane = ReloadPane
-    { cwd      :: Text
-    , masterFd :: Int
+-- | The live OS handles and emulator state a pane carries across the re-exec;
+-- everything durable about it (its cwd, its command) is in the tree instead.
+data HotPane = HotPane
+    { masterFd :: Int
     , childPid :: Int
     , modes    :: ReloadModes  -- ^ replayed into the adopted pane's fresh
                                --   emulator; see 'Hat.Server.adoptPane'
     , screen   :: ReloadScreen -- ^ the live grid and scrollback, replayed into
                                --   the adopted pane; see 'Hat.Server.adoptPane'
     }
-    deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
+    deriving (Eq, Show)
+
+-- Hand-written appendable list codecs, as 'ReloadScreen' uses: the encoding is
+-- (constructor-tag word, then fields), and a longer list from a newer writer
+-- has its tail skipped. A field appended here can therefore be read back by a
+-- decoder that predates it, without a positional mirror.
+instance Serialise ReloadHot where
+    encode h =
+           encodeListLen 4
+        <> encodeWord 0
+        <> encode h.tree <> encode h.hot <> encode h.lastSession
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        h <- ReloadHot <$> decode <*> decode <*> decode
+        replicateM_ (max 0 (len - 4)) (() <$ decodeTerm)
+        pure h
+
+instance Serialise HotPane where
+    encode p =
+           encodeListLen 5
+        <> encodeWord 0
+        <> encode p.masterFd <> encode p.childPid
+        <> encode p.modes <> encode p.screen
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        p <- HotPane <$> decode <*> decode <*> decode <*> decode
+        replicateM_ (max 0 (len - 5)) (() <$ decodeTerm)
+        pure p
+
+-- | A decoded handover: the captured tree with every pane paired to its hot
+-- state. In-memory only — never serialized, so its shape carries no era.
+data ReloadTree = ReloadTree
+    { sessions       :: [HotSession]
+    , currentSession :: Maybe Text  -- ^ name of the focused session at capture
+    , lastSession    :: Maybe Text  -- ^ name of the alternate session; see
+                                    --   'ReloadHot'
+    }
+    deriving (Eq, Show)
+
+-- | A 'SessionSnap' in a decoded handover. See 'ReloadTree'.
+data HotSession = HotSession
+    { name       :: Text
+    , startCwd   :: Text
+    , currentIx  :: Int
+    , windowHist :: [Int]
+    , windows    :: [HotWindow]
+    }
+    deriving (Eq, Show)
+
+-- | A 'WindowSnap' in a decoded handover, its panes paired with their hot
+-- state. See 'ReloadTree'.
+data HotWindow = HotWindow
+    { ix         :: Int
+    , name       :: Text
+    , layout     :: Text
+    , active     :: Int
+    , paneHist   :: [Int]
+    , autoRename :: Bool
+    , panes      :: [(PaneSnap, HotPane)]
+    }
+    deriving (Eq, Show)
 
 -- | A pane's captured screen: the live grid (top row first), its cursor, its
 -- alternate-screen flag, and the scrollback (oldest line first). Replayed into
@@ -171,17 +220,18 @@ data ReloadCleanup = ReloadCleanup
 -- to a clean restart driven by 'cleanup').
 data Handover = Handover
     { cleanup :: ReloadCleanup
-    , tree    :: Either Text ReloadState
+    , tree    :: Either Text ReloadTree
     }
     deriving (Eq, Show)
 
--- | The payload format version. Bump on ANY change to 'ReloadState' or its
--- nested types. An image decodes a handover's tree only when its era equals
--- this, so a bump makes an older image fall through to safe cleanup rather than
--- misdecode. The golden-byte test pins the encoding, so a shape change that
--- forgets the bump fails the build.
+-- | The payload format version. Bump on ANY change to 'ReloadHot' or 'HotPane'
+-- or their nested types — but NOT for a change inside the tree JSON, which
+-- evolves additively under the store's rules. An image decodes a handover's
+-- tree only when its era equals this, so a bump makes an older image fall
+-- through to safe cleanup rather than misdecode. The golden-byte test pins the
+-- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 7
+reloadEra = 8
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -190,16 +240,16 @@ reloadMagic = 0x48415452
 
 -- | Serialize a handover as a frozen 5-element envelope
 -- @[magic, era, listenFd, live, payload]@: the first four are stable forever,
--- and @payload@ is the era-gated tree embedded as an opaque byte string, so a
--- reader recovers the cleanup core without ever decoding a foreign payload.
-encodeHandover :: ReloadCleanup -> ReloadState -> ByteString
-encodeHandover c t = toStrictByteString $
+-- and @payload@ is the era-gated hot state embedded as an opaque byte string,
+-- so a reader recovers the cleanup core without ever decoding a foreign payload.
+encodeHandover :: ReloadCleanup -> ReloadHot -> ByteString
+encodeHandover c h = toStrictByteString $
        encodeListLen 5
     <> encodeWord reloadMagic
     <> encode reloadEra
     <> encode c.listenFd
     <> encode c.live
-    <> encode (BL.toStrict (serialise t))
+    <> encode (BL.toStrict (serialise h))
 
 -- | Read a handover. The frozen envelope always yields the cleanup core; the
 -- tree comes back only when the blob's era matches this build and its payload
@@ -225,46 +275,74 @@ decodeHandover bs =
         pure Handover { cleanup = cl, tree = decodeReloadTree era payload }
 
 -- | Decode a handover payload written at era @e@ into the CURRENT
--- 'ReloadState', migrating it forward. This is where backward compatibility
+-- 'ReloadTree', migrating it forward. This is where backward compatibility
 -- lives: a build at era X must read every era @1..X@ (enforced by a committed
--- vector per era in the reload corpus test). A payload from a newer era, or one
--- too old to migrate, is a 'Left' — the caller then cleanly restarts rather
--- than adopting a tree it can't trust.
+-- vector per era in the reload corpus test). A payload from a newer era, one
+-- too old to migrate, or one whose halves disagree is a 'Left' — the caller
+-- then cleanly restarts rather than adopting a tree it can't trust.
 --
--- To introduce era X+1: freeze the current payload types as @…V\<X\>@, keep
--- their decoder, add a @migrate@ from them to the new shape, and add an @e ==
--- X@ arm below that decodes-then-migrates. Add a corpus vector for the new era.
-decodeReloadTree :: Int -> ByteString -> Either Text ReloadState
+-- To introduce era X+1: bump 'reloadEra' and add a corpus vector. A field
+-- merely APPENDED to 'ReloadHot' or 'HotPane' needs nothing else — their
+-- codecs default what an older list omits. A deeper change freezes the current
+-- payload types as @…V\<X\>@, keeps their decoder, adds a @migrate@ to the new
+-- shape, and adds an @e == X@ arm below.
+decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    | e == reloadEra = case deserialiseOrFail (BL.fromStrict payload) of
-        Right t  -> Right t
-        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    | e == reloadEra = hotTree =<< deser
+    | e == 7 = migrateV7 <$> deser
     -- Eras 4, 5 and 6 share the session/window shape (a single-Int "last", not
     -- the MRU stack). They differ only by additive leaves (era 4 lacks
     -- 'Style.faint', era 5 lacks 'ReloadScreen.pen'), which the hand-written
     -- Style and ReloadScreen decoders default, so one 'ReloadStateV6' mirror
     -- decodes all three; 'migrateV6' lifts the single "last" into a stack.
-    | e == 6 || e == 5 || e == 4 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV6 v)
-        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
-    | e == 3 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV6 (migrateV3 v))
-        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
-    | e == 2 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV6 (migrateV3 (migrateV2 v)))
-        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
-    | e == 1 = case deserialiseOrFail (BL.fromStrict payload) of
-        Right v  -> Right (migrateV6 (migrateV3 (migrateV2 (migrateV1 v))))
-        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+    | e == 6 || e == 5 || e == 4 = migrateV7 . migrateV6 <$> deser
+    | e == 3 = migrateV7 . migrateV6 . migrateV3 <$> deser
+    | e == 2 = migrateV7 . migrateV6 . migrateV3 . migrateV2 <$> deser
+    | e == 1 = migrateV7 . migrateV6 . migrateV3 . migrateV2 . migrateV1 <$> deser
     | e > reloadEra =
         Left ("reload handover from a newer hat (era " <> T.pack (show e)
               <> "); this build is era " <> T.pack (show reloadEra))
     | otherwise =
         Left ("no migration for reload era " <> T.pack (show e))
+  where
+    deser :: Serialise a => Either Text a
+    deser = case deserialiseOrFail (BL.fromStrict payload) of
+        Right v  -> Right v
+        Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
+
+-- | Pair an era-8 payload's tree with its panes' hot state, pane for pane in
+-- tree order. Both halves come from one capture walk, so a count mismatch means
+-- a payload that must not be adopted.
+hotTree :: ReloadHot -> Either Text ReloadTree
+hotTree h = do
+    snap <- maybe (Left "corrupt reload tree") Right (decodeSnapshotJson h.tree)
+    let treePanes =
+            length [ () | s <- snap.sessions, w <- s.windows, _ <- w.panes ]
+    unless (treePanes == length h.hot) $
+        Left ("reload tree has " <> T.pack (show treePanes) <> " pane(s) but "
+              <> T.pack (show (length h.hot)) <> " hot record(s)")
+    pure ReloadTree
+        { sessions = snd (mapAccumL zipSession h.hot snap.sessions)
+        , currentSession = snap.lastActiveSession
+        , lastSession = h.lastSession }
+  where
+    zipSession hs s =
+        let (rest, ws) = mapAccumL zipWindow hs s.windows
+        in ( rest
+           , HotSession
+               { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
+               , windowHist = s.windowHist, windows = ws } )
+    zipWindow hs w =
+        let (mine, rest) = splitAt (length w.panes) hs
+        in ( rest
+           , HotWindow
+               { ix = w.ix, name = w.name, layout = w.layout, active = w.active
+               , paneHist = w.paneHist, autoRename = w.autoRename
+               , panes = zip w.panes mine } )
 
 -- Era-1 payload shapes, frozen: a pane carried no mode subscriptions. CBOR
 -- Generic keys on constructor arity and field order, not names, so these
--- positional mirrors decode an era-1 blob that a modes-bearing 'ReloadPane'
+-- positional mirrors decode an era-1 blob that a modes-bearing 'ReloadPaneV7'
 -- no longer can. See 'decodeReloadTree'.
 data ReloadStateV1 = ReloadStateV1 [ReloadSessionV1] (Maybe Text)
     deriving (Generic) deriving anyclass (Serialise)
@@ -277,8 +355,7 @@ data ReloadPaneV1 = ReloadPaneV1 Text Int Int
     deriving (Generic) deriving anyclass (Serialise)
 
 -- Era-2 payload shapes, frozen: a pane carried its modes but no screen. Same
--- positional-mirror trick as the era-1 shapes, so a screen-bearing 'ReloadPane'
--- can still decode an era-2 blob. See 'decodeReloadTree'.
+-- positional-mirror trick as the era-1 shapes. See 'decodeReloadTree'.
 data ReloadStateV2 = ReloadStateV2 [ReloadSessionV2] (Maybe Text)
     deriving (Generic) deriving anyclass (Serialise)
 data ReloadSessionV2 = ReloadSessionV2 Text Text Int (Maybe Int) [ReloadWindowV2]
@@ -313,7 +390,7 @@ migrateV2 (ReloadStateV2 sess cur) = ReloadStateV3 (map migSession sess) cur
     migWindow (ReloadWindowV2 ix' nm lay act la ar ps) =
         ReloadWindowV6 ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV2 cwd' mfd cpid ms) =
-        ReloadPane cwd' mfd cpid ms emptyReloadScreen
+        ReloadPaneV7 cwd' mfd cpid ms emptyReloadScreen
 
 -- Era-3 top-level shape, frozen: the tree carried no alternate session, over
 -- the era 3–6 session/window shape ('ReloadSessionV6'). See 'decodeReloadTree'.
@@ -326,12 +403,12 @@ migrateV3 :: ReloadStateV3 -> ReloadStateV6
 migrateV3 (ReloadStateV3 sess cur) = ReloadStateV6 sess cur Nothing
 
 -- Era 3–6 session/window shapes, frozen: a single-Int "last", not the MRU
--- stack. The nested 'ReloadPane' is today's, so its tolerant leaf decoders
+-- stack. The nested 'ReloadPaneV7' has today's tolerant leaf decoders, which
 -- default era-4's missing faint and era-5's missing pen. See 'decodeReloadTree'.
 data ReloadSessionV6 = ReloadSessionV6 Text Text Int (Maybe Int) [ReloadWindowV6]
     deriving (Generic) deriving anyclass (Serialise)
 data ReloadWindowV6 =
-    ReloadWindowV6 Int Text Text Int (Maybe Int) Bool [ReloadPane]
+    ReloadWindowV6 Int Text Text Int (Maybe Int) Bool [ReloadPaneV7]
     deriving (Generic) deriving anyclass (Serialise)
 
 -- Era-6 top-level shape, frozen: it carried the alternate session (gained at
@@ -341,10 +418,44 @@ data ReloadStateV6 = ReloadStateV6 [ReloadSessionV6] (Maybe Text) (Maybe Text)
 
 -- | Carry an era-4/5/6 tree forward: each session's and window's single
 -- last-active becomes a one-deep MRU stack. See 'decodeReloadTree'.
-migrateV6 :: ReloadStateV6 -> ReloadState
-migrateV6 (ReloadStateV6 sess cur lst) = ReloadState (map migSession sess) cur lst
+migrateV6 :: ReloadStateV6 -> ReloadStateV7
+migrateV6 (ReloadStateV6 sess cur lst) =
+    ReloadStateV7 (map migSession sess) cur lst
   where
     migSession (ReloadSessionV6 nm cwd' ci li wins) =
-        ReloadSession nm cwd' ci (maybeToList li) (map migWindow wins)
+        ReloadSessionV7 nm cwd' ci (maybeToList li) (map migWindow wins)
     migWindow (ReloadWindowV6 ix' nm lay act la ar ps) =
-        ReloadWindow ix' nm lay act (maybeToList la) ar ps
+        ReloadWindowV7 ix' nm lay act (maybeToList la) ar ps
+
+-- Era-7 payload shapes, frozen: the tree and the panes' hot state travelled as
+-- one CBOR structure, and a pane carried only its cwd from the durable tree.
+-- See 'decodeReloadTree'.
+data ReloadStateV7 = ReloadStateV7 [ReloadSessionV7] (Maybe Text) (Maybe Text)
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadSessionV7 = ReloadSessionV7 Text Text Int [Int] [ReloadWindowV7]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadWindowV7 =
+    ReloadWindowV7 Int Text Text Int [Int] Bool [ReloadPaneV7]
+    deriving (Generic) deriving anyclass (Serialise)
+data ReloadPaneV7 = ReloadPaneV7 Text Int Int ReloadModes ReloadScreen
+    deriving (Generic) deriving anyclass (Serialise)
+
+-- | Carry an era ≤ 7 tree forward: its durable fields take the store's snapshot
+-- shape and its live handles become 'HotPane's. A pane's command was never
+-- captured before era 8, so it comes back absent — adoption keeps the running
+-- program either way and never reads it.
+migrateV7 :: ReloadStateV7 -> ReloadTree
+migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
+    { sessions = map migSession sess
+    , currentSession = cur
+    , lastSession = lst }
+  where
+    migSession (ReloadSessionV7 nm cwd' ci hist wins) = HotSession
+        { name = nm, startCwd = cwd', currentIx = ci
+        , windowHist = hist, windows = map migWindow wins }
+    migWindow (ReloadWindowV7 ix' nm lay act hist ar ps) = HotWindow
+        { ix = ix', name = nm, layout = lay, active = act
+        , paneHist = hist, autoRename = ar, panes = map migPane ps }
+    migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
+        ( PaneSnap { cwd = cwd', command = Nothing, shellSpawned = False }
+        , HotPane { masterFd = mfd, childPid = cpid, modes = ms, screen = sc } )

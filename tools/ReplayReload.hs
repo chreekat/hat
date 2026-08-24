@@ -1,7 +1,7 @@
 -- | Load a preserved reload handover (@<socket>.reload.last@) offline as a
 -- faithful model of the server's resume path: walk the decoded tree once,
 -- restoring each pane into a libghostty emulator, and hold only the emulators
--- afterwards -- exactly as 'Hat.Server.rebuildReload' consumes its 'ReloadState'
+-- afterwards -- exactly as 'Hat.Server.rebuildReload' consumes its 'ReloadTree'
 -- into 'ServerState' and returns, leaving the tree unreferenced. The summary is
 -- read back out of the emulators, never off the tree, so a heap census here
 -- measures the state the server actually keeps rather than the inflated
@@ -58,14 +58,14 @@ main = do
 -- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty
 -- adoption and 'ServerState' bookkeeping: the traversal consumes the tree and
 -- yields only the emulators, so the tree is collectable once it returns.
-rebuild :: ReloadState -> IO [(String, Emu.Emulator)]
+rebuild :: ReloadTree -> IO [(String, Emu.Emulator)]
 rebuild tree = fmap concat $ forM tree.sessions $ \sess ->
     fmap concat $ forM sess.windows $ \win ->
-        forM (zip [0 :: Int ..] win.panes) $ \(ordinal, rp) -> do
+        forM (zip [0 :: Int ..] win.panes) $ \(ordinal, (_, rp)) -> do
             e <- adopt rp
             pure (T.unpack sess.name <> ":" <> show win.ix <> "." <> show ordinal, e)
 
-adopt :: ReloadPane -> IO Emu.Emulator
+adopt :: HotPane -> IO Emu.Emulator
 adopt rp = do
     let esz = fromMaybe rebuildSize (captureSize rp.screen)
     e <- Emu.newEmulator esz historyLimit

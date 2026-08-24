@@ -16,7 +16,7 @@ module Hat.Server.Handover
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, catch, try)
-import Control.Monad (filterM, forM, forM_)
+import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
@@ -31,16 +31,17 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.Persist (PaneSnap (..), encodeSnapshotJson)
 import Hat.Server.Reload
-    (Handover (..), ReloadCleanup (..), ReloadModes (..), ReloadPane (..)
-    , ReloadScreen (..), ReloadSession (..), ReloadState (..), ReloadWindow (..)
-    , decodeHandover)
+    (Handover (..), HotPane (..), HotSession (..), HotWindow (..)
+    , ReloadCleanup (..), ReloadHot (..), ReloadModes (..), ReloadScreen (..)
+    , ReloadTree (..), decodeHandover)
 import Hat.Term.Pty qualified
 import Hat.Server.ColorScheme
     ( ColorScheme, schemeReport )
-import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
 import Hat.Server.Pane
 import Hat.Server.Rebuild (rebuildSession)
+import Hat.Server.Snapshot (captureTree)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -64,55 +65,39 @@ data ScrollbackCarry = KeepScrollback | DropScrollback
     deriving (Eq, Show)
 
 -- | Capture the running tree into the two halves of a handover: the evolving
--- 'ReloadState' (the same structure 'captureSnapshot' records, plus each
--- pane's live pty master fd and child pid), and the version-independent
--- 'ReloadCleanup' core (the listening socket fd and the flat list of every
--- pane's (master fd, child pid), so a version-mismatched reload can hang the
--- inherited processes up cleanly rather than orphan them).
-captureReload :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, ReloadState)
+-- 'ReloadHot' (the tree exactly as 'captureTree' records it, plus each pane's
+-- hot state), and the version-independent 'ReloadCleanup' core (the listening
+-- socket fd and the flat list of every pane's (master fd, child pid), so a
+-- version-mismatched reload can hang the inherited processes up cleanly rather
+-- than orphan them). Tree and hot state come from one walk, so they agree
+-- pane-for-pane by construction.
+captureReload :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, ReloadHot)
 captureReload carry st = do
-    (sess, laName, lsName, mfd) <- atomically $ do
+    (snap, panes) <- captureTree st
+    (lsName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
-        laId    <- readTVar st.lastActiveSession
-        laName  <- traverse (readTVar . (.name)) (laId >>= (`Map.lookup` sessMap))
         lsId    <- readTVar st.lastSession
         lsName  <- traverse (readTVar . (.name)) (lsId >>= (`Map.lookup` sessMap))
         mfd     <- readTVar st.listenFd
-        pure (Map.elems sessMap, laName, lsName, mfd)
-    rsessions <- mapM (captureReloadSession carry) sess
-    let tree = ReloadState rsessions laName lsName
-        liveHandles =
-            [ (p.masterFd, p.childPid)
-            | s <- rsessions, w <- s.windows, p <- w.panes ]
-        cleanup = ReloadCleanup
-            { listenFd = fromMaybe (-1) mfd, live = liveHandles }
-    pure (cleanup, tree)
+        pure (lsName, mfd)
+    hots <- mapM (captureHotPane carry) panes
+    pure ( ReloadCleanup
+             { listenFd = fromMaybe (-1) mfd
+             , live = [(p.masterFd, p.childPid) | p <- hots] }
+         , ReloadHot
+             { tree = encodeSnapshotJson snap, hot = hots
+             , lastSession = lsName } )
 
-captureReloadSession :: ScrollbackCarry -> Session -> IO ReloadSession
-captureReloadSession carry s = do
-    (nm, cwd, curIx, winHist, wstructs) <- atomically $ do
-        nm    <- readTVar s.name
-        cwd   <- readTVar s.startCwd
-        curIx <- readTVar s.currentIx
-        winHist <- readTVar s.windowHist
-        eff   <- readTVar s.lastSize
-        ws    <- Map.toAscList <$> readTVar s.windows
-        wstructs <- mapM (windowStruct eff) ws
-        pure (nm, cwd, curIx, winHist, wstructs)
-    rwins <- mapM (captureReloadWindow carry) wstructs
-    pure (ReloadSession nm (T.pack cwd) curIx winHist rwins)
-
-captureReloadWindow :: ScrollbackCarry -> WindowStruct -> IO ReloadWindow
-captureReloadWindow carry ws = do
-    rpanes <- forM ws.wsPanes $ \pane -> do
-        dir <- paneCurrentPath pane
-        let Fd fd = Hat.Term.Pty.masterFd pane.pty
-        ms <- Emu.modes pane.emulator
-        sc <- captureReloadScreen carry pane.emulator
-        pure (ReloadPane (T.pack dir) (fromIntegral fd)
-                (fromIntegral (Hat.Term.Pty.pid pane.pty)) (reloadModesOf ms) sc)
-    pure (ReloadWindow ws.wsIx ws.wsName ws.wsLayout ws.wsActive
-            ws.wsLastActive ws.wsAutoRename rpanes)
+captureHotPane :: ScrollbackCarry -> Pane -> IO HotPane
+captureHotPane carry pane = do
+    let Fd fd = Hat.Term.Pty.masterFd pane.pty
+    ms <- Emu.modes pane.emulator
+    sc <- captureReloadScreen carry pane.emulator
+    pure HotPane
+        { masterFd = fromIntegral fd
+        , childPid = fromIntegral (Hat.Term.Pty.pid pane.pty)
+        , modes = reloadModesOf ms
+        , screen = sc }
 
 -- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
 -- its alt-screen flag, and its scrollback (oldest line first). 'adoptPane'
@@ -176,13 +161,13 @@ readReload lg hp = do
 -- | Rebuild the tree from a reload handover, adopting each pane's inherited
 -- pty and child rather than spawning; each pane's captured screen is replayed
 -- into its fresh emulator ('adoptPane').
-rebuildReload :: ServerState -> ReloadState -> IO ()
-rebuildReload st rs = do
-    forM_ rs.sessions (rebuildReloadSession st)
-    forM_ rs.currentSession $ \nm ->
+rebuildReload :: ServerState -> ReloadTree -> IO ()
+rebuildReload st rt = do
+    forM_ rt.sessions (rebuildReloadSession st)
+    forM_ rt.currentSession $ \nm ->
         resolveSessionByName st nm $ \s ->
             atomically (writeTVar st.lastActiveSession (Just s.id))
-    forM_ rs.lastSession $ \nm ->
+    forM_ rt.lastSession $ \nm ->
         resolveSessionByName st nm $ \s ->
             atomically (writeTVar st.lastSession (Just s.id))
 
@@ -192,7 +177,7 @@ resolveSessionByName st nm act = do
     hits <- filterM (fmap (== nm) . readTVarIO . (.name)) (Map.elems sessMap)
     forM_ (listToMaybe hits) act
 
-rebuildReloadSession :: ServerState -> ReloadSession -> IO ()
+rebuildReloadSession :: ServerState -> HotSession -> IO ()
 rebuildReloadSession st rsess = do
     env <- restoreEnv
     histLimit <- (.historyLimit) <$> readTVarIO st.options
@@ -201,8 +186,8 @@ rebuildReloadSession st rsess = do
 -- | Build a pane around an inherited pty ('Hat.Term.Pty.adopt') and a blank
 -- emulator, for the reload path — the analogue of 'spawnPane' that re-adopts
 -- a running child instead of forking a new one.
-adoptPane :: ServerState -> Int -> Size -> ReloadPane -> IO Pane
-adoptPane st histLimit sz rp = do
+adoptPane :: ServerState -> Int -> Size -> (PaneSnap, HotPane) -> IO Pane
+adoptPane st histLimit sz (psnap, rp) = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
     -- Trace each adopt phase so a resume that stalls names the pane and the
     -- step it stalled on (fd adopt vs. screen replay) instead of going silent.
@@ -233,7 +218,7 @@ adoptPane st histLimit sz rp = do
     optionsVar <- newTVarIO emptyDelta
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
-            , dead = deadVar, startCwd = T.unpack rp.cwd, mode = modeVar
+            , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
             , options = optionsVar
             , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing }
     -- A surviving app that held the ?2031 subscription never re-emits it across
@@ -273,7 +258,7 @@ screenOf sz rs = Emu.Screen
 -- screen (re-entering the alt screen when the program was in it), paired with
 -- the scrollback lines to reseed. Pure, so the capture→replay round trip is
 -- testable without a pty.
-replayPane :: Size -> ReloadPane -> (B.ByteString, [V.Vector Cell.Cell])
+replayPane :: Size -> HotPane -> (B.ByteString, [V.Vector Cell.Cell])
 replayPane sz rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
         <> Emu.restoreBytes restoreModes rp.screen.pen (screenOf sz rp.screen)
