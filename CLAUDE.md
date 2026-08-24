@@ -22,12 +22,14 @@ specific to HAT.
   - While it runs, read compile errors from `errors.err` instead of invoking
     `cabal build`. It typechecks only: running anything (tests, the binary)
     still needs cabal.
-  - `errors.err` ending in "Ghcid has stopped." means ghcid is NOT running;
-    the file is stale — fall back to `cabal build`.
+  - `errors.err` ending in "Ghcid has stopped." means ghcid is NOT running
+    and the file is stale: kill any remnant and relaunch `just ghcid`. Don't
+    switch to `cabal build` for feedback — ghcid is fast enough to be worth
+    hand-holding through a crash.
   - It can die on first load: an error that keeps the multi-repl session from
-    coming up at all (e.g. a cabal-level error) exits ghcid instead of landing
-    in `errors.err`. Start it from a compiling tree; if it dies at launch, fix
-    the build via `cabal build`, then relaunch.
+    coming up at all (e.g. a cabal-level error) exits ghcid without writing
+    `errors.err`. The error is in ghcid's own output, so capture that when
+    launching; fix what it names and relaunch.
   - `hat.cabal` and `src/Hat/Term/Emulator.hsc` are `--restart` triggers (the
     session rebuilds from scratch when they change); other files hot-reload
     on save.
