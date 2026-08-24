@@ -36,6 +36,10 @@ specific to HAT.
   - Each git worktree runs its own ghcid with its own `errors.err`. It is a
     long-running watcher: launch it detached/background, never foreground in
     an agent shell.
+  - A ghcid you started is yours to shut down when the job is done — note its
+    pid at launch and kill it before finishing (an orphaned multi-repl holds
+    the whole project in memory). Never kill a ghcid you did not start: the
+    one in the main checkout is the user's.
 
 ## Forward/backward compatibility is a first-class concern
 
