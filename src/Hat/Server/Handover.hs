@@ -16,15 +16,12 @@ module Hat.Server.Handover
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, catch, try)
-import Control.Monad (filterM, forM, forM_, unless)
+import Control.Monad (filterM, forM, forM_)
 import Data.ByteString qualified as B
-import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
-import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as V
 import System.Directory
     (renameFile)
@@ -32,7 +29,6 @@ import System.Posix.Types (Fd (..))
 
 import Hat.Geometry
 import Hat.Log
-import Hat.Server.Environ (environFromPairs)
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Reload
@@ -43,9 +39,8 @@ import Hat.Term.Pty qualified
 import Hat.Server.ColorScheme
     ( ColorScheme, schemeReport )
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
-import Hat.Server.Layout
-import Hat.Server.LayoutString (capturedArea, layoutFromString)
 import Hat.Server.Pane
+import Hat.Server.Rebuild (rebuildSession)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -199,77 +194,15 @@ resolveSessionByName st nm act = do
 
 rebuildReloadSession :: ServerState -> ReloadSession -> IO ()
 rebuildReloadSession st rsess = do
-    let wins = filter (not . null . (.panes)) rsess.windows
-    unless (null wins) $ do
-        sid <- SessionId <$> atomically (freshId st.nextSession)
-        env <- restoreEnv
-        let sz = capturedArea (map (.layout) wins)
-        built <- forM wins $ \rwin -> do
-            (win, panes) <- rebuildReloadWindow st sz rwin
-            pure (rwin.ix, win, panes)
-        let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
-            curIx | Map.member rsess.currentIx winMap = rsess.currentIx
-                  | otherwise = maybe rsess.currentIx fst (Map.lookupMin winMap)
-            winHist = List.nub
-                [l | l <- rsess.windowHist, l /= curIx, Map.member l winMap]
-        nameVar    <- newTVarIO rsess.name
-        windowsVar <- newTVarIO winMap
-        currentVar <- newTVarIO curIx
-        windowHistVar <- newTVarIO winHist
-        sizeVar    <- newTVarIO sz
-        environVar <- newTVarIO (environFromPairs env)
-        cwdVar     <- newTVarIO (T.unpack rsess.startCwd)
-        optionsVar <- newTVarIO emptyDelta
-        let sess = Session
-                { id = sid, name = nameVar, windows = windowsVar
-                , currentIx = currentVar, windowHist = windowHistVar
-                , lastSize = sizeVar, environ = environVar
-                , startCwd = cwdVar, options = optionsVar }
-        atomically $ modifyTVar' st.sessions (Map.insert sid sess)
-        forM_ built $ \(_, win, panes) ->
-            forM_ panes (startPaneReader st sid win)
-
-rebuildReloadWindow :: ServerState -> Size -> ReloadWindow -> IO (Window, [Pane])
-rebuildReloadWindow st sz rwin = do
-    wid <- WindowId <$> atomically (freshId st.nextWindow)
+    env <- restoreEnv
     histLimit <- (.historyLimit) <$> readTVarIO st.options
-    panes <- forM rwin.panes (adoptPane st sz histLimit)
-    let pids = map (.id) panes
-        paneMap = Map.fromList [(p.id, p) | p <- panes]
-        lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
-                        (layoutFromString rwin.layout pids)
-        activePid = pids !! max 0 (min (length pids - 1) rwin.active)
-        paneHistPids = List.nub
-            [ pids !! o | o <- rwin.paneHist
-            , o >= 0, o < length pids, pids !! o /= activePid ]
-    nameVar       <- newTVarIO rwin.name
-    layoutVar     <- newTVarIO lay
-    layoutNameVar <- newTVarIO Nothing
-    panesVar      <- newTVarIO paneMap
-    activeVar     <- newTVarIO activePid
-    paneHistVar   <- newTVarIO paneHistPids
-    bellVar       <- newTVarIO False
-    activityVar   <- newTVarIO False
-    zoomVar       <- newTVarIO Nothing
-    autoRenameVar <- newTVarIO rwin.autoRename
-    optionsVar    <- newTVarIO emptyDelta
-    silenceVar    <- newTVarIO False
-    activityAtVar <- newTVarIO =<< getPOSIXTime
-    let win = Window
-            { id = wid, name = nameVar, layout = layoutVar
-            , layoutName = layoutNameVar
-            , panes = panesVar, activeId = activeVar
-            , paneHist = paneHistVar, bellFlag = bellVar
-            , activity = activityVar, zoomed = zoomVar
-            , silenceFlag = silenceVar, activityAt = activityAtVar
-            , autoRename = autoRenameVar, options = optionsVar }
-    pure (win, panes)
+    rebuildSession st env (const (adoptPane st histLimit)) rsess
 
 -- | Build a pane around an inherited pty ('Hat.Term.Pty.adopt') and a blank
 -- emulator, for the reload path — the analogue of 'spawnPane' that re-adopts
 -- a running child instead of forking a new one.
-adoptPane :: ServerState -> Size -> Int -> ReloadPane -> IO Pane
-adoptPane st sz histLimit rp = do
+adoptPane :: ServerState -> Int -> Size -> ReloadPane -> IO Pane
+adoptPane st histLimit sz rp = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
     -- Trace each adopt phase so a resume that stalls names the pane and the
     -- step it stalled on (fd adopt vs. screen replay) instead of going silent.

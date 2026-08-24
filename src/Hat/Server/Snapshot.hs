@@ -28,11 +28,9 @@ import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
-import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory
     (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Environment (lookupEnv)
@@ -40,7 +38,6 @@ import System.FilePath (takeFileName)
 
 import Hat.Geometry
 import Hat.Log
-import Hat.Server.Environ (environFromPairs)
 import Hat.Model
 import Hat.Model.Options
 import Hat.Path (hatPath, render, (</:>))
@@ -51,9 +48,8 @@ import Hat.Server.Persist
 import Hat.Term.Pty qualified
 import Hat.Server.Command.Types (CommandImpl, Reply (..))
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
-import Hat.Server.Layout
-import Hat.Server.LayoutString (capturedArea, layoutFromString)
 import Hat.Server.Pane
+import Hat.Server.Rebuild (rebuildSession)
 
 -- Persistence ----------------------------------------------------------
 
@@ -268,88 +264,15 @@ restoreSnapshot st snap = do
 
 restoreSession :: ServerState -> SessionSnap -> IO ()
 restoreSession st ssnap = do
-    let wins = filter (not . null . (.panes)) ssnap.windows
-    unless (null wins) $ do
-        sid <- SessionId <$> atomically (freshId st.nextSession)
-        env <- globalSpawnEnv st =<< restoreEnv
-        whitelist <- restoreWhitelist st
-        let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
-            sz = capturedArea (map (.layout) wins)
-        built <- forM wins $ \wsnap -> do
-            (win, panes) <- restoreWindow st sid shellCmd env sz whitelist wsnap
-            pure (wsnap.ix, win, panes)
-        let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
-            curIx | Map.member ssnap.currentIx winMap = ssnap.currentIx
-                  | otherwise = maybe ssnap.currentIx fst (Map.lookupMin winMap)
-            -- Keep the MRU history to surviving windows other than the current
-            -- one; nothing else is a meaningful "last" to return to.
-            winHist = List.nub
-                [l | l <- ssnap.windowHist, l /= curIx, Map.member l winMap]
-        nameVar    <- newTVarIO ssnap.name
-        windowsVar <- newTVarIO winMap
-        currentVar <- newTVarIO curIx
-        windowHistVar <- newTVarIO winHist
-        sizeVar    <- newTVarIO sz
-        environVar <- newTVarIO (environFromPairs env)
-        cwdVar     <- newTVarIO (T.unpack ssnap.startCwd)
-        optionsVar <- newTVarIO emptyDelta
-        let sess = Session
-                { id = sid, name = nameVar, windows = windowsVar
-                , currentIx = currentVar, windowHist = windowHistVar
-                , lastSize = sizeVar, environ = environVar
-                , startCwd = cwdVar, options = optionsVar }
-        atomically $ modifyTVar' st.sessions (Map.insert sid sess)
-        forM_ built $ \(_, win, panes) ->
-            forM_ panes (startPaneReader st sid win)
-
-restoreWindow
-    :: ServerState -> SessionId -> FilePath -> [(Text, Text)] -> Size
-    -> [Text] -> WindowSnap -> IO (Window, [Pane])
-restoreWindow st sid shellCmd env sz whitelist wsnap = do
-    wid <- WindowId <$> atomically (freshId st.nextWindow)
-    panes <- forM wsnap.panes $ restorePane st sid shellCmd env sz whitelist
-    let pids = map (.id) panes
-        paneMap = Map.fromList [(p.id, p) | p <- panes]
-        -- Our own emitted string round-trips; the named layout is only a
-        -- fallback for a corrupt string, and still contains every pane.
-        lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
-                        (layoutFromString wsnap.layout pids)
-        activePid = pids !! max 0 (min (length pids - 1) wsnap.active)
-        -- Map the MRU history's ordinals back to surviving pane ids, dropping
-        -- the active pane and any out-of-range ordinal; keep order, drop dups.
-        paneHistPids = List.nub
-            [ pids !! o | o <- wsnap.paneHist
-            , o >= 0, o < length pids, pids !! o /= activePid ]
-    nameVar       <- newTVarIO wsnap.name
-    layoutVar     <- newTVarIO lay
-    layoutNameVar <- newTVarIO Nothing
-    panesVar      <- newTVarIO paneMap
-    activeVar     <- newTVarIO activePid
-    paneHistVar   <- newTVarIO paneHistPids
-    bellVar       <- newTVarIO False
-    activityVar   <- newTVarIO False
-    zoomVar       <- newTVarIO Nothing
-    -- Auto-rename status survives the round-trip: a window renaming
-    -- automatically keeps tracking its active pane, a manually-named one
-    -- keeps its pinned name.
-    autoRenameVar <- newTVarIO wsnap.autoRename
-    optionsVar    <- newTVarIO emptyDelta
-    silenceVar    <- newTVarIO False
-    activityAtVar <- newTVarIO =<< getPOSIXTime
-    let win = Window
-            { id = wid, name = nameVar, layout = layoutVar
-            , layoutName = layoutNameVar
-            , panes = panesVar, activeId = activeVar
-            , paneHist = paneHistVar, bellFlag = bellVar
-            , activity = activityVar, zoomed = zoomVar
-            , silenceFlag = silenceVar, activityAt = activityAtVar
-            , autoRename = autoRenameVar, options = optionsVar }
-    pure (win, panes)
+    env <- globalSpawnEnv st =<< restoreEnv
+    whitelist <- restoreWhitelist st
+    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
+    rebuildSession st env (restorePane st shellCmd env whitelist) ssnap
 
 restorePane
-    :: ServerState -> SessionId -> FilePath -> [(Text, Text)] -> Size
-    -> [Text] -> PaneSnap -> IO Pane
-restorePane st sid shellCmd env sz whitelist psnap = do
+    :: ServerState -> FilePath -> [(Text, Text)] -> [Text]
+    -> SessionId -> Size -> PaneSnap -> IO Pane
+restorePane st shellCmd env whitelist sid sz psnap = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
     let origin = if psnap.shellSpawned then ShellSpawned else Direct
     spawnPane st pid sid shellCmd (restoreRun whitelist origin psnap.command)

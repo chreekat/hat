@@ -123,6 +123,7 @@ library
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt
+        Hat.Server.Rebuild
         Hat.Server.Reload
         Hat.Server.Render
         Hat.Server.Resize
