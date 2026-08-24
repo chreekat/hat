@@ -20,7 +20,7 @@ import Control.Monad (filterM, forM, forM_, unless)
 import Data.ByteString qualified as B
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -44,7 +44,7 @@ import Hat.Server.ColorScheme
     ( ColorScheme, schemeReport )
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
 import Hat.Server.Layout
-import Hat.Server.LayoutString (layoutFromString, layoutSize)
+import Hat.Server.LayoutString (capturedArea, layoutFromString)
 import Hat.Server.Pane
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -203,11 +203,7 @@ rebuildReloadSession st rsess = do
     unless (null wins) $ do
         sid <- SessionId <$> atomically (freshId st.nextSession)
         env <- restoreEnv
-        -- The captured window area (every window was captured at the same
-        -- effective size), so the reconcile tick that runs before any client
-        -- attaches finds the adopted panes already at their layout size.
-        let sz = fromMaybe Size { rows = 24, cols = 80 }
-                (listToMaybe (mapMaybe (layoutSize . (.layout)) wins))
+        let sz = capturedArea (map (.layout) wins)
         built <- forM wins $ \rwin -> do
             (win, panes) <- rebuildReloadWindow st sz rwin
             pure (rwin.ix, win, panes)

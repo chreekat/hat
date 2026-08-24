@@ -6,11 +6,13 @@ module Hat.Server.LayoutString
     ( emitLayout
     , layoutFromString
     , layoutSize
+    , capturedArea
     , layoutChecksum
     ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
 import Data.Char (ord)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -90,6 +92,15 @@ layoutSize str = case parse (layoutP <* eof) "<layout>" str of
     Right node -> Just Size { rows = clamp node.h, cols = clamp node.w }
   where
     clamp n = fromIntegral (max 1 (min 1000 n))
+
+-- | The window area a captured tree was laid out in: the first parsable
+-- window's 'layoutSize' (every window is captured at the same effective
+-- size), defaulting to 24x80. Seeding a rebuilt session's size from this
+-- keeps the pre-attach reconcile from reflowing every pane through a
+-- fabricated geometry.
+capturedArea :: [Text] -> Size
+capturedArea lays = fromMaybe Size { rows = 24, cols = 80 }
+    (listToMaybe (mapMaybe layoutSize lays))
 
 layoutP :: P LNode
 layoutP = do

@@ -806,6 +806,32 @@ spec = parallel $ do
         pl <- ctlOut h ["list-panes", "-a"]
         length (lines pl) `shouldBe` 3
 
+    -- A restored tree comes back at its captured area, not 24x80 (bug 4b).
+    it "restores the saved tree at its captured area before any client attaches" $
+        withHatPersist hatBin $ \h -> do
+        let rect = sizeRect (Size { rows = 30, cols = 100 })
+            lay = emitLayout rect (Leaf (PaneId 0))
+            snap = Snapshot
+                { lastActiveSession = Nothing, sessions =
+                    [ SessionSnap
+                        { name = "sized", startCwd = "/tmp", currentIx = 0
+                        , windowHist = []
+                        , windows =
+                            [ WindowSnap
+                                { ix = 0, name = "one", layout = lay
+                                , active = 0, paneHist = []
+                                , autoRename = False
+                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                            ] } ] }
+        createDirectoryIfMissing True (takeDirectory (storeOf h))
+        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
+
+        -- start-server autostarts the server and only returns once startup
+        -- (including the restore) has landed; no client ever attaches.
+        _ <- hatCtl h ["start-server"]
+        out <- ctlOut h ["list-panes", "-a", "-F", "#{pane_width}x#{pane_height}"]
+        out `shouldBe` "100x30\n"
+
     it "forgets the saved tree when the last window exits (pristine restart)" $
         withHatPersist hatBin $ \h -> do
         -- Seed a saved tree so the autostarted server restores it.

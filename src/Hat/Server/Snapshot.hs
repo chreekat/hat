@@ -52,7 +52,7 @@ import Hat.Term.Pty qualified
 import Hat.Server.Command.Types (CommandImpl, Reply (..))
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
 import Hat.Server.Layout
-import Hat.Server.LayoutString (layoutFromString)
+import Hat.Server.LayoutString (capturedArea, layoutFromString)
 import Hat.Server.Pane
 
 -- Persistence ----------------------------------------------------------
@@ -274,7 +274,7 @@ restoreSession st ssnap = do
         env <- globalSpawnEnv st =<< restoreEnv
         whitelist <- restoreWhitelist st
         let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
-            sz = Size { rows = 24, cols = 80 }  -- resized on client attach
+            sz = capturedArea (map (.layout) wins)
         built <- forM wins $ \wsnap -> do
             (win, panes) <- restoreWindow st sid shellCmd env sz whitelist wsnap
             pure (wsnap.ix, win, panes)
