@@ -13,3 +13,4 @@ result-*
 *.prof
 *.eventlog.html
 *.hp
+errors.err

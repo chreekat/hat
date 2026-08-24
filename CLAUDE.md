@@ -16,6 +16,24 @@ specific to HAT.
   is a stop-work emergency, never "pre-existing flakiness."
 - Golden fixtures: `cabal run gen-fixtures` regenerates emulator goldens. A
   golden diff is a tripwire; regenerate only when the change is intended.
+- `just ghcid` (inside the dev shell) is the fast typecheck loop: a
+  `-fno-code` multi-repl over every component — tests and benchmarks
+  included — that mirrors diagnostics to `errors.err` in the checkout root.
+  - While it runs, read compile errors from `errors.err` instead of invoking
+    `cabal build`. It typechecks only: running anything (tests, the binary)
+    still needs cabal.
+  - `errors.err` ending in "Ghcid has stopped." means ghcid is NOT running;
+    the file is stale — fall back to `cabal build`.
+  - It can die on first load: an error that keeps the multi-repl session from
+    coming up at all (e.g. a cabal-level error) exits ghcid instead of landing
+    in `errors.err`. Start it from a compiling tree; if it dies at launch, fix
+    the build via `cabal build`, then relaunch.
+  - `hat.cabal` and `src/Hat/Term/Emulator.hsc` are `--restart` triggers (the
+    session rebuilds from scratch when they change); other files hot-reload
+    on save.
+  - Each git worktree runs its own ghcid with its own `errors.err`. It is a
+    long-running watcher: launch it detached/background, never foreground in
+    an agent shell.
 
 ## Forward/backward compatibility is a first-class concern
 
