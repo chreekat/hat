@@ -23,6 +23,8 @@ module Hat.Server.Persist
     , listArchived
     , loadArchived
     , clearLive
+    , encodeSnapshotJson
+    , decodeSnapshotJson
     ) where
 
 import Control.Exception (bracket)
@@ -413,14 +415,15 @@ metaValue conn key = do
         (Only v : _) -> Just v
         []           -> Nothing
 
--- The history row's @data@ payload: the whole tree as JSON, evolved the
--- same way as the @extra@ columns — append optional keys, default the
--- absent, ignore the unknown. Instances are written by hand (explicit
--- keys, never derived layout).
-
+-- | The whole tree as one tolerant JSON document, evolved the same way as
+-- the @extra@ columns — append optional keys, default the absent, ignore
+-- the unknown. Instances are written by hand (explicit keys, never derived
+-- layout), so no field's meaning rides on record order.
 encodeSnapshotJson :: Snapshot -> Text
 encodeSnapshotJson = TE.decodeUtf8 . BL.toStrict . encode
 
+-- | Read back a tree written by 'encodeSnapshotJson', at any vintage;
+-- 'Nothing' only for text that is not a tree document at all.
 decodeSnapshotJson :: Text -> Maybe Snapshot
 decodeSnapshotJson = decode . BL.fromStrict . TE.encodeUtf8
 
