@@ -7,6 +7,7 @@ import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Codec.CBOR.Write (toStrictByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
+import Control.Monad (forM_)
 import Data.Either (isLeft)
 import Data.Maybe (isJust)
 import Data.Word (Word8)
@@ -321,17 +322,23 @@ spec = describe "reload handover" $ do
     it "rejects a foreign or corrupt blob outright" $
         decodeHandover (B.pack [0, 1, 2, 3]) `shouldSatisfy` isLeft
 
-    -- The two halves come from one capture walk, so a payload whose hot list
-    -- does not match the tree pane-for-pane is not adoptable — the caller
-    -- hangs the inherited handles up instead.
-    it "refuses a payload whose hot state and tree disagree on panes" $ do
+    -- A same-era payload the build still cannot trust: the tree and the hot
+    -- list come from one capture walk, so any disagreement means it must not
+    -- be adopted. The caller hangs the inherited handles up instead.
+    it "refuses an unusable same-era payload yet recovers the cleanup core" $ do
         let full = hotOf fixedTree
-            payload = ReloadHot { tree = full.tree, hot = [], lastSession = Nothing }
-        case decodeHandover (encodeHandover fixedCleanup payload) of
-            Right h -> do
-                h.cleanup `shouldBe` fixedCleanup
-                h.tree `shouldSatisfy` isLeft
-            Left e -> expectationFailure ("envelope should decode: " <> show e)
+            unusable =
+                [ ReloadHot   -- tree that is not a tree at all
+                    { tree = "}{", hot = full.hot, lastSession = Nothing }
+                , ReloadHot   -- hot state that does not match the tree's panes
+                    { tree = full.tree, hot = [], lastSession = Nothing } ]
+        forM_ unusable $ \payload ->
+            case decodeHandover (encodeHandover fixedCleanup payload) of
+                Right h -> do
+                    h.cleanup `shouldBe` fixedCleanup
+                    h.tree `shouldSatisfy` isLeft
+                Left e ->
+                    expectationFailure ("envelope should decode: " <> show e)
 
     -- Backward compatibility: this build decodes every historical era's bytes.
     -- Failure means a payload change broke an old format — migrate it, don't
