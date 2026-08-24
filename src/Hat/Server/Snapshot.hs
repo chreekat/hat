@@ -11,6 +11,7 @@ module Hat.Server.Snapshot
     , StorePin (..)
     , saveNow
     , captureSnapshot
+    , captureTree
     , restoreSaved
     , restoreSnapshot
     , snapshotHistoryLimit
@@ -172,16 +173,22 @@ saveSnapshotNow path snap =
 -- | Read the whole session tree into a pure 'Snapshot': sessions in id
 -- order, windows by index, panes in layout order with their live cwd.
 captureSnapshot :: ServerState -> IO Snapshot
-captureSnapshot st = do
+captureSnapshot = fmap fst . captureTree
+
+-- | 'captureSnapshot', plus the live panes the walk visited — flat, in the
+-- snapshot's own pane order. One walk yields both, so a caller that needs
+-- per-pane state alongside the tree cannot pair them up wrong.
+captureTree :: ServerState -> IO (Snapshot, [Pane])
+captureTree st = do
     (sess, laName) <- atomically $ do
         sessMap <- readTVar st.sessions
         laId    <- readTVar st.lastActiveSession
         laName  <- traverse (readTVar . (.name)) (laId >>= (`Map.lookup` sessMap))
         pure (Map.elems sessMap, laName)
-    Snapshot <$> mapM captureSession sess <*> pure laName
+    (snaps, panes) <- unzip <$> mapM captureSession sess
+    pure (Snapshot snaps laName, concat panes)
 
-
-captureSession :: Session -> IO SessionSnap
+captureSession :: Session -> IO (SessionSnap, [Pane])
 captureSession s = do
     (nm, cwd, curIx, winHist, wstructs) <- atomically $ do
         nm    <- readTVar s.name
@@ -192,12 +199,13 @@ captureSession s = do
         ws    <- Map.toAscList <$> readTVar s.windows
         wstructs <- mapM (windowStruct eff) ws
         pure (nm, cwd, curIx, winHist, wstructs)
-    wsnaps <- mapM captureWindow wstructs
-    pure SessionSnap
-        { name = nm, startCwd = T.pack cwd
-        , currentIx = curIx, windowHist = winHist, windows = wsnaps }
+    (wsnaps, panes) <- unzip <$> mapM captureWindow wstructs
+    pure ( SessionSnap
+             { name = nm, startCwd = T.pack cwd
+             , currentIx = curIx, windowHist = winHist, windows = wsnaps }
+         , concat panes )
 
-captureWindow :: WindowStruct -> IO WindowSnap
+captureWindow :: WindowStruct -> IO (WindowSnap, [Pane])
 captureWindow ws = do
     psnaps <- forM ws.wsPanes $ \pane -> do
         dir  <- paneCurrentPath pane
@@ -208,10 +216,11 @@ captureWindow ws = do
         -- so a restore can relaunch it through the shell (see 'restoreRun').
         shellSp <- Hat.Term.Pty.foregroundIsChild pane.pty
         pure PaneSnap { cwd = T.pack dir, command = argv, shellSpawned = shellSp }
-    pure WindowSnap
-        { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
-        , active = ws.wsActive, paneHist = ws.wsLastActive
-        , autoRename = ws.wsAutoRename, panes = psnaps }
+    pure ( WindowSnap
+             { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
+             , active = ws.wsActive, paneHist = ws.wsLastActive
+             , autoRename = ws.wsAutoRename, panes = psnaps }
+         , ws.wsPanes )
 
 -- Persistence restore ----------------------------------------------------
 
