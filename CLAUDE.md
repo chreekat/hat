@@ -60,7 +60,7 @@ check, and **add a row whenever you introduce a new one**:
 |---|---|---|---|
 | Client ↔ server wire | `Hat.Transport.Wire` | Versions exchanged, both speak `min` (`negotiate`); window = every version ≥ floor 4, forever. Append-only CBOR tags; leaves grow under a new dialect level, encoded per-peer. Unknown tag → skip; `Malformed` → fatal. | golden-byte + dialect corpus in `WireSpec` |
 | Persistence store | `Hat.Server.Persist` (SQLite) | Additive schema: core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent and ignore the unknown (never gate on `schema_version`). The live tables always hold the newest tree; `snapshot` history rows carry whole trees as JSON evolved under the same tolerant rule. | `PersistSpec` "schema compatibility" |
-| Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload; a build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. | `ReloadSpec` corpus |
+| Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload. The tree rides inside as the store's snapshot JSON, evolving under the store's additive rule; the era gates only the hot core (fds, pids, modes, screens). A build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. | `ReloadSpec` corpus |
 
 Two valid mechanisms, both delivering the same guarantee (a new build reads old
 data): **additive schema** — one lenient reader handles old *and* new, both
@@ -76,9 +76,9 @@ When you add or change any such format, the rules are:
 2. **Evolve additively by default.** Append tagged fields or add defaulting
    columns — never renumber, reorder, or repurpose an existing field. Do **not**
    lean on Generic-derived record/constructor layout for anything cross-version:
-   that caused the era-4 wire incident. (The reload payload is Generic but
-   era-*gated* — only decoded at an exact era match — which is why a shape
-   change there MUST bump `reloadEra`.)
+   that caused the era-4 wire incident. (The reload payload's frozen historical
+   shapes are Generic but era-*gated* — only decoded at an exact era match —
+   which is why a shape change to the hot core MUST bump `reloadEra`.)
 3. **When additive won't do, migrate — never lose state.** Bump the version and
    keep a decoder + forward migration for each older version; a clean restart /
    data loss is the floor, not the goal.

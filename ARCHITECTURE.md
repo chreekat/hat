@@ -756,8 +756,9 @@ keybinding.
 `Hat.Server.Persist` holds the pure `Snapshot` (sessions > windows >
 panes) and the SQLite codec; capture, the mirror loop, and rebuild live
 in `Hat.Server.Snapshot`, with `Hat.Server.WindowStruct` as the shared
-tree-reader that the persistence mirror and the reload handover both
-consume. The store is
+tree-reader underneath. The reload handover reuses the capture itself:
+`captureTree` returns the snapshot and the very panes it walked, so the
+handover's tree and its per-pane hot state cannot disagree. The store is
 `$HAT_STORE_DIR/<socket>.db` if that is set, else
 `$XDG_DATA_HOME/hat/<socket>.db` — reboot-surviving and keyed per socket. A
 poll thread rewrites it on any structural or working-directory change;
@@ -799,22 +800,27 @@ The server upgrades itself without killing anyone's programs: it
 serializes a handover payload, `execve`s its own (new) binary, and the
 incoming image adopts what the old one held. OS handles survive the exec
 — pane PTY fds, the listening socket fd, child pids — while the heap
-does not, so the payload (`Hat.Server.Reload`) carries the tree
-structure plus each pane's screen + scrollback, and the incoming image
-rebuilds a pane by *byte replay*: it synthesizes the escape-sequence
-stream that reconstructs the carried grid and feeds it to a fresh
-emulator (`Hat.Server.Handover` captures and adopts). `-C` — on either
-spelling, `restart-server` and `restart` — drops scrollback from the
-handover as a memory-relief valve.
+does not, so the payload (`Hat.Server.Reload`) carries the tree —
+serialized as the persistence store's own snapshot JSON — beside each
+pane's *hot* state: its master fd, child pid, emulator modes, and its
+screen with scrollback. The incoming image rebuilds a pane by *byte
+replay*: it synthesizes the escape-sequence stream that reconstructs the
+carried grid and feeds it to a fresh emulator (`Hat.Server.Handover`
+captures and adopts). `-C` — on either spelling, `restart-server` and
+`restart` — drops scrollback from the handover as a memory-relief valve.
 
-Compatibility follows the versioned-migration mechanism: a frozen
+Compatibility uses both mechanisms, split by what evolves. The frozen
 envelope (magic, `reloadEra`, and a version-independent cleanup core of
-fds) around an era-tagged payload. A build decodes and migrates every
+fds) wraps an era-tagged payload, and a build decodes and migrates every
 era `1..current`; a newer or undecodable payload triggers a clean
 restart — the cleanup core still lets it hang up the inherited handles,
-so processes are never orphaned. The `ReloadSpec` corpus pins one
-serialized vector per era. Attached clients ride through via
-`RestartClient`: each re-execs itself in place, keeping the attachment.
+so processes are never orphaned. Only the hot core is era-gated: the
+tree inside evolves additively under the store's JSON rule, so a
+tree-shape change costs no era bump. A payload whose hot list and tree
+disagree pane-for-pane is refused like a corrupt one. The `ReloadSpec`
+corpus pins one serialized vector per era. Attached clients ride through
+via `RestartClient`: each re-execs itself in place, keeping the
+attachment.
 
 ## Options persistence (resolved)
 

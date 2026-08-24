@@ -33,10 +33,10 @@ import Hat.Server
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
 import Hat.Server.LayoutString (emitLayout)
-import Hat.Server.Persist (SessionSnap (..), Snapshot (..))
+import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
-    (ReloadModes (..), ReloadPane (..), ReloadScreen (..), ReloadSession (..),
-     ReloadWindow (..), emptyReloadScreen)
+    (HotPane (..), HotSession (..), HotWindow (..), ReloadModes (..),
+     ReloadScreen (..), emptyReloadScreen)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -123,8 +123,8 @@ spec = do
             srcSb  <- mapM (Emu.scrollbackLine src) [0 .. srcLen - 1]
             captured <- captureReloadScreen KeepScrollback src
             captured.altScreen `shouldBe` True
-            let rp = ReloadPane
-                    { cwd = "/tmp", masterFd = 0, childPid = 0
+            let rp = HotPane
+                    { masterFd = 0, childPid = 0
                     , modes = ReloadModes False False 0, screen = captured }
                 (bytes, sb) = replayPane sz rp
             dst <- Emu.newEmulator sz 1000
@@ -149,8 +149,8 @@ spec = do
                 src <- Emu.newEmulator sz 1000
                 _ <- Emu.feed src feedBytes
                 captured <- captureReloadScreen KeepScrollback src
-                let rp = ReloadPane
-                        { cwd = "/tmp", masterFd = 0, childPid = 0
+                let rp = HotPane
+                        { masterFd = 0, childPid = 0
                         , modes = ReloadModes False False 0, screen = captured }
                     (bytes, _) = replayPane sz rp
                 dst <- Emu.newEmulator sz 1000
@@ -189,8 +189,8 @@ spec = do
                     , cursorVisible = True
                     , rows = replicate 42 wideRow, scrollback = []
                     , pen = Cell.defaultStyle }
-                rp = ReloadPane
-                    { cwd = "/", masterFd = 0, childPid = 0
+                rp = HotPane
+                    { masterFd = 0, childPid = 0
                     , modes = ReloadModes False False 0, screen = sc }
                 esz = fromMaybe (Size 24 80) (captureSize sc)
             esz `shouldBe` Size 42 330
@@ -212,14 +212,16 @@ spec = do
             let lay = emitLayout
                     Rect { startRow = 0, endRow = 30, startCol = 0, endCol = 100 }
                     (Leaf (PaneId 0))
-                rp = ReloadPane
-                    { cwd = "/tmp", masterFd = fromIntegral m, childPid = 999999
+                rp = HotPane
+                    { masterFd = fromIntegral m, childPid = 999999
                     , modes = ReloadModes False False 0
                     , screen = emptyReloadScreen }
-                rw = ReloadWindow
+                psnap = PaneSnap
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                rw = HotWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
-                    , paneHist = [], autoRename = True, panes = [rp] }
-                rsess = ReloadSession
+                    , paneHist = [], autoRename = True, panes = [(psnap, rp)] }
+                rsess = HotSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
                     , windowHist = [], windows = [rw] }
             rebuildReloadSession st rsess
