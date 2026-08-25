@@ -126,6 +126,7 @@ shuttle sock = do
                 Message _ -> receiver  -- server renders toasts into frames
                 DetachOk -> pure Detached
                 RestartClient -> pure RestartRequested
+                RestartClientTo _ -> pure RestartRequested
                 CommandDone -> receiver
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
@@ -171,6 +172,7 @@ runClientControl sock origin setup = do
                 DetachOk -> pure Detached
                 Exited -> pure SessionEnded
                 RestartClient -> pure Detached
+                RestartClientTo _ -> pure Detached
                 ServerError e -> pure (Rejected e)
                 _ -> receiver
     stdinUntilEof = do

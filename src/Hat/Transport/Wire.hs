@@ -85,7 +85,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 5
+protocolVersion = 6
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -163,6 +163,7 @@ data ServerToClient
     | Exited                -- ^ the client's session is gone
     | ServerVersion Word16  -- ^ the server's own wire version; see 'negotiate'
     | RestartClient         -- ^ re-exec yourself in place, keeping the attachment
+    | RestartClientTo Text  -- ^ 'RestartClient' naming the session to reattach to
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -228,6 +229,7 @@ instance WireMessage ClientToServer where
 --   Exited        = 9
 --   ServerVersion = 10
 --   RestartClient = 11
+--   RestartClientTo = 12
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -242,6 +244,7 @@ instance WireMessage ServerToClient where
         Exited        -> encodeListLen 1 <> encodeWord 9
         ServerVersion v -> encodeListLen 2 <> encodeWord 10 <> encode v
         RestartClient -> encodeListLen 1 <> encodeWord 11
+        RestartClientTo t -> encodeListLen 2 <> encodeWord 12 <> encode t
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -255,6 +258,7 @@ instance WireMessage ServerToClient where
         9 -> nullary len (Known Exited)
         10 -> field len (Known . ServerVersion <$> decode)
         11 -> nullary len (Known RestartClient)
+        12 -> field len (Known . RestartClientTo <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -306,12 +310,14 @@ skipField = () <$ decodeTerm
 encodeMessage :: WireMessage a => a -> ByteString
 encodeMessage = toStrictByteString . encodeWire
 
--- | Encode for a peer at the negotiated dialect @lvl@. Only 'Draw' is
--- dialect-sensitive today; every other message is shape-frozen.
+-- | Encode for a peer at the negotiated dialect @lvl@: 'Draw' carries the
+-- level's 'Style' leaf, and a tag the level predates is rewritten to the
+-- form that peer knows; every other message is shape-frozen.
 encodeServerMessageAt :: Word16 -> ServerToClient -> ByteString
 encodeServerMessageAt lvl = \case
     Draw ops -> toStrictByteString $
         encodeListLen 2 <> encodeWord 1 <> encodeDrawOpsAt lvl ops
+    RestartClientTo _ | lvl < 6 -> encodeMessage RestartClient
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

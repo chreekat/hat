@@ -124,6 +124,7 @@ instance Arbitrary ServerToClient where
         , pure Exited
         , ServerVersion <$> arbitrary
         , pure RestartClient
+        , RestartClientTo <$> genText
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -138,6 +139,7 @@ instance Arbitrary ServerToClient where
         Exited -> []
         ServerVersion v -> ServerVersion <$> shrink v
         RestartClient -> []
+        RestartClientTo t -> RestartClientTo . T.pack <$> shrink (T.unpack t)
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -222,6 +224,8 @@ spec = do
             hex (encodeMessage (ServerVersion 5)) `shouldBe` "820a05"
         it "RestartClient" $
             hex (encodeMessage RestartClient) `shouldBe` "810b"
+        it "RestartClientTo" $
+            hex (encodeMessage (RestartClientTo "main")) `shouldBe` "820c646d61696e"
 
     -- A new build must read an old peer's nine-element (pre-faint) Style —
     -- that's what lets a new client drive an old server.
@@ -265,10 +269,15 @@ spec = do
     describe "dialect-levelled encoding" $ do
         prop "level-current bytes match the plain encoder" $
             \(msg :: ServerToClient) ->
-                encodeServerMessageAt 5 msg === encodeMessage msg
+                encodeServerMessageAt protocolVersion msg === encodeMessage msg
         it "encodes an empty Draw exactly like the plain encoder" $
-            encodeServerMessageAt 5 (Draw [])
+            encodeServerMessageAt protocolVersion (Draw [])
                 `shouldBe` encodeMessage (Draw [])
+        -- The level-5 corpus vector for tag 12: a pre-12 peer gets the bare
+        -- RestartClient it has always known.
+        it "downgrades RestartClientTo to bare RestartClient below level 6" $
+            hex (encodeServerMessageAt 5 (RestartClientTo "main"))
+                `shouldBe` "810b"
         it "emits the pre-faint nine-element Style at level 4" $
             hex (encodeServerMessageAt 4
                 (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll,
