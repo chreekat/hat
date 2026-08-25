@@ -386,11 +386,13 @@ reloadName ServerOnly = "restart-server"
 reloadName ServerAndClients = "restart"
 
 -- | The farewell 'cmdReload' sends each client it is about to drop: under
--- 'ServerAndClients' an attached client re-execs in place ('RestartClient',
--- handled like @restart-client@); everyone else exits.
-reloadFarewell :: ReloadScope -> ClientRole -> ServerToClient
-reloadFarewell ServerAndClients Attached = RestartClient
-reloadFarewell _ _ = Exited
+-- 'ServerAndClients' an attached client re-execs in place, told which
+-- session to rejoin ('RestartClientTo', handled like @restart-client@);
+-- everyone else exits.
+reloadFarewell :: ReloadScope -> ClientRole -> Maybe Text -> ServerToClient
+reloadFarewell ServerAndClients Attached msess =
+    maybe RestartClient RestartClientTo msess
+reloadFarewell _ _ _ = Exited
 
 -- | Reload the server binary in place while every pane's program keeps
 -- running. @-C@ drops all scrollback across the reload (a memory cleanup).
@@ -450,11 +452,14 @@ cmdReload' scope st mclient args =
                 B.writeFile blobPath (encodeHandover cleanup tree)
                 keepOpenAcrossExec cleanup
                 sessions <- readTVarIO st.sessions
-                forM_ (Map.keys sessions) $ \sid -> do
-                    cs <- atomically (sessionClients st sid)
-                    forM_ cs $ \c -> send c (reloadFarewell scope c.role)
+                forM_ (Map.elems sessions) $ \sess -> do
+                    nm <- readTVarIO sess.name
+                    cs <- atomically (sessionClients st sess.id)
+                    forM_ cs $ \c ->
+                        send c (reloadFarewell scope c.role (Just nm))
                 forM_ mclient $ \client ->
-                    send client (reloadFarewell scope client.role)
+                    send client . reloadFarewell scope client.role
+                        =<< clientSessionName st client
                 mconfig <- readTVarIO st.serverConfig
                 let argv = ["--server", st.sockPath]
                         <> maybe [] (: []) mconfig
@@ -531,12 +536,21 @@ cleanupInherited cleanup = do
 -- attached client — a bare @hat restart-client@ from a shell reaches the server
 -- as a control connection, so there is nothing rendering to restart.
 cmdRestartClient :: CommandImpl
-cmdRestartClient _ mclient _ =
+cmdRestartClient st mclient _ =
     case restartClientAction ((.role) <$> mclient) of
         NoAttachedClient -> pure []
         RestartAttached  -> do
-            forM_ mclient $ \client -> send client RestartClient
+            forM_ mclient $ \client ->
+                send client . maybe RestartClient RestartClientTo
+                    =<< clientSessionName st client
             pure []
+
+-- | The name of the session a client is attached to, if it still exists.
+clientSessionName :: ServerState -> Client -> IO (Maybe Text)
+clientSessionName st client = do
+    sid <- readTVarIO client.session
+    sessMap <- readTVarIO st.sessions
+    traverse (readTVarIO . (.name)) (Map.lookup sid sessMap)
 
 -- | The outcome of 'cmdRestartClient': restart the issuing client, or do
 -- nothing because no attached client issued the command.

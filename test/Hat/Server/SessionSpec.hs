@@ -233,11 +233,11 @@ spec = do
             restartClientAction (Just Control) `shouldBe` NoAttachedClient
             restartClientAction Nothing `shouldBe` NoAttachedClient
 
-        it "sends RestartClient to the attached client that issued it" $ do
+        it "sends the issuer its own session to rejoin (81)" $ do
             (st, _) <- seedSession "/"
             (client, peer) <- wiredClient st Attached
             [] <- cmdRestartClient st (Just client) []
-            recvMessage peer `shouldReturn` Just (Known RestartClient)
+            recvMessage peer `shouldReturn` Just (Known (RestartClientTo "work"))
 
         it "sends nothing when a control connection issues it" $ do
             (st, _) <- seedSession "/"
@@ -258,10 +258,13 @@ spec = do
     -- reload's farewell tells attached clients to re-exec instead of exit.
     describe "restart" $ do
         it "re-execs attached clients and exits everyone else (4f)" $ do
-            reloadFarewell ServerAndClients Attached `shouldBe` RestartClient
-            reloadFarewell ServerAndClients Control `shouldBe` Exited
-            reloadFarewell ServerOnly Attached `shouldBe` Exited
-            reloadFarewell ServerOnly Control `shouldBe` Exited
+            reloadFarewell ServerAndClients Attached (Just "beta")
+                `shouldBe` RestartClientTo "beta"
+            reloadFarewell ServerAndClients Attached Nothing
+                `shouldBe` RestartClient
+            reloadFarewell ServerAndClients Control (Just "beta") `shouldBe` Exited
+            reloadFarewell ServerOnly Attached (Just "beta") `shouldBe` Exited
+            reloadFarewell ServerOnly Control Nothing `shouldBe` Exited
 
         it "aborts the client restart when the reload is rejected (4f)" $ do
             (st, _) <- seedSession "/"

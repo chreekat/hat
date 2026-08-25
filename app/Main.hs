@@ -179,7 +179,7 @@ attach path mconfig setup = do
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
-        RestartRequested -> restartClient path mconfig
+        RestartRequested target -> restartClient path mconfig target
         ServerDied -> do
             hPutStrLn stderr "hat: server connection lost"
             exitWith (ExitFailure 1)
@@ -191,13 +191,15 @@ attach path mconfig setup = do
 -- replace this client image with a fresh @hat attach@ against the same socket
 -- and config. Resolving @hat@ on @PATH@ (not @\/proc\/self\/exe@) is what lets
 -- the restart pick up a just-installed build — the point of restart-client —
--- mirroring 'Hat.Server.resolveReloadTarget'. A bare attach lands on the
--- session the server last had us on, so the attachment survives.
-restartClient :: FilePath -> Maybe FilePath -> IO ()
-restartClient path mconfig = do
+-- mirroring 'Hat.Server.resolveReloadTarget'. The attach targets the session
+-- the farewell named, so each client rejoins its own; a nameless farewell (an
+-- older server) falls back to a bare attach.
+restartClient :: FilePath -> Maybe FilePath -> Maybe T.Text -> IO ()
+restartClient path mconfig msess = do
     onPath <- findExecutable "hat"
     target <- maybe getExecutablePath pure onPath
-    let argv = ["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig <> ["attach"]
+    let argv = ["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig
+            <> ["attach"] <> maybe [] (\s -> ["-t", T.unpack s]) msess
     executeFile target False argv Nothing
 
 control :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()

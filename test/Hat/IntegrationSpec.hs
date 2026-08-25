@@ -2261,6 +2261,28 @@ spec = parallel $ do
         pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
         pidAfter `shouldBe` pidBefore
 
+    -- `restart` returns each client to its own session, not the last-active
+    -- one every bare attach lands on (bug 81).
+    it "restart returns each client to its own session" $
+        withHat hatBin $ \h -> do
+        ambient <- testPath
+        let bindir = h.home </> "bin"
+        createDirectoryIfMissing True bindir
+        createFileLink h.bin (bindir </> "hat")
+        let env = [("PATH", bindir <> ":" <> ambient)]
+        c1 <- startClientEnv h env []
+        awaitScreen c1 "$"
+        c2 <- startClientEnv h env ["new-session", "-s", "beta"]
+        awaitScreen c2 "$"
+        let ownSessions = do
+                out <- ctlOut h ["list-clients", "-F", "#{session_name}"]
+                pure (List.sort (lines out) == ["0", "beta"])
+        awaitTrue "two clients on their own sessions" ownSessions
+        _ <- hatCtl h ["restart", h.bin]
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitTrue "each re-exec'd client to rejoin its own session" ownSessions
+
     -- A typo'd binary path must be caught before anything is torn down, so the
     -- running session is untouched rather than half-dropped.
     it "restart-server rejects a missing binary without dropping the session" $
