@@ -730,6 +730,34 @@ spec = parallel $ do
         t2 <- readIORef c2.transcript
         t2 `shouldSatisfy` B8.isInfixOf "[exited]"
 
+    -- bug 64: an outer terminal's extended-key sequence must arrive as the
+    -- key it names, not as bytes. Pins that a mapping keyed on the raw ctrl
+    -- byte still fires after one has been pressed.
+    it "keeps a vim mapping alive across an outer extended-key press" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        typeInto c1 "vim -u NONE -i NONE -N\r"
+        awaitScreen c1 "VIM - Vi IMproved"
+        -- Every C-n bumps a counter and echoes it, whichever spelling
+        -- delivers the key. (C-n, not the bug's C-s: raw 0x13 is XOFF to
+        -- the pane's tty.)
+        typeInto c1 ":let g:n=0\r"
+        typeInto c1 ":nmap <C-n> :let g:n+=1<Bar>echom \"PING\" . g:n<CR>\r"
+        typeInto c1 "\x0e"
+        awaitScreen c1 "PING1"
+        -- The outer terminal's spelling of the same key.
+        typeInto c1 "\ESC[27;5;110~"
+        awaitScreen c1 "PING2"
+        typeInto c1 "\x0e"
+        awaitScreen c1 "PING3"
+
+        typeInto c1 "\ESC:q!\r"
+        awaitScreen c1 "$"
+        typeInto c1 "exit\r"
+        _ <- awaitExit c1
+        pure ()
+
     it "runs htop (colors, alt screen, live redraw)" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
