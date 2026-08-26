@@ -20,12 +20,15 @@ module Hat.Server.Keys
     , flushEscape
     , parseKeyName
     , namedKeys
+    , extendedKeyCode
     , routeKeys
     ) where
 
+import Data.Bits (testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.Char (chr, ord)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -201,10 +204,11 @@ tokenize timing = go
                     Just (nm, len) ->
                         cons (mkKey nm ("\ESC" <> B.take len rest)) (go (B.drop len rest))
                     Nothing ->
-                        -- Unknown sequence: swallow it whole so garbage
-                        -- doesn't leak keys; forward raw.
+                        -- Swallow the sequence whole so garbage doesn't leak
+                        -- keys: an extended-key form becomes its canonical
+                        -- key, anything else an unnamed 'Unknown'.
                         let (seqBytes, rest') = spanCsi rest
-                        in cons (mkKey "Unknown" ("\ESC" <> seqBytes)) (go rest')
+                        in cons (extendedOrUnknown seqBytes) (go rest')
             | otherwise -> case go (B.cons b2 rest2) of
                 (k : ks, p) -> (mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks, p)
                 ([], p) -> ([mkKey "Escape" "\ESC"], p)
@@ -239,6 +243,96 @@ tokenize timing = go
         | b >= 0xe0 = 3
         | b >= 0xc0 = 2
         | otherwise = 1
+
+-- | Name a swallowed CSI sequence as an extended key, or leave it 'Unknown'.
+-- An 'Unknown' key is never delivered (see 'Hat.Server.Conn.deliversKey'), so
+-- its bytes stay in the sequence only for the log.
+extendedOrUnknown :: ByteString -> Key
+extendedOrUnknown sq = case extendedParams sq >>= uncurry extendedKeyOf of
+    Just k  -> k
+    Nothing -> mkKey "Unknown" ("\ESC" <> sq)
+
+-- The (codepoint, xterm modifier param) an extended-key CSI carries: xterm's
+-- modifyOtherKeys @CSI 27;mod;code~@ and the CSI-u @CSI code;mod u@ that
+-- kitty's protocol shares. Kitty's @:@ subparams (alternate keys, event type,
+-- associated text) are dropped: the base codepoint is the key.
+extendedParams :: ByteString -> Maybe (Int, Int)
+extendedParams sq = do
+    (intro, body) <- B.uncons sq
+    (params, final) <- B.unsnoc body
+    fields <- traverse wholeInt [B8.takeWhile (/= ':') f | f <- B8.split ';' params]
+    case (intro, final, fields) of
+        (0x5b, 0x7e, [27, m, c]) -> Just (c, m)
+        (0x5b, 0x75, [c])        -> Just (c, 1)
+        (0x5b, 0x75, c : m : _)  -> Just (c, m)
+        _                        -> Nothing
+  where
+    wholeInt f = case B8.readInt f of
+        Just (n, rest) | B.null rest -> Just n
+        _                            -> Nothing
+
+-- | The key an extended-key (codepoint, modifier param) denotes: its canonical
+-- tmux name, and the legacy bytes a pane that enabled no key protocol expects
+-- — modifiers with no legacy encoding dropped, Alt kept as an ESC prefix, as
+-- tmux does. A pane's own protocol state re-spells it on delivery (see
+-- 'Hat.Term.Emulator.encodeKeyPress'). 'Nothing' for a codepoint with no tmux
+-- name, such as kitty's functional-key codes.
+extendedKeyOf :: Int -> Int -> Maybe Key
+extendedKeyOf code param = do
+    base <- baseKeyName code
+    let bits = max 0 (param - 1)
+        (ctrl, alt, shift) = (testBit bits 2, testBit bits 1, testBit bits 0)
+        name = T.concat ([ "C-" | ctrl ] ++ [ "M-" | alt ] ++ [ "S-" | shift ])
+        legacy = if ctrl then ctrlByte code else charBytes code
+    pure (mkKey (name <> base) (if alt then "\ESC" <> legacy else legacy))
+
+-- The name of an extended key's base codepoint: the specials tmux names, then
+-- the printable ASCII character itself, lowercased (the codepoint is the
+-- unshifted one, so Shift rides the modifier mask).
+baseKeyName :: Int -> Maybe Text
+baseKeyName c = case c of
+    13  -> Just "Enter"
+    9   -> Just "Tab"
+    27  -> Just "Escape"
+    32  -> Just "Space"
+    127 -> Just "BSpace"
+    _ | c >= 0x21 && c <= 0x7e -> Just (T.toLower (T.singleton (chr c)))
+      | otherwise              -> Nothing
+
+-- The C0 byte Ctrl+key produces, for the codepoints that have one; the others
+-- have no legacy encoding, so Ctrl is dropped.
+ctrlByte :: Int -> ByteString
+ctrlByte c
+    | c >= ord 'a' && c <= ord 'z' = B.singleton (fromIntegral (c - 0x60))
+    | c >= 0x40 && c <= 0x5f       = B.singleton (fromIntegral (c - 0x40))
+    | c == 0x20                    = "\NUL"
+    | c == ord '?'                 = "\DEL"
+    | otherwise                    = charBytes c
+
+charBytes :: Int -> ByteString
+charBytes = TE.encodeUtf8 . T.singleton . chr
+
+-- | The (codepoint, xterm modifier param) a canonical key name denotes, for
+-- the keys an extended-key sequence can carry — what a pane's key protocol
+-- re-encodes on delivery. 'Nothing' for a name with no modifiers, or whose
+-- base is not a codepoint (an arrow, a function key).
+extendedKeyCode :: Text -> Maybe (Int, Int)
+extendedKeyCode = go (0 :: Int)
+  where
+    go bits t
+        | Just rest <- T.stripPrefix "C-" t = go (bits + 4) rest
+        | Just rest <- T.stripPrefix "M-" t = go (bits + 2) rest
+        | Just rest <- T.stripPrefix "S-" t = go (bits + 1) rest
+        | bits == 0 = Nothing
+        | otherwise = (\c -> (c, bits + 1)) <$> baseCode t
+    baseCode t = case t of
+        "Enter"  -> Just 13
+        "Tab"    -> Just 9
+        "Escape" -> Just 27
+        "Space"  -> Just 32
+        "BSpace" -> Just 127
+        _ | T.length t == 1, c <- ord (T.head t), c >= 0x21, c <= 0x7e -> Just c
+          | otherwise -> Nothing
 
 -- | What a batch of keys should do, in order. Consecutive unbound
 -- keys coalesce into one passthrough write.
