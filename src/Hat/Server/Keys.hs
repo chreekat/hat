@@ -24,7 +24,7 @@ module Hat.Server.Keys
     , routeKeys
     ) where
 
-import Data.Bits (testBit)
+import Data.Bits ((.|.), testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -317,22 +317,45 @@ charBytes = TE.encodeUtf8 . T.singleton . chr
 -- re-encodes on delivery. 'Nothing' for a name with no modifiers, or whose
 -- base is not a codepoint (an arrow, a function key).
 extendedKeyCode :: Text -> Maybe (Int, Int)
-extendedKeyCode = go (0 :: Int)
+extendedKeyCode t = do
+    (bits, base) <- modifiedName t
+    (\c -> (c, bits + 1)) <$> baseKeyCode base
+
+-- | The key a modified character name denotes (@C-Enter@, @C-S-s@, @M-Space@),
+-- in any prefix order and any case: the same canonical key the tokenizer makes
+-- of that key's wire form, so a binding written this way fires on both.
+extendedByName :: Text -> Maybe Key
+extendedByName t = do
+    (bits, base) <- modifiedName t
+    code <- baseKeyCode base
+    extendedKeyOf code (bits + 1)
+
+-- A key name's modifier bitmask and the base name under it; 'Nothing' when it
+-- carries no modifier prefix at all.
+modifiedName :: Text -> Maybe (Int, Text)
+modifiedName = go 0
   where
     go bits t
-        | Just rest <- T.stripPrefix "C-" t = go (bits + 4) rest
-        | Just rest <- T.stripPrefix "M-" t = go (bits + 2) rest
-        | Just rest <- T.stripPrefix "S-" t = go (bits + 1) rest
-        | bits == 0 = Nothing
-        | otherwise = (\c -> (c, bits + 1)) <$> baseCode t
-    baseCode t = case t of
-        "Enter"  -> Just 13
-        "Tab"    -> Just 9
-        "Escape" -> Just 27
-        "Space"  -> Just 32
-        "BSpace" -> Just 127
-        _ | T.length t == 1, c <- ord (T.head t), c >= 0x21, c <= 0x7e -> Just c
-          | otherwise -> Nothing
+        | Just rest <- stripCI "c-" t = go (bits .|. 4) rest
+        | Just rest <- stripCI "m-" t = go (bits .|. 2) rest
+        | Just rest <- stripCI "s-" t = go (bits .|. 1) rest
+        | bits == (0 :: Int) = Nothing
+        | otherwise = Just (bits, t)
+    stripCI p t =
+        let (pre, rest) = T.splitAt (T.length p) t
+        in if T.toLower pre == p then Just rest else Nothing
+
+-- The codepoint a base key name denotes: one of the specials tmux names
+-- (case-insensitively, as tmux matches them) or a printable character.
+baseKeyCode :: Text -> Maybe Int
+baseKeyCode t
+    | Just c <- lookup (T.toLower t) specials = Just c
+    | T.length t == 1, c <- ord (T.head t), c >= 0x21, c <= 0x7e = Just c
+    | otherwise = Nothing
+  where
+    specials =
+        [ ("enter", 13), ("tab", 9), ("escape", 27)
+        , ("space", 32), ("bspace", 127) ]
 
 -- | What a batch of keys should do, in order. Consecutive unbound
 -- keys coalesce into one passthrough write.
@@ -390,6 +413,7 @@ parseKeyName :: Text -> Maybe Key
 parseKeyName t
     | Just (n, r) <- lookupNamed t = Just (mkKey n r)
     | Just (n, r) <- lookupModified t = Just (mkKey n r)
+    | Just k <- extendedByName t = Just k
     | Just rest <- T.stripPrefix "C-" t = ctrl rest
     | Just rest <- T.stripPrefix "^" t, not (T.null rest) = ctrl rest
     | Just rest <- T.stripPrefix "M-" t = do

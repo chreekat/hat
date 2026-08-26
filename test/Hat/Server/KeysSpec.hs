@@ -360,6 +360,13 @@ spec = do
             [k.name | Just k0 <- map parseKeyName names
                     , k <- tokenizeKeys k0.raw]
                 `shouldBe` names
+        it "parses the modified character keys the wire can carry" $ do
+            -- bug 64: a key hat can now receive must also be bindable.
+            (.name) <$> parseKeyName "C-Enter" `shouldBe` Just "C-Enter"
+            (.raw) <$> parseKeyName "C-Enter" `shouldBe` Just "\r"
+            (.name) <$> parseKeyName "c-enter" `shouldBe` Just "C-Enter"
+            (.name) <$> parseKeyName "S-M-s" `shouldBe` Just "M-S-s"
+            (.raw) <$> parseKeyName "C-S-s" `shouldBe` Just "\x13"
         it "rejects nonsense" $
             parseKeyName "NotAKey" `shouldBe` Nothing
 
