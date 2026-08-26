@@ -92,11 +92,12 @@ captureHotPane :: ScrollbackCarry -> Pane -> IO HotPane
 captureHotPane carry pane = do
     let Fd fd = Hat.Term.Pty.masterFd pane.pty
     ms <- Emu.modes pane.emulator
+    km <- Emu.keyModes pane.emulator
     sc <- captureReloadScreen carry pane.emulator
     pure HotPane
         { masterFd = fromIntegral fd
         , childPid = fromIntegral (Hat.Term.Pty.pid pane.pty)
-        , modes = reloadModesOf ms
+        , modes = reloadModesOf ms km
         , screen = sc }
 
 -- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
@@ -123,10 +124,10 @@ captureReloadScreen carry emu = do
         , pen           = pen
         }
 
--- | The app-set mode subscriptions to carry across a reload; the inverse
+-- | The app-set subscriptions to carry across a reload; the inverse
 -- rebuild happens in 'adoptPane'.
-reloadModesOf :: Emu.Modes -> ReloadModes
-reloadModesOf m = ReloadModes
+reloadModesOf :: Emu.Modes -> Emu.KeyModes -> ReloadModes
+reloadModesOf m km = ReloadModes
     { colorReport = m.colorReport
     , focusReport = m.focusReport
     , mouse = case m.mouse of
@@ -134,6 +135,8 @@ reloadModesOf m = ReloadModes
         Emu.MouseClick -> 1
         Emu.MouseDrag  -> 2
         Emu.MouseMove  -> 3
+    , modifyOtherKeys = km.modifyOtherKeys
+    , kittyFlags = km.kittyFlags
     }
 
 -- Read and consume the handover file the outgoing image wrote. The frozen
@@ -243,6 +246,12 @@ emuModesOf rm = Emu.Modes
         _ -> Emu.MouseOff
     }
 
+-- | Rebuild the key protocols a reload carried, so the adopted pane keeps
+-- encoding keys as the surviving program expects. Inverse of 'reloadModesOf'.
+keyModesOf :: ReloadModes -> Emu.KeyModes
+keyModesOf rm = Emu.KeyModes
+    { modifyOtherKeys = rm.modifyOtherKeys, kittyFlags = rm.kittyFlags }
+
 -- | Rebuild the 'Emu.Screen' a reload captured, sized to the pane, for
 -- 'Emu.restoreBytes'. See 'replayPane'.
 screenOf :: Size -> ReloadScreen -> Emu.Screen
@@ -254,13 +263,14 @@ screenOf sz rs = Emu.Screen
     }
 
 -- | What 'adoptPane' feeds a reloaded pane's fresh emulator to reconstruct it:
--- the bytes that replay the mode subscriptions then repaint the captured
+-- the bytes that replay the mode and key-protocol subscriptions then repaint the captured
 -- screen (re-entering the alt screen when the program was in it), paired with
 -- the scrollback lines to reseed. Pure, so the capture→replay round trip is
 -- testable without a pty.
 replayPane :: Size -> HotPane -> (B.ByteString, [V.Vector Cell.Cell])
 replayPane sz rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
+        <> Emu.keyModeReplayBytes (keyModesOf rp.modes)
         <> Emu.restoreBytes restoreModes rp.screen.pen (screenOf sz rp.screen)
     , map V.fromList rp.screen.scrollback )
   where
