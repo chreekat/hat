@@ -19,9 +19,15 @@ module Hat.Term.Emulator
     , Modes (..)
     , MouseMode (..)
     , CursorKey (..)
+    , KeyPress (..)
+    , KeyModes (..)
+    , modifyOtherKeysBytes
+    , keyModeReplayBytes
     , newEmulator
     , feed
     , encodeKey
+    , encodeKeyPress
+    , keyModes
     , resize
     , snapshot
     , currentPen
@@ -93,6 +99,10 @@ foreign import ccall unsafe "ghost_shim_row_wrapped"
     c_row_wrapped :: Ptr CTerm -> CInt -> CUInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_pen"
     c_pen :: Ptr CTerm -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_encode_key"
+    c_encode_key :: Ptr CTerm -> CUInt -> CUInt -> Ptr Word8 -> CSize -> IO CLong
+foreign import ccall unsafe "ghost_shim_key_modes"
+    c_key_modes :: Ptr CTerm -> Ptr Word8 -> IO CInt
 foreign import ccall unsafe "ghostty_terminal_set"
     c_set :: Ptr CTerm -> CInt -> Ptr () -> IO CInt
 
@@ -380,6 +390,40 @@ encodeKey e key = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
             CursorHome  -> "H"
             CursorEnd   -> "F"
     pure (intro <> final)
+
+-- | Encode a modified key press as the pane's app expects it: the legacy bytes
+-- when it turned no key protocol on (modifiers with no legacy encoding are
+-- dropped, keeping alt, as tmux does), the modifyOtherKeys form once it sent
+-- @CSI > 4 ; 2 m@, the kitty CSI-u form once it pushed kitty flags.
+-- 'Nothing' when the encoder cannot spell the key, leaving the caller its
+-- tokenized bytes.
+encodeKeyPress :: Emulator -> KeyPress -> IO (Maybe ByteString)
+encodeKeyPress e kp = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    km <- readKeyModes t
+    -- libghostty keeps a legacy encoding under modifyOtherKeys where xterm and
+    -- tmux escape it, and a half-escaped app reads the legacy byte as unmapped.
+    if km.modifyOtherKeys && km.kittyFlags == 0
+        then pure (Just (modifyOtherKeysBytes kp))
+        else allocaBytes cap $ \buf -> do
+            n <- c_encode_key t (fromIntegral kp.code) (fromIntegral kp.mods)
+                    buf (fromIntegral cap)
+            if n < 0
+                then pure Nothing
+                else Just <$> B.packCStringLen (castPtr buf, fromIntegral n)
+  where
+    cap = 64 :: Int
+
+-- | The key protocols the pane's app has turned on, for the reload carry.
+keyModes :: Emulator -> IO KeyModes
+keyModes e = withMVar e.lock $ \_ -> withForeignPtr e.term readKeyModes
+
+readKeyModes :: Ptr CTerm -> IO KeyModes
+readKeyModes t = alloca $ \kfp -> do
+    poke kfp 0
+    mok <- c_key_modes t kfp
+    kf <- peek kfp
+    pure KeyModes
+        { modifyOtherKeys = mok > 0, kittyFlags = fromIntegral (kf :: Word8) }
 
 -- | The current window title: an OSC 0\/2 title polled from libghostty, or a
 -- screen\/tmux ESC k title scrubbed from the stream.

@@ -189,3 +189,99 @@ int ghost_shim_pen(void *t, GhostShimCell *out) {
     ghostty_free(NULL, buf, len);
     return ok;
 }
+
+/* The physical key an unshifted ASCII codepoint sits on. The encoder needs it
+ * to produce a legacy encoding; a bare codepoint only carries under kitty. */
+static GhosttyKey key_of_codepoint(uint32_t cp) {
+    if (cp >= 'a' && cp <= 'z') return (GhosttyKey)(GHOSTTY_KEY_A + (cp - 'a'));
+    if (cp >= '0' && cp <= '9')
+        return (GhosttyKey)(GHOSTTY_KEY_DIGIT_0 + (cp - '0'));
+    switch (cp) {
+        case '`':  return GHOSTTY_KEY_BACKQUOTE;
+        case '\\': return GHOSTTY_KEY_BACKSLASH;
+        case '[':  return GHOSTTY_KEY_BRACKET_LEFT;
+        case ']':  return GHOSTTY_KEY_BRACKET_RIGHT;
+        case ',':  return GHOSTTY_KEY_COMMA;
+        case '=':  return GHOSTTY_KEY_EQUAL;
+        case '-':  return GHOSTTY_KEY_MINUS;
+        case '.':  return GHOSTTY_KEY_PERIOD;
+        case '\'': return GHOSTTY_KEY_QUOTE;
+        case ';':  return GHOSTTY_KEY_SEMICOLON;
+        case '/':  return GHOSTTY_KEY_SLASH;
+        case ' ':  return GHOSTTY_KEY_SPACE;
+        case 13:   return GHOSTTY_KEY_ENTER;
+        case 9:    return GHOSTTY_KEY_TAB;
+        case 27:   return GHOSTTY_KEY_ESCAPE;
+        case 127:  return GHOSTTY_KEY_BACKSPACE;
+        default:   return GHOSTTY_KEY_UNIDENTIFIED;
+    }
+}
+
+static GhosttyMods mods_of(unsigned mods) {
+    unsigned bits = mods > 0 ? mods - 1 : 0;
+    GhosttyMods m = 0;
+    if (bits & 1) m |= GHOSTTY_MODS_SHIFT;
+    if (bits & 2) m |= GHOSTTY_MODS_ALT;
+    if (bits & 4) m |= GHOSTTY_MODS_CTRL;
+    return m;
+}
+
+static long encode_press(GhosttyKeyEncoder e, uint32_t cp, unsigned mods,
+                         uint8_t *buf, size_t cap) {
+    GhosttyKeyEvent ev = NULL;
+    if (ghostty_key_event_new(NULL, &ev) != GHOSTTY_SUCCESS) return -1;
+    ghostty_key_event_set_action(ev, GHOSTTY_KEY_ACTION_PRESS);
+    ghostty_key_event_set_key(ev, key_of_codepoint(cp));
+    ghostty_key_event_set_mods(ev, mods_of(mods));
+    ghostty_key_event_set_unshifted_codepoint(ev, cp);
+    /* The layout text the key produces; a C0 codepoint has none. */
+    char text = (char)cp;
+    if (cp >= 0x20 && cp < 0x7f) ghostty_key_event_set_utf8(ev, &text, 1);
+    size_t n = 0;
+    GhosttyResult r =
+        ghostty_key_encoder_encode(e, ev, (char *)buf, cap, &n);
+    ghostty_key_event_free(ev);
+    return r == GHOSTTY_SUCCESS ? (long)n : -1;
+}
+
+/* Whether encoded bytes are an extended-key sequence: xterm's
+ * CSI 27;mod;code~ or a CSI-u form. */
+static int is_extended(const uint8_t *b, long n) {
+    if (n < 3 || b[0] != 0x1b || b[1] != '[') return 0;
+    if (n >= 5 && b[2] == '2' && b[3] == '7' && b[4] == ';') return 1;
+    return b[n - 1] == 'u';
+}
+
+/* See ghost_shim_key_modes: alt+enter spells as an extended sequence only
+ * under a key protocol. */
+static int protocol_active(GhosttyKeyEncoder e) {
+    uint8_t probe[64];
+    long n = encode_press(e, 13, 3, probe, sizeof probe);
+    return n > 0 && is_extended(probe, n);
+}
+
+long ghost_shim_encode_key(void *t, uint32_t cp, unsigned mods,
+                           uint8_t *buf, size_t cap) {
+    GhosttyKeyEncoder e = NULL;
+    if (ghostty_key_encoder_new(NULL, &e) != GHOSTTY_SUCCESS) return -1;
+    ghostty_key_encoder_setopt_from_terminal(e, (GhosttyTerminal)t);
+    long n = encode_press(e, cp, mods, buf, cap);
+    if (n > 0 && is_extended(buf, n) && !protocol_active(e))
+        n = encode_press(e, cp, 1 + (((mods > 0 ? mods - 1 : 0)) & 2), buf, cap);
+    ghostty_key_encoder_free(e);
+    return n;
+}
+
+int ghost_shim_key_modes(void *t, uint8_t *kitty_flags) {
+    GhosttyKittyKeyFlags kf = 0;
+    if (ghostty_terminal_get((GhosttyTerminal)t,
+            GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, &kf) != GHOSTTY_SUCCESS)
+        return -1;
+    *kitty_flags = kf;
+    GhosttyKeyEncoder e = NULL;
+    if (ghostty_key_encoder_new(NULL, &e) != GHOSTTY_SUCCESS) return -1;
+    ghostty_key_encoder_setopt_from_terminal(e, (GhosttyTerminal)t);
+    int mok = kf == 0 && protocol_active(e);
+    ghostty_key_encoder_free(e);
+    return mok;
+}

@@ -369,6 +369,68 @@ spec = do
         back <- encodeKey e CursorUp
         back `shouldBe` "\ESC[A"
 
+    -- bug 64: what a pane receives for a modified key depends on the key
+    -- protocol its app turned on, and an app that turned none on must never
+    -- see an extended-key sequence.
+    describe "key protocol encoding" $ do
+        let cSs   = KeyPress { code = 115, mods = 5 }
+            cEnter = KeyPress { code = 13, mods = 5 }
+            sEnter = KeyPress { code = 13, mods = 2 }
+            mX    = KeyPress { code = 120, mods = 3 }
+            cSpace = KeyPress { code = 32, mods = 5 }
+            enc e kp = encodeKeyPress e kp
+
+        it "sends legacy bytes to a pane that turned no protocol on" $ do
+            e <- new80x24
+            enc e cSs `shouldReturn` Just "\x13"
+            enc e mX `shouldReturn` Just "\ESCx"
+            enc e cSpace `shouldReturn` Just "\NUL"
+            -- No legacy encoding at all: the modifiers drop rather than
+            -- escaping into an extended sequence.
+            enc e cEnter `shouldReturn` Just "\r"
+            enc e sEnter `shouldReturn` Just "\r"
+
+        it "spells every modified key as modifyOtherKeys once the app asked" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC[>4;2m"
+            enc e cSs `shouldReturn` Just "\ESC[27;5;115~"
+            enc e cEnter `shouldReturn` Just "\ESC[27;5;13~"
+            enc e mX `shouldReturn` Just "\ESC[27;3;120~"
+
+        it "spells modified keys as CSI-u once the app pushed kitty flags" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC[>1u"
+            enc e cSs `shouldReturn` Just "\ESC[115;5u"
+            enc e cEnter `shouldReturn` Just "\ESC[13;5u"
+
+        it "returns to legacy bytes when the app turns the protocol off" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC[>4;2m"
+            _ <- feedStr e "\ESC[>4;0m"
+            enc e cSs `shouldReturn` Just "\x13"
+            enc e cEnter `shouldReturn` Just "\r"
+
+        it "reads back the protocols an app turned on" $ do
+            e <- new80x24
+            keyModes e `shouldReturn` KeyModes False 0
+            _ <- feedStr e "\ESC[>4;2m"
+            keyModes e `shouldReturn` KeyModes True 0
+            _ <- feedStr e "\ESC[>5u"
+            keyModes e `shouldReturn` KeyModes False 5
+
+        -- The reload contract: replaying the captured protocols into a fresh
+        -- emulator encodes keys as the surviving program still expects.
+        it "re-arms a captured protocol in a fresh emulator" $
+            forM_ [("\ESC[>4;2m", Just "\ESC[27;5;115~"), ("\ESC[>1u", Just "\ESC[115;5u")]
+                $ \(enable, expected) -> do
+                    live <- new80x24
+                    _ <- feedStr live enable
+                    km <- keyModes live
+                    fresh <- new80x24
+                    _ <- feed fresh (keyModeReplayBytes km)
+                    keyModes fresh `shouldReturn` km
+                    enc fresh cSs `shouldReturn` expected
+
     it "reports title changes" $ do
         e <- new80x24
         evs <- feedStr e "\ESC]2;my title\BEL"

@@ -14,6 +14,10 @@ module Hat.Term.Emulator.Types
     , Modes (..)
     , MouseMode (..)
     , CursorKey (..)
+    , KeyPress (..)
+    , KeyModes (..)
+    , modifyOtherKeysBytes
+    , keyModeReplayBytes
     , modeReplayBytes
     , restoreBytes
     , cellSgr
@@ -26,6 +30,7 @@ module Hat.Term.Emulator.Types
 
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as BL
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -72,6 +77,23 @@ data CursorKey
     = CursorUp | CursorDown | CursorLeft | CursorRight | CursorHome | CursorEnd
     deriving (Eq, Show)
 
+-- | A modified key press to encode for a pane. See
+-- 'Hat.Term.Emulator.encodeKeyPress'.
+data KeyPress = KeyPress
+    { code :: Int  -- ^ the key's unshifted codepoint
+    , mods :: Int  -- ^ xterm modifier parameter: 1 + a bitmask of
+                   --   1 shift, 2 alt, 4 ctrl
+    }
+    deriving (Eq, Show)
+
+-- | The key protocols a pane's app has turned on. See
+-- 'Hat.Term.Emulator.keyModes'.
+data KeyModes = KeyModes
+    { modifyOtherKeys :: Bool  -- ^ xterm modifyOtherKeys state 2 (@CSI > 4 ; 2 m@)
+    , kittyFlags      :: Int   -- ^ kitty keyboard protocol flags (@CSI > flags u@)
+    }
+    deriving (Eq, Show)
+
 data Modes = Modes
     { altScreen   :: Bool
     , mouse       :: MouseMode
@@ -87,6 +109,22 @@ data Screen = Screen
     , cursor        :: Pos
     , cursorVisible :: Bool
     }
+
+-- | The xterm modifyOtherKeys spelling of a key press: what an app that
+-- enabled it expects for EVERY modified key, whether or not the combination
+-- has a legacy encoding.
+modifyOtherKeysBytes :: KeyPress -> B.ByteString
+modifyOtherKeysBytes kp = BL.toStrict $ BB.toLazyByteString $
+       BB.byteString "\ESC[27;" <> BB.intDec kp.mods
+    <> BB.char8 ';' <> BB.intDec kp.code <> BB.char8 '~'
+
+-- | The bytes that re-arm an app's key protocols in a fresh emulator, so a
+-- pane adopted by a reload keeps encoding keys as the surviving program
+-- expects. The key-protocol companion to 'modeReplayBytes'.
+keyModeReplayBytes :: KeyModes -> B.ByteString
+keyModeReplayBytes km = B.concat $
+       [ "\ESC[>4;2m" | km.modifyOtherKeys ]
+    ++ [ "\ESC[>" <> B8.pack (show km.kittyFlags) <> "u" | km.kittyFlags /= 0 ]
 
 -- | The DECSET bytes that re-establish an app's mode subscriptions in a fresh
 -- emulator — feed them into the one an in-place reload adopts a program into,

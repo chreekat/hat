@@ -56,4 +56,22 @@ long  ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen);
  * space cell. Returns 1 on success, 0 on failure. */
 int   ghost_shim_pen(void *t, GhostShimCell *out);
 
+/* Encode a key press for the terminal's live state (cursor-key mode,
+ * alt-esc-prefix, kitty keyboard flags) into buf. cp is the key's UNSHIFTED
+ * codepoint and mods the xterm modifier parameter, 1 + a bitmask of
+ * 1 shift, 2 alt, 4 ctrl. An app that turned no key protocol on never receives
+ * an extended-key sequence: a combination with no legacy encoding drops those
+ * modifiers, keeping only alt, as tmux does. Returns the byte count written,
+ * or -1 on failure. */
+long  ghost_shim_encode_key(void *t, uint32_t cp, unsigned mods,
+                            uint8_t *buf, size_t cap);
+
+/* Read the key protocols an app has turned on: *kitty_flags gets the kitty
+ * keyboard flags, and the return is 1 when xterm modifyOtherKeys is on, 0 when
+ * it is not, -1 on failure. libghostty exposes modifyOtherKeys only to its key
+ * encoder, so it is probed rather than read: alt+enter has a legacy encoding,
+ * so an extended spelling of it means a protocol is active, and the kitty
+ * flags tell which. */
+int   ghost_shim_key_modes(void *t, uint8_t *kitty_flags);
+
 #endif
