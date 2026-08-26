@@ -12,7 +12,7 @@ module Hat.Server.Conn
     , pickAttachSession
     , deliversKey
     , escTiming
-    , reencodeCursor
+    , reencodeKey
     ) where
 
 import Control.Concurrent (forkIO)
@@ -374,7 +374,7 @@ runKeys d st client keys = do
               modeTable <- case mpane of
                 Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
-              k <- reencodeCursor mpane k0
+              k <- reencodeKey (fmap (.emulator) mpane) k0
               -- The outer terminal's ?1004 focus reports track whether the
               -- user is watching this client, independent of whether the
               -- pane's app asked for them (the 'keepKey' gate below).
@@ -426,15 +426,20 @@ runKeys d st client keys = do
 
 -- | Forward a recognized key as the pane's advertised terminal expects, not
 -- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
--- (@\ESC[A@ vs @\ESCOA@), so the pane's emulator encodes them; every other
--- named key forwards its tmux-256color terminfo bytes from 'namedKeys'.
--- Unrecognized keys keep their raw bytes.
-reencodeCursor :: Maybe Pane -> Key -> IO Key
-reencodeCursor mpane key = case arrowOf key.name of
-    Just ck | Just pane <- mpane -> do
-        enc <- Emu.encodeKey pane.emulator ck
+-- (@\ESC[A@ vs @\ESCOA@), and a modified character key depends on the key
+-- protocol the pane's app turned on, so the pane's emulator encodes both;
+-- every other named key forwards its tmux-256color terminfo bytes from
+-- 'namedKeys'. Unrecognized keys keep their raw bytes.
+reencodeKey :: Maybe Emu.Emulator -> Key -> IO Key
+reencodeKey memu key = case arrowOf key.name of
+    Just ck | Just emu <- memu -> do
+        enc <- Emu.encodeKey emu ck
         pure key { raw = enc }
-    _ | Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
+    _ | Just (code, mods) <- extendedKeyCode key.name
+      , Just emu <- memu -> do
+        enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
+        pure (maybe key (\bs -> key { raw = bs }) enc)
+      | Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
     _ -> pure key
   where
     arrowOf n = case n of
