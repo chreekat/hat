@@ -909,6 +909,12 @@ spec = do
         it "delivers a focus report only when focus-events is on and ?1004 set" $
             deliversKey (withFocus True) True focusIn `shouldBe` True
 
+        -- bug 64: a sequence hat cannot name is dropped, never forwarded --
+        -- the poison-stopper for a pane that enabled no key protocol.
+        it "drops a sequence it could not name" $
+            deliversKey (withFocus True) True
+                Key { name = "Unknown", raw = "\ESC[97~" } `shouldBe` False
+
     describe "reencodeCursor (Home/End terminfo normalization)" $ do
         -- hat advertises TERM=tmux-256color (khome=\E[1~, kend=\E[4~), so Home
         -- and End must forward those bytes whatever xterm-ish form the outer

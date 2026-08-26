@@ -302,13 +302,15 @@ noteClientActivity st client = do
         sid <- readTVarIO client.session
         applySessionSize st sid
 
--- | Whether a key event is delivered to the focused pane's program. Focus
--- in/out reports reach the pane only when @focus-events@ is on and the pane's
--- app enabled focus reporting (?1004); a bare shell never asks, so its focus
--- report is dropped rather than echoed as a stray "^[[I". Every other key is
--- always delivered.
+-- | Whether a key event is delivered to the focused pane's program. A sequence
+-- the tokenizer could not name is dropped, so bytes hat does not understand
+-- never reach an app. Focus in/out reports reach the pane only when
+-- @focus-events@ is on and the pane's app enabled focus reporting (?1004); a
+-- bare shell never asks, so its focus report is dropped rather than echoed as
+-- a stray "^[[I". Every other key is always delivered.
 deliversKey :: Options -> Bool -> Key -> Bool
 deliversKey opts paneFocusReport k
+    | k.name == "Unknown" = False
     | k.name `notElem` ["FocusIn", "FocusOut"] = True
     | otherwise = opts.focusEvents && paneFocusReport
 
@@ -379,7 +381,12 @@ runKeys d st client keys = do
               noteOuterFocus st client k
               keep <- keepKey opts mpane k
               if not keep
-                then loop kst rest
+                then do
+                    when (k.name == "Unknown") $
+                        logEvent st.logger UnknownKeySequence
+                            { client = rawClient client.id
+                            , input = T.pack (show k.raw) }
+                    loop kst rest
                 else do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
@@ -397,11 +404,11 @@ runKeys d st client keys = do
     -- Reads the pane's live focus-reporting mode, then defers the actual
     -- keep/drop decision to the pure 'deliversKey'.
     keepKey opts mpane k
-        | k.name `notElem` ["FocusIn", "FocusOut"] = pure True
-        | otherwise = do
+        | k.name `elem` ["FocusIn", "FocusOut"] = do
             report <- maybe (pure False)
                 (\pane -> (.focusReport) <$> Emu.modes pane.emulator) mpane
             pure (deliversKey opts report k)
+        | otherwise = pure (deliversKey opts False k)
     -- When the pane's copy mode is waiting for a char-search target, this
     -- key IS the target: a single printable char runs the search, anything
     -- else (Escape, Enter, an arrow) cancels it. Returns whether it was

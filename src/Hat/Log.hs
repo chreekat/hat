@@ -50,6 +50,7 @@ data LogEvent
     | ConfigError     { file :: FilePath, err :: Text }
     | ProtocolError   { client :: Int, err :: Text }
     | UnknownTermProp { pane :: Int, propKind :: Text, prop :: Int }  -- ^ the emulator reported a terminal property hat does not handle
+    | UnknownKeySequence { client :: Int, input :: Text }  -- ^ an input sequence hat could not name; dropped rather than forwarded to the pane
     | UnhandledPassthrough { pane :: Int, payload :: Text }  -- ^ a tmux passthrough payload hat neither answers nor forwards (OSC 52\/12\/4, …), logged instead of silently dropped
     | ServerCrash     { err :: Text }
     | ServerFatal     { err :: Text }  -- ^ an exception escaped the server's main loop and is taking the process down; carries its 'displayException' (backtrace included)
