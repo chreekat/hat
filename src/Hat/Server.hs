@@ -51,7 +51,7 @@ module Hat.Server
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
-    , reencodeCursor    -- ^ exported for the cursor-key encoding test
+    , reencodeKey       -- ^ exported for the key-encoding test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , awaitReconcileTick  -- ^ exported for the command-batch gate test
     , detachPane  -- ^ exported for the pane-detach test

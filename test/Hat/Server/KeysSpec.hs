@@ -1,10 +1,37 @@
 module Hat.Server.KeysSpec (spec) where
 
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import Test.QuickCheck
 
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.Map.Strict qualified as Map
 
 import Hat.Server.Keys
+
+-- A key an outer terminal can spell as an extended-key sequence: a base
+-- codepoint hat can name, under an xterm modifier parameter (1 + bitmask).
+data ExtKey = ExtKey Int Int
+    deriving (Show)
+
+instance Arbitrary ExtKey where
+    arbitrary = ExtKey <$> elements extBases <*> ((1 +) <$> choose (1, 7))
+    shrink (ExtKey c m) =
+        [ ExtKey c' m | c' <- takeWhile (/= c) extBases ]
+        ++ [ ExtKey c m' | m' <- [2 .. m - 1] ]
+
+extBases :: [Int]
+-- Uppercase letters are absent: an extended key carries the UNSHIFTED
+-- codepoint, and Shift rides the modifier mask.
+extBases = [13, 9, 27, 32, 127] ++ [0x21 .. 0x40] ++ [0x5b .. 0x7e]
+
+-- The two wire spellings of one extended key: xterm's modifyOtherKeys form
+-- and the CSI-u form.
+extForms :: ExtKey -> [B.ByteString]
+extForms (ExtKey c m) =
+    [ B8.pack ("\ESC[27;" <> show m <> ";" <> show c <> "~")
+    , B8.pack ("\ESC[" <> show c <> ";" <> show m <> "u") ]
 
 
 spec :: Spec
@@ -94,6 +121,73 @@ spec = do
 
         it "reads utf-8 sequences as single keys" $
             map (.name) (tokenizeKeys "\xc3\xa9") `shouldBe` ["é"]
+
+    -- bug 64: an outer terminal spells a combo with no legacy byte as an
+    -- extended-key sequence. Both spellings must land on the same canonical
+    -- name as the raw-byte twin, and neither may carry its own bytes into a
+    -- pane.
+    describe "tokenizeKeys (extended keys)" $ do
+        it "names xterm modifyOtherKeys sequences" $
+            map (.name) (tokenizeKeys
+                "\ESC[27;5;115~\ESC[27;6;115~\ESC[27;5;13~\ESC[27;2;13~\ESC[27;3;120~")
+                `shouldBe` ["C-s", "C-S-s", "C-Enter", "S-Enter", "M-x"]
+
+        it "names CSI-u sequences" $
+            map (.name) (tokenizeKeys
+                "\ESC[115;5u\ESC[13;5u\ESC[9;5u\ESC[32;5u\ESC[127;5u\ESC[27u")
+                `shouldBe` ["C-s", "C-Enter", "C-Tab", "C-Space", "C-BSpace",
+                            "Escape"]
+
+        it "encodes a kitty sequence from its base codepoint, subparams ignored" $
+            map (.name) (tokenizeKeys "\ESC[115:83;5:1u") `shouldBe` ["C-s"]
+
+        it "gives an extended key the same name as its raw-byte twin" $ do
+            let twins =
+                    [ ("\ESC[27;5;115~", "\x13"), ("\ESC[27;3;120~", "\ESCx")
+                    , ("\ESC[32;5u", "\NUL") ]
+            [ (map (.name) (tokenizeKeys a), map (.name) (tokenizeKeys b))
+                | (a, b) <- twins ]
+                `shouldSatisfy` all (uncurry (==))
+
+        it "carries the legacy bytes a protocol-less pane expects" $
+            map (.raw) (tokenizeKeys
+                "\ESC[27;5;115~\ESC[27;5;13~\ESC[27;2;13~\ESC[27;3;120~\ESC[32;5u")
+                `shouldBe` ["\x13", "\r", "\r", "\ESCx", "\NUL"]
+
+        prop "never forwards extended-key bytes, in either spelling" $ \k ->
+            conjoin
+                [ counterexample (show (bs, ks)) $
+                    length ks === 1 .&&. all (not . isExtended . (.raw)) ks
+                | bs <- extForms k, let ks = tokenizeKeys bs ]
+
+        prop "names both spellings of a key identically" $ \k ->
+            case map (map (.name) . tokenizeKeys) (extForms k) of
+                [mok, csiu] -> mok === csiu
+                _           -> property False
+
+        it "leaves a sequence it cannot name unknown" $ do
+            -- kitty's functional-key codepoints have no tmux name.
+            map (.name) (tokenizeKeys "\ESC[57399;5u") `shouldBe` ["Unknown"]
+            map (.name) (tokenizeKeys "\ESC[97~") `shouldBe` ["Unknown"]
+
+    describe "extendedKeyCode" $ do
+        it "reads the codepoint and modifier mask off a modified name" $ do
+            extendedKeyCode "C-s" `shouldBe` Just (115, 5)
+            extendedKeyCode "C-S-s" `shouldBe` Just (115, 6)
+            extendedKeyCode "C-Enter" `shouldBe` Just (13, 5)
+            extendedKeyCode "M-x" `shouldBe` Just (120, 3)
+            extendedKeyCode "C-Space" `shouldBe` Just (32, 5)
+            extendedKeyCode "C-BSpace" `shouldBe` Just (127, 5)
+        it "declines names with no modifier or no codepoint base" $ do
+            extendedKeyCode "s" `shouldBe` Nothing
+            extendedKeyCode "Enter" `shouldBe` Nothing
+            extendedKeyCode "C-Up" `shouldBe` Nothing
+            extendedKeyCode "S-F1" `shouldBe` Nothing
+        prop "round-trips the name a tokenized extended key gets" $ \k@(ExtKey c m) ->
+            case extForms k of
+                (mok : _) | [key] <- tokenizeKeys mok ->
+                    extendedKeyCode key.name === Just (c, m)
+                _ -> property False
 
     -- escape-time coalescing core: with escape-time 0 (EscImmediate) a lone
     -- trailing ESC is Escape at once; with escape-time > 0 (EscBuffered) it is
@@ -266,5 +360,19 @@ spec = do
             [k.name | Just k0 <- map parseKeyName names
                     , k <- tokenizeKeys k0.raw]
                 `shouldBe` names
+        it "parses the modified character keys the wire can carry" $ do
+            -- bug 64: a key hat can now receive must also be bindable.
+            (.name) <$> parseKeyName "C-Enter" `shouldBe` Just "C-Enter"
+            (.raw) <$> parseKeyName "C-Enter" `shouldBe` Just "\r"
+            (.name) <$> parseKeyName "c-enter" `shouldBe` Just "C-Enter"
+            (.name) <$> parseKeyName "S-M-s" `shouldBe` Just "M-S-s"
+            (.raw) <$> parseKeyName "C-S-s" `shouldBe` Just "\x13"
         it "rejects nonsense" $
             parseKeyName "NotAKey" `shouldBe` Nothing
+
+-- Whether bytes are an extended-key sequence: the modifyOtherKeys form or a
+-- CSI-u one.
+isExtended :: B.ByteString -> Bool
+isExtended bs =
+    "\ESC[27;" `B.isPrefixOf` bs
+    || ("\ESC[" `B.isPrefixOf` bs && "u" `B.isSuffixOf` bs)

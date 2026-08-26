@@ -125,7 +125,7 @@ spec = do
             captured.altScreen `shouldBe` True
             let rp = HotPane
                     { masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0, screen = captured }
+                    , modes = ReloadModes False False 0 False 0, screen = captured }
                 (bytes, sb) = replayPane sz rp
             dst <- Emu.newEmulator sz 1000
             _ <- Emu.feed dst bytes
@@ -151,7 +151,7 @@ spec = do
                 captured <- captureReloadScreen KeepScrollback src
                 let rp = HotPane
                         { masterFd = 0, childPid = 0
-                        , modes = ReloadModes False False 0, screen = captured }
+                        , modes = ReloadModes False False 0 False 0, screen = captured }
                     (bytes, _) = replayPane sz rp
                 dst <- Emu.newEmulator sz 1000
                 _ <- Emu.feed dst bytes
@@ -163,6 +163,23 @@ spec = do
             -- green foreground still active, no reset: the pen stays green
             penAfterReload "\ESC[32mgreen"
                 `shouldReturn` Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
+
+        -- bug 64: the key protocol an app turned on is state a reload must
+        -- carry, or the adopted pane spells its keys the legacy way while the
+        -- surviving program still expects the protocol.
+        it "re-arms the key protocols the capture carried" $
+            forM_ [ ReloadModes False False 0 True 0
+                  , ReloadModes False False 0 False 5 ] $ \ms -> do
+                let sz = Size { rows = 3, cols = 20 }
+                    rp = HotPane
+                        { masterFd = 0, childPid = 0
+                        , modes = ms, screen = emptyReloadScreen }
+                    (bytes, _) = replayPane sz rp
+                dst <- Emu.newEmulator sz 1000
+                _ <- Emu.feed dst bytes
+                Emu.keyModes dst `shouldReturn` Emu.KeyModes
+                    { modifyOtherKeys = ms.modifyOtherKeys
+                    , kittyFlags = ms.kittyFlags }
 
         -- restart-server -C: restart as memory cleanup — the handover keeps
         -- the live grid but sheds every scrollback line.
@@ -191,7 +208,7 @@ spec = do
                     , pen = Cell.defaultStyle }
                 rp = HotPane
                     { masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0, screen = sc }
+                    , modes = ReloadModes False False 0 False 0, screen = sc }
                 esz = fromMaybe (Size 24 80) (captureSize sc)
             esz `shouldBe` Size 42 330
             e <- Emu.newEmulator esz 1000
@@ -214,7 +231,7 @@ spec = do
                     (Leaf (PaneId 0))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = 999999
-                    , modes = ReloadModes False False 0
+                    , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen }
                 psnap = PaneSnap
                     { cwd = "/tmp", command = Nothing, shellSpawned = False }
@@ -235,17 +252,17 @@ spec = do
     -- scheme once into a subscribed pane.
     describe "reload color-scheme re-push" $ do
         it "re-pushes the current scheme to a pane that held the ?2031 subscription" $ do
-            reloadSchemePush (ReloadModes True False 0) (Just SchemeDark)
+            reloadSchemePush (ReloadModes True False 0 False 0) (Just SchemeDark)
                 `shouldBe` Just "\ESC[?997;1n"
-            reloadSchemePush (ReloadModes True False 0) (Just SchemeLight)
+            reloadSchemePush (ReloadModes True False 0 False 0) (Just SchemeLight)
                 `shouldBe` Just "\ESC[?997;2n"
 
         it "pushes nothing to a pane that never subscribed" $
-            reloadSchemePush (ReloadModes False False 0) (Just SchemeDark)
+            reloadSchemePush (ReloadModes False False 0 False 0) (Just SchemeDark)
                 `shouldBe` Nothing
 
         it "pushes nothing when the server does not yet know the scheme" $
-            reloadSchemePush (ReloadModes True False 0) Nothing
+            reloadSchemePush (ReloadModes True False 0 False 0) Nothing
                 `shouldBe` Nothing
 
     -- Fail loud rather than reload on top of an in-flight startup: a second

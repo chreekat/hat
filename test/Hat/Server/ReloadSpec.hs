@@ -99,10 +99,14 @@ instance Arbitrary HotPane where
             shrink (p.masterFd, p.childPid, p.modes, p.screen) ]
 
 instance Arbitrary ReloadModes where
-    arbitrary = ReloadModes <$> arbitrary <*> arbitrary <*> choose (0, 3)
+    arbitrary = ReloadModes
+        <$> arbitrary <*> arbitrary <*> choose (0, 3)
+        <*> arbitrary <*> choose (0, 31)
     shrink m =
-        [ ReloadModes cr fr mo
-        | (cr, fr, mo) <- shrink (m.colorReport, m.focusReport, m.mouse) ]
+        [ ReloadModes cr fr mo mok kf
+        | (cr, fr, mo, mok, kf) <-
+            shrink (m.colorReport, m.focusReport, m.mouse
+                   , m.modifyOtherKeys, m.kittyFlags) ]
 
 instance Arbitrary ReloadScreen where
     arbitrary = ReloadScreen
@@ -223,9 +227,18 @@ fixedScreen = ReloadScreen
 -- The current-era representative, with a non-trivial mode set, screen, and
 -- alternate session to pin its encoding.
 fixedTree :: ReloadTree
-fixedTree = treeWith (Just "prev")
-    ReloadModes { colorReport = True, focusReport = False, mouse = 2 }
-    fixedScreen
+fixedTree = treeWith (Just "prev") fixedModes fixedScreen
+
+fixedModes :: ReloadModes
+fixedModes = ReloadModes
+    { colorReport = True, focusReport = False, mouse = 2
+    , modifyOtherKeys = True, kittyFlags = 3 }
+
+-- What an era 4-8 row migrates to: those payloads predate the key protocols,
+-- so their panes come back with none enabled.
+preKeyProtocolTree :: ReloadTree
+preKeyProtocolTree = treeWith (Just "prev")
+    fixedModes { modifyOtherKeys = False, kittyFlags = 0 } fixedScreen
 
 -- The reload corpus: one committed encoding per era. A build MUST decode every
 -- vector here into the current tree (armor-style backward-compat enforcement).
@@ -241,13 +254,13 @@ corpus =
         \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
         \071864ffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes False False 0) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes False False 0 False 0) emptyReloadScreen )
     , ( 2
       , "851a4841545202039f82071864ff583683009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8500642f746d70\
         \0718648400f5f402ffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes True False 2) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes True False 2 False 0) emptyReloadScreen )
     , ( 3
       , "851a4841545203039f82071864ff586783009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -255,21 +268,21 @@ corpus =
         \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
         \ffffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes True False 2) fixedScreen )
+      , treeWith Nothing (ReloadModes True False 2 False 0) fixedScreen )
     , ( 4
       , "851a4841545204039f82071864ff586d84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
         \0718648400f5f4028700f50102f59f9f840061780189008201018100\
         \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
         \ffffffff8164776f726b816470726576"
-      , fixedCleanup, fixedTree )
+      , fixedCleanup, preKeyProtocolTree )
     , ( 5
       , "851a4841545205039f82071864ff586f84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
         \0718648400f5f4028700f50102f59f9f84006178018a0082010181\
         \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
         \f4f4f4ffffffffff8164776f726b816470726576"
-      , fixedCleanup, fixedTree )
+      , fixedCleanup, preKeyProtocolTree )
     , ( 6
       , "851a4841545206039f82071864ff587c84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -277,7 +290,7 @@ corpus =
         \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
         \f4f4f4ffff8a0081008100f4f4f4f4f4f4f4ffffff8164776f726b\
         \816470726576"
-      , fixedCleanup, fixedTree )
+      , fixedCleanup, preKeyProtocolTree )
     , ( 7
       , "851a4841545207039f82071864ff587c84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -285,7 +298,7 @@ corpus =
         \00f4f4f4f4f4f4f4ffff9f9f84006120018a0081008100f4f4f4f4\
         \f4f4f4ffff8a0081008100f4f4f4f4f4f4f4ffffff8164776f726b\
         \816470726576"
-      , fixedCleanup, fixedTree )
+      , fixedCleanup, preKeyProtocolTree )
     , ( 8
       , "851a4841545208039f82071864ff590118840078c27b226c6173\
         \745f6163746976655f73657373696f6e223a22776f726b222c22\
@@ -299,6 +312,20 @@ corpus =
         \84006178018a008201018100f4f4f4f4f4f4f4ffff9f9f840061\
         \20018a0081008100f4f4f4f4f4f4f4ffff8a0081008100f4f4f4\
         \f4f4f4f4ff816470726576"
+      , fixedCleanup, preKeyProtocolTree )
+    , ( 9
+      , "851a4841545209039f82071864ff59011a840078c27b226c6173\
+        \745f6163746976655f73657373696f6e223a22776f726b222c22\
+        \73657373696f6e73223a5b7b2263757272656e745f6978223a30\
+        \2c226e616d65223a22776f726b222c2273746172745f63776422\
+        \3a222f686f6d65222c2277696e646f7773223a5b7b2261637469\
+        \7665223a302c226175746f5f72656e616d65223a747275652c22\
+        \6978223a302c226c61796f7574223a224c222c226e616d65223a\
+        \2277222c2270616e6573223a5b7b22637764223a222f746d7022\
+        \7d5d7d5d7d5d7d9f85000718648600f5f402f5038800f50102f5\
+        \9f9f84006178018a008201018100f4f4f4f4f4f4f4ffff9f9f84\
+        \006120018a0081008100f4f4f4f4f4f4f4ffff8a0081008100f4\
+        \f4f4f4f4f4f4ff816470726576"
       , fixedCleanup, fixedTree )
     ]
 

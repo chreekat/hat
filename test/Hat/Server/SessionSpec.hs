@@ -17,6 +17,7 @@ import Test.Hspec
 import Data.Set qualified as Set
 import Data.Vector qualified as V
 import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
@@ -34,7 +35,7 @@ import Hat.Server
     , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
-    , dispatch, reencodeCursor, refreshSessionEnv, removePaneFromTree
+    , dispatch, reencodeKey, refreshSessionEnv, removePaneFromTree
     , welcome
     , zoomTarget )
 import Hat.Server.Environ
@@ -909,25 +910,41 @@ spec = do
         it "delivers a focus report only when focus-events is on and ?1004 set" $
             deliversKey (withFocus True) True focusIn `shouldBe` True
 
-    describe "reencodeCursor (Home/End terminfo normalization)" $ do
+        -- bug 64: a sequence hat cannot name is dropped, never forwarded --
+        -- the poison-stopper for a pane that enabled no key protocol.
+        it "drops a sequence it could not name" $
+            deliversKey (withFocus True) True
+                Key { name = "Unknown", raw = "\ESC[97~" } `shouldBe` False
+
+    describe "reencodeKey (what the pane receives)" $ do
         -- hat advertises TERM=tmux-256color (khome=\E[1~, kend=\E[4~), so Home
         -- and End must forward those bytes whatever xterm-ish form the outer
         -- terminal sent -- else a pager reads a bare H/F and less opens help.
-        let reraw form = (.raw) <$> reencodeCursor Nothing (Key "Home" form)
+        let reraw form = (.raw) <$> reencodeKey Nothing (Key "Home" form)
         it "normalizes Home to khome (\\E[1~) from any incoming form" $ do
             reraw "\ESC[H"  `shouldReturn` "\ESC[1~"
             reraw "\ESCOH"  `shouldReturn` "\ESC[1~"
             reraw "\ESC[1~" `shouldReturn` "\ESC[1~"
         it "normalizes End to kend (\\E[4~)" $
-            ((.raw) <$> reencodeCursor Nothing (Key "End" "\ESCOF"))
+            ((.raw) <$> reencodeKey Nothing (Key "End" "\ESCOF"))
                 `shouldReturn` "\ESC[4~"
         it "normalizes F1-F4 to the SS3 kf1..kf4 forms from the legacy CSI" $ do
             -- bug fad
-            ((.raw) <$> reencodeCursor Nothing (Key "F1" "\ESC[11~"))
+            ((.raw) <$> reencodeKey Nothing (Key "F1" "\ESC[11~"))
                 `shouldReturn` "\ESCOP"
-            ((.raw) <$> reencodeCursor Nothing (Key "F4" "\ESC[14~"))
+            ((.raw) <$> reencodeKey Nothing (Key "F4" "\ESC[14~"))
                 `shouldReturn` "\ESCOS"
         it "leaves an unrecognized sequence's raw bytes alone" $
             -- bug fad
-            ((.raw) <$> reencodeCursor Nothing (Key "Unknown" "\ESC[97~"))
+            ((.raw) <$> reencodeKey Nothing (Key "Unknown" "\ESC[97~"))
                 `shouldReturn` "\ESC[97~"
+
+        -- bug 64: a modified character key is spelled by the pane's own key
+        -- protocol state, so what the app asked for is what it receives.
+        it "encodes a modified key through the pane's key protocol" $ do
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            let cEnter = Key "C-Enter" "\r"
+            ((.raw) <$> reencodeKey (Just emu) cEnter) `shouldReturn` "\r"
+            _ <- Emu.feed emu "\ESC[>4;2m"
+            ((.raw) <$> reencodeKey (Just emu) cEnter)
+                `shouldReturn` "\ESC[27;5;13~"

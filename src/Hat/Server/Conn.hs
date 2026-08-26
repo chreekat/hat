@@ -12,7 +12,7 @@ module Hat.Server.Conn
     , pickAttachSession
     , deliversKey
     , escTiming
-    , reencodeCursor
+    , reencodeKey
     ) where
 
 import Control.Concurrent (forkIO)
@@ -302,13 +302,15 @@ noteClientActivity st client = do
         sid <- readTVarIO client.session
         applySessionSize st sid
 
--- | Whether a key event is delivered to the focused pane's program. Focus
--- in/out reports reach the pane only when @focus-events@ is on and the pane's
--- app enabled focus reporting (?1004); a bare shell never asks, so its focus
--- report is dropped rather than echoed as a stray "^[[I". Every other key is
--- always delivered.
+-- | Whether a key event is delivered to the focused pane's program. A sequence
+-- the tokenizer could not name is dropped, so bytes hat does not understand
+-- never reach an app. Focus in/out reports reach the pane only when
+-- @focus-events@ is on and the pane's app enabled focus reporting (?1004); a
+-- bare shell never asks, so its focus report is dropped rather than echoed as
+-- a stray "^[[I". Every other key is always delivered.
 deliversKey :: Options -> Bool -> Key -> Bool
 deliversKey opts paneFocusReport k
+    | k.name == "Unknown" = False
     | k.name `notElem` ["FocusIn", "FocusOut"] = True
     | otherwise = opts.focusEvents && paneFocusReport
 
@@ -372,14 +374,19 @@ runKeys d st client keys = do
               modeTable <- case mpane of
                 Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
-              k <- reencodeCursor mpane k0
+              k <- reencodeKey (fmap (.emulator) mpane) k0
               -- The outer terminal's ?1004 focus reports track whether the
               -- user is watching this client, independent of whether the
               -- pane's app asked for them (the 'keepKey' gate below).
               noteOuterFocus st client k
               keep <- keepKey opts mpane k
               if not keep
-                then loop kst rest
+                then do
+                    when (k.name == "Unknown") $
+                        logEvent st.logger UnknownKeySequence
+                            { client = rawClient client.id
+                            , input = T.pack (show k.raw) }
+                    loop kst rest
                 else do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
@@ -397,11 +404,11 @@ runKeys d st client keys = do
     -- Reads the pane's live focus-reporting mode, then defers the actual
     -- keep/drop decision to the pure 'deliversKey'.
     keepKey opts mpane k
-        | k.name `notElem` ["FocusIn", "FocusOut"] = pure True
-        | otherwise = do
+        | k.name `elem` ["FocusIn", "FocusOut"] = do
             report <- maybe (pure False)
                 (\pane -> (.focusReport) <$> Emu.modes pane.emulator) mpane
             pure (deliversKey opts report k)
+        | otherwise = pure (deliversKey opts False k)
     -- When the pane's copy mode is waiting for a char-search target, this
     -- key IS the target: a single printable char runs the search, anything
     -- else (Escape, Enter, an arrow) cancels it. Returns whether it was
@@ -419,15 +426,20 @@ runKeys d st client keys = do
 
 -- | Forward a recognized key as the pane's advertised terminal expects, not
 -- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
--- (@\ESC[A@ vs @\ESCOA@), so the pane's emulator encodes them; every other
--- named key forwards its tmux-256color terminfo bytes from 'namedKeys'.
--- Unrecognized keys keep their raw bytes.
-reencodeCursor :: Maybe Pane -> Key -> IO Key
-reencodeCursor mpane key = case arrowOf key.name of
-    Just ck | Just pane <- mpane -> do
-        enc <- Emu.encodeKey pane.emulator ck
+-- (@\ESC[A@ vs @\ESCOA@), and a modified character key depends on the key
+-- protocol the pane's app turned on, so the pane's emulator encodes both;
+-- every other named key forwards its tmux-256color terminfo bytes from
+-- 'namedKeys'. Unrecognized keys keep their raw bytes.
+reencodeKey :: Maybe Emu.Emulator -> Key -> IO Key
+reencodeKey memu key = case arrowOf key.name of
+    Just ck | Just emu <- memu -> do
+        enc <- Emu.encodeKey emu ck
         pure key { raw = enc }
-    _ | Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
+    _ | Just (code, mods) <- extendedKeyCode key.name
+      , Just emu <- memu -> do
+        enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
+        pure (maybe key (\bs -> key { raw = bs }) enc)
+      | Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
     _ -> pure key
   where
     arrowOf n = case n of

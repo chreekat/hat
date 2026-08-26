@@ -193,16 +193,36 @@ emptyReloadScreen = ReloadScreen
     { altScreen = False, cursorRow = 0, cursorCol = 0, cursorVisible = True
     , rows = [], scrollback = [], pen = Cell.defaultStyle }
 
--- | The app-set mode subscriptions a pane carries across a reload, so a program
+-- | The app-set subscriptions a pane carries across a reload, so a program
 -- adopted into a fresh emulator keeps them. A blank set (everything off) is what
 -- an era-1 pane, which never recorded them, migrates to.
 data ReloadModes = ReloadModes
-    { colorReport :: Bool  -- ^ ?2031 color-scheme reporting
-    , focusReport :: Bool  -- ^ ?1004 focus reporting
-    , mouse       :: Int   -- ^ mouse tracking: 0 off, 1 click, 2 drag, 3 move
+    { colorReport     :: Bool  -- ^ ?2031 color-scheme reporting
+    , focusReport     :: Bool  -- ^ ?1004 focus reporting
+    , mouse           :: Int   -- ^ mouse tracking: 0 off, 1 click, 2 drag, 3 move
+    , modifyOtherKeys :: Bool  -- ^ xterm modifyOtherKeys state 2
+    , kittyFlags      :: Int   -- ^ kitty keyboard protocol flags
     }
-    deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
+    deriving (Eq, Show)
+
+-- Appended the key protocols tolerantly (era 9) with the same additive-leaf
+-- codec as 'ReloadScreen': an era ≤ 8 pane is a three-field list, and decodes
+-- here with no key protocol enabled.
+instance Serialise ReloadModes where
+    encode m =
+           encodeListLen 6
+        <> encodeWord 0
+        <> encode m.colorReport <> encode m.focusReport <> encode m.mouse
+        <> encode m.modifyOtherKeys <> encode m.kittyFlags
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        m <- ReloadModes
+            <$> decode <*> decode <*> decode
+            <*> (if len >= 5 then decode else pure False)
+            <*> (if len >= 6 then decode else pure 0)
+        replicateM_ (max 0 (len - 6)) (() <$ decodeTerm)
+        pure m
 
 -- | The version-INDEPENDENT core of a handover: the fds the incoming image
 -- inherited. Its shape is frozen forever, so a reader of ANY era recovers it —
@@ -231,7 +251,7 @@ data Handover = Handover
 -- through to safe cleanup rather than misdecode. The golden-byte test pins the
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 8
+reloadEra = 9
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -288,7 +308,9 @@ decodeHandover bs =
 -- shape, and adds an @e == X@ arm below.
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    | e == reloadEra = hotTree =<< deser
+    -- Era 8 differs only by the key protocols appended to 'ReloadModes',
+    -- which its decoder defaults, so today's shape reads both.
+    | e == reloadEra || e == 8 = hotTree =<< deser
     | e == 7 = migrateV7 <$> deser
     -- Eras 4, 5 and 6 share the session/window shape (a single-Int "last", not
     -- the MRU stack). They differ only by additive leaves (era 4 lacks
@@ -310,7 +332,7 @@ decodeReloadTree e payload
         Right v  -> Right v
         Left err -> Left ("corrupt reload payload: " <> T.pack (show err))
 
--- | Pair an era-8 payload's tree with its panes' hot state, pane for pane in
+-- | Pair an era-9 payload's tree with its panes' hot state, pane for pane in
 -- tree order. Both halves come from one capture walk, so a count mismatch means
 -- a payload that must not be adopted.
 hotTree :: ReloadHot -> Either Text ReloadTree
@@ -376,7 +398,7 @@ migrateV1 (ReloadStateV1 sess cur) = ReloadStateV2 (map migSession sess) cur
     migWindow (ReloadWindowV1 ix' nm lay act la ar ps) =
         ReloadWindowV2 ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV1 cwd' mfd cpid) =
-        ReloadPaneV2 cwd' mfd cpid (ReloadModes False False 0)
+        ReloadPaneV2 cwd' mfd cpid (ReloadModes False False 0 False 0)
 
 -- | Carry an era-2 tree forward to the era-3 shape: every pane gains a blank
 -- screen, since an era-2 image never captured one, so it restores to a blank
