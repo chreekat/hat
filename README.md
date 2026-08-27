@@ -4,8 +4,6 @@ A Haskell-Adapted Terminal multiplexer. Haskell around libghostty-vt; tmux-shape
 commands, config, and key bindings. See ARCHITECTURE.md for the design and
 FEATURES.md for the scope.
 
-Todos are tracked at <https://todo.sr.ht/~chreekat/hat>.
-
 ## Status
 
 Ready for alpha testing. Current priorities:
