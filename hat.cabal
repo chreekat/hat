@@ -246,6 +246,7 @@ test-suite hat-test
         Hat.LogSpec
         Hat.PathSpec
         Hat.Server.PersistSpec
+        Hat.TestSupport
         Hat.Term.PtySpec
         Hat.Transport.SocketSpec
         Hat.Server.CaptureSpec

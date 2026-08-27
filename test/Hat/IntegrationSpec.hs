@@ -40,6 +40,7 @@ import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
 import Hat.Server.Persist qualified as Persist
 import Hat.Term.Pty (setWinsize)
+import Hat.TestSupport (bashPath)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
@@ -1604,9 +1605,10 @@ spec = parallel $ do
         let bin = h.home </> "bin"
             wrapped = bin </> ".vimish-wrapped"
         createDirectoryIfMissing True bin
-        P.callProcess "cp" ["/bin/sh", wrapped]
+        bash <- bashPath
+        P.callProcess "cp" [bash, wrapped]
         writeExecutable (bin </> "vimish") $ unlines
-            [ "#!/bin/sh"
+            [ "#!" <> bash
             , "exec -a \"$0\" " <> wrapped <> " -c 'read line'"
             ]
         writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"

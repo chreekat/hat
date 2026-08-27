@@ -20,6 +20,7 @@ import Test.Hspec.Runner (defaultConfig, evalSpec)
 
 import Hat.Geometry
 import Hat.Term.Pty
+import Hat.TestSupport (bashPath)
 
 -- The test shells get a throwaway HOME: an interactive bash saves (and,
 -- at its default 500-line HISTFILESIZE, truncates!) $HOME/.bash_history
@@ -198,10 +199,12 @@ shellSpec = do
             -- this (forking, parallel) test process leaks into fork→exec
             -- windows and makes the exec below flake with ETXTBSY.
             let wrapped = dir <> "/.sleepish-wrapped"
-            callProcess "cp" ["/bin/sh", wrapped]
+            bash <- bashPath
+            callProcess "cp" [bash, wrapped]
             cmd <- withPty base $ \pty -> do
                 writePty pty (B8.pack
-                    ("exec -a sleepish " <> wrapped <> " -c 'sleep 5; :'\n"))
+                    ("exec " <> bash <> " -c \"exec -a sleepish "
+                        <> wrapped <> " -c 'sleep 5; :'\"\n"))
                 retryFor 100 (foregroundCommand pty)
                     (== Just (T.pack "sleepish"))
             cmd `shouldBe` Just (T.pack "sleepish")
