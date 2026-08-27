@@ -1,6 +1,14 @@
 # HAT
 
-A Haskell-Adapted Terminal multiplexer. Haskell around libghostty-vt; tmux-shaped
+A Haskell-Adapted Terminal multiplexer.
+
+Sorry for the slop.
+
+Stop reading now.
+
+No, really.
+
+Haskell around libghostty-vt; tmux-shaped
 commands, config, and key bindings. See ARCHITECTURE.md for the design and
 FEATURES.md for the scope.
 
