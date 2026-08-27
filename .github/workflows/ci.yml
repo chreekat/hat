@@ -1,12 +1,17 @@
-# GitHub Actions consumer of scripts/ci.sh.
 name: ci
 on:
   push:
   pull_request:
 jobs:
-  ci:
+  nix-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - run: ./scripts/ci.sh
+  check-generated-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix develop -c ./scripts/check-hat-nix.sh
