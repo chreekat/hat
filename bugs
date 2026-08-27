@@ -6,6 +6,7 @@ PERF hat restart-server is too slow | id:314e55650d196ecdf5fd9dae632c802db6c37db
 zsh as a tier-1 supported shell: audit every place hat assumes bash/sh semantics and make zsh a first-class target. Sweep for bash-isms (rc sourcing, -i/-c flags, the /bin/sh -c and $SHELL-fallback spawn paths) and add zsh coverage + tests. | id:53f11dd9215715652a8375728dc8af45dd1380fc
 FEAT [UI] when the prefix key is sent, give a quick animated 'flash' of the active pane -- maybe a fast color zoom effect. The goal is to orient the user to the active pane before doing more actions like moving or zooming. it should be unobtrusive, fast | id:6c7527840ee1409b2d41c1ac96a45cda18321a7c
 learn how to use ghcid for fast feedback in a general way (not just for hat) | id:7cf4a94b9747eecb4f55c578b56c2a57f732c5b2
+BUG restart with multiple clients funnels every client into the last-active session instead of its own | id:81f01c7044e91868b0dbbff7571a950f973484c2
 PERF design model benchmarks against tmux. neutralize the system confounder by running same test against tmux and hat as black boxes. but what is the test, and what gets measured? | id:86b9d0f2bf07f11ebd78d40c017a07d0caefce76
 FEAT implement display-panes and relevant options/default behaviors | id:b6389ad375127313f677a67e16ce3f8ad564092e
 audit all tests and distingush those that were part of catching real bugs vs "speculative" bugs. The latter should be lightweight and minimal and really just test normal paths, since their main purpose is to explain code, not speculate | id:bc0376c6022fabe66cec1ab4cbba7a74465746b3

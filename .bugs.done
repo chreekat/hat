@@ -36,6 +36,7 @@ pane resizing and reorganizing and bad key or command: C-Down | id:5feca414fc1be
 BUG default mapping for break-pane is missing. any others missing as well? | id:629d057cfd29b90cf89a1a253e052befb77ed7ab
 FEAT implement 'move-window -r' | id:629f3affa387d1b608fc3f936049ca615a8bc839
 in light mode, inactive pane borders are a little too heavy, hard to distinguish from active pane border | id:62b9389cfdcea9c8dca2690d5d3d71de3078a197
+BUG unrecognized extended-key CSI sequences leak verbatim into panes and poison vim seenModifyOtherKeys, killing raw ctrl mappings | id:644c97d37513600ba8db2018a99316b6d93801a1
 BUG: when closing a pane, the last active pane should be active again | id:663433105313a93e4f630d1013d7a47742fafa9e
 BUG moving a pane with prefix+H or prefix+L causes the other pane to be redrawn as if it was half its actual horizontol size. | id:66d45793e72eeb3e4ac89303da12bde81a1bee1b
 activity/bell marker: use OS focus (client ?1004 FocusIn/FocusOut) so a hat-current window whose outer terminal is unfocused still flags, and clears on FocusIn. | id:6804482b2f7ce8df4d80ae516cedafdfc1986ace
