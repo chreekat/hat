@@ -45,6 +45,7 @@ why doesn't claude react to system color theme changes when run inside hat? | id
 do select-pane properly. pane-index is a cross-cutting concern and supports ':.[+-][N]' for a number N. No N = N=1. The pane-index concept should be given proper Haskell shape. | id:696fecbe9271df1707c1ecf673a6cdca6495f12b
 should watchColorScheme restart on death? | id:7098b35f4fb7815b2f47edbd9ae034ef91a2cd09
 when restoring, hat forgets last active session/window/pane | id:715dcd2e08ed17f2480d1b77d56539df9b297dac
+Cell continuation cells hold in-band garbage (char ' ' + width 0); consider a glyph ADT (Continuation | Glyph Char marks) or Maybe Char | id:721c9169dd31f3d9f148d403fe87af54791b1242
 inner app's desktop notification (OSC 9 / OSC 777 notify) is written to the display as text instead of being consumed or forwarded to the outer terminal | id:75f20c8ae7384b58a163232934af9d2c4d7d70ea
 on restore, i expect window auto-rename status to persist. looks like maybe it didn't | id:799d14285e80920d575e3ecd5323f3bed552a556
 choose-tree search ENTER should just move cursor, not actually activate the first hit | id:7b90ce1b3aa3a2eb2aec90cb829fd32ef985b0e9
