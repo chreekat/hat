@@ -10,13 +10,19 @@ module Hat.Term.Cell
     ( Color (..)
     , Style (..)
     , Cell (..)
+    , Content (..)
+    , Width (..)
     , defaultStyle
     , blankCell
+    , glyphCell
+    , cellWidth
+    , cluster
+    , baseChar
     , encodeStyleAt
     ) where
 
 import Codec.Serialise (Serialise (..))
-import Codec.Serialise.Decoding (decodeListLen, decodeWord)
+import Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
 import Codec.Serialise.Encoding (Encoding, encodeListLen, encodeWord)
 import Data.Text qualified as T
 import Data.Word (Word16, Word8)
@@ -101,36 +107,69 @@ encodeStyleAt lvl s =
   where
     hasFaint = lvl >= 5
 
--- | One grid cell. A wide character occupies one 'Cell' with @width = 2@;
--- the following grid column is a continuation ('width' 0, 'char' a
--- don't-care @' '@) and is skipped when drawing.
+-- | One grid cell.
 data Cell = Cell
-    { char  :: Char
-    , marks :: [Char]  -- ^ combining codepoints completing the grapheme cluster
-    , width :: Int
-    , style :: Style
+    { content :: Content
+    , style   :: Style
     }
     deriving stock (Eq, Show, Ord, Generic)
 
--- | Byte-compatible with the Text-field encoding every era wrote: the whole
--- cluster rides as one string, empty for a continuation cell; decode splits a
--- string into its first char and the rest.
+-- | What a cell holds: the spacer column behind a wide glyph, or a glyph —
+-- its base char, the combining codepoints completing the grapheme cluster,
+-- and how many columns it spans.
+data Content
+    = Continuation
+    | Glyph Char [Char] Width
+    deriving stock (Eq, Show, Ord, Generic)
+
+data Width = Narrow | Wide
+    deriving stock (Eq, Show, Ord, Generic)
+
+-- | Columns a cell occupies: 0 for a continuation, 1 or 2 for a glyph.
+cellWidth :: Cell -> Int
+cellWidth c = case c.content of
+    Continuation     -> 0
+    Glyph _ _ Narrow -> 1
+    Glyph _ _ Wide   -> 2
+
+-- | The cell's full grapheme cluster; empty for a continuation.
+cluster :: Cell -> [Char]
+cluster c = case c.content of
+    Continuation   -> []
+    Glyph ch mks _ -> ch : mks
+
+-- | The char shown at the cell's column; @' '@ for a continuation.
+baseChar :: Cell -> Char
+baseChar c = case c.content of
+    Continuation  -> ' '
+    Glyph ch _ _  -> ch
+
+-- | Byte-compatible with the field encoding every era wrote: the whole
+-- cluster rides as one string (empty for a continuation) beside a 0\/1\/2
+-- column count; decode rebuilds the 'Content' from the pair.
 instance Serialise Cell where
     encode c =
            encodeListLen 4
         <> encodeWord 0
-        <> encode (if c.width == 0 then T.empty else T.pack (c.char : c.marks))
-        <> encode c.width
+        <> encode (T.pack (cluster c))
+        <> encode (cellWidth c)
         <> encode c.style
     decode = do
         _   <- decodeListLen
         _   <- decodeWord
         txt <- decode
-        w   <- decode
+        w   <- decode :: Decoder s Int
         s   <- decode
-        pure $ case T.unpack txt of
-            []       -> Cell { char = ' ', marks = [], width = w, style = s }
-            ch : mks -> Cell { char = ch, marks = mks, width = w, style = s }
+        let wd = if w >= 2 then Wide else Narrow
+            ct = case T.unpack txt of
+                _ | w == 0 -> Continuation
+                []         -> Glyph ' ' [] wd
+                ch : mks   -> Glyph ch mks wd
+        pure Cell { content = ct, style = s }
 
 blankCell :: Cell
-blankCell = Cell { char = ' ', marks = [], width = 1, style = defaultStyle }
+blankCell = glyphCell ' ' defaultStyle
+
+-- | A narrow, markless glyph cell.
+glyphCell :: Char -> Style -> Cell
+glyphCell ch sty = Cell { content = Glyph ch [] Narrow, style = sty }

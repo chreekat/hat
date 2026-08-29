@@ -122,16 +122,24 @@ shortGrid = do
     vectorOf r (choose (0, 3) >>= (`vectorOf` arbitrary))
 
 instance Arbitrary Cell where
-    arbitrary = do
-        w   <- elements [0, 1, 2]
-        ch  <- if w == 0 then pure ' ' else chooseEnum ('a', '~')
-        mks <- if w == 0 then pure []
-               else elements [[], ['\x0301'], ['\x0301', '\x0308']]
-        Cell ch mks w <$> arbitrary
-    shrink c =
-        [ Cell ch mks w s
-        | (ch, mks, w, s) <- shrink (c.char, c.marks, c.width, c.style)
-        , w /= 0 || (ch == ' ' && null mks) ]
+    arbitrary = Cell <$> arbitrary <*> arbitrary
+    shrink c = [ Cell ct s | (ct, s) <- shrink (c.content, c.style) ]
+
+instance Arbitrary Content where
+    arbitrary = frequency
+        [ (1, pure Continuation)
+        , (8, Glyph <$> chooseEnum ('a', '~')
+                    <*> elements [[], ['\x0301'], ['\x0301', '\x0308']]
+                    <*> arbitrary)
+        ]
+    shrink Continuation = []
+    shrink (Glyph ch mks w) = Continuation
+        : [ Glyph ch' mks' w' | (ch', mks', w') <- shrink (ch, mks, w) ]
+
+instance Arbitrary Width where
+    arbitrary = elements [Narrow, Wide]
+    shrink Wide = [Narrow]
+    shrink Narrow = []
 
 instance Arbitrary Style where
     arbitrary = Style
@@ -224,8 +232,7 @@ treeWith mlast ms sc = ReloadTree
 fixedScreen :: ReloadScreen
 fixedScreen = ReloadScreen
     { altScreen = True, cursorRow = 1, cursorCol = 2, cursorVisible = True
-    , rows = [[ blankCell { char = 'x'
-                          , style = defaultStyle { fg = Indexed 1 } } ]]
+    , rows = [[ glyphCell 'x' defaultStyle { fg = Indexed 1 } ]]
     , scrollback = [[ blankCell ]], pen = defaultStyle }
 
 -- The current-era representative, with a non-trivial mode set, screen, and

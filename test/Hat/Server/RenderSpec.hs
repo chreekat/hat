@@ -23,7 +23,7 @@ genCell = do
         , defaultStyle { fg = Indexed 1 }
         , defaultStyle { bg = Indexed 4, underline = True }
         ]
-    pure blankCell { char = ch, style = st }
+    pure (glyphCell ch st)
 
 genFrame :: Size -> Gen Frame
 genFrame sz =
@@ -46,7 +46,7 @@ applyOps = foldl apply
                 Nothing -> frame
                 Just row ->
                     let updates =
-                            [ (c, blankCell { char = ch, style = st })
+                            [ (c, glyphCell ch st)
                             | (i, ch) <- zip [0 ..] (T.unpack txt)
                             , let c = pos.col + i
                             , c < V.length row
@@ -64,9 +64,9 @@ spec = do
             diffFrame frame frame === []
 
     it "keeps wide-char pairs atomic" $ do
-        let wide = blankCell { char = '日', width = 2 }
-            cont = blankCell { width = 0 }
-            a = blankCell { char = 'a' }
+        let wide = Cell { content = Glyph '日' [] Wide, style = defaultStyle }
+            cont = Cell { content = Continuation, style = defaultStyle }
+            a = glyphCell 'a' defaultStyle
             row cs = V.fromList [V.fromList cs]
             old = row [wide, cont, a]
             new = row [a, a, a]
@@ -78,10 +78,10 @@ spec = do
     it "pads and clips a pane screen into a client frame" $ do
         let paneCells = V.fromList
                 [ V.fromList [c 'h', c 'i'] ]
-            c ch = blankCell { char = ch }
+            c ch = glyphCell ch defaultStyle
             frame = composeFrame Size { rows = 2, cols = 3 } paneCells
         V.length frame `shouldBe` 2
         V.map V.length frame `shouldBe` V.fromList [3, 3]
-        (frame V.! 0 V.! 0).char `shouldBe` 'h'
-        (frame V.! 0 V.! 2).char `shouldBe` ' '
-        (frame V.! 1 V.! 0).char `shouldBe` ' '
+        baseChar (frame V.! 0 V.! 0) `shouldBe` 'h'
+        baseChar (frame V.! 0 V.! 2) `shouldBe` ' '
+        baseChar (frame V.! 1 V.! 0) `shouldBe` ' '

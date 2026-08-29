@@ -344,15 +344,15 @@ peekShimCell ci fetchMarks p = do
     fgV   <- #{peek GhostShimCell, fg_val} p :: IO Word32
     bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
     bgV   <- #{peek GhostShimCell, bg_val} p :: IO Word32
-    mks <- if g /= 0 then fetchMarks else pure []
-    let width = fromIntegral w :: Int
-        ch | width == 0 || cp == 0 = ' '
-           | otherwise             = chr (fromIntegral cp)
+    mks <- if g /= 0 && w /= 0 then fetchMarks else pure []
+    let ch | cp == 0   = ' '
+           | otherwise = chr (fromIntegral cp)
+        ct = case fromIntegral w :: Int of
+            0 -> Continuation
+            n -> Glyph ch mks (if n >= 2 then Wide else Narrow)
         has m = flags .&. m /= 0
     shareVals ci $! Cell
-        { char = ch
-        , marks = mks
-        , width = width
+        { content = ct
         , style = Style
             { fg = color fgT fgV
             , bg = color bgT bgV

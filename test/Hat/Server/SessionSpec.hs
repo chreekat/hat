@@ -393,7 +393,7 @@ spec = do
                     o { windowStatusFormat = "#I#{?window_active_clients,<eyes>,}" }
             _ <- addClient st sessB.id (Size { rows = 24, cols = 80 }) 1
             row <- statusCells st sessA 80
-            T.pack [c.char | c <- V.toList row, c.width /= 0]
+            T.pack (concatMap Cell.cluster (V.toList row))
                 `shouldSatisfy` T.isInfixOf "1<eyes>"
 
     describe "move-window -r" $

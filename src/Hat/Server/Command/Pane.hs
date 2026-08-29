@@ -124,15 +124,15 @@ captureText opts = T.concat . go Cell.defaultStyle
         | otherwise = rtrimBlank (V.toList r.cells)
     renderCells pen [] = ("", pen)
     renderCells pen (cell : cls)
-        | cell.width == 0 = renderCells pen cls
+        | Cell.Continuation <- cell.content = renderCells pen cls
         | otherwise =
             let lead | opts.captSeq = styleDiffSgr opts.captOctal pen cell.style
                      | otherwise    = ""
                 (rest, pen') = renderCells cell.style cls
             in (lead <> cellText cell <> rest, pen')
     cellText cell
-        | opts.captOctal = foldMap escapeOctal (cell.char : cell.marks)
-        | otherwise      = T.pack (cell.char : cell.marks)
+        | opts.captOctal = foldMap escapeOctal (Cell.cluster cell)
+        | otherwise      = T.pack (Cell.cluster cell)
 
 -- | The SGR bytes that move the pen from @old@ to @new@, exactly as tmux's
 -- @grid_string_cells_code@: a leading @0@ when any attribute drops, newly set

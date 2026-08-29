@@ -290,7 +290,7 @@ previewRow grid k w =
     in V.generate w (\c -> fromMaybe Cell.blankCell (row V.!? c))
 
 dividerCell :: Cell.Cell
-dividerCell = Cell.blankCell { Cell.char = '\x2502', Cell.style = pickerStyle }
+dividerCell = Cell.glyphCell '\x2502' pickerStyle
 
 pickerStyle :: Cell.Style
 pickerStyle = Cell.defaultStyle
@@ -328,7 +328,7 @@ borderCells opts mActive rowOff borders =
             glyph = case (active, Map.lookup p arrows) of
                 (True, Just arr) -> arr
                 _                -> mapGlyph opts.paneBorderLines ch
-        in Cell.blankCell { Cell.char = glyph, Cell.style = sty }
+        in Cell.glyphCell glyph sty
 
 -- | Is a position on the (border) perimeter just outside a pane's rect?
 onPerimeter :: Rect -> Pos -> Bool
@@ -427,7 +427,7 @@ stampTopRight label sty grid
     updates =
         [ (start + i, cell c)
         | (i, c) <- zip [0 ..] (T.unpack label), start + i < w ]
-    cell c = Cell.blankCell { Cell.char = c, Cell.style = sty }
+    cell c = Cell.glyphCell c sty
 
 -- | The cursor a pane shows: its shell cursor, or the copy cursor when
 -- in copy mode (hidden when scrolled off the viewport).
@@ -453,9 +453,8 @@ paneCursor pane origin rowOff = do
 lineCells :: Cell.Style -> Int -> Text -> V.Vector Cell.Cell
 lineCells style width line = V.fromList (take width (cells <> repeat blank))
   where
-    cells = [ Cell.blankCell { Cell.char = ch, Cell.style = style }
-            | ch <- T.unpack line ]
-    blank = Cell.blankCell { Cell.style = style }
+    cells = [ Cell.glyphCell ch style | ch <- T.unpack line ]
+    blank = Cell.glyphCell ' ' style
 
 toastCells :: Text -> Int -> V.Vector Cell.Cell
 toastCells t width = lineCells toastStyle width t
@@ -559,8 +558,7 @@ assembleStatusRow opts width left right entries =
 -- | One cell per character, all in the given style.
 styledCells :: Cell.Style -> Text -> [Cell.Cell]
 styledCells sty t =
-    [ Cell.blankCell { Cell.char = c, Cell.style = sty }
-    | c <- T.unpack t ]
+    [ Cell.glyphCell c sty | c <- T.unpack t ]
 
 blankOf :: Cell.Style -> Cell.Cell
-blankOf sty = Cell.blankCell { Cell.style = sty }
+blankOf sty = Cell.glyphCell ' ' sty

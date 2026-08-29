@@ -147,12 +147,12 @@ frozenGrid fg = Grid
     { gHsize = fg.fgHsize
     , gSy = fg.fgSy
     , gSx = fg.fgSx
-    , gChar = \row col -> pure $ maybe ' ' (.char) (rowAt row V.!? col)
+    , gChar = \row col -> pure $ maybe ' ' Cell.baseChar (rowAt row V.!? col)
     , gLineLen = \row ->
         let cs = rowAt row
             lastFilled = V.ifoldr keep (-1) cs
             keep i c acc
-                | isSpace c.char = acc
+                | isSpace (Cell.baseChar c) = acc
                 | otherwise = max acc i
         in pure (min fg.fgSx (lastFilled + 1))
     , gWrapped = \_ -> pure False

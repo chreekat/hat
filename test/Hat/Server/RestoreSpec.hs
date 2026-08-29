@@ -200,7 +200,7 @@ spec = do
         -- shrink abort the whole process inside libvterm ("screen_resize
         -- failed to update cursor position").
         it "adopts an oversized capture at its captured size and survives the shrink" $ do
-            let wideRow = replicate 330 Cell.blankCell { Cell.char = 'x' }
+            let wideRow = replicate 330 (Cell.glyphCell 'x' Cell.defaultStyle)
                 sc = ReloadScreen
                     { altScreen = True, cursorRow = 39, cursorCol = 2
                     , cursorVisible = True

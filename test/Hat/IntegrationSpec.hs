@@ -44,7 +44,7 @@ import Hat.TestSupport (bashPath)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
-import Hat.Term.Cell (Cell (..), Color (..), Style (..))
+import Hat.Term.Cell (Cell (..), Color (..), Style (..), baseChar)
 import Hat.Term.Emulator qualified as Emu
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
@@ -392,7 +392,7 @@ boldBorderFg d = do
     pure $ listToMaybe
         [ cell.style.fg
         | row <- V.toList scr.cells, cell <- V.toList row
-        , cell.char `elem` ['\x2502', '\x2503']
+        , baseChar cell `elem` ['\x2502', '\x2503']
         , cell.style.bold ]
 
 -- The column of the vertical pane border (│) on a content row, if any.
@@ -401,7 +401,7 @@ verticalBorderCol d = do
     scr <- Emu.snapshot d.screen
     pure $ case scr.cells V.!? 5 of
         Just row -> listToMaybe
-            [ c | (c, cell) <- zip [0 ..] (V.toList row), cell.char == '\x2502' ]
+            [ c | (c, cell) <- zip [0 ..] (V.toList row), baseChar cell == '\x2502' ]
         Nothing -> Nothing
 
 -- Count cells drawn with the reverse-video attribute (how a copy-mode
@@ -1416,7 +1416,7 @@ spec = parallel $ do
             scr <- Emu.snapshot d.screen
             let cols = [ c | row <- V.toList scr.cells
                            , (c, cell) <- zip [0 :: Int ..] (V.toList row)
-                           , cell.char == '\x2502' ]
+                           , baseChar cell == '\x2502' ]
             pure (length (List.nub cols) >= 2)) c1
         -- even-vertical stacks them: horizontal borders, no vertical.
         _ <- ctlOut h ["select-layout", "even-vertical"]

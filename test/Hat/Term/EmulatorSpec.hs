@@ -140,10 +140,6 @@ spec = do
         allText `shouldNotSatisfy` T.isInfixOf "more help"
         -- the primary line survived
         rowText scr 0 `shouldBe` "primary prompt$"
-        -- every cell is a real, single-width glyph or a blank -- no garbage
-        forM_ [0 .. 11] $ \r -> forM_ [0 .. 39] $ \c -> do
-            let cell = screenCell scr Pos { row = r, col = c }
-            cell.width `shouldSatisfy` (\w -> w == 0 || w == 1 || w == 2)
 
     -- bug: a pane with shell scrollback runs vim on the alt screen, then Ctrl-Z
     -- suspends it (?1049l restores the primary). A later zoom grows the pane and
@@ -548,17 +544,15 @@ spec = do
         _ <- feedStr e (B8.pack "\xe6\x97\xa5")  -- 日 in utf-8
         scr <- snapshot e
         let cell = screenCell scr Pos { row = 0, col = 0 }
-        cell.width `shouldBe` 2
-        cell.char `shouldBe` '日'
+        cell.content `shouldBe` Glyph '日' [] Wide
 
     it "keeps combining marks with their base character's cell" $ do
         e <- new80x24
         _ <- feedStr e (B8.pack "e\xcc\x81x")  -- e, U+0301, x in utf-8
         scr <- snapshot e
         let cell = screenCell scr Pos { row = 0, col = 0 }
-        cell.char `shouldBe` 'e'
-        cell.marks `shouldBe` ['\x0301']
-        (screenCell scr Pos { row = 0, col = 1 }).char `shouldBe` 'x'
+        cell.content `shouldBe` Glyph 'e' ['\x0301'] Narrow
+        baseChar (screenCell scr Pos { row = 0, col = 1 }) `shouldBe` 'x'
 
     it "pushes scrolled-off lines into scrollback" $ do
         e <- newEmulator Size { rows = 5, cols = 20 } 1000
@@ -785,4 +779,4 @@ spec = do
         _ <- snapshot e
         pure True
   where
-    cellsText cells = T.stripEnd (T.pack [c.char | c <- V.toList cells, c.width /= 0])
+    cellsText cells = T.stripEnd (T.pack (concatMap cluster (V.toList cells)))

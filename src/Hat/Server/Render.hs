@@ -87,11 +87,11 @@ rowOps r oldRow newRow = runsToOps r newRow (widenChanged newRow changed)
 widenChanged :: V.Vector Cell -> V.Vector Bool -> V.Vector Bool
 widenChanged row changed = V.generate (V.length changed) $ \c ->
     let self = changed V.! c
-        asLead = cellWidth c == 2 && orFalse (changed V.!? (c + 1))
-        asCont = cellWidth c == 0 && c > 0 && changed V.! (c - 1)
+        asLead = colWidth c == 2 && orFalse (changed V.!? (c + 1))
+        asCont = colWidth c == 0 && c > 0 && changed V.! (c - 1)
     in self || asLead || asCont
   where
-    cellWidth c = maybe 1 (.width) (row V.!? c)
+    colWidth c = maybe 1 cellWidth (row V.!? c)
     orFalse = maybe False id
 
 -- Group consecutive changed cells with equal style into single Puts.
@@ -105,9 +105,8 @@ runsToOps r row changed = go 0
         | otherwise =
             let st = (row V.! c).style
                 runEnd = findRunEnd c st
-                txt = T.pack $ concat
-                    [ cell.char : cell.marks | i <- [c .. runEnd - 1]
-                    , let cell = row V.! i, cell.width /= 0 ]
+                txt = T.pack $
+                    concatMap (\i -> cluster (row V.! i)) [c .. runEnd - 1]
             in Put Pos { row = r, col = c } st txt : go runEnd
     findRunEnd c st
         | c >= n = c
