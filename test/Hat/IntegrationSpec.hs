@@ -458,7 +458,11 @@ rawModesLeftBehind d = do
 
 spec :: Spec
 spec = parallel $ do
-    hatBin <- runIO (init <$> readProcess "cabal" ["list-bin", "hat"] "")
+    -- Build and locate as one step, so the tested binary is fresh and the
+    -- two agree on a builddir.
+    hatBin <- runIO $ do
+        P.callProcess "cabal" ["build", "-v0", "exe:hat"]
+        init <$> readProcess "cabal" ["list-bin", "hat"] ""
 
     it "gives every pane a canonical line discipline under concurrent spawn load" $ do
         let n = 24 :: Int

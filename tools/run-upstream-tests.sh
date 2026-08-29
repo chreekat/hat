@@ -34,9 +34,12 @@ regress="$tmux_src/regress"
 
 here=$(dirname "$0")
 xfail_file="$here/upstream-xfail.txt"
-# Use the binary the hat-upstream suite resolved from its build-tool-depends
-# PATH ($HAT_BIN), else the dev build via `cabal list-bin`. Never fall through
-# to a $PATH `hat`, which on a dev box is the stale system-installed one.
+# $HAT_BIN overrides; else build and locate the dev binary as one step, so it
+# is fresh and the two agree on a builddir. Never fall through to a $PATH
+# `hat`, which on a dev box is the stale system-installed one.
+if [ -z "${HAT_BIN:-}" ]; then
+    cabal build -v0 exe:hat || { echo "hat build failed" >&2; exit 2; }
+fi
 hat_bin=${HAT_BIN:-$(cabal list-bin hat 2>/dev/null)} \
     || { echo "build hat first" >&2; exit 2; }
 [ -x "$hat_bin" ] || { echo "build hat first (no binary at: $hat_bin)" >&2; exit 2; }

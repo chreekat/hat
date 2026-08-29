@@ -230,7 +230,6 @@ test-suite hat-test
     type:               exitcode-stdio-1.0
     hs-source-dirs:     test
     main-is:            Main.hs
-    build-tool-depends: hat:hat
     other-modules:
         Hat.Bench.LinearSpec
         Hat.Bench.PerfStatSpec
@@ -304,7 +303,6 @@ test-suite hat-upstream
     type:               exitcode-stdio-1.0
     hs-source-dirs:     test-upstream
     main-is:            Main.hs
-    build-tool-depends: hat:hat
     build-depends:
         base    ^>= 4.20.2.0,
         process ^>= 1.6.26.1
