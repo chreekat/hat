@@ -19,9 +19,13 @@
       url = "github:tmux/tmux/31dccb6bc9521b0ea46307974d071ad7f09f0e9b";
       flake = false;
     };
+
+    tricorder = {
+      url = "github:tweag/tricorder";
+    };
   };
 
-  outputs = { self, nixpkgs, nixpkgs-ghostty, tmux-src, ... }:
+  outputs = { self, nixpkgs, nixpkgs-ghostty, tmux-src, tricorder, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f:
@@ -86,6 +90,7 @@
           buildInputs = [
             pkgs.cabal-install
             pkgs.cabal2nix
+            tricorder.packages.${pkgs.system}.tricorder
             # libghostty-vt backs the terminal emulator (bug 17). Its pkg-config
             # files live in the dev output's share/pkgconfig, which the
             # pkg-config setup hook adds to the path.
