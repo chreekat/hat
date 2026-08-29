@@ -53,7 +53,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, bracket, catch)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Array ((!))
-import Data.Char (toLower)
+import Data.Char (isSpace, toLower)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -147,16 +147,12 @@ frozenGrid fg = Grid
     { gHsize = fg.fgHsize
     , gSy = fg.fgSy
     , gSx = fg.fgSx
-    , gChar = \row col -> pure $ case rowAt row V.!? col of
-        Just c -> case T.uncons c.text of
-            Just (ch, _) -> ch
-            Nothing -> ' '
-        Nothing -> ' '
+    , gChar = \row col -> pure $ maybe ' ' (.char) (rowAt row V.!? col)
     , gLineLen = \row ->
         let cs = rowAt row
             lastFilled = V.ifoldr keep (-1) cs
             keep i c acc
-                | T.strip c.text == "" = acc
+                | isSpace c.char = acc
                 | otherwise = max acc i
         in pure (min fg.fgSx (lastFilled + 1))
     , gWrapped = \_ -> pure False

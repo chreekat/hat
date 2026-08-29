@@ -62,7 +62,7 @@ mkClient sz lastFrame = do
 filledFrame :: Size -> Frame
 filledFrame sz = V.replicate (fromIntegral sz.rows)
     (V.replicate (fromIntegral sz.cols)
-        blankCell { text = T.singleton 'X' })
+        blankCell { char = 'X' })
 
 -- What a single-width terminal shows after executing the ops.
 applyOps :: Frame -> [DrawOp] -> Frame
@@ -75,7 +75,7 @@ applyOps = foldl apply
             Nothing -> frame
             Just row ->
                 let updates =
-                        [ (c, blankCell { text = T.singleton ch, style = st })
+                        [ (c, blankCell { char = ch, style = st })
                         | (i, ch) <- zip [0 ..] (T.unpack txt)
                         , let c = pos.col + i, c < V.length row ]
                 in frame V.// [(pos.row, row V.// updates)]

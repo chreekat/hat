@@ -370,7 +370,7 @@ spec = do
 
     describe "selection overlay (reverse video)" $ do
         let cellsOf txt = V.fromList
-                [ Cell { text = T.singleton c, width = 1, style = defaultStyle }
+                [ Cell { char = c, width = 1, style = defaultStyle }
                 | c <- take 5 (T.unpack txt <> repeat ' ') ]
             gridOf = V.fromList . map cellsOf
             -- The default mode style is reverse-only, so on a defaultStyle

@@ -3,7 +3,6 @@
 module Hat.Server.CaptureSpec (spec) where
 
 import Data.Map.Strict qualified as Map
-import Data.Text qualified as T
 import Data.Vector qualified as V
 import Test.Hspec
 
@@ -16,11 +15,11 @@ import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle)
 
 -- | A width-1 cell with default style.
 c :: Char -> Cell
-c ch = Cell { text = T.singleton ch, width = 1, style = defaultStyle }
+c ch = Cell { char = ch, width = 1, style = defaultStyle }
 
 -- | A width-1 cell with the given style.
 cs :: Style -> Char -> Cell
-cs st ch = Cell { text = T.singleton ch, width = 1, style = st }
+cs st ch = Cell { char = ch, width = 1, style = st }
 
 -- | A row from an ASCII string, padded with blanks to the given width.
 row :: Int -> String -> V.Vector Cell
@@ -36,8 +35,8 @@ crow n w cells = CaptureRow { number = n, wrapped = w, cells = V.fromList cells 
 
 wide :: V.Vector Cell
 wide = V.fromList
-    [ Cell { text = "\12354", width = 2, style = defaultStyle }  -- あ
-    , Cell { text = "", width = 0, style = defaultStyle }        -- continuation
+    [ Cell { char = '\12354', width = 2, style = defaultStyle }  -- あ
+    , Cell { char = ' ', width = 0, style = defaultStyle }       -- continuation
     , c 'B' ]
 
 opts0 :: CaptureOpts
@@ -181,8 +180,8 @@ spec = do
             captureText opts0 { captOctal = True }
                 [ crow 0 False
                     [ c 'a'
-                    , Cell { text = "\\", width = 1, style = defaultStyle }
-                    , Cell { text = "\a", width = 1, style = defaultStyle } ] ]
+                    , Cell { char = '\\', width = 1, style = defaultStyle }
+                    , Cell { char = '\a', width = 1, style = defaultStyle } ] ]
                 `shouldBe` "a\\\\\\007\n"
 
         it "spells the SGR introducer as literal octal too" $

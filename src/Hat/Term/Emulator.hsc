@@ -326,12 +326,11 @@ peekShimCell ci p = do
     bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
     bgV   <- #{peek GhostShimCell, bg_val} p :: IO Word32
     let width = fromIntegral w :: Int
-        txt | width == 0 = ""
-            | cp == 0    = " "
-            | otherwise  = T.singleton (chr (fromIntegral cp))
+        ch | width == 0 || cp == 0 = ' '
+           | otherwise             = chr (fromIntegral cp)
         has m = flags .&. m /= 0
     shareVals ci $! Cell
-        { text = txt
+        { char = ch
         , width = width
         , style = Style
             { fg = color fgT fgV

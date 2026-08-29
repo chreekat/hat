@@ -290,7 +290,7 @@ previewRow grid k w =
     in V.generate w (\c -> fromMaybe Cell.blankCell (row V.!? c))
 
 dividerCell :: Cell.Cell
-dividerCell = Cell.Cell { Cell.text = "\x2502", Cell.width = 1, Cell.style = pickerStyle }
+dividerCell = Cell.Cell { Cell.char = '\x2502', Cell.width = 1, Cell.style = pickerStyle }
 
 pickerStyle :: Cell.Style
 pickerStyle = Cell.defaultStyle
@@ -328,7 +328,7 @@ borderCells opts mActive rowOff borders =
             glyph = case (active, Map.lookup p arrows) of
                 (True, Just arr) -> arr
                 _                -> mapGlyph opts.paneBorderLines ch
-        in Cell.Cell { Cell.text = T.singleton glyph, Cell.width = 1, Cell.style = sty }
+        in Cell.Cell { Cell.char = glyph, Cell.width = 1, Cell.style = sty }
 
 -- | Is a position on the (border) perimeter just outside a pane's rect?
 onPerimeter :: Rect -> Pos -> Bool
@@ -427,7 +427,7 @@ stampTopRight label sty grid
     updates =
         [ (start + i, cell c)
         | (i, c) <- zip [0 ..] (T.unpack label), start + i < w ]
-    cell c = Cell.Cell { Cell.text = T.singleton c, Cell.width = 1, Cell.style = sty }
+    cell c = Cell.Cell { Cell.char = c, Cell.width = 1, Cell.style = sty }
 
 -- | The cursor a pane shows: its shell cursor, or the copy cursor when
 -- in copy mode (hidden when scrolled off the viewport).
@@ -453,11 +453,11 @@ paneCursor pane origin rowOff = do
 lineCells :: Cell.Style -> Int -> Text -> V.Vector Cell.Cell
 lineCells style width line = V.fromList (take width (cells <> repeat blank))
   where
-    cells = [ Cell.Cell { Cell.text = T.singleton ch
+    cells = [ Cell.Cell { Cell.char = ch
                         , Cell.width = 1
                         , Cell.style = style }
             | ch <- T.unpack line ]
-    blank = Cell.Cell { Cell.text = " ", Cell.width = 1, Cell.style = style }
+    blank = Cell.Cell { Cell.char = ' ', Cell.width = 1, Cell.style = style }
 
 toastCells :: Text -> Int -> V.Vector Cell.Cell
 toastCells t width = lineCells toastStyle width t
@@ -561,8 +561,8 @@ assembleStatusRow opts width left right entries =
 -- | One cell per character, all in the given style.
 styledCells :: Cell.Style -> Text -> [Cell.Cell]
 styledCells sty t =
-    [ Cell.Cell { Cell.text = T.singleton c, Cell.width = 1, Cell.style = sty }
+    [ Cell.Cell { Cell.char = c, Cell.width = 1, Cell.style = sty }
     | c <- T.unpack t ]
 
 blankOf :: Cell.Style -> Cell.Cell
-blankOf sty = Cell.Cell { Cell.text = " ", Cell.width = 1, Cell.style = sty }
+blankOf sty = Cell.Cell { Cell.char = ' ', Cell.width = 1, Cell.style = sty }

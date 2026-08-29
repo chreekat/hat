@@ -35,7 +35,6 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 
 import Hat.Geometry
@@ -179,7 +178,8 @@ paintRow _ [] = mempty
 paintRow pen (c : cs) =
     let penB = if c.style == pen then mempty else BB.byteString (cellSgr c.style)
         rest = drop (max 0 (c.width - 1)) cs
-    in penB <> BB.byteString (TE.encodeUtf8 c.text) <> paintRow c.style rest
+    in penB <> (if c.width == 0 then mempty else BB.charUtf8 c.char)
+        <> paintRow c.style rest
 
 -- | Absolute CUP to a 0-based position (VT rows\/cols are 1-based).
 moveTo :: Pos -> BB.Builder
@@ -227,7 +227,7 @@ colorCode base ext = \case
 screenRowText :: Screen -> Int -> Text
 screenRowText scr r = case scr.cells V.!? r of
     Nothing -> ""
-    Just row -> T.concat [c.text | c <- V.toList row]
+    Just row -> T.pack [c.char | c <- V.toList row, c.width /= 0]
 
 -- | The cell at a position, or 'blankCell' when the position is off-screen.
 screenCell :: Screen -> Pos -> Cell

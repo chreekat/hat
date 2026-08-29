@@ -549,7 +549,7 @@ spec = do
         scr <- snapshot e
         let cell = screenCell scr Pos { row = 0, col = 0 }
         cell.width `shouldBe` 2
-        cell.text `shouldBe` "日"
+        cell.char `shouldBe` '日'
 
     it "pushes scrolled-off lines into scrollback" $ do
         e <- newEmulator Size { rows = 5, cols = 20 } 1000
@@ -776,4 +776,4 @@ spec = do
         _ <- snapshot e
         pure True
   where
-    cellsText cells = T.stripEnd (T.concat (map (.text) (V.toList cells)))
+    cellsText cells = T.stripEnd (T.pack [c.char | c <- V.toList cells, c.width /= 0])

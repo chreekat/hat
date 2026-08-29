@@ -18,7 +18,7 @@ module Hat.Term.Cell
 import Codec.Serialise (Serialise (..))
 import Codec.Serialise.Decoding (decodeListLen, decodeWord)
 import Codec.Serialise.Encoding (Encoding, encodeListLen, encodeWord)
-import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
 
@@ -102,14 +102,36 @@ encodeStyleAt lvl s =
     hasFaint = lvl >= 5
 
 -- | One grid cell. A wide character occupies one 'Cell' with @width = 2@;
--- the following grid column is a continuation and is skipped when drawing.
+-- the following grid column is a continuation ('width' 0, 'char' a
+-- don't-care @' '@) and is skipped when drawing.
 data Cell = Cell
-    { text  :: Text
+    { char  :: Char
     , width :: Int
     , style :: Style
     }
     deriving stock (Eq, Show, Ord, Generic)
-    deriving anyclass (Serialise)
+
+-- | Byte-compatible with the Text-field encoding every era wrote: the char
+-- rides as a string, empty for a continuation cell; decode keeps a string's
+-- first char and defaults the rest.
+instance Serialise Cell where
+    encode c =
+           encodeListLen 4
+        <> encodeWord 0
+        <> encode (if c.width == 0 then T.empty else T.singleton c.char)
+        <> encode c.width
+        <> encode c.style
+    decode = do
+        _   <- decodeListLen
+        _   <- decodeWord
+        txt <- decode
+        w   <- decode
+        s   <- decode
+        pure Cell
+            { char = maybe ' ' fst (T.uncons txt)
+            , width = w
+            , style = s
+            }
 
 blankCell :: Cell
-blankCell = Cell { text = " ", width = 1, style = defaultStyle }
+blankCell = Cell { char = ' ', width = 1, style = defaultStyle }

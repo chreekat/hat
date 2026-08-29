@@ -115,13 +115,13 @@ spec = do
         describe "pane-border-indicators toggles the active-edge arrow" $ do
             let rect = Rect { startRow = 0, endRow = 2, startCol = 1, endCol = 3 }
                 arrowPos = Pos { row = 1, col = 0 }  -- midpoint of the left edge
-                glyphWith ind = (.text) <$> lookup arrowPos
+                glyphWith ind = (.char) <$> lookup arrowPos
                     (borderCells (defaultOptions { paneBorderIndicators = ind })
                         (Just rect) 0 [ (arrowPos, '\x2502') ])
             it "arrows: the active edge shows an arrow" $
-                glyphWith IndicatorsArrows `shouldBe` Just "\x25b6"  -- ▶
+                glyphWith IndicatorsArrows `shouldBe` Just '\x25b6'  -- ▶
             it "off: the active edge keeps the plain line" $
-                glyphWith IndicatorsOff `shouldBe` Just "\x2502"  -- │
+                glyphWith IndicatorsOff `shouldBe` Just '\x2502'  -- │
 
         -- window-status-style / -current-style / -bell-style: which style a
         -- window's entry in the status bar takes.
@@ -168,7 +168,7 @@ spec = do
                     , statusLeftLength = 3
                     , statusRightLength = 2 }
                 row = assembleStatusRow opts 10 "HELLO" "WORLD" []
-                rowText = T.concat (map (.text) (V.toList row))
+                rowText = T.pack [c.char | c <- V.toList row, c.width /= 0]
             it "status-left-length caps the left text" $
                 T.take 3 rowText `shouldBe` "HEL"
             it "status-right-length caps the right text" $
