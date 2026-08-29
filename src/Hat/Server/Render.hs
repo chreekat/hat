@@ -105,8 +105,9 @@ runsToOps r row changed = go 0
         | otherwise =
             let st = (row V.! c).style
                 runEnd = findRunEnd c st
-                txt = T.pack [ cell.char | i <- [c .. runEnd - 1]
-                             , let cell = row V.! i, cell.width /= 0 ]
+                txt = T.pack $ concat
+                    [ cell.char : cell.marks | i <- [c .. runEnd - 1]
+                    , let cell = row V.! i, cell.width /= 0 ]
             in Put Pos { row = r, col = c } st txt : go runEnd
     findRunEnd c st
         | c >= n = c

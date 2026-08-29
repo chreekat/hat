@@ -551,6 +551,15 @@ spec = do
         cell.width `shouldBe` 2
         cell.char `shouldBe` '日'
 
+    it "keeps combining marks with their base character's cell" $ do
+        e <- new80x24
+        _ <- feedStr e (B8.pack "e\xcc\x81x")  -- e, U+0301, x in utf-8
+        scr <- snapshot e
+        let cell = screenCell scr Pos { row = 0, col = 0 }
+        cell.char `shouldBe` 'e'
+        cell.marks `shouldBe` ['\x0301']
+        (screenCell scr Pos { row = 0, col = 1 }).char `shouldBe` 'x'
+
     it "pushes scrolled-off lines into scrollback" $ do
         e <- newEmulator Size { rows = 5, cols = 20 } 1000
         _ <- feedStr e (B8.intercalate "\r\n" ["line" <> B8.pack (show i) | i <- [1 :: Int .. 10]])

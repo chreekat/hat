@@ -87,6 +87,10 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
     ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CODEPOINT, &cp);
     out->codepoint = cp;
 
+    GhosttyCellContentTag content = GHOSTTY_CELL_CONTENT_CODEPOINT;
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CONTENT_TAG, &content);
+    out->grapheme = content == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME;
+
     GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
     ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide);
     switch (wide) {
@@ -127,6 +131,18 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
         out->bg_val = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
     }
     return 1;
+}
+
+int ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
+                              uint32_t *buf, size_t buf_len, size_t *out_len) {
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = x;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return GHOSTTY_INVALID_VALUE;
+    return ghostty_grid_ref_graphemes(&ref, buf, buf_len, out_len);
 }
 
 int ghost_shim_row_wrapped(void *t, int tag, uint32_t y) {

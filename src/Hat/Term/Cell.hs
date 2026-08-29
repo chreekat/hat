@@ -106,19 +106,20 @@ encodeStyleAt lvl s =
 -- don't-care @' '@) and is skipped when drawing.
 data Cell = Cell
     { char  :: Char
+    , marks :: [Char]  -- ^ combining codepoints completing the grapheme cluster
     , width :: Int
     , style :: Style
     }
     deriving stock (Eq, Show, Ord, Generic)
 
--- | Byte-compatible with the Text-field encoding every era wrote: the char
--- rides as a string, empty for a continuation cell; decode keeps a string's
--- first char and defaults the rest.
+-- | Byte-compatible with the Text-field encoding every era wrote: the whole
+-- cluster rides as one string, empty for a continuation cell; decode splits a
+-- string into its first char and the rest.
 instance Serialise Cell where
     encode c =
            encodeListLen 4
         <> encodeWord 0
-        <> encode (if c.width == 0 then T.empty else T.singleton c.char)
+        <> encode (if c.width == 0 then T.empty else T.pack (c.char : c.marks))
         <> encode c.width
         <> encode c.style
     decode = do
@@ -127,11 +128,9 @@ instance Serialise Cell where
         txt <- decode
         w   <- decode
         s   <- decode
-        pure Cell
-            { char = maybe ' ' fst (T.uncons txt)
-            , width = w
-            , style = s
-            }
+        pure $ case T.unpack txt of
+            []       -> Cell { char = ' ', marks = [], width = w, style = s }
+            ch : mks -> Cell { char = ch, marks = mks, width = w, style = s }
 
 blankCell :: Cell
-blankCell = Cell { char = ' ', width = 1, style = defaultStyle }
+blankCell = Cell { char = ' ', marks = [], width = 1, style = defaultStyle }

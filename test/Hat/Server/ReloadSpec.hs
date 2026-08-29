@@ -123,13 +123,15 @@ shortGrid = do
 
 instance Arbitrary Cell where
     arbitrary = do
-        w  <- elements [0, 1, 2]
-        ch <- if w == 0 then pure ' ' else chooseEnum ('a', '~')
-        Cell ch w <$> arbitrary
+        w   <- elements [0, 1, 2]
+        ch  <- if w == 0 then pure ' ' else chooseEnum ('a', '~')
+        mks <- if w == 0 then pure []
+               else elements [[], ['\x0301'], ['\x0301', '\x0308']]
+        Cell ch mks w <$> arbitrary
     shrink c =
-        [ Cell ch w s
-        | (ch, w, s) <- shrink (c.char, c.width, c.style)
-        , w /= 0 || ch == ' ' ]
+        [ Cell ch mks w s
+        | (ch, mks, w, s) <- shrink (c.char, c.marks, c.width, c.style)
+        , w /= 0 || (ch == ' ' && null mks) ]
 
 instance Arbitrary Style where
     arbitrary = Style
@@ -222,8 +224,8 @@ treeWith mlast ms sc = ReloadTree
 fixedScreen :: ReloadScreen
 fixedScreen = ReloadScreen
     { altScreen = True, cursorRow = 1, cursorCol = 2, cursorVisible = True
-    , rows = [[ Cell { char = 'x', width = 1
-                     , style = defaultStyle { fg = Indexed 1 } } ]]
+    , rows = [[ blankCell { char = 'x'
+                          , style = defaultStyle { fg = Indexed 1 } } ]]
     , scrollback = [[ blankCell ]], pen = defaultStyle }
 
 -- The current-era representative, with a non-trivial mode set, screen, and

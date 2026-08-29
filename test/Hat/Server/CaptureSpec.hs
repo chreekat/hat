@@ -11,15 +11,15 @@ import Hat.Model (newServerState)
 import Hat.Server
     (CaptureOpts (..), CaptureRow (..), Reply (..), captureBounds, captureText
     , cmdCapturePane)
-import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle)
+import Hat.Term.Cell (Cell (..), Color (..), Style (..), blankCell, defaultStyle)
 
 -- | A width-1 cell with default style.
 c :: Char -> Cell
-c ch = Cell { char = ch, width = 1, style = defaultStyle }
+c ch = blankCell { char = ch }
 
 -- | A width-1 cell with the given style.
 cs :: Style -> Char -> Cell
-cs st ch = Cell { char = ch, width = 1, style = st }
+cs st ch = blankCell { char = ch, style = st }
 
 -- | A row from an ASCII string, padded with blanks to the given width.
 row :: Int -> String -> V.Vector Cell
@@ -35,8 +35,8 @@ crow n w cells = CaptureRow { number = n, wrapped = w, cells = V.fromList cells 
 
 wide :: V.Vector Cell
 wide = V.fromList
-    [ Cell { char = '\12354', width = 2, style = defaultStyle }  -- あ
-    , Cell { char = ' ', width = 0, style = defaultStyle }       -- continuation
+    [ blankCell { char = '\12354', width = 2 }  -- あ
+    , blankCell { width = 0 }                                    -- continuation
     , c 'B' ]
 
 opts0 :: CaptureOpts
@@ -180,8 +180,8 @@ spec = do
             captureText opts0 { captOctal = True }
                 [ crow 0 False
                     [ c 'a'
-                    , Cell { char = '\\', width = 1, style = defaultStyle }
-                    , Cell { char = '\a', width = 1, style = defaultStyle } ] ]
+                    , blankCell { char = '\\' }
+                    , blankCell { char = '\a' } ] ]
                 `shouldBe` "a\\\\\\007\n"
 
         it "spells the SGR introducer as literal octal too" $

@@ -18,7 +18,7 @@ import Hat.Model
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
-import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle)
+import Hat.Term.Cell (Cell (..), Color (..), Style (..), blankCell, defaultStyle)
 import Hat.Term.Emulator qualified as Emu
 
 import Data.Map.Strict qualified as Map
@@ -370,7 +370,7 @@ spec = do
 
     describe "selection overlay (reverse video)" $ do
         let cellsOf txt = V.fromList
-                [ Cell { char = c, width = 1, style = defaultStyle }
+                [ blankCell { char = c }
                 | c <- take 5 (T.unpack txt <> repeat ' ') ]
             gridOf = V.fromList . map cellsOf
             -- The default mode style is reverse-only, so on a defaultStyle

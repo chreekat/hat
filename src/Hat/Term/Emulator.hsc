@@ -95,6 +95,9 @@ foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_cell"
     c_cell :: Ptr CTerm -> CInt -> CUShort -> CUInt -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_cell_graphemes"
+    c_graphemes :: Ptr CTerm -> CInt -> CUShort -> CUInt
+                -> Ptr Word32 -> CSize -> Ptr CSize -> IO CInt
 foreign import ccall unsafe "ghost_shim_row_wrapped"
     c_row_wrapped :: Ptr CTerm -> CInt -> CUInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_pen"
@@ -309,28 +312,46 @@ readRow :: CellIntern -> Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
 readRow ci t tag y cols = allocaBytes #{size GhostShimCell} $ \cellp ->
     V.generateM cols $ \c -> do
         _ <- c_cell t tag (fromIntegral c) (fromIntegral y) cellp
-        peekShimCell ci cellp
+        peekShimCell ci (graphemeMarks t tag c y) cellp
+
+-- | The combining codepoints of a cluster cell: the full cluster minus its
+-- base. Retries once with the exact size if a cluster outgrows the buffer.
+graphemeMarks :: Ptr CTerm -> CInt -> Int -> Int -> IO [Char]
+graphemeMarks t tag x y = go 16
+  where
+    go cap = allocaArray cap $ \buf -> alloca $ \lenp -> do
+        r <- c_graphemes t tag (fromIntegral x) (fromIntegral y)
+                buf (fromIntegral cap) lenp
+        n <- fromIntegral <$> peek lenp
+        case () of
+            _ | r == #{const GHOSTTY_SUCCESS} ->
+                    map (chr . fromIntegral) . drop 1 <$> peekArray n buf
+              | r == #{const GHOSTTY_OUT_OF_SPACE}, n > cap -> go n
+              | otherwise -> pure []
 
 -- | Marshal one 'GhostShimCell' the shim just filled into a 'Cell': a
 -- zero-width continuation renders as empty, a zero codepoint as a space, and
 -- the flag bitmask and tagged colors decode as in the shim's header. The fresh
 -- cell is interned ('shareVals') so equal cells across the grid and scrollback
 -- collapse to one shared heap object.
-peekShimCell :: CellIntern -> Ptr () -> IO Cell
-peekShimCell ci p = do
+peekShimCell :: CellIntern -> IO [Char] -> Ptr () -> IO Cell
+peekShimCell ci fetchMarks p = do
     cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
+    g     <- #{peek GhostShimCell, grapheme} p :: IO CInt
     w     <- #{peek GhostShimCell, width} p :: IO CInt
     flags <- #{peek GhostShimCell, flags} p :: IO CUInt
     fgT   <- #{peek GhostShimCell, fg_tag} p :: IO CInt
     fgV   <- #{peek GhostShimCell, fg_val} p :: IO Word32
     bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
     bgV   <- #{peek GhostShimCell, bg_val} p :: IO Word32
+    mks <- if g /= 0 then fetchMarks else pure []
     let width = fromIntegral w :: Int
         ch | width == 0 || cp == 0 = ' '
            | otherwise             = chr (fromIntegral cp)
         has m = flags .&. m /= 0
     shareVals ci $! Cell
         { char = ch
+        , marks = mks
         , width = width
         , style = Style
             { fg = color fgT fgV
@@ -435,7 +456,7 @@ currentPen :: Emulator -> IO Style
 currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     allocaBytes #{size GhostShimCell} $ \cellp -> do
         _ <- c_pen t cellp
-        (.style) <$> peekShimCell e.cellIntern cellp
+        (.style) <$> peekShimCell e.cellIntern (pure []) cellp
 
 -- Scrollback lives inside libghostty (the HISTORY point tag), so the row limit
 -- hat exposes is enforced here on the read side, over libghostty's byte-bounded

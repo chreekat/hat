@@ -131,8 +131,8 @@ captureText opts = T.concat . go Cell.defaultStyle
                 (rest, pen') = renderCells cell.style cls
             in (lead <> cellText cell <> rest, pen')
     cellText cell
-        | opts.captOctal = escapeOctal cell.char
-        | otherwise      = T.singleton cell.char
+        | opts.captOctal = foldMap escapeOctal (cell.char : cell.marks)
+        | otherwise      = T.pack (cell.char : cell.marks)
 
 -- | The SGR bytes that move the pen from @old@ to @new@, exactly as tmux's
 -- @grid_string_cells_code@: a leading @0@ when any attribute drops, newly set

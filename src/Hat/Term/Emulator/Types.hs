@@ -178,7 +178,7 @@ paintRow _ [] = mempty
 paintRow pen (c : cs) =
     let penB = if c.style == pen then mempty else BB.byteString (cellSgr c.style)
         rest = drop (max 0 (c.width - 1)) cs
-    in penB <> (if c.width == 0 then mempty else BB.charUtf8 c.char)
+    in penB <> (if c.width == 0 then mempty else BB.stringUtf8 (c.char : c.marks))
         <> paintRow c.style rest
 
 -- | Absolute CUP to a 0-based position (VT rows\/cols are 1-based).
@@ -227,7 +227,7 @@ colorCode base ext = \case
 screenRowText :: Screen -> Int -> Text
 screenRowText scr r = case scr.cells V.!? r of
     Nothing -> ""
-    Just row -> T.pack [c.char | c <- V.toList row, c.width /= 0]
+    Just row -> T.pack (concat [c.char : c.marks | c <- V.toList row, c.width /= 0])
 
 -- | The cell at a position, or 'blankCell' when the position is off-screen.
 screenCell :: Screen -> Pos -> Cell
