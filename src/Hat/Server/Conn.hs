@@ -52,18 +52,29 @@ import Hat.Transport.Wire
 
 -- Connections ----------------------------------------------------------
 
+-- | Serve connections until 'acceptGate' closes; while parked, arrivals sit
+-- in the listen backlog (for the next image, across a reload's exec) until
+-- the gate reopens.
 acceptLoop :: Dispatch -> ServerState -> N.Socket -> IO ()
 acceptLoop d st lsock = forever $ do
-    (conn, _) <- N.accept lsock
-    -- The autostarting client has now reached us; the idle-exit may
-    -- consider draining (see 'waitIdle'). This is what lets us drop the
-    -- old fixed-delay grace period without racing that client.
-    atomically $ writeTVar st.served True
-    void . forkIO $
-        handleConn d st conn
-            `catch` (\(e :: SomeException) ->
-                logEvent st.logger ServerCrash { err = T.pack (show e) })
-            `finally` (N.close conn `catch` \(_ :: SomeException) -> pure ())
+    r <- race awaitClosing (N.accept lsock)
+    case r of
+        Left () -> do
+            atomically $ writeTVar st.acceptGate AcceptParked
+            atomically $ readTVar st.acceptGate >>= check . (== AcceptOpen)
+        Right (conn, _) -> do
+            -- The autostarting client has now reached us; the idle-exit may
+            -- consider draining (see 'waitIdle'). This is what lets us drop the
+            -- old fixed-delay grace period without racing that client.
+            atomically $ writeTVar st.served True
+            void . forkIO $
+                handleConn d st conn
+                    `catch` (\(e :: SomeException) ->
+                        logEvent st.logger ServerCrash { err = T.pack (show e) })
+                    `finally` (N.close conn `catch` \(_ :: SomeException) -> pure ())
+  where
+    awaitClosing = atomically $
+        readTVar st.acceptGate >>= check . (== AcceptClosing)
 
 handleConn :: Dispatch -> ServerState -> N.Socket -> IO ()
 handleConn d st conn = do

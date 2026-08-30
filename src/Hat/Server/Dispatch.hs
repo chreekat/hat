@@ -26,7 +26,7 @@ module Hat.Server.Dispatch
     , restartClientAction
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (forM, forM_, unless, void)
@@ -41,7 +41,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error qualified as TEE
 import Data.Text.Read qualified as TR
 import System.Directory
-import System.Environment (getExecutablePath)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.Posix.IO qualified as PIO
 import System.Posix.Process (executeFile)
@@ -451,6 +451,12 @@ cmdReload' scope st mclient args =
                 let blobPath = st.sockPath <> ".reload"
                 B.writeFile blobPath (encodeHandover cleanup tree)
                 keepOpenAcrossExec cleanup
+                -- Park the accept loop before any farewell goes out, so a
+                -- farewelled client's immediate reattach waits in the listen
+                -- backlog for the next image instead of being accepted by
+                -- this dying one.
+                atomically $ writeTVar st.acceptGate AcceptClosing
+                atomically $ readTVar st.acceptGate >>= check . (== AcceptParked)
                 sessions <- readTVarIO st.sessions
                 forM_ (Map.elems sessions) $ \sess -> do
                     nm <- readTVarIO sess.name
@@ -460,6 +466,10 @@ cmdReload' scope st mclient args =
                 forM_ mclient $ \client ->
                     send client . reloadFarewell scope client.role
                         =<< clientSessionName st client
+                -- Test-only knob: hold the farewell->exec window open (µs)
+                -- so the suite can pin the reattach race deterministically.
+                linger <- lookupEnv "HAT_TEST_RELOAD_LINGER"
+                forM_ (linger >>= readMaybe) threadDelay
                 mconfig <- readTVarIO st.serverConfig
                 let argv = ["--server", st.sockPath]
                         <> maybe [] (: []) mconfig
@@ -468,12 +478,14 @@ cmdReload' scope st mclient args =
                 -- unwinds: the gsettings monitor child would be orphaned (14 such
                 -- orphans accrued on the dev box across upgrades). Reap it here,
                 -- while we can still signal it.
-                reapMonitor st.monitorRegistry
-                -- The self-exec replaces this image, so 'withLogger's
-                -- flush-on-exit never runs; drain the queue now or the
-                -- reload trace is lost.
-                flushLogger st.logger
-                _ <- executeFile target False argv Nothing
+                (do reapMonitor st.monitorRegistry
+                    -- The self-exec replaces this image, so 'withLogger's
+                    -- flush-on-exit never runs; drain the queue now or the
+                    -- reload trace is lost.
+                    flushLogger st.logger
+                    void $ executeFile target False argv Nothing)
+                  `onException`
+                    atomically (writeTVar st.acceptGate AcceptOpen)
                 pure []  -- unreachable: executeFile replaces this image
 
 -- | The binary a no-argument @restart-server@ re-execs: @hat@ as resolved on

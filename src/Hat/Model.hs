@@ -14,6 +14,7 @@ module Hat.Model
     , ClientRole (..)
     , EnvImport (..)
     , StartupPhase (..)
+    , AcceptGate (..)
     , CopyModeState (..)
     , FrozenGrid (..)
     , PaneMode (..)
@@ -116,6 +117,7 @@ data ServerState = ServerState
     , served      :: TVar Bool  -- ^ a client connection has been accepted.
                                 --   See 'waitIdle'.
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
+    , acceptGate  :: TVar AcceptGate    -- ^ see 'Hat.Server.Conn.acceptLoop'.
     , preserveStore :: TVar Bool
         -- ^ the store holds an explicitly saved final tree that must
         --   survive shutdown. Set by @kill-server@; off across a natural
@@ -403,6 +405,12 @@ data EnvImport = ImportEnv | SkipEnvImport
 data StartupPhase = LoadingConfig | Restoring | Ready
     deriving (Eq, Show)
 
+-- | Whether the accept loop takes new connections. A reload closes the gate
+-- ('AcceptClosing'), the loop confirms ('AcceptParked'), and arrivals wait in
+-- the listen backlog; 'AcceptOpen' resumes. See 'Hat.Server.Conn.acceptLoop'.
+data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
+    deriving (Eq, Show)
+
 data Client = Client
     { id        :: ClientId
     , role      :: ClientRole
@@ -452,6 +460,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     -- Ready, not LoadingConfig: a bare state (tests) is idle. 'runServerWith'
     -- arms LoadingConfig before its accept loop can serve anyone.
     <*> newTVarIO Ready  -- startupPhase
+    <*> newTVarIO AcceptOpen
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions

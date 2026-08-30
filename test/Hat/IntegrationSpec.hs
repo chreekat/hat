@@ -292,6 +292,40 @@ awaitWith what check d = do
                 ingest d chunk
                 go
 
+-- The shared body of the restart-keeps-client tests: the pane pid pins the
+-- server half of the upgrade, the same pty client still delivering input
+-- pins the client half. @extraEnv@ seeds the autostarted server's
+-- environment (e.g. the reload linger knob).
+restartKeepsClient :: [(String, String)] -> Hat -> IO ()
+restartKeepsClient extraEnv h = do
+    let digits = filter (\ch -> ch >= '0' && ch <= '9')
+    -- The re-exec'd client resolves `hat` on PATH: point it at THIS
+    -- build so the hop is deterministic (and never the system hat).
+    ambient <- testPath
+    let bindir = h.home </> "bin"
+    createDirectoryIfMissing True bindir
+    createFileLink h.bin (bindir </> "hat")
+    c <- startClientEnv h (("PATH", bindir <> ":" <> ambient) : extraEnv) []
+    awaitScreen c "$"
+    typeInto c "echo before-restart\r"
+    awaitScreen c "before-restart"
+    pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+    pidBefore `shouldNotBe` ""
+    _ <- hatCtl h ["restart", h.bin]
+    -- Only type once the new image owns the ptys (the consumed handover)
+    -- and the re-exec'd client is attached to it, so no keystroke can
+    -- land in the old image's final instants.
+    awaitTrue "the reload handover to be consumed" $
+        doesFileExist (h.sock <> ".reload.last")
+    awaitTrue "the re-exec'd client to reattach" $
+        not . null . words <$> ctlOut h ["list-clients"]
+    -- "done-42" can only render if the reloaded server adopted the pane
+    -- AND the re-exec'd client reattached to shuttle the keystrokes.
+    typeInto c "echo done-$((21+21))\r"
+    awaitScreen c "done-42"
+    pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+    pidAfter `shouldBe` pidBefore
+
 -- What a user would see on screen.
 awaitScreen :: Driver -> T.Text -> IO ()
 awaitScreen d needle = awaitWith (show needle) check d
@@ -2266,34 +2300,13 @@ spec = parallel $ do
     -- both halves (bug 4f). The pane pid pins the server half; the same pty
     -- client still delivering input pins the client half.
     it "restart reloads the server and the attached client stays attached" $
-        withHat hatBin $ \h -> do
-        let digits = filter (\ch -> ch >= '0' && ch <= '9')
-        -- The re-exec'd client resolves `hat` on PATH: point it at THIS
-        -- build so the hop is deterministic (and never the system hat).
-        ambient <- testPath
-        let bindir = h.home </> "bin"
-        createDirectoryIfMissing True bindir
-        createFileLink h.bin (bindir </> "hat")
-        c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
-        awaitScreen c "$"
-        typeInto c "echo before-restart\r"
-        awaitScreen c "before-restart"
-        pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
-        pidBefore `shouldNotBe` ""
-        _ <- hatCtl h ["restart", h.bin]
-        -- Only type once the new image owns the ptys (the consumed handover)
-        -- and the re-exec'd client is attached to it, so no keystroke can
-        -- land in the old image's final instants.
-        awaitTrue "the reload handover to be consumed" $
-            doesFileExist (h.sock <> ".reload.last")
-        awaitTrue "the re-exec'd client to reattach" $
-            not . null . words <$> ctlOut h ["list-clients"]
-        -- "done-42" can only render if the reloaded server adopted the pane
-        -- AND the re-exec'd client reattached to shuttle the keystrokes.
-        typeInto c "echo done-$((21+21))\r"
-        awaitScreen c "done-42"
-        pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
-        pidAfter `shouldBe` pidBefore
+        withHat hatBin (restartKeepsClient [])
+
+    -- 83: a farewelled client's reattach must wait in the listen backlog for
+    -- the next image, even when the old image lingers before its exec.
+    it "restart reattaches the client across a lingering old image (83)" $
+        withHat hatBin
+            (restartKeepsClient [("HAT_TEST_RELOAD_LINGER", "200000")])
 
     -- `restart` returns each client to its own session, not the last-active
     -- one every bare attach lands on (bug 81).
