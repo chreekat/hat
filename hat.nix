@@ -1,5 +1,5 @@
 { mkDerivation, aeson, array, async, base, bytestring, cborg
-, containers, directory, filepath, hspec, lib, libghostty-vt
+, containers, directory, filepath, hspec, HUnit, lib, libghostty-vt
 , megaparsec, network, process, QuickCheck, regex-tdfa, serialise
 , sqlite-simple, stm, text, time, unix, vector
 }:
@@ -20,8 +20,8 @@ mkDerivation {
   ];
   testHaskellDepends = [
     async base bytestring cborg containers directory filepath hspec
-    network process QuickCheck serialise sqlite-simple stm text time
-    unix vector
+    HUnit network process QuickCheck serialise sqlite-simple stm text
+    time unix vector
   ];
   description = "A terminal multiplexer";
   license = lib.meta.getLicenseFromSpdxId "AGPL-3.0-or-later";

@@ -28,6 +28,8 @@ import System.Posix.Terminal
 import System.Process (readProcess)
 import System.Process qualified as P
 import System.Timeout (timeout)
+import Test.HUnit.Lang
+    (FailureReason (..), HUnitFailure (..), formatFailureReason)
 import Test.Hspec
 import Text.Read (readMaybe)
 
@@ -102,7 +104,21 @@ withHatOn hatBin persistOn sockRel action = do
             { bin = hatBin, home = dir
             , sock = dir <> "/" <> sockRel, persist = persistOn
             , keep = keepRef }
-    bracket (mkdtemp "/tmp/hat-test-") (teardown . hatFor) (action . hatFor)
+    bracket (mkdtemp "/tmp/hat-test-") (teardown . hatFor)
+        (\dir -> action (hatFor dir) `catch` rethrowWithLog (hatFor dir))
+
+-- | A failing test's assertion, annotated with the tail of its server's
+-- event log before teardown deletes it -- the only trace a CI failure
+-- leaves.
+rethrowWithLog :: Hat -> HUnitFailure -> IO a
+rethrowWithLog h (HUnitFailure loc reason) = do
+    events <- readFile (h.home </> "server.log")
+        `catch` \(_ :: SomeException) -> pure "(no server log)"
+    let interesting = filter (not . List.isInfixOf "gsettings") (lines events)
+        excerpt = unlines (lastN 25 interesting)
+        lastN n xs = drop (length xs - n) xs
+    throwIO $ HUnitFailure loc $ Reason $
+        formatFailureReason reason <> "\nserver log (tail):\n" <> excerpt
 
 -- Kill the server (harmless if already gone) and remove the temp dir.
 teardown :: Hat -> IO ()
