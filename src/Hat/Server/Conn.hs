@@ -16,7 +16,7 @@ module Hat.Server.Conn
     ) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.Async (race, withAsync)
+import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
@@ -126,7 +126,10 @@ welcome d st conn h = do
                     atomically $ writeTVar client.ready True
                     logEvent st.logger ClientConnected
                         { client = rawClient client.id, term = h.term }
-                    withAsync (renderLoop st client) $ \_ ->
+                    -- Linked: a dying render loop must end the connection
+                    -- loudly, never leave a live client rendering nothing.
+                    withAsync (renderLoop st client) $ \a -> do
+                        link a
                         inputLoop d st client
                             `finally` removeClient st client
 
