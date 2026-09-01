@@ -1,3 +1,6 @@
+import System.Posix.Resource
+    (Resource (..), ResourceLimit (..), ResourceLimits (..), getResourceLimit,
+     setResourceLimit)
 import Test.Hspec
 
 import Hat.Bench.LinearSpec qualified
@@ -46,8 +49,17 @@ import Hat.Term.EmulatorSpec qualified
 import Hat.Term.GoldenSpec qualified
 import Hat.Transport.WireSpec qualified
 
+-- | Bound the fd table so each close_fds spawn scans a small range; the
+-- hard limit stays untouched.
+boundFds :: IO ()
+boundFds = do
+    ResourceLimits _ hard <- getResourceLimit ResourceOpenFiles
+    setResourceLimit ResourceOpenFiles
+        ResourceLimits { softLimit = ResourceLimit 2048, hardLimit = hard }
+
 main :: IO ()
 main = hspec $ do
+    runIO boundFds
     describe "Hat.Path" Hat.PathSpec.spec
     describe "Hat.Debug" Hat.DebugSpec.spec
     describe "Hat.Bench.Linear" Hat.Bench.LinearSpec.spec
