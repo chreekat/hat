@@ -6,10 +6,19 @@ specific to HAT.
 
 ## Build, test, run
 
-- Everything goes through `cabal` **inside the dev shell**: `nix develop -c
-  cabal build`, `nix develop -c cabal test`, `nix develop -c cabal run hat`.
-  Never call built binaries directly (stale artifacts) and never build outside
-  `nix develop` (libghostty-vt and its `pkg-config` come from the shell).
+- Everything goes through `cabal` **inside the dev shell**: never call built
+  binaries directly (stale artifacts) and never build outside the shell
+  (libghostty-vt and its `pkg-config` come from it).
+- Enter the shell **once**, not per command: `nix develop -c ...` re-evaluates
+  the flake every invocation (~15s on a dirty tree). Snapshot the environment
+  and source it instead:
+
+      nix print-dev-env > "$SCRATCH/devenv.sh"   # once per session
+      source "$SCRATCH/devenv.sh" && cabal test  # per command
+
+  Re-snapshot if `flake.nix`/`flake.lock` change. (A user shell can use
+  direnv or an interactive `nix develop`; the snapshot trick is for
+  non-persistent shells like an agent's.)
 - `cabal test` runs the unit, property, and integration suites. The
   integration tests drive the real `hat` binary through a pty, so rebuild
   before trusting a repro. Keep the whole suite fast and green — a flaky test
