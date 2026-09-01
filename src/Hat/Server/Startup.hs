@@ -49,10 +49,19 @@ startupGate phase origin cmds
         (Ready, _) -> Proceed
         (Restoring, _) -> Hold
         (LoadingConfig, Autostarted) -> Hold
-        (LoadingConfig, Joined) -> Proceed
+        (LoadingConfig, Joined)
+            | attaches -> Hold
+            | otherwise -> Proceed
   where
     isReload (name : _) = name `elem` ["restart-server", "restart"]
     isReload []         = False
+    -- A batch that resolves or creates sessions needs the finished tree:
+    -- an empty batch is the bare attach (reuse-or-create), and a targeted
+    -- attach served early rejects "no such session" instead of waiting.
+    attaches = null cmds || any isAttach cmds
+    isAttach (name : _) =
+        name `elem` ["attach", "attach-session", "new", "new-session"]
+    isAttach [] = False
 
 -- | Park a command batch until 'startupGate' lets it through.
 awaitStartup :: ServerState -> Autostart -> [[Text]] -> IO ()

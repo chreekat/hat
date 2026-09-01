@@ -92,6 +92,19 @@ spec = do
         it "holds only the autostarting client during config load" $ do
             startupGate LoadingConfig Autostarted cmds `shouldBe` Hold
             startupGate LoadingConfig Joined cmds `shouldBe` Proceed
+
+        -- Bug 4: a reload's farewelled clients reattach as Joined; served
+        -- against the pre-restore session table they exit "no such session".
+        it "holds a joined attach until the tree exists" $ do
+            startupGate LoadingConfig Joined [["attach", "-t", "projects"]]
+                `shouldBe` Hold
+            startupGate LoadingConfig Joined [["attach-session"]]
+                `shouldBe` Hold
+        it "holds a joined bare attach too (it would create a session)" $
+            startupGate LoadingConfig Joined [] `shouldBe` Hold
+        it "holds a joined new-session during config load" $
+            startupGate LoadingConfig Joined [["new-session", "-s", "x"]]
+                `shouldBe` Hold
         it "never holds a restart-server batch (the guard must reject, not wait)" $ do
             let reload = [["restart-server", "/some/hat"]]
             startupGate Restoring Autostarted reload `shouldBe` Proceed

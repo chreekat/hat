@@ -2395,6 +2395,32 @@ spec = parallel $ do
             doesFileExist (h.sock <> ".reload.last")
         awaitTrue "each re-exec'd client to rejoin its own session" ownSessions
 
+    -- Bug 4: restart -C sent both clients to "no such session" exits. The
+    -- slow config holds the re-exec'd image in LoadingConfig, the window
+    -- the farewelled attaches race.
+    it "restart -C returns each client to its own session" $
+        withHat hatBin $ \h -> do
+        ambient <- testPath
+        let bindir = h.home </> "bin"
+        createDirectoryIfMissing True bindir
+        createFileLink h.bin (bindir </> "hat")
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "if 'sleep 0.7' 'set -g escape-time 0'\n"
+        let env = [("PATH", bindir <> ":" <> ambient)]
+        c1 <- startClientEnv h env ["-f", confPath]
+        awaitScreen c1 "$"
+        c2 <- startClientEnv h env ["new-session", "-s", "beta"]
+        awaitScreen c2 "$"
+        let ownSessions = do
+                out <- ctlOut h ["list-clients", "-F", "#{session_name}"]
+                pure (List.sort (lines out) == ["0", "beta"])
+        awaitTrue "two clients on their own sessions" ownSessions
+        _ <- hatCtl h ["restart", "-C", h.bin]
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitWith "each re-exec'd client to rejoin its own session"
+            (\_ -> ownSessions) c1
+
     -- A typo'd binary path must be caught before anything is torn down, so the
     -- running session is untouched rather than half-dropped.
     it "restart-server rejects a missing binary without dropping the session" $
