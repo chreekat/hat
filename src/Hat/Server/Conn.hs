@@ -39,6 +39,7 @@ import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
 import Hat.Server.Overlay
 import Hat.Server.Startup
+import Hat.Server.Flash
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
@@ -170,6 +171,7 @@ newClient st conn h = do
     cursorColourVar <- newIORef ""
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
+    flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
@@ -196,6 +198,7 @@ newClient st conn h = do
         , lastCursorColour = cursorColourVar
         , needsFull = fullVar
         , toast = toastVar
+        , flash = flashVar
         , prompt = promptVar
         , picker = pickerVar
         , outerFocused = focusVar
@@ -377,6 +380,7 @@ runKeys d st client keys = do
     let loop kst [] = writeIORef client.keyState kst
         loop kst (k0 : rest) = do
             dismissToast st client
+            dismissFlash st client
             mpane <- clientActivePane st client
             -- A pending vi char search (f/F/t/T) captures this key as its
             -- target, ahead of any keymap lookup.
@@ -401,6 +405,8 @@ runKeys d st client keys = do
                 else do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
+                    when (kst /= PrefixArmed && kst' == PrefixArmed) $
+                        showFlash st client
                     forM_ actions $ \case
                         Passthrough raw ->
                             forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw

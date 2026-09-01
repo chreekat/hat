@@ -5,6 +5,7 @@ module Hat.Server.View
     , awaitRenderable
     , renderOnce
     , statusCells
+    , flashTarget
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
@@ -76,6 +77,13 @@ statusLayout pos count rows = case pos of
     StatusTop    -> (count, Just 0)
     StatusBottom -> (0, Just (rows - count))
 
+-- | The rect the prefix flash inverts: the active pane's, and only when
+-- more than one pane is visible.
+flashTarget :: [(PaneId, Rect)] -> PaneId -> Maybe Rect
+flashTarget rects active = case rects of
+    _ : _ : _ -> List.lookup active rects
+    _ -> Nothing
+
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
     -- One transaction: the frame is built from this size, so 'fullFlag' must
@@ -116,6 +124,12 @@ renderOnce st client = do
                     Just pane -> do
                         cells <- paneViewCells st pane
                         pure (overlayGrid acc (shiftRect rect) cells)
+            mflash <- readTVarIO client.flash
+            let flashed
+                    | isJust mflash
+                    , Just r <- flashTarget rects active =
+                        invertRect base (shiftRect r)
+                    | otherwise = base
             mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast
             let w = fromIntegral csize.cols
@@ -135,8 +149,8 @@ renderOnce st client = do
                             Just ix -> Just . (,) ix <$> statusCells st sess w
                             Nothing -> pure Nothing
             let withStatus = case mBarRow of
-                    Just (ix, cells) -> base V.// [(ix, cells)]
-                    Nothing -> base
+                    Just (ix, cells) -> flashed V.// [(ix, cells)]
+                    Nothing -> flashed
             cur <- case (mprompt, mBarRow) of
                 (Just pr, Just (ix, _)) ->
                     pure (Pos { row = ix

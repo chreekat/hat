@@ -24,6 +24,7 @@ module Hat.Model
     , CharStop (..)
     , CharSearch (..)
     , Toast (..)
+    , Flash (..)
     , PromptState (..)
     , PickerState (..)
     , PickerNode (..)
@@ -318,6 +319,12 @@ data Toast = Toast
                                    --   'Nothing' = until a key is pressed
     }
 
+-- | The active-pane highlight shown while the prefix arms; see
+-- 'Hat.Server.Flash.showFlash'.
+newtype Flash = Flash
+    { deadline :: Word64  -- ^ monotonic ns, from 'flashDeadline'
+    }
+
 -- | Per-client command-prompt state: the line being edited, the cursor's
 -- index into it, and (when browsing) the position in command history.
 data PromptState = PromptState
@@ -431,6 +438,7 @@ data Client = Client
     , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
+    , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
     , outerFocused :: TVar Bool

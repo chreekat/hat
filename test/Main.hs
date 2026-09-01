@@ -14,6 +14,7 @@ import Hat.IntegrationSpec qualified
 import Hat.LogSpec qualified
 import Hat.PathSpec qualified
 import Hat.Server.PersistSpec qualified
+import Hat.Server.FlashSpec qualified
 import Hat.Term.PtySpec qualified
 import Hat.Server.CaptureSpec qualified
 import Hat.Server.ColorSchemeSpec qualified
@@ -90,4 +91,5 @@ main = hspec $ do
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "Hat.Server.Hooks" Hat.Server.HooksSpec.spec
     describe "Hat.Server.Flags" Hat.Server.FlagsSpec.spec
+    describe "Hat.Server.Flash" Hat.Server.FlashSpec.spec
     describe "integration" Hat.IntegrationSpec.spec

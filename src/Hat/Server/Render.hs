@@ -8,6 +8,7 @@ module Hat.Server.Render
     , composeFrame
     , overlayGrid
     , applyBorders
+    , invertRect
     , diffFrame
     , fullRedraw
     ) where
@@ -63,6 +64,18 @@ applyBorders frame borders = frame V.// updates
         , r < V.length frame
         , let row = frame V.! r
         ]
+
+-- | Toggle reverse video on every cell inside the rect.
+invertRect :: Frame -> Rect -> Frame
+invertRect frame rect = V.imap invRow frame
+  where
+    invRow r row
+        | r < rect.startRow || r >= rect.endRow = row
+        | otherwise = V.imap invCell row
+    invCell c cell
+        | c < rect.startCol || c >= rect.endCol = cell
+        | otherwise =
+            cell { style = cell.style { reverse = not cell.style.reverse } }
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]

@@ -273,6 +273,7 @@ fakeClient _ = do
     colourVar <- newIORef ""
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
+    flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
     focusVar <- newTVarIO True
@@ -296,6 +297,7 @@ fakeClient _ = do
         , lastCursorColour = colourVar
         , needsFull = fullVar
         , toast = toastVar
+        , flash = flashVar
         , prompt = promptVar
         , picker = pickerVar
         , outerFocused = focusVar

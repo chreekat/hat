@@ -104,6 +104,7 @@ library
         Hat.Server.CopyMode
         Hat.Server.Dispatch
         Hat.Server.Environ
+        Hat.Server.Flash
         Hat.Server.Format
         Hat.Server.Format.Colour
         Hat.Server.Format.Fuzzy
@@ -254,6 +255,7 @@ test-suite hat-test
         Hat.Server.CopyModeSpec
         Hat.Server.EnvironSpec
         Hat.Server.FlagsSpec
+        Hat.Server.FlashSpec
         Hat.Server.FormatSpec
         Hat.Server.HooksSpec
         Hat.Server.KeysSpec

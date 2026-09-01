@@ -127,6 +127,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
         <*> newTVarIO True     -- outerFocused
         <*> newTVarIO ImportEnv
         <*> pure []
@@ -158,6 +159,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef (Pos 0 0, True)
         <*> newIORef ""
         <*> newTVarIO True
+        <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
