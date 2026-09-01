@@ -6,7 +6,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception
     (IOException, SomeException, bracket, catch, evaluate, finally, throwIO,
      try)
-import Control.Monad (forM, unless, void, when)
+import Control.Monad (forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -16,10 +16,11 @@ import System.Directory
      removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hSetBuffering, BufferMode (..))
+import System.IO (Handle, hClose, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (closeFd, createPipe, fdToHandle, handleToFd)
 import System.Posix.Process (ProcessStatus (..))
+import System.Mem
 import System.Posix.Temp (mkdtemp)
 import System.Posix.Terminal
     ( TerminalMode (..), TerminalState (Immediately), getTerminalAttributes
@@ -55,6 +56,7 @@ data Hat = Hat
     , home    :: FilePath
     , sock    :: FilePath
     , persist :: Bool   -- ^ whether the server keeps its SQLite store
+    , keep    :: IORef [Driver]  -- ^ every spawned driver; see 'teardown'
     }
 
 -- Disable the SQLite persistence layer unless a test opts in, so most
@@ -94,12 +96,13 @@ withHatPersist hatBin = withHatOn hatBin True "socket"
 -- | 'withHat' with a custom socket path relative to the temp HOME (used
 -- by the test that needs the socket's parent dirs to not exist yet).
 withHatOn :: FilePath -> Bool -> FilePath -> (Hat -> IO a) -> IO a
-withHatOn hatBin persistOn sockRel action =
+withHatOn hatBin persistOn sockRel action = do
+    keepRef <- newIORef []
+    let hatFor dir = Hat
+            { bin = hatBin, home = dir
+            , sock = dir <> "/" <> sockRel, persist = persistOn
+            , keep = keepRef }
     bracket (mkdtemp "/tmp/hat-test-") (teardown . hatFor) (action . hatFor)
-  where
-    hatFor dir = Hat
-        { bin = hatBin, home = dir
-        , sock = dir <> "/" <> sockRel, persist = persistOn }
 
 -- Kill the server (harmless if already gone) and remove the temp dir.
 teardown :: Hat -> IO ()
@@ -121,6 +124,12 @@ teardown h = do
     _ <- pollServerGone h.sock 20
     void $ P.readProcessWithExitCode
         "pkill" ["-9", "-f", "--", "--server " <> h.sock] ""
+    -- A driver's pty master stays open for the whole test -- closed here,
+    -- never by the collector mid-test (a finalized master hangs up its
+    -- still-attached client).
+    ds <- readIORef h.keep
+    forM_ ds $ \d -> hClose d.pty.master
+        `catch` \(_ :: SomeException) -> pure ()
     removeDirectoryRecursive h.home
         `catch` \(_ :: SomeException) -> pure ()
 
@@ -243,11 +252,12 @@ startClientEnv h extraEnv extra = do
             }
     t <- newIORef ""
     emu <- Emu.newEmulator size 1000
-    pure Driver
-        { pty = Client { master = masterH, proch = ph }
-        , transcript = t
-        , screen = emu
-        }
+    let d = Driver
+            { pty = Client { master = masterH, proch = ph }
+            , transcript = t
+            , screen = emu
+            }
+    d <$ modifyIORef' h.keep (d :)
 
 -- Blocking read of available bytes; empty means the pty closed (the hat
 -- client exited and the slave went away — Linux reports EIO at pty EOF).
@@ -2350,6 +2360,7 @@ spec = parallel $ do
                 out <- ctlOut h ["list-clients", "-F", "#{session_name}"]
                 pure (List.sort (lines out) == ["0", "beta"])
         awaitTrue "two clients on their own sessions" ownSessions
+        performGC  -- deterministic: drivers must survive collection mid-test
         _ <- hatCtl h ["restart", h.bin]
         awaitTrue "the reload handover to be consumed" $
             doesFileExist (h.sock <> ".reload.last")
