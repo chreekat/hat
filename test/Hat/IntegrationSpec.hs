@@ -114,7 +114,13 @@ teardown h = do
         Nothing -> void $ P.readProcessWithExitCode
             "pkill" ["-f", "--", "--server " <> h.sock] ""
         Just _ -> pure ()
-    _ <- pollServerGone h.sock 50
+    -- kill-server returns before the drain finishes, and a draining server
+    -- stops accepting before it exits, so "unreachable" is not "gone". The
+    -- poll gives a clean drain its chance; the unconditional -9 guarantees
+    -- nothing survives the socket-path unlink below.
+    _ <- pollServerGone h.sock 20
+    void $ P.readProcessWithExitCode
+        "pkill" ["-9", "-f", "--", "--server " <> h.sock] ""
     removeDirectoryRecursive h.home
         `catch` \(_ :: SomeException) -> pure ()
 
