@@ -114,11 +114,22 @@ rethrowWithLog :: Hat -> HUnitFailure -> IO a
 rethrowWithLog h (HUnitFailure loc reason) = do
     events <- readFile (h.home </> "server.log")
         `catch` \(_ :: SomeException) -> pure "(no server log)"
-    let interesting = filter (not . List.isInfixOf "gsettings") (lines events)
-        excerpt = unlines (lastN 25 interesting)
+    -- From the last reload when there is one (the epoch failures hide in),
+    -- middle elided; plain tail otherwise. Poll chatter is dropped.
+    let noise l = List.isInfixOf "gsettings" l
+            || List.isInfixOf "\"command\":\"list-clients" l
+        interesting = filter (not . noise) (lines events)
+        epoch = List.dropWhileEnd (not . List.isInfixOf "ServerReloading")
+            interesting
+        sliced = case drop (length epoch - 1) interesting of
+            [] -> lastN 25 interesting
+            fromReload
+                | length fromReload <= 45 -> fromReload
+                | otherwise ->
+                    take 30 fromReload <> ["..."] <> lastN 15 fromReload
         lastN n xs = drop (length xs - n) xs
     throwIO $ HUnitFailure loc $ Reason $
-        formatFailureReason reason <> "\nserver log (tail):\n" <> excerpt
+        formatFailureReason reason <> "\nserver log:\n" <> unlines sliced
 
 -- Kill the server (harmless if already gone) and remove the temp dir.
 teardown :: Hat -> IO ()
@@ -352,8 +363,10 @@ restartKeepsClient extraEnv h = do
     -- land in the old image's final instants.
     awaitTrue "the reload handover to be consumed" $
         doesFileExist (h.sock <> ".reload.last")
-    awaitTrue "the re-exec'd client to reattach" $
-        not . null . words <$> ctlOut h ["list-clients"]
+    -- Through the driver, so a timeout shows the pty: whatever the
+    -- re-exec'd client printed before dying is the diagnosis.
+    awaitWith "the re-exec'd client to reattach"
+        (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
     -- "done-42" can only render if the reloaded server adopted the pane
     -- AND the re-exec'd client reattached to shuttle the keystrokes.
     typeInto c "echo done-$((21+21))\r"
