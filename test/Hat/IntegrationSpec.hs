@@ -4,7 +4,8 @@ module Hat.IntegrationSpec (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception
-    (IOException, SomeException, bracket, catch, evaluate, throwIO, try)
+    (IOException, SomeException, bracket, catch, evaluate, finally, throwIO,
+     try)
 import Control.Monad (forM, unless, void, when)
 import Data.List qualified as List
 import Data.ByteString qualified as B
@@ -17,7 +18,7 @@ import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
-import System.Posix.IO (fdToHandle, handleToFd)
+import System.Posix.IO (closeFd, createPipe, fdToHandle, handleToFd)
 import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Temp (mkdtemp)
 import System.Posix.Terminal
@@ -124,7 +125,8 @@ hatCtl h args = do
     path <- testPath
     P.readCreateProcessWithExitCode
         (P.proc h.bin (["-S", h.sock] <> args))
-            { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h) }
+            { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+            , P.close_fds = True }
         ""
 
 -- Stdout of a hat control command.
@@ -216,6 +218,7 @@ startClientEnv h extraEnv extra = do
             { P.std_in  = P.UseHandle slaveH
             , P.std_out = P.UseHandle slaveH
             , P.std_err = P.UseHandle slaveH
+            , P.close_fds = True
             , P.new_session = True
             , P.cwd = Just "/tmp"
             , P.env = Just $
@@ -2189,6 +2192,22 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    -- A spawned client must not inherit the driver's open fds (bug 9).
+    it "spawns clients with a clean fd table" $
+        withHat hatBin $ \h -> do
+        (r, w) <- createPipe  -- marker fd held open across the spawn
+        flip finally (closeFd r >> closeFd w) $ do
+            c <- startClient h
+            awaitScreen c "$"
+            mpid <- P.getPid c.pty.proch
+            pid <- maybe (fail "client already gone") pure mpid
+            marker <- readSymbolicLink ("/proc/self/fd/" <> show w)
+            fds <- listDirectory ("/proc/" <> show pid <> "/fd")
+            links <- forM fds $ \fd ->
+                readSymbolicLink ("/proc/" <> show pid <> "/fd/" <> fd)
+                    `catch` \(_ :: SomeException) -> pure ""
+            links `shouldNotSatisfy` elem marker
 
     -- Milestone A: `restart-server` reloads the server binary in place by
     -- re-exec'ing itself and re-adopting the still-running pane programs
