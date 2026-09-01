@@ -77,7 +77,7 @@ statusLayout pos count rows = case pos of
     StatusTop    -> (count, Just 0)
     StatusBottom -> (0, Just (rows - count))
 
--- | The rect the prefix flash inverts: the active pane's, and only when
+-- | The rect the prefix flash blanks: the active pane's, and only when
 -- more than one pane is visible.
 flashTarget :: [(PaneId, Rect)] -> PaneId -> Maybe Rect
 flashTarget rects active = case rects of
@@ -128,7 +128,7 @@ renderOnce st client = do
             let flashed
                     | isJust mflash
                     , Just r <- flashTarget rects active =
-                        invertRect base (shiftRect r)
+                        blankRect base (shiftRect r)
                     | otherwise = base
             mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast

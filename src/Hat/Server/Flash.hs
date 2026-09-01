@@ -1,6 +1,6 @@
--- | The per-client prefix flash: a brief reverse-video highlight of the
--- active pane when the prefix key arms, with the timer that clears it.
--- See 'Hat.Server.View.flashTarget' for what it highlights.
+-- | The per-client prefix flash: the active pane briefly blanks to the
+-- terminal's background when the prefix key arms, with the timer that
+-- clears it. See 'Hat.Server.View.flashTarget' for what it blanks.
 module Hat.Server.Flash
     ( showFlash
     , dismissFlash

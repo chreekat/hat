@@ -1,5 +1,5 @@
--- | The prefix flash: arming the prefix briefly reverse-videos the active
--- pane to orient the user, and only when more than one pane is visible.
+-- | The prefix flash: arming the prefix briefly blanks the active pane to
+-- the terminal's background, and only when more than one pane is visible.
 module Hat.Server.FlashSpec (spec) where
 
 import Test.Hspec
@@ -13,7 +13,7 @@ import Hat.Model
 import Hat.Model.Options (emptyDelta)
 import Hat.Server.Flash (flashDeadline, flashExpired)
 import Hat.Server.Layout (Layout (..), Orientation (..))
-import Hat.Server.Render (blankFrame, invertRect)
+import Hat.Server.Render (blankFrame, blankRect)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.View (flashTarget)
 import Hat.Term.Cell qualified as Cell
@@ -42,26 +42,19 @@ spec = do
         it "an active pane missing from the layout: no flash" $
             flashTarget both (PaneId 9) `shouldBe` Nothing
 
-    describe "invertRect" $ do
+    describe "blankRect" $ do
         let sz = Size { rows = 4, cols = 6 }
             rect = Rect { startRow = 1, endRow = 3, startCol = 2, endCol = 5 }
-            reversed cell = (cell.style).reverse
+            busy = V.map (V.map (const x)) (blankFrame sz)
+            x = Cell.glyphCell 'x' Cell.defaultStyle
 
-        it "toggles reverse video exactly inside the rect" $ do
-            let frame = invertRect (blankFrame sz) rect
+        it "blanks to the default background exactly inside the rect" $ do
+            let frame = blankRect busy rect
             [ (r, c)
                 | (r, row) <- zip [0 :: Int ..] (V.toList frame)
                 , (c, cell) <- zip [0 :: Int ..] (V.toList row)
-                , reversed cell ]
+                , cell == Cell.blankCell ]
                 `shouldBe` [ (r, c) | r <- [1, 2], c <- [2, 3, 4] ]
-
-        it "un-reverses an already-reversed cell (stays visible as a flash)" $ do
-            let pre = V.map (V.map toReversed) (blankFrame sz)
-                toReversed cell = cell { Cell.style = revStyle }
-                revStyle = Cell.defaultStyle { Cell.reverse = True }
-                frame = invertRect pre rect
-            reversed (frame V.! 1 V.! 2) `shouldBe` False
-            reversed (frame V.! 0 V.! 0) `shouldBe` True
 
     describe "flash lifetime" $ do
         let shownAt = 41000000000
