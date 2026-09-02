@@ -820,7 +820,7 @@ spec = parallel $ do
     -- bug 64: an outer terminal's extended-key sequence must arrive as the
     -- key it names, not as bytes. Pins that a mapping keyed on the raw ctrl
     -- byte still fires after one has been pressed.
-    it "keeps a vim mapping alive across an outer extended-key press" $
+    it "delivers ctrl keys to vim in every outer spelling (64, 1b)" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
@@ -838,6 +838,23 @@ spec = parallel $ do
         awaitScreen c1 "PING2"
         typeInto c1 "\x0e"
         awaitScreen c1 "PING3"
+
+        -- Ctrl punctuation: C-] must land as 0x1d whichever spelling the
+        -- outer terminal sends (1b).
+        typeInto c1 ":nmap <C-]> :let g:n+=1<Bar>echom \"PING\" . g:n<CR>\r"
+        typeInto c1 "\x1d"
+        awaitScreen c1 "PING4"
+        typeInto c1 "\ESC[93;5u"
+        awaitScreen c1 "PING5"
+        typeInto c1 "\ESC[27;5;93~"
+        awaitScreen c1 "PING6"
+        -- C-[ is Escape in every spelling: the CSI-u form some outer
+        -- terminals send must leave insert mode, never insert a '['.
+        typeInto c1 "iqq"
+        awaitScreen c1 "qq"
+        typeInto c1 "\ESC[91;5u"
+        typeInto c1 "AZ!"
+        awaitScreen c1 "qqZ!"
 
         typeInto c1 "\ESC:q!\r"
         awaitScreen c1 "$"

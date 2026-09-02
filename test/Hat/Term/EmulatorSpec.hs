@@ -371,20 +371,14 @@ spec = do
     describe "key protocol encoding" $ do
         let cSs   = KeyPress { code = 115, mods = 5 }
             cEnter = KeyPress { code = 13, mods = 5 }
-            sEnter = KeyPress { code = 13, mods = 2 }
             mX    = KeyPress { code = 120, mods = 3 }
-            cSpace = KeyPress { code = 32, mods = 5 }
             enc e kp = encodeKeyPress e kp
 
-        it "sends legacy bytes to a pane that turned no protocol on" $ do
+        it "offers no spelling to a pane that turned no protocol on (1b)" $ do
+            -- The caller keeps the key's own legacy bytes.
             e <- new80x24
-            enc e cSs `shouldReturn` Just "\x13"
-            enc e mX `shouldReturn` Just "\ESCx"
-            enc e cSpace `shouldReturn` Just "\NUL"
-            -- No legacy encoding at all: the modifiers drop rather than
-            -- escaping into an extended sequence.
-            enc e cEnter `shouldReturn` Just "\r"
-            enc e sEnter `shouldReturn` Just "\r"
+            enc e cSs `shouldReturn` Nothing
+            enc e cEnter `shouldReturn` Nothing
 
         it "spells every modified key as modifyOtherKeys once the app asked" $ do
             e <- new80x24
@@ -399,12 +393,12 @@ spec = do
             enc e cSs `shouldReturn` Just "\ESC[115;5u"
             enc e cEnter `shouldReturn` Just "\ESC[13;5u"
 
-        it "returns to legacy bytes when the app turns the protocol off" $ do
+        it "stops spelling keys once the app turns the protocol off" $ do
             e <- new80x24
             _ <- feedStr e "\ESC[>4;2m"
             _ <- feedStr e "\ESC[>4;0m"
-            enc e cSs `shouldReturn` Just "\x13"
-            enc e cEnter `shouldReturn` Just "\r"
+            enc e cSs `shouldReturn` Nothing
+            enc e cEnter `shouldReturn` Nothing
 
         it "reads back the protocols an app turned on" $ do
             e <- new80x24

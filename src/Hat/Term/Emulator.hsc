@@ -411,25 +411,26 @@ encodeKey e key = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
             CursorEnd   -> "F"
     pure (intro <> final)
 
--- | Encode a modified key press as the pane's app expects it: the legacy bytes
--- when it turned no key protocol on (modifiers with no legacy encoding are
--- dropped, keeping alt, as tmux does), the modifyOtherKeys form once it sent
--- @CSI > 4 ; 2 m@, the kitty CSI-u form once it pushed kitty flags.
--- 'Nothing' when the encoder cannot spell the key, leaving the caller its
--- tokenized bytes.
+-- | Encode a modified key press per the key protocol the pane's app turned
+-- on: the modifyOtherKeys form once it sent @CSI > 4 ; 2 m@, the kitty CSI-u
+-- form once it pushed kitty flags. 'Nothing' when no protocol is on or the
+-- encoder cannot spell the key: the caller keeps the key's own legacy bytes.
 encodeKeyPress :: Emulator -> KeyPress -> IO (Maybe ByteString)
 encodeKeyPress e kp = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     km <- readKeyModes t
-    -- libghostty keeps a legacy encoding under modifyOtherKeys where xterm and
-    -- tmux escape it, and a half-escaped app reads the legacy byte as unmapped.
-    if km.modifyOtherKeys && km.kittyFlags == 0
-        then pure (Just (modifyOtherKeysBytes kp))
-        else allocaBytes cap $ \buf -> do
+    if km.kittyFlags /= 0
+        then allocaBytes cap $ \buf -> do
             n <- c_encode_key t (fromIntegral kp.code) (fromIntegral kp.mods)
                     buf (fromIntegral cap)
             if n < 0
                 then pure Nothing
                 else Just <$> B.packCStringLen (castPtr buf, fromIntegral n)
+        -- Spelled by hat, not c_encode_key: libghostty keeps a legacy
+        -- encoding under modifyOtherKeys where xterm and tmux escape it, and
+        -- a half-escaped app reads the legacy byte as unmapped.
+        else pure $ if km.modifyOtherKeys
+            then Just (modifyOtherKeysBytes kp)
+            else Nothing
   where
     cap = 64 :: Int
 
