@@ -9,6 +9,7 @@ module Hat.Server.ColorScheme
     , schemeName
     , schemeReport
     , applyPalette
+    , flashBorderStyle
     , previewLabelStyle
     , WatcherFault (..)
     , watcherFault
@@ -181,6 +182,7 @@ data Palette = Palette
     , bell         :: Cell.Style
     , border       :: Cell.Style
     , activeBorder :: Cell.Style
+    , flash        :: Cell.Style
     , mode         :: Cell.Style
     , previewLabel :: Cell.Style
     }
@@ -192,6 +194,7 @@ palette SchemeDark = Palette
     , bell         = (fgBg 214 22) { Cell.bold = True }
     , border       = onlyFg 65
     , activeBorder = (onlyFg 10) { Cell.bold = True }
+    , flash        = (onlyFg 153) { Cell.bold = True }
     , mode         = fgBg 0 179
     , previewLabel = (fgBg 153 24) { Cell.bold = True }
     }
@@ -201,6 +204,7 @@ palette SchemeLight = Palette
     , bell         = (fgBg 166 151) { Cell.bold = True }
     , border       = onlyFg 250
     , activeBorder = (onlyFg 22) { Cell.bold = True }
+    , flash        = (onlyFg 25) { Cell.bold = True }
     , mode         = fgBg 0 222
     , previewLabel = (fgBg 24 153) { Cell.bold = True }
     }
@@ -213,6 +217,14 @@ palette SchemeLight = Palette
 previewLabelStyle :: Maybe ColorScheme -> Cell.Style
 previewLabelStyle (Just scheme) = (palette scheme).previewLabel
 previewLabelStyle Nothing = (fgBg 15 4) { Cell.bold = True }
+
+-- | The prefix flash's border tint, for the scheme in force: blue again
+-- (see 'previewLabelStyle'), kept apart from the resting active border in
+-- luminance as well as hue — pale on dark, deep on light — so the flash
+-- reads at a glance. Without a scheme, basic bright blue.
+flashBorderStyle :: Maybe ColorScheme -> Cell.Style
+flashBorderStyle (Just scheme) = (palette scheme).flash
+flashBorderStyle Nothing = (onlyFg 12) { Cell.bold = True }
 
 fgBg :: Word8 -> Word8 -> Cell.Style
 fgBg f b = Cell.defaultStyle

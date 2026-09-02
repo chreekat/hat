@@ -8,7 +8,6 @@ module Hat.Server.Render
     , composeFrame
     , overlayGrid
     , applyBorders
-    , blankRect
     , diffFrame
     , fullRedraw
     ) where
@@ -64,17 +63,6 @@ applyBorders frame borders = frame V.// updates
         , r < V.length frame
         , let row = frame V.! r
         ]
-
--- | Blank every cell inside the rect to the default background.
-blankRect :: Frame -> Rect -> Frame
-blankRect frame rect = V.imap blankRow frame
-  where
-    blankRow r row
-        | r < rect.startRow || r >= rect.endRow = row
-        | otherwise = V.imap blankCol row
-    blankCol c cell
-        | c < rect.startCol || c >= rect.endCol = cell
-        | otherwise = blankCell
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]

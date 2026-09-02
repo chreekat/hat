@@ -28,7 +28,7 @@ import Data.Vector qualified as V
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.ColorScheme (previewLabelStyle)
+import Hat.Server.ColorScheme (flashBorderStyle, previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.FormatEnv
@@ -77,8 +77,8 @@ statusLayout pos count rows = case pos of
     StatusTop    -> (count, Just 0)
     StatusBottom -> (0, Just (rows - count))
 
--- | The rect the prefix flash blanks: the active pane's, and only when
--- more than one pane is visible.
+-- | The rect whose border the prefix flash tints: the active pane's, and
+-- only when more than one pane is visible.
 flashTarget :: [(PaneId, Rect)] -> PaneId -> Maybe Rect
 flashTarget rects active = case rects of
     _ : _ : _ -> List.lookup active rects
@@ -112,24 +112,24 @@ renderOnce st client = do
     (frame, cursor, mActiveRect) <- case view of
         Nothing -> pure (blankFrame csize, (Pos 0 0, False), Nothing)
         Just (sess, _, rects, borders, ps, active) -> do
+            mflash <- readTVarIO client.flash
+            tint <-
+                if isJust mflash && isJust (flashTarget rects active)
+                    then Just . flashBorderStyle <$> readTVarIO st.colorScheme
+                    else pure Nothing
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
                     }
                 base0 = applyBorders (blankFrame csize)
-                    (borderCells opts (List.lookup active rects) rowOff borders)
+                    (borderCells opts (List.lookup active rects) tint rowOff
+                        borders)
             base <- foldM' base0 rects $ \acc (pidL, rect) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure acc
                     Just pane -> do
                         cells <- paneViewCells st pane
                         pure (overlayGrid acc (shiftRect rect) cells)
-            mflash <- readTVarIO client.flash
-            let flashed
-                    | isJust mflash
-                    , Just r <- flashTarget rects active =
-                        blankRect base (shiftRect r)
-                    | otherwise = base
             mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast
             let w = fromIntegral csize.cols
@@ -149,8 +149,8 @@ renderOnce st client = do
                             Just ix -> Just . (,) ix <$> statusCells st sess w
                             Nothing -> pure Nothing
             let withStatus = case mBarRow of
-                    Just (ix, cells) -> flashed V.// [(ix, cells)]
-                    Nothing -> flashed
+                    Just (ix, cells) -> base V.// [(ix, cells)]
+                    Nothing -> base
             cur <- case (mprompt, mBarRow) of
                 (Just pr, Just (ix, _)) ->
                     pure (Pos { row = ix
@@ -238,7 +238,7 @@ windowCompositeCells st win size = do
         a      <- readTVar win.activeId
         pure (r, b, ps, a)
     let base = applyBorders (blankFrame size)
-            (borderCells opts (List.lookup active rects) 0 borders)
+            (borderCells opts (List.lookup active rects) Nothing 0 borders)
     foldM (\acc (pid, rect) -> case Map.lookup pid ps of
               Nothing   -> pure acc
               Just pane -> do
@@ -320,12 +320,15 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 -- | Turn @arrange@'s raw border glyphs into styled cells: the active
 -- pane's border takes @pane-active-border-style@ (when
 -- @pane-border-indicators@ colours it) and gains direction arrows (when
--- it uses arrows); everything else takes @pane-border-style@. Glyphs are
+-- it uses arrows); everything else takes @pane-border-style@. A flash
+-- @tint@, while set, overrides the active perimeter's style outright —
+-- the flash must show regardless of the indicator option. Glyphs are
 -- remapped per @pane-border-lines@. Positions are shifted by @rowOff@ for
 -- a top status line.
 borderCells
-    :: Options -> Maybe Rect -> Int -> [(Pos, Char)] -> [(Pos, Cell.Cell)]
-borderCells opts mActive rowOff borders =
+    :: Options -> Maybe Rect -> Maybe Cell.Style -> Int -> [(Pos, Char)]
+    -> [(Pos, Cell.Cell)]
+borderCells opts mActive tint rowOff borders =
     [ (p { row = p.row + rowOff }, cellAt p ch) | (p, ch) <- borders ]
   where
     (useColor, useArrows) = case opts.paneBorderIndicators of
@@ -337,7 +340,8 @@ borderCells opts mActive rowOff borders =
     arrows = if useArrows then maybe Map.empty edgeArrows mActive else Map.empty
     cellAt p ch =
         let active = activeAt p
-            sty | active && useColor = opts.paneActiveBorderStyle
+            sty | active, Just t <- tint = t
+                | active && useColor = opts.paneActiveBorderStyle
                 | otherwise          = opts.paneBorderStyle
             glyph = case (active, Map.lookup p arrows) of
                 (True, Just arr) -> arr
