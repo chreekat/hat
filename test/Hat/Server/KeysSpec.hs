@@ -43,6 +43,12 @@ spec = do
         it "reads control chars" $
             map (.name) (tokenizeKeys "\x02\x01") `shouldBe` ["C-b", "C-a"]
 
+        it "names 0x1c-0x1f as ctrl punctuation, not chars past z (1b)" $ do
+            map (.name) (tokenizeKeys "\x1c\x1d\x1e\x1f")
+                `shouldBe` ["C-\\", "C-]", "C-^", "C-_"]
+            map (.raw) (tokenizeKeys "\x1c\x1d\x1e\x1f")
+                `shouldBe` ["\x1c", "\x1d", "\x1e", "\x1f"]
+
         it "reads C-Space" $
             map (.name) (tokenizeKeys "\x00") `shouldBe` ["C-Space"]
 
@@ -302,6 +308,10 @@ spec = do
             (.name) <$> parseKeyName "%" `shouldBe` Just "%"
         it "parses control keys" $
             (.raw) <$> parseKeyName "C-b" `shouldBe` Just "\x02"
+        it "parses ctrl punctuation in both spellings (1b)" $ do
+            (.raw) <$> parseKeyName "C-]" `shouldBe` Just "\x1d"
+            (.raw) <$> parseKeyName "^]" `shouldBe` Just "\x1d"
+            (.name) <$> parseKeyName "^]" `shouldBe` Just "C-]"
         it "parses C-Space" $
             (.raw) <$> parseKeyName "C-Space" `shouldBe` Just "\x00"
         it "parses ctrl arrows" $ do

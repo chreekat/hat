@@ -183,7 +183,11 @@ tokenize timing = go
                 cons (mkKey (T.singleton (toEnum (fromIntegral b))) (B.singleton b))
                     (go rest)
             | otherwise -> utf8 bs
-    ctrlChar b = toEnum (fromIntegral b + fromEnum 'a' - 1)
+    -- 0x01-0x1a are C-a..C-z; the rest of C0 (0x1c-0x1f here — ESC, NUL,
+    -- Tab, Enter never reach this) ctrl the 0x40-offset chars: C-\ C-] C-^ C-_.
+    ctrlChar b
+        | b <= 0x1a = toEnum (fromIntegral b + fromEnum 'a' - 1)
+        | otherwise = toEnum (fromIntegral b + 0x40)
     cons k (ks, p) = (k : ks, p)
 
     escape rest = case B.uncons rest of
@@ -430,7 +434,8 @@ parseKeyName t
         , c >= 'a' && c <= 'z' =
             Just $ mkKey ("C-" <> T.singleton c)
                 (B8.singleton (toEnum (fromEnum c - fromEnum 'a' + 1)))
-        | otherwise = Nothing
+        -- ctrl punctuation (^], ^\, ...): same key as the C- spelling.
+        | otherwise = extendedByName ("C-" <> rest)
     toLowerAscii c
         | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
         | otherwise = c
