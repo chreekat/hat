@@ -101,7 +101,7 @@ spec = do
                     , paneActiveBorderStyle = activeSty
                     , paneBorderIndicators = IndicatorsColour }
                 rect = Rect { startRow = 0, endRow = 2, startCol = 1, endCol = 3 }
-                cells = borderCells opts (Just rect) Nothing 0
+                cells = borderCells opts (Just rect) 0
                     [ (Pos { row = 0, col = 0 }, '\x2502')    -- on the perimeter
                     , (Pos { row = 5, col = 5 }, '\x2502') ]  -- off it
                 styleAt p = (.style) <$> lookup p cells
@@ -117,7 +117,7 @@ spec = do
                 arrowPos = Pos { row = 1, col = 0 }  -- midpoint of the left edge
                 glyphWith ind = Cell.baseChar <$> lookup arrowPos
                     (borderCells (defaultOptions { paneBorderIndicators = ind })
-                        (Just rect) Nothing 0 [ (arrowPos, '\x2502') ])
+                        (Just rect) 0 [ (arrowPos, '\x2502') ])
             it "arrows: the active edge shows an arrow" $
                 glyphWith IndicatorsArrows `shouldBe` Just '\x25b6'  -- ▶
             it "off: the active edge keeps the plain line" $
