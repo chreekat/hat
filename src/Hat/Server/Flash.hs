@@ -1,6 +1,6 @@
--- | The per-client prefix flash: the active pane briefly blanks to the
--- terminal's background when the prefix key arms, with the timer that
--- clears it. See 'Hat.Server.View.flashTarget' for what it blanks.
+-- | The per-client prefix flash: the active pane's own edge cells briefly
+-- take a tint when the prefix key arms, with the timer that clears it.
+-- See 'Hat.Server.View.flashTarget' for what it tints.
 module Hat.Server.Flash
     ( showFlash
     , dismissFlash

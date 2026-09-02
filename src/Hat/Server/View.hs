@@ -28,7 +28,7 @@ import Data.Vector qualified as V
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.ColorScheme (previewLabelStyle)
+import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.FormatEnv
@@ -77,8 +77,8 @@ statusLayout pos count rows = case pos of
     StatusTop    -> (count, Just 0)
     StatusBottom -> (0, Just (rows - count))
 
--- | The rect the prefix flash blanks: the active pane's, and only when
--- more than one pane is visible.
+-- | The rect whose edge cells the prefix flash tints: the active pane's,
+-- and only when more than one pane is visible.
 flashTarget :: [(PaneId, Rect)] -> PaneId -> Maybe Rect
 flashTarget rects active = case rects of
     _ : _ : _ -> List.lookup active rects
@@ -125,10 +125,11 @@ renderOnce st client = do
                         cells <- paneViewCells st pane
                         pure (overlayGrid acc (shiftRect rect) cells)
             mflash <- readTVarIO client.flash
+            scheme <- readTVarIO st.colorScheme
             let flashed
                     | isJust mflash
                     , Just r <- flashTarget rects active =
-                        blankRect base (shiftRect r)
+                        tintInnerRing (flashStyle scheme) base (shiftRect r)
                     | otherwise = base
             mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast

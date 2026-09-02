@@ -8,7 +8,7 @@ module Hat.Server.Render
     , composeFrame
     , overlayGrid
     , applyBorders
-    , blankRect
+    , tintInnerRing
     , diffFrame
     , fullRedraw
     ) where
@@ -65,16 +65,19 @@ applyBorders frame borders = frame V.// updates
         , let row = frame V.! r
         ]
 
--- | Blank every cell inside the rect to the default background.
-blankRect :: Frame -> Rect -> Frame
-blankRect frame rect = V.imap blankRow frame
+-- | Restyle the ring of cells just inside the rect, keeping their glyphs.
+tintInnerRing :: Style -> Frame -> Rect -> Frame
+tintInnerRing sty frame rect = V.imap tintRow frame
   where
-    blankRow r row
+    tintRow r row
         | r < rect.startRow || r >= rect.endRow = row
-        | otherwise = V.imap blankCol row
-    blankCol c cell
+        | otherwise = V.imap (tintCol r) row
+    tintCol r c cell
         | c < rect.startCol || c >= rect.endCol = cell
-        | otherwise = blankCell
+        | r == rect.startRow || r == rect.endRow - 1
+            || c == rect.startCol || c == rect.endCol - 1 =
+            cell { style = sty }
+        | otherwise = cell
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]

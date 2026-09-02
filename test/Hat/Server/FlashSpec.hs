@@ -1,5 +1,5 @@
--- | The prefix flash: arming the prefix briefly blanks the active pane to
--- the terminal's background, and only when more than one pane is visible.
+-- | The prefix flash: arming the prefix briefly tints the active pane's
+-- own edge cells, and only when more than one pane is visible.
 module Hat.Server.FlashSpec (spec) where
 
 import Test.Hspec
@@ -13,7 +13,7 @@ import Hat.Model
 import Hat.Model.Options (emptyDelta)
 import Hat.Server.Flash (flashDeadline, flashExpired)
 import Hat.Server.Layout (Layout (..), Orientation (..))
-import Hat.Server.Render (blankFrame, blankRect)
+import Hat.Server.Render (blankFrame, tintInnerRing)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.View (flashTarget)
 import Hat.Term.Cell qualified as Cell
@@ -42,19 +42,27 @@ spec = do
         it "an active pane missing from the layout: no flash" $
             flashTarget both (PaneId 9) `shouldBe` Nothing
 
-    describe "blankRect" $ do
-        let sz = Size { rows = 4, cols = 6 }
-            rect = Rect { startRow = 1, endRow = 3, startCol = 2, endCol = 5 }
+    describe "tintInnerRing" $ do
+        let sz = Size { rows = 5, cols = 7 }
+            rect = Rect { startRow = 1, endRow = 4, startCol = 2, endCol = 6 }
+            tint = Cell.defaultStyle
+                { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 12 }
             busy = V.map (V.map (const x)) (blankFrame sz)
             x = Cell.glyphCell 'x' Cell.defaultStyle
+            frame = tintInnerRing tint busy rect
 
-        it "blanks to the default background exactly inside the rect" $ do
-            let frame = blankRect busy rect
+        it "restyles exactly the ring of cells just inside the rect" $
             [ (r, c)
                 | (r, row) <- zip [0 :: Int ..] (V.toList frame)
                 , (c, cell) <- zip [0 :: Int ..] (V.toList row)
-                , cell == Cell.blankCell ]
-                `shouldBe` [ (r, c) | r <- [1, 2], c <- [2, 3, 4] ]
+                , cell.style == tint ]
+                `shouldBe`
+                [ (r, c)
+                    | r <- [1 .. 3], c <- [2 .. 5]
+                    , r == 1 || r == 3 || c == 2 || c == 5 ]
+
+        it "keeps every glyph in place" $
+            all (all ((== 'x') . Cell.baseChar)) frame `shouldBe` True
 
     describe "flash lifetime" $ do
         let shownAt = 41000000000
