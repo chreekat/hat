@@ -65,6 +65,7 @@ module Hat.Server
     , IdleInputs (..)
     , markBell  -- ^ exported for the current-window bell test
     , markActivity  -- ^ exported for the outer-focus activity test
+    , windowActivity  -- ^ exported for the output repaint gating test
     , noteOuterFocus  -- ^ exported for the focus-in-clears test
     , attentionSeen  -- ^ exported for the outer-focus gating test
     , deliversKey  -- ^ exported for the focus-event gating test

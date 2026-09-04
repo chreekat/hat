@@ -424,16 +424,36 @@ windowSeen st sess win = do
     anyFocused <- or <$> mapM (readTVar . (.outerFocused)) cs
     pure (attentionSeen current anyFocused)
 
+-- | Whether some attached client has @win@ on screen: it is the current
+-- window of the client's session, or the client has a chooser open (whose
+-- live preview can show any window).
+windowDisplayed :: ServerState -> Window -> STM Bool
+windowDisplayed st win = do
+    sessions <- readTVar st.sessions
+    cs <- Map.elems <$> readTVar st.clients
+    let displays c = readTVar c.picker >>= \case
+            Just _ -> pure True
+            Nothing -> do
+                sid <- readTVar c.session
+                maybe (pure False) (\sess -> isCurrentWindow sess win)
+                    (Map.lookup sid sessions)
+    or <$> mapM displays [c | c <- cs, c.role == Attached]
+
 -- | Register activity on a window: restart its silence timer, raise the
 -- activity flag, and fire alert-activity when the flag newly rose on a
--- non-current window. Output and window creation both land here.
+-- non-current window. Output and window creation both land here. A repaint
+-- is scheduled only when a client could see the difference — the window is
+-- displayed, or its status-line flag rose.
 windowActivity :: ServerState -> SessionId -> Window -> IO ()
 windowActivity st sid win = do
     now <- getPOSIXTime
     mfire <- atomically $ do
         writeTVar win.activityAt now
+        was <- readTVar win.activity
         r <- activityAlert st sid win
-        bumpDirty st
+        flagRose <- (&& not was) <$> readTVar win.activity
+        displayed <- windowDisplayed st win
+        when (displayed || flagRose) (bumpDirty st)
         pure r
     forM_ mfire $ \(sname, wname) ->
         notify st "alert-activity"

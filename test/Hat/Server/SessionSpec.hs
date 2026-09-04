@@ -36,7 +36,7 @@ import Hat.Server
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
     , markBell, nextZoom, noteOuterFocus, pickActivityTarget, pickAttachSession
     , dispatch, reencodeKey, refreshSessionEnv, removePaneFromTree
-    , welcome
+    , welcome, windowActivity
     , zoomTarget )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
@@ -893,6 +893,48 @@ spec = do
                 writeTVar st.reconciled 5
                 writeTVar client.needsFull False
             renderable st client 5 `shouldReturn` Nothing
+
+    describe "windowActivity (output repaint gating)" $ do
+        let sz = Size { rows = 24, cols = 80 }
+            -- A session with two windows and a client watching window 0.
+            watchedPair = do
+                (st, sess) <- seedSession "/"
+                front <- addWindow sess 0
+                back <- addWindow sess 1
+                client <- addClient st (SessionId 0) sz 1
+                pure (st, front, back, client)
+
+        it "repaints when the window is on an attached client's screen" $ do
+            (st, front, _, _) <- watchedPair
+            gen <- readTVarIO st.dirty
+            windowActivity st (SessionId 0) front
+            readTVarIO st.dirty `shouldNotReturn` gen
+
+        it "leaves the screen untouched for a background window" $ do
+            (st, _, back, _) <- watchedPair
+            gen <- readTVarIO st.dirty
+            windowActivity st (SessionId 0) back
+            readTVarIO st.dirty `shouldReturn` gen
+
+        it "repaints a monitored background window only when its flag rises" $ do
+            (st, _, back, _) <- watchedPair
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta OptMonitorActivity (OVBool True))
+            gen <- readTVarIO st.dirty
+            windowActivity st (SessionId 0) back
+            gen' <- readTVarIO st.dirty
+            gen' `shouldNotBe` gen
+            windowActivity st (SessionId 0) back
+            readTVarIO st.dirty `shouldReturn` gen'
+
+        it "keeps a chooser's live preview fresh" $ do
+            (st, _, back, client) <- watchedPair
+            atomically $ writeTVar client.picker $ Just PickerState
+                { title = "choose", roots = [], cursor = 0
+                , query = "", search = "", mode = Browsing, fill = PaneRegion }
+            gen <- readTVarIO st.dirty
+            windowActivity st (SessionId 0) back
+            readTVarIO st.dirty `shouldNotReturn` gen
 
     describe "deliversKey (focus-event gating)" $ do
         let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }
