@@ -1,5 +1,6 @@
 module Hat.Server.PromptSpec (spec) where
 
+import Control.Monad (forM_)
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Test.Hspec
@@ -40,9 +41,6 @@ spec = do
         it "deletes the character before the cursor" $
             bufferAfter "abc\DEL" `shouldBe` "ab"
 
-        it "is a no-op on an empty buffer" $
-            bufferAfter "\DEL" `shouldBe` ""
-
         it "deletes mid-line, before the cursor" $
             -- abc, Left, BSpace -> deletes 'b'
             bufferAfter "abc\ESC[D\DEL" `shouldBe` "ac"
@@ -50,14 +48,6 @@ spec = do
     describe "cursor movement" $ do
         it "Left then insert lands before the moved-over char" $
             bufferAfter "ac\ESC[Db" `shouldBe` "abc"
-
-        it "Left is a no-op at the start of the line" $
-            stateAfter "\ESC[D" `shouldBe` emptyPrompt
-
-        it "Right is a no-op at the end of the line" $ do
-            let st = stateAfter "ab\ESC[C"
-            st.input `shouldBe` "ab"
-            st.cursor `shouldBe` 2
 
         it "Home / C-a jump to the start" $ do
             bufferAfter "abc\SOHX" `shouldBe` "Xabc"      -- C-a
@@ -67,13 +57,28 @@ spec = do
             bufferAfter "abc\SOH\ENQX" `shouldBe` "abcX"  -- C-a then C-e
             bufferAfter "abc\SOH\ESC[FX" `shouldBe` "abcX"
 
-    describe "delete" $ do
+    describe "delete" $
         it "Delete / C-d removes the char at the cursor" $ do
             bufferAfter "abc\SOH\EOT" `shouldBe` "bc"     -- C-a then C-d
             bufferAfter "abc\SOH\ESC[3~" `shouldBe` "bc"  -- C-a then Delete
 
-        it "C-d is a no-op at the end of the line" $
-            bufferAfter "abc\EOT" `shouldBe` "abc"
+    describe "no-op keys" $ do
+        -- each edge-case key must leave the full prompt state untouched
+        let typedState hist raw = case typeKeys hist emptyPrompt raw of
+                Editing st -> st
+                other -> error ("prompt closed unexpectedly: " <> show other)
+            rows :: [(String, [Text], Text, Text)]
+            rows =
+                [ ("backspace on an empty buffer", [], "", "\DEL")
+                , ("Left at the start of the line", [], "", "\ESC[D")
+                , ("Right at the end of the line", [], "ab", "\ESC[C")
+                , ("C-d at the end of the line", [], "abc", "\EOT")
+                , ("Down when not browsing history", ["prior"], "wip", "\ESC[B")
+                , ("Up with empty history", [], "wip", "\ESC[A")
+                ]
+        forM_ rows $ \(name, hist, prefix, key) ->
+            it (name <> " is a no-op") $
+                typedState hist (prefix <> key) `shouldBe` typedState hist prefix
 
     describe "readline editing" $ do
         it "C-b moves left, C-f moves right" $ do
@@ -127,12 +132,6 @@ spec = do
 
         it "Down past the newest restores the in-progress line" $
             recall "wip\ESC[A\ESC[B" `shouldBe` "wip"
-
-        it "Down is a no-op when not browsing history" $
-            recall "wip\ESC[B" `shouldBe` "wip"
-
-        it "Up is a no-op with empty history" $
-            bufferAfter "wip\ESC[A" `shouldBe` "wip"
 
     describe "pushHistory" $ do
         it "prepends the newest line" $
