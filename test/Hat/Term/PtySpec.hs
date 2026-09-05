@@ -1,6 +1,5 @@
 module Hat.Term.PtySpec (spec) where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
 import Data.ByteString.Char8 qualified as B8
 import Data.List (isPrefixOf)
@@ -59,15 +58,6 @@ readUntil pty needle = go B8.empty
             chunk <- readPty pty
             if B8.null chunk then pure acc else go (acc <> chunk)
 
--- Poll an IO action up to @n@ times (20ms apart) until it satisfies the
--- predicate, returning the last value seen.
-retryFor :: Int -> IO a -> (a -> Bool) -> IO a
-retryFor n act ok = do
-    v <- act
-    if ok v || n <= 0
-        then pure v
-        else threadDelay 20000 >> retryFor (n - 1) act ok
-
 -- One test's pty, always closed. 'closePty' tolerates a child that has
 -- already exited, so a test may still close early to make one exit.
 withPty :: Spawn -> (PtyHandle -> IO a) -> IO a
@@ -123,11 +113,15 @@ spec = do
 shellSpec :: SpecWith TestShell
 shellSpec = do
     it "reads a live pane's foreground argv from /proc" $ \TestShell{base} -> do
-        argv <- withPty base { args = ["-c", "exec sleep 30"] } $ \pty -> do
-            argv <- retryFor 50 (foregroundArgv pty) (== Just ["sleep", "30"])
+        argv <- withPty base { args = ["-c", "exec tr n N"] } $ \pty -> do
+            writePty pty "ping\n"
+            -- The transformed copy comes from the exec'd tr itself, so
+            -- /proc already shows its argv.
+            _ <- readUntil pty "piNg"
+            argv <- foregroundArgv pty
             closePty pty
             argv <$ waitExit pty
-        argv `shouldBe` Just ["sleep", "30"]
+        argv `shouldBe` Just ["tr", "n", "N"]
 
     it "keeps the test shells' HOME away from the real one" $ \TestShell{home, base} -> do
         realHome <- getEnv "HOME"
@@ -176,11 +170,14 @@ shellSpec = do
     -- group while it runs.
     it "reports the pane's foreground command, not the shell" $ \TestShell{base} -> do
         cmd <- withPty base $ \pty -> do
-            -- Long enough that the sleep still owns the foreground when a
-            -- loaded box delays the shell; closePty reaps it either way.
-            writePty pty "sleep 30\n"
-            retryFor 250 (foregroundCommand pty) (== Just (T.pack "sleep"))
-        cmd `shouldBe` Just (T.pack "sleep")
+            writePty pty "tr n N\n"
+            writePty pty "ping\n"
+            -- tr's transformed copy: it has read the tty, and a read from
+            -- outside the foreground group would have stopped it (SIGTTIN),
+            -- so tr's group owns the foreground.
+            _ <- readUntil pty "piNg"
+            foregroundCommand pty
+        cmd `shouldBe` Just (T.pack "tr")
 
     -- NixOS wrappers exec the real binary as @.<name>-wrapped@ but keep
     -- the public name in argv[0] (bash's @exec -a@). The foreground
@@ -201,11 +198,15 @@ shellSpec = do
             bash <- bashPath
             callProcess "cp" [bash, wrapped]
             cmd <- withPty base $ \pty -> do
+                -- The outer shell expands $((6*7)), so UP-42 can only come
+                -- from the wrapped process itself, already exec'd under its
+                -- public argv[0]; the typed line echoes unexpanded.
                 writePty pty (B8.pack
                     ("exec " <> bash <> " -c \"exec -a sleepish "
-                        <> wrapped <> " -c 'sleep 5; :'\"\n"))
-                retryFor 100 (foregroundCommand pty)
-                    (== Just (T.pack "sleepish"))
+                        <> wrapped
+                        <> " -c 'echo UP-$((6*7)); sleep 30; :'\"\n"))
+                _ <- readUntil pty "UP-42"
+                foregroundCommand pty
             cmd `shouldBe` Just (T.pack "sleepish")
 
     -- An orphaned pane that kept hat's listening socket open outlived
