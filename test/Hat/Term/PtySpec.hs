@@ -176,8 +176,10 @@ shellSpec = do
     -- group while it runs.
     it "reports the pane's foreground command, not the shell" $ \TestShell{base} -> do
         cmd <- withPty base $ \pty -> do
-            writePty pty "sleep 5\n"
-            retryFor 100 (foregroundCommand pty) (== Just (T.pack "sleep"))
+            -- Long enough that the sleep still owns the foreground when a
+            -- loaded box delays the shell; closePty reaps it either way.
+            writePty pty "sleep 30\n"
+            retryFor 250 (foregroundCommand pty) (== Just (T.pack "sleep"))
         cmd `shouldBe` Just (T.pack "sleep")
 
     -- NixOS wrappers exec the real binary as @.<name>-wrapped@ but keep
