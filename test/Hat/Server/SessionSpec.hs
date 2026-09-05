@@ -3,6 +3,7 @@ module Hat.Server.SessionSpec (spec) where
 import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
+import Control.Exception (finally)
 import Data.IORef (newIORef)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -12,6 +13,9 @@ import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
     , socketPair, touchSocket )
 import System.Mem (performGC)
+import System.Posix.IO (closeFd)
+import System.Posix.Process (getProcessID)
+import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
 
 import Data.Set qualified as Set
@@ -38,9 +42,15 @@ import Hat.Server
     , dispatch, reencodeKey, refreshSessionEnv, removePaneFromTree
     , welcome, windowActivity
     , zoomTarget )
+import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
+import Hat.Server.Command.Session
+    (cmdKillSession, cmdNewSession, cmdRenameSession)
+import Hat.Server.Command.Window (cmdRenameWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
+import Hat.Server.Snapshot (cmdListSnapshots, cmdRestoreSnapshot)
+import Hat.Term.Pty qualified as Pty
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
@@ -195,6 +205,16 @@ stubPane n = do
         , pendingInput = Nothing
         }
 
+-- A 'stubPane' whose pty is a real pty pair adopted around this very process,
+-- for paths that probe the pty (break-pane's window-name sniff). The release
+-- closes only the slave: 'closePty' would SIGHUP the adopted pid — us.
+adoptedPane :: Int -> IO (Pane, IO ())
+adoptedPane n = do
+    (master, slave) <- openPseudoTerminal
+    ptyH <- Pty.adopt master =<< getProcessID
+    p <- stubPane n
+    pure (p { pty = ptyH }, closeFd slave)
+
 spec :: Spec
 spec = do
     -- User options resolve per scope: a session-local @set @v@ is visible
@@ -345,6 +365,54 @@ spec = do
             env <- readTVarIO sess.environ
             environFind "MYVAR" env
                 `shouldBe` Just (EnvEntry (Just "new") EnvVisible)
+
+    describe "new-session" $
+        it "creates a named session with its first window; a duplicate name is refused" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-newsess.sock" Nothing
+            [] <- cmdNewSession st Nothing
+                ["-d", "-s", "alpha", "-n", "init", "sleep 30"]
+            [sess] <- Map.elems <$> readTVarIO st.sessions
+            [win] <- Map.elems <$> readTVarIO sess.windows
+            [pane] <- Map.elems <$> readTVarIO win.panes
+            let reap = do
+                    _ <- cmdKillSession st Nothing ["-t", "alpha"]
+                    () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
+            flip finally reap $ do
+                readTVarIO sess.name `shouldReturn` "alpha"
+                readTVarIO win.name `shouldReturn` "init"
+                cmdNewSession st Nothing ["-d", "-s", "alpha"]
+                    `shouldReturn` [RErr "duplicate session: alpha"]
+
+    describe "rename-session" $
+        it "renames the -t session and refuses a duplicate name" $ do
+            (st, sess) <- seedSession "/"   -- "work"
+            -- "s" is the newest session, so it would be the default target:
+            -- "work" being renamed instead pins that -t chooses.
+            other <- addSession st 1
+            cmdRenameSession st Nothing ["-t", "work", "s"]
+                `shouldReturn` [RErr "duplicate session: s"]
+            [] <- cmdRenameSession st Nothing ["-t", "work", "renamed"]
+            readTVarIO sess.name `shouldReturn` "renamed"
+            readTVarIO other.name `shouldReturn` "s"
+
+    describe "rename-window" $
+        it "pins the given name and turns automatic-rename off" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            [] <- cmdRenameWindow st Nothing ["pinned"]
+            readTVarIO win.name `shouldReturn` "pinned"
+            readTVarIO win.autoRename `shouldReturn` False
+
+    describe "snapshot commands without persistence" $
+        it "list-snapshots and restore-snapshot fail loudly, never silently" $ do
+            (st, _) <- seedSession "/"
+            cmdListSnapshots st Nothing []
+                `shouldReturn` [RErr "list-snapshots: persistence is disabled"]
+            cmdRestoreSnapshot st Nothing ["1"]
+                `shouldReturn` [RErr "restore-snapshot: persistence is disabled"]
 
     describe "list-clients" $
         it "lists attached clients only" $ do
@@ -758,6 +826,46 @@ spec = do
             (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` False
             (Map.member 0 <$> readTVarIO sess.windows) `shouldReturn` True
             (Map.member pb.id <$> readTVarIO w0.panes) `shouldReturn` True
+
+    describe "break-pane" $
+        -- The move half; the teardown half is 'detachPaneCurrent' above.
+        it "moves the active pane into a fresh window of its own" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            (pa, release) <- adoptedPane 1
+            pb <- stubPane 2
+            atomically $ do
+                writeTVar w0.layout
+                    (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                writeTVar w0.panes (Map.fromList [(pa.id, pa), (pb.id, pb)])
+                writeTVar w0.activeId pa.id
+            flip finally release $ do
+                [] <- cmdBreakPane st Nothing []
+                ws <- readTVarIO sess.windows
+                Map.keys ws `shouldBe` [0, 1]
+                Just w1 <- pure (Map.lookup 1 ws)
+                readTVarIO w1.layout `shouldReturn` Leaf pa.id
+                (Map.keys <$> readTVarIO w1.panes) `shouldReturn` [pa.id]
+                readTVarIO w0.layout `shouldReturn` Leaf pb.id
+                readTVarIO w0.activeId `shouldReturn` pb.id
+                readTVarIO sess.currentIx `shouldReturn` 1
+
+    describe "join-pane" $
+        it "splits the -s pane into the current window, closing its emptied window" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0      -- current; holds pane 0
+            w1 <- addWindow sess 1      -- source; holds pane 1
+            pa <- stubPane 0
+            pc <- stubPane 1
+            atomically $ do
+                modifyTVar' w0.panes (Map.insert pa.id pa)
+                modifyTVar' w1.panes (Map.insert pc.id pc)
+            [] <- cmdJoinPane st Nothing ["-h", "-s", "%1"]
+            (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` False
+            (Map.keys <$> readTVarIO w0.panes) `shouldReturn` [pa.id, pc.id]
+            readTVarIO w0.layout `shouldReturn`
+                Split LeftRight 0.5 (Leaf pa.id) (Leaf pc.id)
+            readTVarIO w0.activeId `shouldReturn` pc.id
 
     describe "serverIdle" $ do
         let idle = IdleInputs
