@@ -108,31 +108,19 @@ arrange rect lay =
 arrangeRaw :: Rect -> Layout -> ([(PaneId, Rect)], [(Pos, Char)])
 arrangeRaw rect = \case
     Leaf pid -> ([(pid, rect)], [])
-    Split LeftRight ratio a b ->
-        let w = rect.endCol - rect.startCol
-            avail = w - 1
-            aw = clamp (1, max 1 (avail - 1)) (round (ratio * fromIntegral avail))
-            borderCol = rect.startCol + aw
-            ra = rect { endCol = borderCol }
-            rb = rect { startCol = min rect.endCol (borderCol + 1) }
-            border =
-                [ (Pos { row = r, col = borderCol }, '│')
-                | borderCol < rect.endCol
-                , r <- [rect.startRow .. rect.endRow - 1]
-                ]
-        in arrangeRaw ra a <> arrangeRaw rb b <> (mempty, border)
-    Split TopBottom ratio a b ->
-        let h = rect.endRow - rect.startRow
-            avail = h - 1
-            ah = clamp (1, max 1 (avail - 1)) (round (ratio * fromIntegral avail))
-            borderRow = rect.startRow + ah
-            ra = rect { endRow = borderRow }
-            rb = rect { startRow = min rect.endRow (borderRow + 1) }
-            border =
-                [ (Pos { row = borderRow, col = c }, '─')
-                | borderRow < rect.endRow
-                , c <- [rect.startCol .. rect.endCol - 1]
-                ]
+    Split o ratio a b ->
+        let (ra, rb) = childRects rect o ratio
+            border = case o of
+                LeftRight ->
+                    [ (Pos { row = r, col = ra.endCol }, '│')
+                    | ra.endCol < rect.endCol
+                    , r <- [rect.startRow .. rect.endRow - 1]
+                    ]
+                TopBottom ->
+                    [ (Pos { row = ra.endRow, col = c }, '─')
+                    | ra.endRow < rect.endRow
+                    , c <- [rect.startCol .. rect.endCol - 1]
+                    ]
         in arrangeRaw ra a <> arrangeRaw rb b <> (mempty, border)
 
 -- | Fuse abutting divider runs into box-drawing junctions. Each cell keeps
@@ -520,19 +508,22 @@ pinDividers axis edge old new lay
         LeftRight -> r.endCol - r.startCol
         TopBottom -> r.endRow - r.startRow
 
+-- | The sub-rects a split assigns its children. Both stay inside the
+-- parent: a rect too small for the split yields empty children, never
+-- cells beyond its edges.
 childRects :: Rect -> Orientation -> Rational -> (Rect, Rect)
 childRects rect o ratio = case o of
     LeftRight ->
         let avail = (rect.endCol - rect.startCol) - 1
             aw = clamp (1, max 1 (avail - 1)) (round (ratio * fromIntegral avail))
             borderCol = rect.startCol + aw
-        in ( rect { endCol = borderCol }
+        in ( rect { endCol = min rect.endCol borderCol }
            , rect { startCol = min rect.endCol (borderCol + 1) }
            )
     TopBottom ->
         let avail = (rect.endRow - rect.startRow) - 1
             ah = clamp (1, max 1 (avail - 1)) (round (ratio * fromIntegral avail))
             borderRow = rect.startRow + ah
-        in ( rect { endRow = borderRow }
+        in ( rect { endRow = min rect.endRow borderRow }
            , rect { startRow = min rect.endRow (borderRow + 1) }
            )

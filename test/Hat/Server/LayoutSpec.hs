@@ -42,10 +42,15 @@ instance Arbitrary PaneCycle where
 windowRect :: Rect
 windowRect = Rect { startRow = 0, endRow = 40, startCol = 0, endCol = 120 }
 
--- Small enough to keep the tiling walk cheap, big enough that every
--- depth-3 split of 'genLayout' ratios keeps at least one cell per side.
-tileRect :: Rect
-tileRect = Rect { startRow = 0, endRow = 14, startCol = 0, endCol = 30 }
+-- Any small rect, degenerate sizes included: a tree starved of space
+-- must still tile, never spilling a cell outside the window.
+genTileRect :: Gen Rect
+genTileRect = do
+    r0 <- chooseInt (0, 3)
+    c0 <- chooseInt (0, 3)
+    h <- chooseInt (0, 14)
+    w <- chooseInt (0, 30)
+    pure Rect { startRow = r0, endRow = r0 + h, startCol = c0, endCol = c0 + w }
 
 cellsOf :: Rect -> [(Int, Int)]
 cellsOf r = [(row, col) | row <- [r.startRow .. r.endRow - 1]
@@ -53,15 +58,25 @@ cellsOf r = [(row, col) | row <- [r.startRow .. r.endRow - 1]
 
 spec :: Spec
 spec = do
-    prop "panes and borders tile the window exactly" $
-        forAll (genLayout 3) $ \lay ->
-            let (rects, borders) = arrange tileRect lay
+    prop "panes and borders tile the window exactly, at any size" $
+        forAll ((,) <$> genLayout 3 <*> genTileRect) $ \(lay, rect) ->
+            let (rects, borders) = arrange rect lay
                 paneCells = concatMap (cellsOf . snd) rects
                 borderCells = [(p.row, p.col) | (p, _) <- borders]
                 allCells = paneCells <> borderCells
                 cellSet = Set.fromList allCells
             in length allCells === Set.size cellSet  -- no cell covered twice
-                .&&. cellSet === Set.fromList (cellsOf tileRect)
+                .&&. cellSet === Set.fromList (cellsOf rect)
+
+    -- A split of an already-empty rect once fabricated a one-row child
+    -- outside the window.
+    it "keeps a space-starved nested split inside the window" $ do
+        let rect = Rect { startRow = 0, endRow = 2, startCol = 0, endCol = 4 }
+            lay = Split TopBottom (1 % 2) (Leaf (PaneId 1))
+                (Split TopBottom (1 % 2) (Leaf (PaneId 2)) (Leaf (PaneId 3)))
+            inside r = r.startRow >= 0 && r.endRow <= 2
+                && r.startCol >= 0 && r.endCol <= 4
+        all (inside . snd) (fst (arrange rect lay)) `shouldBe` True
 
     describe "border junctions" $ do
         let smallRect = Rect { startRow = 0, endRow = 5, startCol = 0, endCol = 5 }
