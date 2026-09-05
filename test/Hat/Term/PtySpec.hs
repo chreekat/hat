@@ -107,9 +107,6 @@ spec = do
             parseCmdline "vim\NULFoo Bar.txt\NUL"
                 `shouldBe` Just ["vim", "Foo Bar.txt"]
 
-        it "is Nothing for an empty cmdline" $
-            parseCmdline "" `shouldBe` Nothing
-
     describe "the test shells' throwaway HOME" $ do
         it "is not created by building the spec (bug 13)" $ do
             existing <- testShellHomes

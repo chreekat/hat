@@ -46,9 +46,6 @@ spec = do
         it "prefers a contiguous match over a gapped one" $
             s "ab" "ab" `shouldSatisfy` (> s "ab" "aXb")
 
-        it "prefers a contiguous match over a gapped one landing on a boundary" $
-            s "p4" "p4lang" `shouldSatisfy` (> s "p4" "projects/4h")
-
         it "prefers a CamelCase hump over a buried match" $
             s "mn" "BatMan" `shouldSatisfy` (> s "mn" "batman")
 

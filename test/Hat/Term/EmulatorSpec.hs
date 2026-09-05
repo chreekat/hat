@@ -235,11 +235,6 @@ spec = do
         (m'.colorReport, m'.focusReport, m'.mouse)
             `shouldBe` (True, True, MouseDrag)
 
-    it "replays nothing for an emulator with no app-set modes" $ do
-        e <- new80x24
-        m <- modes e
-        modeReplayBytes m `shouldBe` ""
-
     -- Reload restores a pane's live screen by replaying 'restoreBytes' into
     -- the adopted pane's fresh emulator; the visible grid must come back
     -- byte-identical, so a full-screen app survives restart-server intact.

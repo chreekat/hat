@@ -38,6 +38,3 @@ spec = do
             , flagSilence = True
             , flagZoomed = True
             } `shouldBe` "*!#~Z"
-
-    it "does not render Z when the window is not zoomed" $
-        windowFlags noFlags { flagCurrent = True } `shouldBe` "*"

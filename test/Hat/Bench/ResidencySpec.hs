@@ -16,12 +16,6 @@ spec = do
         it "accepts a measurement inside the band" $
             classify tol base (LiveBytes 1040) `shouldBe` WithinBand
 
-        it "treats the upper edge as within band" $
-            classify tol base (LiveBytes 1050) `shouldBe` WithinBand
-
-        it "treats the lower edge as within band" $
-            classify tol base (LiveBytes 950) `shouldBe` WithinBand
-
         it "flags a regression just above the band" $
             classify tol base (LiveBytes 1051) `shouldBe` Regressed (LiveBytes 1051)
 

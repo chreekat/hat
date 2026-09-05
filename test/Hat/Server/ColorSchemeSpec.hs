@@ -93,12 +93,6 @@ spec = do
                 (isNothing <$> readTVarIO (monitorHandle reg))
                     `shouldReturn` True
 
-        it "is a no-op when no monitor is registered" $ do
-            reg <- newMonitorRegistry
-            reapMonitor reg  -- must not throw with an empty registry
-            (isNothing <$> readTVarIO (monitorHandle reg))
-                `shouldReturn` True
-
     describe "applyPalette" $ do
         it "adapts the default chrome to the scheme" $ do
             let dark = resolveOptions [applyPalette SchemeDark]

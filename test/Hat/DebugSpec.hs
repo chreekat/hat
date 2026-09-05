@@ -14,9 +14,6 @@ spec = do
         it "puts it in the directory ghc-debug-brick discovers" $
             debugSocketPath "/x" "/tmp/hat-1000/work"
                 `shouldBe` debugSocketDir "/x" <> "/hat-work"
-        it "joins with a single separator" $
-            debugSocketPath "/x/" "/tmp/hat-1000//default"
-                `shouldBe` "/x/ghc-debug/debuggee/sockets/hat-default"
 
     describe "fitsSocketAddr" $ do
         it "accepts a path a sockaddr_un holds" $

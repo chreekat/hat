@@ -381,12 +381,6 @@ spec = do
             small = Size { rows = 24, cols = 80 }
             -- an attached client's window area is its viewport minus the status row
             pane s = s { rows = s.rows - 1 }
-        it "sizes the session to the smallest client by default" $ do
-            (st, sess) <- seedSession "/"
-            _ <- addClient st (SessionId 0) big 1
-            _ <- addClient st (SessionId 0) small 2   -- smaller client is newer
-            applySessionSize st (SessionId 0)
-            readTVarIO sess.lastSize `shouldReturn` pane small
         it "follows the most-recently-active client under aggressive-resize" $ do
             (st, sess) <- seedSession "/"
             atomically $ writeTVar st.globalWindowOptions

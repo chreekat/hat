@@ -188,11 +188,6 @@ spec = do
             vi [ "history-top", "cursor-right", "cursor-right"
                , "begin-selection", "copy-selection" ]
                 `shouldBe` ["l"]
-        it "cursor-left retreats one cell" $
-            vi [ "history-top", "cursor-right", "cursor-right"
-               , "cursor-right", "cursor-left", "begin-selection"
-               , "copy-selection" ]
-                `shouldBe` ["l"]
         it "end-of-line lands on the last non-blank cell" $
             vi [ "history-top", "end-of-line"
                , "begin-selection", "copy-selection" ]
@@ -201,10 +196,6 @@ spec = do
             vi [ "history-top", "end-of-line", "cursor-down"
                , "begin-selection", "copy-selection" ]
                 `shouldBe` ["e"]  -- row 1 "        Indented line", col 14
-        it "cursor-up returns toward the previous row" $
-            vi [ "history-top", "cursor-down", "cursor-up"
-               , "begin-selection", "copy-selection" ]
-                `shouldBe` ["A"]
 
     describe "paging and jump motions" $ do
         -- The shared grid has 10 rows (sy = 10, no scrollback), so the

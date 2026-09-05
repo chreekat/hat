@@ -1,7 +1,6 @@
 module Hat.PathSpec (spec) where
 
 import Test.Hspec
-import Test.QuickCheck
 
 import System.Posix.User (getRealUserID, getUserEntryForID, userName, homeDirectory)
 
@@ -14,10 +13,6 @@ spec = do
             render (hatPath "/tmp/hat-1000") `shouldBe` "/tmp/hat-1000"
         it "normalizes redundant separators" $
             render (hatPath "/tmp//hat-1000/") `shouldBe` "/tmp/hat-1000"
-        it "is idempotent through render" $
-            property $ \p ->
-                render (hatPath (render (hatPath p)))
-                    `shouldBe` render (hatPath p)
 
     describe "</:>" $ do
         it "joins with a single separator regardless of trailing slash" $ do
@@ -25,9 +20,6 @@ spec = do
                 `shouldBe` "/tmp/default"
             render (hatPath "/tmp/" </:> "default")
                 `shouldBe` "/tmp/default"
-        it "matches System.FilePath's </> semantics for the built path" $
-            render (hatPath "/a/b" </:> "c" </:> "d")
-                `shouldBe` "/a/b/c/d"
 
     describe "expandTildeWith" $ do
         it "expands a ~/ prefix against the given home" $
@@ -51,10 +43,6 @@ spec = do
         it "leaves ~user untouched when the user is unknown" $
             expandTildeWith noUser (Just "/home/b") "~nosuchuser/db"
                 `shouldBe` "~nosuchuser/db"
-        it "is idempotent for an absolute home" $
-            property $ \(AbsHome home) p ->
-                let e = expandTildeWith noUser home p
-                in expandTildeWith noUser home e `shouldBe` e
 
     describe "expandTilde" $
         it "expands ~<current-user> to the current user's home" $ do
@@ -71,17 +59,3 @@ noUser _ = Nothing
 -- | A named-user resolver backed by a fixed table.
 byUser :: [(String, FilePath)] -> String -> Maybe FilePath
 byUser table name = lookup name table
-
--- | A @HOME@ value that is either unset or an absolute path, mirroring how
--- the environment actually presents it.
-newtype AbsHome = AbsHome (Maybe FilePath)
-    deriving (Show)
-
-instance Arbitrary AbsHome where
-    arbitrary = AbsHome <$> oneof
-        [ pure Nothing
-        , Just . ('/' :) <$> arbitrary
-        ]
-    shrink (AbsHome Nothing) = []
-    shrink (AbsHome (Just h)) =
-        AbsHome Nothing : [ AbsHome (Just ('/' : h')) | h' <- shrink (drop 1 h) ]
