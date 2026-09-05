@@ -1,13 +1,18 @@
--- | A client whose frame shrank must be fully repainted, never diffed
--- (regression guard, bug 97).
+-- | The client render seam, driven over a real socketpair: a shrunk client
+-- must be fully repainted (regression guard, bug 97), and 'renderLoop'
+-- paces frames.
 module Hat.Server.ResizeRenderSpec (spec) where
 
+import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.MVar (newMVar)
-import Control.Concurrent.STM (newTVarIO)
+import Control.Concurrent.STM
+    (atomically, newTVarIO, readTVar, writeTVar)
+import Control.Monad (replicateM_)
 import Data.IORef (newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket
     (Family (AF_UNIX), SocketType (Stream), Socket, close, socketPair)
 import System.Timeout (timeout)
@@ -18,7 +23,7 @@ import Hat.Log (newLogger)
 import Hat.Model hiding (Toast (..))
 import Hat.Server.Keys (EscPending (NoEscPending), PrefixState (NoPrefix))
 import Hat.Server.Render (Frame)
-import Hat.Server.View (renderOnce)
+import Hat.Server.View (renderLoop, renderOnce)
 import Hat.Term.Cell
 import Hat.Transport.Wire
     (Autostart (..), DrawOp (..), Inbound (..), ServerToClient (..)
@@ -88,9 +93,45 @@ drawOps peer = do
         Just (Just (Known (Draw ops))) -> ops
         _ -> []
 
+-- The next frame, or a test failure if none arrives.
+expectDraw :: Socket -> IO ()
+expectDraw peer = do
+    r <- timeout 1_000_000 (recvMessage peer)
+    case r of
+        Just (Just (Known (Draw _))) -> pure ()
+        _ -> expectationFailure "expected a Draw frame"
+
 spec :: Spec
-spec = describe "renderOnce after a shrink" $
-    it "fully repaints so no stale wide content survives" $ do
+spec = do
+    describe "renderLoop" $
+        -- | Consecutive frames sit at least a frame period apart; dirty
+        -- ticks landing inside the gap coalesce into the next frame.
+        it "paces frames a period apart, coalescing a dirty burst" $ do
+            let sz = Size { rows = 6, cols = 12 }
+                period = 100_000
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-renderpace.sock" Nothing
+            (client, peer) <- mkClient sz (filledFrame sz)
+            withAsync (renderLoop period st client) $ \_ -> do
+                expectDraw peer  -- erases the stale filled frame
+                t0 <- getMonotonicTimeNSec
+                replicateM_ 5 $ atomically $ do
+                    writeTVar client.needsFull True
+                    bumpDirty st
+                    readTVar st.dirty >>= writeTVar st.reconciled
+                expectDraw peer
+                t1 <- getMonotonicTimeNSec
+                t1 - t0 `shouldSatisfy` (>= 80_000_000)
+                extra <- timeout 50_000
+                    (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))
+                case extra of
+                    Nothing -> pure ()
+                    Just _ -> expectationFailure "burst split across frames"
+            close peer
+            close client.sock
+
+    describe "renderOnce after a shrink" $
+        it "fully repaints so no stale wide content survives" $ do
         let wide = Size { rows = 6, cols = 40 }
             narrow = Size { rows = 6, cols = 12 }
         lg <- newLogger "/dev/null"

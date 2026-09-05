@@ -2,6 +2,7 @@
 -- tree into frames, the status line, and the chooser\/copy-mode overlays.
 module Hat.Server.View
     ( renderLoop
+    , framePeriod
     , awaitRenderable
     , renderOnce
     , statusCells
@@ -14,6 +15,7 @@ module Hat.Server.View
     , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, when)
 import Data.IORef
@@ -43,12 +45,21 @@ import Hat.Transport.Wire
 
 -- Rendering ---------------------------------------------------------------
 
-renderLoop :: ServerState -> Client -> IO ()
-renderLoop st client = loop (-1)
+-- | Minimum gap between frames, in microseconds (~80 fps): the pacing
+-- 'renderLoop' is spawned with in production.
+framePeriod :: Int
+framePeriod = 12500
+
+-- | Paint each dirty generation, at most one frame per @period@: the wait
+-- runs after the paint, so dirty ticks landing inside it coalesce into the
+-- next frame while an idle client's next event still paints immediately.
+renderLoop :: Int -> ServerState -> Client -> IO ()
+renderLoop period st client = loop (-1)
   where
     loop lastGen = do
         gen <- atomically (awaitRenderable st client lastGen)
         renderOnce st client
+        threadDelay period
         loop gen
 
 -- | The dirty generation 'renderLoop' paints next: newer than the one last

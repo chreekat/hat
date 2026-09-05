@@ -128,7 +128,7 @@ welcome d st conn h = do
                         { client = rawClient client.id, term = h.term }
                     -- Linked: a dying render loop must end the connection
                     -- loudly, never leave a live client rendering nothing.
-                    withAsync (renderLoop st client) $ \a -> do
+                    withAsync (renderLoop framePeriod st client) $ \a -> do
                         link a
                         inputLoop d st client
                             `finally` removeClient st client
