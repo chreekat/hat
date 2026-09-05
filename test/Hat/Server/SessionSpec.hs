@@ -480,7 +480,7 @@ spec = do
             readTVarIO win.autoRename `shouldReturn` False
 
     describe "snapshot commands without persistence" $
-        it "list-snapshots and restore-snapshot fail loudly, never silently" $ do
+        it "list-snapshots and restore-snapshot fail loudly, never silently (bb)" $ do
             (st, _) <- seedSession "/"
             cmdListSnapshots st Nothing []
                 `shouldReturn` [RErr "list-snapshots: persistence is disabled"]

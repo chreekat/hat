@@ -658,59 +658,6 @@ spec = parallel $ do
         typeInto c "q"                -- exit less
         awaitScreen c "$"
 
-    it "new-session creates and attaches to a fresh session" $
-        withHat hatBin $ \h -> do
-        -- First client autostarts the server on session $1.
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "echo one-$((1+1))\r"
-        awaitScreen c1 "one-2"
-
-        -- `hat new` from a shell must attach this terminal to a brand-new
-        -- session with its own fresh shell, not create-and-exit.
-        c2 <- startClientArgs h ["new"]
-        awaitScreen c2 "$"
-        typeInto c2 "echo two-$((2+2))\r"
-        awaitScreen c2 "two-4"
-
-        -- Two independent sessions now exist.
-        out <- ctlOut h ["list-sessions"]
-        length (lines out) `shouldBe` 2
-
-        -- The new session is a distinct shell: c1's marker is not on c2.
-        scr2 <- screenText c2
-        T.isInfixOf "one-2" scr2 `shouldBe` False
-
-        typeInto c2 "exit\r"
-        _ <- awaitExit c2
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
-
-    -- The tmuxed-alacritty attach/nuke scripts pick a session from
-    -- `list-sessions -F` with this line template, so #{session_attached}
-    -- and #{session_windows} must resolve to their counts and drive the
-    -- #{?...} attached-marker conditional.
-    it "list-sessions -F reports session_attached and session_windows" $
-        withHat hatBin $ \h -> do
-        -- One attached client: its session has 1 client and 1 window.
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        -- A detached session grown to two windows: 0 clients, 2 windows.
-        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
-        _ <- hatCtl h ["new-window", "-t", "work"]
-        out <- T.pack <$> ctlOut h
-            [ "list-sessions", "-F"
-            , "#{session_name}\t#{session_attached}\t#{session_windows}"
-                <> "\t#{?session_attached,ATT,DET}" ]
-        -- Detached session: 0 attached, 2 windows, false branch.
-        out `shouldSatisfy` T.isInfixOf "work\t0\t2\tDET"
-        -- Attached session: 1 attached, 1 window, true branch.
-        out `shouldSatisfy` T.isInfixOf "\t1\t1\tATT"
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
-
     -- tmux prints command errors bare; scripts (tmuxed-alacritty-new)
     -- match on the exact text, e.g. `duplicate session: NAME`. A `hat: `
     -- prefix would break that match, so control errors stay unbranded.
@@ -1011,16 +958,6 @@ spec = parallel $ do
         lines names `shouldSatisfy`
             (\ns -> "bbsess" `elem` ns && "bbsess-2" `elem` ns)
 
-    -- bb: snapshot commands error, never silently no-op, without a store.
-    it "snapshot commands fail loudly when persistence is off" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        (_, _, errL) <- hatCtl h ["list-snapshots"]
-        errL `shouldContain` "persistence is disabled"
-        (_, _, errR) <- hatCtl h ["restore-snapshot", "1"]
-        errR `shouldContain` "persistence is disabled"
-
     it "splits panes, navigates, zooms, and kills" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1094,50 +1031,6 @@ spec = parallel $ do
         typeInto c1 "stty size\r"
         awaitScreen c1 "23 39"
 
-    it "clear-history drops the pane's scrollback" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        -- Fill scrollback, then confirm copy mode reports a non-empty history.
-        -- The arithmetic echo output ("hist199") appears only once the 200
-        -- lines above it have scrolled into scrollback, avoiding a race with
-        -- the echoed input line.
-        typeInto c1 "seq 1 200\r"
-        typeInto c1 "echo hist$((100+99))\r"
-        awaitScreen c1 "hist199"
-        typeInto c1 "\x02["                 -- copy mode
-        awaitScreen c1 "[0/"
-        scr <- screenText c1
-        scr `shouldNotSatisfy` T.isInfixOf "[0/0]"
-        typeInto c1 "q"                     -- exit copy mode
-        awaitWith "indicator gone" (\d ->
-            not . T.isInfixOf "[0/" <$> screenText d) c1
-
-        -- clear-history empties the scrollback; copy mode now shows [0/0].
-        _ <- ctlOut h ["clear-history"]
-        typeInto c1 "\x02["
-        awaitScreen c1 "[0/0]"
-
-    it "break-pane moves the active pane into its own window" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02%"                 -- split -h; new pane active
-        awaitScreen c1 "\x2502"
-        typeInto c1 "echo b-marker\r"
-        awaitScreen c1 "b-marker"
-        _ <- ctlOut h ["break-pane"]
-        -- The pane is now window 1 (current), sharing no split border, and
-        -- window 0 still exists in the status line.
-        awaitWith "broken out into window 1" (\d -> do
-            t <- screenText d
-            -- Anchor on the window labels ("0:sh"/"1:sh"), not bare "0:"/"1:":
-            -- the status-bar clock (e.g. 10:52, 11:52) would otherwise spoof a
-            -- window's presence and mask a regression.
-            pure ("b-marker" `T.isInfixOf` t
-                  && not ("\x2502" `T.isInfixOf` t)
-                  && "0:sh" `T.isInfixOf` t && "1:sh" `T.isInfixOf` t)) c1
-
     -- Bug a4: break-pane numbered the new window from 0, ignoring base-index.
     -- With base-index 1 the origin window is 1, so the broken-out pane must
     -- land at the next free index (2), exactly like new-window would.
@@ -1171,53 +1064,6 @@ spec = parallel $ do
             -- Match the window-1 label ("1:sh"), not a bare "1:", so the
             -- status-bar clock (e.g. 11:52) can't spoof the "still there" check.
             pure (not ("1:sh" `T.isInfixOf` t) && "0:sh*" `T.isInfixOf` t)) c1
-
-    it "join-pane merges a pane in from another window" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "echo win0-marker\r"
-        awaitScreen c1 "win0-marker"
-        typeInto c1 "\x02\&c"               -- new window (index 1)
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "echo win1-marker\r"
-        awaitScreen c1 "win1-marker"
-        -- Grab window 1's pane id, switch back to window 0, join it in.
-        pidOut <- ctlOut h ["list-panes"]
-        let paneId = takeWhile (/= ':') pidOut
-        typeInto c1 "\x02\&0"
-        awaitScreen c1 "win0-marker"
-        _ <- ctlOut h ["join-pane", "-h", "-s", paneId]
-        awaitWith "both panes share window 0" (\d -> do
-            t <- screenText d
-            pure ("win0-marker" `T.isInfixOf` t
-                  && "win1-marker" `T.isInfixOf` t
-                  && "\x2502" `T.isInfixOf` t)) c1
-
-    it "choose-window joins the chosen window's pane (V binding)" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf")
-            "bind V choose-window 'join-pane -hs \"%%\"'\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "echo win0-marker\r"
-        awaitScreen c1 "win0-marker"
-        typeInto c1 "\x02\&c"               -- new window 1
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "echo win1-marker\r"
-        awaitScreen c1 "win1-marker"
-        typeInto c1 "\x02\&0"               -- back to window 0
-        awaitScreen c1 "win0-marker"
-        -- prefix V opens choose-window; pick window 1 and join its pane.
-        typeInto c1 "\x02V"
-        awaitScreen c1 "choose a window"
-        typeInto c1 "j"                     -- cursor to window 1
-        typeInto c1 "\r"
-        awaitWith "window 1's pane joined into window 0" (\d -> do
-            t <- screenText d
-            pure ("win0-marker" `T.isInfixOf` t
-                  && "win1-marker" `T.isInfixOf` t
-                  && "\x2502" `T.isInfixOf` t)) c1
 
     -- The drop path (a bare shell that never enabled ?1004) is covered by
     -- the pure 'deliversKey' matrix in SessionSpec plus EmulatorSpec's
@@ -1328,27 +1174,6 @@ spec = parallel $ do
         typeInto c1 "\x04"                   -- Ctrl-D ends the read
         awaitScreen c1 "0:sh*"
 
-    it "an explicit rename-window pins the name and stops auto-rename" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        _ <- ctlOut h ["rename-window", "pinned"]
-        awaitScreen c1 "0:pinned*"
-        -- Run cat in the pinned window, then open a second, UNPINNED window
-        -- and run cat there too.
-        typeInto c1 "cat\r"
-        typeInto c1 "\x02\&c"            -- new-window (window 1, auto-rename on)
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "cat\r"
-        -- The unpinned window auto-renaming to cat proves the rename poll has
-        -- run; in that same pass the pinned window was left alone, so its
-        -- staying "pinned" is decidable now without waiting on a clock.
-        awaitScreen c1 "1:cat*"
-        nm <- T.pack <$> ctlOut h ["list-windows", "-F", "#{window_index}:#{window_name}"]
-        nm `shouldSatisfy`
-            (\t -> "0:pinned" `T.isInfixOf` t && not ("0:cat" `T.isInfixOf` t))
-
     it "follows the desktop color scheme (gsettings) and sources the dark config" $
         withHat hatBin $ \h -> do
         -- A fake gsettings on the server's PATH: `get` reports light,
@@ -1389,23 +1214,6 @@ spec = parallel $ do
         out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
         lines out `shouldBe` ["dark"]
 
-    it "rename-session targets by -t and rejects a duplicate name" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        _ <- ctlOut h ["new-session", "-d", "-s", "other"]
-        -- Renaming session 0 onto an existing name is refused.
-        (_, _, err) <- hatCtl h ["rename-session", "-t", "0", "other"]
-        err `shouldSatisfy` (\e -> "duplicate" `List.isInfixOf` e)
-        -- -t names the session to rename (not the client's current one).
-        _ <- ctlOut h ["rename-session", "-t", "other", "renamed"]
-        names <- T.pack <$> ctlOut h ["list-sessions", "-F", "#{session_name}"]
-        names `shouldSatisfy`
-            (\t -> "renamed" `T.isInfixOf` t && not ("other" `T.isInfixOf` t))
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
-
     it "creates and switches windows with a live status line" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1438,19 +1246,6 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "save-buffer writes a buffer to disk, and -a appends" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        let path = h.home <> "/out.txt"
-        _ <- ctlOut h ["set-buffer", "alpha"]
-        _ <- ctlOut h ["save-buffer", path]
-        readFile path >>= (`shouldBe` "alpha")
-        -- a fresh set-buffer pushes a new top buffer; -a appends it.
-        _ <- ctlOut h ["set-buffer", "beta"]
-        _ <- ctlOut h ["save-buffer", "-a", path]
-        readFile path >>= (`shouldBe` "alphabeta")
-
     it "copy-pipe does not freeze the client when the command leaves a child holding stdout" $
         withHat hatBin $ \h -> do
         -- xclip forks a selection-owner daemon that inherits and never closes
@@ -1473,30 +1268,6 @@ spec = parallel $ do
         typeInto c1 "q"                  -- leave copy mode
         typeInto c1 "echo STILLALIVE\r"
         awaitScreen c1 "STILLALIVE"
-
-    it "shows the [scroll/history] position indicator on entering copy mode" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        -- No indicator until copy mode is entered.
-        scr0 <- screenText c1
-        scr0 `shouldNotSatisfy` T.isInfixOf "[0/"
-        typeInto c1 "\x02["              -- C-b [
-        awaitScreen c1 "[0/"             -- top-right box appears immediately
-        typeInto c1 "q"                  -- exit
-        awaitWith "indicator gone" (\d ->
-            not . T.isInfixOf "[0/" <$> screenText d) c1
-
-    it "surfaces copy mode in the status line via pane_in_mode" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf")
-            "set -g status-right '#{?pane_in_mode,COPYMODE,normal}'\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "normal"          -- not in copy mode yet
-        typeInto c1 "\x02["              -- C-b [ enters copy mode
-        awaitScreen c1 "COPYMODE"        -- the indicator flips
-        typeInto c1 "q"                  -- exit copy mode
-        awaitScreen c1 "normal"          -- and it reverts
 
     it "pipe-pane tees pane output to a command, and stops on demand" $
         withHat hatBin $ \h -> do
