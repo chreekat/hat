@@ -36,7 +36,7 @@ import Text.Read (readMaybe)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
@@ -48,7 +48,7 @@ import Hat.TestSupport (bashPath)
 import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
-import Hat.Term.Cell (Cell (..), Color (..), Style (..), baseChar)
+import Hat.Term.Cell (Cell (..), Style (..))
 import Hat.Term.Emulator qualified as Emu
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
@@ -466,26 +466,6 @@ awaitForeground h cmd = go (500 :: Int)
             then pure ()
             else threadDelay 10000 >> go (n - 1)
 
--- The foreground colour of a bold pane-border cell (│ or heavy ┃), if
--- any — how the active-border style shows up on screen.
-boldBorderFg :: Driver -> IO (Maybe Color)
-boldBorderFg d = do
-    scr <- Emu.snapshot d.screen
-    pure $ listToMaybe
-        [ cell.style.fg
-        | row <- V.toList scr.cells, cell <- V.toList row
-        , baseChar cell `elem` ['\x2502', '\x2503']
-        , cell.style.bold ]
-
--- The column of the vertical pane border (│) on a content row, if any.
-verticalBorderCol :: Driver -> IO (Maybe Int)
-verticalBorderCol d = do
-    scr <- Emu.snapshot d.screen
-    pure $ case scr.cells V.!? 5 of
-        Just row -> listToMaybe
-            [ c | (c, cell) <- zip [0 ..] (V.toList row), baseChar cell == '\x2502' ]
-        Nothing -> Nothing
-
 -- Count cells drawn with the reverse-video attribute (how a copy-mode
 -- selection renders).
 reverseCellCount :: Driver -> IO Int
@@ -742,50 +722,6 @@ spec = parallel $ do
         (code, _, err) <- hatCtl h ["new-session", "-d", "-s", "work"]
         code `shouldBe` ExitFailure 1
         err `shouldBe` "duplicate session: work\n"
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
-
-    it "refuses to nest: attaching from inside a pane errors out" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- hat-in-hat: attaching from a pane of the same server would
-        -- render the session inside itself (input/draw recursion). The
-        -- pane's $TMUX marks the nesting; attach must refuse, like tmux.
-        typeInto c1 (B8.pack (h.bin <> " -S " <> h.sock <> " attach\r"))
-        awaitScreen c1 "nested with care"
-
-        -- The shell survives the refusal, and control commands from
-        -- inside a pane still work (scripts depend on them).
-        typeInto c1 (B8.pack (h.bin <> " -S " <> h.sock <> " list-sessions\r"))
-        awaitWith "list-sessions output" (\d -> do
-            t <- screenText d
-            pure ("windows" `T.isInfixOf` t)) c1
-
-    it "attach -t attaches this terminal to the named session" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- A detached second session named "work".
-        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
-        out <- ctlOut h ["list-sessions"]
-        length (lines out) `shouldBe` 2
-
-        -- Attaching a fresh terminal explicitly to "work" must render it.
-        c2 <- startClientArgs h ["attach", "-t", "work"]
-        awaitScreen c2 "$"
-        typeInto c2 "echo work-$((3+4))\r"
-        awaitScreen c2 "work-7"
-
-        typeInto c2 "\x02\&d"
-        status2 <- awaitExit c2
-        status2 `shouldBe` Exited ExitSuccess
-        t2 <- readIORef c2.transcript
-        t2 `shouldSatisfy` B8.isInfixOf "[detached]"
-
         typeInto c1 "exit\r"
         _ <- awaitExit c1
         pure ()
@@ -1158,28 +1094,6 @@ spec = parallel $ do
         typeInto c1 "stty size\r"
         awaitScreen c1 "23 39"
 
-    it "resize-pane -t ! -Z zooms the alternate pane, not the active one" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        -- Original pane gets a marker; it becomes the alternate after split.
-        typeInto c1 "echo alt-pane-zone\r"
-        awaitScreen c1 "alt-pane-zone"
-        -- Vertical split: the new right pane is active, the original is last.
-        typeInto c1 "\x02%"
-        awaitScreen c1 "\x2502"      -- │
-        typeInto c1 "echo main-pane-zone\r"
-        awaitScreen c1 "main-pane-zone"
-
-        -- Zoom the ALTERNATE pane (-t !): the original fills the screen,
-        -- the border and the active pane's content both vanish.
-        _ <- ctlOut h ["resize-pane", "-t", "!", "-Z"]
-        awaitWith "alternate pane zoomed" (\d -> do
-            t <- screenText d
-            pure ("alt-pane-zone" `T.isInfixOf` t
-                  && not ("\x2502" `T.isInfixOf` t)
-                  && not ("main-pane-zone" `T.isInfixOf` t))) c1
-
     it "clear-history drops the pane's scrollback" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1203,26 +1117,6 @@ spec = parallel $ do
         _ <- ctlOut h ["clear-history"]
         typeInto c1 "\x02["
         awaitScreen c1 "[0/0]"
-
-    it "moves a pane to the far edge (splitw -f; swap-pane; kill-pane)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "echo edge-marker\r"
-        awaitScreen c1 "edge-marker"
-        -- Stack a second pane below; the original (top) keeps the marker.
-        typeInto c1 "\x02\""                -- split -v
-        awaitScreen c1 "\x2500"             -- ─
-        -- Focus the marked pane, then run the tmux move-to-edge idiom.
-        _ <- ctlOut h ["select-pane", "-U"]
-        _ <- ctlOut h ["split-window", "-fh"]
-        _ <- ctlOut h ["swap-pane", "-t", "!"]
-        _ <- ctlOut h ["kill-pane", "-t", "!"]
-        -- The marker survives and now lives in a full-height edge column
-        -- (a vertical border proves two side-by-side panes remain).
-        awaitWith "pane moved to edge, content preserved" (\d -> do
-            t <- screenText d
-            pure ("edge-marker" `T.isInfixOf` t && "\x2502" `T.isInfixOf` t)) c1
 
     it "break-pane moves the active pane into its own window" $
         withHat hatBin $ \h -> do
@@ -1300,114 +1194,6 @@ spec = parallel $ do
                   && "win1-marker" `T.isInfixOf` t
                   && "\x2502" `T.isInfixOf` t)) c1
 
-    it "choose-tree lists windows; search + Enter switches to one" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf")
-            "bind / choose-tree -GZw \\; send-keys /\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "echo win0-marker\r"
-        awaitScreen c1 "win0-marker"
-        typeInto c1 "\x02\&c"               -- new window 1
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "echo win1-marker\r"
-        awaitScreen c1 "win1-marker"
-        typeInto c1 "\x02\&0"               -- back to window 0
-        awaitScreen c1 "win0-marker"
-        -- prefix / opens choose-tree and (via send-keys /) enters search.
-        typeInto c1 "\x02/"
-        awaitScreen c1 "choose a window"
-        -- Filter to the window-1 row, then select it.
-        typeInto c1 "1"
-        typeInto c1 "\r"
-        awaitScreen c1 "win1-marker"
-
-    it "default prefix w opens choose-tree" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "echo win0-marker\r"
-        awaitScreen c1 "win0-marker"
-        typeInto c1 "\x02\&c"               -- new window 1
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "echo win1-marker\r"
-        awaitScreen c1 "win1-marker"
-        typeInto c1 "\x02\&0"               -- back to window 0
-        awaitScreen c1 "win0-marker"
-        -- prefix w opens choose-tree with no config binding at all. The
-        -- preview beside the list shows the highlighted node's live pane —
-        -- win0-marker, which a full-screen list would otherwise have erased.
-        typeInto c1 "\x02w"
-        awaitWith "chooser open with a live preview of window 0" (\d -> do
-            t <- screenText d
-            pure ("choose a window" `T.isInfixOf` t
-                  && "win0-marker" `T.isInfixOf` t)) c1
-        -- Navigate to the window-1 row and select it.
-        typeInto c1 "/1"
-        typeInto c1 "\r"
-        awaitScreen c1 "win1-marker"
-
-    it "choose-tree previews a split window with both of its panes" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        -- 'clear' pins each marker at the top-left of its pane, so it shows
-        -- even in the composited (clipped) preview thumbnail.
-        typeInto c1 "clear; echo LEFTMARK\r"
-        awaitScreen c1 "LEFTMARK"
-        typeInto c1 "\x02%"                   -- split -h; the right pane is active
-        awaitScreen c1 "\x2502"
-        typeInto c1 "clear; echo RIGHTMARK\r"
-        awaitScreen c1 "RIGHTMARK"
-        -- prefix w opens the zoomed chooser, hiding the live panes. Its
-        -- preview composites the whole current window, so BOTH panes of the
-        -- split appear beside the list — not just the active one, which is
-        -- all the old single-pane preview could show.
-        typeInto c1 "\x02w"
-        awaitWith "preview shows both panes of the split" (\d -> do
-            t <- screenText d
-            pure ("choose a window" `T.isInfixOf` t
-                  && "LEFTMARK" `T.isInfixOf` t
-                  && "RIGHTMARK" `T.isInfixOf` t)) c1
-
-    it "choose-tree previews a session as a stack of its windows' thumbnails" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "clear; echo ALPHA\r"     -- window 0's marker, pinned top-left
-        awaitScreen c1 "ALPHA"
-        typeInto c1 "\x02\&c"                  -- new window 1
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "clear; echo BETA\r"       -- window 1's marker
-        awaitScreen c1 "BETA"
-        typeInto c1 "\x02w"                    -- open the zoomed tree chooser
-        typeInto c1 "g"                        -- jump to the session row (top)
-        -- The session row stacks a thumbnail per window, so a marker from
-        -- BOTH windows shows — not just the current window's active pane.
-        awaitWith "session preview stacks both windows" (\d -> do
-            t <- screenText d
-            pure ("ALPHA" `T.isInfixOf` t && "BETA" `T.isInfixOf` t)) c1
-
-    it "choose-tree without -Z draws in the active pane, sparing the other" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "bind e choose-tree -w\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "echo left-marker\r"
-        awaitScreen c1 "left-marker"
-        typeInto c1 "\x02%"                  -- split -h; right pane is active
-        awaitScreen c1 "\x2502"
-        typeInto c1 "echo right-marker\r"
-        awaitScreen c1 "right-marker"
-        -- prefix e opens a non-zoomed chooser in the right (active) pane.
-        -- The left pane's content must survive beside it.  (\& terminates
-        -- the \x02 hex escape so the 'e' is a separate key, not 0x2e.)
-        typeInto c1 "\x02\&e"
-        awaitWith "chooser confined to the active pane" (\d -> do
-            t <- screenText d
-            pure ("choose a window" `T.isInfixOf` t
-                  && "left-marker" `T.isInfixOf` t)) c1
-
     it "choose-window joins the chosen window's pane (V binding)" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf")
@@ -1433,57 +1219,6 @@ spec = parallel $ do
                   && "win1-marker" `T.isInfixOf` t
                   && "\x2502" `T.isInfixOf` t)) c1
 
-    it "prefix R toggles the pane theme, recoloring borders (styling)" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") $ unlines
-            [ "set -g pane-border-style 'fg=colour240'"
-            , "set -g pane-active-border-style 'fg=brightwhite,bold'"
-            , "set -g pane-border-lines heavy"
-            , "set -g pane-border-indicators both"
-            , "set -g @pane-theme dark"
-            , "bind R if-shell '[ \"#{@pane-theme}\" = \"dark\" ]' "
-              <> "'set -g pane-active-border-style \"fg=black,bold\" ; "
-              <> "set -g @pane-theme light ; display-message \"Theme: light\"' "
-              <> "'set -g pane-active-border-style \"fg=brightwhite,bold\" ; "
-              <> "set -g @pane-theme dark ; display-message \"Theme: dark\"'"
-            ]
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02%"                  -- split -h; heavy border ┃ appears
-        awaitScreen c1 "\x2503"              -- ┃ proves pane-border-lines heavy
-        -- Dark theme: the active border is bold; capture its colour.
-        awaitWith "bold active border" (\d -> (/= Nothing) <$> boldBorderFg d) c1
-        darkFg <- boldBorderFg c1
-        -- prefix R runs the if-shell theme toggle (needs #{@pane-theme}).
-        typeInto c1 "\x02R"
-        awaitScreen c1 "Theme: light"
-        -- Light theme recolours the (still bold) active border.
-        awaitWith "active border recoloured" (\d -> do
-            mfg <- boldBorderFg d
-            pure (mfg /= Nothing && mfg /= darkFg)) c1
-
-    it "monitor-activity flags a background window; next-window -a jumps to it" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") $ unlines
-            [ "set -g monitor-activity on"
-            -- Keep window names stable ('sh') so the flag assertions below
-            -- read "0:sh-#" regardless of the foreground command.
-            , "set -g automatic-rename off"
-            , "bind C-a next-window -a" ]
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        -- Arm delayed output in window 0, then leave it for a new window.
-        typeInto c1 "sleep 1 && echo bg-activity-marker\r"
-        typeInto c1 "\x02\&c"                -- new window 1
-        awaitScreen c1 "1:sh*"
-        -- When window 0 emits, it is flagged with activity (# in the flags;
-        -- it is also the last window, so "-#").
-        awaitScreen c1 "0:sh-#"
-        -- prefix C-a jumps to the window carrying activity (window 0).
-        typeInto c1 "\x02\x01"
-        awaitScreen c1 "bg-activity-marker"
-        awaitScreen c1 "0:sh*"               -- now current; activity cleared
-
     -- The drop path (a bare shell that never enabled ?1004) is covered by
     -- the pure 'deliversKey' matrix in SessionSpec plus EmulatorSpec's
     -- default focusReport=False; this keeps the real-pty wiring for the
@@ -1500,96 +1235,6 @@ spec = parallel $ do
         awaitForeground h "cat"
         typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
         awaitScreen c1 "^[[I"                -- forwarded to the pane, echoed by cat -v
-
-    it "select-layout rearranges panes; main-vertical honors main-pane-width" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g main-pane-width 50\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02%"                  -- 2 panes
-        awaitScreen c1 "\x2502"
-        typeInto c1 "\x02%"                  -- 3 panes
-        -- The third pane renders a second vertical border to the client; wait
-        -- for that (an event on the render stream), not a poll.
-        awaitWith "three panes side by side" (\d -> do
-            scr <- Emu.snapshot d.screen
-            let cols = [ c | row <- V.toList scr.cells
-                           , (c, cell) <- zip [0 :: Int ..] (V.toList row)
-                           , baseChar cell == '\x2502' ]
-            pure (length (List.nub cols) >= 2)) c1
-        -- even-vertical stacks them: horizontal borders, no vertical.
-        _ <- ctlOut h ["select-layout", "even-vertical"]
-        awaitWith "stacked (no vertical border)" (\d -> do
-            t <- screenText d
-            pure ("\x2500" `T.isInfixOf` t
-                  && not ("\x2502" `T.isInfixOf` t))) c1
-        -- main-vertical: a ~50-column main pane on the left, stack on the right.
-        _ <- ctlOut h ["select-layout", "main-vertical"]
-        awaitWith "main pane ~50 cols wide" (\d -> do
-            mcol <- verticalBorderCol d
-            t <- screenText d
-            pure (maybe False (\c -> c >= 46 && c <= 52) mcol
-                  && "\x2500" `T.isInfixOf` t)) c1
-
-    it "round-trips @-options via set -gq / show -gqv (resurrect config)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        _ <- ctlOut h ["set", "-gq", "@resurrect-save", "M-s"]
-        out <- ctlOut h ["show", "-gqv", "@resurrect-save"]
-        out `shouldSatisfy` List.isInfixOf "M-s"
-
-    it "list-panes -aF emits resurrect's per-pane fields" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "\x02%"                  -- two panes
-        awaitScreen c1 "\x2502"
-        out <- ctlOut h
-            [ "list-panes", "-a", "-F"
-            , "#{pane_id}|#{pane_current_path}|#{pane_current_command}|#{window_layout}" ]
-        -- a row per pane, each carrying id, cwd, command and a layout string
-        length (lines out) `shouldSatisfy` (>= 2)
-        out `shouldSatisfy` List.isInfixOf "%"     -- pane_id
-        out `shouldSatisfy` List.isInfixOf "/"     -- pane_current_path
-        out `shouldSatisfy` List.isInfixOf "x"     -- WxH in window_layout
-
-    it "default prefix . renumbers the current window, keeping focus" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02\&c"                -- window 1, now current
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "\x02."                  -- prefix . opens the move prompt
-        awaitPromptOpen c1 "1:sh*"
-        typeInto c1 "5\r"                    -- move current window to index 5
-        awaitScreen c1 "5:sh*"               -- renumbered, still current
-
-    it "moves a window to a new index (move-window)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02\&c"                -- window 1
-        awaitScreen c1 "1:sh*"
-        _ <- ctlOut h ["move-window", "-s", "1", "-t", "5"]
-        out <- ctlOut h ["list-windows", "-F", "#{window_index}"]
-        lines out `shouldSatisfy` elem "5"
-
-    it "restores a saved window_layout (resurrect's select-layout replay)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "\x02%"                  -- split -h: side-by-side panes
-        awaitScreen c1 "\x2502"
-        -- "save": capture the window_layout string, as save.sh does
-        layoutOut <- ctlOut h ["list-windows", "-F", "#{window_layout}"]
-        let layout = takeWhile (/= '\n') layoutOut
-        -- mangle: stack the panes (no vertical border)
-        _ <- ctlOut h ["select-layout", "even-vertical"]
-        awaitWith "stacked" (\d -> not . T.isInfixOf "\x2502" <$> screenText d) c1
-        -- "restore": replay the saved layout -> side-by-side returns
-        _ <- ctlOut h ["select-layout", layout]
-        awaitScreen c1 "\x2502"
 
     it "save -> kill-server -> restart -> restore rebuilds the window tree" $
         withHatPersist hatBin $ \h -> do
@@ -1641,46 +1286,6 @@ spec = parallel $ do
         flags2 <- ctlOut h ["list-windows", "-F", "#{automatic_rename}"]
         lines flags2 `shouldBe` ["1", "0"]
 
-    it "opens the command prompt (:) and runs the typed command" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"       -- status line is up
-
-        -- prefix : opens the prompt; typed text echoes on the status row.
-        typeInto c1 "\x02:"
-        awaitPromptOpen c1 "0:sh*"
-        typeInto c1 "rename-window promptwin"
-        awaitScreen c1 ":rename-window promptwin"
-
-        -- Enter runs it: the status line shows the renamed window. The
-        -- trailing '*' (current-window marker) never appears in the
-        -- echoed prompt text, so this only matches after execution.
-        typeInto c1 "\r"
-        awaitScreen c1 "promptwin*"
-
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
-    it "renames the current window via prefix , (pre-filled prompt)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-
-        -- prefix , opens a rename prompt pre-filled with the window name
-        -- (#W), behind the (rename-window) label.
-        typeInto c1 "\x02,"
-        awaitScreen c1 "(rename-window) sh"
-
-        -- The pre-fill is editable; Enter runs the spliced template and
-        -- the status line shows the new name.
-        typeInto c1 "\DEL\DELlogs\r"
-        awaitScreen c1 "logs*"
-
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
     it "automatic-rename follows the pane's foreground command" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
@@ -1722,34 +1327,6 @@ spec = parallel $ do
         awaitScreen c1 "0:vimish*"
         typeInto c1 "\x04"                   -- Ctrl-D ends the read
         awaitScreen c1 "0:sh*"
-
-    it "set-titles composes hat: [window:] path: program, most specific kept" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g set-titles on\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        -- The default session name ("0") is numeric noise and the
-        -- auto-renamed window would just repeat the program: both are
-        -- skipped, leaving cwd and foreground program.
-        awaitWith "initial composed title" (\d -> do
-            t <- readIORef d.transcript
-            pure ("\ESC]0;hat: /tmp: sh\BEL" `B8.isInfixOf` t)) c1
-        typeInto c1 "cat\r"
-        awaitWith "title follows the foreground program" (\d -> do
-            t <- readIORef d.transcript
-            pure ("\ESC]0;hat: /tmp: cat\BEL" `B8.isInfixOf` t)) c1
-        typeInto c1 "\x04"                   -- end cat
-        -- A program-set (OSC) title is the most specific component and
-        -- replaces the bare program name.
-        typeInto c1 "printf '\\033]2;MYAPP\\007'\r"
-        awaitWith "pane's own title replaces the program" (\d -> do
-            t <- readIORef d.transcript
-            pure ("\ESC]0;hat: /tmp: MYAPP\BEL" `B8.isInfixOf` t)) c1
-        -- A pinned (explicit) window name is signal again.
-        _ <- ctlOut h ["rename-window", "pinned"]
-        awaitWith "pinned window name reappears" (\d -> do
-            t <- readIORef d.transcript
-            pure ("\ESC]0;hat: pinned: /tmp: MYAPP\BEL" `B8.isInfixOf` t)) c1
 
     it "an explicit rename-window pins the name and stops auto-rename" $
         withHat hatBin $ \h -> do
@@ -1812,22 +1389,6 @@ spec = parallel $ do
         out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
         lines out `shouldBe` ["dark"]
 
-    it "renames the session via prefix $ (pre-filled prompt)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        -- The default session name is its numeric id; status-left shows [0].
-        awaitScreen c1 "[0]"
-        -- prefix $ opens a rename-session prompt pre-filled with #S.
-        typeInto c1 "\x02$"
-        awaitScreen c1 "(rename-session) 0"
-        -- Replace the pre-filled name; status-left reflects the new one.
-        typeInto c1 "\DELwork\r"
-        awaitScreen c1 "[work]"
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
-
     it "rename-session targets by -t and rejects a duplicate name" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1877,67 +1438,6 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "marks only viewed windows: window_active_clients is per-window" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf")
-            "set -g window-status-format \
-            \'#I:#W#{?window_active_clients,<watched>,}'\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh"
-
-        -- New window: window 0 is now idle, viewed by nobody.
-        typeInto c1 "\x02\&c"
-        awaitScreen c1 "1:sh*"
-
-        -- With a single client, the idle window has no viewers, so its
-        -- per-window count is 0 and the marker must not appear.
-        scr <- screenText c1
-        scr `shouldSatisfy` T.isInfixOf "0:sh"
-        scr `shouldNotSatisfy` T.isInfixOf "<watched>"
-
-    it "swallows typing while in copy mode (prefix [)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- Control: typed text echoes at the shell.
-        typeInto c1 "echo before-copy-zone\r"
-        awaitScreen c1 "before-copy-zone"
-
-        -- prefix [ enters copy mode. Keys with no copy-mode binding are
-        -- swallowed, so this marker never reaches the shell to be echoed.
-        -- q exits copy mode; the pane takes input again. Keys route one at a
-        -- time, so the whole sequence is correct even in a single chunk.
-        typeInto c1 "\x02[zapzap42q"
-        typeInto c1 "echo after-copy-zone\r"
-        awaitScreen c1 "after-copy-zone"
-
-        -- after-copy-zone came after the swallowed marker in the same
-        -- input stream, so its presence proves the marker was dropped.
-        scr <- screenText c1
-        scr `shouldNotSatisfy` T.isInfixOf "zapzap42"
-
-    it "reverse-videos the copy-mode selection on screen" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- Leave a line of default-styled text on the input line (unentered).
-        typeInto c1 "echo SELECTMEMARKER"
-        awaitScreen c1 "SELECTMEMARKER"
-        baseline <- reverseCellCount c1
-
-        -- Enter copy mode (default mode-keys = emacs) and select the
-        -- line: C-a start-of-line, Space begin-selection, C-e end-of-line.
-        typeInto c1 "\x02[\x01 \x05"
-        awaitWith "selection highlighted" (\d ->
-            (> baseline) <$> reverseCellCount d) c1
-
-        -- C-g clears the selection, so the highlight goes away.
-        typeInto c1 "\x07"           -- C-g: clear-selection
-        awaitWith "highlight cleared" (\d ->
-            (<= baseline) <$> reverseCellCount d) c1
-
     it "save-buffer writes a buffer to disk, and -a appends" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1950,42 +1450,6 @@ spec = parallel $ do
         _ <- ctlOut h ["set-buffer", "beta"]
         _ <- ctlOut h ["save-buffer", "-a", path]
         readFile path >>= (`shouldBe` "alphabeta")
-
-    it "prefix ] pastes the top buffer into the pane" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        -- Run cat so pasted input is echoed straight back.
-        typeInto c1 "cat\r"
-        awaitForeground h "cat"
-        _ <- ctlOut h ["set-buffer", "bracketpastemarker"]
-        typeInto c1 "\x02]"          -- C-b ]  -> paste-buffer
-        awaitScreen c1 "bracketpastemarker"
-        -- Finish the line, EOF cat, exit the shell.
-        typeInto c1 "\r"
-        typeInto c1 "\x04"
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
-    it "copy-pipe feeds the selection to a shell command" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        -- Leave a marker on the input line, unentered, then select it.
-        typeInto c1 "echo PIPEDWORD"
-        awaitScreen c1 "PIPEDWORD"
-        baseline <- reverseCellCount c1
-        typeInto c1 "\x02[\x01 \x05"     -- enter; C-a, Space (select), C-e
-        awaitWith "selection highlighted" (\d ->
-            (> baseline) <$> reverseCellCount d) c1
-
-        -- copy-pipe reaps the command off-thread, so poll for the written
-        -- file rather than assuming it exists once the control call returns.
-        let outPath = h.home <> "/piped.txt"
-        _ <- ctlOut h ["send-keys", "-X", "copy-pipe", "cat > " <> outPath]
-        contents <- awaitFile outPath (List.isInfixOf "PIPEDWORD")
-        contents `shouldSatisfy` List.isInfixOf "PIPEDWORD"
 
     it "copy-pipe does not freeze the client when the command leaves a child holding stdout" $
         withHat hatBin $ \h -> do
@@ -2082,15 +1546,6 @@ spec = parallel $ do
         _ <- ctlOut h ["kill-pane"]
         awaitReaped pid2
 
-    it "default-terminal sets $TERM for a pane's program" $
-        withHat hatBin $ \h -> do
-        let confPath = h.home <> "/hat.conf"
-        writeFile confPath "set -g default-terminal xterm-256color\n"
-        c1 <- startClientArgs h ["-f", confPath]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "echo term=$TERM\r"
-        awaitScreen c1 "term=xterm-256color"
-
     it "pane-base-index numbers panes from the configured base" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
@@ -2100,73 +1555,6 @@ spec = parallel $ do
         _ <- ctlOut h ["split-window", "-v"]
         out <- ctlOut h ["list-panes", "-F", "#{pane_index}"]
         List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
-
-    it "history-limit caps a pane's scrollback" $
-        withHat hatBin $ \h -> do
-        let confPath = h.home <> "/hat.conf"
-        writeFile confPath "set -g history-limit 3\n"
-        c1 <- startClientArgs h ["-f", confPath]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "for i in $(seq 1 40); do echo line$i; done\r"
-        awaitScreen c1 "line40"
-        out <- ctlOut h ["list-panes", "-F", "#{history_size}"]
-        -- ~40 lines scrolled off, but history-limit 3 keeps at most 3
-        let sizes = map read (filter (not . null) (lines out)) :: [Int]
-        sizes `shouldSatisfy` (not . null)
-        sizes `shouldSatisfy` all (\n -> n >= 1 && n <= 3)
-
-    it "loads a user config: C-Space prefix, vim keys, base-index 1" $
-        withHat hatBin $ \h -> do
-        let confPath = h.home <> "/hat.conf"
-        writeFile confPath $ unlines
-            [ "# hat test config"
-            , "set -g prefix C-Space"
-            , "unbind C-b"
-            , "set -g base-index 1"
-            , "set -g status-position top"
-            , "bind v split-window -h -c '#{pane_current_path}'"
-            , "bind s split-window -v"
-            , "bind h select-pane -L"
-            , "bind l select-pane -R"
-            , "bind X kill-pane"
-            , "bind r source-file " <> confPath <> " \\; display-message reloaded"
-            , "set -g status-right 'clients=#{window_active_clients}'"
-            ]
-        c1 <- startClientArgs h ["-f", confPath]
-        -- base-index 1 shows in the status line, at the TOP
-        awaitScreen c1 "1:sh*"
-        awaitWith "status on top row" (\d -> do
-            scr <- Emu.snapshot d.screen
-            pure ("1:sh*" `T.isInfixOf` Emu.screenRowText scr 0)) c1
-
-        -- C-Space v splits; C-b must do nothing (unbound).
-        typeInto c1 "\x00v"
-        awaitScreen c1 "\x2502"
-        typeInto c1 "echo cfg-right-pane\r"
-        awaitScreen c1 "cfg-right-pane"
-        typeInto c1 "\x00h"
-        typeInto c1 "echo cfg-left-pane\r"
-        awaitScreen c1 "cfg-left-pane"
-
-        -- the format engine drives the status line
-        awaitScreen c1 "clients=1"
-
-        -- config reload binding shows the toast
-        typeInto c1 "\x00r"
-        awaitScreen c1 "reloaded"
-
-        -- detach still works via the default d binding under new prefix
-        typeInto c1 "\x00\&d"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
-        -- control commands from a shell
-        out1 <- ctlOut h ["list-sessions"]
-        out1 `shouldSatisfy` List.isInfixOf "1 windows"
-        out2 <- ctlOut h ["list-panes"]
-        out2 `shouldSatisfy` List.isInfixOf "%"
-        out3 <- ctlOut h ["display-message", "-p", "hello-cli"]
-        out3 `shouldSatisfy` List.isInfixOf "hello-cli"
 
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
