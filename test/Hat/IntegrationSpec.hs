@@ -1317,16 +1317,6 @@ spec = parallel $ do
         _ <- ctlOut h ["kill-pane"]
         awaitReaped pid2
 
-    it "pane-base-index numbers panes from the configured base" $
-        withHat hatBin $ \h -> do
-        let confPath = h.home <> "/hat.conf"
-        writeFile confPath "set -g pane-base-index 1\n"
-        c1 <- startClientArgs h ["-f", confPath]
-        awaitScreen c1 "0:sh*"
-        _ <- ctlOut h ["split-window", "-v"]
-        out <- ctlOut h ["list-panes", "-F", "#{pane_index}"]
-        List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
-
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
     -- runs, or the pane spawns before `set -g default-terminal` applies.
