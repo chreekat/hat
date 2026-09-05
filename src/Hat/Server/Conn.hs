@@ -65,14 +65,21 @@ acceptLoop d st lsock = forever $ do
             atomically $ readTVar st.acceptGate >>= check . (== AcceptOpen)
         Right (conn, _) -> do
             -- The autostarting client has now reached us; the idle-exit may
-            -- consider draining (see 'waitIdle'). This is what lets us drop the
-            -- old fixed-delay grace period without racing that client.
-            atomically $ writeTVar st.served True
+            -- consider draining (see 'waitIdle'). Counting the handler as
+            -- in-flight here, before its fork, is what lets us drop the old
+            -- fixed-delay grace period without racing that client — and, since
+            -- the count falls again when the handler ends, lets a client that
+            -- connects and dies before creating a session drain (bug 28).
+            atomically $ do
+                writeTVar st.served True
+                modifyTVar' st.activeConns (+ 1)
             void . forkIO $
                 handleConn d st conn
                     `catch` (\(e :: SomeException) ->
                         logEvent st.logger ServerCrash { err = T.pack (show e) })
-                    `finally` (N.close conn `catch` \(_ :: SomeException) -> pure ())
+                    `finally` do
+                        atomically $ modifyTVar' st.activeConns (subtract 1)
+                        N.close conn `catch` \(_ :: SomeException) -> pure ()
   where
     awaitClosing = atomically $
         readTVar st.acceptGate >>= check . (== AcceptClosing)
@@ -119,7 +126,6 @@ welcome d st conn h = do
                 (_, Just sess) -> do
                     refreshSessionEnv st sess client
                     sname <- readTVarIO sess.name
-                    atomically $ writeTVar st.everAttached True
                     applySessionSize st sess.id
                     sendMessage conn (Welcome sname)
                     sendMessage conn (ServerVersion protocolVersion)

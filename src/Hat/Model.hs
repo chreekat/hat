@@ -113,8 +113,8 @@ data ServerState = ServerState
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
                                 --   'Hat.Server.serverIdle'
-    , everAttached :: TVar Bool  -- ^ a session has existed at some point.
-                                --   See 'waitIdle'.
+    , activeConns :: TVar Int   -- ^ connection handlers currently running; see
+                                --   'waitIdle'.
     , served      :: TVar Bool  -- ^ a client connection has been accepted.
                                 --   See 'waitIdle'.
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
@@ -463,7 +463,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
     <*> newTVarIO 0      -- livePanes
-    <*> newTVarIO False  -- everAttached
+    <*> newTVarIO 0      -- activeConns
     <*> newTVarIO False  -- served
     -- Ready, not LoadingConfig: a bare state (tests) is idle. 'runServerWith'
     -- arms LoadingConfig before its accept loop can serve anyone.

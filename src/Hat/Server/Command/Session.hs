@@ -80,7 +80,6 @@ cmdNewSession st mclient args
                     }
             sess <- createSession st mname mrun environ dir' sz
             atomically $ do
-                writeTVar st.everAttached True
                 forM_ (lookup "-n" opts) $ \wname -> do
                     ws <- readTVar sess.windows
                     forM_ (Map.elems ws) $ \w -> do

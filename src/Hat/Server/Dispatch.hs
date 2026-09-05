@@ -657,9 +657,7 @@ cmdKillServer st mclient _ = do
             ws <- readTVar s.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
     forM_ panes hangupPane
-    atomically $ do
-        writeTVar st.sessions Map.empty
-        writeTVar st.everAttached True
+    atomically $ writeTVar st.sessions Map.empty
     pure []
 
 cmdSendKeys :: CommandImpl

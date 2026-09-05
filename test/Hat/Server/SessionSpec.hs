@@ -936,7 +936,7 @@ spec = do
 
     describe "serverIdle" $ do
         let idle = IdleInputs
-                { idleAttached = True, idleServed = True, idlePhase = Ready
+                { idleActiveConns = 0, idleServed = True, idlePhase = Ready
                 , idleSessions = 0, idleClients = 0, idlePanes = 0 }
         it "is idle once served, drained, and every pane reaped" $
             serverIdle idle `shouldBe` True
@@ -944,9 +944,14 @@ spec = do
             -- bug 98: a drained server must outlive its children's reap, so a
             -- SIGHUP-ignoring child is SIGKILLed rather than orphaned on exit.
             serverIdle (idle { idlePanes = 1 }) `shouldBe` False
-        it "stays busy until it has served a client" $ do
+        it "stays busy until it has served a client" $
             serverIdle (idle { idleServed = False }) `shouldBe` False
-            serverIdle (idle { idleAttached = False }) `shouldBe` False
+        it "stays busy while a connection is still being handled" $
+            -- the in-flight connection may yet create the first session.
+            serverIdle (idle { idleActiveConns = 1 }) `shouldBe` False
+        it "exits after a connection came and went without a session (28)" $
+            -- served, no handler left, nothing created: don't strand it.
+            serverIdle idle `shouldBe` True
         it "stays busy until startup lands at Ready" $ do
             serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` False
             serverIdle (idle { idlePhase = Restoring }) `shouldBe` False

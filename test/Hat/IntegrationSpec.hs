@@ -574,6 +574,17 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "server did not exit"
 
+    -- 28: a server that served a connection which left without creating a
+    -- session must drain, not orphan. start-server autostarts an empty
+    -- server (no session, no client stays), so once the control connection
+    -- closes there is nothing left to serve.
+    it "exits an empty server whose connection made no session (28)" $
+        withHat hatBin $ \h -> do
+        code <- (\(c, _, _) -> c) <$> hatCtl h ["start-server"]
+        code `shouldBe` ExitSuccess
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "empty server did not exit"
+
     -- A pane whose shell ignores SIGHUP (and keeps the pty slave open) gives
     -- the reader thread no EOF, so a teardown that closes the master Handle
     -- while the reader still blocks in it deadlocks. kill-server must instead

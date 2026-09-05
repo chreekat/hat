@@ -319,24 +319,29 @@ acquireLock lockPath = do
 
 -- | The reasons a server stays alive, gathered for 'serverIdle'. See it.
 data IdleInputs = IdleInputs
-    { idleAttached :: Bool
-    , idleServed   :: Bool
-    , idlePhase    :: StartupPhase
-    , idleSessions :: Int
-    , idleClients  :: Int
-    , idlePanes    :: Int
+    { idleActiveConns :: Int
+    , idleServed      :: Bool
+    , idlePhase       :: StartupPhase
+    , idleSessions    :: Int
+    , idleClients     :: Int
+    , idlePanes       :: Int
     }
 
--- | Whether the server may exit: it has served at least one client, startup
--- has fully landed at 'Ready', and no sessions, clients, or live panes are
--- left. The live-pane term is what keeps a drained server alive until every
--- child it spawned has been reaped — since 'cmdKillPane' detaches a pane
--- from the model before its child is reaped, an empty session map no longer
--- implies the children are gone, and exiting first would orphan a
--- SIGHUP-ignoring child mid-'reapPane'. See 'waitIdle'.
+-- | Whether the server may exit: it has served at least one connection,
+-- startup has fully landed at 'Ready', and no connection handler, session,
+-- client, or live pane is left. The active-connection term is what
+-- distinguishes a server still fielding a connection that may yet create the
+-- first session from one whose only client came and went without one —
+-- without it, a client that connects and dies mid-attach (never creating a
+-- session) would strand the server forever (bug 28). The live-pane term
+-- keeps a drained server alive until every child it spawned has been reaped —
+-- since 'cmdKillPane' detaches a pane from the model before its child is
+-- reaped, an empty session map no longer implies the children are gone, and
+-- exiting first would orphan a SIGHUP-ignoring child mid-'reapPane'. See
+-- 'waitIdle'.
 serverIdle :: IdleInputs -> Bool
 serverIdle i =
-    i.idleAttached && i.idleServed && i.idlePhase == Ready
+    i.idleServed && i.idlePhase == Ready && i.idleActiveConns == 0
         && i.idleSessions == 0 && i.idleClients == 0 && i.idlePanes == 0
 
 -- Exit once every session is gone, every attached client has drained and
@@ -345,7 +350,7 @@ serverIdle i =
 waitIdle :: ServerState -> IO ()
 waitIdle st = atomically $ do
     inputs <- IdleInputs
-        <$> readTVar st.everAttached
+        <$> readTVar st.activeConns
         <*> readTVar st.served
         <*> readTVar st.startupPhase
         <*> (Map.size <$> readTVar st.sessions)
