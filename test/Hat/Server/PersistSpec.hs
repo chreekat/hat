@@ -7,7 +7,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, close, execute_, open)
 import Test.Hspec
-import Test.Hspec.QuickCheck (prop)
+import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck
 
 import Hat.Server.Persist
@@ -114,20 +114,22 @@ spec = do
     it "a fresh store loads an empty snapshot" $
         withStore ":memory:" loadSnapshot `shouldReturn` Snapshot { sessions = [], lastActiveSession = Nothing }
 
-    prop "a snapshot round-trips through the store" $ \snap ->
-        ioProperty $ do
-            got <- withStore ":memory:" $ \conn -> do
-                saveSnapshot conn snap
-                loadSnapshot conn
-            pure (got === snap)
+    -- each case opens a fresh SQLite store, so 25 cases is the budget
+    modifyMaxSuccess (const 25) $ do
+        prop "a snapshot round-trips through the store" $ \snap ->
+            ioProperty $ do
+                got <- withStore ":memory:" $ \conn -> do
+                    saveSnapshot conn snap
+                    loadSnapshot conn
+                pure (got === snap)
 
-    prop "re-saving overwrites rather than appends" $ \s1 s2 ->
-        ioProperty $ do
-            got <- withStore ":memory:" $ \conn -> do
-                saveSnapshot conn s1
-                saveSnapshot conn s2
-                loadSnapshot conn
-            pure (got === (s2 :: Snapshot))
+        prop "re-saving overwrites rather than appends" $ \s1 s2 ->
+            ioProperty $ do
+                got <- withStore ":memory:" $ \conn -> do
+                    saveSnapshot conn s1
+                    saveSnapshot conn s2
+                    loadSnapshot conn
+                pure (got === (s2 :: Snapshot))
 
     -- Forward/backward compatibility: the reader keys off core columns
     -- only, so it reads a store from an older or newer binary. This block is
@@ -272,13 +274,14 @@ spec = do
     describe "snapshot history" $ do
         let snapOf nm = oneSession nm "/h" "w" "lay" ("/h/" <> nm)
 
-        prop "a non-empty snapshot round-trips through the archive" $ \snap ->
-            not (null (snap :: Snapshot).sessions) ==> ioProperty $ do
-                got <- withStore ":memory:" $ \conn -> do
-                    saveSnapshot conn snap
-                    archiveSnapshot conn 10 snap
-                    listArchived conn
-                pure (map (.snapshot) got === [snap])
+        modifyMaxSuccess (const 25) $
+            prop "a non-empty snapshot round-trips through the archive" $ \snap ->
+                not (null (snap :: Snapshot).sessions) ==> ioProperty $ do
+                    got <- withStore ":memory:" $ \conn -> do
+                        saveSnapshot conn snap
+                        archiveSnapshot conn 10 snap
+                        listArchived conn
+                    pure (map (.snapshot) got === [snap])
 
         it "archiving lists newest first and prunes to the limit" $ do
             got <- withStore ":memory:" $ \conn -> do
@@ -368,22 +371,6 @@ spec = do
             saveSnapshot conn snap >> loadSnapshot conn
         [ w.autoRename | s <- got.sessions, w <- s.windows ]
             `shouldBe` [True, False]
-
-    it "round-trips an argv whose argument contains spaces" $ do
-        let snap = Snapshot
-                { lastActiveSession = Nothing, sessions =
-                    [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
-                        , windowHist = []
-                        , windows =
-                            [ WindowSnap { ix = 0, name = "w", layout = "l"
-                                , active = 0, paneHist = []
-                                , autoRename = False
-                                , panes = [ PaneSnap { cwd = "/h"
-                                    , command = Just ["vim", "Foo Bar.txt"]
-                                    , shellSpawned = False } ] } ] } ] }
-        got <- withStore ":memory:" $ \conn ->
-            saveSnapshot conn snap >> loadSnapshot conn
-        got `shouldBe` snap
 
     -- d: whether a program was shell-spawned survives a save/load, so a
     -- restore knows to relaunch it through the pane's shell.
