@@ -249,6 +249,7 @@ test-suite hat-test
         Hat.TestSupport
         Hat.Term.PtySpec
         Hat.Transport.SocketSpec
+        Hat.Server.BufferSpec
         Hat.Server.CaptureSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec

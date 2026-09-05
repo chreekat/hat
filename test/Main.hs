@@ -19,6 +19,7 @@ import Hat.PathSpec qualified
 import Hat.Server.PersistSpec qualified
 import Hat.Server.FlashSpec qualified
 import Hat.Term.PtySpec qualified
+import Hat.Server.BufferSpec qualified
 import Hat.Server.CaptureSpec qualified
 import Hat.Server.ColorSchemeSpec qualified
 import Hat.Server.ConfigSpec qualified
@@ -87,6 +88,7 @@ main = hspec $ do
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
+    describe "Hat.Server.Buffer" Hat.Server.BufferSpec.spec
     describe "Hat.Server.Capture" Hat.Server.CaptureSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec

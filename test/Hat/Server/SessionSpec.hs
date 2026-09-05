@@ -4,7 +4,7 @@ import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Control.Exception (finally)
-import Data.IORef (newIORef)
+import Data.IORef (newIORef, readIORef)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Timeout (timeout)
@@ -43,6 +43,7 @@ import Hat.Server
     , welcome, windowActivity
     , zoomTarget )
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
+import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.Session
     (cmdKillSession, cmdNewSession, cmdRenameSession)
 import Hat.Server.Command.Window (cmdRenameWindow)
@@ -57,8 +58,8 @@ import Hat.Transport.Wire
     , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
-import Hat.Server.FormatEnv (sessionFormatEnv)
-import Hat.Server.View (awaitRenderable, statusCells)
+import Hat.Server.FormatEnv (paneModeEnv, sessionFormatEnv)
+import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 
 -- A bare session with the given id inserted into an existing server.
 addSession :: ServerState -> Int -> IO Session
@@ -215,6 +216,25 @@ adoptedPane n = do
     p <- stubPane n
     pure (p { pty = ptyH }, closeFd slave)
 
+-- An open copy mode over a blank frozen 24x80 grid with @hsize@ scrollback
+-- lines, viewing the bottom.
+copyModeAt :: Int -> PaneMode
+copyModeAt hsize = PaneMode
+    { frozen = FrozenGrid
+        { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
+    , copyState = CopyModeState
+        { cursorRow = hsize
+        , cursorCol = 0
+        , selection = Nothing
+        , keyTable = "copy-mode"
+        , viewportOffY = 0
+        , numPrefix = Nothing
+        , pendingSearch = Nothing
+        , lastSearch = Nothing
+        , lastQuery = Nothing
+        }
+    }
+
 spec :: Spec
 spec = do
     -- User options resolve per scope: a session-local @set @v@ is visible
@@ -229,6 +249,59 @@ spec = do
                     (insertDelta (OptUser "@v") (OVText "local"))
             env <- sessionFormatEnv st sess
             Map.lookup "@v" env `shouldBe` Just "local"
+
+    describe "session format counts" $
+        it "session_attached and session_windows report live counts" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            _ <- addWindow sess 1
+            detached <- sessionFormatEnv st sess
+            Map.lookup "session_attached" detached `shouldBe` Just "0"
+            Map.lookup "session_windows" detached `shouldBe` Just "2"
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            attached <- sessionFormatEnv st sess
+            Map.lookup "session_attached" attached `shouldBe` Just "1"
+
+    describe "pane_in_mode" $
+        it "is 1 while copy mode is open, 0 otherwise" $ do
+            p <- stubPane 0
+            env0 <- paneModeEnv p
+            lookup "pane_in_mode" env0 `shouldBe` Just "0"
+            lookup "pane_mode" env0 `shouldBe` Just ""
+            atomically $ writeTVar p.mode (Just (copyModeAt 3))
+            env1 <- paneModeEnv p
+            lookup "pane_in_mode" env1 `shouldBe` Just "1"
+            lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
+
+    describe "copy-mode position indicator" $
+        it "stamps [scroll/history] on the pane's top-right row" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' win.panes (Map.insert p.id p)
+                writeTVar p.mode (Just (copyModeAt 3))
+                -- status off: statusCells would touch the stub pane
+                modifyTVar' st.options $ \o -> o { statusLines = 0 }
+            (client, _peer) <- wiredClient st Attached
+            renderOnce st client
+            frame <- readIORef client.lastFrame
+            let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
+            row0 `shouldSatisfy` T.isInfixOf "[0/3]"
+
+    describe "clear-history" $
+        it "empties the target pane's scrollback" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes
+                (Map.insert p.id p { emulator = emu })
+            _ <- Emu.feed emu (mconcat (replicate 20 "line\r\n"))
+            hsize <- Emu.scrollbackLength emu
+            hsize `shouldSatisfy` (> 0)
+            [] <- cmdClearHistory st Nothing []
+            Emu.scrollbackLength emu `shouldReturn` 0
 
     -- Any client at or above the floor is welcomed and told the server's
     -- version (after Welcome, which old clients validate strictly).
