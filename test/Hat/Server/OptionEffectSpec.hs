@@ -1,19 +1,18 @@
 -- | The executable companion to @docs/options-audit.md@: each option gets a
 -- prefix-style effect test that sets a non-default value and asserts the
--- observable behavior the value controls, so a silent no-op (or wrong
--- semantics) fails a test instead of needing another manual audit.
+-- option→behavior mapping it controls — the pure function or single dispatch
+-- step that turns the value into a behavioral mode — so a silent no-op (or
+-- wrong semantics) fails a test instead of needing another manual audit.
+-- The behavior behind each mode lives in its owning spec.
 module Hat.Server.OptionEffectSpec (spec) where
 
 import Test.Hspec
 
 import Control.Concurrent.STM (readTVarIO)
-import Control.Exception (bracket)
 import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import System.Directory (removeDirectoryRecursive)
-import System.Posix.Temp (mkdtemp)
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Log (newLogger)
@@ -27,8 +26,7 @@ import Hat.Server
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
-import Hat.Server.Keys
-    (EscPending (..), EscTokens (..), Key (..), feedKeys, flushEscape)
+import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
 import Hat.Server.View
     ( assembleStatusRow, borderCells, mapGlyph, statusLayout
@@ -39,17 +37,13 @@ spec :: Spec
 spec = do
     describe "option effects (see docs/options-audit.md)" $ do
         -- focus-events: a FocusIn/FocusOut report reaches the pane only when
-        -- focus-events is on; with it off the report is swallowed.
-        describe "focus-events gates FocusIn/FocusOut delivery" $ do
-            let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }
-            it "off (default): the focus report is dropped" $
+        -- focus-events is on (the full gating matrix is SessionSpec's).
+        describe "focus-events gates FocusIn/FocusOut delivery" $
+            it "turning the option on flips a focus report from dropped to delivered" $ do
+                let focusIn = Key { name = "FocusIn", raw = "\ESC[I" }
                 deliversKey defaultOptions True focusIn `shouldBe` False
-            it "on: the focus report is delivered" $
                 deliversKey (defaultOptions { focusEvents = True }) True focusIn
                     `shouldBe` True
-            it "on but pane never asked (?1004 off): still dropped" $
-                deliversKey (defaultOptions { focusEvents = True }) False focusIn
-                    `shouldBe` False
 
         -- display-time: a toast lives that many milliseconds; 0 keeps it up
         -- until a key is pressed (bug ff).
@@ -214,37 +208,24 @@ spec = do
                 environFind "ABSENT" (environUpdate ["ABSENT"] clientEnv sessEnv)
                     `shouldBe` Just (EnvEntry Nothing EnvVisible)
 
-        -- escape-time: 0 forwards a lone trailing ESC as Escape at once; a
-        -- non-zero value holds it (EscBuffered) so the input loop can coalesce
-        -- it with the next chunk or flush it on timeout.
-        describe "escape-time gates lone-trailing-ESC coalescing" $ do
-            let feed opts held = feedKeys (escTiming opts) held
-            it "0 (default): a lone trailing ESC is Escape now, nothing held" $ do
-                let toks = feed defaultOptions NoEscPending "a\ESC"
-                map (.name) toks.escKeys `shouldBe` ["a", "Escape"]
-                toks.escPending `shouldBe` NoEscPending
-            it "non-zero: a lone trailing ESC is held, not emitted" $ do
-                let toks = feed (defaultOptions { escapeTime = 500 }) NoEscPending "a\ESC"
-                map (.name) toks.escKeys `shouldBe` ["a"]
-                toks.escPending `shouldBe` EscPending
-            it "non-zero: a held ESC coalesces with the next chunk into M-x" $ do
-                let opts = defaultOptions { escapeTime = 500 }
-                    held = (feed opts NoEscPending "\ESC").escPending
-                map (.name) (feed opts held "x").escKeys `shouldBe` ["M-x"]
-            it "non-zero: a held ESC flushes to Escape on timeout" $
-                map (.name) (flushEscape EscPending) `shouldBe` ["Escape"]
+        -- escape-time: 0 handles a lone trailing ESC at once; non-zero holds
+        -- it for coalescing (the coalescing itself is KeysSpec's).
+        describe "escape-time picks the lone-ESC timing mode" $ do
+            it "0 (default): immediate" $
+                escTiming defaultOptions `shouldBe` EscImmediate
+            it "non-zero: buffered for coalescing" $
+                escTiming (defaultOptions { escapeTime = 500 })
+                    `shouldBe` EscBuffered
 
         -- command-alias: a matching entry re-routes dispatch to its
         -- expansion, with the invocation's own arguments appended.
         describe "command-alias re-routes dispatch" $ do
-            let withState body =
-                    bracket (mkdtemp "/tmp/hat-alias-")
-                            removeDirectoryRecursive $ \dir -> do
-                        lg <- newLogger "/dev/null"
-                        st <- newServerState Map.empty lg
-                            (dir <> "/s.sock") Nothing
-                        body st
-            it "an alias runs its expansion with the args appended" $
+            let withState body = do
+                    lg <- newLogger "/dev/null"
+                    st <- newServerState Map.empty lg
+                        "/tmp/hat-optioneffectspec.sock" Nothing
+                    body st
+            it "a set alias runs its expansion with the args appended" $
                 withState $ \st -> do
                     _ <- runCommands st Nothing
                         [ [ "set", "-s", "command-alias[100]"
