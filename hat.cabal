@@ -79,6 +79,7 @@ library
         Hat.Debug
         Hat.FuzzyMatch
         Hat.Geometry
+        Hat.Glob
         Hat.Intern
         Hat.Log
         Hat.Model
@@ -241,6 +242,7 @@ test-suite hat-test
         Hat.Command.ParserSpec
         Hat.DebugSpec
         Hat.FuzzyMatchSpec
+        Hat.GlobSpec
         Hat.InternSpec
         Hat.IntegrationSpec
         Hat.LogSpec

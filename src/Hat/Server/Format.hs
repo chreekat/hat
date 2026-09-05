@@ -16,7 +16,7 @@ module Hat.Server.Format
 
 import Data.Array qualified as A
 import Data.ByteString qualified as BS
-import Data.Char (chr, digitToInt, isAlpha, isAlphaNum, isAscii, isDigit, isPrint, isSpace, toLower)
+import Data.Char (chr, digitToInt, isAlpha, isAlphaNum, isAscii, isDigit, isPrint, isSpace)
 import Data.List qualified as List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -34,6 +34,7 @@ import Text.Regex.TDFA
     (CompOption (..), MatchArray, Regex, defaultCompOpt, defaultExecOpt, matchOnce)
 import Text.Regex.TDFA.Text qualified as RT
 
+import Hat.Glob (globMatch)
 import Hat.Server.Format.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)
 import Hat.TextWidth (charWidth, textWidth)
@@ -735,34 +736,6 @@ regexTest :: Bool -> Text -> Text -> Bool
 regexTest icase pat txt = case compileRe icase pat of
     Left _ -> False
     Right re -> isJust (matchOnce re txt)
-
--- fnmatch(3)-style glob: *, ?, [...] classes, backslash escapes.
-globMatch :: Bool -> Text -> Text -> Bool
-globMatch icase pat txt = go (prep pat) (prep txt)
-  where
-    prep = (if icase then map toLower else id) . T.unpack
-    go [] [] = True
-    go ('*' : ps) cs = any (go ps) (List.tails cs)
-    go ('?' : ps) (_ : cs) = go ps cs
-    go ('[' : ps) (c : cs) = case charClass ps of
-        Just (member, ps') -> member c && go ps' cs
-        Nothing -> c == '[' && go ps cs
-    go ('\\' : p : ps) (c : cs) = p == c && go ps cs
-    go (p : ps) (c : cs) = p == c && go ps cs
-    go _ _ = False
-    charClass ps0 =
-        let (neg, ps1) = case ps0 of
-                ('!' : r) -> (True, r)
-                ('^' : r) -> (True, r)
-                _ -> (False, ps0)
-            items acc = \case
-                (']' : r) | not (null acc) -> Just (acc, r)
-                (a : '-' : b : r) | b /= ']' -> items ((\c -> c >= a && c <= b) : acc) r
-                (a : r) -> items ((== a) : acc) r
-                [] -> Nothing
-        in do
-            (tests, rest) <- items [] ps1
-            pure (\c -> neg /= any ($ c) tests, rest)
 
 -- format_quote_shell: backslash-escape shell metacharacters.
 quoteShellT :: Text -> Text

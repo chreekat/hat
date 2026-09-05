@@ -12,6 +12,7 @@ import Hat.Client.TtySpec qualified
 import Hat.Command.ParserSpec qualified
 import Hat.DebugSpec qualified
 import Hat.FuzzyMatchSpec qualified
+import Hat.GlobSpec qualified
 import Hat.InternSpec qualified
 import Hat.IntegrationSpec qualified
 import Hat.LogSpec qualified
@@ -96,6 +97,7 @@ main = hspec $ do
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
+    describe "Hat.Glob" Hat.GlobSpec.spec
     describe "Hat.Server.ColorScheme" Hat.Server.ColorSchemeSpec.spec
     describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec

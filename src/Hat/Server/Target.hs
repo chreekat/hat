@@ -17,7 +17,6 @@ module Hat.Server.Target
     , paneFound
     , sessionCurrent
     , sessionCurrentFound
-    , wildMatch
     ) where
 
 import Data.List (find)
@@ -27,6 +26,7 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
 import Hat.Geometry (Rect (..), Size (..))
+import Hat.Glob (globMatch)
 import Hat.Model.Ids (PaneId (..), SessionId (..), WindowId (..))
 import Hat.Server.Layout (Direction (..), neighbor)
 
@@ -316,7 +316,7 @@ findSession world exact s
     | otherwise = case filter (\se -> s `T.isPrefixOf` se.name) world.sessions of
         [se] -> Just se
         (_ : _) -> Nothing
-        [] -> case filter (\se -> wildMatch s se.name) world.sessions of
+        [] -> case filter (\se -> globMatch False s se.name) world.sessions of
             [se] -> Just se
             _ -> Nothing
 
@@ -379,7 +379,7 @@ findWindowInSession _world wantIndex exact se w
                 case filter (\(_, we) -> w `T.isPrefixOf` we.name) se.windows of
                     [(ix, we)] -> Just (WinAt ix we)
                     (_ : _) -> Nothing
-                    [] -> case filter (\(_, we) -> wildMatch w we.name) se.windows of
+                    [] -> case filter (\(_, we) -> globMatch False w we.name) se.windows of
                         [(ix, we)] -> Just (WinAt ix we)
                         _ -> Nothing
 
@@ -550,31 +550,3 @@ parseDecimal t = case TR.decimal t of
 
 lookupIndex :: Eq a => a -> [a] -> Maybe Int
 lookupIndex x xs = lookup x (zip xs [0 ..])
-
--- | POSIX @fnmatch@ (no flags): @*@, @?@ and @[...]@ classes with
--- ranges and @!@\/@^@ negation.
-wildMatch :: Text -> Text -> Bool
-wildMatch pat = go (T.unpack pat) . T.unpack
-  where
-    go [] s = null s
-    go ('*' : ps) s = go ps s || case s of
-        (_ : rest) -> go ('*' : ps) rest
-        [] -> False
-    go ('?' : ps) (_ : rest) = go ps rest
-    go ('[' : ps) (c : rest) = case classMatch ps c of
-        Just ps' -> go ps' rest
-        Nothing -> False
-    go (p : ps) (c : rest) = p == c && go ps rest
-    go _ [] = False
-    classMatch ps c =
-        let (neg, body) = case ps of
-                ('!' : more) -> (True, more)
-                ('^' : more) -> (True, more)
-                _ -> (False, ps)
-            fits seen = \case
-                (']' : more) -> if neg /= seen then Just more else Nothing
-                (lo : '-' : hi : more) | hi /= ']' ->
-                    fits (seen || (lo <= c && c <= hi)) more
-                (p : more) -> fits (seen || p == c) more
-                [] -> Nothing
-        in fits False body

@@ -17,7 +17,6 @@ module Hat.Server.Environ
     , environPairs
     , environUpdate
     , renderEnvLine
-    , globMatch
     ) where
 
 import Data.List qualified as List
@@ -25,6 +24,8 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+
+import Hat.Glob (globMatch)
 
 -- | Whether an entry shows in plain output and spawned panes' environments,
 -- or only under @show-environment -h@.
@@ -90,7 +91,7 @@ environPairs env =
 environUpdate :: [Text] -> [(Text, Text)] -> Environ -> Environ
 environUpdate pats clientEnv env0 = List.foldl' step env0 pats
   where
-    step env pat = case [kv | kv@(k, _) <- clientEnv, globMatch pat k] of
+    step env pat = case [kv | kv@(k, _) <- clientEnv, globMatch False pat k] of
         []  -> environClear pat env
         kvs -> List.foldl' (\e (k, v) -> environSet EnvVisible k v e) env kvs
 
@@ -112,14 +113,3 @@ renderEnvLine EnvShellExport name entry = case entry.value of
 shellEscape :: Text -> Text
 shellEscape = T.concatMap $ \c ->
     if c `elem` ("$`\"\\" :: String) then T.pack ['\\', c] else T.singleton c
-
--- | Shell-style pattern match (fnmatch): @*@ any run, @?@ one character,
--- anything else literal.
-globMatch :: Text -> Text -> Bool
-globMatch pat = go (T.unpack pat) . T.unpack
-  where
-    go ('*' : ps) s       = any (go ps) (List.tails s)
-    go ('?' : ps) (_ : s) = go ps s
-    go (p : ps) (c : s)   = p == c && go ps s
-    go [] []              = True
-    go _ _                = False

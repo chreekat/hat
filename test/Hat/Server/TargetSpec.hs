@@ -199,18 +199,6 @@ spec = do
             sessionCurrentFound targetsWorld.sessions (PaneId 3)
                 `shouldBe` Just (Found (SessionId 0) 0 (PaneId 0))
 
-    describe "wildMatch" $ do
-        it "matches * and ?" $ do
-            wildMatch "al*" "alpha" `shouldBe` True
-            wildMatch "a?pha" "alpha" `shouldBe` True
-            wildMatch "al*" "beta" `shouldBe` False
-        it "matches character classes" $ do
-            wildMatch "grp[12]" "grp1" `shouldBe` True
-            wildMatch "grp[!12]" "grp3" `shouldBe` True
-            wildMatch "grp[!12]" "grp1" `shouldBe` False
-        it "requires a full match" $
-            wildMatch "al" "alpha" `shouldBe` False
-
 -- Fixtures -------------------------------------------------------------------
 
 area :: Size

@@ -188,15 +188,3 @@ spec = do
         it "shell: a cleared entry prints unset NAME;" $
             renderEnvLine EnvShellExport "FOO" (EnvEntry Nothing EnvVisible)
                 `shouldBe` "unset FOO;"
-
-    describe "globMatch" $ do
-        it "a literal pattern matches only itself" $ do
-            globMatch "MYVAR" "MYVAR" `shouldBe` True
-            globMatch "MYVAR" "MYVAR2" `shouldBe` False
-        it "* matches any run including empty" $ do
-            globMatch "TEST_*" "TEST_GLOB" `shouldBe` True
-            globMatch "TEST_*" "TEST_" `shouldBe` True
-            globMatch "TEST_*" "OTHER" `shouldBe` False
-        it "? matches exactly one character" $ do
-            globMatch "A?C" "ABC" `shouldBe` True
-            globMatch "A?C" "AC" `shouldBe` False
