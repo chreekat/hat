@@ -2,6 +2,7 @@
 
 module Hat.Server.LayoutSpec (spec) where
 
+import Control.Monad (forM_)
 import Data.List qualified as List
 import Data.Ratio ((%))
 import Data.Set qualified as Set
@@ -41,6 +42,11 @@ instance Arbitrary PaneCycle where
 windowRect :: Rect
 windowRect = Rect { startRow = 0, endRow = 40, startCol = 0, endCol = 120 }
 
+-- Small enough to keep the tiling walk cheap, big enough that every
+-- depth-3 split of 'genLayout' ratios keeps at least one cell per side.
+tileRect :: Rect
+tileRect = Rect { startRow = 0, endRow = 14, startCol = 0, endCol = 30 }
+
 cellsOf :: Rect -> [(Int, Int)]
 cellsOf r = [(row, col) | row <- [r.startRow .. r.endRow - 1]
                         , col <- [r.startCol .. r.endCol - 1]]
@@ -49,13 +55,13 @@ spec :: Spec
 spec = do
     prop "panes and borders tile the window exactly" $
         forAll (genLayout 3) $ \lay ->
-            let (rects, borders) = arrange windowRect lay
+            let (rects, borders) = arrange tileRect lay
                 paneCells = concatMap (cellsOf . snd) rects
                 borderCells = [(p.row, p.col) | (p, _) <- borders]
                 allCells = paneCells <> borderCells
                 cellSet = Set.fromList allCells
             in length allCells === Set.size cellSet  -- no cell covered twice
-                .&&. cellSet === Set.fromList (cellsOf windowRect)
+                .&&. cellSet === Set.fromList (cellsOf tileRect)
 
     describe "border junctions" $ do
         let smallRect = Rect { startRow = 0, endRow = 5, startCol = 0, endCol = 5 }
@@ -151,64 +157,60 @@ spec = do
                 widths = [ r.endCol - r.startCol | (_, r) <- rects ]
             maximum widths - minimum widths `shouldSatisfy` (<= 1)
 
-    describe "nextLayoutName" $ do
-        it "starts the cycle at even-horizontal when none is set" $
-            nextLayoutName Nothing `shouldBe` EvenHorizontal
-        it "advances through tmux's layout order" $
-            map (nextLayoutName . Just)
-                [EvenHorizontal, EvenVertical, MainHorizontal, MainVertical]
-                `shouldBe` [EvenVertical, MainHorizontal, MainVertical, Tiled]
-        it "wraps from the last layout back to the first" $
-            nextLayoutName (Just Tiled) `shouldBe` EvenHorizontal
-
-    describe "previousLayoutName" $ do
-        it "starts at the last layout when none is set" $
-            previousLayoutName Nothing `shouldBe` Tiled
-        it "steps backward through the cycle" $
-            previousLayoutName (Just EvenVertical) `shouldBe` EvenHorizontal
-        it "wraps from the first layout back to the last" $
-            previousLayoutName (Just EvenHorizontal) `shouldBe` Tiled
+    describe "nextLayoutName/previousLayoutName" $ do
+        -- tmux's layout cycle pinned from every point in both directions:
+        -- Nothing (no layout set yet) enters at either end; the ends wrap.
+        forM_
+            [ (Nothing, EvenHorizontal, Tiled)
+            , (Just EvenHorizontal, EvenVertical, Tiled)
+            , (Just EvenVertical, MainHorizontal, EvenHorizontal)
+            , (Just MainHorizontal, MainVertical, EvenVertical)
+            , (Just MainVertical, Tiled, MainHorizontal)
+            , (Just Tiled, EvenHorizontal, MainVertical)
+            ] $ \(from, next, previous) ->
+            it (show from <> ": next " <> show next
+                    <> ", previous " <> show previous) $ do
+                nextLayoutName from `shouldBe` next
+                previousLayoutName from `shouldBe` previous
 
     describe "cyclePane" $ do
         let three = map PaneId [0, 1, 2]
-        it "moves to the next pane in order" $
-            cyclePane PaneNext three (PaneId 0) `shouldBe` Just (PaneId 1)
-        it "wraps forward past the last pane" $
-            cyclePane PaneNext three (PaneId 2) `shouldBe` Just (PaneId 0)
-        it "wraps backward before the first pane" $
-            cyclePane PanePrev three (PaneId 0) `shouldBe` Just (PaneId 2)
-        it "stays put with a single pane" $
-            cyclePane PaneNext [PaneId 7] (PaneId 7) `shouldBe` Just (PaneId 7)
-        it "has nowhere to go when the pane is absent" $
-            cyclePane PaneNext three (PaneId 9) `shouldBe` Nothing
+        forM_
+            [ ("moves to the next pane in order",
+                PaneNext, three, PaneId 0, Just (PaneId 1))
+            , ("wraps forward past the last pane",
+                PaneNext, three, PaneId 2, Just (PaneId 0))
+            , ("wraps backward before the first pane",
+                PanePrev, three, PaneId 0, Just (PaneId 2))
+            , ("stays put with a single pane",
+                PaneNext, [PaneId 7], PaneId 7, Just (PaneId 7))
+            , ("has nowhere to go when the pane is absent",
+                PaneNext, three, PaneId 9, Nothing)
+            ] $ \(name, dir, ps, from, expected) ->
+            it name $ cyclePane dir ps from `shouldBe` expected
 
     describe "parsePaneIndex" $ do
-        it "parses the bare next form" $
-            parsePaneIndex ":.+" `shouldBe` Just (IndexRelative PaneNext 1)
-        it "parses the bare previous form" $
-            parsePaneIndex ":.-" `shouldBe` Just (IndexRelative PanePrev 1)
-        it "parses a forward count" $
-            parsePaneIndex ":.+2" `shouldBe` Just (IndexRelative PaneNext 2)
-        it "parses a backward count" $
-            parsePaneIndex ":.-2" `shouldBe` Just (IndexRelative PanePrev 2)
-        it "parses the dotless next form" $
-            parsePaneIndex "+" `shouldBe` Just (IndexRelative PaneNext 1)
-        it "parses the dotless previous form" $
-            parsePaneIndex "-" `shouldBe` Just (IndexRelative PanePrev 1)
-        it "parses a dotless forward count" $
-            parsePaneIndex "+3" `shouldBe` Just (IndexRelative PaneNext 3)
-        it "parses the dot-prefixed absolute form" $
-            parsePaneIndex ":.3" `shouldBe` Just (IndexAbsolute 3)
-        it "parses a dotless absolute form" $
-            parsePaneIndex "3" `shouldBe` Just (IndexAbsolute 3)
-        it "parses a window-and-pane dotted absolute form" $
-            parsePaneIndex "mywin.2" `shouldBe` Just (IndexAbsolute 2)
-        it "parses a window-and-pane dotted relative form" $
-            parsePaneIndex "mywin.+2" `shouldBe` Just (IndexRelative PaneNext 2)
-        it "rejects a trailing non-number" $
-            parsePaneIndex ":.+x" `shouldBe` Nothing
-        it "rejects an empty target" $
-            parsePaneIndex "" `shouldBe` Nothing
+        -- The relative/absolute pane part of a target, with or without the
+        -- ":."/window prefix; garbage and emptiness parse to Nothing.
+        forM_
+            [ ("the bare next form", ":.+", Just (IndexRelative PaneNext 1))
+            , ("the bare previous form", ":.-", Just (IndexRelative PanePrev 1))
+            , ("a forward count", ":.+2", Just (IndexRelative PaneNext 2))
+            , ("a backward count", ":.-2", Just (IndexRelative PanePrev 2))
+            , ("the dotless next form", "+", Just (IndexRelative PaneNext 1))
+            , ("the dotless previous form", "-", Just (IndexRelative PanePrev 1))
+            , ("a dotless forward count", "+3", Just (IndexRelative PaneNext 3))
+            , ("the dot-prefixed absolute form", ":.3", Just (IndexAbsolute 3))
+            , ("a dotless absolute form", "3", Just (IndexAbsolute 3))
+            , ("a window-and-pane dotted absolute form", "mywin.2",
+                Just (IndexAbsolute 2))
+            , ("a window-and-pane dotted relative form", "mywin.+2",
+                Just (IndexRelative PaneNext 2))
+            , ("a trailing non-number", ":.+x", Nothing)
+            , ("an empty target", "", Nothing)
+            ] $ \(name, t, expected) ->
+            it (maybe "rejects " (const "parses ") expected <> name) $
+                parsePaneIndex t `shouldBe` expected
         prop "round-trips a rendered relative target with an explicit count" $
             \(Positive n) dir ->
                 let t = case dir of PaneNext -> "+"; PanePrev -> "-"
@@ -243,22 +245,23 @@ spec = do
                 (Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1)))
                 (Split LeftRight 0.5 (Leaf (PaneId 2)) (Leaf (PaneId 3)))
             (rects, _) = arrange windowRect quad
-        it "finds the right neighbor" $
-            neighbor rects (PaneId 0) DirRight `shouldBe` Just (PaneId 1)
-        it "finds the down neighbor" $
-            neighbor rects (PaneId 1) DirDown `shouldBe` Just (PaneId 3)
-        it "finds the left neighbor" $
-            neighbor rects (PaneId 3) DirLeft `shouldBe` Just (PaneId 2)
-        it "finds the up neighbor" $
-            neighbor rects (PaneId 2) DirUp `shouldBe` Just (PaneId 0)
-        it "wraps around at the left edge to the rightmost pane in the row" $
-            neighbor rects (PaneId 0) DirLeft `shouldBe` Just (PaneId 1)
-        it "wraps around at the right edge to the leftmost pane in the row" $
-            neighbor rects (PaneId 1) DirRight `shouldBe` Just (PaneId 0)
-        it "wraps around at the top edge to the bottommost pane in the column" $
-            neighbor rects (PaneId 0) DirUp `shouldBe` Just (PaneId 2)
-        it "wraps around at the bottom edge to the topmost pane in the column" $
-            neighbor rects (PaneId 2) DirDown `shouldBe` Just (PaneId 0)
+        -- Adjacent panes in each direction; at an edge, wrap to the far
+        -- side of the same row or column.
+        forM_
+            [ ("finds the right neighbor", PaneId 0, DirRight, PaneId 1)
+            , ("finds the down neighbor", PaneId 1, DirDown, PaneId 3)
+            , ("finds the left neighbor", PaneId 3, DirLeft, PaneId 2)
+            , ("finds the up neighbor", PaneId 2, DirUp, PaneId 0)
+            , ("wraps at the left edge to the rightmost pane in the row",
+                PaneId 0, DirLeft, PaneId 1)
+            , ("wraps at the right edge to the leftmost pane in the row",
+                PaneId 1, DirRight, PaneId 0)
+            , ("wraps at the top edge to the bottommost pane in the column",
+                PaneId 0, DirUp, PaneId 2)
+            , ("wraps at the bottom edge to the topmost pane in the column",
+                PaneId 2, DirDown, PaneId 0)
+            ] $ \(name, from, dir, expected) ->
+            it name $ neighbor rects from dir `shouldBe` Just expected
         it "stays put with a single pane" $
             neighbor [(PaneId 5, windowRect)] (PaneId 5) DirLeft `shouldBe` Nothing
 

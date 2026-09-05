@@ -1,6 +1,8 @@
 module Hat.Server.TargetSpec (spec) where
 
+import Control.Monad (forM_)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Test.Hspec
 
 import Hat.Geometry (Rect (..), Size (..))
@@ -71,19 +73,16 @@ spec = do
             resolve "@999" `shouldBe` Left "can't find window: @999"
 
     describe "resolveTarget: window offsets and specials" $ do
-        it "^ is the first window" $ winOf "alpha:^" `shouldBe` Right 0
-        it "$ is the last window" $ winOf "alpha:$" `shouldBe` Right 3
-        it "+ is the next window" $ winOf "alpha:+" `shouldBe` Right 1
-        it "- wraps to the previous window" $ winOf "alpha:-" `shouldBe` Right 3
-        it "+2 steps forward" $ winOf "alpha:+2" `shouldBe` Right 2
-        it "-2 wraps backward" $ winOf "alpha:-2" `shouldBe` Right 2
-        it "{start} maps to ^" $ winOf "alpha:{start}" `shouldBe` Right 0
-        it "{end} maps to $" $ winOf "alpha:{end}" `shouldBe` Right 3
-        it "{next} maps to +" $ winOf "alpha:{next}" `shouldBe` Right 1
-        it "{previous} maps to -" $ winOf "alpha:{previous}" `shouldBe` Right 3
-        it "! is the last (previously current) window" $
-            winOf "alpha:!" `shouldBe` Right 2
-        it "{last} maps to !" $ winOf "alpha:{last}" `shouldBe` Right 2
+        -- Steps wrap; each {name} alias must agree with its symbol. From
+        -- current 0 (last 2): ^/{start} first, $/{end} last, +/-/{next}/
+        -- {previous} steps, !/{last} the previously current window.
+        forM_
+            [ ("^", 0), ("$", 3), ("+", 1), ("-", 3), ("+2", 2), ("-2", 2)
+            , ("{start}", 0), ("{end}", 3), ("{next}", 1), ("{previous}", 3)
+            , ("!", 2), ("{last}", 2)
+            ] $ \(t, n) ->
+            it (T.unpack t <> " resolves to window " <> show n) $
+                winOf ("alpha:" <> t) `shouldBe` Right (n :: Int)
 
     describe "resolveTarget: combined and empty forms" $ do
         it "no target is the current state" $
@@ -185,6 +184,12 @@ spec = do
             paneOf "p:solo.{up-of}" `shouldBe` Left "can't find pane: {up-of}"
         it "rejects an out-of-range pane index" $
             paneOf "p:0.9" `shouldBe` Left "can't find pane: 9"
+        it "numbers pane indexes from the configured pane-base-index" $ do
+            let based t = (.pane) <$> resolveTarget FindPane
+                    panesWorld { paneBase = 1 } (Just t)
+            based "p:0.1" `shouldBe` Right (PaneId 0)
+            based "p:0.4" `shouldBe` Right (PaneId 3)
+            based "p:0.5" `shouldBe` Left "can't find pane: 5"
 
     describe "snapshot helpers" $ do
         it "paneFound locates a pane in its own window" $

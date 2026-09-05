@@ -5,6 +5,7 @@ module Hat.Transport.WireSpec (spec) where
 
 import Codec.Serialise (DeserialiseFailure, deserialiseOrFail)
 import Control.Concurrent.Async (concurrently)
+import Control.Monad (forM_)
 import Data.Either (isLeft)
 import Data.Bits (shiftR)
 import Data.Bits qualified as Bits
@@ -182,79 +183,73 @@ spec = do
     -- NEVER "fix" a golden by blindly pasting new bytes. Valid changes:
     -- append a NEW message tag, or grow a leaf under a new dialect level —
     -- keeping every old level's bytes in the dialect corpus below.
-    describe "golden bytes (client -> server)" $ do
-        it "ClientHello" $
-            hex (encodeMessage (ClientHello
-                (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False)))
-                `shouldBe` "8200870465787465726d9f8261416142ff830018181850642f746d708101f4"
-        it "Input" $
-            hex (encodeMessage (Input "hi")) `shouldBe` "8201426869"
-        it "Resize" $
-            hex (encodeMessage (Resize (Size 24 80))) `shouldBe` "8202830018181850"
-        it "Command" $
-            hex (encodeMessage (Command [["kill-server"]]))
-                `shouldBe` "82039f9f6b6b696c6c2d736572766572ffff"
-        it "Detach" $
-            hex (encodeMessage Detach) `shouldBe` "8104"
+    describe "golden bytes (client -> server)" $
+        forM_
+            [ ( "ClientHello"
+              , encodeMessage (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False))
+              , "8200870465787465726d9f8261416142ff830018181850642f746d708101f4" )
+            , ( "Input", encodeMessage (Input "hi"), "8201426869" )
+            , ( "Resize", encodeMessage (Resize (Size 24 80)), "8202830018181850" )
+            , ( "Command"
+              , encodeMessage (Command [["kill-server"]])
+              , "82039f9f6b6b696c6c2d736572766572ffff" )
+            , ( "Detach", encodeMessage Detach, "8104" )
+            ] $ \(name, bytes, golden) ->
+            it name $ hex bytes `shouldBe` golden
 
-    describe "golden bytes (server -> client)" $ do
-        it "Welcome" $
-            hex (encodeMessage (Welcome "main")) `shouldBe` "8200646d61696e"
-        it "Draw" $
-            hex (encodeMessage
-                (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll, CursorAt (Pos 3 4) True]))
-                `shouldBe` "82019f8400830001028a0081008100f4f4f4f4f4f4f461788101830283000304f5ff"
-        it "SetTitle" $
-            hex (encodeMessage (SetTitle "t")) `shouldBe` "82026174"
-        it "RingBell" $
-            hex (encodeMessage RingBell) `shouldBe` "8103"
-        it "Notify" $
-            hex (encodeMessage (Notify "n")) `shouldBe` "8204416e"
-        it "Message" $
-            hex (encodeMessage (Message "m")) `shouldBe` "8205616d"
-        it "DetachOk" $
-            hex (encodeMessage DetachOk) `shouldBe` "8106"
-        it "CommandDone" $
-            hex (encodeMessage CommandDone) `shouldBe` "8107"
-        it "ServerError" $
-            hex (encodeMessage (ServerError "boom")) `shouldBe` "820864626f6f6d"
-        it "Exited" $
-            hex (encodeMessage Exited) `shouldBe` "8109"
-        it "ServerVersion" $
-            hex (encodeMessage (ServerVersion 5)) `shouldBe` "820a05"
-        it "RestartClient" $
-            hex (encodeMessage RestartClient) `shouldBe` "810b"
-        it "RestartClientTo" $
-            hex (encodeMessage (RestartClientTo "main")) `shouldBe` "820c646d61696e"
+    describe "golden bytes (server -> client)" $
+        forM_
+            [ ( "Welcome", encodeMessage (Welcome "main"), "8200646d61696e" )
+            , ( "Draw"
+              , encodeMessage
+                    (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll, CursorAt (Pos 3 4) True])
+              , "82019f8400830001028a0081008100f4f4f4f4f4f4f461788101830283000304f5ff" )
+            , ( "SetTitle", encodeMessage (SetTitle "t"), "82026174" )
+            , ( "RingBell", encodeMessage RingBell, "8103" )
+            , ( "Notify", encodeMessage (Notify "n"), "8204416e" )
+            , ( "Message", encodeMessage (Message "m"), "8205616d" )
+            , ( "DetachOk", encodeMessage DetachOk, "8106" )
+            , ( "CommandDone", encodeMessage CommandDone, "8107" )
+            , ( "ServerError", encodeMessage (ServerError "boom"), "820864626f6f6d" )
+            , ( "Exited", encodeMessage Exited, "8109" )
+            , ( "ServerVersion", encodeMessage (ServerVersion 5), "820a05" )
+            , ( "RestartClient", encodeMessage RestartClient, "810b" )
+            , ( "RestartClientTo", encodeMessage (RestartClientTo "main"), "820c646d61696e" )
+            ] $ \(name, bytes, golden) ->
+            it name $ hex bytes `shouldBe` golden
 
     -- A new build must read an old peer's nine-element (pre-faint) Style —
     -- that's what lets a new client drive an old server.
     describe "append-tolerant leaf compatibility" $ do
         let decodeStyle ws = either (const Nothing) Just
                 (deserialiseOrFail (BL.pack ws) :: Either DeserialiseFailure Style)
-        it "reads a legacy nine-element Style with faint defaulted off" $
-            decodeStyle [0x89,0,0x81,0,0x81,0,0xf4,0xf4,0xf4,0xf4,0xf4,0xf4]
-                `shouldBe` Just defaultStyle
-        it "keeps the legacy fields when the pre-faint list is short" $
-            decodeStyle [0x89,0,0x81,0,0x81,0,0xf5,0xf4,0xf4,0xf4,0xf4,0xf4]
-                `shouldBe` Just defaultStyle { bold = True }
+        forM_
+            [ ( "reads a legacy nine-element Style with faint defaulted off"
+              , [0x89,0,0x81,0,0x81,0,0xf4,0xf4,0xf4,0xf4,0xf4,0xf4]
+              , defaultStyle )
+            , ( "keeps the legacy fields when the pre-faint list is short"
+              , [0x89,0,0x81,0,0x81,0,0xf5,0xf4,0xf4,0xf4,0xf4,0xf4]
+              , defaultStyle { bold = True } )
+            ] $ \(name, ws, expected) ->
+            it name $ decodeStyle ws `shouldBe` Just expected
         -- The hello's own append rule: a six-field (pre-autostart) hello —
         -- these are the previous golden's bytes, verbatim — defaults the
         -- flag off, and a seventh field carries it.
-        it "reads a legacy six-field hello with autostarted defaulted off" $
-            (decodeMessage (B.pack (hexBytes
-                "8200860465787465726d9f8261416142ff830018181850642f746d708101"))
-                :: Inbound ClientToServer)
-                `shouldBe` Known (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        ControlIntent False))
-        it "reads the autostarted flag from a seven-field hello" $
-            (decodeMessage (B.pack (hexBytes
-                "8200870465787465726d9f8261416142ff830018181850642f746d708101f5"))
-                :: Inbound ClientToServer)
-                `shouldBe` Known (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        ControlIntent True))
+        forM_
+            [ ( "reads a legacy six-field hello with autostarted defaulted off"
+              , "8200860465787465726d9f8261416142ff830018181850642f746d708101"
+              , False )
+            , ( "reads the autostarted flag from a seven-field hello"
+              , "8200870465787465726d9f8261416142ff830018181850642f746d708101f5"
+              , True )
+            ] $ \(name, goldenHex, autostarted) ->
+            it name $
+                (decodeMessage (B.pack (hexBytes goldenHex))
+                    :: Inbound ClientToServer)
+                    `shouldBe` Known (ClientHello
+                        (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
+                            ControlIntent autostarted))
 
     describe "negotiate" $ do
         it "meets an older client at its version" $
