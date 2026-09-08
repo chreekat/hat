@@ -604,6 +604,29 @@ spec = parallel $ do
                 unless gone $
                     expectationFailure "server did not exit after kill-server"
 
+    -- e7: a pane whose shell exits behind a child still holding the pty open
+    -- must be torn down -- pane death tracks the shell, not pty EOF.
+    it "closes a pane whose shell exits behind a lingering child (e7)" $
+        withHat hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "$"
+        let pidFile = h.home <> "/lingerer.pid"
+        -- Background a sleep that inherits the pane's pty on fd 1/2, record its
+        -- pid, drop it from the job table, then exit the shell out from under
+        -- it: the shell dies but the pty slave stays open.
+        typeInto c1 $ B8.pack
+            ("sleep 300 & echo $! > " <> pidFile <> "; disown; exit\r")
+        lingerer <- read . takeWhile (/= '\n') <$> awaitFile pidFile (not . null)
+        -- The pane must end on the shell's exit, so the session ends and this
+        -- client is told to leave -- even though the child still holds the pty.
+        status <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        -- Reap the orphan we intentionally leaked before asserting.
+        _ <- P.readProcessWithExitCode "kill" ["-9", show (lingerer :: Int)] ""
+        status `shouldBe` Exited ExitSuccess
+        unless gone $ expectationFailure
+            "pane leaked: server did not exit after its shell exited"
+
     it "restores the terminal line discipline when the session ends" $
         withHat hatBin $ \h -> do
         c1 <- startClient h

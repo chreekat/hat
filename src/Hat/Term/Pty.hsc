@@ -10,6 +10,7 @@ module Hat.Term.Pty
     , spawn
     , adopt
     , readPty
+    , readAvail
     , writePty
     , resize
     , waitExit
@@ -216,6 +217,16 @@ readPty pty = do
     r <- try (B.hGetSome pty.handle 65536)
     pure $ case r of
         Left (_ :: IOException) -> B.empty  -- Linux gives EIO at pty EOF
+        Right bs -> bs
+
+-- | Non-blocking read of whatever is already buffered; empty when nothing is
+-- ready. Drains a reaped child's final bytes (all in the kernel buffer by the
+-- time it is reaped) without blocking on a pty a lingering fd-holder keeps open.
+readAvail :: PtyHandle -> IO ByteString
+readAvail pty = do
+    r <- try (B.hGetNonBlocking pty.handle 65536)
+    pure $ case r of
+        Left (_ :: IOException) -> B.empty
         Right bs -> bs
 
 writePty :: PtyHandle -> ByteString -> IO ()

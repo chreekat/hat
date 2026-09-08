@@ -56,11 +56,12 @@ module Hat.Server.Pane
     , sessionSpawnEnv
     ) where
 
-import Control.Concurrent (forkIOWithUnmask, killThread, myThreadId, threadDelay)
+import Control.Concurrent
+    (forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (Async, async, cancel)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Exception (IOException, catch, finally, try)
+import Control.Exception (Exception, IOException, catch, finally, try)
 import Control.Monad (forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -297,6 +298,13 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , pendingInput = pending
         }
 
+-- | Signals a pane's reader that its shell child has exited. See
+-- 'startPaneReader'.
+data ChildExited = ChildExited
+    deriving Show
+
+instance Exception ChildExited
+
 -- | The reader thread owns a pane's lifetime: it pumps pty output into
 -- the emulator until end-of-file, and 'closePane' runs in a @finally@ so
 -- the pane's resources and model entry are released however the loop ends
@@ -319,15 +327,25 @@ startPaneReader st sid win pane = do
     void $ forkIOWithUnmask $ \unmask -> do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
-        unmask (readLoop pane.pendingInput)
+        -- Track pane death by the shell's exit, not only pty EOF: a lingering
+        -- fd-holder can keep the master from ever EOFing. 'ChildExited' (never
+        -- the 'ThreadKilled' of an explicit kill) switches the reader to a
+        -- non-blocking drain of the reaped child's final bytes, then ends.
+        void $ forkIO $ Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited
+        unmask
+            (readLoop (Hat.Term.Pty.readPty pane.pty) pane.pendingInput
+                `catch` \ChildExited ->
+                    readLoop (Hat.Term.Pty.readAvail pane.pty) Nothing)
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
-    -- it), then dropped. Enter is a bare CR, as a real keyboard sends.
-    readLoop pending = do
-        bs <- Hat.Term.Pty.readPty pane.pty
+    -- it), then dropped. Enter is a bare CR, as a real keyboard sends. @rd@ is
+    -- the read step: blocking during the pane's life, a non-blocking drain
+    -- once the shell has exited (an empty result ends the loop either way).
+    readLoop rd pending = do
+        bs <- rd
         unless (B8.null bs) $ do
             pending' <- case pending of
                 Just line -> Nothing <$
@@ -390,7 +408,7 @@ startPaneReader st sid win pane = do
                         { pane = rawPane pane.id
                         , payload = T.pack (show raw)
                         }
-            readLoop pending'
+            readLoop rd pending'
 
 -- | Name a terminal prop's value kind for the 'UnknownTermProp' log.
 propKindLabel :: Emu.PropKind -> Text
