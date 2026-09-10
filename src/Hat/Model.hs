@@ -319,11 +319,12 @@ data Toast = Toast
                                    --   'Nothing' = until a key is pressed
     }
 
--- | The active-pane highlight shown while the prefix arms; see
--- 'Hat.Server.Flash.showFlash'.
-newtype Flash = Flash
-    { deadline :: Word64  -- ^ monotonic ns, from 'flashDeadline'
-    }
+-- | The active-pane highlight shown while the prefix is armed; see
+-- 'Hat.Server.Flash.armFlash'.
+data Flash
+    = FlashArmed               -- ^ held while the prefix is armed
+    | FlashLinger !Word64      -- ^ fading after a pane move; monotonic-ns deadline
+    deriving (Eq)
 
 -- | Per-client command-prompt state: the line being edited, the cursor's
 -- index into it, and (when browsing) the position in command history.

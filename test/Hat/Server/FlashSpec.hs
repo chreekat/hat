@@ -1,17 +1,18 @@
--- | The prefix flash: arming the prefix briefly tints the active pane's
--- own edge cells, and only when more than one pane is visible.
+-- | The prefix highlight: arming the prefix tints the active pane's own edge
+-- cells, in any layout, and lingers on the new pane after a pane move.
 module Hat.Server.FlashSpec (spec) where
 
 import Test.Hspec
 
 import Control.Concurrent.STM
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Vector qualified as V
 
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model
 import Hat.Model.Options (emptyDelta)
-import Hat.Server.Flash (flashDeadline, flashExpired)
+import Hat.Server.Flash (lingerDeadline, flashExpired)
 import Hat.Server.Layout (Layout (..), Orientation (..))
 import Hat.Server.Render (blankFrame, tintInnerRing)
 import Hat.Server.Resize (windowArrange)
@@ -20,7 +21,7 @@ import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
 spec = do
-    describe "flashTarget picks what the prefix flash highlights" $ do
+    describe "flashTarget picks what the prefix highlight tints" $ do
         let ra = Rect { startRow = 0, endRow = 10, startCol = 0, endCol = 40 }
             rb = Rect { startRow = 0, endRow = 10, startCol = 41, endCol = 80 }
             both = [(PaneId 1, ra), (PaneId 2, rb)]
@@ -29,17 +30,17 @@ spec = do
             flashTarget both (PaneId 1) `shouldBe` Just ra
             flashTarget both (PaneId 2) `shouldBe` Just rb
 
-        it "a window with a single visible pane: no flash" $
-            flashTarget [(PaneId 1, ra)] (PaneId 1) `shouldBe` Nothing
+        it "a window with a single visible pane: that pane's rect" $
+            flashTarget [(PaneId 1, ra)] (PaneId 1) `shouldBe` Just ra
 
-        it "a zoomed pane arranges alone, so no flash" $ do
+        it "a zoomed pane arranges alone: the zoomed pane's rect" $ do
             win <- splitWindow
             atomically $ writeTVar win.zoomed (Just (PaneId 1))
             (rects, _) <- atomically $
                 windowArrange (Size { rows = 24, cols = 80 }) win
-            flashTarget rects (PaneId 1) `shouldBe` Nothing
+            flashTarget rects (PaneId 1) `shouldSatisfy` isJust
 
-        it "an active pane missing from the layout: no flash" $
+        it "an active pane missing from the layout: no highlight" $
             flashTarget both (PaneId 9) `shouldBe` Nothing
 
     describe "tintInnerRing" $ do
@@ -66,11 +67,14 @@ spec = do
 
     describe "flash lifetime" $ do
         let shownAt = 41000000000
-            flash = Flash { deadline = flashDeadline shownAt }
+            linger = FlashLinger (lingerDeadline shownAt)
 
-        it "alive when shown, gone within a second" $ do
-            flashExpired shownAt flash `shouldBe` False
-            flashExpired (shownAt + 1000000000) flash `shouldBe` True
+        it "a linger is alive when shown, gone within a second" $ do
+            flashExpired shownAt linger `shouldBe` False
+            flashExpired (shownAt + 1000000000) linger `shouldBe` True
+
+        it "the armed highlight never times out" $
+            flashExpired (shownAt + 1000000000) FlashArmed `shouldBe` False
 
 -- A two-pane split window, bare TVars around the fields 'windowArrange'
 -- reads.

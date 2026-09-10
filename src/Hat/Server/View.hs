@@ -88,12 +88,10 @@ statusLayout pos count rows = case pos of
     StatusTop    -> (count, Just 0)
     StatusBottom -> (0, Just (rows - count))
 
--- | The rect whose edge cells the prefix flash tints: the active pane's,
--- and only when more than one pane is visible.
+-- | The rect whose edge cells the prefix highlight tints: the active pane's,
+-- whatever the layout — a lone pane, a split, or a zoomed pane all qualify.
 flashTarget :: [(PaneId, Rect)] -> PaneId -> Maybe Rect
-flashTarget rects active = case rects of
-    _ : _ : _ -> List.lookup active rects
-    _ -> Nothing
+flashTarget rects active = List.lookup active rects
 
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do

@@ -389,7 +389,6 @@ runKeys d st client keys = do
     let loop kst [] = writeIORef client.keyState kst
         loop kst (k0 : rest) = do
             dismissToast st client
-            dismissFlash st client
             mpane <- clientActivePane st client
             -- A pending vi char search (f/F/t/T) captures this key as its
             -- target, ahead of any keymap lookup.
@@ -414,8 +413,6 @@ runKeys d st client keys = do
                 else do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
-                    when (kst /= PrefixArmed && kst' == PrefixArmed) $
-                        showFlash st client
                     forM_ actions $ \case
                         Passthrough raw ->
                             forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw
@@ -423,6 +420,15 @@ runKeys d st client keys = do
                             forM_ cmds $ \argv ->
                                 toastReplies st client
                                     =<< d.runArgv st (Just client) argv
+                    -- Arming lights the highlight; disarming clears it, unless
+                    -- the command just moved the active pane — then it lingers
+                    -- on the new pane to trace the motion.
+                    case (kst, kst') of
+                        (NoPrefix, PrefixArmed) -> armFlash st client
+                        (PrefixArmed, NoPrefix) -> do
+                            after <- fmap (fmap (.id)) (clientActivePane st client)
+                            disarmFlash st client (after /= fmap (.id) mpane)
+                        _ -> pure ()
                     loop kst' rest
     st0 <- readIORef client.keyState
     loop st0 keys
