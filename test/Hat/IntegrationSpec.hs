@@ -1595,6 +1595,39 @@ spec = parallel $ do
             doesFileExist (h.sock <> ".reload.last")
         awaitTrue "each re-exec'd client to rejoin its own session" ownSessions
 
+    -- Bug 8d: `restart` must carry a client's whole last-session stack, not
+    -- just the one alternate. Visiting 0 -> a -> b leaves history [a, 0];
+    -- after the re-exec, killing the head (a) must let `switch-client -l`
+    -- fall through to 0. A depth-1 carry (the old behaviour) would have
+    -- dropped 0, so -l would find "no last session" and stay on b.
+    it "restart preserves the whole last-session stack, not just one" $
+        withHat hatBin $ \h -> do
+        ambient <- testPath
+        let bindir = h.home </> "bin"
+        createDirectoryIfMissing True bindir
+        createFileLink h.bin (bindir </> "hat")
+        c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
+        awaitScreen c "[0]"
+        typeInto c "\x02:"
+        awaitPromptOpen c "0:sh*"
+        typeInto c "new-session -s a\r"
+        awaitScreen c "[a]"
+        typeInto c "\x02:"
+        awaitPromptOpen c "0:sh*"
+        typeInto c "new-session -s b\r"
+        awaitScreen c "[b]"
+        _ <- hatCtl h ["restart", h.bin]
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitWith "the re-exec'd client to reattach"
+            (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
+        awaitScreen c "[b]"
+        _ <- hatCtl h ["kill-session", "-t", "a"]
+        typeInto c "\x02:"
+        awaitPromptOpen c "0:sh*"
+        typeInto c "switch-client -l\r"
+        awaitScreen c "[0]"
+
     -- Bug 4: restart -C sent both clients to "no such session" exits. The
     -- slow config holds the re-exec'd image in LoadingConfig, the window
     -- the farewelled attaches race.

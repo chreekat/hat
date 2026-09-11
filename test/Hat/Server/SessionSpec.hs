@@ -313,7 +313,7 @@ spec = do
                     { protoVersion = protocolVersion + 1
                     , term = "xterm", env = [], size = Size 24 80
                     , cwd = "/", intent = ControlIntent
-                    , autostarted = False }
+                    , autostarted = False, sessionHist = [] }
             withAsync (welcome dispatch st server h) $ \_ -> do
                 Just (Known (Welcome _)) <- recvMessage client
                 Just (Known (ServerVersion v)) <- recvMessage client
@@ -333,7 +333,7 @@ spec = do
             (st, _) <- seedSession "/"
             (client, peer) <- wiredClient st Attached
             [] <- cmdRestartClient st (Just client) []
-            recvMessage peer `shouldReturn` Just (Known (RestartClientTo "work"))
+            recvMessage peer `shouldReturn` Just (Known (RestartClientTo "work" []))
 
         it "sends nothing when a control connection issues it" $ do
             (st, _) <- seedSession "/"
@@ -354,13 +354,13 @@ spec = do
     -- reload's farewell tells attached clients to re-exec instead of exit.
     describe "restart" $ do
         it "re-execs attached clients and exits everyone else (4f)" $ do
-            reloadFarewell ServerAndClients Attached (Just "beta")
-                `shouldBe` RestartClientTo "beta"
-            reloadFarewell ServerAndClients Attached Nothing
+            reloadFarewell ServerAndClients Attached (Just "beta") ["alpha"]
+                `shouldBe` RestartClientTo "beta" ["alpha"]
+            reloadFarewell ServerAndClients Attached Nothing []
                 `shouldBe` RestartClient
-            reloadFarewell ServerAndClients Control (Just "beta") `shouldBe` Exited
-            reloadFarewell ServerOnly Attached (Just "beta") `shouldBe` Exited
-            reloadFarewell ServerOnly Control Nothing `shouldBe` Exited
+            reloadFarewell ServerAndClients Control (Just "beta") [] `shouldBe` Exited
+            reloadFarewell ServerOnly Attached (Just "beta") [] `shouldBe` Exited
+            reloadFarewell ServerOnly Control Nothing [] `shouldBe` Exited
 
         it "aborts the client restart when the reload is rejected (4f)" $ do
             (st, _) <- seedSession "/"

@@ -115,7 +115,8 @@ parseCli = go Cli
 clientMain :: Cli -> IO ()
 clientMain cli = do
     path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
-    let cmds = parseArgv cli.command
+    let (hist, cmdArgs) = takeReattachHist cli.command
+        cmds = parseArgv cmdArgs
     if cli.controlMode
         then case cmds of
             ((verb : _) : _)
@@ -124,13 +125,24 @@ clientMain cli = do
             _ -> do
                 hPutStrLn stderr "hat: -C supports only attach"
                 exitFailure
-        else case cli.command of
-            [] -> attach path cli.configFile []
-            ["attach"] -> attach path cli.configFile []
-            ["attach-session"] -> attach path cli.configFile []
+        else case cmdArgs of
+            [] -> attach path cli.configFile [] hist
+            ["attach"] -> attach path cli.configFile [] hist
+            ["attach-session"] -> attach path cli.configFile [] hist
             _ -> case terminalMode cmds of
-                GrabsTerminal -> attach path cli.configFile cmds
+                GrabsTerminal -> attach path cli.configFile cmds hist
                 FireAndForget -> control path cli.configFile cmds
+
+-- | Pull the internal @--reattach-hist NAME@ flags (repeated, one per MRU
+-- session) out of a restarting client's argv, returning the names
+-- most-recent-first and the argv without them. See 'restartClient'.
+takeReattachHist :: [String] -> ([T.Text], [String])
+takeReattachHist = go ([], [])
+  where
+    go (hist, keep) = \case
+        ("--reattach-hist" : n : rest) -> go (hist <> [T.pack n], keep) rest
+        (a : rest) -> go (hist, keep <> [a]) rest
+        [] -> (hist, keep)
 
 -- | @-C attach@: a scripted attached client with no terminal; stdin EOF
 -- detaches. See 'Hat.Client.runClientControl'.
@@ -161,8 +173,8 @@ terminalMode [cmd@(verb : _)]
     | verb `elem` ["attach-session", "attach"] = GrabsTerminal
 terminalMode _ = FireAndForget
 
-attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
-attach path mconfig setup = do
+attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> [T.Text] -> IO ()
+attach path mconfig setup hist = do
     -- Attaching from inside a pane of the *same* server ($TMUX names its
     -- socket) would render the session inside itself. Refuse, like tmux.
     -- Attaching to a different server, and control commands (list-sessions,
@@ -175,11 +187,11 @@ attach path mconfig setup = do
             exitFailure
         _ -> pure ()
     (sock, origin) <- connectOrStart path mconfig
-    reason <- runClient sock origin setup
+    reason <- runClient sock origin setup hist
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
-        RestartRequested target -> restartClient path mconfig target
+        RestartRequested target hist' -> restartClient path mconfig target hist'
         ServerDied -> do
             hPutStrLn stderr "hat: server connection lost"
             exitWith (ExitFailure 1)
@@ -193,13 +205,15 @@ attach path mconfig setup = do
 -- the restart pick up a just-installed build — the point of restart-client —
 -- mirroring 'Hat.Server.resolveReloadTarget'. The attach targets the session
 -- the farewell named, so each client rejoins its own; a nameless farewell (an
--- older server) falls back to a bare attach.
-restartClient :: FilePath -> Maybe FilePath -> Maybe T.Text -> IO ()
-restartClient path mconfig msess = do
+-- older server) falls back to a bare attach. The farewell's MRU session
+-- history rides back as @--reattach-hist@ flags so @switch-client -l@ survives.
+restartClient :: FilePath -> Maybe FilePath -> Maybe T.Text -> [T.Text] -> IO ()
+restartClient path mconfig msess hist = do
     onPath <- findExecutable "hat"
     target <- maybe getExecutablePath pure onPath
     let argv = ["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig
             <> ["attach"] <> maybe [] (\s -> ["-t", T.unpack s]) msess
+            <> concatMap (\n -> ["--reattach-hist", T.unpack n]) hist
     executeFile target False argv Nothing
 
 control :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()

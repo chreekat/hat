@@ -34,7 +34,7 @@ import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -389,10 +389,10 @@ reloadName ServerAndClients = "restart"
 -- 'ServerAndClients' an attached client re-execs in place, told which
 -- session to rejoin ('RestartClientTo', handled like @restart-client@);
 -- everyone else exits.
-reloadFarewell :: ReloadScope -> ClientRole -> Maybe Text -> ServerToClient
-reloadFarewell ServerAndClients Attached msess =
-    maybe RestartClient RestartClientTo msess
-reloadFarewell _ _ _ = Exited
+reloadFarewell :: ReloadScope -> ClientRole -> Maybe Text -> [Text] -> ServerToClient
+reloadFarewell ServerAndClients Attached msess hist =
+    maybe RestartClient (`RestartClientTo` hist) msess
+reloadFarewell _ _ _ _ = Exited
 
 -- | Reload the server binary in place while every pane's program keeps
 -- running. @-C@ drops all scrollback across the reload (a memory cleanup).
@@ -461,11 +461,13 @@ cmdReload' scope st mclient args =
                 forM_ (Map.elems sessions) $ \sess -> do
                     nm <- readTVarIO sess.name
                     cs <- atomically (sessionClients st sess.id)
-                    forM_ cs $ \c ->
-                        send c (reloadFarewell scope c.role (Just nm))
-                forM_ mclient $ \client ->
-                    send client . reloadFarewell scope client.role
-                        =<< clientSessionName st client
+                    forM_ cs $ \c -> do
+                        hist <- clientSessionHistNames st c
+                        send c (reloadFarewell scope c.role (Just nm) hist)
+                forM_ mclient $ \client -> do
+                    msess <- clientSessionName st client
+                    hist <- clientSessionHistNames st client
+                    send client (reloadFarewell scope client.role msess hist)
                 -- Test-only knob: hold the farewell->exec window open (µs)
                 -- so the suite can pin the reattach race deterministically.
                 linger <- lookupEnv "HAT_TEST_RELOAD_LINGER"
@@ -552,9 +554,10 @@ cmdRestartClient st mclient _ =
     case restartClientAction ((.role) <$> mclient) of
         NoAttachedClient -> pure []
         RestartAttached  -> do
-            forM_ mclient $ \client ->
-                send client . maybe RestartClient RestartClientTo
-                    =<< clientSessionName st client
+            forM_ mclient $ \client -> do
+                msess <- clientSessionName st client
+                hist <- clientSessionHistNames st client
+                send client (maybe RestartClient (`RestartClientTo` hist) msess)
             pure []
 
 -- | The name of the session a client is attached to, if it still exists.
@@ -563,6 +566,16 @@ clientSessionName st client = do
     sid <- readTVarIO client.session
     sessMap <- readTVarIO st.sessions
     traverse (readTVarIO . (.name)) (Map.lookup sid sessMap)
+
+-- | The still-existing sessions in a client's MRU history, by name,
+-- most-recent first — carried across a restart to keep @switch-client -l@
+-- working. See 'Hat.Server.Conn.resolveSessionNames' for the inverse.
+clientSessionHistNames :: ServerState -> Client -> IO [Text]
+clientSessionHistNames st client = atomically $ do
+    hist <- readTVar client.sessionHist
+    sessMap <- readTVar st.sessions
+    catMaybes <$>
+        mapM (\sid -> traverse (readTVar . (.name)) (Map.lookup sid sessMap)) hist
 
 -- | The outcome of 'cmdRestartClient': restart the issuing client, or do
 -- nothing because no attached client issued the command.

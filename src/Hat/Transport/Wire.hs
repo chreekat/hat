@@ -85,7 +85,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 6
+protocolVersion = 7
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -137,6 +137,10 @@ data Hello = Hello
     , intent       :: Intent
     , autostarted  :: Bool  -- ^ appended 2026-08; absent in a six-field
                             --   hello -> 'False'. See 'Hat.Server.startupGate'.
+    , sessionHist  :: [Text]  -- ^ the MRU session names a reattaching client
+                              --   carries across a restart; absent in a
+                              --   seven-field hello -> @[]@. See
+                              --   'Hat.Server.Conn.newClient'.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -163,7 +167,10 @@ data ServerToClient
     | Exited                -- ^ the client's session is gone
     | ServerVersion Word16  -- ^ the server's own wire version; see 'negotiate'
     | RestartClient         -- ^ re-exec yourself in place, keeping the attachment
-    | RestartClientTo Text  -- ^ 'RestartClient' naming the session to reattach to
+    | RestartClientTo Text [Text]
+        -- ^ 'RestartClient' naming the session to reattach to and the MRU
+        --   session history to carry back (most-recent first; @[]@ from a
+        --   pre-level-7 server)
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -244,7 +251,8 @@ instance WireMessage ServerToClient where
         Exited        -> encodeListLen 1 <> encodeWord 9
         ServerVersion v -> encodeListLen 2 <> encodeWord 10 <> encode v
         RestartClient -> encodeListLen 1 <> encodeWord 11
-        RestartClientTo t -> encodeListLen 2 <> encodeWord 12 <> encode t
+        RestartClientTo t hist ->
+            encodeListLen 3 <> encodeWord 12 <> encode t <> encode hist
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -258,7 +266,12 @@ instance WireMessage ServerToClient where
         9 -> nullary len (Known Exited)
         10 -> field len (Known . ServerVersion <$> decode)
         11 -> nullary len (Known RestartClient)
-        12 -> field len (Known . RestartClientTo <$> decode)
+        -- A level-6 server omits the history field: default it to @[]@.
+        12 -> case len of
+            2 -> Known . (`RestartClientTo` []) <$> decode
+            3 -> Known <$> (RestartClientTo <$> decode <*> decode)
+            _ -> pure (Malformed
+                ("RestartClientTo: expected 1-2 fields, got " <> show (len - 1)))
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -271,11 +284,11 @@ nullary :: Int -> Inbound a -> Decoder s (Inbound a)
 nullary 1 v = pure v
 nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 
--- | 'Hello' as a definite list of its 6 fields. Decoding accepts any
--- length >= 6 and ignores extras, so fields can be appended compatibly.
+-- | 'Hello' as a definite list of its fields. Decoding accepts any length
+-- >= 6 and ignores extras, so fields can be appended compatibly.
 encodeHello :: Hello -> Encoding
 encodeHello h =
-       encodeListLen 7
+       encodeListLen 8
     <> encodeWord16 h.protoVersion
     <> encode h.term
     <> encode h.env
@@ -283,6 +296,7 @@ encodeHello h =
     <> encode h.cwd
     <> encode h.intent
     <> encode h.autostarted
+    <> encode h.sessionHist
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -300,7 +314,8 @@ decodeHello = do
                 -- Fields appended since the six-field original default when
                 -- absent; any the decoder doesn't know yet are skipped.
                 <*> (if n >= 7 then decode else pure False)
-            replicateM_ (max 0 (n - 7)) skipField
+                <*> (if n >= 8 then decode else pure [])
+            replicateM_ (max 0 (n - 8)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).
@@ -317,7 +332,10 @@ encodeServerMessageAt :: Word16 -> ServerToClient -> ByteString
 encodeServerMessageAt lvl = \case
     Draw ops -> toStrictByteString $
         encodeListLen 2 <> encodeWord 1 <> encodeDrawOpsAt lvl ops
-    RestartClientTo _ | lvl < 6 -> encodeMessage RestartClient
+    RestartClientTo _ _ | lvl < 6 -> encodeMessage RestartClient
+    RestartClientTo t _ | lvl < 7 ->
+        -- A level-6 peer knows the name-only form; drop the history.
+        toStrictByteString $ encodeListLen 2 <> encodeWord 12 <> encode t
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

@@ -23,6 +23,7 @@ import Control.Exception
 import Control.Monad (forM_, forever, void, when)
 import Data.ByteString qualified as B
 import Data.IORef
+import Data.List (nub)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
@@ -113,6 +114,13 @@ welcome d st conn h = do
             -- directly, so an autostarting `hat new` would otherwise race
             -- its own server's config load (upstream if-shell-TERM.sh).
             awaitStartup st client.autostart setupCmds
+            -- A reattaching client carries its MRU session history by name (it
+            -- re-execs across a restart with a fresh identity). Resolve it back
+            -- to ids now the tree is restored (awaitStartup held for it), before
+            -- the attach records this session's visit, so @switch-client -l@
+            -- survives the restart.
+            atomically . writeTVar client.sessionHist
+                =<< atomically (resolveSessionNames st h.sessionHist)
             setupErr <- attachSetup d st client setupCmds
             msess <- case setupErr of
                 Just _ -> pure Nothing
@@ -215,6 +223,15 @@ newClient st conn h = do
         , env = h.env
         , cwd = h.cwd
         }
+
+-- | Resolve MRU session names to the ids of the sessions that still exist,
+-- keeping MRU order and dropping duplicates and names with no live session.
+resolveSessionNames :: ServerState -> [Text] -> STM [SessionId]
+resolveSessionNames st names = do
+    sessMap <- readTVar st.sessions
+    named <- mapM (\(sid, s) -> (, sid) <$> readTVar s.name) (Map.toList sessMap)
+    let byName = Map.fromList named
+    pure (nub [ sid | nm <- names, Just sid <- [Map.lookup nm byName] ])
 
 removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do

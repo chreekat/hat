@@ -37,9 +37,10 @@ data ExitReason
     | SessionEnded
     | ServerDied
     | Rejected Text
-    | RestartRequested (Maybe Text)
+    | RestartRequested (Maybe Text) [Text]
         -- ^ server asked us to re-exec in place, naming the session to
-        --   rejoin when it knows it; see 'Main.attach'
+        --   rejoin (when it knows it) and the MRU session history to carry
+        --   back; see 'Main.attach'
     deriving (Eq, Show)
 
 versionMismatch :: Text
@@ -53,8 +54,8 @@ nestsOwnServer :: String -> FilePath -> Bool
 nestsOwnServer tmuxVar target =
     not (null tmuxVar) && takeWhile (/= ',') tmuxVar == target
 
-hello :: Word16 -> Autostart -> Intent -> IO ClientToServer
-hello v origin intent = do
+hello :: Word16 -> Autostart -> Intent -> [Text] -> IO ClientToServer
+hello v origin intent hist = do
     term <- maybe "xterm" T.pack <$> lookupEnv "TERM"
     env0 <- getEnvironment
     sz <- ttySize
@@ -67,22 +68,24 @@ hello v origin intent = do
         , cwd = T.pack dir
         , intent = intent
         , autostarted = origin == Autostarted
+        , sessionHist = hist
         }
 
 -- | Attach to the server and shuttle bytes until detach or death. The
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
--- shell) run server-side to establish which session we render.
-runClient :: Socket -> Autostart -> [[Text]] -> IO ExitReason
-runClient sock origin setup = do
+-- shell) run server-side to establish which session we render. @hist@ seeds
+-- @switch-client -l@ across a restart and is empty for a fresh attach.
+runClient :: Socket -> Autostart -> [[Text]] -> [Text] -> IO ExitReason
+runClient sock origin setup hist = do
     inp <- probeTerminal stdInput
     out <- probeTerminal stdOutput
     case diagnoseTerminal inp out of
         Just msg -> pure (Rejected msg)
-        Nothing -> attachClient protocolVersion sock origin setup
+        Nothing -> attachClient protocolVersion sock origin setup hist
 
-attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
-attachClient v sock origin setup = do
-    sendMessage sock =<< hello v origin (AttachIntent setup)
+attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> [Text] -> IO ExitReason
+attachClient v sock origin setup hist = do
+    sendMessage sock =<< hello v origin (AttachIntent setup) hist
     greeting <- recvMessage sock
     case greeting of
         Just (Known (Welcome _)) ->
@@ -127,8 +130,8 @@ shuttle sock = do
                 Notify raw -> B.hPut stdout raw >> receiver
                 Message _ -> receiver  -- server renders toasts into frames
                 DetachOk -> pure Detached
-                RestartClient -> pure (RestartRequested Nothing)
-                RestartClientTo t -> pure (RestartRequested (Just t))
+                RestartClient -> pure (RestartRequested Nothing [])
+                RestartClientTo t hist -> pure (RestartRequested (Just t) hist)
                 CommandDone -> receiver
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
@@ -151,7 +154,7 @@ shuttle sock = do
 -- client.
 runClientControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
 runClientControl sock origin setup = do
-    sendMessage sock =<< hello protocolVersion origin (AttachIntent setup)
+    sendMessage sock =<< hello protocolVersion origin (AttachIntent setup) []
     greeting <- recvMessage sock
     case greeting of
         Just (Known (Welcome _)) -> do
@@ -174,7 +177,7 @@ runClientControl sock origin setup = do
                 DetachOk -> pure Detached
                 Exited -> pure SessionEnded
                 RestartClient -> pure Detached
-                RestartClientTo _ -> pure Detached
+                RestartClientTo _ _ -> pure Detached
                 ServerError e -> pure (Rejected e)
                 _ -> receiver
     stdinUntilEof = do
@@ -192,7 +195,7 @@ runControl sock origin cmds = controlAt protocolVersion sock origin cmds
 
 controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
 controlAt v sock origin cmds = do
-    sendMessage sock =<< hello v origin ControlIntent
+    sendMessage sock =<< hello v origin ControlIntent []
     greeting <- recvMessage sock
     case greeting of
         Just (Known (Welcome _)) -> do

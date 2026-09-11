@@ -92,6 +92,7 @@ genHello = Hello
     <*> genText
     <*> genIntent
     <*> arbitrary
+    <*> listOf genText
 
 instance Arbitrary ClientToServer where
     arbitrary = oneof
@@ -106,6 +107,8 @@ instance Arbitrary ClientToServer where
             [ ClientHello h { term = T.pack t' } | t' <- shrink (T.unpack h.term) ]
             ++ [ ClientHello h { cwd = T.pack c' } | c' <- shrink (T.unpack h.cwd) ]
             ++ [ ClientHello h { autostarted = False } | h.autostarted ]
+            ++ [ ClientHello h { sessionHist = hs }
+               | hs <- shrinkList (const []) h.sessionHist ]
         Input bs -> Input . B.pack <$> shrink (B.unpack bs)
         Resize sz -> Resize <$> shrink sz
         Command cmds -> Command . unstrs <$> shrink (strs cmds)
@@ -125,7 +128,7 @@ instance Arbitrary ServerToClient where
         , pure Exited
         , ServerVersion <$> arbitrary
         , pure RestartClient
-        , RestartClientTo <$> genText
+        , RestartClientTo <$> genText <*> listOf genText
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -140,7 +143,9 @@ instance Arbitrary ServerToClient where
         Exited -> []
         ServerVersion v -> ServerVersion <$> shrink v
         RestartClient -> []
-        RestartClientTo t -> RestartClientTo . T.pack <$> shrink (T.unpack t)
+        RestartClientTo t hist ->
+            [ RestartClientTo (T.pack t') hist | t' <- shrink (T.unpack t) ]
+            ++ [ RestartClientTo t hs | hs <- shrinkList (const []) hist ]
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -187,8 +192,8 @@ spec = do
         forM_
             [ ( "ClientHello"
               , encodeMessage (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False))
-              , "8200870465787465726d9f8261416142ff830018181850642f746d708101f4" )
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []))
+              , "8200880465787465726d9f8261416142ff830018181850642f746d708101f480" )
             , ( "Input", encodeMessage (Input "hi"), "8201426869" )
             , ( "Resize", encodeMessage (Resize (Size 24 80)), "8202830018181850" )
             , ( "Command"
@@ -215,7 +220,9 @@ spec = do
             , ( "Exited", encodeMessage Exited, "8109" )
             , ( "ServerVersion", encodeMessage (ServerVersion 5), "820a05" )
             , ( "RestartClient", encodeMessage RestartClient, "810b" )
-            , ( "RestartClientTo", encodeMessage (RestartClientTo "main"), "820c646d61696e" )
+            , ( "RestartClientTo"
+              , encodeMessage (RestartClientTo "main" ["alt"])
+              , "830c646d61696e9f63616c74ff" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -235,21 +242,26 @@ spec = do
             it name $ decodeStyle ws `shouldBe` Just expected
         -- The hello's own append rule: a six-field (pre-autostart) hello —
         -- these are the previous golden's bytes, verbatim — defaults the
-        -- flag off, and a seventh field carries it.
+        -- flag off and the history empty; a seventh field carries autostart,
+        -- an eighth the session history.
         forM_
-            [ ( "reads a legacy six-field hello with autostarted defaulted off"
+            [ ( "reads a legacy six-field hello with the later fields defaulted"
               , "8200860465787465726d9f8261416142ff830018181850642f746d708101"
-              , False )
+              , False, [] )
             , ( "reads the autostarted flag from a seven-field hello"
               , "8200870465787465726d9f8261416142ff830018181850642f746d708101f5"
-              , True )
-            ] $ \(name, goldenHex, autostarted) ->
+              , True, [] )
+            , ( "reads the session history from an eight-field hello"
+              , "8200880465787465726d9f8261416142ff830018181850642f746d708101f5\
+                \9f64776f726bff"
+              , True, ["work"] )
+            ] $ \(name, goldenHex, autostarted, hist) ->
             it name $
                 (decodeMessage (B.pack (hexBytes goldenHex))
                     :: Inbound ClientToServer)
                     `shouldBe` Known (ClientHello
                         (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                            ControlIntent autostarted))
+                            ControlIntent autostarted hist))
 
     describe "negotiate" $ do
         it "meets an older client at its version" $
@@ -271,8 +283,17 @@ spec = do
         -- The level-5 corpus vector for tag 12: a pre-12 peer gets the bare
         -- RestartClient it has always known.
         it "downgrades RestartClientTo to bare RestartClient below level 6" $
-            hex (encodeServerMessageAt 5 (RestartClientTo "main"))
+            hex (encodeServerMessageAt 5 (RestartClientTo "main" ["alt"]))
                 `shouldBe` "810b"
+        -- The level-6 corpus vector for tag 12: a pre-history peer gets the
+        -- name-only form it knows, the session history dropped.
+        it "drops the history, to the name-only RestartClientTo, at level 6" $
+            hex (encodeServerMessageAt 6 (RestartClientTo "main" ["alt"]))
+                `shouldBe` "820c646d61696e"
+        it "reads a level-6 name-only RestartClientTo as empty history" $
+            (decodeMessage (B.pack (hexBytes "820c646d61696e"))
+                :: Inbound ServerToClient)
+                `shouldBe` Known (RestartClientTo "main" [])
         it "emits the pre-faint nine-element Style at level 4" $
             hex (encodeServerMessageAt 4
                 (Draw [Put (Pos 1 2) defaultStyle "x", ClearAll,

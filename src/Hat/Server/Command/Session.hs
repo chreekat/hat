@@ -113,8 +113,16 @@ switchClientTo st client sess = do
     old <- readTVarIO client.session
     atomically $ do
         when (old /= sess.id) $ do
-            modifyTVar' client.sessionHist (recordVisit old sess.id)
-            writeTVar st.lastSession (Just old)
+            -- Record a visit only from a real prior session. A first attach
+            -- (the sentinel/absent session) has nothing to push, but must
+            -- still drop the destination from any carried history so the
+            -- current session is never in its own history.
+            sessMap <- readTVar st.sessions
+            if Map.member old sessMap
+                then do
+                    modifyTVar' client.sessionHist (recordVisit old sess.id)
+                    writeTVar st.lastSession (Just old)
+                else modifyTVar' client.sessionHist (filter (/= sess.id))
             writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
         markActive st client
