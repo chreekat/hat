@@ -33,6 +33,7 @@ import Hat.Model.Options
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
+import Hat.Server.Flash (startLingerClock)
 import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
      windowFlags)
@@ -198,6 +199,9 @@ renderOnce st client = do
     writeIORef client.lastFrame frame'
     writeIORef client.lastCursor cursor'
     when needSend $ send client (Draw (ops <> [cursorOp]))
+    -- The moved-to pane is now on screen, so a pending move-linger starts its
+    -- countdown from here rather than from the command.
+    startLingerClock st client
     -- @cursor-colour@: mirror the viewed active pane's resolved colour onto
     -- the outer terminal's cursor (OSC 12), resetting it (OSC 112) when the
     -- pane in view no longer has one.

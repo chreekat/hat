@@ -76,6 +76,9 @@ spec = do
         it "the armed highlight never times out" $
             flashExpired (shownAt + 1000000000) FlashArmed `shouldBe` False
 
+        it "a pending linger holds until its clock starts" $
+            flashExpired (shownAt + 1000000000) FlashLingerPending `shouldBe` False
+
 -- A two-pane split window, bare TVars around the fields 'windowArrange'
 -- reads.
 splitWindow :: IO Window

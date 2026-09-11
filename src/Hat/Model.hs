@@ -323,7 +323,8 @@ data Toast = Toast
 -- 'Hat.Server.Flash.armFlash'.
 data Flash
     = FlashArmed               -- ^ held while the prefix is armed
-    | FlashLinger !Word64      -- ^ fading after a pane move; monotonic-ns deadline
+    | FlashLingerPending       -- ^ after a pane move, until the move's frame is drawn
+    | FlashLinger !Word64      -- ^ fading after the move's frame; monotonic-ns deadline
     deriving (Eq)
 
 -- | Per-client command-prompt state: the line being edited, the cursor's
