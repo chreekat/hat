@@ -14,7 +14,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..)
-    , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine) )
+    , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
@@ -122,6 +122,11 @@ spec = do
             bound "copy-mode-vi" "v" `shouldBe` beginSel
         it "emacs mode: Space begins a selection" $
             bound "copy-mode" "Space" `shouldBe` beginSel
+        let rectToggle = Just [["send-keys", "-X", "rectangle-toggle"]]
+        it "vi mode: C-v toggles rectangle selection (tmux parity)" $
+            bound "copy-mode-vi" "C-v" `shouldBe` rectToggle
+        it "emacs mode: R toggles rectangle selection (tmux parity)" $
+            bound "copy-mode" "R" `shouldBe` rectToggle
 
     describe "default prefix key bindings (tmux parity)" $ do
         let bound key = Map.lookup key =<< Map.lookup "prefix" defaultKeymap
@@ -241,6 +246,20 @@ spec = do
             s'.selection `shouldBe` Just ((3, 5), SelChar)
         it "other-end is a no-op without a selection" $
             otherEnd (start.sState) `shouldBe` start.sState
+        it "rectangle-toggle begins a rectangular selection at the cursor" $ do
+            let s = (start.sState) { cursorRow = 3, cursorCol = 5 }
+            (rectangleToggle s).selection `shouldBe` Just ((3, 5), SelRect)
+        it "rectangle-toggle keeps the anchor, only changing the shape" $ do
+            let s = (start.sState)
+                    { cursorRow = 3, cursorCol = 5
+                    , selection = Just ((1, 2), SelChar) }
+                s' = rectangleToggle s
+            s'.selection `shouldBe` Just ((1, 2), SelRect)
+            (s'.cursorRow, s'.cursorCol) `shouldBe` (3, 5)
+        it "rectangle-toggle flips a rectangle back to a char selection" $ do
+            let s = (start.sState)
+                    { selection = Just ((1, 2), SelRect) }
+            (rectangleToggle s).selection `shouldBe` Just ((1, 2), SelChar)
         it "select-line yanks whole lines from anchor to cursor" $ do
             let s = (start.sState)
                     { cursorRow = 2, cursorCol = 3
@@ -248,6 +267,15 @@ spec = do
             runIdentity (extractSelection grid KeysVi s)
                 `shouldBe` Just
                     "A line of words\n        Indented line\nAnother line..."
+        it "rectangle yanks each row clamped to the same column band" $ do
+            -- Anchor (0,2), cursor (2,5), vi-inclusive: columns 2..5 of
+            -- rows 0..2. Row 0 "A line of words" -> "line", row 1's
+            -- indentation -> four spaces, row 2 "Another line..." -> "othe".
+            let s = (start.sState)
+                    { cursorRow = 2, cursorCol = 5
+                    , selection = Just ((0, 2), SelRect) }
+            runIdentity (extractSelection grid KeysVi s)
+                `shouldBe` Just "line\n    \nothe"
 
     describe "char search (f/F/t/T)" $ do
         -- Row 0 is "A line of words"; 'o' is at columns 7 and 11.
@@ -406,6 +434,16 @@ spec = do
             map (revAt g 0) [0 .. 4] `shouldBe` replicate 5 True
             map (revAt g 1) [0 .. 4] `shouldBe` replicate 5 True
             map (revAt g 2) [0 .. 4] `shouldBe` replicate 5 False
+
+        it "rectangle clamps every row to the same column band" $ do
+            -- Anchor (0,1), cursor (2,3), vi-inclusive: columns 1..3 of
+            -- every row, a straight block rather than a ragged span.
+            let rectSel = (sel 2 3 (0, 1) "copy-mode-vi")
+                    { selection = Just ((0, 1), SelRect) }
+                g = overlaySelection dfltMode KeysVi 0 rectSel board
+            map (revAt g 0) [0 .. 4] `shouldBe` [False, True, True, True, False]
+            map (revAt g 1) [0 .. 4] `shouldBe` [False, True, True, True, False]
+            map (revAt g 2) [0 .. 4] `shouldBe` [False, True, True, True, False]
 
         it "paints a themed mode-style's colours over selected cells" $ do
             -- A concrete bg/fg mode style overrides the cell's own colours

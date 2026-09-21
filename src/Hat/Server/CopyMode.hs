@@ -35,6 +35,7 @@ module Hat.Server.CopyMode
     , paragraphUp
     , paragraphDown
     , beginLineSelection
+    , rectangleToggle
     , otherEnd
     , charSearch
     , SearchPattern
@@ -638,7 +639,7 @@ paragraphUp g st = loop st.cursorRow >>= \row' -> gotoRow row' g st
             if b then pure (r - 1) else loop (r - 1)
 
 -- ---------------------------------------------------------------------
--- Selection extraction (port of window_copy_get_selection, no rectangle)
+-- Selection extraction (port of window_copy_get_selection)
 
 -- | Extract the text covered by the current selection. Rows are joined
 -- with @\\n@; end-inclusiveness follows 'ModeKeys' (vi keeps the cell
@@ -652,6 +653,19 @@ extractSelection g keys st = case st.selection of
         let sy = min ar st.cursorRow
             ey = max ar st.cursorRow
         pieces <- mapM (\i -> g.gLineLen i >>= copyLine g i 0) [sy .. ey]
+        let joined = T.concat pieces
+        pure . Just $
+            if not (T.null joined) && T.last joined == '\n'
+                then T.init joined else joined
+    -- Rectangular (vi @C-v@): every row clamped to the same column band.
+    Just ((ar, ac), SelRect) -> do
+        let sy = min ar st.cursorRow
+            ey = max ar st.cursorRow
+            loCol = min ac st.cursorCol
+            hiCol = case keys of
+                KeysEmacs -> max ac st.cursorCol       -- exclusive end column
+                KeysVi    -> max ac st.cursorCol + 1    -- inclusive end column
+        pieces <- mapM (\i -> copyLine g i loCol hiCol) [sy .. ey]
         let joined = T.concat pieces
         pure . Just $
             if not (T.null joined) && T.last joined == '\n'
@@ -706,6 +720,13 @@ cellSelected keys st sx row col = case st.selection of
     -- Line-wise: every column of every row between anchor and cursor.
     Just ((ar, _), SelLine) ->
         row >= min ar st.cursorRow && row <= max ar st.cursorRow && col < sx
+    -- Rectangular: the same column band on every row between the ends.
+    Just ((ar, ac), SelRect) ->
+        let inclusive = case keys of KeysVi -> 1; KeysEmacs -> 0
+            lo = min ac st.cursorCol
+            hi = min sx (max ac st.cursorCol + inclusive)
+        in row >= min ar st.cursorRow && row <= max ar st.cursorRow
+            && col >= lo && col < hi
     Just ((ar, ac), _) ->
         let (sRow, sCol, eRow, eCol)
                 | (st.cursorRow, st.cursorCol) `before` (ar, ac) =
@@ -817,6 +838,7 @@ handlers = Map.fromList
     , ("history-top",       pureH (\s -> s { cursorRow = 0, cursorCol = 0 }))
     , ("begin-selection",   pureH beginSelection)
     , ("select-line",       pureH beginLineSelection)
+    , ("rectangle-toggle",  pureH rectangleToggle)
     , ("other-end",         pureH otherEnd)
     , ("clear-selection",   pureH (\s -> s { selection = Nothing }))
     , ("next-word",         motionH (\seps -> mNextWord seps))
@@ -969,6 +991,17 @@ beginSelection s = s
 beginLineSelection :: CopyModeState -> CopyModeState
 beginLineSelection s = s
     { selection = Just ((s.cursorRow, s.cursorCol), SelLine) }
+
+-- | @rectangle-toggle@ (vi @C-v@, emacs @R@): flip the selection between
+-- rectangular and non-rectangular, keeping both endpoints. With no
+-- selection yet, begin a rectangular one anchored at the cursor.
+rectangleToggle :: CopyModeState -> CopyModeState
+rectangleToggle s = s { selection = Just (anchor, kind) }
+  where
+    (anchor, kind) = case s.selection of
+        Just (a, SelRect) -> (a, SelChar)
+        Just (a, _)       -> (a, SelRect)
+        Nothing           -> ((s.cursorRow, s.cursorCol), SelRect)
 
 -- | @other-end@ (vi @o@): swap the cursor with the selection anchor, so
 -- motions extend the opposite end. A no-op without a selection.
