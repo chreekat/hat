@@ -57,8 +57,8 @@ module Hat.Server.Pane
     ) where
 
 import Control.Concurrent
-    (forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
-import Control.Concurrent.Async (Async, async, cancel)
+    (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
+import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (Exception, IOException, catch, finally, try)
@@ -331,11 +331,15 @@ startPaneReader st sid win pane = do
         -- fd-holder can keep the master from ever EOFing. 'ChildExited' (never
         -- the 'ThreadKilled' of an explicit kill) switches the reader to a
         -- non-blocking drain of the reaped child's final bytes, then ends.
-        void $ forkIO $ Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited
-        unmask
-            (readLoop (Hat.Term.Pty.readPty pane.pty) pane.pendingInput
-                `catch` \ChildExited ->
-                    readLoop (Hat.Term.Pty.readAvail pane.pty) Nothing)
+        -- 'withAsync' scopes the watcher to the read phase: once the reads end
+        -- (by EOF or by draining after 'ChildExited'), it is cancelled before
+        -- the 'finally' cleanup, so a late async 'ChildExited' can never land in
+        -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
+        (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
+            \_ -> unmask
+                (readLoop (Hat.Term.Pty.readPty pane.pty) pane.pendingInput
+                    `catch` \ChildExited ->
+                        readLoop (Hat.Term.Pty.readAvail pane.pty) Nothing))
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where

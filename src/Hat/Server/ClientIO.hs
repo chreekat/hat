@@ -7,7 +7,8 @@ module Hat.Server.ClientIO
 
 import Control.Concurrent.MVar (withMVar)
 import Control.Concurrent.STM (atomically, readTVarIO)
-import Control.Exception (SomeException, catch)
+import Control.Exception
+    (SomeAsyncException (..), SomeException, catch, fromException, throwIO)
 import Control.Monad (forM_, when)
 
 import Hat.Model
@@ -24,7 +25,13 @@ send client msg = do
     when isReady $
         withMVar client.sendLock
             (\_ -> sendMessageAt client.wireLevel client.sock msg)
-            `catch` \(_ :: SomeException) -> pure ()
+            -- A dead client's write throws synchronously; swallow that so one
+            -- gone client never sinks a broadcast. An async exception (a
+            -- teardown 'ChildExited', a shutdown 'ThreadKilled') is not ours to
+            -- eat — rethrow it, or it silently drops the message it interrupted.
+            `catch` \(e :: SomeException) -> case fromException e of
+                Just (SomeAsyncException _) -> throwIO e
+                Nothing -> pure ()
 
 -- | Send one message to every client attached to a session.
 broadcast :: ServerState -> SessionId -> ServerToClient -> IO ()
