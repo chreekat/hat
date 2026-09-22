@@ -41,6 +41,8 @@ spec = do
             humanize 936000000 `shouldBe` "936M"
         it "shows billions" $ humanize 1880000000 `shouldBe` "1.88G"
         it "shows small values plainly" $ humanize 12 `shouldBe` "12.0"
+        it "keeps the sign of a negative value" $
+            humanize (-6352815) `shouldBe` "-6.35M"
 
     describe "summaryTable" $ do
         let series =
@@ -56,6 +58,13 @@ spec = do
 
         it "renders no ratio when one mux is missing" $
             summaryTable [(key "hat" "type" "server", Line 28.0e6 0)]
+                `shouldSatisfy` not . any ("x tmux" `T.isInfixOf`)
+
+        it "renders no ratio against a flat tmux series" $
+            summaryTable
+                [ (key "hat" "type" "client", Line 43.0e3 0)
+                , (key "tmux" "type" "client", Line 0.01 0)
+                ]
                 `shouldSatisfy` not . any ("x tmux" `T.isInfixOf`)
 
     describe "compareTable" $ do

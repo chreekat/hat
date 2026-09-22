@@ -53,6 +53,7 @@ parseSeriesFile name = do
 -- | Three significant digits with an engineering suffix: @28.1M@, @41.0k@.
 humanize :: Double -> Text
 humanize v
+    | v < 0 = "-" <> humanize (negate v)
     | v >= 1e9 = sig3 (v / 1e9) <> "G"
     | v >= 1e6 = sig3 (v / 1e6) <> "M"
     | v >= 1e3 = sig3 (v / 1e3) <> "k"
@@ -73,7 +74,9 @@ percent p = sign <> T.pack (showFFloat (Just 1) p "") <> "%"
     sign = if p >= 0 then "+" else ""
 
 -- | One line per series (slope humanized, intercept aside), then a
--- @hat = Nx tmux@ ratio line for every series both muxes measured.
+-- @hat = Nx tmux@ ratio line for every series both muxes measured. A flat
+-- tmux series (slope under one instruction) gets no ratio; against ~0 the
+-- quotient is noise, not a comparison.
 summaryTable :: [(SeriesKey, Line)] -> [Text]
 summaryTable series = map row (sortOn fst series) <> ratios
   where
@@ -86,7 +89,7 @@ summaryTable series = map row (sortOn fst series) <> ratios
         , k.mux == "hat"
         , (tk, tl) <- series
         , tk == k { mux = "tmux" }
-        , tl.slope > 0
+        , tl.slope >= 1
         ]
 
 -- | Series against series: the slope before, after, and the change. A series
