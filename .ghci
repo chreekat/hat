@@ -1,1 +1,2 @@
+:seti -Wno-prepositive-qualified-module
 GHC.Conc.getNumProcessors >>= GHC.Conc.setNumCapabilities
