@@ -61,6 +61,21 @@ spec = do
         rowText s2 1 `shouldBe` "ZZZ"   -- changed row refreshes
         rowText s2 2 `shouldBe` "ccc"
 
+    it "stamps row generations that change only with the row" $ do
+        e <- new80x24
+        _ <- feedStr e "aaa\r\nbbb\r\nccc"
+        (s1, g1) <- snapshotWithGens e
+        (_, g1') <- snapshotWithGens e
+        g1' `shouldBe` g1               -- no feed: every row keeps its gen
+        _ <- feedStr e "\ESC[2;1HZZZ"   -- rewrite only the middle row
+        (s2, g2) <- snapshotWithGens e
+        g2 V.! 1 `shouldNotBe` g1 V.! 1
+        -- an unchanged gen promises unchanged content
+        sequence_
+            [ (s2.cells V.! i) `shouldBe` (s1.cells V.! i)
+            | i <- [0 .. V.length g2 - 1]
+            , g2 V.!? i == g1 V.!? i ]
+
     it "puts plain text on the first row" $ do
         e <- new80x24
         _ <- feedStr e "hello"
