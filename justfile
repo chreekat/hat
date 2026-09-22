@@ -25,6 +25,22 @@ profiled_hat:
     @cabal build --enable-profiling --profiling-detail=late --builddir=dist-prof exe:hat >/dev/null
     @cabal list-bin --builddir=dist-prof exe:hat
 
+# CPU benchmark: workloads under perf, hat vs tmux, humanized summary
+perf_bench workloads='type type4' out='bench-out':
+    ./tools/bench/hat_perf --workloads '{{workloads}}' --out '{{out}}'
+
+# Compare two perf_bench output directories, before vs after
+perf_compare before after:
+    cabal run -v0 bench-report -- compare '{{before}}' '{{after}}'
+
+# Judge one gate-shaped typing run against tools/bench/perf-baseline
+perf_check:
+    cabal bench hat-perf
+
+# Re-record tools/bench/perf-baseline from a fresh gate-shaped run
+perf_baseline:
+    HAT_PERF_RECORD=1 cabal bench hat-perf
+
 # Memory benchmark: fixed workload; reload/keep take 'yes', build/rts take flags
 mem_bench lines='20000' reload='no' build='' rts='' keep='no':
     #!/usr/bin/env bash

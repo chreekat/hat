@@ -24,6 +24,7 @@ mkDerivation {
     HUnit network process QuickCheck serialise sqlite-simple stm text
     time unix vector
   ];
+  benchmarkHaskellDepends = [ base directory process unix ];
   description = "A terminal multiplexer";
   license = lib.meta.getLicenseFromSpdxId "AGPL-3.0-or-later";
 }
