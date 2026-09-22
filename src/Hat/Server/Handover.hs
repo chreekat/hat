@@ -42,7 +42,6 @@ import Hat.Server.ColorScheme
 import Hat.Server.Pane
 import Hat.Server.Rebuild (rebuildSession)
 import Hat.Server.Snapshot (captureTree)
-import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
 -- | The color-scheme report a reload must re-push into an adopted pane so a
@@ -267,12 +266,12 @@ screenOf sz rs = Emu.Screen
 -- screen (re-entering the alt screen when the program was in it), paired with
 -- the scrollback lines to reseed. Pure, so the capture→replay round trip is
 -- testable without a pty.
-replayPane :: Size -> HotPane -> (B.ByteString, [V.Vector Cell.Cell])
+replayPane :: Size -> HotPane -> (B.ByteString, [B.ByteString])
 replayPane sz rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
         <> Emu.keyModeReplayBytes (keyModesOf rp.modes)
         <> Emu.restoreBytes restoreModes rp.screen.pen (screenOf sz rp.screen)
-    , map V.fromList rp.screen.scrollback )
+    , map (Emu.paintLineBytes . V.fromList) rp.screen.scrollback )
   where
     restoreModes = (emuModesOf rp.modes) { Emu.altScreen = rp.screen.altScreen }
 

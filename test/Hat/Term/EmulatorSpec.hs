@@ -144,7 +144,7 @@ spec = do
         sblen <- scrollbackLength src
         sblines <- catMaybes <$> mapM (scrollbackLine src) [0 .. sblen - 1]
         dst <- newEmulator Size { rows = 24, cols = 80 } 1000
-        seedScrollback dst sblines
+        seedScrollback dst (map paintLineBytes sblines)
         _ <- feed dst (restoreBytes m defaultStyle scr)
         resize dst Size { rows = 50, cols = 200 }
         scr2 <- snapshot dst
@@ -304,7 +304,7 @@ spec = do
         len <- scrollbackLength src
         captured <- catMaybes <$> traverse (scrollbackLine src) [0 .. len - 1]
         dst <- new80x24
-        seedScrollback dst captured
+        seedScrollback dst (map paintLineBytes captured)
         len' <- scrollbackLength dst
         len' `shouldBe` len
         restored <- catMaybes <$> traverse (scrollbackLine dst) [0 .. len - 1]
@@ -325,7 +325,7 @@ spec = do
         sblines <- catMaybes <$> mapM (scrollbackLine src) [0 .. len - 1]
         dst <- new80x24
         -- adoptPane order: seed scrollback under the live grid, then paint it.
-        seedScrollback dst sblines
+        seedScrollback dst (map paintLineBytes sblines)
         _ <- feed dst (restoreBytes m defaultStyle scr)
         restored <- snapshot dst
         restored.cells `shouldBe` scr.cells

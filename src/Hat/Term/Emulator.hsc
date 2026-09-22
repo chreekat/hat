@@ -35,6 +35,8 @@ module Hat.Term.Emulator
     , modes
     , modeReplayBytes
     , restoreBytes
+    , restorePainted
+    , paintLineBytes
     , cellSgr
     , seedScrollback
     , title
@@ -583,13 +585,14 @@ clearScrollback :: Emulator -> IO ()
 clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     feedBytes t "\ESC[3J"
 
--- | Seed a fresh emulator's history with captured lines (oldest first), trimmed
--- to the current limit. libghostty owns scrollback and offers no way to inject
--- history rows directly, so replay them as bytes: paint each line, then scroll
--- the whole block up out of the viewport with SU (@CSI n S@), which pushes
+-- | Seed a fresh emulator's history with captured painted lines (oldest
+-- first, 'paintLineBytes' each), trimmed to the current limit. libghostty
+-- owns scrollback and offers no way to inject history rows directly, so
+-- replay them as bytes: each line under a leading reset, then scroll the
+-- whole block up out of the viewport with SU (@CSI n S@), which pushes
 -- primary-screen rows into history and leaves a blank screen for a following
--- 'restoreBytes'. The reload-restore companion to it.
-seedScrollback :: Emulator -> [V.Vector Cell] -> IO ()
+-- 'restorePainted'. The reload-restore companion to it.
+seedScrollback :: Emulator -> [ByteString] -> IO ()
 seedScrollback e ls = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     lim <- readIORef e.sbLimit
     let kept = drop (length ls - lim) ls
@@ -598,17 +601,16 @@ seedScrollback e ls = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
         rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
         feedBytes t (seedBytes (min n rows) kept)
 
--- | The bytes 'seedScrollback' feeds: each line painted under a leading reset,
+-- | The bytes 'seedScrollback' feeds: each painted line under a leading reset,
 -- CRLF-separated (no trailing CRLF, so the last line is not left one row low),
 -- then SU by @su@ to scroll every line into history, then a final pen reset.
-seedBytes :: Int -> [V.Vector Cell] -> ByteString
+seedBytes :: Int -> [ByteString] -> ByteString
 seedBytes su ls = BL.toStrict $ BB.toLazyByteString $
-       mconcat (intersperse (BB.byteString "\r\n") (map paintLine ls))
+       mconcat (intersperse (BB.byteString "\r\n") (map paintedLine ls))
     <> BB.byteString "\ESC[" <> BB.intDec su <> BB.char8 'S'
     <> BB.byteString "\ESC[0m"
   where
-    paintLine row =
-        BB.byteString "\ESC[0m" <> paintRow defaultStyle (rtrimBlank (V.toList row))
+    paintedLine bs = BB.byteString "\ESC[0m" <> BB.byteString bs
 
 -- | libghostty's physical scrollback row count (total rows minus the viewport).
 physicalScrollback :: Ptr CTerm -> IO Int

@@ -20,6 +20,8 @@ module Hat.Term.Emulator.Types
     , keyModeReplayBytes
     , modeReplayBytes
     , restoreBytes
+    , restorePainted
+    , paintLineBytes
     , cellSgr
     , paintRow
     , rtrimBlank
@@ -149,24 +151,38 @@ modeReplayBytes m = B.concat $
 -- reproduces the visible grid — the replay half of reload's live-screen
 -- restore. The cursor lands where the capture left it.
 restoreBytes :: Modes -> Style -> Screen -> B.ByteString
-restoreBytes m pen scr = BL.toStrict $ BB.toLazyByteString $
+restoreBytes m pen scr = restorePainted m pen scr.cursor scr.cursorVisible
+    (map paintLineBytes (V.toList scr.cells))
+
+-- | 'restoreBytes' over rows already painted by 'paintLineBytes' — the form
+-- a reload handover carries, so adoption feeds the captured bytes verbatim.
+restorePainted :: Modes -> Style -> Pos -> Bool -> [B.ByteString] -> B.ByteString
+restorePainted m pen cur vis rows = BL.toStrict $ BB.toLazyByteString $
        (if m.altScreen then BB.byteString "\ESC[?1049h" else mempty)
     <> BB.byteString "\ESC[0m\ESC[H"
-    <> foldMap rowBytes [0 .. V.length scr.cells - 1]
+    <> foldMap rowBytes (zip [0 ..] rows)
     -- Restore the live pen after the grid, so the program's next output
     -- (an echoed keystroke after restart-server) takes its captured colour,
     -- not the last painted cell's. 'cellSgr' of the default pen is "\ESC[0m".
     <> BB.byteString (cellSgr pen)
-    <> moveTo scr.cursor
-    <> BB.byteString (if scr.cursorVisible then "\ESC[?25h" else "\ESC[?25l")
+    <> moveTo cur
+    <> BB.byteString (if vis then "\ESC[?25h" else "\ESC[?25l")
   where
-    -- A fresh grid is already blank, so trailing default-blank cells need no
-    -- repaint; the leading "\ESC[0m" makes each row start from a known pen.
-    rowBytes r = case scr.cells V.!? r of
-        Nothing  -> mempty
-        Just row -> case rtrimBlank (V.toList row) of
-            []    -> mempty
-            cells -> moveTo (Pos r 0) <> BB.byteString "\ESC[0m" <> paintRow defaultStyle cells
+    -- A fresh grid is already blank, so a blank row needs no repaint; the
+    -- leading "\ESC[0m" makes each painted row start from a known pen.
+    rowBytes (r, bs)
+        | B.null bs = mempty
+        | otherwise = moveTo (Pos r 0) <> BB.byteString "\ESC[0m"
+            <> BB.byteString bs
+
+-- | One row's replay bytes: the trimmed cells' runs, painted from a freshly
+-- reset pen (empty for an all-blank row). The unit both 'restorePainted' rows
+-- and 'Hat.Term.Emulator.seedScrollback' lines are made of; each consumer
+-- prefixes the @\\ESC[0m@ that resets the pen.
+paintLineBytes :: V.Vector Cell -> B.ByteString
+paintLineBytes row = case rtrimBlank (V.toList row) of
+    []    -> B.empty
+    cells -> BL.toStrict (BB.toLazyByteString (paintRow defaultStyle cells))
 
 rtrimBlank :: [Cell] -> [Cell]
 rtrimBlank = reverse . dropWhile (== blankCell) . reverse
