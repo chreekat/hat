@@ -78,6 +78,7 @@ import Hat.Term.Emulator.Types
 import Hat.Term.HostProtocol
 
 data CTerm
+data CRender
 
 foreign import ccall unsafe "ghost_shim_new"
     c_new :: CUShort -> CUShort -> CSize -> IO (Ptr CTerm)
@@ -100,6 +101,13 @@ foreign import ccall unsafe "ghost_shim_cell_graphemes"
                 -> Ptr Word32 -> CSize -> Ptr CSize -> IO CInt
 foreign import ccall unsafe "ghost_shim_row_wrapped"
     c_row_wrapped :: Ptr CTerm -> CInt -> CUInt -> IO CInt
+foreign import ccall unsafe "ghost_shim_render_new"
+    c_render_new :: IO (Ptr CRender)
+foreign import ccall unsafe "ghost_shim_render_free"
+    c_render_free :: Ptr CRender -> IO ()
+foreign import ccall safe "ghost_shim_render_snapshot"
+    c_render_snapshot :: Ptr CRender -> Ptr CTerm -> CUShort -> CUShort
+                      -> Ptr () -> Ptr Word8 -> IO CInt
 foreign import ccall unsafe "ghost_shim_pen"
     c_pen :: Ptr CTerm -> Ptr () -> IO CInt
 foreign import ccall unsafe "ghost_shim_encode_key"
@@ -130,6 +138,8 @@ data Emulator = Emulator
     , state   :: IORef EmulatorState
     , cellIntern :: CellIntern
         -- ^ shared representatives for cells read out of libghostty
+    , render  :: Ptr CRender
+        -- ^ render-state bundle for 'snapshot'; freed by 'term's finalizer
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
@@ -172,15 +182,19 @@ newEmulator sz limit = do
     _ <- c_set t #{const GHOSTTY_TERMINAL_OPT_WRITE_PTY} (castFunPtrToPtr writePtyW)
     _ <- c_set t #{const GHOSTTY_TERMINAL_OPT_BELL} (castFunPtrToPtr bellW)
 
-    -- Free the terminal and both callback FunPtrs once the emulator is
-    -- unreachable, so a closed pane leaks neither.
+    rp <- c_render_new
+
+    -- Free the terminal, the render bundle, and both callback FunPtrs once the
+    -- emulator is unreachable, so a closed pane leaks none of them.
     fp <- FC.newForeignPtr t $ do
         c_free t
+        c_render_free rp
         freeHaskellFunPtr writePtyW
         freeHaskellFunPtr bellW
     ci <- newIORef Map.empty
     pure Emulator
-        { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci }
+        { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci
+        , render = rp }
 
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
@@ -289,22 +303,39 @@ resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
 -- | Take an immutable 'Screen' by reading the live grid straight from
 -- libghostty: its cols\/rows, cursor, and every active-area cell.
 snapshot :: Emulator -> IO Screen
-snapshot e = withMVar e.lock $ \_ -> withForeignPtr e.term (readGrid e.cellIntern)
+snapshot e = withMVar e.lock $ \_ ->
+    withForeignPtr e.term (readGrid e.cellIntern e.render)
 
-readGrid :: CellIntern -> Ptr CTerm -> IO Screen
-readGrid ci t = do
+readGrid :: CellIntern -> Ptr CRender -> Ptr CTerm -> IO Screen
+readGrid ci rp t = do
     cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
     rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
     cx   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_X}
     cy   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_Y}
     vis  <- c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
-    grid <- V.generateM rows $ \r -> readRow ci t #{const GHOST_SHIM_ACTIVE} r cols
+    grid <- readActiveGrid ci rp t rows cols
     pure Screen
         { size = Size { rows = fromIntegral rows, cols = fromIntegral cols }
         , cells = grid
         , cursor = Pos { row = cy, col = cx }
         , cursorVisible = vis /= 0
         }
+
+-- | The active viewport's cells, filled in one render-state pass rather than a
+-- grid_ref lookup per cell. The per-row dirty flags the snapshot also writes
+-- go unused here; they gate the clean-row cache one layer up.
+readActiveGrid
+    :: CellIntern -> Ptr CRender -> Ptr CTerm -> Int -> Int
+    -> IO (V.Vector (V.Vector Cell))
+readActiveGrid ci rp t rows cols =
+    allocaBytes (rows * cols * #{size GhostShimCell}) $ \out ->
+    allocaBytes rows $ \dirty -> do
+        _ <- c_render_snapshot rp t (fromIntegral cols) (fromIntegral rows)
+                out dirty
+        V.generateM rows $ \y -> V.generateM cols $ \x ->
+            let cellp = out `plusPtr` ((y * cols + x) * #{size GhostShimCell})
+            in peekShimCell ci
+                (graphemeMarks t #{const GHOST_SHIM_ACTIVE} x y) cellp
 
 -- | Read one row's @cols@ cells under a point tag (active or history) into a
 -- vector of 'Cell's.

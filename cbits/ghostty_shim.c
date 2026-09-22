@@ -2,6 +2,7 @@
  * the tagged-union points, sized structs, or opaque cell handles by value, so
  * every one of those crossings happens here in C and only scalars (and one flat
  * GhostShimCell) reach Haskell. See "Hat.Term.Emulator". */
+#include <stdlib.h>
 #include <string.h>
 #include <ghostty/vt.h>
 
@@ -69,19 +70,14 @@ static void color_of(GhosttyStyleColor col, int *tag, uint32_t *val) {
     }
 }
 
-int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out) {
+/* Flatten a resolved cell and its style (NULL if unavailable) into *out. Shared
+ * by the grid_ref path (ghost_shim_cell) and the render-state path
+ * (ghost_shim_snapshot), so both decode a cell identically. Uses the style's
+ * own colors, never the render state's resolved colors, so a palette index
+ * stays an index. */
+static void shim_from_cell(GhosttyCell cell, const GhosttyStyle *st,
+                           GhostShimCell *out) {
     memset(out, 0, sizeof(*out));
-
-    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
-    p.value.coordinate.x = x;
-    p.value.coordinate.y = y;
-
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
-    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
-        return 0;
-    GhosttyCell cell;
-    if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS)
-        return 0;
 
     uint32_t cp = 0;
     ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CODEPOINT, &cp);
@@ -100,36 +96,53 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
         default:                            out->width = 1; break;
     }
 
-    GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
-    if (ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS) {
+    if (st) {
         unsigned f = 0;
-        if (st.bold)          f |= 1;
-        if (st.underline)     f |= 2;
-        if (st.italic)        f |= 4;
-        if (st.inverse)       f |= 8;
-        if (st.strikethrough) f |= 16;
-        if (st.blink)         f |= 32;
-        if (st.faint)         f |= 64;
+        if (st->bold)          f |= 1;
+        if (st->underline)     f |= 2;
+        if (st->italic)        f |= 4;
+        if (st->inverse)       f |= 8;
+        if (st->strikethrough) f |= 16;
+        if (st->blink)         f |= 32;
+        if (st->faint)         f |= 64;
         out->flags = f;
-        color_of(st.fg_color, &out->fg_tag, &out->fg_val);
-        color_of(st.bg_color, &out->bg_tag, &out->bg_val);
+        color_of(st->fg_color, &out->fg_tag, &out->fg_val);
+        color_of(st->bg_color, &out->bg_tag, &out->bg_val);
     }
 
     /* A blank cell carrying only a background color stores it in the content,
      * not the style; surface that as the cell's bg. */
-    GhosttyCellContentTag ctag = GHOSTTY_CELL_CONTENT_CODEPOINT;
-    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CONTENT_TAG, &ctag);
-    if (ctag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+    if (content == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
         GhosttyColorPaletteIndex idx = 0;
         ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_PALETTE, &idx);
         out->bg_tag = 1;
         out->bg_val = idx;
-    } else if (ctag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+    } else if (content == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
         GhosttyColorRgb c = { 0 };
         ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_RGB, &c);
         out->bg_tag = 2;
         out->bg_val = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
     }
+}
+
+int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out) {
+    memset(out, 0, sizeof(*out));
+
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = x;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return 0;
+    GhosttyCell cell;
+    if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS)
+        return 0;
+
+    GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+    const GhosttyStyle *stp =
+        ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS ? &st : NULL;
+    shim_from_cell(cell, stp, out);
     return 1;
 }
 
@@ -160,6 +173,93 @@ int ghost_shim_row_wrapped(void *t, int tag, uint32_t y) {
     if (ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &wrapped) != GHOSTTY_SUCCESS)
         return 0;
     return wrapped ? 1 : 0;
+}
+
+/* The render-state trio, created once per terminal and reused every snapshot:
+ * the state, plus a row iterator and a row-cells cursor to walk it. */
+typedef struct {
+    GhosttyRenderState rs;
+    GhosttyRenderStateRowIterator iter;
+    GhosttyRenderStateRowCells cells;
+} GhostRender;
+
+void *ghost_shim_render_new(void) {
+    GhostRender *r = calloc(1, sizeof(*r));
+    if (r == NULL) return NULL;
+    if (ghostty_render_state_new(NULL, &r->rs) != GHOSTTY_SUCCESS)
+        goto fail;
+    if (ghostty_render_state_row_iterator_new(NULL, &r->iter) != GHOSTTY_SUCCESS)
+        goto fail;
+    if (ghostty_render_state_row_cells_new(NULL, &r->cells) != GHOSTTY_SUCCESS)
+        goto fail;
+    return r;
+fail:
+    ghost_shim_render_free(r);
+    return NULL;
+}
+
+void ghost_shim_render_free(void *rp) {
+    GhostRender *r = rp;
+    if (r == NULL) return;
+    if (r->cells != NULL) ghostty_render_state_row_cells_free(r->cells);
+    if (r->iter != NULL) ghostty_render_state_row_iterator_free(r->iter);
+    if (r->rs != NULL) ghostty_render_state_free(r->rs);
+    free(r);
+}
+
+/* Update the render state from the terminal, then copy the viewport into out
+ * (row-major, out[y*cols + x]) and set dirty[y] for each row changed since the
+ * last snapshot. Resets the state's dirty tracking so the next snapshot reports
+ * only fresh changes. Returns the number of rows written, 0 on failure. */
+int ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
+                               GhostShimCell *out, uint8_t *dirty) {
+    GhostRender *r = rp;
+    if (r == NULL) return 0;
+    if (ghostty_render_state_update(r->rs, (GhosttyTerminal)t) != GHOSTTY_SUCCESS)
+        return 0;
+
+    memset(out, 0, (size_t)rows * cols * sizeof(GhostShimCell));
+    memset(dirty, 0, rows);
+
+    if (ghostty_render_state_get(r->rs, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+            &r->iter) != GHOSTTY_SUCCESS)
+        return 0;
+
+    uint16_t y = 0;
+    while (y < rows && ghostty_render_state_row_iterator_next(r->iter)) {
+        bool row_dirty = false;
+        ghostty_render_state_row_get(r->iter,
+            GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &row_dirty);
+        dirty[y] = row_dirty ? 1 : 0;
+
+        if (ghostty_render_state_row_get(r->iter,
+                GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &r->cells) == GHOSTTY_SUCCESS) {
+            for (uint16_t x = 0; x < cols; x++) {
+                if (ghostty_render_state_row_cells_select(r->cells, x)
+                        != GHOSTTY_SUCCESS)
+                    continue;
+                GhosttyCell cell;
+                if (ghostty_render_state_row_cells_get(r->cells,
+                        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &cell)
+                        != GHOSTTY_SUCCESS)
+                    continue;
+                GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+                const GhosttyStyle *stp = ghostty_render_state_row_cells_get(
+                    r->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &st)
+                        == GHOSTTY_SUCCESS ? &st : NULL;
+                shim_from_cell(cell, stp, &out[(size_t)y * cols + x]);
+            }
+        }
+
+        bool clean = false;
+        ghostty_render_state_row_set(r->iter,
+            GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean);
+        y++;
+    }
+
+    GhosttyRenderStateDirty none = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    ghostty_render_state_set(r->rs, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &none);
+    return y;
 }
 
 long ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen) {

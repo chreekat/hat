@@ -49,6 +49,17 @@ int   ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
  * Returns 1 wrapped, 0 not wrapped or unavailable. */
 int   ghost_shim_row_wrapped(void *t, int tag, uint32_t y);
 
+/* A render-state bundle (state + row/cell iterators) for the fast viewport
+ * snapshot, created once per terminal and freed with it. */
+void *ghost_shim_render_new(void);
+void  ghost_shim_render_free(void *rp);
+
+/* Snapshot the viewport through the render state into out (row-major,
+ * out[y*cols + x]), setting dirty[y] for each row changed since the previous
+ * snapshot. Returns the number of rows written, 0 on failure. */
+int   ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
+                                 GhostShimCell *out, uint8_t *dirty);
+
 /* Copy the terminal title (DATA_TITLE, set by OSC 0/2) into buf, truncated to
  * buflen bytes. Returns the full title length, or -1 on failure. */
 long  ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen);
