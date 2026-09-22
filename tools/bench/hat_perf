@@ -71,13 +71,21 @@ sizes_for() {
 
 mkdir -p "$OUT"
 
-if [ -z "$BIN" ]; then
-    nix develop -c cabal build exe:hat
-    BIN=$(nix develop -c cabal list-bin exe:hat)
+# Inside the dev shell (perf on PATH) run tools directly; outside, wrap each
+# call in `nix develop -c`.
+if command -v perf >/dev/null; then
+    dev() { "$@"; }
+else
+    dev() { nix develop -c "$@"; }
 fi
-nix develop -c cabal build -v0 bench-report
-REPORT=$(nix develop -c cabal list-bin bench-report)
-PERF=$(nix develop -c sh -c 'command -v perf')
+
+if [ -z "$BIN" ]; then
+    dev cabal build exe:hat
+    BIN=$(dev cabal list-bin exe:hat)
+fi
+dev cabal build -v0 bench-report
+REPORT=$(dev cabal list-bin bench-report)
+PERF=$(dev sh -c 'command -v perf')
 
 MARKER=HAT-PERF-READY
 SOCKNAME="hat-perf-$$"
@@ -253,15 +261,5 @@ for mux in $MUXES; do
     done
 done
 
-for mux in $MUXES; do
-    for wl in $WORKLOADS; do
-        for role in server client; do
-            series=()
-            for n in $(sizes_for "$wl"); do
-                series+=("$n=$OUT/$mux-$wl-$role-$n.csv")
-            done
-            "$REPORT" perf "$mux $wl $role" "${series[@]}"
-        done
-    done
-done
+"$REPORT" summary "$OUT"
 echo ">>> artifacts in $OUT"

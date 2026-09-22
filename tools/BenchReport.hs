@@ -1,47 +1,86 @@
--- | Report the figures a benchmark run left behind: an @+RTS -t
--- --machine-readable@ stats file, or a @perf stat -x,@ instruction series
--- over workload sizes. The orchestration lives in @tools\/bench\/hat_mem@
--- and @tools\/bench\/hat_perf@; this only reads their artifacts.
+-- | Report the figures a benchmark run left behind: fitted summaries,
+-- before\/after comparisons, and baseline checks over a directory of
+-- @perf stat -x,@ CSVs, or an @+RTS -t --machine-readable@ stats file. The
+-- orchestration lives in @tools\/bench\/hat_mem@ and @tools\/bench\/hat_perf@;
+-- this only reads their artifacts.
 module Main (main) where
 
+import Data.List (sortOn)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import System.Directory (listDirectory)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 
 import Hat.Bench.Linear
 import Hat.Bench.PerfStat
+import Hat.Bench.Report
 import Hat.Bench.RtsStats
 
 main :: IO ()
 main = getArgs >>= \case
-    "perf" : label : points@(_ : _) -> perfReport label points
+    ["summary", dir] -> fitDir dir >>= mapM_ TIO.putStrLn . summaryTable
+    ["compare", beforeDir, afterDir] -> do
+        beforeRun <- fitDir beforeDir
+        afterRun <- fitDir afterDir
+        mapM_ TIO.putStrLn (compareTable beforeRun afterRun)
+    ["check", baselineFile, dir] -> do
+        baseline <- readBaseline baselineFile
+        checks <- checkBaseline baseline <$> fitDir dir
+        mapM_ TIO.putStrLn (renderChecks checks)
+        if checkPassed checks
+            then putStrLn "baseline check passed"
+            else die "baseline check FAILED"
+    ["record", baselineFile, dir] -> do
+        fits <- fitDir dir
+        let baseline = Baseline
+                { tolerance = 0.2
+                , entries = [ (k, l.slope) | (k, l) <- fits ]
+                }
+        TIO.writeFile baselineFile (renderBaseline baseline)
+        putStrLn (baselineFile <> " recorded:")
+        mapM_ TIO.putStrLn (renderChecks (checkBaseline baseline fits))
     [stats] -> report stats
-    _ -> die "usage: bench-report <rts-stats-file>\n\
-             \       bench-report perf <label> <N>=<perf-csv>..."
+    _ -> die "usage: bench-report summary <dir>\n\
+             \       bench-report compare <before-dir> <after-dir>\n\
+             \       bench-report check <baseline> <dir>\n\
+             \       bench-report record <baseline> <dir>\n\
+             \       bench-report <rts-stats-file>"
 
--- | Fit instructions = slope·N + intercept over one series of perf runs and
--- print the points alongside the fit.
-perfReport :: String -> [String] -> IO ()
-perfReport label points = do
-    pts <- mapM readPoint points
-    mapM_ (putStrLn . renderPoint) pts
-    case fitLinear pts of
-        Left err -> die (T.unpack err)
-        Right l -> putStrLn $
-            label <> " fit: instructions = "
-                <> show l.slope <> " * N + " <> show l.intercept
+-- | Fit every series a directory of @<mux>-<workload>-<role>-<N>.csv@ files
+-- holds. An unreadable CSV or an unfittable series dies loudly, never reads
+-- as a measurement.
+fitDir :: FilePath -> IO [(SeriesKey, Line)]
+fitDir dir = do
+    files <- listDirectory dir
+    let series = Map.fromListWith (<>)
+            [ (k, [(n, f)])
+            | f <- files
+            , Just (k, n) <- [parseSeriesFile (T.pack f)]
+            ]
+    if Map.null series
+        then die (dir <> ": no benchmark CSVs")
+        else mapM fit (Map.toList series)
   where
-    readPoint arg = case break (== '=') arg of
-        (n@(_ : _), '=' : file) | [(size, "")] <- reads n -> do
-            raw <- TIO.readFile file
-            case parsePerfStat raw >>= counterWord "instructions" of
-                Left err -> die (file <> ": " <> T.unpack err)
-                Right instr -> pure (size :: Double, fromIntegral instr)
-        _ -> die ("not an <N>=<perf-csv> argument: " <> arg)
-    renderPoint (n, instr) =
-        label <> " N=" <> show (round n :: Integer)
-            <> ": " <> show (round instr :: Integer) <> " instructions"
+    fit (k, points) = do
+        pts <- mapM instructions (sortOn fst points)
+        case fitLinear pts of
+            Left err -> die (T.unpack (renderKey k <> ": " <> err))
+            Right l -> pure (k, l)
+    instructions (n, f) = do
+        raw <- TIO.readFile (dir <> "/" <> f)
+        case parsePerfStat raw >>= counterWord "instructions" of
+            Left err -> die (f <> ": " <> T.unpack err)
+            Right instr ->
+                pure (fromIntegral n :: Double, fromIntegral instr)
+
+readBaseline :: FilePath -> IO Baseline
+readBaseline file = do
+    raw <- TIO.readFile file
+    case parseBaseline raw of
+        Left err -> die (file <> ": " <> T.unpack err)
+        Right b -> pure b
 
 report :: FilePath -> IO ()
 report stats = do
