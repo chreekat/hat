@@ -42,6 +42,7 @@ module Hat.Term.Emulator
     , title
     , scrollbackLength
     , scrollbackLine
+    , scrollbackPainted
     , scrollbackLineWrapped
     , screenRowWrapped
     , setScrollbackLimit
@@ -97,8 +98,8 @@ foreign import ccall unsafe "ghost_shim_get_title"
     c_get_title :: Ptr CTerm -> Ptr Word8 -> CSize -> IO CLong
 foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
-foreign import ccall unsafe "ghost_shim_cell"
-    c_cell :: Ptr CTerm -> CInt -> CUShort -> CUInt -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_row_cells"
+    c_row_cells :: Ptr CTerm -> CInt -> CUInt -> CUShort -> Ptr () -> IO CInt
 foreign import ccall unsafe "ghost_shim_cell_graphemes"
     c_graphemes :: Ptr CTerm -> CInt -> CUShort -> CUInt
                 -> Ptr Word32 -> CSize -> Ptr CSize -> IO CInt
@@ -369,7 +370,7 @@ readActiveGrid ci rp cacheRef t rows cols =
                 _ -> do
                     row <- V.generateM cols $ \x ->
                         let cellp = out `plusPtr` ((y * cols + x) * #{size GhostShimCell})
-                        in peekShimCell ci
+                        in peekShimCell (shareVals ci)
                             (graphemeMarks t #{const GHOST_SHIM_ACTIVE} x y) cellp
                     pure (row, cache.nextGen)
         let (grid, gens) = V.unzip tagged
@@ -378,12 +379,17 @@ readActiveGrid ci rp cacheRef t rows cols =
         pure (grid, gens)
 
 -- | Read one row's @cols@ cells under a point tag (active or history) into a
--- vector of 'Cell's.
-readRow :: CellIntern -> Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
-readRow ci t tag y cols = allocaBytes #{size GhostShimCell} $ \cellp ->
-    V.generateM cols $ \c -> do
-        _ <- c_cell t tag (fromIntegral c) (fromIntegral y) cellp
-        peekShimCell ci (graphemeMarks t tag c y) cellp
+-- vector of 'Cell's: one bulk crossing fills the whole row, resolving the
+-- page once instead of per cell. @share@ interns each cell ('shareVals' for
+-- rows that are retained) or passes it through ('pure' for rows read once
+-- and dropped, where interning would only pay Map lookups).
+readRow :: (Cell -> IO Cell) -> Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
+readRow share t tag y cols =
+    allocaBytes (max 1 cols * #{size GhostShimCell}) $ \out -> do
+        _ <- c_row_cells t tag (fromIntegral y) (fromIntegral cols) out
+        V.generateM cols $ \c ->
+            let cellp = out `plusPtr` (c * #{size GhostShimCell})
+            in peekShimCell share (graphemeMarks t tag c y) cellp
 
 -- | The combining codepoints of a cluster cell: the full cluster minus its
 -- base. Retries once with the exact size if a cluster outgrows the buffer.
@@ -402,11 +408,11 @@ graphemeMarks t tag x y = go 16
 
 -- | Marshal one 'GhostShimCell' the shim just filled into a 'Cell': a
 -- zero-width continuation renders as empty, a zero codepoint as a space, and
--- the flag bitmask and tagged colors decode as in the shim's header. The fresh
--- cell is interned ('shareVals') so equal cells across the grid and scrollback
--- collapse to one shared heap object.
-peekShimCell :: CellIntern -> IO [Char] -> Ptr () -> IO Cell
-peekShimCell ci fetchMarks p = do
+-- the flag bitmask and tagged colors decode as in the shim's header. @share@
+-- interns the fresh cell so equal cells across the grid and scrollback
+-- collapse to one shared heap object — or skips that for a transient read.
+peekShimCell :: (Cell -> IO Cell) -> IO [Char] -> Ptr () -> IO Cell
+peekShimCell share fetchMarks p = do
     cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
     g     <- #{peek GhostShimCell, grapheme} p :: IO CInt
     w     <- #{peek GhostShimCell, width} p :: IO CInt
@@ -422,7 +428,7 @@ peekShimCell ci fetchMarks p = do
             0 -> Continuation
             n -> Glyph ch mks (if n >= 2 then Wide else Narrow)
         has m = flags .&. m /= 0
-    shareVals ci $! Cell
+    share $! Cell
         { content = ct
         , style = Style
             { fg = color fgT fgV
@@ -528,7 +534,7 @@ currentPen :: Emulator -> IO Style
 currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     allocaBytes #{size GhostShimCell} $ \cellp -> do
         _ <- c_pen t cellp
-        (.style) <$> peekShimCell e.cellIntern (pure []) cellp
+        (.style) <$> peekShimCell (shareVals e.cellIntern) (pure []) cellp
 
 -- Scrollback lives inside libghostty (the HISTORY point tag), so the row limit
 -- hat exposes is enforced here on the read side, over libghostty's byte-bounded
@@ -552,7 +558,21 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
         then pure Nothing
         else do
             cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
-            Just <$> readRow e.cellIntern t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
+            Just <$> readRow (shareVals e.cellIntern) t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
+
+-- | Every exposed scrollback line painted to its replay bytes
+-- ('paintLineBytes'), oldest first, under one lock hold, each line's cells
+-- dropped as soon as they are painted. See 'Hat.Server.captureReloadScreen'.
+scrollbackPainted :: Emulator -> IO [ByteString]
+scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    lim <- readIORef e.sbLimit
+    phys <- physicalScrollback t
+    let exposed = min phys (max 0 lim)
+    cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
+    mapM (\i -> paintLineBytes
+            <$> readRow (shareVals e.cellIntern) t #{const GHOST_SHIM_HISTORY}
+                    (phys - exposed + i) cols)
+        [0 .. exposed - 1]
 
 -- | Whether a scrollback row (indexed as 'scrollbackLine') soft-wraps onto
 -- the next row.

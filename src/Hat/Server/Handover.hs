@@ -19,7 +19,7 @@ import Control.Exception
 import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -111,10 +111,7 @@ captureReloadScreen carry emu = do
     pen <- Emu.currentPen emu
     sb  <- case carry of
         DropScrollback -> pure []
-        KeepScrollback -> do
-            len <- Emu.scrollbackLength emu
-            let painted i = fmap Emu.paintLineBytes <$> Emu.scrollbackLine emu i
-            catMaybes <$> mapM painted [0 .. len - 1]
+        KeepScrollback -> Emu.scrollbackPainted emu
     pure ReloadScreen
         { altScreen     = m.altScreen
         , cursorRow     = scr.cursor.row

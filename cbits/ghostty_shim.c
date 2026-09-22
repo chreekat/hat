@@ -146,6 +146,35 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
     return 1;
 }
 
+/* One whole row's cells in a single page resolve: the node is looked up once
+ * at column 0 and reused across the row — a row never spans pages, so the
+ * ref's x is the terminal column. Failed rows come back all-blank. */
+int ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
+                         GhostShimCell *out) {
+    memset(out, 0, (size_t)cols * sizeof(*out));
+
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = 0;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return 0;
+    for (uint16_t x = 0; x < cols; x++) {
+        ref.x = x;
+        GhosttyCell cell;
+        if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS) {
+            memset(out, 0, (size_t)cols * sizeof(*out));
+            return 0;
+        }
+        GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+        const GhosttyStyle *stp =
+            ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS ? &st : NULL;
+        shim_from_cell(cell, stp, &out[x]);
+    }
+    return 1;
+}
+
 int ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
                               uint32_t *buf, size_t buf_len, size_t *out_len) {
     GhosttyPoint p = { .tag = (GhosttyPointTag)tag };

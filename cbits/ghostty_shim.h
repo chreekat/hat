@@ -42,6 +42,8 @@ int   ghost_shim_mode(void *t, uint16_t mode_num, int ansi);
 /* Read the cell at (x, y) under a point tag into *out. Returns 1 on success,
  * 0 when the ref or cell is unavailable (out is left zeroed). */
 int   ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out);
+int   ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
+                           GhostShimCell *out);
 int   ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
                                 uint32_t *buf, size_t buf_len, size_t *out_len);
 

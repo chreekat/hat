@@ -297,6 +297,20 @@ spec = do
 
     -- libghostty owns scrollback, so reload restores it by capturing the lines
     -- and re-seeding them (byte-replay) into the fresh emulator.
+    it "reads styled, wide, and clustered cells back out of scrollback" $ do
+        e <- newEmulator Size { rows = 3, cols = 20 } 1000
+        -- UTF-8 spelled out: 日 = e6 97 a5, combining acute U+0301 = cc 81
+        _ <- feedStr e "\ESC[31;1mred\ESC[0m \xe6\x97\xa5 e\xcc\x81\r\n"
+        forM_ [1 .. 4 :: Int] $ \_ -> feedStr e "\r\n"  -- scroll it into history
+        Just row <- scrollbackLine e 0
+        let cellAt i = row V.! i
+        (cellAt 0).content `shouldBe` Glyph 'r' [] Narrow
+        (cellAt 0).style `shouldBe` defaultStyle { fg = Indexed 1, bold = True }
+        (cellAt 2).style `shouldBe` defaultStyle { fg = Indexed 1, bold = True }
+        (cellAt 4).content `shouldBe` Glyph '日' [] Wide
+        (cellAt 5).content `shouldBe` Continuation
+        (cellAt 7).content `shouldBe` Glyph 'e' ['\x0301'] Narrow
+
     it "round-trips scrollback through capture and seed" $ do
         src <- new80x24
         forM_ [1 .. 30 :: Int] $ \i ->
