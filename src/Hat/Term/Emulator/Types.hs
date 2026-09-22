@@ -32,6 +32,7 @@ module Hat.Term.Emulator.Types
 
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Builder.Extra qualified as BBE
 import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as BL
 import Data.Maybe (fromMaybe)
@@ -182,7 +183,9 @@ restorePainted m pen cur vis rows = BL.toStrict $ BB.toLazyByteString $
 paintLineBytes :: V.Vector Cell -> B.ByteString
 paintLineBytes row = case rtrimBlank (V.toList row) of
     []    -> B.empty
-    cells -> BL.toStrict (BB.toLazyByteString (paintRow defaultStyle cells))
+    cells -> BL.toStrict (BBE.toLazyByteStringWith
+        (BBE.untrimmedStrategy 256 BBE.smallChunkSize) BL.empty
+        (paintRow defaultStyle cells))
 
 rtrimBlank :: [Cell] -> [Cell]
 rtrimBlank = reverse . dropWhile (== blankCell) . reverse
@@ -206,7 +209,8 @@ moveTo p = BB.byteString "\ESC["
 -- Mirrors 'Hat.Client.Draw.sgr' (client-out); kept separate to avoid the
 -- emulator depending on the client layer.
 cellSgr :: Style -> B.ByteString
-cellSgr st = BL.toStrict $ BB.toLazyByteString $
+cellSgr st = BL.toStrict $
+    BBE.toLazyByteStringWith (BBE.untrimmedStrategy 64 64) BL.empty $
     BB.byteString "\ESC[0"
     <> flag st.bold 1
     <> flag st.faint 2
