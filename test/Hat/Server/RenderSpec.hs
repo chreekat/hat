@@ -33,6 +33,19 @@ genFrame sz =
 smallSize :: Size
 smallSize = Size { rows = 6, cols = 12 }
 
+-- Rects may hang past (or start before) the frame; grids may be any
+-- size relative to the rect.
+genOverlay :: Gen (Frame, Rect, V.Vector (V.Vector Cell))
+genOverlay = do
+    frame <- genFrame smallSize
+    rect <- Rect
+        <$> chooseInt (-2, 8) <*> chooseInt (-2, 8)
+        <*> chooseInt (-2, 15) <*> chooseInt (-2, 15)
+    gr <- chooseInt (0, 8)
+    gc <- chooseInt (0, 15)
+    grid <- V.replicateM gr (V.replicateM gc genCell)
+    pure (frame, rect, grid)
+
 -- Reference interpreter: what a (single-width) terminal would show
 -- after executing the ops.
 applyOps :: Frame -> [DrawOp] -> Frame
@@ -74,6 +87,18 @@ spec = do
         -- run; the untouched third column is not re-sent.
         let ops = diffFrame old new
         ops `shouldBe` [Put Pos { row = 0, col = 0 } defaultStyle "aa"]
+
+    prop "overlays a grid clipped to both rect and frame" $
+        forAll genOverlay $ \(frame, rect, grid) ->
+            let expect r c
+                    | r >= rect.startRow, r < rect.endRow
+                    , c >= rect.startCol, c < rect.endCol =
+                        maybe blankCell id
+                            (grid V.!? (r - rect.startRow)
+                                >>= (V.!? (c - rect.startCol)))
+                    | otherwise = frame V.! r V.! c
+            in V.imap (\r -> V.imap (\c _ -> expect r c)) frame
+                === overlayGrid frame rect grid
 
     it "pads and clips a pane screen into a client frame" $ do
         let paneCells = V.fromList

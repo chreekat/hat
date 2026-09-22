@@ -37,15 +37,23 @@ composeFrame sz grid = V.generate (fromIntegral sz.rows) $ \r ->
     in V.generate w $ \c -> maybe blankCell id (src V.!? c)
 
 -- | Draw a pane grid into a frame at the given rectangle, clipping to
--- both the rect and the frame.
+-- both the rect and the frame. Rows outside the rect keep their
+-- identity, and a source row covering the full frame width passes
+-- through as-is, so unchanged rows stay pointer-equal for reuse checks
+-- downstream.
 overlayGrid :: Frame -> Rect -> V.Vector (V.Vector Cell) -> Frame
-overlayGrid frame rect grid = V.imap overlayRow frame
+overlayGrid frame rect grid = frame V.// updates
   where
+    updates =
+        [ (r, overlayRow r (frame V.! r))
+        | r <- [max 0 rect.startRow .. min (V.length frame) rect.endRow - 1]
+        ]
     overlayRow r frameRow
-        | r < rect.startRow || r >= rect.endRow = frameRow
-        | otherwise =
-            let src = maybe V.empty (\x -> x) (grid V.!? (r - rect.startRow))
-            in V.imap (overlayCell src) frameRow
+        | rect.startCol == 0, rect.endCol >= V.length frameRow
+        , V.length src == V.length frameRow = src
+        | otherwise = V.imap (overlayCell src) frameRow
+      where
+        src = maybe V.empty (\x -> x) (grid V.!? (r - rect.startRow))
     overlayCell src c cell
         | c < rect.startCol || c >= rect.endCol = cell
         | otherwise = maybe blankCell (\x -> x) (src V.!? (c - rect.startCol))
