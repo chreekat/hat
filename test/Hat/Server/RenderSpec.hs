@@ -88,6 +88,27 @@ spec = do
         let ops = diffFrame old new
         ops `shouldBe` [Put Pos { row = 0, col = 0 } defaultStyle "aa"]
 
+    prop "a known-equal row mask never changes the diff" $
+        forAll ((,,) <$> genFrame smallSize <*> genFrame smallSize
+                     <*> infiniteListOf arbitrary) $
+            \(old, new, coins) ->
+                -- Sound mask: true only on genuinely equal rows (any subset).
+                let known r = old V.!? r == new V.!? r && coins !! r
+                in diffFrameKnown known old new === diffFrame old new
+
+    prop "overlayGridRows reports rows taken whole from the grid" $
+        forAll genOverlay $ \(frame, rect, grid) ->
+            let (out, taken) = overlayGridRows frame rect grid
+            in conjoin
+                [ out V.! fr === grid V.! gr | (fr, gr) <- taken ]
+                .&&. (out === overlayGrid frame rect grid)
+
+    it "reports every row of an exact-fit overlay" $ do
+        let grid = V.replicate 3 (V.replicate 4 (glyphCell 'g' defaultStyle))
+            frame = blankFrame Size { rows = 3, cols = 4 }
+            rect = Rect { startRow = 0, endRow = 3, startCol = 0, endCol = 4 }
+        snd (overlayGridRows frame rect grid) `shouldBe` [(0, 0), (1, 1), (2, 2)]
+
     prop "overlays a grid clipped to both rect and frame" $
         forAll genOverlay $ \(frame, rect, grid) ->
             let expect r c

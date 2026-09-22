@@ -7,9 +7,11 @@ module Hat.Server.Render
     , blankFrame
     , composeFrame
     , overlayGrid
+    , overlayGridRows
     , applyBorders
     , tintInnerRing
     , diffFrame
+    , diffFrameKnown
     , fullRedraw
     ) where
 
@@ -42,16 +44,28 @@ composeFrame sz grid = V.generate (fromIntegral sz.rows) $ \r ->
 -- through as-is, so unchanged rows stay pointer-equal for reuse checks
 -- downstream.
 overlayGrid :: Frame -> Rect -> V.Vector (V.Vector Cell) -> Frame
-overlayGrid frame rect grid = frame V.// updates
+overlayGrid frame rect grid = fst (overlayGridRows frame rect grid)
+
+-- | 'overlayGrid', also naming which rows the grid supplied whole as
+-- @(frame row, grid row)@ pairs — the rows whose cells in the result ARE
+-- the grid's, so a caller can tie them back to the grid's provenance.
+overlayGridRows
+    :: Frame -> Rect -> V.Vector (V.Vector Cell)
+    -> (Frame, [(Int, Int)])
+overlayGridRows frame rect grid = (frame V.// updates, taken)
   where
-    updates =
-        [ (r, overlayRow r (frame V.! r))
+    updates = [ (r, row) | (r, row, _) <- overlaid ]
+    taken = [ (r, r - rect.startRow) | (r, _, whole) <- overlaid, whole ]
+    overlaid =
+        [ (r, row, whole)
         | r <- [max 0 rect.startRow .. min (V.length frame) rect.endRow - 1]
+        , let (row, whole) = overlayRow r (frame V.! r)
         ]
     overlayRow r frameRow
-        | rect.startCol == 0, rect.endCol >= V.length frameRow
-        , V.length src == V.length frameRow = src
-        | otherwise = V.imap (overlayCell src) frameRow
+        | Just srcRow <- grid V.!? (r - rect.startRow)
+        , rect.startCol == 0, rect.endCol >= V.length frameRow
+        , V.length srcRow == V.length frameRow = (srcRow, True)
+        | otherwise = (V.imap (overlayCell src) frameRow, False)
       where
         src = maybe V.empty (\x -> x) (grid V.!? (r - rect.startRow))
     overlayCell src c cell
@@ -89,9 +103,16 @@ tintInnerRing sty frame rect = V.imap tintRow frame
 
 -- | Ops that turn @old@ into @new@ on the client's terminal.
 diffFrame :: Frame -> Frame -> [DrawOp]
-diffFrame old new = concat
+diffFrame = diffFrameKnown (\_ -> False)
+
+-- | 'diffFrame' skipping — without comparing — rows the caller knows are
+-- equal in both frames. The predicate must be true only for rows whose
+-- cells genuinely match, or the screen keeps stale content.
+diffFrameKnown :: (Int -> Bool) -> Frame -> Frame -> [DrawOp]
+diffFrameKnown known old new = concat
     [ rowOps r oldRow newRow
     | (r, newRow) <- zip [0 ..] (V.toList new)
+    , not (known r)
     , let oldRow = maybe V.empty id (old V.!? r)
     , oldRow /= newRow
     ]
