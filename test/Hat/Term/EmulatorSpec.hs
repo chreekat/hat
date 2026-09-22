@@ -324,6 +324,24 @@ spec = do
         restored <- catMaybes <$> traverse (scrollbackLine dst) [0 .. len - 1]
         restored `shouldBe` captured
 
+    -- scrollbackPainted paints off the shim's raw row buffer; its bytes must
+    -- never drift from paintLineBytes over the same rows' cells.
+    it "paints scrollback byte-identically to paintLineBytes over its cells" $ do
+        e <- newEmulator Size { rows = 3, cols = 20 } 1000
+        _ <- feedStr e "plain text\r\n"
+        _ <- feedStr e "\ESC[1;31mbold red\ESC[0m tail\r\n"
+        _ <- feedStr e "\ESC[38;2;9;8;7mrgb\ESC[48;5;42m bg\ESC[0m\r\n"
+        -- UTF-8 spelled out: 日 = e6 97 a5, combining acute U+0301 = cc 81
+        _ <- feedStr e "wide \xe6\x97\xa5 e\xcc\x81 marks\r\n"
+        _ <- feedStr e "\ESC[44mbg-erased blanks\ESC[K\r\n"
+        _ <- feedStr e "\ESC[7;2;4mreverse faint under\ESC[0m\r\n"
+        forM_ [1 .. 4 :: Int] $ \_ -> feedStr e "\r\n"  -- scroll into history
+        len <- scrollbackLength e
+        len `shouldSatisfy` (>= 6)
+        cellRows <- catMaybes <$> mapM (scrollbackLine e) [0 .. len - 1]
+        painted <- scrollbackPainted e
+        painted `shouldBe` map paintLineBytes cellRows
+
     -- bug: adoptPane restores a primary-screen pane by both painting the live
     -- grid and seeding scrollback into one fresh emulator. The live grid must
     -- survive the seed -- a shell that never repaints on attach would otherwise

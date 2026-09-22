@@ -55,13 +55,13 @@ module Hat.Term.Emulator
 #include "ghostty_shim.h"
 
 import Control.Concurrent.MVar
-import Control.Monad (unless)
+import Control.Monad (foldM, unless)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Unsafe qualified as BU
-import Data.Char (chr)
+import Data.Char (chr, ord)
 import Data.IORef
 import Data.List (intersperse)
 import Data.Map (Map)
@@ -416,31 +416,35 @@ peekShimCell share fetchMarks p = do
     cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
     g     <- #{peek GhostShimCell, grapheme} p :: IO CInt
     w     <- #{peek GhostShimCell, width} p :: IO CInt
-    flags <- #{peek GhostShimCell, flags} p :: IO CUInt
-    fgT   <- #{peek GhostShimCell, fg_tag} p :: IO CInt
-    fgV   <- #{peek GhostShimCell, fg_val} p :: IO Word32
-    bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
-    bgV   <- #{peek GhostShimCell, bg_val} p :: IO Word32
+    sty   <- peekShimStyle p
     mks <- if g /= 0 && w /= 0 then fetchMarks else pure []
     let ch | cp == 0   = ' '
            | otherwise = chr (fromIntegral cp)
         ct = case fromIntegral w :: Int of
             0 -> Continuation
             n -> Glyph ch mks (if n >= 2 then Wide else Narrow)
-        has m = flags .&. m /= 0
-    share $! Cell
-        { content = ct
-        , style = Style
-            { fg = color fgT fgV
-            , bg = color bgT bgV
-            , bold = has 1
-            , underline = has 2
-            , italic = has 4
-            , reverse = has 8
-            , strike = has 16
-            , blink = has 32
-            , faint = has 64
-            }
+    share $! Cell { content = ct, style = sty }
+
+-- | The style half of a shim cell: the flag bitmask and tagged colors decode
+-- as in the shim's header.
+peekShimStyle :: Ptr () -> IO Style
+peekShimStyle p = do
+    flags <- #{peek GhostShimCell, flags} p :: IO CUInt
+    fgT   <- #{peek GhostShimCell, fg_tag} p :: IO CInt
+    fgV   <- #{peek GhostShimCell, fg_val} p :: IO Word32
+    bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
+    bgV   <- #{peek GhostShimCell, bg_val} p :: IO Word32
+    let has m = flags .&. m /= 0
+    pure Style
+        { fg = color fgT fgV
+        , bg = color bgT bgV
+        , bold = has 1
+        , underline = has 2
+        , italic = has 4
+        , reverse = has 8
+        , strike = has 16
+        , blink = has 32
+        , faint = has 64
         }
   where
     color :: CInt -> Word32 -> Color
@@ -561,20 +565,118 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
             Just <$> readRow (shareVals e.cellIntern) t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
 
 -- | Every exposed scrollback line painted to its replay bytes
--- ('paintLineBytes'), oldest first, under one lock hold, each line's cells
--- dropped as soon as they are painted. See 'Hat.Server.captureReloadScreen'.
+-- ('paintShimRow'), oldest first, under one lock hold. See
+-- 'Hat.Server.captureReloadScreen'.
 scrollbackPainted :: Emulator -> IO [ByteString]
 scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     lim <- readIORef e.sbLimit
     phys <- physicalScrollback t
     let exposed = min phys (max 0 lim)
     cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
-    mapM (\i -> do
-            row <- readRow pure t #{const GHOST_SHIM_HISTORY}
-                       (phys - exposed + i) cols
-            let !bs = paintLineBytes row
-            pure bs)
-        [0 .. exposed - 1]
+    -- 68 covers a markless cell's worst case ('cellSgr' ≤ 54 + 4 UTF-8
+    -- bytes); grapheme marks eat the shared slack, overflowing into a retry.
+    let cap = max 1 cols * 68 + 64
+    allocaBytes (max 1 cols * #{size GhostShimCell}) $ \buf ->
+        allocaBytes cap $ \out ->
+            mapM (\i -> paintShimRow t #{const GHOST_SHIM_HISTORY}
+                            (phys - exposed + i) cols buf out cap)
+                [0 .. exposed - 1]
+
+-- | One row's replay bytes painted straight off the shim's row buffer: fill
+-- @buf@ via 'c_row_cells', trim trailing 'blankCell's, and emit each cell's
+-- text into @out@ under 'cellSgr' runs — marshalling a 'Style' only when the
+-- raw style words change, and never a 'Cell'. A row outgrowing @out@ retries
+-- into a bigger buffer. Must stay byte-identical to 'paintLineBytes' over
+-- the same row's cells (pinned in @EmulatorSpec@).
+paintShimRow :: Ptr CTerm -> CInt -> Int -> Int -> Ptr ()
+             -> Ptr Word8 -> Int -> IO ByteString
+paintShimRow t tag y cols buf out0 cap0 = do
+    _ <- c_row_cells t tag (fromIntegral y) (fromIntegral cols) buf
+    end <- trimEnd (cols - 1)
+    attempt end out0 cap0
+  where
+    attempt end out cap =
+        walk out cap 0 end 0 0 0 0 0 0 defaultStyle >>= \case
+            Just n  -> B.packCStringLen (castPtr out, n)
+            Nothing -> allocaBytes (cap * 4) $ \bigger ->
+                attempt end bigger (cap * 4)
+    cellAt i = buf `plusPtr` (i * #{size GhostShimCell})
+    marksAt g i = if g /= (0 :: CInt) then graphemeMarks t tag i y else pure []
+    trimEnd i
+        | i < 0 = pure (-1)
+        | otherwise = do
+            let p = cellAt i
+            cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
+            w     <- #{peek GhostShimCell, width} p :: IO CInt
+            g     <- #{peek GhostShimCell, grapheme} p
+            flags <- #{peek GhostShimCell, flags} p :: IO CUInt
+            fgT   <- #{peek GhostShimCell, fg_tag} p :: IO CInt
+            bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
+            mks   <- marksAt g i
+            let blank = (cp == 0 || cp == 32) && w == 1 && null mks
+                    && flags == 0 && fgT /= 1 && fgT /= 2 && bgT /= 1 && bgT /= 2
+            if blank then trimEnd (i - 1) else pure i
+    walk out cap i end o rf rft rfv rbt rbv pen
+        | i > end = pure (Just o)
+        | otherwise = do
+            let p = cellAt i
+            f  <- #{peek GhostShimCell, flags} p :: IO CUInt
+            ft <- #{peek GhostShimCell, fg_tag} p :: IO CInt
+            fv <- #{peek GhostShimCell, fg_val} p :: IO Word32
+            bt <- #{peek GhostShimCell, bg_tag} p :: IO CInt
+            bv <- #{peek GhostShimCell, bg_val} p :: IO Word32
+            w  <- #{peek GhostShimCell, width} p :: IO CInt
+            g  <- #{peek GhostShimCell, grapheme} p
+            mks <- if w /= 0 then marksAt g i else pure []
+            let emit o1 pen' = do
+                    o2 <- if w == 0
+                        then pure o1
+                        else do
+                            cp <- #{peek GhostShimCell, codepoint} p :: IO Word32
+                            let u = if cp == 0 then 0x20 else fromIntegral cp
+                            o' <- pokeUtf8 out o1 u
+                            foldM (\oo m -> pokeUtf8 out oo (ord m)) o' mks
+                    let skip = if w >= 2 then 1 else 0
+                    walk out cap (i + 1 + skip) end o2 f ft fv bt bv pen'
+            if o + 68 + 4 * length mks > cap
+                then pure Nothing
+                else if f == rf && ft == rft && fv == rfv
+                        && bt == rbt && bv == rbv
+                    then emit o pen
+                    else do
+                        sty <- peekShimStyle p
+                        if sty == pen
+                            then emit o sty
+                            else do
+                                o1 <- pokeBS out o (cellSgr sty)
+                                emit o1 sty
+    pokeBS out o bs = BU.unsafeUseAsCStringLen bs $ \(src, n) -> do
+        copyBytes (out `plusPtr` o) (castPtr src) n
+        pure (o + n)
+    -- 'BB.stringUtf8'-compatible for every code point, surrogates included
+    -- (bytestring, too, encodes them by the plain 3-byte branch)
+    pokeUtf8 :: Ptr Word8 -> Int -> Int -> IO Int
+    pokeUtf8 out o u
+        | u < 0x80 = do
+            pokeByteOff out o (fromIntegral u :: Word8)
+            pure (o + 1)
+        | u < 0x800 = do
+            pokeByteOff out o       (0xc0 .|. byte u 6)
+            pokeByteOff out (o + 1) (cont u 0)
+            pure (o + 2)
+        | u < 0x10000 = do
+            pokeByteOff out o       (0xe0 .|. byte u 12)
+            pokeByteOff out (o + 1) (cont u 6)
+            pokeByteOff out (o + 2) (cont u 0)
+            pure (o + 3)
+        | otherwise = do
+            pokeByteOff out o       (0xf0 .|. byte u 18)
+            pokeByteOff out (o + 1) (cont u 12)
+            pokeByteOff out (o + 2) (cont u 6)
+            pokeByteOff out (o + 3) (cont u 0)
+            pure (o + 4)
+    byte u s = fromIntegral (u `shiftR` s) :: Word8
+    cont u s = 0x80 .|. (byte u s .&. 0x3f)
 
 -- | Whether a scrollback row (indexed as 'scrollbackLine') soft-wraps onto
 -- the next row.
