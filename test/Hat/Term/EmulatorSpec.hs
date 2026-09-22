@@ -49,6 +49,18 @@ spec = do
                 (sa == sb) `shouldBe` True
             _ -> expectationFailure "expected at least two blank cells"
 
+    it "keeps unchanged rows correct while a later change refreshes one row" $ do
+        e <- new80x24
+        _ <- feedStr e "aaa\r\nbbb\r\nccc"
+        s1 <- snapshot e
+        rowText s1 0 `shouldBe` "aaa"
+        rowText s1 2 `shouldBe` "ccc"
+        _ <- feedStr e "\ESC[2;1HZZZ"   -- rewrite only the middle row
+        s2 <- snapshot e
+        rowText s2 0 `shouldBe` "aaa"   -- reused row stays correct
+        rowText s2 1 `shouldBe` "ZZZ"   -- changed row refreshes
+        rowText s2 2 `shouldBe` "ccc"
+
     it "puts plain text on the first row" $ do
         e <- new80x24
         _ <- feedStr e "hello"

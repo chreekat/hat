@@ -140,6 +140,8 @@ data Emulator = Emulator
         -- ^ shared representatives for cells read out of libghostty
     , render  :: Ptr CRender
         -- ^ render-state bundle for 'snapshot'; freed by 'term's finalizer
+    , gridCache :: IORef (V.Vector (V.Vector Cell))
+        -- ^ last snapshot's rows, reused for rows the render state reports clean
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
@@ -192,9 +194,10 @@ newEmulator sz limit = do
         freeHaskellFunPtr writePtyW
         freeHaskellFunPtr bellW
     ci <- newIORef Map.empty
+    gc <- newIORef V.empty
     pure Emulator
         { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci
-        , render = rp }
+        , render = rp, gridCache = gc }
 
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
@@ -304,16 +307,18 @@ resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
 -- libghostty: its cols\/rows, cursor, and every active-area cell.
 snapshot :: Emulator -> IO Screen
 snapshot e = withMVar e.lock $ \_ ->
-    withForeignPtr e.term (readGrid e.cellIntern e.render)
+    withForeignPtr e.term (readGrid e.cellIntern e.render e.gridCache)
 
-readGrid :: CellIntern -> Ptr CRender -> Ptr CTerm -> IO Screen
-readGrid ci rp t = do
+readGrid
+    :: CellIntern -> Ptr CRender -> IORef (V.Vector (V.Vector Cell))
+    -> Ptr CTerm -> IO Screen
+readGrid ci rp cacheRef t = do
     cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
     rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
     cx   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_X}
     cy   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_Y}
     vis  <- c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
-    grid <- readActiveGrid ci rp t rows cols
+    grid <- readActiveGrid ci rp cacheRef t rows cols
     pure Screen
         { size = Size { rows = fromIntegral rows, cols = fromIntegral cols }
         , cells = grid
@@ -321,21 +326,31 @@ readGrid ci rp t = do
         , cursorVisible = vis /= 0
         }
 
--- | The active viewport's cells, filled in one render-state pass rather than a
--- grid_ref lookup per cell. The per-row dirty flags the snapshot also writes
--- go unused here; they gate the clean-row cache one layer up.
+-- | The active viewport's cells, in one render-state pass rather than a
+-- grid_ref lookup per cell. Rows the render state reports unchanged since the
+-- last snapshot are reused from the cache verbatim — the same 'Cell' vectors,
+-- so an unchanged row costs no per-cell marshalling and stays pointer-equal
+-- for a downstream frame diff. A width change forces every row (the cache no
+-- longer fits), matching the render state's full-dirty resize.
 readActiveGrid
-    :: CellIntern -> Ptr CRender -> Ptr CTerm -> Int -> Int
-    -> IO (V.Vector (V.Vector Cell))
-readActiveGrid ci rp t rows cols =
+    :: CellIntern -> Ptr CRender -> IORef (V.Vector (V.Vector Cell))
+    -> Ptr CTerm -> Int -> Int -> IO (V.Vector (V.Vector Cell))
+readActiveGrid ci rp cacheRef t rows cols =
     allocaBytes (rows * cols * #{size GhostShimCell}) $ \out ->
     allocaBytes rows $ \dirty -> do
         _ <- c_render_snapshot rp t (fromIntegral cols) (fromIntegral rows)
                 out dirty
-        V.generateM rows $ \y -> V.generateM cols $ \x ->
-            let cellp = out `plusPtr` ((y * cols + x) * #{size GhostShimCell})
-            in peekShimCell ci
-                (graphemeMarks t #{const GHOST_SHIM_ACTIVE} x y) cellp
+        cache <- readIORef cacheRef
+        grid <- V.generateM rows $ \y -> do
+            clean <- (== 0) <$> (peekElemOff dirty y :: IO Word8)
+            case cache V.!? y of
+                Just row | clean, V.length row == cols -> pure row
+                _ -> V.generateM cols $ \x ->
+                    let cellp = out `plusPtr` ((y * cols + x) * #{size GhostShimCell})
+                    in peekShimCell ci
+                        (graphemeMarks t #{const GHOST_SHIM_ACTIVE} x y) cellp
+        writeIORef cacheRef grid
+        pure grid
 
 -- | Read one row's @cols@ cells under a point tag (active or history) into a
 -- vector of 'Cell's.
