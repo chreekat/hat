@@ -212,6 +212,7 @@ executable replay-reload
     main-is:            ReplayReload.hs
     ghc-options:        -threaded -rtsopts
     build-depends:
+        async       ^>= 2.2.6,
         base        ^>= 4.20.2.0,
         bytestring  ^>= 0.12.2.0,
         hat,

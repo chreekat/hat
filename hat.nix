@@ -16,8 +16,8 @@ mkDerivation {
   ];
   libraryPkgconfigDepends = [ libghostty-vt ];
   executableHaskellDepends = [
-    base bytestring containers directory network process text unix
-    vector
+    async base bytestring containers directory network process text
+    unix vector
   ];
   testHaskellDepends = [
     async base bytestring cborg containers directory filepath hspec

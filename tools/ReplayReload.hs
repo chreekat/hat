@@ -14,6 +14,7 @@
 -- Heap-profile the rehydration with @just reload_rehydrate_profile@.
 module Main (main) where
 
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (forM)
 import Data.ByteString qualified as B
 import Data.Maybe (fromMaybe)
@@ -66,7 +67,7 @@ main = do
     -- Model of the outgoing image's half: re-capture the emulators just
     -- rebuilt, then encode a fresh payload around them (dummy handles; the
     -- tree is the decoded one's, so the blob round-trips below).
-    screens <- forM emus (captureReloadScreen KeepScrollback . snd)
+    screens <- mapConcurrently (captureReloadScreen KeepScrollback . snd) emus
     t3 <- getMonotonicTime
     let hots = [ HotPane { masterFd = -1, childPid = -1
                          , modes = ReloadModes False False 0 False 0
@@ -108,14 +109,15 @@ treeJson t = encodeSnapshotJson Snapshot
         , panes = map fst w.panes }
 
 -- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty
--- adoption and 'ServerState' bookkeeping: the traversal consumes the tree and
--- yields only the emulators, so the tree is collectable once it returns.
+-- adoption and 'ServerState' bookkeeping: panes rebuild concurrently, the
+-- traversal consumes the tree, and only the emulators are kept, so the tree
+-- is collectable once it returns.
 rebuild :: ReloadTree -> IO [(String, Emu.Emulator)]
-rebuild tree = fmap concat $ forM tree.sessions $ \sess ->
-    fmap concat $ forM sess.windows $ \win ->
-        forM (zip [0 :: Int ..] win.panes) $ \(ordinal, (_, rp)) -> do
-            e <- adopt rp
-            pure (T.unpack sess.name <> ":" <> show win.ix <> "." <> show ordinal, e)
+rebuild tree = mapConcurrently (traverse adopt)
+    [ ( T.unpack sess.name <> ":" <> show win.ix <> "." <> show ordinal, rp )
+    | sess <- tree.sessions
+    , win <- sess.windows
+    , (ordinal, (_, rp)) <- zip [0 :: Int ..] win.panes ]
 
 adopt :: HotPane -> IO Emu.Emulator
 adopt rp = do

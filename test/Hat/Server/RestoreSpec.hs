@@ -27,7 +27,7 @@ import Hat.Server
      StartupGate (..), StorePin (..),
      captureReloadScreen, captureSize, cmdRestart, cmdRestartServer,
      defaultRestoreCommands, finallyReady, parseReloadArgs, persistDecision,
-     phaseAfterConfig, rebuildReloadSession, reloadSchemePush, replayPane,
+     phaseAfterConfig, rebuildReload, reloadSchemePush, replayPane,
      restoreRun, runCommands, shellLine, snapshotHistoryLimit, startupGate,
      uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
@@ -36,7 +36,7 @@ import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
     (HotPane (..), HotSession (..), HotWindow (..), ReloadModes (..),
-     ReloadScreen (..), emptyReloadScreen)
+     ReloadScreen (..), ReloadTree (..), emptyReloadScreen)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -255,7 +255,9 @@ spec = do
                 rsess = HotSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
                     , windowHist = [], windows = [rw] }
-            rebuildReloadSession st rsess
+            rebuildReload st ReloadTree
+                { sessions = [rsess]
+                , currentSession = Nothing, lastSession = Nothing }
             sessMap <- readTVarIO st.sessions
             szs <- mapM (readTVarIO . (.lastSize)) (Map.elems sessMap)
             szs `shouldBe` [Size { rows = 30, cols = 100 }]

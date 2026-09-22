@@ -6,18 +6,22 @@ module Hat.Server.Handover
     , captureReload
     , readReload
     , rebuildReload
-    , rebuildReloadSession
     , captureReloadScreen
     , replayPane
     , captureSize
     , reloadSchemePush
     ) where
 
+import Control.Concurrent
+    (getNumCapabilities, setNumCapabilities)
+import GHC.Conc (getNumProcessors)
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.STM
 import Control.Exception
-    (IOException, catch, try)
+    (IOException, bracket, catch, try)
 import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -79,7 +83,8 @@ captureReload carry st = do
         lsName  <- traverse (readTVar . (.name)) (lsId >>= (`Map.lookup` sessMap))
         mfd     <- readTVar st.listenFd
         pure (lsName, mfd)
-    hots <- mapM (captureHotPane carry) panes
+    hots <- withCapabilities (length panes) $
+        mapConcurrently (captureHotPane carry) panes
     pure ( ReloadCleanup
              { listenFd = fromMaybe (-1) mfd
              , live = [(p.masterFd, p.childPid) | p <- hots] }
@@ -162,10 +167,26 @@ readReload lg hp = do
 
 -- | Rebuild the tree from a reload handover, adopting each pane's inherited
 -- pty and child rather than spawning; each pane's captured screen is replayed
--- into its fresh emulator ('adoptPane').
+-- into its fresh emulator ('adoptPane'). Pane ids are assigned in tree order
+-- first, so numbering stays deterministic; the adoptions themselves — each
+-- pane's fresh emulator and its replay — run concurrently across the
+-- machine's cores, and the tree walk then consumes the built panes in the
+-- same order.
 rebuildReload :: ServerState -> ReloadTree -> IO ()
 rebuildReload st rt = do
-    forM_ rt.sessions (rebuildReloadSession st)
+    histLimit <- (.historyLimit) <$> readTVarIO st.options
+    let flat = [ p | s <- rt.sessions, w <- s.windows, p <- w.panes ]
+    pids <- mapM (\_ -> PaneId <$> atomically (freshId st.nextPane)) flat
+    built <- withCapabilities (length flat) $ mapConcurrently
+        (\(pid, p) -> adoptPane st histLimit pid p)
+        (zip pids flat)
+    ready <- newIORef built
+    let popPane _ _ _ = atomicModifyIORef' ready $ \case
+            p : rest -> (rest, p)
+            [] -> ([], error "reload: pane walk out of sync with the adoptions")
+    forM_ rt.sessions $ \rsess -> do
+        env <- restoreEnv
+        rebuildSession st env popPane rsess
     forM_ rt.currentSession $ \nm ->
         resolveSessionByName st nm $ \s ->
             atomically (writeTVar st.lastActiveSession (Just s.id))
@@ -173,35 +194,41 @@ rebuildReload st rt = do
         resolveSessionByName st nm $ \s ->
             atomically (writeTVar st.lastSession (Just s.id))
 
+-- | Run an action with enough capabilities to spread @n@ concurrent pane
+-- jobs over the cores, restoring the configured count after: the server
+-- normally runs -N2, which would cap a reload's parallelism at two.
+withCapabilities :: Int -> IO a -> IO a
+withCapabilities n act = bracket
+    (do old <- getNumCapabilities
+        procs <- getNumProcessors
+        old <$ setNumCapabilities (max old (min procs n)))
+    setNumCapabilities
+    (const act)
+
 resolveSessionByName :: ServerState -> Text -> (Session -> IO ()) -> IO ()
 resolveSessionByName st nm act = do
     sessMap <- readTVarIO st.sessions
     hits <- filterM (fmap (== nm) . readTVarIO . (.name)) (Map.elems sessMap)
     forM_ (listToMaybe hits) act
 
-rebuildReloadSession :: ServerState -> HotSession -> IO ()
-rebuildReloadSession st rsess = do
-    env <- restoreEnv
-    histLimit <- (.historyLimit) <$> readTVarIO st.options
-    rebuildSession st env (const (adoptPane st histLimit)) rsess
-
 -- | Build a pane around an inherited pty ('Hat.Term.Pty.adopt') and a blank
 -- emulator, for the reload path — the analogue of 'spawnPane' that re-adopts
--- a running child instead of forking a new one.
-adoptPane :: ServerState -> Int -> Size -> (PaneSnap, HotPane) -> IO Pane
-adoptPane st histLimit sz (psnap, rp) = do
-    pid <- PaneId <$> atomically (freshId st.nextPane)
+-- a running child instead of forking a new one. Safe to run concurrently
+-- across panes: everything it touches is its own (the id is pre-assigned).
+adoptPane :: ServerState -> Int -> PaneId -> (PaneSnap, HotPane) -> IO Pane
+adoptPane st histLimit pid (psnap, rp) = do
     -- Trace each adopt phase so a resume that stalls names the pane and the
     -- step it stalled on (fd adopt vs. screen replay) instead of going silent.
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "start" }
     pty <- Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
                               (fromIntegral rp.childPid)
-    -- Adopt at the size the pane was CAPTURED at, not the session default:
-    -- replaying a capture into a smaller grid wraps and clamps it into a
-    -- state whose later reflow-resize aborts inside the emulator ("screen_resize
-    -- failed to update cursor position", the 2026-07-28 field crash). The
-    -- reconcile loop then resizes toward the layout as for any live pane.
-    let esz = fromMaybe sz (captureSize rp.screen)
+    -- Adopt at the size the pane was CAPTURED at, not a default: replaying a
+    -- capture into a smaller grid wraps and clamps it into a state whose
+    -- later reflow-resize aborts inside the emulator ("screen_resize failed
+    -- to update cursor position", the 2026-07-28 field crash). The reconcile
+    -- loop then resizes toward the layout as for any live pane — including a
+    -- blank (pre-screen era) capture's placeholder size.
+    let esz = fromMaybe Size { rows = 24, cols = 80 } (captureSize rp.screen)
     emu <- Emu.newEmulator esz histLimit
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "replaying" }
     -- Seed the scrollback first, then paint the live grid on top of it, so the

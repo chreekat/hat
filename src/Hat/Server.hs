@@ -8,8 +8,8 @@ module Hat.Server
     , ScrollbackCarry (..)  -- ^ exported for the reload-screen round-trip test
     , replayPane           -- ^ exported for the reload-screen round-trip test
     , reloadSchemePush     -- ^ exported for the reload scheme re-push test
-    , rebuildReloadSession -- ^ exported for the reload session-size test
     , captureSize          -- ^ exported for the oversized-capture adopt test
+    , rebuildReload        -- ^ exported for the reload session-size test
     , cmdRestartServer     -- ^ exported for the reload-in-progress guard test
     , cmdRestart           -- ^ exported for the restart failure-abort test
     , ReloadScope (..)     -- ^ exported for the restart farewell test
