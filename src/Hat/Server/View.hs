@@ -128,12 +128,19 @@ renderOnce st client = do
                     }
                 base0 = applyBorders (blankFrame csize)
                     (borderCells opts (List.lookup active rects) rowOff borders)
-            base <- foldM' base0 rects $ \acc (pidL, rect) ->
+            -- Snapshot each visible pane once; its cells and its cursor both
+            -- come from that one read (the active pane was snapshotted twice).
+            paneViews <- fmap (Map.fromList . concat) $ forM rects $ \(pidL, _) ->
                 case Map.lookup pidL ps of
-                    Nothing -> pure acc
+                    Nothing -> pure []
                     Just pane -> do
-                        cells <- paneViewCells st pane
-                        pure (overlayGrid acc (shiftRect rect) cells)
+                        pv <- paneView st pane
+                        pure [(pidL, pv)]
+            let base = List.foldl'
+                    (\acc (pidL, rect) -> case Map.lookup pidL paneViews of
+                        Nothing -> acc
+                        Just pv -> overlayGrid acc (shiftRect rect) pv.cells)
+                    base0 rects
             mflash <- readTVarIO client.flash
             scheme <- readTVarIO st.colorScheme
             let flashed
@@ -166,11 +173,9 @@ renderOnce st client = do
                 (Just pr, Just (ix, _)) ->
                     pure (Pos { row = ix
                               , col = min (w - 1) (promptCursorCol pr) }, True)
-                _ -> case Map.lookup active ps of
-                    Nothing -> pure (Pos 0 0, False)
-                    Just pane -> do
-                        let origin = paneOrigin rects active
-                        paneCursor pane origin rowOff
+                _ -> pure $ case Map.lookup active paneViews of
+                    Nothing -> (Pos 0 0, False)
+                    Just pv -> placePaneCursor (paneOrigin rects active) rowOff pv
             pure (withStatus, cur, shiftRect <$> List.lookup active rects)
     -- A chooser overlay, when open, is drawn in the active pane's rect
     -- (or the whole window under -Z), with a live preview of the
@@ -217,7 +222,6 @@ renderOnce st client = do
             then "\ESC]112\a"
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where
-    foldM' z xs f = foldM f z xs
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
 
 -- | The rendered cells previewing the highlighted node, sized to the
@@ -410,14 +414,27 @@ mapGlyph bl ch = case bl of
     simple '\x253c' = '+'; simple '\x2524' = '+'; simple '\x251c' = '+'
     simple '\x252c' = '+'; simple '\x2534' = '+'; simple c = c
 
--- | The cells a pane contributes to a frame. Normally its live screen;
--- in copy mode, a viewport over scrollback+screen with the selection
--- reverse-videoed.
-paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
-paneViewCells st pane = do
+-- | A pane's contribution to a frame, from ONE emulator snapshot: its cells
+-- and its pane-local cursor. Normally the live screen; in copy mode, a
+-- viewport over scrollback+screen with the selection reverse-videoed and the
+-- copy cursor (absent when scrolled off the viewport).
+data PaneView = PaneView
+    { cells :: V.Vector (V.Vector Cell.Cell)
+    , cursor :: Maybe Pos
+    , cursorVisible :: Bool
+    }
+
+paneView :: ServerState -> Pane -> IO PaneView
+paneView st pane = do
     mmode <- readTVarIO pane.mode
     case mmode of
-        Nothing -> (.cells) <$> Emu.snapshot pane.emulator
+        Nothing -> do
+            scr <- Emu.snapshot pane.emulator
+            pure PaneView
+                { cells = scr.cells
+                , cursor = Just scr.cursor
+                , cursorVisible = scr.cursorVisible
+                }
         Just pm -> do
             opts <- readTVarIO st.options
             let s = pm.copyState
@@ -428,11 +445,23 @@ paneViewCells st pane = do
                 overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
                     (V.fromList rows)
                 label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
-            pure (stampTopRight label copyIndicatorStyle overlaid)
+                (cur, vis) = case CopyMode.copyCursorPos top fg.fgSy s of
+                    Just p -> (Just p, True)
+                    Nothing -> (Nothing, False)
+            pure PaneView
+                { cells = stampTopRight label copyIndicatorStyle overlaid
+                , cursor = cur
+                , cursorVisible = vis
+                }
   where
     viewportRow fg a =
         let row = fromMaybe V.empty (fg.fgRows V.!? a)
         in V.generate fg.fgSx (\c -> fromMaybe Cell.blankCell (row V.!? c))
+
+-- | The cells a pane contributes, discarding the cursor: for previews and
+-- the chooser, which draw no cursor.
+paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
+paneViewCells st pane = (.cells) <$> paneView st pane
 
 -- | tmux's copy-mode position indicator: black on yellow, like the
 -- default @mode-style@.
@@ -457,21 +486,12 @@ stampTopRight label sty grid
         | (i, c) <- zip [0 ..] (T.unpack label), start + i < w ]
     cell c = Cell.glyphCell c sty
 
--- | The cursor a pane shows: its shell cursor, or the copy cursor when
--- in copy mode (hidden when scrolled off the viewport).
-paneCursor :: Pane -> Pos -> Int -> IO (Pos, Bool)
-paneCursor pane origin rowOff = do
-    mmode <- readTVarIO pane.mode
-    case mmode of
-        Nothing -> do
-            scr <- Emu.snapshot pane.emulator
-            pure (place scr.cursor, scr.cursorVisible)
-        Just pm -> do
-            let s = pm.copyState
-                top = pm.frozen.fgHsize - s.viewportOffY
-            case CopyMode.copyCursorPos top pm.frozen.fgSy s of
-                Just p -> pure (place p, True)
-                Nothing -> pure (Pos 0 0, False)
+-- | Place a pane's local cursor into screen coordinates, or hide it when the
+-- pane has none (a copy viewport scrolled past the cursor).
+placePaneCursor :: Pos -> Int -> PaneView -> (Pos, Bool)
+placePaneCursor origin rowOff pv = case pv.cursor of
+    Nothing -> (Pos 0 0, False)
+    Just p -> (place p, pv.cursorVisible)
   where
     place p = Pos { row = p.row + origin.row + rowOff
                   , col = p.col + origin.col }
