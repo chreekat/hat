@@ -2,17 +2,26 @@
 
 set -Eeuo pipefail
 
-# CPU-cost benchmark: run one high-churn pane workload at several sizes N
-# under `perf stat` (instructions retired), for hat and for tmux, and fit
+# CPU-cost benchmark: run one pane workload at several sizes N under
+# `perf stat` (instructions retired), for hat and for tmux, and fit
 # instructions = slope*N + intercept per series. The slope is the marginal
-# per-line cost; the intercept absorbs startup. Server and attached client
+# per-unit cost; the intercept absorbs startup. Server and attached client
 # are measured as separate series. Black box throughout -- the real binary,
 # the real --server path, a real attached client on a pty.
+#
+# Workloads (the unit N counts differs per workload):
+#   lines       N lines of colored output printed flat out: scroll churn.
+#   type        N keystrokes fed to the client's pty at ~50/s, echoed by a
+#               quiet pane: the per-keystroke render path. Every 80th key is
+#               Enter, so lines stay short and scrolls stay rare, like typing.
+#   type4       type, with three idle panes splitting the same window.
+#   typestatus  type, with the status line on.
 #
 # The server runs in the foreground under perf and exits on its own
 # kill-server, so each perf count brackets exactly one server lifetime.
 
-SIZES="2000 4000 8000 16000"
+SIZES=""
+WORKLOADS="lines"
 MUXES="hat tmux"
 TMUX_BIN=tmux
 BIN=""
@@ -23,19 +32,24 @@ usage() {
     cat <<'USAGE'
 usage: hat_perf [options]
 
-  --sizes "N N ..."  workload sizes, lines per run (default "2000 4000 8000 16000")
-  --mux "M M ..."    which multiplexers to measure: hat, tmux (default both)
-  --tmux BIN         the tmux binary to compare against (default: tmux)
-  --bin PATH         measure this hat binary instead of building one
-  --out DIR          where perf CSVs land (default ./bench-out)
-  --keep             keep each run's scratch HOME for debugging
+  --workloads "W W ..."  which workloads to run: lines, type, type4,
+                         typestatus (default "lines")
+  --sizes "N N ..."      workload sizes, overriding the per-workload defaults
+                         (lines: "2000 4000 8000 16000",
+                          type*: "200 400 800 1600")
+  --mux "M M ..."        which multiplexers to measure: hat, tmux (default both)
+  --tmux BIN             the tmux binary to compare against (default: tmux)
+  --bin PATH             measure this hat binary instead of building one
+  --out DIR              where perf CSVs land (default ./bench-out)
+  --keep                 keep each run's scratch HOME for debugging
 
-The workload is fixed so runs stay comparable; vary only the sizes.
+Each workload is fixed so runs stay comparable; vary only the sizes.
 USAGE
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --workloads) WORKLOADS="$2"; shift 2 ;;
         --sizes) SIZES="$2"; shift 2 ;;
         --mux) MUXES="$2"; shift 2 ;;
         --tmux) TMUX_BIN="$2"; shift 2 ;;
@@ -47,6 +61,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+sizes_for() {
+    if [ -n "$SIZES" ]; then echo "$SIZES"; return; fi
+    case "$1" in
+        lines) echo "2000 4000 8000 16000" ;;
+        *) echo "200 400 800 1600" ;;
+    esac
+}
+
 mkdir -p "$OUT"
 
 if [ -z "$BIN" ]; then
@@ -57,7 +79,7 @@ nix develop -c cabal build -v0 bench-report
 REPORT=$(nix develop -c cabal list-bin bench-report)
 PERF=$(nix develop -c sh -c 'command -v perf')
 
-MARKER=HAT-PERF-FILLED
+MARKER=HAT-PERF-READY
 SOCKNAME="hat-perf-$$"
 
 WORK=""
@@ -82,25 +104,62 @@ await() {
     return 1
 }
 
-# one_run MUX N: measure server + client CSVs for one workload size.
+# Feed N keystrokes into fd $2 at ~50/s: 79 letters then Enter, repeating.
+# The pace between keys comes from a timed read on an empty fifo ($3), so no
+# process is spawned per key; ~50/s stays under the muxes' frame coalescing,
+# giving one echoed frame per key, like a human typist.
+feed_keys() {
+    local n=$1 kfd=$2 pacefd=$3 i=0
+    while [ "$i" -lt "$n" ]; do
+        if [ $(( (i + 1) % 80 )) -eq 0 ]; then
+            printf '\r' >&"$kfd"
+        else
+            printf 'x' >&"$kfd"
+        fi
+        read -r -t 0.02 -u "$pacefd" || true
+        i=$((i + 1))
+    done
+}
+
+# one_run MUX WORKLOAD N: measure server + client CSVs for one workload size.
 one_run() {
-    local mux=$1 lines=$2
+    local mux=$1 wl=$2 n=$3
     WORK=$(mktemp -d "/tmp/hat-perf-XXXXXX")
     local sock="$WORK/socket"
-    local server_csv="$OUT/$mux-server-$lines.csv"
-    local client_csv="$OUT/$mux-client-$lines.csv"
+    local server_csv="$OUT/$mux-$wl-server-$n.csv"
+    local client_csv="$OUT/$mux-$wl-client-$n.csv"
 
-    # Same conf for both muxes: room for the lines, no status-line churn.
-    printf 'set -g history-limit %d\nset -g status off\n' \
-        "$((lines * 2))" > "$WORK/conf"
+    # Same conf for both muxes. The lines workload needs room to scroll;
+    # typing barely scrolls. Only typestatus renders a status line.
+    local history status
+    case "$wl" in
+        lines) history=$((n * 2)); status=off ;;
+        typestatus) history=200; status=on ;;
+        *) history=200; status=off ;;
+    esac
+    printf 'set -g history-limit %d\nset -g status %s\n' \
+        "$history" "$status" > "$WORK/conf"
 
-    # The pane prints its lines, leaves a marker, and stays alive until the
-    # driver's kill-server; awk's pty writes block, pacing it to the server.
-    cat > "$WORK/work.sh" <<EOF
-awk 'BEGIN{for(i=0;i<$lines;i++) printf "\033[3%dm%06d the quick brown fox jumps over the lazy dog %s\033[0m\n", i%8, i, i%2?"~~~":"..."}'
+    # The pane's program: it signals readiness with a marker and stays alive
+    # until the driver's kill-server.
+    case "$wl" in
+        lines)
+            # awk's pty writes block, pacing it to the server.
+            cat > "$WORK/work.sh" <<EOF
+awk 'BEGIN{for(i=0;i<$n;i++) printf "\033[3%dm%06d the quick brown fox jumps over the lazy dog %s\033[0m\n", i%8, i, i%2?"~~~":"..."}'
 echo $MARKER
 exec sleep 1000000
 EOF
+            ;;
+        *)
+            # cat echoes each keystroke through the pane pty's own line
+            # discipline: the real type-a-key-see-it path.
+            cat > "$WORK/work.sh" <<EOF
+echo $MARKER
+exec cat > /dev/null
+EOF
+            ;;
+    esac
 
     # The measured server, foreground under perf; everything else is a
     # plain unmeasured client.
@@ -131,21 +190,48 @@ EOF
         exit 1
     }
 
+    # Typing workloads feed the client's stdin through a fifo; keeping our
+    # own read-write end open means launching the client never blocks on it
+    # and it never sees EOF.
+    local stdin_src=/dev/null kfd=
+    if [ "$wl" != lines ]; then
+        mkfifo "$WORK/keys.fifo" "$WORK/pace.fifo"
+        exec {kfd}<>"$WORK/keys.fifo"
+        stdin_src="$WORK/keys.fifo"
+    fi
+
     # The measured client: attached on its own pty, created by script(1),
     # sized before the mux starts so both muxes render the same screen.
     script -qefc "stty rows 50 cols 200; \
         exec env HOME='$WORK' TMUX_TMPDIR='$WORK' TERM=xterm-256color \
         '$PERF' stat -x, -e instructions -o '$client_csv' -- \
         $(printf '%q ' "${client[@]}") new-session 'sh $WORK/work.sh'" \
-        /dev/null > "$WORK/client.log" 2>&1 &
+        /dev/null < "$stdin_src" > "$WORK/client.log" 2>&1 &
     local client_job=$!
 
-    filled() { "${CTL[@]}" capture-pane -p | grep -q "$MARKER"; }
-    await 3000 filled || {
-        echo "hat_perf: $mux pane never finished generating; logs:" >&2
+    ready() { "${CTL[@]}" capture-pane -p | grep -q "$MARKER"; }
+    await 3000 ready || {
+        echo "hat_perf: $mux pane never became ready; logs:" >&2
         tail -5 "$WORK/server.log" "$WORK/client.log" >&2
         exit 1
     }
+
+    if [ "$wl" != lines ]; then
+        if [ "$wl" = type4 ]; then
+            "${CTL[@]}" split-window -d 'sleep 1000000'
+            "${CTL[@]}" split-window -d 'sleep 1000000'
+            "${CTL[@]}" split-window -d 'sleep 1000000'
+        fi
+        local pacefd
+        exec {pacefd}<>"$WORK/pace.fifo"
+        feed_keys "$n" "$kfd" "$pacefd"
+        exec {pacefd}>&- {kfd}>&-
+        echoed() { "${CTL[@]}" capture-pane -p | grep -q "xxxx"; }
+        await 250 echoed || {
+            echo "hat_perf: $mux pane never echoed the typed keys" >&2
+            exit 1
+        }
+    fi
 
     # kill-server is the workload's final step: the server exits on its own
     # and perf writes its count; the client follows when the server goes.
@@ -154,24 +240,28 @@ EOF
     wait "$client_job" 2>/dev/null || true
     CTL=()
 
-    [ "$KEEP" = 1 ] && echo ">>> $mux N=$lines scratch kept in $WORK" \
+    [ "$KEEP" = 1 ] && echo ">>> $mux $wl N=$n scratch kept in $WORK" \
         || rm -rf "$WORK"
     WORK=""
 }
 
 for mux in $MUXES; do
-    for lines in $SIZES; do
-        one_run "$mux" "$lines"
+    for wl in $WORKLOADS; do
+        for n in $(sizes_for "$wl"); do
+            one_run "$mux" "$wl" "$n"
+        done
     done
 done
 
 for mux in $MUXES; do
-    for role in server client; do
-        series=()
-        for lines in $SIZES; do
-            series+=("$lines=$OUT/$mux-$role-$lines.csv")
+    for wl in $WORKLOADS; do
+        for role in server client; do
+            series=()
+            for n in $(sizes_for "$wl"); do
+                series+=("$n=$OUT/$mux-$wl-$role-$n.csv")
+            done
+            "$REPORT" perf "$mux $wl $role" "${series[@]}"
         done
-        "$REPORT" perf "$mux $role" "${series[@]}"
     done
 done
 echo ">>> artifacts in $OUT"
