@@ -569,9 +569,11 @@ scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     phys <- physicalScrollback t
     let exposed = min phys (max 0 lim)
     cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
-    mapM (\i -> paintLineBytes
-            <$> readRow (shareVals e.cellIntern) t #{const GHOST_SHIM_HISTORY}
-                    (phys - exposed + i) cols)
+    mapM (\i -> do
+            row <- readRow pure t #{const GHOST_SHIM_HISTORY}
+                       (phys - exposed + i) cols
+            let !bs = paintLineBytes row
+            pure bs)
         [0 .. exposed - 1]
 
 -- | Whether a scrollback row (indexed as 'scrollbackLine') soft-wraps onto
