@@ -43,6 +43,7 @@ mkClient sz lastFrame = do
     keyV    <- newIORef NoPrefix
     escV    <- newIORef NoEscPending
     frameV  <- newIORef lastFrame
+    originsV <- newIORef V.empty
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef ""
     fullV   <- newTVarIO False
@@ -57,7 +58,8 @@ mkClient sz lastFrame = do
             , wireLevel = protocolVersion, sendLock = lock, size = sizeV
             , lastActive = activeV, session = sessV, sessionHist = lastV
             , ready = readyV, keyState = keyV, escState = escV
-            , lastFrame = frameV, lastCursor = curV, lastCursorColour = colourV
+            , lastFrame = frameV, lastOrigins = originsV
+            , lastCursor = curV, lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "" }

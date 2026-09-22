@@ -12,6 +12,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
+    , RowOrigin (..)
     , EnvImport (..)
     , StartupPhase (..)
     , AcceptGate (..)
@@ -420,6 +421,13 @@ data StartupPhase = LoadingConfig | Restoring | Ready
 data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
     deriving (Eq, Show)
 
+-- | What produced one row of a client's composed frame: a pane row the
+-- grid supplied whole — @(pane, pane row, generation)@ — or anything
+-- else. No 'Eq': two 'VolatileRow's say nothing about their cells, so
+-- equality is the consumer's judgement. See 'Hat.Server.View.renderOnce'.
+data RowOrigin = VolatileRow | PaneRowAt PaneId Int Int
+    deriving Show
+
 data Client = Client
     { id        :: ClientId
     , role      :: ClientRole
@@ -436,6 +444,8 @@ data Client = Client
     , keyState  :: IORef PrefixState  -- input thread only
     , escState  :: IORef EscPending   -- ^ held trailing ESC; input thread only
     , lastFrame :: IORef Frame        -- render thread only
+    , lastOrigins :: IORef (V.Vector RowOrigin)
+        -- ^ what produced each row of 'lastFrame'; render thread only
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool

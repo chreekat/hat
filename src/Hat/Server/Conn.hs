@@ -28,6 +28,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Vector qualified as V
 import Network.Socket qualified as N
 import Hat.Geometry
 import Hat.Log
@@ -184,6 +185,7 @@ newClient st conn h = do
     keyVar <- newIORef NoPrefix
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame h.size)
+    originsVar <- newIORef V.empty
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef ""
     fullVar <- newTVarIO True
@@ -211,6 +213,7 @@ newClient st conn h = do
         , keyState = keyVar
         , escState = escVar
         , lastFrame = frameVar
+        , lastOrigins = originsVar
         , lastCursor = cursorVar
         , lastCursorColour = cursorColourVar
         , needsFull = fullVar

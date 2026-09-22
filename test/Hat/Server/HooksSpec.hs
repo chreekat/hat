@@ -12,6 +12,7 @@ import Data.IORef
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text qualified as T
+import Data.Vector qualified as V
 import Network.Socket qualified as N
 import System.Timeout (timeout)
 
@@ -269,6 +270,7 @@ fakeClient _ = do
     keyVar <- newIORef NoPrefix
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame (Size 80 24))
+    originsVar <- newIORef V.empty
     cursorVar <- newIORef (Pos 0 0, True)
     colourVar <- newIORef ""
     fullVar <- newTVarIO True
@@ -293,6 +295,7 @@ fakeClient _ = do
         , keyState = keyVar
         , escState = escVar
         , lastFrame = frameVar
+        , lastOrigins = originsVar
         , lastCursor = cursorVar
         , lastCursorColour = colourVar
         , needsFull = fullVar

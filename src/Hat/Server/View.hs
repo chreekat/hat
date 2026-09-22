@@ -119,8 +119,11 @@ renderOnce st client = do
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
                         pure (Just (sess, win, rects, borders, ps, active))
-    (frame, cursor, mActiveRect) <- case view of
-        Nothing -> pure (blankFrame csize, (Pos 0 0, False), Nothing)
+    (frame, origins, cursor, mActiveRect) <- case view of
+        Nothing -> pure
+            ( blankFrame csize
+            , V.replicate (fromIntegral csize.rows) VolatileRow
+            , (Pos 0 0, False), Nothing )
         Just (sess, _, rects, borders, ps, active) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
@@ -136,18 +139,26 @@ renderOnce st client = do
                     Just pane -> do
                         pv <- paneView st pane
                         pure [(pidL, pv)]
-            let base = List.foldl'
-                    (\acc (pidL, rect) -> case Map.lookup pidL paneViews of
-                        Nothing -> acc
-                        Just pv -> overlayGrid acc (shiftRect rect) pv.cells)
-                    base0 rects
+            let overlayPane (acc, origs) (pidL, rect) =
+                    case Map.lookup pidL paneViews of
+                        Nothing -> (acc, origs)
+                        Just pv ->
+                            let (acc', taken) =
+                                    overlayGridRows acc (shiftRect rect) pv.cells
+                            in (acc', origs V.//
+                                [ (fr, PaneRowAt pidL gr (gens V.! gr))
+                                | Just gens <- [pv.rowGens]
+                                , (fr, gr) <- taken, gr < V.length gens ])
+                (base, baseOrigins) = List.foldl' overlayPane
+                    (base0, V.replicate (V.length base0) VolatileRow) rects
             mflash <- readTVarIO client.flash
             scheme <- readTVarIO st.colorScheme
-            let flashed
+            let (flashed, flashedOrigins)
                     | isJust mflash
                     , Just r <- flashTarget rects active =
-                        tintInnerRing (flashStyle scheme) base (shiftRect r)
-                    | otherwise = base
+                        ( tintInnerRing (flashStyle scheme) base (shiftRect r)
+                        , volatileRows (shiftRect r) baseOrigins )
+                    | otherwise = (base, baseOrigins)
             mprompt <- readTVarIO client.prompt
             mtoast <- readTVarIO client.toast
             let w = fromIntegral csize.cols
@@ -166,9 +177,12 @@ renderOnce st client = do
                         (Nothing, Nothing) -> case mStatusRowIx of
                             Just ix -> Just . (,) ix <$> statusCells st sess w
                             Nothing -> pure Nothing
-            let withStatus = case mBarRow of
-                    Just (ix, cells) -> flashed V.// [(ix, cells)]
-                    Nothing -> flashed
+            let (withStatus, statusOrigins) = case mBarRow of
+                    Just (ix, cells) ->
+                        ( flashed V.// [(ix, cells)]
+                        , flashedOrigins V.//
+                            [ (ix, VolatileRow) | ix < V.length flashedOrigins ] )
+                    Nothing -> (flashed, flashedOrigins)
             cur <- case (mprompt, mBarRow) of
                 (Just pr, Just (ix, _)) ->
                     pure (Pos { row = ix
@@ -176,13 +190,14 @@ renderOnce st client = do
                 _ -> pure $ case Map.lookup active paneViews of
                     Nothing -> (Pos 0 0, False)
                     Just pv -> placePaneCursor (paneOrigin rects active) rowOff pv
-            pure (withStatus, cur, shiftRect <$> List.lookup active rects)
+            pure ( withStatus, statusOrigins, cur
+                 , shiftRect <$> List.lookup active rects )
     -- A chooser overlay, when open, is drawn in the active pane's rect
     -- (or the whole window under -Z), with a live preview of the
     -- highlighted node's pane beside the list.
     mpicker <- readTVarIO client.picker
-    (frame', cursor') <- case mpicker of
-        Nothing -> pure (frame, cursor)
+    (frame', origins', cursor') <- case mpicker of
+        Nothing -> pure (frame, origins, cursor)
         Just pk -> do
             let region = Picker.pickerRegion pk.fill csize rowOff mActiveRect
                 width = region.endCol - region.startCol
@@ -192,16 +207,24 @@ renderOnce st client = do
                     { rows = fromIntegral (max 0 rows)
                     , cols = fromIntegral (max 0 (width - listW - 1)) }
                 Nothing -> pure Nothing
-            pure (overlayPicker region pk mPreview frame, (Pos 0 0, False))
+            pure ( overlayPicker region pk mPreview frame
+                 , volatileRows region origins
+                 , (Pos 0 0, False) )
     old <- readIORef client.lastFrame
+    oldOrigins <- readIORef client.lastOrigins
     oldCursor <- readIORef client.lastCursor
     -- A diff is only valid between same-sized frames; force full on any
     -- dimension change.
     let full = fullFlag || frameDims old /= frameDims frame'
-        ops = if full then fullRedraw frame' else diffFrame old frame'
+        known r = case (oldOrigins V.!? r, origins' V.!? r) of
+            (Just (PaneRowAt p pr g), Just (PaneRowAt p' pr' g')) ->
+                p == p' && pr == pr' && g == g'
+            _ -> False
+        ops = if full then fullRedraw frame' else diffFrameKnown known old frame'
         cursorOp = CursorAt (fst cursor') (snd cursor')
         needSend = not (null ops) || cursor' /= oldCursor || full
     writeIORef client.lastFrame frame'
+    writeIORef client.lastOrigins origins'
     writeIORef client.lastCursor cursor'
     when needSend $ send client (Draw (ops <> [cursorOp]))
     -- The moved-to pane is now on screen, so a pending move-linger starts its
@@ -223,6 +246,13 @@ renderOnce st client = do
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
+
+-- | Drop the pane provenance of the rect's rows: whatever repainted them
+-- owns them now.
+volatileRows :: Rect -> V.Vector RowOrigin -> V.Vector RowOrigin
+volatileRows rect o = o V.//
+    [ (r, VolatileRow)
+    | r <- [max 0 rect.startRow .. min (V.length o) rect.endRow - 1] ]
 
 -- | The rendered cells previewing the highlighted node, sized to the
 -- preview column (@size@): a single pane's contents, a whole window
@@ -420,6 +450,9 @@ mapGlyph bl ch = case bl of
 -- copy cursor (absent when scrolled off the viewport).
 data PaneView = PaneView
     { cells :: V.Vector (V.Vector Cell.Cell)
+    , rowGens :: Maybe (V.Vector Int)
+        -- ^ 'Emu.snapshotWithGens' stamps, one per row of 'cells';
+        -- 'Nothing' when the cells are not a plain snapshot (copy mode)
     , cursor :: Maybe Pos
     , cursorVisible :: Bool
     }
@@ -429,9 +462,10 @@ paneView st pane = do
     mmode <- readTVarIO pane.mode
     case mmode of
         Nothing -> do
-            scr <- Emu.snapshot pane.emulator
+            (scr, gens) <- Emu.snapshotWithGens pane.emulator
             pure PaneView
                 { cells = scr.cells
+                , rowGens = Just gens
                 , cursor = Just scr.cursor
                 , cursorVisible = scr.cursorVisible
                 }
@@ -450,6 +484,7 @@ paneView st pane = do
                     Nothing -> (Nothing, False)
             pure PaneView
                 { cells = stampTopRight label copyIndicatorStyle overlaid
+                , rowGens = Nothing
                 , cursor = cur
                 , cursorVisible = vis
                 }

@@ -8,6 +8,7 @@ module Hat.Server.SendSpec (spec) where
 import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM (atomically, newTVarIO, writeTVar)
 import Data.IORef (newIORef)
+import Data.Vector qualified as V
 import Network.Socket
     (Family (AF_UNIX), Socket, SocketType (Stream), close, socketPair)
 import System.Timeout (timeout)
@@ -36,6 +37,7 @@ mkClient = do
     keyV    <- newIORef NoPrefix
     escV    <- newIORef NoEscPending
     frameV  <- newIORef (blankFrame sz)
+    originsV <- newIORef V.empty
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef ""
     fullV   <- newTVarIO True
@@ -50,7 +52,8 @@ mkClient = do
             , sendLock = lock, size = sizeV
             , lastActive = activeV
             , session = sessV, sessionHist = lastV, ready = readyV
-            , keyState = keyV, escState = escV, lastFrame = frameV, lastCursor = curV
+            , keyState = keyV, escState = escV, lastFrame = frameV
+            , lastOrigins = originsV, lastCursor = curV
             , lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, outerFocused = focusV, envImport = envImpV
