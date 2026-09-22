@@ -87,7 +87,6 @@ dev cabal build -v0 bench-report
 REPORT=$(dev cabal list-bin bench-report)
 PERF=$(dev sh -c 'command -v perf')
 
-MARKER=HAT-PERF-READY
 SOCKNAME="hat-perf-$$"
 
 WORK=""
@@ -97,7 +96,9 @@ cleanup() {
     if [ "${#CTL[@]}" -gt 0 ]; then
         "${CTL[@]}" kill-server >/dev/null 2>&1 || true
     fi
-    [ "$KEEP" = 1 ] || { [ -n "$WORK" ] && rm -rf "$WORK"; }
+    # Statement form: a failing list at the tail of an EXIT trap would turn
+    # a successful run into exit 1 under set -e.
+    if [ "$KEEP" != 1 ] && [ -n "$WORK" ]; then rm -rf "$WORK"; fi
 }
 trap cleanup EXIT
 
@@ -148,14 +149,18 @@ one_run() {
     printf 'set -g history-limit %d\nset -g status %s\n' \
         "$history" "$status" > "$WORK/conf"
 
-    # The pane's program: it signals readiness with a marker and stays alive
-    # until the driver's kill-server.
+    # The pane's program signals readiness by touching a file, then stays
+    # alive until the driver's kill-server. The sentinel is a file, not a
+    # capture-pane grep: a control client connecting in the window before the
+    # attached client has created its session marks the server "served" and
+    # trips its no-sessions idle-exit, killing it mid-startup.
+    local ready_file="$WORK/ready"
     case "$wl" in
         lines)
             # awk's pty writes block, pacing it to the server.
             cat > "$WORK/work.sh" <<EOF
 awk 'BEGIN{for(i=0;i<$n;i++) printf "\033[3%dm%06d the quick brown fox jumps over the lazy dog %s\033[0m\n", i%8, i, i%2?"~~~":"..."}'
-echo $MARKER
+touch "$ready_file"
 exec sleep 1000000
 EOF
             ;;
@@ -163,7 +168,7 @@ EOF
             # cat echoes each keystroke through the pane pty's own line
             # discipline: the real type-a-key-see-it path.
             cat > "$WORK/work.sh" <<EOF
-echo $MARKER
+touch "$ready_file"
 exec cat > /dev/null
 EOF
             ;;
@@ -217,10 +222,10 @@ EOF
         /dev/null < "$stdin_src" > "$WORK/client.log" 2>&1 &
     local client_job=$!
 
-    ready() { "${CTL[@]}" capture-pane -p | grep -q "$MARKER"; }
+    ready() { [ -f "$ready_file" ]; }
     await 3000 ready || {
         echo "hat_perf: $mux pane never became ready; logs:" >&2
-        tail -5 "$WORK/server.log" "$WORK/client.log" >&2
+        tail -n 5 "$WORK/server.log" "$WORK/client.log" >&2
         exit 1
     }
 
