@@ -19,12 +19,16 @@ import Data.ByteString qualified as B
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import GHC.Clock (getMonotonicTime)
 import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
+import Text.Printf (printf)
 
 import Hat.Geometry
-import Hat.Server (captureSize, replayPane)
+import Hat.Server
+    (ScrollbackCarry (KeepScrollback), captureReloadScreen, captureSize
+    , replayPane)
 import Hat.Server.Reload
 import Hat.Term.Emulator (Screen (cells))
 import Hat.Term.Emulator qualified as Emu
@@ -46,13 +50,35 @@ main = do
         [p] -> pure p
         _   -> die "usage: replay-reload <blob>"
     bs <- B.readFile path
+    t0 <- getMonotonicTime
     tree <- case decodeHandover bs of
         Left e -> die ("undecodable blob: " <> T.unpack e)
         Right h -> case h.tree of
             Left e -> die ("unusable tree: " <> T.unpack e)
             Right t -> pure t
+    t1 <- getMonotonicTime
     emus <- rebuild tree
-    putStrLn ("rehydrated " <> show (length emus) <> " pane(s)")
+    t2 <- getMonotonicTime
+    putStrLn ("rehydrated " <> show (length emus) <> " pane(s) from "
+              <> show (B.length bs `div` 1000000) <> " MB")
+    -- Model of the outgoing image's half: re-capture the emulators just
+    -- rebuilt, then encode a fresh payload (dummy cleanup core, empty tree
+    -- JSON — the screens dominate both).
+    screens <- forM emus (captureReloadScreen KeepScrollback . snd)
+    t3 <- getMonotonicTime
+    let hots = [ HotPane { masterFd = -1, childPid = -1
+                         , modes = ReloadModes False False 0 False 0
+                         , screen = sc }
+               | sc <- screens ]
+        blob = encodeHandover
+            ReloadCleanup { listenFd = -1, live = [] }
+            ReloadHot { tree = "", hot = hots, lastSession = Nothing }
+    printf "re-encoded blob: %d MB\n" (B.length blob `div` 1000000)
+    t4 <- getMonotonicTime
+    printf "decode    %6.2fs\n" (t1 - t0)
+    printf "rebuild   %6.2fs\n" (t2 - t1)
+    printf "recapture %6.2fs\n" (t3 - t2)
+    printf "encode    %6.2fs\n" (t4 - t3)
     -- putStr =<< summarize emus
 
 -- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty
