@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# End-to-end restart-server wall time on a private throwaway server:
+# N panes each with M lines of colored scrollback, then time from issuing
+# restart-server to the server answering commands again. Mirrors
+# tools/bench/hat_perf's attach structure (file sentinel, script(1) client).
+set -Eeuo pipefail
+BIN="$1"; PANES="${2:-8}"; LINES="${3:-30000}"
+WORK=$(mktemp -d /tmp/hat-e2e-XXXXXX)
+sock="$WORK/socket"
+printf 'set -g history-limit 60000\nset -g status off\n' > "$WORK/conf"
+CTL=(env "HOME=$WORK" "$BIN" -S "$sock")
+cleanup() { "${CTL[@]}" kill-server >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+trap cleanup EXIT
+
+ready="$WORK/ready"
+cat > "$WORK/work.sh" <<EOF
+awk 'BEGIN{for(i=0;i<$LINES;i++) printf "\033[3%dm%07d scrollback line with some padding text here\033[0m\n", i%8, i}'
+touch "\$1"
+exec sleep 100000
+EOF
+
+env "HOME=$WORK" "$BIN" --server "$sock" "$WORK/conf" > "$WORK/server.log" 2>&1 &
+for i in $(seq 250); do if [ -S "$sock" ]; then break; fi; sleep 0.02; done
+
+# The first session comes from an attached client, as hat_perf does: a
+# control client racing server startup trips the no-sessions idle-exit.
+script -qefc "stty rows 50 cols 200; \
+    exec env HOME='$WORK' TERM=xterm-256color \
+    $(printf '%q ' "${CTL[@]}") new-session -s w 'sh $WORK/work.sh $ready.1'" \
+    /dev/null > "$WORK/client.log" 2>&1 < /dev/null &
+for i in $(seq 600); do if [ -f "$ready.1" ]; then break; fi; sleep 0.1; done
+
+for i in $(seq 2 "$PANES"); do
+    "${CTL[@]}" split-window -d -t w "sh $WORK/work.sh $ready.$i" >/dev/null
+    "${CTL[@]}" select-layout -t w tiled >/dev/null
+done
+for i in $(seq 600); do
+    if [ "$(ls "$WORK" | grep -c '^ready')" = "$PANES" ]; then break; fi
+    sleep 0.1
+done
+sleep 1  # let the emulators drain the last chunks
+echo ">>> panes ready: $("${CTL[@]}" list-panes -t w | wc -l)"
+
+start=$(date +%s.%N)
+"${CTL[@]}" restart-server "$BIN" >/dev/null 2>&1 || true
+until "${CTL[@]}" list-panes -t w >/dev/null 2>&1; do sleep 0.02; done
+end=$(date +%s.%N)
+echo ">>> restart-server wall time: $(echo "$end $start" | awk '{printf "%.2fs", $1-$2}')"
+echo ">>> panes after: $("${CTL[@]}" list-panes -t w | wc -l)"
+ls -la "$WORK"/*.reload.last 2>/dev/null || true
