@@ -304,12 +304,25 @@ long ghost_shim_get_title(void *t, uint8_t *buf, size_t buflen) {
 int ghost_shim_pen(void *t, GhostShimCell *out) {
     memset(out, 0, sizeof(*out));
 
-    /* Emit the cursor's active SGR (plus the screen, which we discard). */
+    /* Emit the cursor's active SGR (plus one cell, which we discard): the
+     * style extra is terminal-level, so restricting the content dump to a
+     * one-cell selection keeps the pen without formatting the whole screen. */
     GhosttyFormatterTerminalOptions fo = { .size = sizeof(fo) };
     fo.emit = GHOSTTY_FORMATTER_FORMAT_VT;
     fo.extra.size = sizeof(fo.extra);
     fo.extra.screen.size = sizeof(fo.extra.screen);
     fo.extra.screen.style = true;
+    GhosttyPoint origin = { .tag = GHOST_SHIM_ACTIVE };
+    origin.value.coordinate.x = 0;
+    origin.value.coordinate.y = 0;
+    GhosttyGridRef oref = { .size = sizeof(GhosttyGridRef) };
+    GhosttySelection sel = { .size = sizeof(GhosttySelection) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, origin, &oref)
+            == GHOSTTY_SUCCESS) {
+        sel.start = oref;
+        sel.end = oref;
+        fo.selection = &sel;
+    }
     GhosttyFormatter f = NULL;
     if (ghostty_formatter_terminal_new(NULL, &f, (GhosttyTerminal)t, fo)
             != GHOSTTY_SUCCESS)
