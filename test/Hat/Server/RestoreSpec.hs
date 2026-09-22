@@ -139,7 +139,7 @@ spec = do
             let rp = HotPane
                     { masterFd = 0, childPid = 0
                     , modes = ReloadModes False False 0 False 0, screen = captured }
-                (bytes, sb) = replayPane sz rp
+                (bytes, sb) = replayPane rp
             dst <- Emu.newEmulator sz 1000
             _ <- Emu.feed dst bytes
             Emu.seedScrollback dst sb
@@ -165,7 +165,7 @@ spec = do
                 let rp = HotPane
                         { masterFd = 0, childPid = 0
                         , modes = ReloadModes False False 0 False 0, screen = captured }
-                    (bytes, _) = replayPane sz rp
+                    (bytes, _) = replayPane rp
                 dst <- Emu.newEmulator sz 1000
                 _ <- Emu.feed dst bytes
                 Emu.currentPen dst   -- the pen the next echoed keystroke takes
@@ -187,7 +187,7 @@ spec = do
                     rp = HotPane
                         { masterFd = 0, childPid = 0
                         , modes = ms, screen = emptyReloadScreen }
-                    (bytes, _) = replayPane sz rp
+                    (bytes, _) = replayPane rp
                 dst <- Emu.newEmulator sz 1000
                 _ <- Emu.feed dst bytes
                 Emu.keyModes dst `shouldReturn` Emu.KeyModes
@@ -204,7 +204,7 @@ spec = do
             srcScr <- Emu.snapshot src
             captured <- captureReloadScreen DropScrollback src
             captured.scrollback `shouldBe` []
-            captured.rows `shouldBe` map V.toList (V.toList srcScr.cells)
+            captured.rows `shouldBe` map Emu.paintLineBytes (V.toList srcScr.cells)
 
         -- Bug capture (field crash 2026-07-28): a pane captured LARGER than
         -- the rebuild default — cursor beyond the small grid, rows that would
@@ -213,10 +213,11 @@ spec = do
         -- shrink abort the whole process inside libvterm ("screen_resize
         -- failed to update cursor position").
         it "adopts an oversized capture at its captured size and survives the shrink" $ do
-            let wideRow = replicate 330 (Cell.glyphCell 'x' Cell.defaultStyle)
+            let wideRow = Emu.paintLineBytes
+                    (V.replicate 330 (Cell.glyphCell 'x' Cell.defaultStyle))
                 sc = ReloadScreen
                     { altScreen = True, cursorRow = 39, cursorCol = 2
-                    , cursorVisible = True
+                    , cursorVisible = True, cols = 330
                     , rows = replicate 42 wideRow, scrollback = []
                     , pen = Cell.defaultStyle }
                 rp = HotPane
@@ -225,7 +226,7 @@ spec = do
                 esz = fromMaybe (Size 24 80) (captureSize sc)
             esz `shouldBe` Size 42 330
             e <- Emu.newEmulator esz 1000
-            let (bytes, sb) = replayPane esz rp
+            let (bytes, sb) = replayPane rp
             _ <- Emu.feed e bytes
             Emu.seedScrollback e sb
             Emu.resize e (Size 11 80)

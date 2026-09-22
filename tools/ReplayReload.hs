@@ -29,6 +29,8 @@ import Hat.Geometry
 import Hat.Server
     (ScrollbackCarry (KeepScrollback), captureReloadScreen, captureSize
     , replayPane)
+import Hat.Server.Persist
+    (SessionSnap (..), Snapshot (..), WindowSnap (..), encodeSnapshotJson)
 import Hat.Server.Reload
 import Hat.Term.Emulator (Screen (cells))
 import Hat.Term.Emulator qualified as Emu
@@ -62,8 +64,8 @@ main = do
     putStrLn ("rehydrated " <> show (length emus) <> " pane(s) from "
               <> show (B.length bs `div` 1000000) <> " MB")
     -- Model of the outgoing image's half: re-capture the emulators just
-    -- rebuilt, then encode a fresh payload (dummy cleanup core, empty tree
-    -- JSON — the screens dominate both).
+    -- rebuilt, then encode a fresh payload around them (dummy handles; the
+    -- tree is the decoded one's, so the blob round-trips below).
     screens <- forM emus (captureReloadScreen KeepScrollback . snd)
     t3 <- getMonotonicTime
     let hots = [ HotPane { masterFd = -1, childPid = -1
@@ -72,14 +74,38 @@ main = do
                | sc <- screens ]
         blob = encodeHandover
             ReloadCleanup { listenFd = -1, live = [] }
-            ReloadHot { tree = "", hot = hots, lastSession = Nothing }
+            ReloadHot { tree = treeJson tree, hot = hots
+                      , lastSession = Nothing }
     printf "re-encoded blob: %d MB\n" (B.length blob `div` 1000000)
     t4 <- getMonotonicTime
-    printf "decode    %6.2fs\n" (t1 - t0)
-    printf "rebuild   %6.2fs\n" (t2 - t1)
-    printf "recapture %6.2fs\n" (t3 - t2)
-    printf "encode    %6.2fs\n" (t4 - t3)
+    -- The incoming image's half at the CURRENT era: decode the re-encoded
+    -- blob and rebuild from it.
+    tree2 <- case decodeHandover blob of
+        Right h | Right t <- h.tree -> pure t
+        _ -> die "re-encoded blob does not round-trip"
+    t5 <- getMonotonicTime
+    emus2 <- rebuild tree2
+    t6 <- getMonotonicTime
+    printf "given blob:   decode    %6.2fs  rebuild %6.2fs\n" (t1 - t0) (t2 - t1)
+    printf "current era:  recapture %6.2fs  encode  %6.2fs\n" (t3 - t2) (t4 - t3)
+    printf "current era:  decode    %6.2fs  rebuild %6.2fs\n" (t5 - t4) (t6 - t5)
+    printf "(rehydrated again: %d pane(s))\n" (length emus2)
     -- putStr =<< summarize emus
+
+-- The store-codec JSON of a decoded tree, for re-encoding it into a fresh
+-- handover: the inverse of 'hotTree's split.
+treeJson :: ReloadTree -> T.Text
+treeJson t = encodeSnapshotJson Snapshot
+    { sessions = map sessionOf t.sessions
+    , lastActiveSession = t.currentSession }
+  where
+    sessionOf s = SessionSnap
+        { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
+        , windowHist = s.windowHist, windows = map windowOf s.windows }
+    windowOf w = WindowSnap
+        { ix = w.ix, name = w.name, layout = w.layout, active = w.active
+        , paneHist = w.paneHist, autoRename = w.autoRename
+        , panes = map fst w.panes }
 
 -- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty
 -- adoption and 'ServerState' bookkeeping: the traversal consumes the tree and
@@ -95,7 +121,7 @@ adopt :: HotPane -> IO Emu.Emulator
 adopt rp = do
     let esz = fromMaybe rebuildSize (captureSize rp.screen)
     e <- Emu.newEmulator esz historyLimit
-    let (bytes, sb) = replayPane esz rp
+    let (bytes, sb) = replayPane rp
     _ <- Emu.feed e bytes
     Emu.seedScrollback e sb
     pure e

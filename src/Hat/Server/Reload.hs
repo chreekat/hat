@@ -46,6 +46,7 @@ import Data.Maybe (maybeToList)
 import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Vector qualified as V
 import GHC.Generics (Generic)
 
 import Hat.Server.Persist
@@ -53,6 +54,7 @@ import Hat.Server.Persist
     , decodeSnapshotJson)
 import Hat.Term.Cell (Cell, Style)
 import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator.Types (paintLineBytes)
 
 -- | What an era-matched reload hands over: the captured tree as the store's
 -- snapshot JSON, and beside it the state that has nowhere durable to live.
@@ -144,46 +146,42 @@ data HotWindow = HotWindow
     }
     deriving (Eq, Show)
 
--- | A pane's captured screen: the live grid (top row first), its cursor, its
--- alternate-screen flag, and the scrollback (oldest line first). Replayed into
--- the adopted pane's fresh emulator so a full-screen program survives a reload
--- with its display intact. An 'emptyReloadScreen' restores to a blank pane,
--- which is what a pre-screen (era ≤ 2) blob migrates to.
+-- | A pane's captured screen, already painted for replay: the live grid (one
+-- 'Hat.Term.Emulator.paintLineBytes' row per grid row, top first, empty =
+-- blank row), the scrollback likewise (oldest line first), its cursor, its
+-- alternate-screen flag, and the capture width. The adopted pane feeds these
+-- bytes verbatim, so a full-screen program survives a reload with its display
+-- intact. An 'emptyReloadScreen' restores to a blank pane, which is what a
+-- pre-screen (era ≤ 2) blob migrates to.
 data ReloadScreen = ReloadScreen
     { altScreen     :: Bool
     , cursorRow     :: Int
     , cursorCol     :: Int
     , cursorVisible :: Bool
-    -- These should probably be vectors, but I'm leaving it as lists to avoid a
-    -- migration. Besides, they get read directly into vectors anyway, and the
-    -- serialized shape is basically identical.
-    , rows          :: [[Cell]]
-    , scrollback    :: [[Cell]]
+    , cols          :: Int  -- ^ capture width; see 'Hat.Server.captureSize'
+    , rows          :: [ByteString]
+    , scrollback    :: [ByteString]
     , pen           :: Style  -- ^ the live pen (SGR the next glyph takes); see
                               --   'Hat.Server.captureReloadScreen'
     }
-    deriving (Eq, Show, Generic)
+    deriving (Eq, Show)
 
--- Appended 'pen' tolerantly (era 6): a pre-pen (era ≤ 5) screen is a six-field
--- list, which decodes with the default pen — the same additive-leaf trick the
--- 'Style' and 'Hello' codecs use, so no positional-mirror migration is needed.
--- The list is (constructor-tag word, then fields), matching what a derived
--- Serialise would emit, so a pre-pen (era ≤ 5) six-field screen — 'encodeListLen
--- 7' with no pen — decodes here with the default pen.
+-- The same appendable list codec as 'ReloadHot': a longer list from a newer
+-- writer has its tail skipped.
 instance Serialise ReloadScreen where
     encode s =
-           encodeListLen 8
+           encodeListLen 9
         <> encodeWord 0
         <> encode s.altScreen <> encode s.cursorRow <> encode s.cursorCol
-        <> encode s.cursorVisible <> encode s.rows <> encode s.scrollback
-        <> encode s.pen
+        <> encode s.cursorVisible <> encode s.cols <> encode s.rows
+        <> encode s.scrollback <> encode s.pen
     decode = do
         len <- decodeListLen
         _   <- decodeWord
         s <- ReloadScreen
             <$> decode <*> decode <*> decode <*> decode <*> decode <*> decode
-            <*> (if len >= 8 then decode else pure Cell.defaultStyle)
-        replicateM_ (max 0 (len - 8)) (() <$ decodeTerm)
+            <*> decode <*> decode
+        replicateM_ (max 0 (len - 9)) (() <$ decodeTerm)
         pure s
 
 -- | The blank screen a pane with no captured display restores to: no grid, no
@@ -191,7 +189,7 @@ instance Serialise ReloadScreen where
 emptyReloadScreen :: ReloadScreen
 emptyReloadScreen = ReloadScreen
     { altScreen = False, cursorRow = 0, cursorCol = 0, cursorVisible = True
-    , rows = [], scrollback = [], pen = Cell.defaultStyle }
+    , cols = 0, rows = [], scrollback = [], pen = Cell.defaultStyle }
 
 -- | The app-set subscriptions a pane carries across a reload, so a program
 -- adopted into a fresh emulator keeps them. A blank set (everything off) is what
@@ -251,7 +249,7 @@ data Handover = Handover
 -- through to safe cleanup rather than misdecode. The golden-byte test pins the
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 9
+reloadEra = 10
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -308,9 +306,10 @@ decodeHandover bs =
 -- shape, and adds an @e == X@ arm below.
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    -- Era 8 differs only by the key protocols appended to 'ReloadModes',
-    -- which its decoder defaults, so today's shape reads both.
-    | e == reloadEra || e == 8 = hotTree =<< deser
+    | e == reloadEra = hotTree =<< deser
+    -- Eras 8 and 9 differ from today only by cell-grid screens ('migrateV9'
+    -- paints them) and, for era 8, the key protocols 'ReloadModes' defaults.
+    | e == 9 || e == 8 = hotTree . migrateV9 =<< deser
     | e == 7 = migrateV7 <$> deser
     -- Eras 4, 5 and 6 share the session/window shape (a single-Int "last", not
     -- the MRU stack). They differ only by additive leaves (era 4 lacks
@@ -362,6 +361,79 @@ hotTree h = do
                , paneHist = w.paneHist, autoRename = w.autoRename
                , panes = zip w.panes mine } )
 
+-- Era ≤ 9 payload shapes, frozen: screens travelled as cell grids, which
+-- 'migrateV9' paints into today's byte rows. The decoders are verbatim what
+-- eras 8-9 shipped, tolerant leaves included ('pen' defaulted for a pre-era-6
+-- screen); the older-era mirrors below nest these where they shared the shape.
+data ReloadHotV9 = ReloadHotV9 Text [HotPaneV9] (Maybe Text)
+data HotPaneV9 = HotPaneV9 Int Int ReloadModes ReloadScreenV9
+data ReloadScreenV9 = ReloadScreenV9 Bool Int Int Bool [[Cell]] [[Cell]] Style
+
+instance Serialise ReloadHotV9 where
+    encode (ReloadHotV9 tr hots lst) =
+           encodeListLen 4
+        <> encodeWord 0
+        <> encode tr <> encode hots <> encode lst
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        h <- ReloadHotV9 <$> decode <*> decode <*> decode
+        replicateM_ (max 0 (len - 4)) (() <$ decodeTerm)
+        pure h
+
+instance Serialise HotPaneV9 where
+    encode (HotPaneV9 mfd cpid ms sc) =
+           encodeListLen 5
+        <> encodeWord 0
+        <> encode mfd <> encode cpid <> encode ms <> encode sc
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        p <- HotPaneV9 <$> decode <*> decode <*> decode <*> decode
+        replicateM_ (max 0 (len - 5)) (() <$ decodeTerm)
+        pure p
+
+instance Serialise ReloadScreenV9 where
+    encode (ReloadScreenV9 alt cr cc cv rs sb pen) =
+           encodeListLen 8
+        <> encodeWord 0
+        <> encode alt <> encode cr <> encode cc <> encode cv
+        <> encode rs <> encode sb <> encode pen
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        s <- ReloadScreenV9
+            <$> decode <*> decode <*> decode <*> decode <*> decode <*> decode
+            <*> (if len >= 8 then decode else pure Cell.defaultStyle)
+        replicateM_ (max 0 (len - 8)) (() <$ decodeTerm)
+        pure s
+
+-- | Carry an era 8-9 payload forward: its cell-grid screens get painted. See
+-- 'decodeReloadTree'.
+migrateV9 :: ReloadHotV9 -> ReloadHot
+migrateV9 (ReloadHotV9 tr hots lst) = ReloadHot
+    { tree = tr
+    , hot = [ HotPane { masterFd = mfd, childPid = cpid, modes = ms
+                      , screen = paintScreenV9 sc }
+            | HotPaneV9 mfd cpid ms sc <- hots ]
+    , lastSession = lst }
+
+-- | Paint an era ≤ 9 cell-grid screen into today's byte rows. The width is
+-- what the old capture-size derivation used: the widest captured row.
+paintScreenV9 :: ReloadScreenV9 -> ReloadScreen
+paintScreenV9 (ReloadScreenV9 alt cr cc cv rs sb pen) = ReloadScreen
+    { altScreen = alt, cursorRow = cr, cursorCol = cc, cursorVisible = cv
+    , cols = maximum (0 : map length rs)
+    , rows = map paint rs
+    , scrollback = map paint sb
+    , pen = pen }
+  where
+    paint = paintLineBytes . V.fromList
+
+-- | The blank 'ReloadScreenV9' a pre-screen (era ≤ 2) pane migrates through.
+emptyScreenV9 :: ReloadScreenV9
+emptyScreenV9 = ReloadScreenV9 False 0 0 True [] [] Cell.defaultStyle
+
 -- Era-1 payload shapes, frozen: a pane carried no mode subscriptions. CBOR
 -- Generic keys on constructor arity and field order, not names, so these
 -- positional mirrors decode an era-1 blob that a modes-bearing 'ReloadPaneV7'
@@ -412,7 +484,7 @@ migrateV2 (ReloadStateV2 sess cur) = ReloadStateV3 (map migSession sess) cur
     migWindow (ReloadWindowV2 ix' nm lay act la ar ps) =
         ReloadWindowV6 ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV2 cwd' mfd cpid ms) =
-        ReloadPaneV7 cwd' mfd cpid ms emptyReloadScreen
+        ReloadPaneV7 cwd' mfd cpid ms emptyScreenV9
 
 -- Era-3 top-level shape, frozen: the tree carried no alternate session, over
 -- the era 3–6 session/window shape ('ReloadSessionV6'). See 'decodeReloadTree'.
@@ -425,8 +497,9 @@ migrateV3 :: ReloadStateV3 -> ReloadStateV6
 migrateV3 (ReloadStateV3 sess cur) = ReloadStateV6 sess cur Nothing
 
 -- Era 3–6 session/window shapes, frozen: a single-Int "last", not the MRU
--- stack. The nested 'ReloadPaneV7' has today's tolerant leaf decoders, which
--- default era-4's missing faint and era-5's missing pen. See 'decodeReloadTree'.
+-- stack. The nested 'ReloadPaneV7' has the frozen tolerant leaf decoders,
+-- which default era-4's missing faint and era-5's missing pen. See
+-- 'decodeReloadTree'.
 data ReloadSessionV6 = ReloadSessionV6 Text Text Int (Maybe Int) [ReloadWindowV6]
     deriving (Generic) deriving anyclass (Serialise)
 data ReloadWindowV6 =
@@ -459,7 +532,7 @@ data ReloadSessionV7 = ReloadSessionV7 Text Text Int [Int] [ReloadWindowV7]
 data ReloadWindowV7 =
     ReloadWindowV7 Int Text Text Int [Int] Bool [ReloadPaneV7]
     deriving (Generic) deriving anyclass (Serialise)
-data ReloadPaneV7 = ReloadPaneV7 Text Int Int ReloadModes ReloadScreen
+data ReloadPaneV7 = ReloadPaneV7 Text Int Int ReloadModes ReloadScreenV9
     deriving (Generic) deriving anyclass (Serialise)
 
 -- | Carry an era ≤ 7 tree forward: its durable fields take the store's snapshot
@@ -480,4 +553,5 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
         , paneHist = hist, autoRename = ar, panes = map migPane ps }
     migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
         ( PaneSnap { cwd = cwd', command = Nothing, shellSpawned = False }
-        , HotPane { masterFd = mfd, childPid = cpid, modes = ms, screen = sc } )
+        , HotPane { masterFd = mfd, childPid = cpid, modes = ms
+                  , screen = paintScreenV9 sc } )

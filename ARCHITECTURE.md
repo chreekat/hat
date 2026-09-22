@@ -804,10 +804,13 @@ does not, so the payload (`Hat.Server.Reload`) carries the tree —
 serialized as the persistence store's own snapshot JSON — beside each
 pane's *hot* state: its master fd, child pid, emulator modes, and its
 screen with scrollback. The incoming image rebuilds a pane by *byte
-replay*: it synthesizes the escape-sequence stream that reconstructs the
-carried grid and feeds it to a fresh emulator (`Hat.Server.Handover`
-captures and adopts). `-C` — on either spelling, `restart-server` and
-`restart` — drops scrollback from the handover as a memory-relief valve.
+replay*: the capture paints each grid row and scrollback line into its
+escape-sequence replay form, and adoption feeds those bytes verbatim to
+a fresh emulator (`Hat.Server.Handover` captures and adopts) — the
+payload carries painted bytes, never per-cell structure, so its size
+and codec cost scale with the text on screen rather than the cell
+count. `-C` — on either spelling, `restart-server` and `restart` —
+drops scrollback from the handover as a memory-relief valve.
 
 Compatibility uses both mechanisms, split by what evolves. The frozen
 envelope (magic, `reloadEra`, and a version-independent cleanup core of

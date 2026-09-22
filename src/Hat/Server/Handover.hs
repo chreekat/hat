@@ -100,9 +100,10 @@ captureHotPane carry pane = do
         , screen = sc }
 
 -- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
--- its alt-screen flag, and its scrollback (oldest line first). 'adoptPane'
--- replays this back into the fresh emulator after a reload. 'DropScrollback'
--- skips the scrollback entirely, so the reload doubles as a memory cleanup.
+-- its alt-screen flag, and its scrollback (oldest line first), each line
+-- painted to its replay bytes as it is read. 'adoptPane' feeds these verbatim
+-- into the fresh emulator after a reload. 'DropScrollback' skips the
+-- scrollback entirely, so the reload doubles as a memory cleanup.
 captureReloadScreen :: ScrollbackCarry -> Emu.Emulator -> IO ReloadScreen
 captureReloadScreen carry emu = do
     scr <- Emu.snapshot emu
@@ -112,14 +113,16 @@ captureReloadScreen carry emu = do
         DropScrollback -> pure []
         KeepScrollback -> do
             len <- Emu.scrollbackLength emu
-            catMaybes <$> mapM (Emu.scrollbackLine emu) [0 .. len - 1]
+            let painted i = fmap Emu.paintLineBytes <$> Emu.scrollbackLine emu i
+            catMaybes <$> mapM painted [0 .. len - 1]
     pure ReloadScreen
         { altScreen     = m.altScreen
         , cursorRow     = scr.cursor.row
         , cursorCol     = scr.cursor.col
         , cursorVisible = scr.cursorVisible
-        , rows          = map V.toList (V.toList scr.cells)
-        , scrollback    = map V.toList sb
+        , cols          = fromIntegral scr.size.cols
+        , rows          = map Emu.paintLineBytes (V.toList scr.cells)
+        , scrollback    = sb
         , pen           = pen
         }
 
@@ -208,7 +211,7 @@ adoptPane st histLimit sz (psnap, rp) = do
     -- restored viewport sits above the reseeded history. replayBytes also re-arms
     -- the app's ?2031/?1004/mouse subscriptions and re-enters the alt screen when
     -- the program was in it, so a later exit reverts cleanly.
-    let (replayBytes, replaySb) = replayPane esz rp
+    let (replayBytes, replaySb) = replayPane rp
     Emu.seedScrollback emu replaySb
     _ <- Emu.feed emu replayBytes
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
@@ -251,39 +254,29 @@ keyModesOf :: ReloadModes -> Emu.KeyModes
 keyModesOf rm = Emu.KeyModes
     { modifyOtherKeys = rm.modifyOtherKeys, kittyFlags = rm.kittyFlags }
 
--- | Rebuild the 'Emu.Screen' a reload captured, sized to the pane, for
--- 'Emu.restoreBytes'. See 'replayPane'.
-screenOf :: Size -> ReloadScreen -> Emu.Screen
-screenOf sz rs = Emu.Screen
-    { size = sz
-    , cells = V.fromList (map V.fromList rs.rows)
-    , cursor = Pos { row = rs.cursorRow, col = rs.cursorCol }
-    , cursorVisible = rs.cursorVisible
-    }
-
 -- | What 'adoptPane' feeds a reloaded pane's fresh emulator to reconstruct it:
--- the bytes that replay the mode and key-protocol subscriptions then repaint the captured
--- screen (re-entering the alt screen when the program was in it), paired with
--- the scrollback lines to reseed. Pure, so the capture→replay round trip is
--- testable without a pty.
-replayPane :: Size -> HotPane -> (B.ByteString, [B.ByteString])
-replayPane sz rp =
+-- the bytes that replay the mode and key-protocol subscriptions then repaint
+-- the captured screen (re-entering the alt screen when the program was in it),
+-- paired with the painted scrollback lines to reseed. Pure, so the
+-- capture→replay round trip is testable without a pty.
+replayPane :: HotPane -> (B.ByteString, [B.ByteString])
+replayPane rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
         <> Emu.keyModeReplayBytes (keyModesOf rp.modes)
-        <> Emu.restoreBytes restoreModes rp.screen.pen (screenOf sz rp.screen)
-    , map (Emu.paintLineBytes . V.fromList) rp.screen.scrollback )
+        <> Emu.restorePainted restoreModes rp.screen.pen
+            Pos { row = rp.screen.cursorRow, col = rp.screen.cursorCol }
+            rp.screen.cursorVisible rp.screen.rows
+    , rp.screen.scrollback )
   where
     restoreModes = (emuModesOf rp.modes) { Emu.altScreen = rp.screen.altScreen }
 
--- | The size a reload capture was taken at, reconstructed from its grid;
--- 'Nothing' for a blank capture (a migrated pre-screen blob), where there is
--- nothing to preserve and the caller's default applies. See 'adoptPane'.
+-- | The size a reload capture was taken at; 'Nothing' for a blank capture (a
+-- migrated pre-screen blob), where there is nothing to preserve and the
+-- caller's default applies. See 'adoptPane'.
 captureSize :: ReloadScreen -> Maybe Size
 captureSize sc = case sc.rows of
     [] -> Nothing
-    rs -> Just Size
-        { rows = clamp (length rs)
-        , cols = clamp (maximum (map length rs)) }
+    rs -> Just Size { rows = clamp (length rs), cols = clamp sc.cols }
   where
     -- Sane bounds armor a hand-edited or corrupt blob: a Word16-overflowing
     -- or zero dimension must not produce a degenerate emulator.

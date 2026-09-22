@@ -111,35 +111,23 @@ instance Arbitrary ReloadModes where
 instance Arbitrary ReloadScreen where
     arbitrary = ReloadScreen
         <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        <*> shortGrid <*> shortGrid <*> arbitrary
-    shrink = genericShrink
+        <*> choose (0, 5) <*> shortLines <*> shortLines <*> arbitrary
+    shrink s =
+        [ ReloadScreen alt cr cc cv co rs sb pen
+        | (alt, cr, cc, (cv, co, rs, sb, pen)) <- shrink
+            ( s.altScreen, s.cursorRow, s.cursorCol
+            , (s.cursorVisible, s.cols, s.rows, s.scrollback, s.pen) ) ]
 
--- Small grids keep the round-trip cheap; the cells only need to survive the
--- CBOR codec, not mean anything to the emulator.
-shortGrid :: Gen [[Cell]]
-shortGrid = do
+-- Short painted lines keep the round-trip cheap; the bytes only need to
+-- survive the CBOR codec, not mean anything to the emulator.
+shortLines :: Gen [B.ByteString]
+shortLines = do
     r <- choose (0, 2)
-    vectorOf r (choose (0, 3) >>= (`vectorOf` arbitrary))
+    vectorOf r (B.pack <$> (choose (0, 4) >>= (`vectorOf` arbitrary)))
 
-instance Arbitrary Cell where
-    arbitrary = Cell <$> arbitrary <*> arbitrary
-    shrink c = [ Cell ct s | (ct, s) <- shrink (c.content, c.style) ]
-
-instance Arbitrary Content where
-    arbitrary = frequency
-        [ (1, pure Continuation)
-        , (8, Glyph <$> chooseEnum ('a', '~')
-                    <*> elements [[], ['\x0301'], ['\x0301', '\x0308']]
-                    <*> arbitrary)
-        ]
-    shrink Continuation = []
-    shrink (Glyph ch mks w) = Continuation
-        : [ Glyph ch' mks' w' | (ch', mks', w') <- shrink (ch, mks, w) ]
-
-instance Arbitrary Width where
-    arbitrary = elements [Narrow, Wide]
-    shrink Wide = [Narrow]
-    shrink Narrow = []
+instance Arbitrary B.ByteString where
+    arbitrary = B.pack <$> arbitrary
+    shrink = map B.pack . shrink . B.unpack
 
 instance Arbitrary Style where
     arbitrary = Style
@@ -228,12 +216,15 @@ treeWith mlast ms sc = ReloadTree
     , lastSession = mlast }
 
 -- A non-trivial captured screen, to pin the current era's encoding: an
--- alt-screen pane with one styled live cell and one scrollback cell.
+-- alt-screen pane with one styled painted row and one blank scrollback line.
+-- Old corpus rows carry the same screen as cells (one red @x@, one blank
+-- line), so this is also what their migration must paint them into.
 fixedScreen :: ReloadScreen
 fixedScreen = ReloadScreen
     { altScreen = True, cursorRow = 1, cursorCol = 2, cursorVisible = True
-    , rows = [[ glyphCell 'x' defaultStyle { fg = Indexed 1 } ]]
-    , scrollback = [[ blankCell ]], pen = defaultStyle }
+    , cols = 1
+    , rows = ["\ESC[0;31mx"]
+    , scrollback = [""], pen = defaultStyle }
 
 -- The current-era representative, with a non-trivial mode set, screen, and
 -- alternate session to pin its encoding.
@@ -337,6 +328,19 @@ corpus =
         \9f9f84006178018a008201018100f4f4f4f4f4f4f4ffff9f9f84\
         \006120018a0081008100f4f4f4f4f4f4f4ffff8a0081008100f4\
         \f4f4f4f4f4f4ff816470726576"
+      , fixedCleanup, fixedTree )
+    , ( 10
+      , "851a484154520a039f82071864ff58fc840078c27b226c6173\
+        \745f6163746976655f73657373696f6e223a22776f726b222c22\
+        \73657373696f6e73223a5b7b2263757272656e745f6978223a30\
+        \2c226e616d65223a22776f726b222c2273746172745f63776422\
+        \3a222f686f6d65222c2277696e646f7773223a5b7b2261637469\
+        \7665223a302c226175746f5f72656e616d65223a747275652c22\
+        \6978223a302c226c61796f7574223a224c222c226e616d65223a\
+        \2277222c2270616e6573223a5b7b22637764223a222f746d7022\
+        \7d5d7d5d7d5d7d9f85000718648600f5f402f5038900f50102f5\
+        \019f481b5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4\
+        \f4f4ff816470726576"
       , fixedCleanup, fixedTree )
     ]
 
