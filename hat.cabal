@@ -70,6 +70,7 @@ library
     exposed-modules:
         Hat.Bench.Linear
         Hat.Bench.PerfStat
+        Hat.Bench.Report
         Hat.Bench.Residency
         Hat.Bench.RtsStats
         Hat.Client
@@ -235,6 +236,7 @@ test-suite hat-test
     other-modules:
         Hat.Bench.LinearSpec
         Hat.Bench.PerfStatSpec
+        Hat.Bench.ReportSpec
         Hat.Bench.ResidencySpec
         Hat.Bench.RtsStatsSpec
         Hat.Client.DrawSpec

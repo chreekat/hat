@@ -5,6 +5,7 @@ import Test.Hspec
 
 import Hat.Bench.LinearSpec qualified
 import Hat.Bench.PerfStatSpec qualified
+import Hat.Bench.ReportSpec qualified
 import Hat.Bench.ResidencySpec qualified
 import Hat.Bench.RtsStatsSpec qualified
 import Hat.Client.DrawSpec qualified
@@ -66,6 +67,7 @@ main = hspec $ do
     describe "Hat.Debug" Hat.DebugSpec.spec
     describe "Hat.Bench.Linear" Hat.Bench.LinearSpec.spec
     describe "Hat.Bench.PerfStat" Hat.Bench.PerfStatSpec.spec
+    describe "Hat.Bench.Report" Hat.Bench.ReportSpec.spec
     describe "Hat.Bench.Residency" Hat.Bench.ResidencySpec.spec
     describe "Hat.Bench.RtsStats" Hat.Bench.RtsStatsSpec.spec
     describe "Hat.Intern" Hat.InternSpec.spec
