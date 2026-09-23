@@ -606,7 +606,7 @@ clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
 -- | Seed a fresh emulator's history with captured painted lines (oldest
 -- first, 'paintLineBytes' each), trimmed to the current limit. libghostty
 -- owns scrollback and offers no way to inject history rows directly, so
--- replay them as bytes: each line under a leading reset, then scroll the
+-- replay them as bytes: each line closed by a reset, then scroll the
 -- whole block up out of the viewport with SU (@CSI n S@), which pushes
 -- primary-screen rows into history and leaves a blank screen for a following
 -- 'restorePainted'. The reload-restore companion to it.
@@ -619,16 +619,18 @@ seedScrollback e ls = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
         rows <- fromIntegral <$> c_get t dataRows
         feedBytes t (seedBytes (min n rows) kept)
 
--- | The bytes 'seedScrollback' feeds: each painted line under a leading reset,
--- CRLF-separated (no trailing CRLF, so the last line is not left one row low),
--- then SU by @su@ to scroll every line into history, then a final pen reset.
+-- | The bytes 'seedScrollback' feeds: an opening reset, then each painted
+-- line closed by a reset — the pen is default at every line boundary, so the
+-- scrolls between lines and the final SU erase revealed rows under the
+-- default background — CRLF-separated (no trailing CRLF, so the last line is
+-- not left one row low), then SU by @su@ to scroll every line into history.
 seedBytes :: Int -> [ByteString] -> ByteString
 seedBytes su ls = BL.toStrict $ BB.toLazyByteString $
-       mconcat (intersperse (BB.byteString "\r\n") (map paintedLine ls))
+       BB.byteString "\ESC[0m"
+    <> mconcat (intersperse (BB.byteString "\r\n") (map paintedLine ls))
     <> BB.byteString "\ESC[" <> BB.intDec su <> BB.char8 'S'
-    <> BB.byteString "\ESC[0m"
   where
-    paintedLine bs = BB.byteString "\ESC[0m" <> BB.byteString bs
+    paintedLine bs = BB.byteString bs <> BB.byteString "\ESC[0m"
 
 -- | libghostty's physical scrollback row count (total rows minus the viewport).
 physicalScrollback :: Ptr CTerm -> IO Int
