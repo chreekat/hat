@@ -26,7 +26,6 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Vector qualified as V
 import System.Directory
     (renameFile)
 import System.Posix.Types (Fd (..))
@@ -109,12 +108,14 @@ captureHotPane carry pane = do
 
 -- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
 -- its alt-screen flag, and its scrollback (oldest line first), each line
--- painted to its replay bytes as it is read. 'adoptPane' feeds these verbatim
--- into the fresh emulator after a reload. 'DropScrollback' skips the
--- scrollback entirely, so the reload doubles as a memory cleanup.
+-- painted to its replay bytes as it is read ('Emu.screenPainted' and
+-- 'Emu.scrollbackPainted' — no cell is ever marshalled). 'adoptPane' feeds
+-- these verbatim into the fresh emulator after a reload. 'DropScrollback'
+-- skips the scrollback entirely, so the reload doubles as a memory cleanup.
 captureReloadScreen :: ScrollbackCarry -> Emu.Emulator -> IO ReloadScreen
 captureReloadScreen carry emu = do
-    scr <- Emu.snapshot emu
+    (sz, rows) <- Emu.screenPainted emu
+    (cur, vis) <- Emu.cursorState emu
     m   <- Emu.modes emu
     pen <- Emu.currentPen emu
     sb  <- case carry of
@@ -122,11 +123,11 @@ captureReloadScreen carry emu = do
         KeepScrollback -> Emu.scrollbackPainted emu
     pure ReloadScreen
         { altScreen     = m.altScreen
-        , cursorRow     = scr.cursor.row
-        , cursorCol     = scr.cursor.col
-        , cursorVisible = scr.cursorVisible
-        , cols          = fromIntegral scr.size.cols
-        , rows          = map Emu.paintLineBytes (V.toList scr.cells)
+        , cursorRow     = cur.row
+        , cursorCol     = cur.col
+        , cursorVisible = vis
+        , cols          = fromIntegral sz.cols
+        , rows          = rows
         , scrollback    = sb
         , pen           = pen
         }

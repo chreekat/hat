@@ -31,6 +31,8 @@ module Hat.Term.Emulator
     , resize
     , snapshot
     , snapshotWithGens
+    , screenPainted
+    , cursorState
     , currentPen
     , modes
     , modeReplayBytes
@@ -513,6 +515,27 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
         else do
             cols <- fromIntegral <$> c_get t dataCols
             Just <$> readRow (shareVals e.cellIntern) t tagHistory (phys - exposed + i) cols
+
+-- | The live grid painted to its replay bytes ('paintShimRow' per row, top
+-- first) with its size, under one lock hold — the capture path's grid read,
+-- which never marshals a 'Cell'. See 'Hat.Server.captureReloadScreen'.
+screenPainted :: Emulator -> IO (Size, [ByteString])
+screenPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    rows <- fromIntegral <$> c_get t dataRows
+    cols <- fromIntegral <$> c_get t dataCols
+    let cap = max 1 cols * 68 + 64
+    painted <- allocaBytes cap $ \out ->
+        mapM (\r -> paintShimRow t tagActive r cols out cap) [0 .. rows - 1]
+    pure ( Size { rows = fromIntegral rows, cols = fromIntegral cols }
+         , painted )
+
+-- | The cursor's position, and whether it is visible.
+cursorState :: Emulator -> IO (Pos, Bool)
+cursorState e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    cx  <- fromIntegral <$> c_get t dataCursorX
+    cy  <- fromIntegral <$> c_get t dataCursorY
+    vis <- c_get t dataCursorVisible
+    pure (Pos { row = cy, col = cx }, vis /= 0)
 
 -- | Every exposed scrollback line painted to its replay bytes
 -- ('paintShimRow'), oldest first, under one lock hold. See

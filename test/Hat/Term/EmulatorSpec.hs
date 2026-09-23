@@ -34,6 +34,29 @@ instance Arbitrary PlainLine where
         PlainLine <$> vectorOf n (chooseEnum (' ', '~'))
     shrink (PlainLine s) = PlainLine <$> shrinkList (const []) s
 
+-- | Lines of terminal-bound bytes mixing plain runs, SGR fragments, wide
+-- chars, and combining marks; shrinks by dropping whole lines.
+newtype PaintedSoup = PaintedSoup [B8.ByteString]
+    deriving (Show)
+
+instance Arbitrary PaintedSoup where
+    arbitrary = PaintedSoup <$> (chooseInt (1, 8) >>= flip vectorOf line)
+      where
+        line = B8.concat <$> (chooseInt (0, 12) >>= flip vectorOf piece)
+        piece = frequency
+            [ (4, plain)
+            , (2, sgr)
+            , (1, pure "\xe6\x97\xa5")   -- 日 (wide)
+            , (1, pure "e\xcc\x81")      -- e + combining acute
+            ]
+        plain = do
+            k <- chooseInt (1, 12)
+            B8.pack <$> vectorOf k (chooseEnum (' ', '~'))
+        sgr = do
+            ps <- vectorOf 2 (chooseInt (0, 108))
+            pure ("\ESC[" <> B8.intercalate ";" (map (B8.pack . show) ps) <> "m")
+    shrink (PaintedSoup lns) = PaintedSoup <$> shrinkList (const []) lns
+
 spec :: Spec
 spec = do
     it "interns equal cells to one shared heap object (peekShimCell)" $ do
@@ -343,6 +366,29 @@ spec = do
         cellRows <- catMaybes <$> mapM (scrollbackLine e) [0 .. len - 1]
         painted <- scrollbackPainted e
         painted `shouldBe` map paintLineBytes cellRows
+
+    -- The C painter must agree with paintLineBytes over arbitrary content,
+    -- not just the example rows above.
+    prop "paints arbitrary content byte-identically to paintLineBytes" $
+        \(PaintedSoup lns) -> ioProperty $ do
+            e <- newEmulator Size { rows = 4, cols = 24 } 1000
+            forM_ lns $ \ln -> feedStr e (ln <> "\r\n")
+            forM_ [1 .. 5 :: Int] $ \_ -> feedStr e "\r\n"  -- scroll into history
+            len <- scrollbackLength e
+            cellRows <- catMaybes <$> mapM (scrollbackLine e) [0 .. len - 1]
+            painted <- scrollbackPainted e
+            pure (painted === map paintLineBytes cellRows)
+
+    -- screenPainted is the capture path's grid read; its bytes must never
+    -- drift from paintLineBytes over the snapshot's cells.
+    it "paints the live grid byte-identically to paintLineBytes over its cells" $ do
+        e <- newEmulator Size { rows = 6, cols = 20 } 1000
+        _ <- feedStr e "plain\r\n\ESC[1;31mbold red\ESC[0m tail\r\n"
+        _ <- feedStr e "\ESC[44mbg\ESC[K\r\nwide \xe6\x97\xa5 e\xcc\x81"
+        scr <- snapshot e
+        (sz, painted) <- screenPainted e
+        sz `shouldBe` scr.size
+        painted `shouldBe` map paintLineBytes (V.toList scr.cells)
 
     -- bug: adoptPane restores a primary-screen pane by both painting the live
     -- grid and seeding scrollback into one fresh emulator. The live grid must
