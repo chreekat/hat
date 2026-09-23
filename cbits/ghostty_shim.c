@@ -440,6 +440,44 @@ long ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
     return (long)o;
 }
 
+long ghost_shim_format_history(void *t, uint32_t from, uint32_t to,
+                               uint16_t cols, uint8_t **out) {
+    GhosttyPoint a = { .tag = GHOSTTY_POINT_TAG_HISTORY };
+    a.value.coordinate.x = 0;
+    a.value.coordinate.y = from;
+    GhosttyPoint b = { .tag = GHOSTTY_POINT_TAG_HISTORY };
+    b.value.coordinate.x = cols ? cols - 1 : 0;
+    b.value.coordinate.y = to;
+    GhosttyGridRef ra = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef rb = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, a, &ra) != GHOSTTY_SUCCESS
+     || ghostty_terminal_grid_ref((GhosttyTerminal)t, b, &rb) != GHOSTTY_SUCCESS)
+        return -1;
+    GhosttySelection sel = { .size = sizeof(GhosttySelection),
+                             .start = ra, .end = rb, .rectangle = false };
+    GhosttyFormatterTerminalOptions fo = { .size = sizeof fo };
+    fo.emit = GHOSTTY_FORMATTER_FORMAT_VT;
+    fo.trim = true;
+    fo.extra.size = sizeof fo.extra;
+    fo.extra.screen.size = sizeof fo.extra.screen;
+    fo.selection = &sel;
+    GhosttyFormatter f = NULL;
+    if (ghostty_formatter_terminal_new(NULL, &f, (GhosttyTerminal)t, fo)
+            != GHOSTTY_SUCCESS)
+        return -1;
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    GhosttyResult r = ghostty_formatter_format_alloc(f, NULL, &buf, &len);
+    ghostty_formatter_free(f);
+    if (r != GHOSTTY_SUCCESS) return -1;
+    *out = buf;
+    return (long)len;
+}
+
+void ghost_shim_format_release(uint8_t *buf, size_t len) {
+    ghostty_free(NULL, buf, len);
+}
+
 int ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
                               uint32_t *buf, size_t buf_len, size_t *out_len) {
     GhosttyPoint p = { .tag = (GhosttyPointTag)tag };

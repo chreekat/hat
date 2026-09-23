@@ -54,6 +54,7 @@ module Hat.Term.Emulator
     ) where
 
 import Control.Concurrent.MVar
+import Control.Exception (finally)
 import Control.Monad (unless)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
@@ -541,21 +542,54 @@ cursorState e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     vis <- c_get t dataCursorVisible
     pure (Pos { row = cy, col = cx }, vis /= 0)
 
--- | Every exposed scrollback line painted to its replay bytes
--- ('paintShimRow'), oldest first, under one lock hold. See
--- 'Hat.Server.captureReloadScreen'.
+-- | Every exposed scrollback line painted to its replay bytes, oldest first,
+-- under one lock hold: one native formatter pass over the history range
+-- ('ghost_shim_format_history'), split at its CRLF row separators. Each row
+-- stands alone, so a per-line replay under 'seedBytes' reproduces it. Rows
+-- the formatter leaves empty — trimmed from the tail, or blank rows whose
+-- cells carry only a background — are repainted by 'paintShimRow', which
+-- preserves that background. See 'Hat.Server.captureReloadScreen'.
 scrollbackPainted :: Emulator -> IO [ByteString]
 scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     lim <- readIORef e.sbLimit
     phys <- physicalScrollback t
     let exposed = min phys (max 0 lim)
-    cols <- fromIntegral <$> c_get t dataCols
-    -- 68 covers a markless cell's worst case ('cellSgr' ≤ 54 + 4 UTF-8
-    -- bytes); grapheme marks eat the shared slack, overflowing into a retry.
-    let cap = max 1 cols * 68 + 64
-    allocaBytes cap $ \out ->
-        mapM (\i -> paintShimRow t tagHistory (phys - exposed + i) cols out cap)
-            [0 .. exposed - 1]
+    if exposed <= 0
+        then pure []
+        else do
+            cols <- fromIntegral <$> c_get t dataCols
+            blob <- formatHistory t (phys - exposed) (phys - 1) cols
+            let rows0 = take exposed (splitCrlf blob ++ repeat B.empty)
+            -- 68 covers a markless cell's worst case ('cellSgr' ≤ 54 + 4
+            -- UTF-8 bytes); grapheme marks eat the shared slack, overflowing
+            -- into a retry.
+            let cap = max 1 cols * 68 + 64
+            allocaBytes cap $ \out ->
+                mapM (\(i, r) -> if B.null r
+                        then paintShimRow t tagHistory (phys - exposed + i)
+                                cols out cap
+                        else pure r)
+                    (zip [0 ..] rows0)
+
+-- | The formatter blob for history rows [from, to]; throws when libghostty
+-- cannot format the range, which aborts the capture before anything is torn
+-- down. See 'scrollbackPainted'.
+formatHistory :: Ptr CTerm -> Int -> Int -> Int -> IO ByteString
+formatHistory t from to cols = alloca $ \pp -> do
+    n <- c_format_history t (fromIntegral from) (fromIntegral to)
+            (fromIntegral cols) pp
+    if n < 0
+        then ioError (userError "scrollback capture: history formatter failed")
+        else do
+            p <- peek pp
+            B.packCStringLen (castPtr p, fromIntegral n)
+                `finally` c_format_release p (fromIntegral n)
+
+-- | Split at CRLF row separators; row content never contains CR or LF.
+splitCrlf :: ByteString -> [ByteString]
+splitCrlf bs = case B.breakSubstring "\r\n" bs of
+    (h, rest) | B.null rest -> [h]
+              | otherwise   -> h : splitCrlf (B.drop 2 rest)
 
 -- | One row's replay bytes from the C painter ('ghost_shim_paint_row'),
 -- retried into a bigger buffer when the row outgrows @out@. Must stay

@@ -55,6 +55,15 @@ int   ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
 long  ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
                            uint8_t *out, size_t cap);
 
+/* VT-format the history rows [from, to] in one native formatter pass: rows
+ * CRLF-separated, each standing alone (styles close and reopen at row
+ * boundaries), trailing blank rows trimmed. *out receives a library-allocated
+ * buffer released with ghost_shim_format_release. Returns the byte length, -1
+ * on failure. */
+long  ghost_shim_format_history(void *t, uint32_t from, uint32_t to,
+                                uint16_t cols, uint8_t **out);
+void  ghost_shim_format_release(uint8_t *buf, size_t len);
+
 /* Whether the row at y under a point tag soft-wraps onto the next row.
  * Returns 1 wrapped, 0 not wrapped or unavailable. */
 int   ghost_shim_row_wrapped(void *t, int tag, uint32_t y);

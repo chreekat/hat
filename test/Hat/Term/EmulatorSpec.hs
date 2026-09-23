@@ -25,6 +25,19 @@ rowText scr r = T.stripEnd (screenRowText scr r)
 feedStr :: Emulator -> B8.ByteString -> IO [Event]
 feedStr = feed
 
+-- | A row-final continuation with no wide glyph ahead of it (a spacer head)
+-- rewritten as the default blank it renders as.
+blankSpacerHead :: V.Vector Cell -> V.Vector Cell
+blankSpacerHead row
+    | n >= 1
+    , (row V.! (n - 1)).content == Continuation
+    , n < 2 || cellWidth (row V.! (n - 2)) /= 2
+    = row V.// [(n - 1, Cell { content = Glyph ' ' "" Narrow
+                             , style = defaultStyle })]
+    | otherwise = row
+  where
+    n = V.length row
+
 newtype PlainLine = PlainLine String
     deriving (Show)
 
@@ -374,9 +387,9 @@ spec = do
         restored <- catMaybes <$> traverse (scrollbackLine dst) [0 .. len - 1]
         restored `shouldBe` captured
 
-    -- scrollbackPainted paints off the shim's raw row buffer; its bytes must
-    -- never drift from paintLineBytes over the same rows' cells.
-    it "paints scrollback byte-identically to paintLineBytes over its cells" $ do
+    -- The formatter-painted capture must reseed to the same cells: styles,
+    -- wide chars, marks, and bg-erased blanks all survive the round trip.
+    it "reseeds captured scrollback to the same cells" $ do
         e <- newEmulator Size { rows = 3, cols = 20 } 1000
         _ <- feedStr e "plain text\r\n"
         _ <- feedStr e "\ESC[1;31mbold red\ESC[0m tail\r\n"
@@ -392,11 +405,18 @@ spec = do
         len `shouldSatisfy` (>= 6)
         cellRows <- catMaybes <$> mapM (scrollbackLine e) [0 .. len - 1]
         painted <- scrollbackPainted e
-        painted `shouldBe` map paintLineBytes cellRows
+        dst <- newEmulator Size { rows = 3, cols = 20 } 1000
+        seedScrollback dst painted
+        len' <- scrollbackLength dst
+        len' `shouldBe` len
+        restored <- catMaybes <$> mapM (scrollbackLine dst) [0 .. len' - 1]
+        restored `shouldBe` cellRows
 
-    -- The C painter must agree with paintLineBytes over arbitrary content,
-    -- not just the example rows above.
-    prop "paints arbitrary content byte-identically to paintLineBytes" $
+    -- The capture must round-trip arbitrary content, not just the example
+    -- rows above. A wide glyph that wraps leaves a spacer-head continuation
+    -- in the source row's last column; it renders blank and no replay bytes
+    -- can respell it, so it compares as the blank it renders as.
+    prop "reseeds arbitrary captured scrollback to the same cells" $
         \(PaintedSoup lns) -> ioProperty $ do
             e <- newEmulator Size { rows = 4, cols = 24 } 1000
             forM_ lns $ \ln -> feedStr e (ln <> "\r\n")
@@ -404,7 +424,10 @@ spec = do
             len <- scrollbackLength e
             cellRows <- catMaybes <$> mapM (scrollbackLine e) [0 .. len - 1]
             painted <- scrollbackPainted e
-            pure (painted === map paintLineBytes cellRows)
+            dst <- newEmulator Size { rows = 4, cols = 24 } 1000
+            seedScrollback dst painted
+            restored <- catMaybes <$> mapM (scrollbackLine dst) [0 .. len - 1]
+            pure (restored === map blankSpacerHead cellRows)
 
     -- screenPainted is the capture path's grid read; its bytes must never
     -- drift from paintLineBytes over the snapshot's cells.
