@@ -145,6 +145,7 @@ library
         Hat.Term.Ghostty
         Hat.Term.HostProtocol
         Hat.Term.Pty
+        Hat.Term.Winsize
         Hat.Transport.Socket
         Hat.Transport.Wire
     include-dirs:       cbits

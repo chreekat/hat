@@ -1,5 +1,3 @@
-{-# LANGUAGE CApiFFI #-}
-
 -- | PTY allocation and child process management. One 'PtyHandle' per pane.
 --
 -- Reads and writes go through a 'Handle' on the master fd so they are
@@ -29,10 +27,6 @@ module Hat.Term.Pty
     , ProcessStatus (..)
     ) where
 
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <termios.h>
-
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 import Control.Exception (IOException, catch, try)
@@ -50,7 +44,7 @@ import Foreign.C.Types
 import System.IO
 import System.Posix.IO (closeFd, fdToHandle)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
-import System.Posix.Signals (Signal, signalProcess, sigHUP, sigKILL)
+import System.Posix.Signals (signalProcess, sigHUP, sigKILL)
 import System.Posix.Terminal
     ( TerminalState (Immediately)
     , getTerminalAttributes
@@ -61,6 +55,7 @@ import System.Posix.Terminal
 import System.Posix.Types (Fd (..), ProcessID)
 
 import Hat.Geometry
+import Hat.Term.Winsize (getWinsize, setWinsize, sigWinch)
 
 data Spawn = Spawn
     { cmd  :: FilePath
@@ -86,9 +81,6 @@ data PtyHandle = PtyHandle
         -- reap itself failed (e.g. the child was already reaped elsewhere).
     }
 
-foreign import capi "sys/ioctl.h ioctl"
-    c_ioctl :: CInt -> CULong -> Ptr () -> IO CInt
-
 -- Forks and execs the child entirely in C (see cbits/hat_shim.c), so no
 -- Haskell/RTS code runs in the child between fork and exec — the manual
 -- forkProcess path did, and under heavy parallel load its post-fork safe
@@ -97,36 +89,6 @@ foreign import ccall unsafe "hat_spawn_pty"
     c_spawn_pty
         :: CInt -> CInt -> CString -> CString
         -> Ptr CString -> Ptr CString -> IO CInt
-
-setWinsize :: Fd -> Size -> IO ()
-setWinsize (Fd fd) sz =
-    allocaBytes #{size struct winsize} $ \ws -> do
-        #{poke struct winsize, ws_row} ws (fromIntegral sz.rows :: CUShort)
-        #{poke struct winsize, ws_col} ws (fromIntegral sz.cols :: CUShort)
-        #{poke struct winsize, ws_xpixel} ws (0 :: CUShort)
-        #{poke struct winsize, ws_ypixel} ws (0 :: CUShort)
-        _ <- c_ioctl fd #{const TIOCSWINSZ} ws
-        pure ()
-
--- | The unix package doesn't export SIGWINCH.
-sigWinch :: Signal
-sigWinch = #{const SIGWINCH}
-
--- | Current size of a terminal, e.g. the client's own tty. Falls back
--- to 80x24 when the fd is not a terminal.
-getWinsize :: Fd -> IO Size
-getWinsize (Fd fd) =
-    allocaBytes #{size struct winsize} $ \ws -> do
-        rc <- c_ioctl fd #{const TIOCGWINSZ} ws
-        if rc /= 0
-            then pure Size { rows = 24, cols = 80 }
-            else do
-                r <- #{peek struct winsize, ws_row} ws :: IO CUShort
-                c <- #{peek struct winsize, ws_col} ws :: IO CUShort
-                if r == 0 || c == 0
-                    then pure Size { rows = 24, cols = 80 }
-                    else pure Size
-                        { rows = fromIntegral r, cols = fromIntegral c }
 
 spawn :: Spawn -> IO PtyHandle
 spawn s = do
