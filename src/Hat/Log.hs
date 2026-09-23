@@ -37,7 +37,9 @@ data LogEvent
     = ServerStarted   { socket :: FilePath }
     | ServerStopping  { reason :: Text }
     | ServerReloading { target :: FilePath }  -- ^ the binary an in-place reload re-execs
-    | ReloadAdopt     { pane :: Int, phase :: Text }  -- ^ a reload's per-pane adopt progress (start\/replaying\/ready), to pinpoint a resume that stalls
+    | ReloadExec      { panes :: Int }  -- ^ capture and farewells done, the exec is next; brackets the outgoing image's half of a reload against 'ServerReloading'
+    | ReloadRebuilding { panes :: Int }  -- ^ the incoming image starts re-adopting the handed-over tree; brackets the config load against the first 'ReloadAdopt'
+    | ReloadAdopt     { pane :: Int, phase :: Text }  -- ^ a reload's per-pane adopt progress (start\/replaying\/seeded\/ready), to pinpoint a resume that stalls
     | ClientConnected { client :: Int, term :: Text }
     | ClientDetached  { client :: Int, reason :: Text }
     | PaneSpawned     { pane :: Int, cmd :: Text }

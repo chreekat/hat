@@ -481,6 +481,7 @@ cmdReload' scope st mclient args =
                 -- orphans accrued on the dev box across upgrades). Reap it here,
                 -- while we can still signal it.
                 (do reapMonitor st.monitorRegistry
+                    logEvent st.logger ReloadExec { panes = length cleanup.live }
                     -- The self-exec replaces this image, so 'withLogger's
                     -- flush-on-exit never runs; drain the queue now or the
                     -- reload trace is lost.
