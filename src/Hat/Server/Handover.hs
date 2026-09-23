@@ -15,7 +15,7 @@ module Hat.Server.Handover
 import Control.Concurrent
     (getNumCapabilities, setNumCapabilities)
 import GHC.Conc (getNumProcessors)
-import Control.Concurrent.Async (mapConcurrently)
+import Control.Concurrent.Async (async, mapConcurrently, waitCatch)
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, bracket, catch, try)
@@ -174,6 +174,8 @@ readReload lg hp = do
 -- same order.
 rebuildReload :: ServerState -> ReloadTree -> IO ()
 rebuildReload st rt = do
+    logEvent st.logger ReloadRebuilding
+        { panes = length [ () | s <- rt.sessions, w <- s.windows, _ <- w.panes ] }
     histLimit <- (.historyLimit) <$> readTVarIO st.options
     let flat = [ p | s <- rt.sessions, w <- s.windows, p <- w.panes ]
     pids <- mapM (\_ -> PaneId <$> atomically (freshId st.nextPane)) flat
@@ -196,13 +198,16 @@ rebuildReload st rt = do
 
 -- | Run an action with enough capabilities to spread @n@ concurrent pane
 -- jobs over the cores, restoring the configured count after: the server
--- normally runs -N2, which would cap a reload's parallelism at two.
+-- normally runs -N2, which would cap a reload's parallelism at two. The bump
+-- runs beside the action — it starts on the current capabilities and widens
+-- as threads spread onto the new ones — so a bump stalled by a loaded
+-- machine delays nothing; the restore waits for it to land.
 withCapabilities :: Int -> IO a -> IO a
 withCapabilities n act = bracket
     (do old <- getNumCapabilities
         procs <- getNumProcessors
-        old <$ setNumCapabilities (max old (min procs n)))
-    setNumCapabilities
+        (,) old <$> async (setNumCapabilities (max old (min procs n))))
+    (\(old, bump) -> waitCatch bump >> setNumCapabilities old)
     (const act)
 
 resolveSessionByName :: ServerState -> Text -> (Session -> IO ()) -> IO ()
@@ -237,6 +242,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     -- the program was in it, so a later exit reverts cleanly.
     let (replayBytes, replaySb) = replayPane rp
     Emu.seedScrollback emu replaySb
+    logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "seeded" }
     _ <- Emu.feed emu replayBytes
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
     sizeVar   <- newTVarIO esz
