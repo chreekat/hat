@@ -1580,18 +1580,20 @@ spec = parallel $ do
         withHat hatBin $ \h -> do
         c <- startClientEnv h [("HAT_TEST_RELOAD_LINGER", "100000")] []
         awaitScreen c "$"
-        typeInto c "i=0; while sleep 0.01; do i=$((i+1)); echo TICK-$i-END; done\r"
+        -- The ticker stops on a flag file, not a keystroke, so stopping it
+        -- cannot race the reattach; the sentinel prints as done-ticks-42 but
+        -- echoes with the $(( )) unexpanded, so only the real end matches.
+        typeInto c (B8.pack ("i=0; while [ ! -e " <> h.home <> "/stop-ticks ]; \
+            \do i=$((i+1)); echo TICK-$i-END; sleep 0.01; done; \
+            \echo done-ticks-$((40+2))\r"))
         awaitScreen c "TICK-3-END"
         _ <- hatCtl h ["restart-server", h.bin]
         _ <- awaitExit c
         c2 <- startClient h
-        -- Only interrupt once the reattached screen shows ticks flowing
-        -- again, so the C-c cannot land before the client is attached.
-        awaitScreen c2 "TICK-"
-        -- Stop the ticker; the prompt only redraws after every buffered
-        -- tick has flowed through the adopted pane.
-        typeInto c2 "\x03"
-        awaitScreen c2 "$"
+        writeFile (h.home </> "stop-ticks") ""
+        -- The sentinel is FIFO-last through the pane, so its render proves
+        -- every tick the kernel buffered across the exec has flowed through.
+        awaitScreen c2 "done-ticks-42"
         out <- ctlOut h ["capture-pane", "-p", "-S", "-"]
         let ticks = [ n | w <- T.words (T.pack out)
                         , Just num <- [T.stripPrefix "TICK-" w
