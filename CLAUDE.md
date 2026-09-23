@@ -39,9 +39,9 @@ specific to HAT.
     coming up at all (e.g. a cabal-level error) exits ghcid without writing
     `errors.err`. The error is in ghcid's own output, so capture that when
     launching; fix what it names and relaunch.
-  - `hat.cabal` and `src/Hat/Term/Emulator.hsc` are `--restart` triggers (the
-    session rebuilds from scratch when they change); other files hot-reload
-    on save.
+  - `hat.cabal` and the `.hsc` layout modules (`src/Hat/Term/Ghostty.hsc`,
+    `src/Hat/Term/Winsize.hsc`) are `--restart` triggers (the session rebuilds
+    from scratch when they change); other files hot-reload on save.
   - Each git worktree runs its own ghcid with its own `errors.err`. It is a
     long-running watcher: launch it detached/background, never foreground in
     an agent shell.
