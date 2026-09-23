@@ -155,6 +155,14 @@ spec = do
         m2 <- modes e
         m2.altScreen `shouldBe` False
 
+    -- A wide pane must still retain the full configured row count (bug c9).
+    it "retains the configured scrollback rows at a wide pane size" $ do
+        e <- newEmulator Size { rows = 50, cols = 200 } 1000
+        forM_ [1 .. 1100 :: Int] $ \i ->
+            feedStr e (B8.pack ("line " ++ show i ++ "\r\n"))
+        sblen <- scrollbackLength e
+        sblen `shouldBe` 1000
+
     it "survives resizing a restored emulator across a size mismatch" $ do
         -- Mirror adoptPane: the pane ran at the client's real size, but the
         -- fresh emulator is built at 24x80 and only resized on client attach.

@@ -125,9 +125,13 @@ data EmulatorState = EmulatorState
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz limit = do
     -- libghostty's max_scrollback is a byte budget, not a row count, so the row
-    -- limit is enforced on the read side ('scrollbackLength'). Give it bytes
-    -- generously proportional to the limit so the row cap is never starved.
-    let budget = max 65536 (fromIntegral limit * 512) :: CSize
+    -- limit is enforced on the read side ('scrollbackLength'). A retained row
+    -- costs ~13 bytes per column, and the budget is fixed at creation while a
+    -- resize can widen the grid, so provision each row from the wider of the
+    -- creation width and a zoom allowance — the byte cap must never starve the
+    -- row cap.
+    let perRow = max 4096 (fromIntegral sz.cols * 20)
+        budget = max 65536 (fromIntegral limit * perRow) :: CSize
     t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) budget
     if t == nullPtr then error "ghostty_terminal_new failed" else pure ()
     lk <- newMVar ()
