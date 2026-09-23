@@ -1572,29 +1572,6 @@ spec = parallel $ do
         withHat hatBin
             (restartKeepsClient [("HAT_TEST_RELOAD_LINGER", "200000")])
 
-    -- `restart` returns each client to its own session, not the last-active
-    -- one every bare attach lands on (bug 81).
-    it "restart returns each client to its own session" $
-        withHat hatBin $ \h -> do
-        ambient <- testPath
-        let bindir = h.home </> "bin"
-        createDirectoryIfMissing True bindir
-        createFileLink h.bin (bindir </> "hat")
-        let env = [("PATH", bindir <> ":" <> ambient)]
-        c1 <- startClientEnv h env []
-        awaitScreen c1 "$"
-        c2 <- startClientEnv h env ["new-session", "-s", "beta"]
-        awaitScreen c2 "$"
-        let ownSessions = do
-                out <- ctlOut h ["list-clients", "-F", "#{session_name}"]
-                pure (List.sort (lines out) == ["0", "beta"])
-        awaitTrue "two clients on their own sessions" ownSessions
-        performGC  -- deterministic: drivers must survive collection mid-test
-        _ <- hatCtl h ["restart", h.bin]
-        awaitTrue "the reload handover to be consumed" $
-            doesFileExist (h.sock <> ".reload.last")
-        awaitTrue "each re-exec'd client to rejoin its own session" ownSessions
-
     -- Bug 8d: `restart` must carry a client's whole last-session stack, not
     -- just the one alternate. Visiting 0 -> a -> b leaves history [a, 0];
     -- after the re-exec, killing the head (a) must let `switch-client -l`
@@ -1630,7 +1607,8 @@ spec = parallel $ do
 
     -- Bug 4: restart -C sent both clients to "no such session" exits. The
     -- slow config holds the re-exec'd image in LoadingConfig, the window
-    -- the farewelled attaches race.
+    -- the farewelled attaches race. Also pins bug 81: each client rejoins
+    -- its OWN session, not the last-active one a bare attach lands on.
     it "restart -C returns each client to its own session" $
         withHat hatBin $ \h -> do
         ambient <- testPath
@@ -1648,6 +1626,7 @@ spec = parallel $ do
                 out <- ctlOut h ["list-clients", "-F", "#{session_name}"]
                 pure (List.sort (lines out) == ["0", "beta"])
         awaitTrue "two clients on their own sessions" ownSessions
+        performGC  -- deterministic: drivers must survive collection mid-test
         _ <- hatCtl h ["restart", "-C", h.bin]
         awaitTrue "the reload handover to be consumed" $
             doesFileExist (h.sock <> ".reload.last")
