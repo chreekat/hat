@@ -1,4 +1,5 @@
 # Fitted slope per series; `bench-report check` trips outside the band.
 tolerance 0.20
+hat restart server 67324
 hat type client 51872
 hat type server 3068607

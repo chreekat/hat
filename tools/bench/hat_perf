@@ -16,6 +16,11 @@ set -Eeuo pipefail
 #               Enter, so lines stay short and scrolls stay rare, like typing.
 #   type4       type, with three idle panes splitting the same window.
 #   typestatus  type, with the status line on.
+#   restart     N lines of scrollback carried across an in-place
+#               restart-server: the slope is the per-line handover cost
+#               (capture, encode, decode, reseed). hat only -- tmux has no
+#               equivalent. The re-exec keeps the pid, so one perf count
+#               brackets both halves.
 #
 # The server runs in the foreground under perf and exits on its own
 # kill-server, so each perf count brackets exactly one server lifetime.
@@ -33,7 +38,7 @@ usage() {
 usage: hat_perf [options]
 
   --workloads "W W ..."  which workloads to run: lines, type, type4,
-                         typestatus (default "lines")
+                         typestatus, restart (default "lines")
   --sizes "N N ..."      workload sizes, overriding the per-workload defaults
                          (lines: "2000 4000 8000 16000",
                           type*: "200 400 800 1600")
@@ -64,7 +69,7 @@ done
 sizes_for() {
     if [ -n "$SIZES" ]; then echo "$SIZES"; return; fi
     case "$1" in
-        lines) echo "2000 4000 8000 16000" ;;
+        lines|restart) echo "2000 4000 8000 16000" ;;
         *) echo "200 400 800 1600" ;;
     esac
 }
@@ -113,6 +118,12 @@ await() {
     return 1
 }
 
+# Whether a workload drives the client's keyboard (rather than printing
+# output and, for restart, re-execing the server).
+typing_wl() {
+    case "$1" in type|type4|typestatus) return 0 ;; *) return 1 ;; esac
+}
+
 # Feed N keystrokes into fd $2 at ~50/s: 79 letters then Enter, repeating.
 # The pace between keys comes from a timed read on an empty fifo ($3), so no
 # process is spawned per key; ~50/s stays under the muxes' frame coalescing,
@@ -142,7 +153,7 @@ one_run() {
     # typing barely scrolls. Only typestatus renders a status line.
     local history status
     case "$wl" in
-        lines) history=$((n * 2)); status=off ;;
+        lines|restart) history=$((n * 2)); status=off ;;
         typestatus) history=200; status=on ;;
         *) history=200; status=off ;;
     esac
@@ -156,7 +167,7 @@ one_run() {
     # trips its no-sessions idle-exit, killing it mid-startup.
     local ready_file="$WORK/ready"
     case "$wl" in
-        lines)
+        lines|restart)
             # awk's pty writes block, pacing it to the server.
             cat > "$WORK/work.sh" <<EOF
 awk 'BEGIN{for(i=0;i<$n;i++) printf "\033[3%dm%06d the quick brown fox jumps over the lazy dog %s\033[0m\n", i%8, i, i%2?"~~~":"..."}'
@@ -207,7 +218,7 @@ EOF
     # own read-write end open means launching the client never blocks on it
     # and it never sees EOF.
     local stdin_src=/dev/null kfd=
-    if [ "$wl" != lines ]; then
+    if typing_wl "$wl"; then
         mkfifo "$WORK/keys.fifo" "$WORK/pace.fifo"
         exec {kfd}<>"$WORK/keys.fifo"
         stdin_src="$WORK/keys.fifo"
@@ -229,7 +240,7 @@ EOF
         exit 1
     }
 
-    if [ "$wl" != lines ]; then
+    if typing_wl "$wl"; then
         if [ "$wl" = type4 ]; then
             "${CTL[@]}" split-window -d 'sleep 1000000'
             "${CTL[@]}" split-window -d 'sleep 1000000'
@@ -242,6 +253,22 @@ EOF
         echoed() { "${CTL[@]}" capture-pane -p | grep -q "xxxx"; }
         await 250 echoed || {
             echo "hat_perf: $mux pane never echoed the typed keys" >&2
+            exit 1
+        }
+    fi
+
+    if [ "$wl" = restart ]; then
+        # Name the binary explicitly: the on-PATH default would re-exec
+        # whatever hat is installed, not the one under measurement.
+        "${CTL[@]}" restart-server "$BIN" >/dev/null 2>&1 || true
+        # The consumed handover proves the successor image owns the panes;
+        # answering a command proves it is serving again.
+        restarted() {
+            [ -f "$sock.reload.last" ] && "${CTL[@]}" list-panes
+        }
+        await 3000 restarted || {
+            echo "hat_perf: $mux server never came back from restart-server" >&2
+            tail -n 5 "$WORK/server.log" >&2
             exit 1
         }
     fi
@@ -260,6 +287,10 @@ EOF
 
 for mux in $MUXES; do
     for wl in $WORKLOADS; do
+        if [ "$wl" = restart ] && [ "$mux" != hat ]; then
+            echo ">>> skipping restart for $mux: no in-place restart to measure"
+            continue
+        fi
         for n in $(sizes_for "$wl"); do
             one_run "$mux" "$wl" "$n"
         done
