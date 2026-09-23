@@ -142,6 +142,7 @@ library
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.Emulator.Types
+        Hat.Term.Ghostty
         Hat.Term.HostProtocol
         Hat.Term.Pty
         Hat.Transport.Socket

@@ -51,9 +51,6 @@ module Hat.Term.Emulator
     , screenCell
     ) where
 
-#include <ghostty/vt.h>
-#include "ghostty_shim.h"
-
 import Control.Concurrent.MVar
 import Control.Monad (foldM, unless)
 import Data.ByteString (ByteString)
@@ -79,55 +76,8 @@ import Hat.Geometry
 import Hat.Intern (shareVals)
 import Hat.Term.Cell
 import Hat.Term.Emulator.Types
+import Hat.Term.Ghostty
 import Hat.Term.HostProtocol
-
-data CTerm
-data CRender
-
-foreign import ccall unsafe "ghost_shim_new"
-    c_new :: CUShort -> CUShort -> CSize -> IO (Ptr CTerm)
-foreign import ccall unsafe "ghost_shim_free"
-    c_free :: Ptr CTerm -> IO ()
-foreign import ccall safe "ghost_shim_write"
-    c_write :: Ptr CTerm -> Ptr Word8 -> CSize -> IO ()
-foreign import ccall safe "ghost_shim_resize"
-    c_resize :: Ptr CTerm -> CUShort -> CUShort -> IO ()
-foreign import ccall unsafe "ghost_shim_get"
-    c_get :: Ptr CTerm -> CInt -> IO CLong
-foreign import ccall unsafe "ghost_shim_get_title"
-    c_get_title :: Ptr CTerm -> Ptr Word8 -> CSize -> IO CLong
-foreign import ccall unsafe "ghost_shim_mode"
-    c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
-foreign import ccall unsafe "ghost_shim_row_cells"
-    c_row_cells :: Ptr CTerm -> CInt -> CUInt -> CUShort -> Ptr () -> IO CInt
-foreign import ccall unsafe "ghost_shim_cell_graphemes"
-    c_graphemes :: Ptr CTerm -> CInt -> CUShort -> CUInt
-                -> Ptr Word32 -> CSize -> Ptr CSize -> IO CInt
-foreign import ccall unsafe "ghost_shim_row_wrapped"
-    c_row_wrapped :: Ptr CTerm -> CInt -> CUInt -> IO CInt
-foreign import ccall unsafe "ghost_shim_render_new"
-    c_render_new :: IO (Ptr CRender)
-foreign import ccall unsafe "ghost_shim_render_free"
-    c_render_free :: Ptr CRender -> IO ()
-foreign import ccall safe "ghost_shim_render_snapshot"
-    c_render_snapshot :: Ptr CRender -> Ptr CTerm -> CUShort -> CUShort
-                      -> Ptr () -> Ptr Word8 -> IO CInt
-foreign import ccall unsafe "ghost_shim_pen"
-    c_pen :: Ptr CTerm -> Ptr () -> IO CInt
-foreign import ccall unsafe "ghost_shim_encode_key"
-    c_encode_key :: Ptr CTerm -> CUInt -> CUInt -> Ptr Word8 -> CSize -> IO CLong
-foreign import ccall unsafe "ghost_shim_key_modes"
-    c_key_modes :: Ptr CTerm -> Ptr Word8 -> IO CInt
-foreign import ccall unsafe "ghostty_terminal_set"
-    c_set :: Ptr CTerm -> CInt -> Ptr () -> IO CInt
-
--- libghostty invokes these synchronously inside 'ghost_shim_write'; the
--- closures registered in 'newEmulator' capture the state IORef and land the
--- pty write-back and the bell in its accumulators.
-type WritePtyFn = Ptr CTerm -> Ptr () -> Ptr Word8 -> CSize -> IO ()
-type BellFn     = Ptr CTerm -> Ptr () -> IO ()
-foreign import ccall "wrapper" wrapWritePty :: WritePtyFn -> IO (FunPtr WritePtyFn)
-foreign import ccall "wrapper" wrapBell     :: BellFn -> IO (FunPtr BellFn)
 
 -- | Per-emulator cell intern table; see 'peekShimCell'.
 type CellIntern = IORef (Map Cell (Weak Cell))
@@ -194,8 +144,8 @@ newEmulator sz limit = do
         modifyIORef' st $ \s -> s { output = bs : s.output }
     bellW <- wrapBell $ \_ _ ->
         modifyIORef' st $ \s -> s { events = Bell : s.events }
-    _ <- c_set t #{const GHOSTTY_TERMINAL_OPT_WRITE_PTY} (castFunPtrToPtr writePtyW)
-    _ <- c_set t #{const GHOSTTY_TERMINAL_OPT_BELL} (castFunPtrToPtr bellW)
+    _ <- c_set t optWritePty (castFunPtrToPtr writePtyW)
+    _ <- c_set t optBell (castFunPtrToPtr bellW)
 
     rp <- c_render_new
 
@@ -333,11 +283,11 @@ readGrid
     :: CellIntern -> Ptr CRender -> IORef GridCache
     -> Ptr CTerm -> IO (Screen, V.Vector Int)
 readGrid ci rp cacheRef t = do
-    cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
-    rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
-    cx   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_X}
-    cy   <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_Y}
-    vis  <- c_get t #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
+    cols <- fromIntegral <$> c_get t dataCols
+    rows <- fromIntegral <$> c_get t dataRows
+    cx   <- fromIntegral <$> c_get t dataCursorX
+    cy   <- fromIntegral <$> c_get t dataCursorY
+    vis  <- c_get t dataCursorVisible
     (grid, gens) <- readActiveGrid ci rp cacheRef t rows cols
     pure ( Screen
              { size = Size { rows = fromIntegral rows, cols = fromIntegral cols }
@@ -357,7 +307,7 @@ readActiveGrid
     :: CellIntern -> Ptr CRender -> IORef GridCache
     -> Ptr CTerm -> Int -> Int -> IO (V.Vector (V.Vector Cell), V.Vector Int)
 readActiveGrid ci rp cacheRef t rows cols =
-    allocaBytes (rows * cols * #{size GhostShimCell}) $ \out ->
+    allocaBytes (rows * cols * shimCellSize) $ \out ->
     allocaBytes rows $ \dirty -> do
         _ <- c_render_snapshot rp t (fromIntegral cols) (fromIntegral rows)
                 out dirty
@@ -369,9 +319,9 @@ readActiveGrid ci rp cacheRef t rows cols =
                     pure (row, cache.gens V.! y)
                 _ -> do
                     row <- V.generateM cols $ \x ->
-                        let cellp = out `plusPtr` ((y * cols + x) * #{size GhostShimCell})
+                        let cellp = out `plusPtr` ((y * cols + x) * shimCellSize)
                         in peekShimCell (shareVals ci)
-                            (graphemeMarks t #{const GHOST_SHIM_ACTIVE} x y) cellp
+                            (graphemeMarks t tagActive x y) cellp
                     pure (row, cache.nextGen)
         let (grid, gens) = V.unzip tagged
         writeIORef cacheRef GridCache
@@ -385,10 +335,10 @@ readActiveGrid ci rp cacheRef t rows cols =
 -- and dropped, where interning would only pay Map lookups).
 readRow :: (Cell -> IO Cell) -> Ptr CTerm -> CInt -> Int -> Int -> IO (V.Vector Cell)
 readRow share t tag y cols =
-    allocaBytes (max 1 cols * #{size GhostShimCell}) $ \out -> do
+    allocaBytes (max 1 cols * shimCellSize) $ \out -> do
         _ <- c_row_cells t tag (fromIntegral y) (fromIntegral cols) out
         V.generateM cols $ \c ->
-            let cellp = out `plusPtr` (c * #{size GhostShimCell})
+            let cellp = out `plusPtr` (c * shimCellSize)
             in peekShimCell share (graphemeMarks t tag c y) cellp
 
 -- | The combining codepoints of a cluster cell: the full cluster minus its
@@ -401,9 +351,9 @@ graphemeMarks t tag x y = go 16
                 buf (fromIntegral cap) lenp
         n <- fromIntegral <$> peek lenp
         case () of
-            _ | r == #{const GHOSTTY_SUCCESS} ->
+            _ | r == resSuccess ->
                     map (chr . fromIntegral) . drop 1 <$> peekArray n buf
-              | r == #{const GHOSTTY_OUT_OF_SPACE}, n > cap -> go n
+              | r == resOutOfSpace, n > cap -> go n
               | otherwise -> pure []
 
 -- | Marshal one 'GhostShimCell' the shim just filled into a 'Cell': a
@@ -413,9 +363,9 @@ graphemeMarks t tag x y = go 16
 -- collapse to one shared heap object — or skips that for a transient read.
 peekShimCell :: (Cell -> IO Cell) -> IO [Char] -> Ptr () -> IO Cell
 peekShimCell share fetchMarks p = do
-    cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
-    g     <- #{peek GhostShimCell, grapheme} p :: IO CInt
-    w     <- #{peek GhostShimCell, width} p :: IO CInt
+    cp    <- peekCellCodepoint p
+    g     <- peekCellGrapheme p
+    w     <- peekCellWidth p
     sty   <- peekShimStyle p
     mks <- if g /= 0 && w /= 0 then fetchMarks else pure []
     let ch | cp == 0   = ' '
@@ -429,11 +379,11 @@ peekShimCell share fetchMarks p = do
 -- as in the shim's header.
 peekShimStyle :: Ptr () -> IO Style
 peekShimStyle p = do
-    flags <- #{peek GhostShimCell, flags} p :: IO CUInt
-    fgT   <- #{peek GhostShimCell, fg_tag} p :: IO CInt
-    fgV   <- #{peek GhostShimCell, fg_val} p :: IO Word32
-    bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
-    bgV   <- #{peek GhostShimCell, bg_val} p :: IO Word32
+    flags <- peekCellFlags p
+    fgT   <- peekCellFgTag p
+    fgV   <- peekCellFgVal p
+    bgT   <- peekCellBgTag p
+    bgV   <- peekCellBgVal p
     let has m = flags .&. m /= 0
     pure Style
         { fg = color fgT fgV
@@ -461,7 +411,7 @@ modes :: Emulator -> IO Modes
 modes e = withMVar e.lock $ \_ -> do
     cr <- (.colorSub) <$> readIORef e.state
     withForeignPtr e.term $ \t -> do
-        alt   <- c_get t #{const GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN}
+        alt   <- c_get t dataActiveScreen
         foc   <- c_mode t 1004 0
         m1000 <- c_mode t 1000 0
         m1002 <- c_mode t 1002 0
@@ -471,7 +421,7 @@ modes e = withMVar e.lock $ \_ -> do
                   | m1000 /= 0 = MouseClick
                   | otherwise  = MouseOff
         pure Modes
-            { altScreen = alt == #{const GHOSTTY_TERMINAL_SCREEN_ALTERNATE}
+            { altScreen = alt == screenAlternate
             , mouse = mouse
             , focusReport = foc /= 0
             , colorReport = cr
@@ -536,7 +486,7 @@ title e = (.title) <$> readIORef e.state
 -- surfaces it only through the shim's formatter round-trip.
 currentPen :: Emulator -> IO Style
 currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    allocaBytes #{size GhostShimCell} $ \cellp -> do
+    allocaBytes shimCellSize $ \cellp -> do
         _ <- c_pen t cellp
         (.style) <$> peekShimCell (shareVals e.cellIntern) (pure []) cellp
 
@@ -561,8 +511,8 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     if i < 0 || i >= exposed
         then pure Nothing
         else do
-            cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
-            Just <$> readRow (shareVals e.cellIntern) t #{const GHOST_SHIM_HISTORY} (phys - exposed + i) cols
+            cols <- fromIntegral <$> c_get t dataCols
+            Just <$> readRow (shareVals e.cellIntern) t tagHistory (phys - exposed + i) cols
 
 -- | Every exposed scrollback line painted to its replay bytes
 -- ('paintShimRow'), oldest first, under one lock hold. See
@@ -572,13 +522,13 @@ scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     lim <- readIORef e.sbLimit
     phys <- physicalScrollback t
     let exposed = min phys (max 0 lim)
-    cols <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_COLS}
+    cols <- fromIntegral <$> c_get t dataCols
     -- 68 covers a markless cell's worst case ('cellSgr' ≤ 54 + 4 UTF-8
     -- bytes); grapheme marks eat the shared slack, overflowing into a retry.
     let cap = max 1 cols * 68 + 64
-    allocaBytes (max 1 cols * #{size GhostShimCell}) $ \buf ->
+    allocaBytes (max 1 cols * shimCellSize) $ \buf ->
         allocaBytes cap $ \out ->
-            mapM (\i -> paintShimRow t #{const GHOST_SHIM_HISTORY}
+            mapM (\i -> paintShimRow t tagHistory
                             (phys - exposed + i) cols buf out cap)
                 [0 .. exposed - 1]
 
@@ -600,18 +550,18 @@ paintShimRow t tag y cols buf out0 cap0 = do
             Just n  -> B.packCStringLen (castPtr out, n)
             Nothing -> allocaBytes (cap * 4) $ \bigger ->
                 attempt end bigger (cap * 4)
-    cellAt i = buf `plusPtr` (i * #{size GhostShimCell})
+    cellAt i = buf `plusPtr` (i * shimCellSize)
     marksAt g i = if g /= (0 :: CInt) then graphemeMarks t tag i y else pure []
     trimEnd i
         | i < 0 = pure (-1)
         | otherwise = do
             let p = cellAt i
-            cp    <- #{peek GhostShimCell, codepoint} p :: IO Word32
-            w     <- #{peek GhostShimCell, width} p :: IO CInt
-            g     <- #{peek GhostShimCell, grapheme} p
-            flags <- #{peek GhostShimCell, flags} p :: IO CUInt
-            fgT   <- #{peek GhostShimCell, fg_tag} p :: IO CInt
-            bgT   <- #{peek GhostShimCell, bg_tag} p :: IO CInt
+            cp    <- peekCellCodepoint p
+            w     <- peekCellWidth p
+            g     <- peekCellGrapheme p
+            flags <- peekCellFlags p
+            fgT   <- peekCellFgTag p
+            bgT   <- peekCellBgTag p
             mks   <- marksAt g i
             let blank = (cp == 0 || cp == 32) && w == 1 && null mks
                     && flags == 0 && fgT /= 1 && fgT /= 2 && bgT /= 1 && bgT /= 2
@@ -620,19 +570,19 @@ paintShimRow t tag y cols buf out0 cap0 = do
         | i > end = pure (Just o)
         | otherwise = do
             let p = cellAt i
-            f  <- #{peek GhostShimCell, flags} p :: IO CUInt
-            ft <- #{peek GhostShimCell, fg_tag} p :: IO CInt
-            fv <- #{peek GhostShimCell, fg_val} p :: IO Word32
-            bt <- #{peek GhostShimCell, bg_tag} p :: IO CInt
-            bv <- #{peek GhostShimCell, bg_val} p :: IO Word32
-            w  <- #{peek GhostShimCell, width} p :: IO CInt
-            g  <- #{peek GhostShimCell, grapheme} p
+            f  <- peekCellFlags p
+            ft <- peekCellFgTag p
+            fv <- peekCellFgVal p
+            bt <- peekCellBgTag p
+            bv <- peekCellBgVal p
+            w  <- peekCellWidth p
+            g  <- peekCellGrapheme p
             mks <- if w /= 0 then marksAt g i else pure []
             let emit o1 pen' = do
                     o2 <- if w == 0
                         then pure o1
                         else do
-                            cp <- #{peek GhostShimCell, codepoint} p :: IO Word32
+                            cp <- peekCellCodepoint p
                             let u = if cp == 0 then 0x20 else fromIntegral cp
                             o' <- pokeUtf8 out o1 u
                             foldM (\oo m -> pokeUtf8 out oo (ord m)) o' mks
@@ -687,7 +637,7 @@ scrollbackLineWrapped e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -
     let exposed = min phys (max 0 lim)
     if i < 0 || i >= exposed
         then pure False
-        else (/= 0) <$> c_row_wrapped t #{const GHOST_SHIM_HISTORY}
+        else (/= 0) <$> c_row_wrapped t tagHistory
             (fromIntegral (phys - exposed + i))
 
 -- | Whether a live-screen row soft-wraps onto the next row.
@@ -695,7 +645,7 @@ screenRowWrapped :: Emulator -> Int -> IO Bool
 screenRowWrapped e r = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     if r < 0
         then pure False
-        else (/= 0) <$> c_row_wrapped t #{const GHOST_SHIM_ACTIVE} (fromIntegral r)
+        else (/= 0) <$> c_row_wrapped t tagActive (fromIntegral r)
 
 -- | Change the live row cap. Read-side only: libghostty already bounds the
 -- history's memory, so a lowered limit hides the oldest rows and a raised one
@@ -722,7 +672,7 @@ seedScrollback e ls = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     let kept = drop (length ls - lim) ls
         n = length kept
     unless (n == 0) $ do
-        rows <- fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_ROWS}
+        rows <- fromIntegral <$> c_get t dataRows
         feedBytes t (seedBytes (min n rows) kept)
 
 -- | The bytes 'seedScrollback' feeds: each painted line under a leading reset,
@@ -739,7 +689,7 @@ seedBytes su ls = BL.toStrict $ BB.toLazyByteString $
 -- | libghostty's physical scrollback row count (total rows minus the viewport).
 physicalScrollback :: Ptr CTerm -> IO Int
 physicalScrollback t =
-    max 0 . fromIntegral <$> c_get t #{const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS}
+    max 0 . fromIntegral <$> c_get t dataScrollbackRows
 
 feedBytes :: Ptr CTerm -> ByteString -> IO ()
 feedBytes t bs = BU.unsafeUseAsCStringLen bs $ \(p, n) ->
