@@ -73,10 +73,13 @@ data ScrollbackCarry = KeepScrollback | DropScrollback
 -- socket fd and the flat list of every pane's (master fd, child pid), so a
 -- version-mismatched reload can hang the inherited processes up cleanly rather
 -- than orphan them). Tree and hot state come from one walk, so they agree
--- pane-for-pane by construction.
+-- pane-for-pane by construction. Readers are parked before the screens are
+-- read ('pauseReaders'), so every captured screen agrees with the byte
+-- stream the exec'd image inherits.
 captureReload :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, ReloadHot)
 captureReload carry st = do
     (snap, panes) <- captureTree st
+    pauseReaders st panes
     (lsName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
         lsId    <- readTVar st.lastSession

@@ -16,6 +16,7 @@ module Hat.Model
     , EnvImport (..)
     , StartupPhase (..)
     , AcceptGate (..)
+    , ReadGate (..)
     , CopyModeState (..)
     , FrozenGrid (..)
     , PaneMode (..)
@@ -120,6 +121,7 @@ data ServerState = ServerState
                                 --   See 'waitIdle'.
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
     , acceptGate  :: TVar AcceptGate    -- ^ see 'Hat.Server.Conn.acceptLoop'.
+    , readGate    :: TVar ReadGate      -- ^ see 'Hat.Server.Pane.pauseReaders'.
     , preserveStore :: TVar Bool
         -- ^ the store holds an explicitly saved final tree that must
         --   survive shutdown. Set by @kill-server@; off across a natural
@@ -421,6 +423,11 @@ data StartupPhase = LoadingConfig | Restoring | Ready
 data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
     deriving (Eq, Show)
 
+-- | Whether pane readers may pump pty bytes into their emulators;
+-- 'ReadersPaused' parks them all. See 'Hat.Server.Pane.pauseReaders'.
+data ReadGate = ReadersFlowing | ReadersPaused
+    deriving (Eq, Show)
+
 -- | What produced one row of a client's composed frame: a pane row the
 -- grid supplied whole — @(pane, pane row, generation)@ — or anything
 -- else. No 'Eq': two 'VolatileRow's say nothing about their cells, so
@@ -481,6 +488,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     -- arms LoadingConfig before its accept loop can serve anyone.
     <*> newTVarIO Ready  -- startupPhase
     <*> newTVarIO AcceptOpen
+    <*> newTVarIO ReadersFlowing
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions

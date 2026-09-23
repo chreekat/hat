@@ -447,47 +447,51 @@ cmdReload' scope st mclient args =
             then pure [RErr (reloadName scope <> ": no such binary: " <> T.pack target)]
             else do
                 logEvent st.logger ServerReloading { target = target }
-                (cleanup, tree) <- captureReload req.carry st
-                let blobPath = st.sockPath <> ".reload"
-                B.writeFile blobPath (encodeHandover cleanup tree)
-                keepOpenAcrossExec cleanup
-                -- Park the accept loop before any farewell goes out, so a
-                -- farewelled client's immediate reattach waits in the listen
-                -- backlog for the next image instead of being accepted by
-                -- this dying one.
-                atomically $ writeTVar st.acceptGate AcceptClosing
-                atomically $ readTVar st.acceptGate >>= check . (== AcceptParked)
-                sessions <- readTVarIO st.sessions
-                forM_ (Map.elems sessions) $ \sess -> do
-                    nm <- readTVarIO sess.name
-                    cs <- atomically (sessionClients st sess.id)
-                    forM_ cs $ \c -> do
-                        hist <- clientSessionHistNames st c
-                        send c (reloadFarewell scope c.role (Just nm) hist)
-                forM_ mclient $ \client -> do
-                    msess <- clientSessionName st client
-                    hist <- clientSessionHistNames st client
-                    send client (reloadFarewell scope client.role msess hist)
-                -- Test-only knob: hold the farewell->exec window open (µs)
-                -- so the suite can pin the reattach race deterministically.
-                linger <- lookupEnv "HAT_TEST_RELOAD_LINGER"
-                forM_ (linger >>= readMaybe) threadDelay
-                mconfig <- readTVarIO st.serverConfig
-                let argv = ["--server", st.sockPath]
-                        <> maybe [] (: []) mconfig
-                        <> ["--reload-handover", blobPath]
-                -- The execve replaces this image atomically, so no bracket
-                -- unwinds: the gsettings monitor child would be orphaned (14 such
-                -- orphans accrued on the dev box across upgrades). Reap it here,
-                -- while we can still signal it.
-                (do reapMonitor st.monitorRegistry
+                -- A failure anywhere past the capture reopens what the
+                -- reload closed — the parked readers and the accept gate —
+                -- so a failed reload keeps serving instead of freezing.
+                (do (cleanup, tree) <- captureReload req.carry st
+                    let blobPath = st.sockPath <> ".reload"
+                    B.writeFile blobPath (encodeHandover cleanup tree)
+                    keepOpenAcrossExec cleanup
+                    -- Park the accept loop before any farewell goes out, so a
+                    -- farewelled client's immediate reattach waits in the listen
+                    -- backlog for the next image instead of being accepted by
+                    -- this dying one.
+                    atomically $ writeTVar st.acceptGate AcceptClosing
+                    atomically $ readTVar st.acceptGate >>= check . (== AcceptParked)
+                    sessions <- readTVarIO st.sessions
+                    forM_ (Map.elems sessions) $ \sess -> do
+                        nm <- readTVarIO sess.name
+                        cs <- atomically (sessionClients st sess.id)
+                        forM_ cs $ \c -> do
+                            hist <- clientSessionHistNames st c
+                            send c (reloadFarewell scope c.role (Just nm) hist)
+                    forM_ mclient $ \client -> do
+                        msess <- clientSessionName st client
+                        hist <- clientSessionHistNames st client
+                        send client (reloadFarewell scope client.role msess hist)
+                    -- Test-only knob: hold the farewell->exec window open (µs)
+                    -- so the suite can pin the reattach race deterministically.
+                    linger <- lookupEnv "HAT_TEST_RELOAD_LINGER"
+                    forM_ (linger >>= readMaybe) threadDelay
+                    mconfig <- readTVarIO st.serverConfig
+                    let argv = ["--server", st.sockPath]
+                            <> maybe [] (: []) mconfig
+                            <> ["--reload-handover", blobPath]
+                    -- The execve replaces this image atomically, so no bracket
+                    -- unwinds: the gsettings monitor child would be orphaned (14 such
+                    -- orphans accrued on the dev box across upgrades). Reap it here,
+                    -- while we can still signal it.
+                    reapMonitor st.monitorRegistry
                     logEvent st.logger ReloadExec { panes = length cleanup.live }
                     -- The self-exec replaces this image, so 'withLogger's
                     -- flush-on-exit never runs; drain the queue now or the
                     -- reload trace is lost.
                     flushLogger st.logger
                     void $ executeFile target False argv Nothing)
-                  `onException`
+                  `onException` do
+                    resumeReaders st
                     atomically (writeTVar st.acceptGate AcceptOpen)
                 pure []  -- unreachable: executeFile replaces this image
 

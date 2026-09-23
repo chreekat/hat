@@ -1572,6 +1572,35 @@ spec = parallel $ do
         withHat hatBin
             (restartKeepsClient [("HAT_TEST_RELOAD_LINGER", "200000")])
 
+    -- b89: a pane's output stream must cross a reload without a gap, even
+    -- for bytes emitted inside the capture->exec window (the linger holds
+    -- that window open). A ticker pins the stream; a missing tick number
+    -- is a byte the old image consumed but never handed over.
+    it "restart-server drops no pane output from the capture window (b89)" $
+        withHat hatBin $ \h -> do
+        c <- startClientEnv h [("HAT_TEST_RELOAD_LINGER", "100000")] []
+        awaitScreen c "$"
+        typeInto c "i=0; while sleep 0.01; do i=$((i+1)); echo TICK-$i-END; done\r"
+        awaitScreen c "TICK-3-END"
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c
+        c2 <- startClient h
+        -- Only interrupt once the reattached screen shows ticks flowing
+        -- again, so the C-c cannot land before the client is attached.
+        awaitScreen c2 "TICK-"
+        -- Stop the ticker; the prompt only redraws after every buffered
+        -- tick has flowed through the adopted pane.
+        typeInto c2 "\x03"
+        awaitScreen c2 "$"
+        out <- ctlOut h ["capture-pane", "-p", "-S", "-"]
+        let ticks = [ n | w <- T.words (T.pack out)
+                        , Just num <- [T.stripPrefix "TICK-" w
+                                        >>= T.stripSuffix "-END"]
+                        , Just n <- [readMaybe (T.unpack num) :: Maybe Int] ]
+        case ticks of
+            [] -> expectationFailure "no ticks captured"
+            first : _ -> ticks `shouldBe` [first .. last ticks]
+
     -- Bug 8d: `restart` must carry a client's whole last-session stack, not
     -- just the one alternate. Visiting 0 -> a -> b leaves history [a, 0];
     -- after the re-exec, killing the head (a) must let `switch-client -l`

@@ -21,6 +21,8 @@ module Hat.Server.Pane
     , spawnPane
     , newWindowWithPane
     , startPaneReader
+    , pauseReaders
+    , resumeReaders
     , propKindLabel
     , notifyColorScheme
     , oscColorReply
@@ -65,6 +67,7 @@ import Control.Exception (Exception, IOException, catch, finally, try)
 import Control.Monad (forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -305,6 +308,13 @@ data ChildExited = ChildExited
 
 instance Exception ChildExited
 
+-- | Signals a pane's reader to park until the read gate reopens. See
+-- 'pauseReaders'.
+data PauseReading = PauseReading
+    deriving Show
+
+instance Exception PauseReading
+
 -- | The reader thread owns a pane's lifetime: it pumps pty output into
 -- the emulator until end-of-file, and 'closePane' runs in a @finally@ so
 -- the pane's resources and model entry are released however the loop ends
@@ -322,11 +332,15 @@ startPaneReader st sid win pane = do
     -- reader is scheduled still finds it counted and 'waitIdle' waits for
     -- its reap. Decremented once the reader (and its 'reapPane') is done.
     atomically $ modifyTVar' st.livePanes (+ 1)
-    -- Masked until the @finally@ chain is armed: once the tid is
-    -- published, a 'hangupPane' kill must always reach the cleanup.
+    -- Masked for the thread's whole life bar the read itself: once the tid
+    -- is published, a 'hangupPane' kill must always reach the cleanup, and
+    -- any async exception (a kill, 'ChildExited', 'PauseReading') can land
+    -- only in the blocked read — a chunk already read is always fully fed
+    -- before the exception takes the loop.
     void $ forkIOWithUnmask $ \unmask -> do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
+        pendingRef <- newIORef pane.pendingInput
         -- Track pane death by the shell's exit, not only pty EOF: a lingering
         -- fd-holder can keep the master from ever EOFing. 'ChildExited' (never
         -- the 'ThreadKilled' of an explicit kill) switches the reader to a
@@ -336,13 +350,20 @@ startPaneReader st sid win pane = do
         -- the 'finally' cleanup, so a late async 'ChildExited' can never land in
         -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
-            \_ -> unmask
-                (readLoop (Hat.Term.Pty.readPty pane.pty) pane.pendingInput
-                    `catch` \ChildExited ->
-                        readLoop (Hat.Term.Pty.readAvail pane.pty) Nothing))
+            \_ -> parkable
+                (readLoop (unmask (Hat.Term.Pty.readPty pane.pty)) pendingRef)
+                `catch` \ChildExited -> do
+                    writeIORef pendingRef Nothing
+                    parkable (readLoop
+                        (unmask (Hat.Term.Pty.readAvail pane.pty)) pendingRef))
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
+    -- A 'PauseReading' parks the loop until the read gate reopens (the
+    -- failed-exec fallback; a reload that execs never resumes it).
+    parkable body = body `catch` \PauseReading -> do
+        atomically (readTVar st.readGate >>= check . (== ReadersFlowing))
+        parkable body
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
     -- it), then dropped. Enter is a bare CR, as a real keyboard sends. @rd@ is
@@ -351,10 +372,9 @@ startPaneReader st sid win pane = do
     readLoop rd pending = do
         bs <- rd
         unless (B8.null bs) $ do
-            pending' <- case pending of
-                Just line -> Nothing <$
-                    Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
-                Nothing   -> pure Nothing
+            readIORef pending >>= mapM_ (\line -> do
+                Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
+                writeIORef pending Nothing)
             forwardToPipe pane bs
             events <- Emu.feed pane.emulator bs
             forM_ events $ \case
@@ -412,7 +432,24 @@ startPaneReader st sid win pane = do
                         { pane = rawPane pane.id
                         , payload = T.pack (show raw)
                         }
-            readLoop rd pending'
+            readLoop rd pending
+
+-- | Quiesce the pane readers for a reload capture: close the read gate,
+-- then interrupt each reader out of its read. 'throwTo' returns only once
+-- its exception is delivered, and delivery can land only in the read
+-- itself, so on return no reader holds an unfed chunk: every pane byte is
+-- either in its emulator (captured) or still in the kernel pty buffer
+-- (survives the exec).
+pauseReaders :: ServerState -> [Pane] -> IO ()
+pauseReaders st panes = do
+    atomically $ writeTVar st.readGate ReadersPaused
+    forM_ panes $ \p ->
+        readTVarIO p.readerTid >>= mapM_ (`throwTo` PauseReading)
+
+-- | Reopen the read gate so parked readers resume; the failed-reload
+-- fallback.
+resumeReaders :: ServerState -> IO ()
+resumeReaders st = atomically $ writeTVar st.readGate ReadersFlowing
 
 -- | Name a terminal prop's value kind for the 'UnknownTermProp' log.
 propKindLabel :: Emu.PropKind -> Text
