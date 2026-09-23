@@ -52,13 +52,13 @@ module Hat.Term.Emulator
     ) where
 
 import Control.Concurrent.MVar
-import Control.Monad (foldM, unless)
+import Control.Monad (unless)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Unsafe qualified as BU
-import Data.Char (chr, ord)
+import Data.Char (chr)
 import Data.IORef
 import Data.List (intersperse)
 import Data.Map (Map)
@@ -526,107 +526,24 @@ scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     -- 68 covers a markless cell's worst case ('cellSgr' ≤ 54 + 4 UTF-8
     -- bytes); grapheme marks eat the shared slack, overflowing into a retry.
     let cap = max 1 cols * 68 + 64
-    allocaBytes (max 1 cols * shimCellSize) $ \buf ->
-        allocaBytes cap $ \out ->
-            mapM (\i -> paintShimRow t tagHistory
-                            (phys - exposed + i) cols buf out cap)
-                [0 .. exposed - 1]
+    allocaBytes cap $ \out ->
+        mapM (\i -> paintShimRow t tagHistory (phys - exposed + i) cols out cap)
+            [0 .. exposed - 1]
 
--- | One row's replay bytes painted straight off the shim's row buffer: fill
--- @buf@ via 'c_row_cells', trim trailing 'blankCell's, and emit each cell's
--- text into @out@ under 'cellSgr' runs — marshalling a 'Style' only when the
--- raw style words change, and never a 'Cell'. A row outgrowing @out@ retries
--- into a bigger buffer. Must stay byte-identical to 'paintLineBytes' over
--- the same row's cells (pinned in @EmulatorSpec@).
-paintShimRow :: Ptr CTerm -> CInt -> Int -> Int -> Ptr ()
+-- | One row's replay bytes from the C painter ('ghost_shim_paint_row'),
+-- retried into a bigger buffer when the row outgrows @out@. Must stay
+-- byte-identical to 'paintLineBytes' over the same row's cells (pinned in
+-- @EmulatorSpec@).
+paintShimRow :: Ptr CTerm -> CInt -> Int -> Int
              -> Ptr Word8 -> Int -> IO ByteString
-paintShimRow t tag y cols buf out0 cap0 = do
-    _ <- c_row_cells t tag (fromIntegral y) (fromIntegral cols) buf
-    end <- trimEnd (cols - 1)
-    attempt end out0 cap0
+paintShimRow t tag y cols = attempt
   where
-    attempt end out cap =
-        walk out cap 0 end 0 0 0 0 0 0 defaultStyle >>= \case
-            Just n  -> B.packCStringLen (castPtr out, n)
-            Nothing -> allocaBytes (cap * 4) $ \bigger ->
-                attempt end bigger (cap * 4)
-    cellAt i = buf `plusPtr` (i * shimCellSize)
-    marksAt g i = if g /= (0 :: CInt) then graphemeMarks t tag i y else pure []
-    trimEnd i
-        | i < 0 = pure (-1)
-        | otherwise = do
-            let p = cellAt i
-            cp    <- peekCellCodepoint p
-            w     <- peekCellWidth p
-            g     <- peekCellGrapheme p
-            flags <- peekCellFlags p
-            fgT   <- peekCellFgTag p
-            bgT   <- peekCellBgTag p
-            mks   <- marksAt g i
-            let blank = (cp == 0 || cp == 32) && w == 1 && null mks
-                    && flags == 0 && fgT /= 1 && fgT /= 2 && bgT /= 1 && bgT /= 2
-            if blank then trimEnd (i - 1) else pure i
-    walk out cap i end o rf rft rfv rbt rbv pen
-        | i > end = pure (Just o)
-        | otherwise = do
-            let p = cellAt i
-            f  <- peekCellFlags p
-            ft <- peekCellFgTag p
-            fv <- peekCellFgVal p
-            bt <- peekCellBgTag p
-            bv <- peekCellBgVal p
-            w  <- peekCellWidth p
-            g  <- peekCellGrapheme p
-            mks <- if w /= 0 then marksAt g i else pure []
-            let emit o1 pen' = do
-                    o2 <- if w == 0
-                        then pure o1
-                        else do
-                            cp <- peekCellCodepoint p
-                            let u = if cp == 0 then 0x20 else fromIntegral cp
-                            o' <- pokeUtf8 out o1 u
-                            foldM (\oo m -> pokeUtf8 out oo (ord m)) o' mks
-                    let skip = if w >= 2 then 1 else 0
-                    walk out cap (i + 1 + skip) end o2 f ft fv bt bv pen'
-            if o + 68 + 4 * length mks > cap
-                then pure Nothing
-                else if f == rf && ft == rft && fv == rfv
-                        && bt == rbt && bv == rbv
-                    then emit o pen
-                    else do
-                        sty <- peekShimStyle p
-                        if sty == pen
-                            then emit o sty
-                            else do
-                                o1 <- pokeBS out o (cellSgr sty)
-                                emit o1 sty
-    pokeBS out o bs = BU.unsafeUseAsCStringLen bs $ \(src, n) -> do
-        copyBytes (out `plusPtr` o) (castPtr src) n
-        pure (o + n)
-    -- 'BB.stringUtf8'-compatible for every code point, surrogates included
-    -- (bytestring, too, encodes them by the plain 3-byte branch)
-    pokeUtf8 :: Ptr Word8 -> Int -> Int -> IO Int
-    pokeUtf8 out o u
-        | u < 0x80 = do
-            pokeByteOff out o (fromIntegral u :: Word8)
-            pure (o + 1)
-        | u < 0x800 = do
-            pokeByteOff out o       (0xc0 .|. byte u 6)
-            pokeByteOff out (o + 1) (cont u 0)
-            pure (o + 2)
-        | u < 0x10000 = do
-            pokeByteOff out o       (0xe0 .|. byte u 12)
-            pokeByteOff out (o + 1) (cont u 6)
-            pokeByteOff out (o + 2) (cont u 0)
-            pure (o + 3)
-        | otherwise = do
-            pokeByteOff out o       (0xf0 .|. byte u 18)
-            pokeByteOff out (o + 1) (cont u 12)
-            pokeByteOff out (o + 2) (cont u 6)
-            pokeByteOff out (o + 3) (cont u 0)
-            pure (o + 4)
-    byte u s = fromIntegral (u `shiftR` s) :: Word8
-    cont u s = 0x80 .|. (byte u s .&. 0x3f)
+    attempt out cap = do
+        n <- c_paint_row t tag (fromIntegral y) (fromIntegral cols)
+                out (fromIntegral cap)
+        if n >= 0
+            then B.packCStringLen (castPtr out, fromIntegral n)
+            else allocaBytes (cap * 4) $ \bigger -> attempt bigger (cap * 4)
 
 -- | Whether a scrollback row (indexed as 'scrollbackLine') soft-wraps onto
 -- the next row.

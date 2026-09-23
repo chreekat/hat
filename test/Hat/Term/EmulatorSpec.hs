@@ -335,6 +335,8 @@ spec = do
         _ <- feedStr e "wide \xe6\x97\xa5 e\xcc\x81 marks\r\n"
         _ <- feedStr e "\ESC[44mbg-erased blanks\ESC[K\r\n"
         _ <- feedStr e "\ESC[7;2;4mreverse faint under\ESC[0m\r\n"
+        -- style changes landing on wide cells: 日 界 under distinct colors
+        _ <- feedStr e "\ESC[35m\xe6\x97\xa5\ESC[36m\xe7\x95\x8c\ESC[0mx\r\n"
         forM_ [1 .. 4 :: Int] $ \_ -> feedStr e "\r\n"  -- scroll into history
         len <- scrollbackLength e
         len `shouldSatisfy` (>= 6)

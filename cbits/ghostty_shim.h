@@ -47,6 +47,14 @@ int   ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
 int   ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
                                 uint32_t *buf, size_t buf_len, size_t *out_len);
 
+/* Paint the row at y under a point tag into out as its replay bytes: trailing
+ * blank cells trimmed, each cell's text emitted under an absolute SGR only
+ * when the pen changes. Byte-identical to paintLineBytes over the row's cells
+ * (pinned in EmulatorSpec). Returns the byte count, 0 for a blank or
+ * unreadable row, or -1 when out is too small (retry with a bigger buffer). */
+long  ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
+                           uint8_t *out, size_t cap);
+
 /* Whether the row at y under a point tag soft-wraps onto the next row.
  * Returns 1 wrapped, 0 not wrapped or unavailable. */
 int   ghost_shim_row_wrapped(void *t, int tag, uint32_t y);

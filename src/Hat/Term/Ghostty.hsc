@@ -13,6 +13,7 @@ module Hat.Term.Ghostty
     , c_get_title
     , c_mode
     , c_row_cells
+    , c_paint_row
     , c_graphemes
     , c_row_wrapped
     , c_render_new
@@ -76,6 +77,9 @@ foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_row_cells"
     c_row_cells :: Ptr CTerm -> CInt -> CUInt -> CUShort -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_paint_row"
+    c_paint_row :: Ptr CTerm -> CInt -> CUInt -> CUShort
+                -> Ptr Word8 -> CSize -> IO CLong
 foreign import ccall unsafe "ghost_shim_cell_graphemes"
     c_graphemes :: Ptr CTerm -> CInt -> CUShort -> CUInt
                 -> Ptr Word32 -> CSize -> Ptr CSize -> IO CInt

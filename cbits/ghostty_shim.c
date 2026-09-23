@@ -175,6 +175,271 @@ int ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
     return 1;
 }
 
+/* The row painter's view of one cell: the paint-relevant fields, with the
+ * style already flattened to the same words GhostShimCell carries. */
+typedef struct {
+    uint32_t cp;
+    int      width;    /* 0 spacer, 1 narrow, 2 wide */
+    int      grapheme;
+    unsigned flags;
+    int      fg_tag;
+    uint32_t fg_val;
+    int      bg_tag;
+    uint32_t bg_val;
+} PaintCell;
+
+/* One resolved style, keyed by its id — valid within a single row (style ids
+ * are page-local, and a row never spans pages). */
+typedef struct {
+    int      valid;
+    uint16_t id;
+    unsigned flags;
+    int      fg_tag;
+    uint32_t fg_val;
+    int      bg_tag;
+    uint32_t bg_val;
+} StyleCache;
+
+/* Read one cell's paint fields, resolving its style only when the style id
+ * differs from the cached one. Same flattening as shim_from_cell. Returns 1
+ * on success, 0 when the cell is unreadable. */
+static int paint_cell(GhosttyGridRef *ref, StyleCache *sc, PaintCell *pc) {
+    GhosttyCell cell;
+    if (ghostty_grid_ref_cell(ref, &cell) != GHOSTTY_SUCCESS) return 0;
+
+    uint32_t cp = 0;
+    GhosttyCellContentTag content = GHOSTTY_CELL_CONTENT_CODEPOINT;
+    GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+    uint16_t sid = 0;
+    const GhosttyCellData keys[4] = {
+        GHOSTTY_CELL_DATA_CODEPOINT, GHOSTTY_CELL_DATA_CONTENT_TAG,
+        GHOSTTY_CELL_DATA_WIDE, GHOSTTY_CELL_DATA_STYLE_ID,
+    };
+    void *vals[4] = { &cp, &content, &wide, &sid };
+    if (ghostty_cell_get_multi(cell, 4, keys, vals, NULL) != GHOSTTY_SUCCESS)
+        return 0;
+
+    pc->cp = cp;
+    pc->grapheme = content == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME;
+    switch (wide) {
+        case GHOSTTY_CELL_WIDE_WIDE:        pc->width = 2; break;
+        case GHOSTTY_CELL_WIDE_SPACER_TAIL:
+        case GHOSTTY_CELL_WIDE_SPACER_HEAD: pc->width = 0; break;
+        default:                            pc->width = 1; break;
+    }
+
+    if (!sc->valid || sc->id != sid) {
+        GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+        sc->flags = 0;
+        sc->fg_tag = 0; sc->fg_val = 0;
+        sc->bg_tag = 0; sc->bg_val = 0;
+        if (ghostty_grid_ref_style(ref, &st) == GHOSTTY_SUCCESS) {
+            unsigned f = 0;
+            if (st.bold)          f |= 1;
+            if (st.underline)     f |= 2;
+            if (st.italic)        f |= 4;
+            if (st.inverse)       f |= 8;
+            if (st.strikethrough) f |= 16;
+            if (st.blink)         f |= 32;
+            if (st.faint)         f |= 64;
+            sc->flags = f;
+            color_of(st.fg_color, &sc->fg_tag, &sc->fg_val);
+            color_of(st.bg_color, &sc->bg_tag, &sc->bg_val);
+        }
+        sc->id = sid;
+        sc->valid = 1;
+    }
+    pc->flags = sc->flags;
+    pc->fg_tag = sc->fg_tag; pc->fg_val = sc->fg_val;
+    pc->bg_tag = sc->bg_tag; pc->bg_val = sc->bg_val;
+
+    /* A blank cell carrying only a background color stores it in the content,
+     * not the style; surface that as the cell's bg. */
+    if (content == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+        GhosttyColorPaletteIndex idx = 0;
+        ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_PALETTE, &idx);
+        pc->bg_tag = 1;
+        pc->bg_val = idx;
+    } else if (content == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+        GhosttyColorRgb c = { 0 };
+        ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_RGB, &c);
+        pc->bg_tag = 2;
+        pc->bg_val = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
+    }
+    return 1;
+}
+
+static int words_equal(const PaintCell *a, const PaintCell *b) {
+    return a->flags == b->flags
+        && a->fg_tag == b->fg_tag && a->fg_val == b->fg_val
+        && a->bg_tag == b->bg_tag && a->bg_val == b->bg_val;
+}
+
+static int paint_blank(const PaintCell *pc, size_t nmarks) {
+    return (pc->cp == 0 || pc->cp == 32) && pc->width == 1 && nmarks == 0
+        && pc->flags == 0
+        && pc->fg_tag != 1 && pc->fg_tag != 2
+        && pc->bg_tag != 1 && pc->bg_tag != 2;
+}
+
+/* The combining codepoints of a cluster cell — the cluster minus its base —
+ * retried once with the exact size when it outgrows the stack buffer. When
+ * *heap is set the marks live there and the caller frees it. */
+static size_t fetch_marks(const GhosttyGridRef *ref, uint32_t *stackbuf,
+                          size_t stackcap, uint32_t **marks, uint32_t **heap) {
+    size_t n = 0;
+    GhosttyResult r = ghostty_grid_ref_graphemes(ref, stackbuf, stackcap, &n);
+    uint32_t *buf = stackbuf;
+    if (r == GHOSTTY_OUT_OF_SPACE && n > stackcap) {
+        *heap = malloc(n * sizeof(uint32_t));
+        if (*heap == NULL) return 0;
+        buf = *heap;
+        r = ghostty_grid_ref_graphemes(ref, buf, n, &n);
+    }
+    if (r != GHOSTTY_SUCCESS || n == 0) return 0;
+    *marks = buf + 1;
+    return n - 1;
+}
+
+static size_t put_str(uint8_t *out, size_t o, const char *s) {
+    while (*s) out[o++] = (uint8_t)*s++;
+    return o;
+}
+
+static size_t put_dec(uint8_t *out, size_t o, uint32_t v) {
+    char tmp[10];
+    int n = 0;
+    do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) out[o++] = (uint8_t)tmp[--n];
+    return o;
+}
+
+/* BB.stringUtf8-compatible for every code point, surrogates included (both
+ * encode them by the plain 3-byte branch). */
+static size_t put_utf8(uint8_t *out, size_t o, uint32_t u) {
+    if (u < 0x80) {
+        out[o++] = (uint8_t)u;
+    } else if (u < 0x800) {
+        out[o++] = (uint8_t)(0xc0 | (u >> 6));
+        out[o++] = (uint8_t)(0x80 | (u & 0x3f));
+    } else if (u < 0x10000) {
+        out[o++] = (uint8_t)(0xe0 | (u >> 12));
+        out[o++] = (uint8_t)(0x80 | ((u >> 6) & 0x3f));
+        out[o++] = (uint8_t)(0x80 | (u & 0x3f));
+    } else {
+        out[o++] = (uint8_t)(0xf0 | (u >> 18));
+        out[o++] = (uint8_t)(0x80 | ((u >> 12) & 0x3f));
+        out[o++] = (uint8_t)(0x80 | ((u >> 6) & 0x3f));
+        out[o++] = (uint8_t)(0x80 | (u & 0x3f));
+    }
+    return o;
+}
+
+/* One SGR color parameter: base is the 8-color offset (30 fg, 40 bg), ext the
+ * 256/truecolor selector (38 fg, 48 bg). */
+static size_t put_color(uint8_t *out, size_t o, unsigned base, unsigned ext,
+                        int tag, uint32_t val) {
+    if (tag == 1 && val < 8) {
+        out[o++] = ';';
+        o = put_dec(out, o, base + val);
+    } else if (tag == 1) {
+        out[o++] = ';';
+        o = put_dec(out, o, ext);
+        o = put_str(out, o, ";5;");
+        o = put_dec(out, o, val);
+    } else if (tag == 2) {
+        out[o++] = ';';
+        o = put_dec(out, o, ext);
+        o = put_str(out, o, ";2;");
+        o = put_dec(out, o, (val >> 16) & 0xff);
+        out[o++] = ';';
+        o = put_dec(out, o, (val >> 8) & 0xff);
+        out[o++] = ';';
+        o = put_dec(out, o, val & 0xff);
+    }
+    return o;
+}
+
+/* cellSgr's bytes: absolute SGR, reset then set, so each run stands alone. */
+static size_t put_sgr(uint8_t *out, size_t o, const PaintCell *w) {
+    o = put_str(out, o, "\x1b[0");
+    if (w->flags & 1)  o = put_str(out, o, ";1");
+    if (w->flags & 64) o = put_str(out, o, ";2");
+    if (w->flags & 4)  o = put_str(out, o, ";3");
+    if (w->flags & 2)  o = put_str(out, o, ";4");
+    if (w->flags & 32) o = put_str(out, o, ";5");
+    if (w->flags & 8)  o = put_str(out, o, ";7");
+    if (w->flags & 16) o = put_str(out, o, ";9");
+    o = put_color(out, o, 30, 38, w->fg_tag, w->fg_val);
+    o = put_color(out, o, 40, 48, w->bg_tag, w->bg_val);
+    out[o++] = 'm';
+    return o;
+}
+
+long ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
+                          uint8_t *out, size_t cap) {
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = 0;
+    p.value.coordinate.y = y;
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return 0;
+
+    StyleCache sc = { 0 };
+    uint32_t markbuf[64];
+    uint32_t *heap = NULL;
+
+    /* The last column whose cell must be painted. */
+    int end = cols - 1;
+    for (; end >= 0; end--) {
+        ref.x = (uint16_t)end;
+        PaintCell pc;
+        if (!paint_cell(&ref, &sc, &pc)) return 0;
+        size_t nmarks = 0;
+        uint32_t *marks = NULL;
+        if (pc.grapheme) {
+            nmarks = fetch_marks(&ref, markbuf, 64, &marks, &heap);
+            if (heap) { free(heap); heap = NULL; }
+        }
+        if (!paint_blank(&pc, nmarks)) break;
+    }
+
+    size_t o = 0;
+    /* prev = the previous cell's raw style words; pen = the last style the
+     * output established. Both start at the default pen, all zeros. */
+    PaintCell prev = { 0 };
+    PaintCell pen  = { 0 };
+    for (int i = 0; i <= end; ) {
+        ref.x = (uint16_t)i;
+        PaintCell pc;
+        if (!paint_cell(&ref, &sc, &pc)) return 0;
+
+        size_t nmarks = 0;
+        uint32_t *marks = NULL;
+        if (pc.width != 0 && pc.grapheme)
+            nmarks = fetch_marks(&ref, markbuf, 64, &marks, &heap);
+
+        if (o + 68 + 4 * nmarks > cap) {
+            if (heap) free(heap);
+            return -1;
+        }
+
+        if (!words_equal(&pc, &prev)) {
+            if (!words_equal(&pc, &pen)) o = put_sgr(out, o, &pc);
+            pen = pc;
+        }
+        prev = pc;
+
+        if (pc.width != 0) {
+            o = put_utf8(out, o, pc.cp == 0 ? 0x20 : pc.cp);
+            for (size_t m = 0; m < nmarks; m++) o = put_utf8(out, o, marks[m]);
+        }
+        if (heap) { free(heap); heap = NULL; }
+        i += 1 + (pc.width >= 2 ? 1 : 0);
+    }
+    return (long)o;
+}
+
 int ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
                               uint32_t *buf, size_t buf_len, size_t *out_len) {
     GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
