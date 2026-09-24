@@ -9,6 +9,10 @@ module Hat.Term.Pty
     , adopt
     , readPty
     , readAvail
+    , ReadBuf
+    , newReadBuf
+    , readPtyBuf
+    , readAvailBuf
     , writePty
     , resize
     , waitExit
@@ -187,6 +191,33 @@ readPty pty = do
 readAvail :: PtyHandle -> IO ByteString
 readAvail pty = do
     r <- try (B.hGetNonBlocking pty.handle 65536)
+    pure $ case r of
+        Left (_ :: IOException) -> B.empty
+        Right bs -> bs
+
+-- | A reader's staging buffer for 'readPtyBuf': each chunk allocates only
+-- its own bytes, not a fresh maximum-size block.
+newtype ReadBuf = ReadBuf (ForeignPtr Word8)
+
+readBufSize :: Int
+readBufSize = 65536
+
+newReadBuf :: IO ReadBuf
+newReadBuf = ReadBuf <$> mallocForeignPtrBytes readBufSize
+
+-- | 'readPty' through a reusable staging buffer.
+readPtyBuf :: PtyHandle -> ReadBuf -> IO ByteString
+readPtyBuf pty = bufRead (hGetBufSome pty.handle)
+
+-- | 'readAvail' through a reusable staging buffer.
+readAvailBuf :: PtyHandle -> ReadBuf -> IO ByteString
+readAvailBuf pty = bufRead (hGetBufNonBlocking pty.handle)
+
+bufRead :: (Ptr Word8 -> Int -> IO Int) -> ReadBuf -> IO ByteString
+bufRead get (ReadBuf fp) = do
+    r <- try $ withForeignPtr fp $ \p -> do
+        n <- get p readBufSize
+        B.packCStringLen (castPtr p, n)
     pure $ case r of
         Left (_ :: IOException) -> B.empty
         Right bs -> bs

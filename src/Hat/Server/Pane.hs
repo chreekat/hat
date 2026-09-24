@@ -343,6 +343,7 @@ startPaneReader st sid win pane = do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
         pendingRef <- newIORef pane.pendingInput
+        rbuf <- Hat.Term.Pty.newReadBuf
         -- Track pane death by the shell's exit, not only pty EOF: a lingering
         -- fd-holder can keep the master from ever EOFing. 'ChildExited' (never
         -- the 'ThreadKilled' of an explicit kill) switches the reader to a
@@ -353,11 +354,13 @@ startPaneReader st sid win pane = do
         -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
             \_ -> parkable
-                (readLoop (unmask (Hat.Term.Pty.readPty pane.pty)) pendingRef)
+                (readLoop (unmask (Hat.Term.Pty.readPtyBuf pane.pty rbuf))
+                    pendingRef)
                 `catch` \ChildExited -> do
                     writeIORef pendingRef Nothing
                     parkable (readLoop
-                        (unmask (Hat.Term.Pty.readAvail pane.pty)) pendingRef))
+                        (unmask (Hat.Term.Pty.readAvailBuf pane.pty rbuf))
+                        pendingRef))
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
@@ -1115,6 +1118,7 @@ createSession st mname mrun environ dir sz = do
     environVar <- newTVarIO (environFromPairs environ)
     cwdVar <- newTVarIO dir
     optionsVar <- newTVarIO emptyDelta
+    resolvedVar <- newTVarIO Nothing
     let sess = Session
             { id = SessionId sid
             , name = nameVar
@@ -1125,6 +1129,7 @@ createSession st mname mrun environ dir sz = do
             , environ = environVar
             , startCwd = cwdVar
             , options = optionsVar
+            , resolvedOptions = resolvedVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
