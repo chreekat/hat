@@ -21,8 +21,15 @@ main = do
 
 gate :: Mode -> FilePath -> FilePath -> IO ()
 gate mode bin out = do
+    -- Each workload runs at sizes where its slope dominates its intercept;
+    -- restart's per-line cost needs thousands of lines to stand clear of
+    -- the ~400M-instruction restart itself.
     callProcess "tools/bench/hat_perf"
-        [ "--workloads", "type", "--sizes", "200 400 800"
+        [ "--workloads", "type", "--sizes", "200 400 800 1600"
+        , "--mux", "hat", "--bin", bin, "--out", out
+        ]
+    callProcess "tools/bench/hat_perf"
+        [ "--workloads", "restart", "--sizes", "2000 4000 8000 16000"
         , "--mux", "hat", "--bin", bin, "--out", out
         ]
     report <- listBin "bench-report"

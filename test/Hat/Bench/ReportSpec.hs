@@ -86,6 +86,7 @@ spec = do
         it "reads tolerance and series entries" $
             parseBaseline good `shouldBe` Right Baseline
                 { tolerance = 0.2
+                , slack = 0
                 , entries = [(key "hat" "type" "server", 28000000)]
                 }
 
@@ -101,6 +102,7 @@ spec = do
         it "roundtrips through parseBaseline" $ do
             let b = Baseline
                     { tolerance = 0.2
+                    , slack = 20000
                     , entries =
                         [ (key "hat" "type" "client", 43000)
                         , (key "hat" "type" "server", 28000000)
@@ -111,12 +113,17 @@ spec = do
     describe "checkBaseline" $ do
         let base = Baseline
                 { tolerance = 0.2
+                , slack = 0
                 , entries = [(key "hat" "type" "server", 100)]
                 }
             run measured = checkBaseline base
                 [(key "hat" "type" "server", Line measured 0)]
         it "passes a measurement inside the band" $
             checkPassed (run 110) `shouldBe` True
+
+        it "passes any drift within the absolute slack" $
+            checkPassed (checkBaseline base { slack = 50 }
+                [(key "hat" "type" "server", Line 140 0)]) `shouldBe` True
 
         it "trips on a regression beyond tolerance" $ do
             checkPassed (run 130) `shouldBe` False

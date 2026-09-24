@@ -36,6 +36,7 @@ main = getArgs >>= \case
         fits <- fitDir dir
         let baseline = Baseline
                 { tolerance = 0.2
+                , slack = 20000
                 , entries = [ (k, l.slope) | (k, l) <- fits ]
                 }
         TIO.writeFile baselineFile (renderBaseline baseline)

@@ -109,30 +109,41 @@ compareTable before after =
         sortOn fst [ x | x@(k, _) <- xs, Nothing <- [lookup k ys] ]
 
 -- | Recorded slopes the check compares against, with the relative band
--- (e.g. 0.2 = ±20%) a measurement may drift within.
+-- (e.g. 0.2 = ±20%) a measurement may drift within and the absolute
+-- instruction count small enough to read as fit noise either way (keeps
+-- a near-zero series, e.g. an idle client's slope, from tripping on
+-- nothing).
 data Baseline = Baseline
     { tolerance :: Double
+    , slack :: Double
     , entries :: [(SeriesKey, Double)]
     }
     deriving stock (Eq, Show)
 
 -- | Read a baseline file: @#@ comments and blanks skipped, one
--- @tolerance \<fraction>@ line, and one @\<mux> \<workload> \<role> \<slope>@
--- line per series.
+-- @tolerance \<fraction>@ line, at most one @slack \<instructions>@ line
+-- (0 when absent), and one @\<mux> \<workload> \<role> \<slope>@ line per
+-- series.
 parseBaseline :: Text -> Either Text Baseline
 parseBaseline input = do
     rows <- traverse row (filter meaningful (T.lines input))
+    slk <- case [ s | Right (Left s) <- rows ] of
+        [] -> Right 0
+        [s] -> Right s
+        _ -> Left "baseline has more than one slack line"
     case [ t | Left t <- rows ] of
         [t] -> Right Baseline
-            { tolerance = t, entries = [ e | Right e <- rows ] }
+            { tolerance = t, slack = slk
+            , entries = [ e | Right (Right e) <- rows ] }
         [] -> Left "baseline has no tolerance line"
         _ -> Left "baseline has more than one tolerance line"
   where
     meaningful l = not (T.null (T.strip l)) && not ("#" `T.isPrefixOf` l)
     row l = case T.words l of
         ["tolerance", v] -> Left <$> number v
-        [m, w, r, v] -> Right . (SeriesKey { mux = m, workload = w, role = r },)
-            <$> number v
+        ["slack", v] -> Right . Left <$> number v
+        [m, w, r, v] -> Right . Right
+            . (SeriesKey { mux = m, workload = w, role = r },) <$> number v
         _ -> Left ("not a baseline line: " <> l)
     number v = case TR.double v of
         Right (x, "") -> Right x
@@ -143,6 +154,7 @@ renderBaseline :: Baseline -> Text
 renderBaseline b = T.unlines $
     [ "# Fitted slope per series; `bench-report check` trips outside the band."
     , "tolerance " <> T.pack (showFFloat (Just 2) b.tolerance "")
+    , "slack " <> T.pack (show (round b.slack :: Integer))
     ]
     <> [ renderKey k <> " " <> T.pack (show (round v :: Integer))
        | (k, v) <- sortOn fst b.entries
@@ -173,9 +185,12 @@ checkBaseline b measured =
   where
     judge _ Nothing = Unmeasured
     judge base (Just l)
+        | inSlack = InBand l.slope base
         | l.slope > base * (1 + b.tolerance) = Regressed l.slope base
         | l.slope < base * (1 - b.tolerance) = Improved l.slope base
         | otherwise = InBand l.slope base
+      where
+        inSlack = abs (l.slope - base) <= b.slack
 
 checkPassed :: [Check] -> Bool
 checkPassed = all $ \c -> case c.verdict of
