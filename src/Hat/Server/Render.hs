@@ -1,5 +1,3 @@
-{-# LANGUAGE MagicHash #-}
-
 -- | Frame composition and diffing: pane grids in, 'DrawOp's out.
 --
 -- The server keeps the last frame sent to each client and sends only
@@ -29,10 +27,11 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import GHC.Exts (isTrue#, reallyUnsafePtrEquality#)
+import Data.Vector.Unboxed qualified as VU
 
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)
+import Hat.PtrEq (samePtr)
 import Hat.Term.Cell
 import Hat.Transport.Wire (DrawOp (..))
 
@@ -109,8 +108,7 @@ data PaneSlice = PaneSlice
 -- 'ComposedRow' — two 'VolatileRow's share one static object but must
 -- still never match.
 sameOrigin :: RowOrigin -> RowOrigin -> Bool
-sameOrigin a@(ComposedRow as) b@(ComposedRow bs) =
-    isTrue# (reallyUnsafePtrEquality# a b) || as == bs
+sameOrigin a@(ComposedRow as) b@(ComposedRow bs) = samePtr a b || as == bs
 sameOrigin _ _ = False
 
 -- | One pane's contribution to 'composeRows': where it sits, its cells,
@@ -158,23 +156,31 @@ composeRows sz chrome layers old oldOrigins = (frame, origins)
     colsN = fromIntegral sz.cols
     chromeAt r = Map.findWithDefault [] r chrome.byRow
     -- Chrome-free rows stamp 0: a border change elsewhere leaves them be.
-    chromeSpan r = ChromeSpan (if null (chromeAt r) then 0 else chrome.gen)
+    chromeStamp r = if null (chromeAt r) then 0 else chrome.gen
     layersAt r = [ l | l <- layers, r >= l.rect.startRow, r < l.rect.endRow ]
     -- Rows and origins are forced as they are built: a lazily reused row
     -- would otherwise chain thunks onto the previous frame's rows for as
     -- long as it stays unread.
     origins = V.fromListN rowsN
         [ o | r <- [0 .. rowsN - 1], let !o = mkOrigin r ]
-    -- A row whose fresh origin equals the old one keeps the old OBJECT,
-    -- so both this frame's reuse check and the next frame's take the
-    -- pointer shortcut in 'sameOrigin' instead of re-walking the spans.
-    mkOrigin r = case built of
-        ComposedRow _
-            | Just prev <- oldOrigins V.!? r, sameOrigin prev built -> prev
-        _ -> built
-      where
-        built = maybe VolatileRow (ComposedRow . (chromeSpan r :))
+    -- A row whose spans would come out identical keeps the old origin
+    -- OBJECT — matched field-by-field before anything is allocated — so
+    -- this frame's reuse check and the next frame's take the pointer
+    -- shortcut in 'sameOrigin'.
+    mkOrigin r = case oldOrigins V.!? r of
+        Just prev@(ComposedRow (ChromeSpan g : ps))
+            | g == chromeStamp r, panesMatch ps (layersAt r) -> prev
+        _ -> maybe VolatileRow (ComposedRow . (ChromeSpan (chromeStamp r) :))
             (traverse (paneSpan r) (layersAt r))
+      where
+        panesMatch (PaneSpan sl : ps) (l : ls)
+            | Just gens <- l.gens
+            , Just g <- gens V.!? (r - l.rect.startRow) =
+                sl.pane == l.pane && sl.prow == r - l.rect.startRow
+                    && sl.gen == g && sl.from == max 0 l.rect.startCol
+                    && sl.to == min colsN l.rect.endCol
+                    && panesMatch ps ls
+        panesMatch ps ls = null ps && null ls
     paneSpan r l = do
         gens <- l.gens
         g <- gens V.!? (r - l.rect.startRow)
@@ -241,47 +247,38 @@ diffFrameKnown known old new = go 0
   where
     go r
         | r >= V.length new = []
-        | sameVector oldRow newRow || known r || oldRow == newRow =
+        | samePtr oldRow newRow || known r || oldRow == newRow =
             go (r + 1)
         | otherwise = rowOps r oldRow newRow <> go (r + 1)
       where
         newRow = new V.! r
         oldRow = fromMaybe V.empty (old V.!? r)
 
--- | Object identity: True only for the very same heap object, which
--- makes equality certain without reading it. False proves nothing.
-sameVector :: V.Vector Cell -> V.Vector Cell -> Bool
-sameVector a b = isTrue# (reallyUnsafePtrEquality# a b)
-
 rowOps :: Int -> V.Vector Cell -> V.Vector Cell -> [DrawOp]
-rowOps r oldRow newRow = runsToOps r newRow (widenChanged newRow changed)
+rowOps r oldRow newRow = runsToOps r newRow eff
   where
     n = V.length newRow
-    changed = V.generate n $ \c ->
-        case oldRow V.!? c of
+    raw = VU.generate n $ \c ->
+        let nc = newRow V.! c
+        in case oldRow V.!? c of
             Nothing -> True
-            Just oldCell -> oldCell /= newRow V.! c
-
--- A wide char and its continuation cell redraw together: touching
--- either marks both.
-widenChanged :: V.Vector Cell -> V.Vector Bool -> V.Vector Bool
-widenChanged row changed = V.generate (V.length changed) $ \c ->
-    let self = changed V.! c
-        asLead = colWidth c == 2 && orFalse (changed V.!? (c + 1))
-        asCont = colWidth c == 0 && c > 0 && changed V.! (c - 1)
-    in self || asLead || asCont
-  where
-    colWidth c = maybe 1 cellWidth (row V.!? c)
-    orFalse = maybe False id
+            Just oldCell -> not (samePtr oldCell nc) && oldCell /= nc
+    -- A wide char and its continuation cell redraw together: touching
+    -- either marks both.
+    eff = VU.generate n $ \c ->
+        raw VU.! c
+            || (colWidth c == 2 && c + 1 < n && raw VU.! (c + 1))
+            || (colWidth c == 0 && c > 0 && raw VU.! (c - 1))
+    colWidth c = maybe 1 cellWidth (newRow V.!? c)
 
 -- Group consecutive changed cells with equal style into single Puts.
-runsToOps :: Int -> V.Vector Cell -> V.Vector Bool -> [DrawOp]
+runsToOps :: Int -> V.Vector Cell -> VU.Vector Bool -> [DrawOp]
 runsToOps r row changed = go 0
   where
     n = V.length row
     go c
         | c >= n = []
-        | not (changed V.! c) = go (c + 1)
+        | not (changed VU.! c) = go (c + 1)
         | otherwise =
             let st = (row V.! c).style
                 runEnd = findRunEnd c st
@@ -290,7 +287,7 @@ runsToOps r row changed = go 0
             in Put Pos { row = r, col = c } st txt : go runEnd
     findRunEnd c st
         | c >= n = c
-        | changed V.! c && (row V.! c).style == st = findRunEnd (c + 1) st
+        | changed VU.! c && (row V.! c).style == st = findRunEnd (c + 1) st
         | otherwise = c
 
 -- | Redraw everything (first frame after attach, or after resize).
