@@ -14,7 +14,7 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket
-    (Family (AF_UNIX), SocketType (Stream), Socket, close, socketPair)
+    (Family (AF_UNIX), SocketType (Stream), close, socketPair)
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -27,11 +27,11 @@ import Hat.Server.View (renderLoop, renderOnce)
 import Hat.Term.Cell
 import Hat.Transport.Wire
     (Autostart (..), DrawOp (..), Inbound (..), ServerToClient (..)
-    , protocolVersion, recvMessage)
+    , ReadEnd (..), newReadEnd, protocolVersion, recvMessage)
 
 -- A ready Client at @sz@, its last-sent frame set to @lastFrame@ and its
 -- full-redraw flag cleared — the post-race state bug 97 leaves behind.
-mkClient :: Size -> Frame -> IO (Client, Socket)
+mkClient :: Size -> Frame -> IO (Client, ReadEnd)
 mkClient sz lastFrame = do
     (a, b) <- socketPair AF_UNIX Stream 0
     lock    <- newMVar ()
@@ -65,7 +65,8 @@ mkClient sz lastFrame = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "" }
-    pure (client, b)
+    re <- newReadEnd b
+    pure (client, re)
 
 -- A frame every cell of which is a non-blank glyph — stand-in for the busy
 -- pane content that was on screen at the old (wider) size.
@@ -90,7 +91,7 @@ applyOps = foldl apply
                         , let c = pos.col + i, c < V.length row ]
                 in frame V.// [(pos.row, row V.// updates)]
 
-drawOps :: Socket -> IO [DrawOp]
+drawOps :: ReadEnd -> IO [DrawOp]
 drawOps peer = do
     r <- timeout 250_000 (recvMessage peer)
     pure $ case r of
@@ -98,7 +99,7 @@ drawOps peer = do
         _ -> []
 
 -- The next frame, or a test failure if none arrives.
-expectDraw :: Socket -> IO ()
+expectDraw :: ReadEnd -> IO ()
 expectDraw peer = do
     r <- timeout 1_000_000 (recvMessage peer)
     case r of
@@ -131,7 +132,7 @@ spec = do
                 case extra of
                     Nothing -> pure ()
                     Just _ -> expectationFailure "burst split across frames"
-            close peer
+            close peer.sock
             close client.sock
 
     describe "renderOnce after a shrink" $
@@ -151,5 +152,5 @@ spec = do
         let onScreen = applyOps (filledFrame wide) ops
             allBlank = all (V.all (== blankCell)) (V.toList onScreen)
         allBlank `shouldBe` True
-        close peer
+        close peer.sock
         close client.sock

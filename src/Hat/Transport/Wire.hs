@@ -54,6 +54,8 @@ module Hat.Transport.Wire
     , decodeMessage
     , sendMessage
     , sendMessageAt
+    , ReadEnd (..)
+    , newReadEnd
     , recvMessage
     ) where
 
@@ -66,8 +68,10 @@ import Codec.Serialise.Decoding
 import Codec.Serialise.Encoding
     ( Encoding, encodeBreak, encodeListLen, encodeListLenIndef, encodeWord
     , encodeWord16 )
-import Control.Monad (replicateM_)
+import Control.Exception (mask_)
+import Control.Monad (replicateM_, unless)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
@@ -390,28 +394,59 @@ sendPayload sock payload = do
     -- syscalls outweigh the copy.
     SB.sendAll sock (header <> payload)
 
--- | 'Nothing' means the peer closed the connection.
-recvMessage :: WireMessage a => Socket -> IO (Maybe (Inbound a))
-recvMessage sock = do
-    mheader <- recvExactly sock 4
-    case mheader of
+-- | A connection's receive side: the socket with its pull buffer, so a
+-- framed message is normally served by a single recv. Owned by the one
+-- reader thread of its connection; bytes buffered past one message are
+-- served to the next, so a socket must keep the same 'ReadEnd' for life.
+data ReadEnd = ReadEnd
+    { sock :: Socket
+    , pending :: IORef ByteString
+    }
+
+newReadEnd :: Socket -> IO ReadEnd
+newReadEnd s = ReadEnd s <$> newIORef B.empty
+
+-- | 'Nothing' means the peer closed the connection. The buffer is
+-- consumed only once the whole frame is present, so a read cancelled at
+-- any point (the escape-time race, a test timeout) leaves the stream
+-- intact for the next call.
+recvMessage :: WireMessage a => ReadEnd -> IO (Maybe (Inbound a))
+recvMessage re = do
+    mbuf <- fillTo re 4
+    case mbuf of
         Nothing -> pure Nothing
-        Just header -> case fromIntegral <$> B.unpack header :: [Word32] of
+        Just buf -> case fromIntegral <$> B.unpack (B.take 4 buf) :: [Word32] of
             [a, b, c, d] -> do
                 let n = a `shiftL` 24 .|. b `shiftL` 16 .|. c `shiftL` 8 .|. d
                 if n > maxFrame
-                    then pure (Just (Malformed "frame too large"))
+                    then do
+                        writeIORef re.pending (B.drop 4 buf)
+                        pure (Just (Malformed "frame too large"))
                     else do
-                        mbody <- recvExactly sock (fromIntegral n)
-                        pure $ decodeMessage <$> mbody
+                        let end = 4 + fromIntegral n
+                        mfull <- fillTo re end
+                        case mfull of
+                            Nothing -> pure Nothing
+                            Just full -> do
+                                writeIORef re.pending (B.drop end full)
+                                pure $ Just $ decodeMessage
+                                    (B.take (fromIntegral n) (B.drop 4 full))
             _ -> pure (Just (Malformed "short frame header"))
 
-recvExactly :: Socket -> Int -> IO (Maybe ByteString)
-recvExactly sock n = go n []
-  where
-    go 0 acc = pure (Just (B.concat (Prelude.reverse acc)))
-    go remaining acc = do
-        chunk <- SB.recv sock remaining
-        if B.null chunk
-            then pure Nothing
-            else go (remaining - B.length chunk) (chunk : acc)
+-- | Grow the pull buffer to at least @n@ bytes and hand it back without
+-- consuming any of it. The refill appends under mask, so bytes that left
+-- the kernel are always retained. 'Nothing' means the peer closed first.
+fillTo :: ReadEnd -> Int -> IO (Maybe ByteString)
+fillTo re n = do
+    buf <- readIORef re.pending
+    if B.length buf >= n
+        then pure (Just buf)
+        else do
+            chunk <- mask_ $ do
+                chunk <- SB.recv re.sock 65536
+                unless (B.null chunk) $
+                    modifyIORef' re.pending (<> chunk)
+                pure chunk
+            if B.null chunk
+                then pure Nothing
+                else fillTo re n

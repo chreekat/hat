@@ -55,7 +55,8 @@ import Hat.Term.Pty qualified as Pty
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
-    , ServerToClient (..), protocolVersion, recvMessage, sendMessage )
+    , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
+    , sendMessage )
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv (paneModeEnv, sessionFormatEnv)
@@ -321,9 +322,11 @@ spec = do
                     , term = "xterm", env = [], size = Size 24 80
                     , cwd = "/", intent = ControlIntent
                     , autostarted = False, sessionHist = [] }
-            withAsync (welcome dispatch st server h) $ \_ -> do
-                Just (Known (Welcome _)) <- recvMessage client
-                Just (Known (ServerVersion v)) <- recvMessage client
+            serverRe <- newReadEnd server
+            clientRe <- newReadEnd client
+            withAsync (welcome dispatch st serverRe h) $ \_ -> do
+                Just (Known (Welcome _)) <- recvMessage clientRe
+                Just (Known (ServerVersion v)) <- recvMessage clientRe
                 v `shouldBe` protocolVersion
                 sendMessage client Detach
 
@@ -340,7 +343,9 @@ spec = do
             (st, _) <- seedSession "/"
             (client, peer) <- wiredClient st Attached
             [] <- cmdRestartClient st (Just client) []
-            recvMessage peer `shouldReturn` Just (Known (RestartClientTo "work" []))
+            peerRe <- newReadEnd peer
+            recvMessage peerRe `shouldReturn`
+                Just (Known (RestartClientTo "work" []))
 
         it "sends nothing when a control connection issues it" $ do
             (st, _) <- seedSession "/"
@@ -352,8 +357,9 @@ spec = do
             -- that hazard deterministic, and hold the socket open past the
             -- read with touchSocket.
             performGC
+            peerRe <- newReadEnd peer
             got <- timeout 100_000
-                (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))
+                (recvMessage peerRe :: IO (Maybe (Inbound ServerToClient)))
             touchSocket client.sock
             got `shouldBe` Nothing
 
@@ -378,8 +384,9 @@ spec = do
             -- Nothing is queued (see the restart-client no-op test for the
             -- GC/touchSocket choreography).
             performGC
+            peerRe <- newReadEnd peer
             got <- timeout 100_000
-                (recvMessage peer :: IO (Maybe (Inbound ServerToClient)))
+                (recvMessage peerRe :: IO (Maybe (Inbound ServerToClient)))
             touchSocket client.sock
             got `shouldBe` Nothing
 

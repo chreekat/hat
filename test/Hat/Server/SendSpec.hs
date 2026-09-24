@@ -10,7 +10,7 @@ import Control.Concurrent.STM (atomically, newTVarIO, writeTVar)
 import Data.IORef (newIORef)
 import Data.Vector qualified as V
 import Network.Socket
-    (Family (AF_UNIX), Socket, SocketType (Stream), close, socketPair)
+    (Family (AF_UNIX), SocketType (Stream), close, socketPair)
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -20,11 +20,12 @@ import Hat.Server.ClientIO (send)
 import Hat.Server.Keys (EscPending (NoEscPending), PrefixState (NoPrefix))
 import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire
-    (Autostart (..), Inbound (..), ServerToClient (..), protocolVersion, recvMessage)
+    ( Autostart (..), Inbound (..), ReadEnd (..), ServerToClient (..)
+    , newReadEnd, protocolVersion, recvMessage )
 
 -- A Client wired to one end of a socketpair (returned second), initially
 -- not ready.
-mkClient :: IO (Client, Socket)
+mkClient :: IO (Client, ReadEnd)
 mkClient = do
     (a, b) <- socketPair AF_UNIX Stream 0
     let sz = Size { rows = 24, cols = 80 }
@@ -60,9 +61,10 @@ mkClient = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "" }
-    pure (client, b)
+    re <- newReadEnd b
+    pure (client, re)
 
-recv :: Socket -> IO (Maybe (Inbound ServerToClient))
+recv :: ReadEnd -> IO (Maybe (Inbound ServerToClient))
 recv peer = do
     r <- timeout 250_000 (recvMessage peer)
     -- collapse "timed out" and "socket closed" into Nothing
@@ -74,7 +76,7 @@ spec = describe "send" $ do
         (client, peer) <- mkClient
         send client (SetTitle "before")
         recv peer `shouldReturn` Nothing
-        close peer
+        close peer.sock
         close client.sock
 
     it "delivers once the client is marked ready" $ do
@@ -82,5 +84,5 @@ spec = describe "send" $ do
         atomically $ writeTVar client.ready True
         send client (SetTitle "after")
         recv peer `shouldReturn` Just (Known (SetTitle "after"))
-        close peer
+        close peer.sock
         close client.sock

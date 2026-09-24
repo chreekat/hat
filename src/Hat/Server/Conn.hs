@@ -88,15 +88,17 @@ acceptLoop d st lsock = forever $ do
 
 handleConn :: Dispatch -> ServerState -> N.Socket -> IO ()
 handleConn d st conn = do
-    m <- recvMessage conn
+    re <- newReadEnd conn
+    m <- recvMessage re
     case m of
         Just (Known (ClientHello h)) -> case negotiate h.protoVersion of
-            Right _ -> welcome d st conn h
+            Right _ -> welcome d st re h
             Left e  -> sendMessage conn (ServerError e)
         _ -> sendMessage conn (ServerError "expected hello")
 
-welcome :: Dispatch -> ServerState -> N.Socket -> Hello -> IO ()
-welcome d st conn h = do
+welcome :: Dispatch -> ServerState -> ReadEnd -> Hello -> IO ()
+welcome d st re h = do
+    let conn = re.sock
     client <- newClient st conn h
     case h.intent of
         ControlIntent -> do
@@ -106,7 +108,7 @@ welcome d st conn h = do
             -- then skips unknown tags.
             sendMessage conn (ServerVersion protocolVersion)
             atomically $ writeTVar client.ready True
-            controlLoop d st client `finally` removeClient st client
+            controlLoop d st re client `finally` removeClient st client
         AttachIntent setupCmds -> do
             -- Register early so the setup commands (new-session,
             -- attach-session -t) act on a live client and can switch it.
@@ -145,7 +147,7 @@ welcome d st conn h = do
                     -- loudly, never leave a live client rendering nothing.
                     withAsync (renderLoop framePeriod st client) $ \a -> do
                         link a
-                        inputLoop d st client
+                        inputLoop d st re client
                             `finally` removeClient st client
 
 -- | Run an attaching client's setup commands, leaving @client.session@
@@ -284,19 +286,19 @@ pickAttachSession lastActive m =
 
 -- Input ---------------------------------------------------------------------
 
-inputLoop :: Dispatch -> ServerState -> Client -> IO ()
-inputLoop d st client = loop
+inputLoop :: Dispatch -> ServerState -> ReadEnd -> Client -> IO ()
+inputLoop d st re client = loop
   where
     loop = do
         -- A lone trailing ESC held by escape-time races the next chunk: if
         -- nothing arrives within the window, flush it as the Escape key.
         held <- readIORef client.escState
         m <- case held of
-            NoEscPending -> Right <$> recvMessage client.sock
+            NoEscPending -> Right <$> recvMessage re
             EscPending -> do
                 opts <- clientOptions st client
                 timer <- registerDelay (opts.escapeTime * 1000)
-                race (atomically (readTVar timer >>= check)) (recvMessage client.sock)
+                race (atomically (readTVar timer >>= check)) (recvMessage re)
         case m of
             Left () -> flushHeldEscape d st client >> loop
             Right Nothing -> pure ()
@@ -503,9 +505,9 @@ reencodeKey memu key = case arrowOf key.name of
         "Right" -> Just Emu.CursorRight
         _       -> Nothing
 
-controlLoop :: Dispatch -> ServerState -> Client -> IO ()
-controlLoop d st client = do
-    m <- recvMessage client.sock
+controlLoop :: Dispatch -> ServerState -> ReadEnd -> Client -> IO ()
+controlLoop d st re client = do
+    m <- recvMessage re
     case m of
         Just (Known (Command cmds)) -> do
             awaitStartup st client.autostart cmds
@@ -518,11 +520,11 @@ controlLoop d st client = do
             -- inspects a pane's size never races the pty resize.
             awaitReconciled st
             send client CommandDone
-            controlLoop d st client
+            controlLoop d st re client
         Just (Known Detach) -> pure ()
         Just (Malformed _) -> pure ()
         Nothing -> pure ()
-        _ -> controlLoop d st client
+        _ -> controlLoop d st re client
 
 
 -- | @kill-server [-a]@: drain every session (a normal shutdown). @-a@ keeps

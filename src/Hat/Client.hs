@@ -85,8 +85,9 @@ runClient sock origin setup hist = do
 
 attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> [Text] -> IO ExitReason
 attachClient v sock origin setup hist = do
+    re <- newReadEnd sock
     sendMessage sock =<< hello v origin (AttachIntent setup) hist
-    greeting <- recvMessage sock
+    greeting <- recvMessage re
     case greeting of
         Just (Known (Welcome _)) ->
             -- withRawMode also owns the stdio buffering switch; see the
@@ -95,15 +96,15 @@ attachClient v sock origin setup hist = do
                 bracket_
                     (B.hPut stdout enterAltScreen)
                     (B.hPut stdout leaveAltScreen)
-                    (shuttle sock)
+                    (shuttle sock re)
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
 
-shuttle :: Socket -> IO ExitReason
-shuttle sock = do
+shuttle :: Socket -> ReadEnd -> IO ExitReason
+shuttle sock re = do
     outbox <- newTQueueIO
     _ <- installHandler sigWinch
         (Catch $ ttySize >>= atomically . writeTQueue outbox . Resize)
@@ -116,7 +117,7 @@ shuttle sock = do
         Right _ -> ServerDied
   where
     receiver = do
-        m <- recvMessage sock
+        m <- recvMessage re
         case m of
             Nothing -> pure ServerDied
             Just (Malformed _) -> pure ServerDied
@@ -154,11 +155,12 @@ shuttle sock = do
 -- client.
 runClientControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
 runClientControl sock origin setup = do
+    re <- newReadEnd sock
     sendMessage sock =<< hello protocolVersion origin (AttachIntent setup) []
-    greeting <- recvMessage sock
+    greeting <- recvMessage re
     case greeting of
         Just (Known (Welcome _)) -> do
-            r <- race (receiver `catch` \(_ :: SomeException) -> pure ServerDied)
+            r <- race (receiver re `catch` \(_ :: SomeException) -> pure ServerDied)
                       stdinUntilEof
             pure (either id id r)
         Just (Known (ServerError e)) -> pure (Rejected e)
@@ -167,19 +169,19 @@ runClientControl sock origin setup = do
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
   where
-    receiver = do
-        m <- recvMessage sock
+    receiver re = do
+        m <- recvMessage re
         case m of
             Nothing -> pure ServerDied
             Just (Malformed _) -> pure ServerDied
-            Just (UnknownTag _) -> receiver
+            Just (UnknownTag _) -> receiver re
             Just (Known msg) -> case msg of
                 DetachOk -> pure Detached
                 Exited -> pure SessionEnded
                 RestartClient -> pure Detached
                 RestartClientTo _ _ -> pure Detached
                 ServerError e -> pure (Rejected e)
-                _ -> receiver
+                _ -> receiver re
     stdinUntilEof = do
         bs <- B.hGetSome stdin 4096
         if B.null bs
@@ -195,28 +197,29 @@ runControl sock origin cmds = controlAt protocolVersion sock origin cmds
 
 controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
 controlAt v sock origin cmds = do
+    re <- newReadEnd sock
     sendMessage sock =<< hello v origin ControlIntent []
-    greeting <- recvMessage sock
+    greeting <- recvMessage re
     case greeting of
         Just (Known (Welcome _)) -> do
             sendMessage sock (Command cmds)
-            drain
+            drain re
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
   where
-    drain = do
-        m <- recvMessage sock
+    drain re = do
+        m <- recvMessage re
         case m of
             Nothing -> pure SessionEnded
-            Just (Known (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain
+            Just (Known (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain re
             Just (Known (ServerError e)) -> pure (Rejected e)
             Just (Known CommandDone) -> pure SessionEnded
             Just (Known Exited) -> pure SessionEnded
-            Just (Known _) -> drain
-            Just (UnknownTag _) -> drain
+            Just (Known _) -> drain re
+            Just (UnknownTag _) -> drain re
             Just (Malformed err) ->
                 pure (Rejected ("wire protocol error: " <> T.pack err
                     <> " — mismatched hat versions?"))
