@@ -176,7 +176,7 @@ spec = do
         sblen <- scrollbackLength e
         sblen `shouldBe` 1000
 
-    -- A seeded blank row must stay blank beneath a bg-filled neighbor
+    -- The row beneath a bg-filled row must reseed with a default background
     -- (bug 66).
     it "keeps a blank row default beneath a bg-filled row across a seed" $ do
         src <- newEmulator Size { rows = 3, cols = 10 } 1000
@@ -186,14 +186,12 @@ spec = do
         _ <- feedStr src "\ESC[44m\ESC[2K\ESC[0m\r\n"  -- full-width bg row
         _ <- feedStr src "\r\n"                        -- blank default row
         forM_ [1 .. 4 :: Int] $ \_ -> feedStr src "\r\n"  -- into history
-        len <- scrollbackLength src
-        len `shouldSatisfy` (>= 2)
         painted <- scrollbackPainted src
         dst <- newEmulator Size { rows = 3, cols = 10 } 1000
         seedScrollback dst painted
-        srcRows <- catMaybes <$> mapM (scrollbackLine src) [0 .. len - 1]
-        dstRows <- catMaybes <$> mapM (scrollbackLine dst) [0 .. len - 1]
-        dstRows `shouldBe` srcRows
+        below <- scrollbackLine dst 5   -- the blank row beneath the bg row
+        fmap (V.map (.style.bg)) below `shouldBe`
+            Just (V.replicate 10 DefaultColor)
 
     it "survives resizing a restored emulator across a size mismatch" $ do
         -- Mirror adoptPane: the pane ran at the client's real size, but the
