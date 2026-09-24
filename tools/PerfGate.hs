@@ -25,7 +25,7 @@ gate mode bin out = do
     -- restart's per-line cost needs thousands of lines to stand clear of
     -- the ~400M-instruction restart itself.
     callProcess "tools/bench/hat_perf"
-        [ "--workloads", "type", "--sizes", "200 400 800 1600"
+        [ "--workloads", "type typeh", "--sizes", "200 400 800 1600"
         , "--mux", "hat", "--bin", bin, "--out", out
         ]
     callProcess "tools/bench/hat_perf"

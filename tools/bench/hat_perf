@@ -15,6 +15,8 @@ set -Eeuo pipefail
 #               quiet pane: the per-keystroke render path. Every 80th key is
 #               Enter, so lines stay short and scrolls stay rare, like typing.
 #   type4       type, with three idle panes splitting the same window.
+#   typeh       type4 with side-by-side (-h) splits: no pane row spans the
+#               full client width.
 #   typestatus  type, with the status line on.
 #   restart     N lines of scrollback carried across an in-place
 #               restart-server: the slope is the per-line handover cost
@@ -37,7 +39,7 @@ usage() {
     cat <<'USAGE'
 usage: hat_perf [options]
 
-  --workloads "W W ..."  which workloads to run: lines, type, type4,
+  --workloads "W W ..."  which workloads to run: lines, type, type4, typeh,
                          typestatus, restart (default "lines")
   --sizes "N N ..."      workload sizes, overriding the per-workload defaults
                          (lines: "2000 4000 8000 16000",
@@ -121,7 +123,7 @@ await() {
 # Whether a workload drives the client's keyboard (rather than printing
 # output and, for restart, re-execing the server).
 typing_wl() {
-    case "$1" in type|type4|typestatus) return 0 ;; *) return 1 ;; esac
+    case "$1" in type|type4|typeh|typestatus) return 0 ;; *) return 1 ;; esac
 }
 
 # Feed N keystrokes into fd $2 at ~50/s: 79 letters then Enter, repeating.
@@ -245,6 +247,10 @@ EOF
             "${CTL[@]}" split-window -d 'sleep 1000000'
             "${CTL[@]}" split-window -d 'sleep 1000000'
             "${CTL[@]}" split-window -d 'sleep 1000000'
+        elif [ "$wl" = typeh ]; then
+            "${CTL[@]}" split-window -dh 'sleep 1000000'
+            "${CTL[@]}" split-window -dh 'sleep 1000000'
+            "${CTL[@]}" split-window -dh 'sleep 1000000'
         fi
         local pacefd
         exec {pacefd}<>"$WORK/pace.fifo"
