@@ -104,9 +104,13 @@ data PaneSlice = PaneSlice
     }
     deriving (Eq, Show)
 
--- | Whether two rows' provenance proves their cells equal.
+-- | Whether two rows' provenance proves their cells equal. The pointer
+-- check is only ever a shortcut for the structural one, and only on
+-- 'ComposedRow' — two 'VolatileRow's share one static object but must
+-- still never match.
 sameOrigin :: RowOrigin -> RowOrigin -> Bool
-sameOrigin (ComposedRow a) (ComposedRow b) = a == b
+sameOrigin a@(ComposedRow as) b@(ComposedRow bs) =
+    isTrue# (reallyUnsafePtrEquality# a b) || as == bs
 sameOrigin _ _ = False
 
 -- | One pane's contribution to 'composeRows': where it sits, its cells,
@@ -161,8 +165,16 @@ composeRows sz chrome layers old oldOrigins = (frame, origins)
     -- long as it stays unread.
     origins = V.fromListN rowsN
         [ o | r <- [0 .. rowsN - 1], let !o = mkOrigin r ]
-    mkOrigin r = maybe VolatileRow (ComposedRow . (chromeSpan r :))
-        (traverse (paneSpan r) (layersAt r))
+    -- A row whose fresh origin equals the old one keeps the old OBJECT,
+    -- so both this frame's reuse check and the next frame's take the
+    -- pointer shortcut in 'sameOrigin' instead of re-walking the spans.
+    mkOrigin r = case built of
+        ComposedRow _
+            | Just prev <- oldOrigins V.!? r, sameOrigin prev built -> prev
+        _ -> built
+      where
+        built = maybe VolatileRow (ComposedRow . (chromeSpan r :))
+            (traverse (paneSpan r) (layersAt r))
     paneSpan r l = do
         gens <- l.gens
         g <- gens V.!? (r - l.rect.startRow)
@@ -180,8 +192,11 @@ composeRows sz chrome layers old oldOrigins = (frame, origins)
     blankRow = V.replicate colsN blankCell
     composeRow r = List.foldl' paneOver chromed (layersAt r)
       where
-        chromed = blankRow V.//
-            [ (c, cell) | (c, cell) <- chromeAt r, c < colsN ]
+        -- A chrome-free row starts as the shared blank row itself, so a
+        -- full-width pane pass-through composes without any copy.
+        chromed = case chromeAt r of
+            [] -> blankRow
+            cs -> blankRow V.// [ (c, cell) | (c, cell) <- cs, c < colsN ]
         paneOver row l = overlayRowAt l.rect l.cells r row
 
 -- | Stamp pre-styled border cells onto a frame. The caller chooses each
@@ -222,14 +237,16 @@ diffFrame = diffFrameKnown (\_ -> False)
 -- cells genuinely match, or the screen keeps stale content. A row that is
 -- the same vector in both frames (compose reuse) is skipped outright.
 diffFrameKnown :: (Int -> Bool) -> Frame -> Frame -> [DrawOp]
-diffFrameKnown known old new = concat
-    [ rowOps r oldRow newRow
-    | (r, newRow) <- zip [0 ..] (V.toList new)
-    , let oldRow = maybe V.empty id (old V.!? r)
-    , not (sameVector oldRow newRow)
-    , not (known r)
-    , oldRow /= newRow
-    ]
+diffFrameKnown known old new = go 0
+  where
+    go r
+        | r >= V.length new = []
+        | sameVector oldRow newRow || known r || oldRow == newRow =
+            go (r + 1)
+        | otherwise = rowOps r oldRow newRow <> go (r + 1)
+      where
+        newRow = new V.! r
+        oldRow = fromMaybe V.empty (old V.!? r)
 
 -- | Object identity: True only for the very same heap object, which
 -- makes equality certain without reading it. False proves nothing.
