@@ -99,6 +99,8 @@ data Emulator = Emulator
         -- ^ render-state bundle for 'snapshot'; freed by 'term's finalizer
     , gridCache :: IORef GridCache
         -- ^ last snapshot's rows, reused for rows the render state reports clean
+    , snapBuf :: IORef SnapBuf
+        -- ^ staging buffer for 'snapshot'; see 'withSnapBuf'
     }
 
 -- | Last snapshot's rows with their generation stamps ('rows' and 'gens'
@@ -108,6 +110,12 @@ data GridCache = GridCache
     { rows    :: V.Vector (V.Vector Cell)
     , gens    :: V.Vector Int
     , nextGen :: Int
+    }
+
+-- | Pinned staging area the shim fills on each snapshot, kept across calls.
+data SnapBuf = SnapBuf
+    { buf :: ForeignPtr Word8
+    , cap :: Int
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
@@ -165,9 +173,11 @@ newEmulator sz limit = do
         freeHaskellFunPtr bellW
     ci <- newIORef Map.empty
     gc <- newIORef GridCache { rows = V.empty, gens = V.empty, nextGen = 0 }
+    sb0 <- mallocForeignPtrBytes 0
+    sb <- newIORef SnapBuf { buf = sb0, cap = 0 }
     pure Emulator
         { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci
-        , render = rp, gridCache = gc }
+        , render = rp, gridCache = gc, snapBuf = sb }
 
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
@@ -284,18 +294,18 @@ snapshot e = fst <$> snapshotWithGens e
 -- guarantee they agree on its cells, so a consumer may skip the row.
 snapshotWithGens :: Emulator -> IO (Screen, V.Vector Int)
 snapshotWithGens e = withMVar e.lock $ \_ ->
-    withForeignPtr e.term (readGrid e.cellIntern e.render e.gridCache)
+    withForeignPtr e.term (readGrid e.cellIntern e.render e.gridCache e.snapBuf)
 
 readGrid
-    :: CellIntern -> Ptr CRender -> IORef GridCache
+    :: CellIntern -> Ptr CRender -> IORef GridCache -> IORef SnapBuf
     -> Ptr CTerm -> IO (Screen, V.Vector Int)
-readGrid ci rp cacheRef t = do
+readGrid ci rp cacheRef bufRef t = do
     cols <- fromIntegral <$> c_get t dataCols
     rows <- fromIntegral <$> c_get t dataRows
     cx   <- fromIntegral <$> c_get t dataCursorX
     cy   <- fromIntegral <$> c_get t dataCursorY
     vis  <- c_get t dataCursorVisible
-    (grid, gens) <- readActiveGrid ci rp cacheRef t rows cols
+    (grid, gens) <- readActiveGrid ci rp cacheRef bufRef t rows cols
     pure ( Screen
              { size = Size { rows = fromIntegral rows, cols = fromIntegral cols }
              , cells = grid
@@ -311,11 +321,10 @@ readGrid ci rp cacheRef t = do
 -- for a downstream frame diff. A width change forces every row (the cache no
 -- longer fits), matching the render state's full-dirty resize.
 readActiveGrid
-    :: CellIntern -> Ptr CRender -> IORef GridCache
+    :: CellIntern -> Ptr CRender -> IORef GridCache -> IORef SnapBuf
     -> Ptr CTerm -> Int -> Int -> IO (V.Vector (V.Vector Cell), V.Vector Int)
-readActiveGrid ci rp cacheRef t rows cols =
-    allocaBytes (rows * cols * shimCellSize) $ \out ->
-    allocaBytes rows $ \dirty -> do
+readActiveGrid ci rp cacheRef bufRef t rows cols =
+    withSnapBuf bufRef rows cols $ \out dirty -> do
         _ <- c_render_snapshot rp t (fromIntegral cols) (fromIntegral rows)
                 out dirty
         cache <- readIORef cacheRef
@@ -334,6 +343,20 @@ readActiveGrid ci rp cacheRef t rows cols =
         writeIORef cacheRef GridCache
             { rows = grid, gens, nextGen = cache.nextGen + 1 }
         pure (grid, gens)
+
+-- | Hand the shim's cell array (@rows*cols@ cells) and per-row dirty flags
+-- from the reusable staging buffer, growing it if the grid outgrew it. Only
+-- valid under the emulator lock, like every snapshot read.
+withSnapBuf :: IORef SnapBuf -> Int -> Int -> (Ptr () -> Ptr Word8 -> IO a) -> IO a
+withSnapBuf ref rows cols k = do
+    let cells = rows * cols * shimCellSize
+    sb <- readIORef ref
+    sb' <- if sb.cap >= cells + rows then pure sb else do
+        fp <- mallocForeignPtrBytes (cells + rows)
+        let grown = SnapBuf { buf = fp, cap = cells + rows }
+        writeIORef ref grown
+        pure grown
+    withForeignPtr sb'.buf $ \p -> k (castPtr p) (p `plusPtr` cells)
 
 -- | Read one row's @cols@ cells under a point tag (active or history) into a
 -- vector of 'Cell's: one bulk crossing fills the whole row, resolving the
