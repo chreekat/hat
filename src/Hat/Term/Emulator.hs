@@ -349,11 +349,20 @@ readActiveGrid ci rp cacheRef bufRef t rows cols =
                     if fits && clean
                         then pure (cache.rows V.! y, cache.gens V.! y)
                         else do
-                            row <- V.generateM cols $ \x ->
+                            -- Within a re-read row, a cell equal to its
+                            -- predecessor keeps the predecessor object:
+                            -- no intern lookup, and it stays pointer-equal
+                            -- for downstream diffs.
+                            let mold = if fits then cache.rows V.!? y
+                                              else Nothing
+                            row <- V.generateM cols $ \x -> do
                                 let cellp = out `plusPtr`
                                         ((y * cols + x) * shimCellSize)
-                                in peekShimCell (shareVals ci)
+                                fresh <- peekShimCell pure
                                     (graphemeMarks t tagActive x y) cellp
+                                case mold >>= (V.!? x) of
+                                    Just oldc | oldc == fresh -> pure oldc
+                                    _ -> shareVals ci fresh
                             pure (row, cache.nextGen)
                 let (grid, gens) = V.unzip tagged
                 writeIORef cacheRef GridCache
