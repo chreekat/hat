@@ -75,9 +75,12 @@ void  ghost_shim_render_free(void *rp);
 
 /* Snapshot the viewport through the render state into out (row-major,
  * out[y*cols + x]), setting dirty[y] for each row changed since the previous
- * snapshot. Returns the number of rows written, 0 on failure. */
+ * snapshot. Only dirty rows' cells are written unless force_all is set; a
+ * caller holding no copy of the clean rows must force. Returns the number of
+ * rows written, 0 on failure. */
 int   ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
-                                 GhostShimCell *out, uint8_t *dirty);
+                                 GhostShimCell *out, uint8_t *dirty,
+                                 uint8_t force_all);
 
 /* Copy the terminal title (DATA_TITLE, set by OSC 0/2) into buf, truncated to
  * buflen bytes. Returns the full title length, or -1 on failure. */

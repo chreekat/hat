@@ -541,17 +541,24 @@ void ghost_shim_render_free(void *rp) {
 
 /* Update the render state from the terminal, then copy the viewport into out
  * (row-major, out[y*cols + x]) and set dirty[y] for each row changed since the
- * last snapshot. Resets the state's dirty tracking so the next snapshot reports
- * only fresh changes. Returns the number of rows written, 0 on failure. */
+ * last snapshot. Cells are copied only for dirty (or force_all) rows; the rest
+ * of out is untouched. Resets the state's dirty tracking so the next snapshot
+ * reports only fresh changes. Returns the number of rows written, 0 on
+ * failure. */
 int ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
-                               GhostShimCell *out, uint8_t *dirty) {
+                               GhostShimCell *out, uint8_t *dirty,
+                               uint8_t force_all) {
     GhostRender *r = rp;
     if (r == NULL) return 0;
+
+    /* Zero the flags (and, when forcing, the cells) up front so every early
+     * failure return still leaves out/dirty readable. */
+    memset(dirty, 0, rows);
+    if (force_all)
+        memset(out, 0, (size_t)rows * cols * sizeof(GhostShimCell));
+
     if (ghostty_render_state_update(r->rs, (GhosttyTerminal)t) != GHOSTTY_SUCCESS)
         return 0;
-
-    memset(out, 0, (size_t)rows * cols * sizeof(GhostShimCell));
-    memset(dirty, 0, rows);
 
     if (ghostty_render_state_get(r->rs, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
             &r->iter) != GHOSTTY_SUCCESS)
@@ -564,8 +571,12 @@ int ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
             GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &row_dirty);
         dirty[y] = row_dirty ? 1 : 0;
 
-        if (ghostty_render_state_row_get(r->iter,
+        if ((row_dirty || force_all)
+                && ghostty_render_state_row_get(r->iter,
                 GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &r->cells) == GHOSTTY_SUCCESS) {
+            if (!force_all)
+                memset(&out[(size_t)y * cols], 0,
+                       (size_t)cols * sizeof(GhostShimCell));
             for (uint16_t x = 0; x < cols; x++) {
                 if (ghostty_render_state_row_cells_select(r->cells, x)
                         != GHOSTTY_SUCCESS)

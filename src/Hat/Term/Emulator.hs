@@ -318,31 +318,47 @@ readGrid ci rp cacheRef bufRef t = do
 -- grid_ref lookup per cell. Rows the render state reports unchanged since the
 -- last snapshot are reused from the cache verbatim — the same 'Cell' vectors,
 -- so an unchanged row costs no per-cell marshalling and stays pointer-equal
--- for a downstream frame diff. A width change forces every row (the cache no
--- longer fits), matching the render state's full-dirty resize.
+-- for a downstream frame diff — and the shim skips copying their cells out at
+-- all. A dimension change forces every row (the cache no longer fits),
+-- matching the render state's full-dirty resize. An all-clean snapshot
+-- returns the cached grid as-is.
 readActiveGrid
     :: CellIntern -> Ptr CRender -> IORef GridCache -> IORef SnapBuf
     -> Ptr CTerm -> Int -> Int -> IO (V.Vector (V.Vector Cell), V.Vector Int)
 readActiveGrid ci rp cacheRef bufRef t rows cols =
     withSnapBuf bufRef rows cols $ \out dirty -> do
-        _ <- c_render_snapshot rp t (fromIntegral cols) (fromIntegral rows)
-                out dirty
         cache <- readIORef cacheRef
-        tagged <- V.generateM rows $ \y -> do
-            clean <- (== 0) <$> (peekElemOff dirty y :: IO Word8)
-            case cache.rows V.!? y of
-                Just row | clean, V.length row == cols ->
-                    pure (row, cache.gens V.! y)
-                _ -> do
-                    row <- V.generateM cols $ \x ->
-                        let cellp = out `plusPtr` ((y * cols + x) * shimCellSize)
-                        in peekShimCell (shareVals ci)
-                            (graphemeMarks t tagActive x y) cellp
-                    pure (row, cache.nextGen)
-        let (grid, gens) = V.unzip tagged
-        writeIORef cacheRef GridCache
-            { rows = grid, gens, nextGen = cache.nextGen + 1 }
-        pure (grid, gens)
+        -- The cache serves clean rows only at matching dimensions; every row
+        -- in it was built at one snapshot's width, so checking the first
+        -- covers them all.
+        let fits = V.length cache.rows == rows
+                && (rows == 0 || V.length (V.head cache.rows) == cols)
+        _ <- c_render_snapshot rp t (fromIntegral cols) (fromIntegral rows)
+                out dirty (if fits then 0 else 1)
+        let anyDirty y
+                | y >= rows = pure False
+                | otherwise = do
+                    d <- peekElemOff dirty y :: IO Word8
+                    if d /= 0 then pure True else anyDirty (y + 1)
+        rebuild <- if fits then anyDirty 0 else pure True
+        if not rebuild
+            then pure (cache.rows, cache.gens)
+            else do
+                tagged <- V.generateM rows $ \y -> do
+                    clean <- (== 0) <$> (peekElemOff dirty y :: IO Word8)
+                    if fits && clean
+                        then pure (cache.rows V.! y, cache.gens V.! y)
+                        else do
+                            row <- V.generateM cols $ \x ->
+                                let cellp = out `plusPtr`
+                                        ((y * cols + x) * shimCellSize)
+                                in peekShimCell (shareVals ci)
+                                    (graphemeMarks t tagActive x y) cellp
+                            pure (row, cache.nextGen)
+                let (grid, gens) = V.unzip tagged
+                writeIORef cacheRef GridCache
+                    { rows = grid, gens, nextGen = cache.nextGen + 1 }
+                pure (grid, gens)
 
 -- | Hand the shim's cell array (@rows*cols@ cells) and per-row dirty flags
 -- from the reusable staging buffer, growing it if the grid outgrew it. Only

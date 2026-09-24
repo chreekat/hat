@@ -112,6 +112,16 @@ spec = do
             | i <- [0 .. V.length g2 - 1]
             , g2 V.!? i == g1 V.!? i ]
 
+    it "serves every row of a resized grid, cache primed or not" $ do
+        e <- newEmulator Size { rows = 6, cols = 20 } 100
+        _ <- feedStr e "aaa\r\nbbb\r\nccc"
+        _ <- snapshot e                 -- prime the row cache at the old size
+        resize e Size { rows = 12, cols = 40 }
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` "aaa"
+        rowText scr 1 `shouldBe` "bbb"
+        rowText scr 2 `shouldBe` "ccc"
+
     it "puts plain text on the first row" $ do
         e <- new80x24
         _ <- feedStr e "hello"

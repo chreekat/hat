@@ -98,7 +98,7 @@ foreign import ccall unsafe "ghost_shim_render_free"
     c_render_free :: Ptr CRender -> IO ()
 foreign import ccall safe "ghost_shim_render_snapshot"
     c_render_snapshot :: Ptr CRender -> Ptr CTerm -> CUShort -> CUShort
-                      -> Ptr () -> Ptr Word8 -> IO CInt
+                      -> Ptr () -> Ptr Word8 -> CUChar -> IO CInt
 foreign import ccall unsafe "ghost_shim_pen"
     c_pen :: Ptr CTerm -> Ptr () -> IO CInt
 foreign import ccall unsafe "ghost_shim_encode_key"
