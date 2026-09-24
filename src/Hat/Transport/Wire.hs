@@ -77,7 +77,6 @@ import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
 import Network.Socket (Socket)
 import Network.Socket.ByteString qualified as SB
-import Network.Socket.ByteString.Lazy qualified as SBL
 
 import Hat.Geometry
 import Hat.Term.Cell
@@ -387,7 +386,9 @@ sendPayload sock payload = do
             , fromIntegral (n `shiftR` 8 .&. 0xff)
             , fromIntegral (n .&. 0xff)
             ]
-    SBL.sendAll sock (BL.fromChunks [header, payload])
+    -- One contiguous buffer, one write: a frame is small and per-frame
+    -- syscalls outweigh the copy.
+    SB.sendAll sock (header <> payload)
 
 -- | 'Nothing' means the peer closed the connection.
 recvMessage :: WireMessage a => Socket -> IO (Maybe (Inbound a))
