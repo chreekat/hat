@@ -15,25 +15,29 @@ module Hat.Server.View
     , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as V
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
+import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.Flash (startLingerClock)
+import Hat.Server.Format (formatReadsTree)
+import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
      windowFlags)
@@ -172,7 +176,8 @@ renderOnce st client = do
                         (Nothing, Just t) ->
                             pure (Just (fromMaybe bottomIx mStatusRowIx, toastCells t.text w))
                         (Nothing, Nothing) -> case mStatusRowIx of
-                            Just ix -> Just . (,) ix <$> statusCells st sess w
+                            Just ix -> Just . (,) ix
+                                <$> statusCellsCached st client sess w
                             Nothing -> pure Nothing
             let (withStatus, statusOrigins) = case mBarRow of
                     Just (ix, cells) ->
@@ -578,41 +583,88 @@ promptCursorCol pr = T.length pr.promptLabel + pr.cursor
 
 statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
 statusCells st sess width = do
+    (opts, env, wins) <- gatherStatus st sess
+    renderStatus st opts env wins width
+
+-- | 'statusCells' through the client's render-side cache: the row is
+-- re-expanded only when something its expansion consumes changed —
+-- including the clock, at second granularity. Bypassed inside a hook's
+-- ambient context, and for formats that read the live tree
+-- ('formatReadsTree'), where the inputs cannot be enumerated.
+statusCellsCached
+    :: ServerState -> Client -> Session -> Int -> IO (V.Vector Cell.Cell)
+statusCellsCached st client sess width = do
+    tid <- myThreadId
+    mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+    (opts, env, wins) <- gatherStatus st sess
+    shells <- readTVarIO st.shellCache
+    sec <- floor <$> getPOSIXTime
+    mc <- readIORef client.lastStatus
+    let plain = case mc of
+            Just c | samePtr c.opts opts -> c.plain
+            _ -> not $ any formatReadsTree
+                [ opts.statusLeft, opts.statusRight
+                , opts.windowStatusFormat, opts.windowStatusCurrentFormat ]
+    case mc of
+        Just c | isNothing mamb, plain
+               , samePtr c.opts opts, samePtr c.shells shells
+               , c.second == sec, c.width == width
+               , c.env == env, c.wins == wins -> pure c.rowCells
+        _ -> do
+            row <- renderStatus st opts env wins width
+            when (isNothing mamb) $ writeIORef client.lastStatus $
+                Just StatusCache
+                    { opts, shells, second = sec, width
+                    , env, wins, plain, rowCells = row }
+            pure row
+
+-- | Everything the status row's expansion consumes, read fresh: the
+-- resolved options, the session's format environment, and each window's
+-- entry inputs (index, name, flags, active clients, current, bell).
+gatherStatus
+    :: ServerState -> Session
+    -> IO (Options, Map.Map Text Text, [(Int, Text, Text, Int, Bool, Bool)])
+gatherStatus st sess = do
     opts <- readTVarIO st.options
     env <- sessionFormatEnv st sess
-    let leftFmt = opts.statusLeft
-        rightFmt = opts.statusRight
-    entries <- do
-        ws <- readTVarIO sess.windows
-        cur <- readTVarIO sess.currentIx
-        mlast <- listToMaybe <$> readTVarIO sess.windowHist
-        counts <- atomically (activeClientCounts st)
-        forM (Map.toAscList ws) $ \(ix, win) -> do
-            (wname, bell, act, sil, zoom) <- atomically $ (,,,,)
-                <$> readTVar win.name <*> readTVar win.bellFlag
-                <*> readTVar win.activity <*> readTVar win.silenceFlag
-                <*> readTVar win.zoomed
-            let flags = windowFlags WindowFlagState
-                    { flagCurrent = ix == cur
-                    , flagLast = Just ix == mlast
-                    , flagBell = bell
-                    , flagActivity = act
-                    , flagSilence = sil
-                    , flagZoomed = isJust zoom
-                    }
-                activeClients = Map.findWithDefault 0 win.id counts
-                wenv = Map.union (Map.fromList
-                    [ ("window_index", tshow ix)
-                    , ("window_name", wname)
-                    , ("window_flags", flags)
-                    , ("window_active_clients", tshow activeClients)
-                    ]) env
-                fmt = windowEntryFormat opts (ix == cur)
-                style = windowEntryStyle opts (ix == cur) bell
-            txt <- expandFormat st wenv fmt
-            pure (txt, style)
-    left <- expandFormat st env leftFmt
-    right <- expandFormat st env rightFmt
+    ws <- readTVarIO sess.windows
+    cur <- readTVarIO sess.currentIx
+    mlast <- listToMaybe <$> readTVarIO sess.windowHist
+    counts <- atomically (activeClientCounts st)
+    wins <- forM (Map.toAscList ws) $ \(ix, win) -> do
+        (wname, bell, act, sil, zoom) <- atomically $ (,,,,)
+            <$> readTVar win.name <*> readTVar win.bellFlag
+            <*> readTVar win.activity <*> readTVar win.silenceFlag
+            <*> readTVar win.zoomed
+        let flags = windowFlags WindowFlagState
+                { flagCurrent = ix == cur
+                , flagLast = Just ix == mlast
+                , flagBell = bell
+                , flagActivity = act
+                , flagSilence = sil
+                , flagZoomed = isJust zoom
+                }
+        pure ( ix, wname, flags
+             , Map.findWithDefault 0 win.id counts, ix == cur, bell )
+    pure (opts, env, wins)
+
+-- | Expand and lay the status row from gathered inputs; see 'statusCells'.
+renderStatus
+    :: ServerState -> Options -> Map.Map Text Text
+    -> [(Int, Text, Text, Int, Bool, Bool)] -> Int
+    -> IO (V.Vector Cell.Cell)
+renderStatus st opts env wins width = do
+    entries <- forM wins $ \(ix, wname, flags, activeClients, isCur, bell) -> do
+        let wenv = Map.union (Map.fromList
+                [ ("window_index", tshow ix)
+                , ("window_name", wname)
+                , ("window_flags", flags)
+                , ("window_active_clients", tshow activeClients)
+                ]) env
+        txt <- expandFormat st wenv (windowEntryFormat opts isCur)
+        pure (txt, windowEntryStyle opts isCur bell)
+    left <- expandFormat st env opts.statusLeft
+    right <- expandFormat st env opts.statusRight
     pure (assembleStatusRow opts width left right entries)
 
 -- | The style a window's status entry takes: the current window uses

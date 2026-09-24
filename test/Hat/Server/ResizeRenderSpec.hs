@@ -45,6 +45,7 @@ mkClient sz lastFrame = do
     frameV  <- newIORef lastFrame
     originsV <- newIORef V.empty
     chromeV <- newIORef Nothing
+    statusV <- newIORef Nothing
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef ""
     fullV   <- newTVarIO False
@@ -61,6 +62,7 @@ mkClient sz lastFrame = do
             , ready = readyV, keyState = keyV, escState = escV
             , lastFrame = frameV, lastOrigins = originsV
             , lastChrome = chromeV
+            , lastStatus = statusV
             , lastCursor = curV, lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, outerFocused = focusV, envImport = envImpV

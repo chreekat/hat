@@ -12,6 +12,7 @@ module Hat.Server.Format
     , evaluateCtx
     , renderFormat
     , renderFormatCtx
+    , formatReadsTree
     ) where
 
 import Data.Array qualified as A
@@ -420,6 +421,21 @@ collectMods = List.foldl' step emptyModState
                 (listToMaybe [o | (c, o) <- table, T.elem c a1])
             , sortR = T.elem 'r' a1
             }
+
+-- | Whether a format may read beyond its own variables: a loop
+-- (@S:@\/@W:@\/@P:@\/@L:@), a name check (@N@), or a visible-content
+-- search (@C@) reaches into the live server tree, so its expansion is
+-- not a function of the caller's environment alone. Conservative — text
+-- that merely resembles such a modifier also answers True.
+formatReadsTree :: Text -> Bool
+formatReadsTree t = case T.breakOn "#{" t of
+    (_, rest)
+        | T.null rest -> False
+        | otherwise -> any (`T.isInfixOf` rest)
+            [ tok <> d
+            | tok <- ["S", "W", "P", "L", "N", "C"]
+            , d <- [":", "/", ";"]
+            ]
 
 -- Key replacement (format_replace): parse modifiers, produce the base
 -- value, then apply the value transformations. Nothing = failed replace.

@@ -14,6 +14,7 @@ module Hat.Model
     , ClientRole (..)
     , RowOrigin (..)
     , ChromeCache (..)
+    , StatusCache (..)
     , EnvImport (..)
     , StartupPhase (..)
     , AcceptGate (..)
@@ -446,6 +447,23 @@ data ChromeCache = ChromeCache
     , chrome  :: Chrome
     }
 
+-- | A client's rendered status row with everything its expansion
+-- consumed; the render thread's cache. See
+-- 'Hat.Server.View.statusCellsCached'.
+-- Fields are strict so the identity-matched ones hold the very objects
+-- they were built from, never a selector thunk 'samePtr' would miss on.
+data StatusCache = StatusCache
+    { opts    :: !Options                    -- ^ matched by object identity
+    , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
+    , second  :: !Int                        -- ^ POSIX second of the render
+    , width   :: !Int
+    , env     :: !(Map Text Text)
+    , wins    :: ![(Int, Text, Text, Int, Bool, Bool)]
+        -- ^ per window: index, name, flags, active clients, current, bell
+    , plain   :: !Bool  -- ^ no format reads the tree; see 'Hat.Server.Format.formatReadsTree'
+    , rowCells :: !(V.Vector Cell.Cell)
+    }
+
 data Client = Client
     { id        :: ClientId
     , role      :: ClientRole
@@ -465,6 +483,7 @@ data Client = Client
     , lastOrigins :: IORef (V.Vector RowOrigin)
         -- ^ what produced each row of 'lastFrame'; render thread only
     , lastChrome :: IORef (Maybe ChromeCache)  -- render thread only
+    , lastStatus :: IORef (Maybe StatusCache)  -- render thread only
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool
