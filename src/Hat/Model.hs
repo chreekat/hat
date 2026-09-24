@@ -204,6 +204,9 @@ data Window = Window
         -- ^ when set, the name tracks the active pane's foreground command
         -- (@automatic-rename@); an explicit @rename-window@ clears it.
     , options    :: TVar OptionsDelta  -- ^ window-scoped set-option; see 'resolveForWindow'
+    , arrangeCache :: TVar (Maybe ((Rect, Layout), ([(PaneId, Rect)], [(Pos, Char)])))
+        -- ^ the last layout arrangement, keyed by its inputs; see
+        -- 'Hat.Server.Resize.windowArrange'
     }
 
 data Pane = Pane

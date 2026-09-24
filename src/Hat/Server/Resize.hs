@@ -160,12 +160,22 @@ rectSize r = Size
     , cols = fromIntegral (max 1 (r.endCol - r.startCol))
     }
 
--- | Pane rects and borders for a window, honoring zoom.
+-- | Pane rects and borders for a window, honoring zoom. Arranging is
+-- pure in the window rect and the layout tree, so the last result is
+-- kept until either input changes — renderers hit this every frame.
 windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
 windowArrange eff win = do
     mz <- readTVar win.zoomed
     lay <- readTVar win.layout
     ps <- readTVar win.panes
-    pure $ case mz of
-        Just zpid | Map.member zpid ps -> ([(zpid, sizeRect eff)], [])
-        _ -> arrange (sizeRect eff) lay
+    case mz of
+        Just zpid | Map.member zpid ps -> pure ([(zpid, sizeRect eff)], [])
+        _ -> do
+            let rect = sizeRect eff
+            hit <- readTVar win.arrangeCache
+            case hit of
+                Just (k, res) | k == (rect, lay) -> pure res
+                _ -> do
+                    let res = arrange rect lay
+                    writeTVar win.arrangeCache (Just ((rect, lay), res))
+                    pure res

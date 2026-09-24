@@ -112,6 +112,7 @@ addWindow sess n = do
         <*> newTVarIO Nothing
         <*> newTVarIO True
         <*> newTVarIO emptyDelta
+        <*> newTVarIO Nothing
     atomically $ modifyTVar' sess.windows (Map.insert n win)
     pure win
 

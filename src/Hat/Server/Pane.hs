@@ -186,6 +186,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     optionsVar    <- newTVarIO emptyDelta
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
+    arrangeVar    <- newTVarIO Nothing
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -201,6 +202,7 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , zoomed = zoomVar
             , autoRename = autoRenameVar
             , options = optionsVar
+            , arrangeCache = arrangeVar
             }
     pure (win, pane)
   where
@@ -954,6 +956,7 @@ wrapPaneInWindow st pane = do
     optionsVar <- newTVarIO emptyDelta
     silenceVar <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
+    arrangeVar <- newTVarIO Nothing
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -969,6 +972,7 @@ wrapPaneInWindow st pane = do
         , zoomed = zoomVar
         , autoRename = autoRenameVar
         , options = optionsVar
+        , arrangeCache = arrangeVar
         }
 
 -- | @-O@: whether pane output is tapped into the process's stdin.

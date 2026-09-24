@@ -125,6 +125,7 @@ rebuildWindow st mkPane sz cwin = do
     optionsVar    <- newTVarIO emptyDelta
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
+    arrangeVar    <- newTVarIO Nothing
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
@@ -132,5 +133,6 @@ rebuildWindow st mkPane sz cwin = do
             , paneHist = paneHistVar, bellFlag = bellVar
             , activity = activityVar, zoomed = zoomVar
             , silenceFlag = silenceVar, activityAt = activityAtVar
-            , autoRename = autoRenameVar, options = optionsVar }
+            , autoRename = autoRenameVar, options = optionsVar
+            , arrangeCache = arrangeVar }
     pure (win, panes)

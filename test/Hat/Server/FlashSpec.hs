@@ -97,6 +97,7 @@ splitWindow = do
         <*> newTVarIO Nothing
         <*> newTVarIO True
         <*> newTVarIO emptyDelta
+        <*> newTVarIO Nothing
     mapM_
         (\n -> do
             p <- flashStubPane (PaneId n)
