@@ -186,6 +186,7 @@ newClient st conn h = do
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame h.size)
     originsVar <- newIORef V.empty
+    chromeVar <- newIORef Nothing
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef ""
     fullVar <- newTVarIO True
@@ -214,6 +215,7 @@ newClient st conn h = do
         , escState = escVar
         , lastFrame = frameVar
         , lastOrigins = originsVar
+        , lastChrome = chromeVar
         , lastCursor = cursorVar
         , lastCursorColour = cursorColourVar
         , needsFull = fullVar

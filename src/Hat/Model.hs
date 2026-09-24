@@ -13,6 +13,7 @@ module Hat.Model
     , Client (..)
     , ClientRole (..)
     , RowOrigin (..)
+    , ChromeCache (..)
     , EnvImport (..)
     , StartupPhase (..)
     , AcceptGate (..)
@@ -86,14 +87,14 @@ import Hat.Log (Logger)
 import Hat.Model.Ids
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( Keymap, Options, OptionsDelta, applyDelta, defaultOptions, emptyDelta
-    , resolveOptions )
+    ( BorderIndicators, BorderLines, Keymap, Options, OptionsDelta, applyDelta
+    , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
-import Hat.Server.Render (Frame, RowOrigin (..))
+import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -431,6 +432,17 @@ data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
 data ReadGate = ReadersFlowing | ReadersPaused
     deriving (Eq, Show)
 
+-- | A client's styled border cells with the inputs that produced them;
+-- the render thread's cache. See 'Hat.Server.View.renderOnce'.
+data ChromeCache = ChromeCache
+    { borders :: [(Pos, Char)]
+    , active  :: Maybe Rect
+    , rowOff  :: Int
+    , look    :: (BorderLines, BorderIndicators, Cell.Style, Cell.Style)
+    , cells   :: [(Pos, Cell.Cell)]
+    , chrome  :: Chrome
+    }
+
 data Client = Client
     { id        :: ClientId
     , role      :: ClientRole
@@ -449,6 +461,7 @@ data Client = Client
     , lastFrame :: IORef Frame        -- render thread only
     , lastOrigins :: IORef (V.Vector RowOrigin)
         -- ^ what produced each row of 'lastFrame'; render thread only
+    , lastChrome :: IORef (Maybe ChromeCache)  -- render thread only
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool

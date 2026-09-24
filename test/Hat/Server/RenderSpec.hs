@@ -117,15 +117,17 @@ spec = do
                 in diffFrameKnown known old new === diffFrame old new
 
     prop "composeRows equals borders-then-overlays composition" $
-        forAll genCompose $ \(chrome, layers) ->
+        forAll genCompose $ \(cells, layers) ->
             let legacy = foldl (\acc l -> overlayGrid acc l.rect l.cells)
-                    (applyBorders (blankFrame smallSize) chrome) layers
+                    (applyBorders (blankFrame smallSize) cells) layers
+                chrome = chromeFromCells cells
             in fst (composeRows smallSize chrome layers V.empty V.empty)
                 === legacy
 
     prop "reuses a previous row exactly when provenance matches" $
-        forAll genCompose $ \(chrome, layers) ->
-            let (f1, o1) = composeRows smallSize chrome layers V.empty V.empty
+        forAll genCompose $ \(cells, layers) ->
+            let chrome = chromeFromCells cells
+                (f1, o1) = composeRows smallSize chrome layers V.empty V.empty
                 poison = V.map (V.map (const (glyphCell '!' defaultStyle))) f1
                 (f2, o2) = composeRows smallSize chrome layers poison o1
             in conjoin

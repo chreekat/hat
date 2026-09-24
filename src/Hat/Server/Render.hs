@@ -13,6 +13,8 @@ module Hat.Server.Render
     , PaneSlice (..)
     , sameOrigin
     , PaneLayer (..)
+    , Chrome (..)
+    , chromeFromCells
     , composeRows
     , overlayGrid
     , applyBorders
@@ -84,9 +86,10 @@ data RowOrigin = VolatileRow | ComposedRow [RowSpan]
     deriving Show
 
 -- | One contribution to a composed frame row, in draw order: the chrome
--- cells stamped beneath the panes, or one pane's slice.
+-- stamped beneath the panes — carried as its row's 'Chrome' generation,
+-- 0 when the row has no chrome cells at all — or one pane's slice.
 data RowSpan
-    = ChromeSpan [(Int, Cell)]
+    = ChromeSpan Int
     | PaneSpan PaneSlice
     deriving (Eq, Show)
 
@@ -116,6 +119,24 @@ data PaneLayer = PaneLayer
     }
     deriving Show
 
+-- | A frame's chrome (border) cells, grouped by row and stamped: two
+-- 'Chrome's with the same generation hold the same cells everywhere, so
+-- a row's chrome contribution is pinned by the generation alone. See
+-- 'Hat.Server.View.renderOnce' for the cache that maintains the stamp.
+data Chrome = Chrome
+    { gen :: Int
+    , byRow :: Map.Map Int [(Int, Cell)]
+    }
+    deriving Show
+
+-- | Chrome from bare positioned cells, as a one-off (generation 1).
+chromeFromCells :: [(Pos, Cell)] -> Chrome
+chromeFromCells cells = Chrome
+    { gen = 1
+    , byRow = Map.fromListWith (<>)
+        [ (p.row, [(p.col, cell)]) | (p, cell) <- cells ]
+    }
+
 -- | Compose a client frame row by row — chrome cells onto blanks, then
 -- each pane's slice in draw order — reusing the previous frame's row
 -- wherever the row's provenance matches ('sameOrigin'): a matched row is
@@ -124,23 +145,23 @@ data PaneLayer = PaneLayer
 -- without stamps, a stale stamp during a resize) come out 'VolatileRow'
 -- and are always recomposed.
 composeRows
-    :: Size -> [(Pos, Cell)] -> [PaneLayer]
+    :: Size -> Chrome -> [PaneLayer]
     -> Frame -> V.Vector RowOrigin
     -> (Frame, V.Vector RowOrigin)
 composeRows sz chrome layers old oldOrigins = (frame, origins)
   where
     rowsN = fromIntegral sz.rows
     colsN = fromIntegral sz.cols
-    chromeBy = Map.fromListWith (<>)
-        [ (p.row, [(p.col, cell)]) | (p, cell) <- chrome ]
-    chromeAt r = Map.findWithDefault [] r chromeBy
+    chromeAt r = Map.findWithDefault [] r chrome.byRow
+    -- Chrome-free rows stamp 0: a border change elsewhere leaves them be.
+    chromeSpan r = ChromeSpan (if null (chromeAt r) then 0 else chrome.gen)
     layersAt r = [ l | l <- layers, r >= l.rect.startRow, r < l.rect.endRow ]
     -- Rows and origins are forced as they are built: a lazily reused row
     -- would otherwise chain thunks onto the previous frame's rows for as
     -- long as it stays unread.
     origins = V.fromListN rowsN
         [ o | r <- [0 .. rowsN - 1], let !o = mkOrigin r ]
-    mkOrigin r = maybe VolatileRow (ComposedRow . (ChromeSpan (chromeAt r) :))
+    mkOrigin r = maybe VolatileRow (ComposedRow . (chromeSpan r :))
         (traverse (paneSpan r) (layersAt r))
     paneSpan r l = do
         gens <- l.gens

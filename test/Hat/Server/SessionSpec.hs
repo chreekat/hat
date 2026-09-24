@@ -134,6 +134,7 @@ addClient st sid sz stamp = do
         <*> newIORef NoEscPending
         <*> newIORef (blankFrame sz)
         <*> newIORef V.empty
+        <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef ""
         <*> newTVarIO True
@@ -170,6 +171,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef NoEscPending
         <*> newIORef (blankFrame (Size 24 80))
         <*> newIORef V.empty
+        <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef ""
         <*> newTVarIO True

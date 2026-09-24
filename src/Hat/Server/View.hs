@@ -139,14 +139,15 @@ renderOnce st client = do
                         pure [(pidL, pv)]
             prevFrame <- readIORef client.lastFrame
             prevOrigins <- readIORef client.lastOrigins
+            chrome <- cachedChrome client opts (List.lookup active rects)
+                rowOff borders
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect rect
                                 , cells = pv.cells, gens = pv.rowGens }
                     | (pidL, rect) <- rects
                     , Just pv <- [Map.lookup pidL paneViews] ]
                 (base, baseOrigins) = composeRows csize
-                    (borderCells opts (List.lookup active rects) rowOff borders)
-                    layers prevFrame prevOrigins
+                    chrome layers prevFrame prevOrigins
             mflash <- readTVarIO client.flash
             scheme <- readTVarIO st.colorScheme
             let (flashed, flashedOrigins)
@@ -359,6 +360,29 @@ paneOrigin :: [(PaneId, Rect)] -> PaneId -> Pos
 paneOrigin rects pidL = case List.lookup pidL rects of
     Just r -> Pos { row = r.startRow, col = r.startCol }
     Nothing -> Pos 0 0
+
+-- | 'borderCells' through the client's render-side cache: recomputed
+-- only when an input changes, and restamped only when the cells
+-- themselves differ — an unchanged border set keeps its 'Chrome'
+-- generation, so every row's chrome provenance stays matchable.
+cachedChrome
+    :: Client -> Options -> Maybe Rect -> Int -> [(Pos, Char)] -> IO Chrome
+cachedChrome client opts mActive rowOff borders = do
+    mcc <- readIORef client.lastChrome
+    let look = ( opts.paneBorderLines, opts.paneBorderIndicators
+               , opts.paneBorderStyle, opts.paneActiveBorderStyle )
+    case mcc of
+        Just cc | cc.borders == borders, cc.active == mActive
+                , cc.rowOff == rowOff, cc.look == look -> pure cc.chrome
+        _ -> do
+            let cells = borderCells opts mActive rowOff borders
+                gen
+                    | Just cc <- mcc, cc.cells == cells = cc.chrome.gen
+                    | otherwise = maybe 0 (\cc -> cc.chrome.gen) mcc + 1
+                chrome = Chrome { gen, byRow = (chromeFromCells cells).byRow }
+            writeIORef client.lastChrome $ Just ChromeCache
+                { borders, active = mActive, rowOff, look, cells, chrome }
+            pure chrome
 
 -- | Turn @arrange@'s raw border glyphs into styled cells: the active
 -- pane's border takes @pane-active-border-style@ (when
