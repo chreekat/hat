@@ -20,6 +20,7 @@ module Hat.Server.Keys
     , flushEscape
     , parseKeyName
     , namedKeys
+    , namedKeyBytes
     , extendedKeyCode
     , routeKeys
     ) where
@@ -72,6 +73,10 @@ namedKeys =
     -- tmux-256color kf1..kf4 are the SS3 forms.
     , ("F1", "\ESCOP"), ("F2", "\ESCOQ"), ("F3", "\ESCOR"), ("F4", "\ESCOS")
     ] ++ [ (nm, "\ESC[" <> code <> "~") | (code, nm) <- fkeyTildes ]
+
+-- | 'namedKeys' as a map, for the per-keystroke forwarding lookup.
+namedKeyBytes :: Map Text ByteString
+namedKeyBytes = Map.fromList namedKeys
 
 -- CSI tilde codes for F5-F12 (tmux-256color kf5..kf12).
 fkeyTildes :: [(ByteString, Text)]

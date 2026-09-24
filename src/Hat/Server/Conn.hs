@@ -493,7 +493,7 @@ reencodeKey memu key = case arrowOf key.name of
       , Just emu <- memu -> do
         enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
         pure (maybe key (\bs -> key { raw = bs }) enc)
-      | Just canon <- lookup key.name namedKeys -> pure key { raw = canon }
+      | Just canon <- Map.lookup key.name namedKeyBytes -> pure key { raw = canon }
     _ -> pure key
   where
     arrowOf n = case n of
