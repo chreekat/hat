@@ -1,3 +1,5 @@
+{-# LANGUAGE MagicHash #-}
+
 -- | Frame composition and diffing: pane grids in, 'DrawOp's out.
 --
 -- The server keeps the last frame sent to each client and sends only
@@ -6,8 +8,13 @@ module Hat.Server.Render
     ( Frame
     , blankFrame
     , composeFrame
+    , RowOrigin (..)
+    , RowSpan (..)
+    , PaneSlice (..)
+    , sameOrigin
+    , PaneLayer (..)
+    , composeRows
     , overlayGrid
-    , overlayGridRows
     , applyBorders
     , tintInnerRing
     , diffFrame
@@ -15,11 +22,15 @@ module Hat.Server.Render
     , fullRedraw
     ) where
 
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import GHC.Exts (isTrue#, reallyUnsafePtrEquality#)
 
 import Hat.Geometry
+import Hat.Model.Ids (PaneId)
 import Hat.Term.Cell
 import Hat.Transport.Wire (DrawOp (..))
 
@@ -44,33 +55,113 @@ composeFrame sz grid = V.generate (fromIntegral sz.rows) $ \r ->
 -- through as-is, so unchanged rows stay pointer-equal for reuse checks
 -- downstream.
 overlayGrid :: Frame -> Rect -> V.Vector (V.Vector Cell) -> Frame
-overlayGrid frame rect grid = fst (overlayGridRows frame rect grid)
-
--- | 'overlayGrid', also naming which rows the grid supplied whole as
--- @(frame row, grid row)@ pairs — the rows whose cells in the result ARE
--- the grid's, so a caller can tie them back to the grid's provenance.
-overlayGridRows
-    :: Frame -> Rect -> V.Vector (V.Vector Cell)
-    -> (Frame, [(Int, Int)])
-overlayGridRows frame rect grid = (frame V.// updates, taken)
+overlayGrid frame rect grid = frame V.// updates
   where
-    updates = [ (r, row) | (r, row, _) <- overlaid ]
-    taken = [ (r, r - rect.startRow) | (r, _, whole) <- overlaid, whole ]
-    overlaid =
-        [ (r, row, whole)
+    updates =
+        [ (r, overlayRowAt rect grid r (frame V.! r))
         | r <- [max 0 rect.startRow .. min (V.length frame) rect.endRow - 1]
-        , let (row, whole) = overlayRow r (frame V.! r)
         ]
-    overlayRow r frameRow
-        | Just srcRow <- grid V.!? (r - rect.startRow)
-        , rect.startCol == 0, rect.endCol >= V.length frameRow
-        , V.length srcRow == V.length frameRow = (srcRow, True)
-        | otherwise = (V.imap (overlayCell src) frameRow, False)
-      where
-        src = maybe V.empty (\x -> x) (grid V.!? (r - rect.startRow))
-    overlayCell src c cell
+
+-- See 'overlayGrid' for the clipping and pass-through rules.
+overlayRowAt :: Rect -> V.Vector (V.Vector Cell) -> Int -> V.Vector Cell -> V.Vector Cell
+overlayRowAt rect grid r frameRow
+    | Just srcRow <- msrc
+    , rect.startCol == 0, rect.endCol >= V.length frameRow
+    , V.length srcRow == V.length frameRow = srcRow
+    | otherwise = V.imap overlayCell frameRow
+  where
+    msrc = grid V.!? (r - rect.startRow)
+    src = fromMaybe V.empty msrc
+    overlayCell c cell
         | c < rect.startCol || c >= rect.endCol = cell
-        | otherwise = maybe blankCell (\x -> x) (src V.!? (c - rect.startCol))
+        | otherwise = fromMaybe blankCell (src V.!? (c - rect.startCol))
+
+-- | What produced one row of a client's composed frame: the ordered
+-- contributions 'composeRows' laid onto it, or anything else. Two equal
+-- span lists promise equal cells; 'VolatileRow' promises nothing, so
+-- 'RowOrigin' has no 'Eq' — matching is 'sameOrigin'.
+data RowOrigin = VolatileRow | ComposedRow [RowSpan]
+    deriving Show
+
+-- | One contribution to a composed frame row, in draw order: the chrome
+-- cells stamped beneath the panes, or one pane's slice.
+data RowSpan
+    = ChromeSpan [(Int, Cell)]
+    | PaneSpan PaneSlice
+    deriving (Eq, Show)
+
+-- | Which pane row (at which generation stamp,
+-- 'Hat.Term.Emulator.snapshotWithGens') supplied cols @[from, to)@.
+data PaneSlice = PaneSlice
+    { pane :: PaneId
+    , prow :: Int
+    , gen  :: Int
+    , from :: Int
+    , to   :: Int
+    }
+    deriving (Eq, Show)
+
+-- | Whether two rows' provenance proves their cells equal.
+sameOrigin :: RowOrigin -> RowOrigin -> Bool
+sameOrigin (ComposedRow a) (ComposedRow b) = a == b
+sameOrigin _ _ = False
+
+-- | One pane's contribution to 'composeRows': where it sits, its cells,
+-- and their generation stamps when the cells are a plain snapshot.
+data PaneLayer = PaneLayer
+    { pane  :: PaneId
+    , rect  :: Rect
+    , cells :: V.Vector (V.Vector Cell)
+    , gens  :: Maybe (V.Vector Int)
+    }
+    deriving Show
+
+-- | Compose a client frame row by row — chrome cells onto blanks, then
+-- each pane's slice in draw order — reusing the previous frame's row
+-- wherever the row's provenance matches ('sameOrigin'): a matched row is
+-- the old frame's very vector, never recomposed, and the caller's diff
+-- may skip it unread. Rows whose provenance promises nothing (a pane
+-- without stamps, a stale stamp during a resize) come out 'VolatileRow'
+-- and are always recomposed.
+composeRows
+    :: Size -> [(Pos, Cell)] -> [PaneLayer]
+    -> Frame -> V.Vector RowOrigin
+    -> (Frame, V.Vector RowOrigin)
+composeRows sz chrome layers old oldOrigins = (frame, origins)
+  where
+    rowsN = fromIntegral sz.rows
+    colsN = fromIntegral sz.cols
+    chromeBy = Map.fromListWith (<>)
+        [ (p.row, [(p.col, cell)]) | (p, cell) <- chrome ]
+    chromeAt r = Map.findWithDefault [] r chromeBy
+    layersAt r = [ l | l <- layers, r >= l.rect.startRow, r < l.rect.endRow ]
+    -- Rows and origins are forced as they are built: a lazily reused row
+    -- would otherwise chain thunks onto the previous frame's rows for as
+    -- long as it stays unread.
+    origins = V.fromListN rowsN
+        [ o | r <- [0 .. rowsN - 1], let !o = mkOrigin r ]
+    mkOrigin r = maybe VolatileRow (ComposedRow . (ChromeSpan (chromeAt r) :))
+        (traverse (paneSpan r) (layersAt r))
+    paneSpan r l = do
+        gens <- l.gens
+        g <- gens V.!? (r - l.rect.startRow)
+        pure $ PaneSpan PaneSlice
+            { pane = l.pane, prow = r - l.rect.startRow, gen = g
+            , from = max 0 l.rect.startCol, to = min colsN l.rect.endCol }
+    frame = V.fromListN rowsN
+        [ row | r <- [0 .. rowsN - 1], let !row = rowAt r ]
+    rowAt r = case old V.!? r of
+        Just prev
+            | V.length prev == colsN
+            , sameOrigin (origins V.! r)
+                (fromMaybe VolatileRow (oldOrigins V.!? r)) -> prev
+        _ -> composeRow r
+    blankRow = V.replicate colsN blankCell
+    composeRow r = List.foldl' paneOver chromed (layersAt r)
+      where
+        chromed = blankRow V.//
+            [ (c, cell) | (c, cell) <- chromeAt r, c < colsN ]
+        paneOver row l = overlayRowAt l.rect l.cells r row
 
 -- | Stamp pre-styled border cells onto a frame. The caller chooses each
 -- cell's glyph (per @pane-border-lines@) and style (per the pane-border
@@ -107,15 +198,22 @@ diffFrame = diffFrameKnown (\_ -> False)
 
 -- | 'diffFrame' skipping — without comparing — rows the caller knows are
 -- equal in both frames. The predicate must be true only for rows whose
--- cells genuinely match, or the screen keeps stale content.
+-- cells genuinely match, or the screen keeps stale content. A row that is
+-- the same vector in both frames (compose reuse) is skipped outright.
 diffFrameKnown :: (Int -> Bool) -> Frame -> Frame -> [DrawOp]
 diffFrameKnown known old new = concat
     [ rowOps r oldRow newRow
     | (r, newRow) <- zip [0 ..] (V.toList new)
-    , not (known r)
     , let oldRow = maybe V.empty id (old V.!? r)
+    , not (sameVector oldRow newRow)
+    , not (known r)
     , oldRow /= newRow
     ]
+
+-- | Object identity: True only for the very same heap object, which
+-- makes equality certain without reading it. False proves nothing.
+sameVector :: V.Vector Cell -> V.Vector Cell -> Bool
+sameVector a b = isTrue# (reallyUnsafePtrEquality# a b)
 
 rowOps :: Int -> V.Vector Cell -> V.Vector Cell -> [DrawOp]
 rowOps r oldRow newRow = runsToOps r newRow (widenChanged newRow changed)

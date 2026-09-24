@@ -1,9 +1,9 @@
 # Fitted slope per series; `bench-report check` trips outside the band.
 tolerance 0.20
 slack 20000
-hat restart client 247
-hat restart server 71497
-hat type client 54694
-hat type server 520578
-hat typeh client 54604
-hat typeh server 21594445
+hat restart client 226
+hat restart server 68960
+hat type client 51211
+hat type server 620204
+hat typeh client 57008
+hat typeh server 1789518

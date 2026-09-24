@@ -129,28 +129,24 @@ renderOnce st client = do
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
                     }
-                base0 = applyBorders (blankFrame csize)
-                    (borderCells opts (List.lookup active rects) rowOff borders)
             -- Snapshot each visible pane once; its cells and its cursor both
-            -- come from that one read (the active pane was snapshotted twice).
+            -- come from that one read.
             paneViews <- fmap (Map.fromList . concat) $ forM rects $ \(pidL, _) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure []
                     Just pane -> do
                         pv <- paneView st pane
                         pure [(pidL, pv)]
-            let overlayPane (acc, origs) (pidL, rect) =
-                    case Map.lookup pidL paneViews of
-                        Nothing -> (acc, origs)
-                        Just pv ->
-                            let (acc', taken) =
-                                    overlayGridRows acc (shiftRect rect) pv.cells
-                            in (acc', origs V.//
-                                [ (fr, PaneRowAt pidL gr (gens V.! gr))
-                                | Just gens <- [pv.rowGens]
-                                , (fr, gr) <- taken, gr < V.length gens ])
-                (base, baseOrigins) = List.foldl' overlayPane
-                    (base0, V.replicate (V.length base0) VolatileRow) rects
+            prevFrame <- readIORef client.lastFrame
+            prevOrigins <- readIORef client.lastOrigins
+            let layers =
+                    [ PaneLayer { pane = pidL, rect = shiftRect rect
+                                , cells = pv.cells, gens = pv.rowGens }
+                    | (pidL, rect) <- rects
+                    , Just pv <- [Map.lookup pidL paneViews] ]
+                (base, baseOrigins) = composeRows csize
+                    (borderCells opts (List.lookup active rects) rowOff borders)
+                    layers prevFrame prevOrigins
             mflash <- readTVarIO client.flash
             scheme <- readTVarIO st.colorScheme
             let (flashed, flashedOrigins)
@@ -217,8 +213,7 @@ renderOnce st client = do
     -- dimension change.
     let full = fullFlag || frameDims old /= frameDims frame'
         known r = case (oldOrigins V.!? r, origins' V.!? r) of
-            (Just (PaneRowAt p pr g), Just (PaneRowAt p' pr' g')) ->
-                p == p' && pr == pr' && g == g'
+            (Just a, Just b) -> sameOrigin a b
             _ -> False
         ops = if full then fullRedraw frame' else diffFrameKnown known old frame'
         cursorOp = CursorAt (fst cursor') (snd cursor')

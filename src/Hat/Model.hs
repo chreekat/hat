@@ -93,7 +93,7 @@ import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
-import Hat.Server.Render (Frame)
+import Hat.Server.Render (Frame, RowOrigin (..))
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -427,13 +427,6 @@ data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
 -- 'ReadersPaused' parks them all. See 'Hat.Server.Pane.pauseReaders'.
 data ReadGate = ReadersFlowing | ReadersPaused
     deriving (Eq, Show)
-
--- | What produced one row of a client's composed frame: a pane row the
--- grid supplied whole — @(pane, pane row, generation)@ — or anything
--- else. No 'Eq': two 'VolatileRow's say nothing about their cells, so
--- equality is the consumer's judgement. See 'Hat.Server.View.renderOnce'.
-data RowOrigin = VolatileRow | PaneRowAt PaneId Int Int
-    deriving Show
 
 data Client = Client
     { id        :: ClientId

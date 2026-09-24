@@ -7,6 +7,7 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
 import Hat.Geometry
+import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Render
 import Hat.Term.Cell
 import Hat.Transport.Wire (DrawOp (..))
@@ -45,6 +46,25 @@ genOverlay = do
     gc <- chooseInt (0, 15)
     grid <- V.replicateM gr (V.replicateM gc genCell)
     pure (frame, rect, grid)
+
+-- Chrome cells plus pane layers, gens sometimes absent (copy mode).
+genCompose :: Gen ([(Pos, Cell)], [PaneLayer])
+genCompose = do
+    nLayers <- chooseInt (0, 3)
+    layers <- mapM genLayer [1 .. nLayers]
+    nChrome <- chooseInt (0, 10)
+    chrome <- vectorOf nChrome $ (,)
+        <$> (Pos <$> chooseInt (0, 5) <*> chooseInt (0, 11))
+        <*> genCell
+    pure (chrome, layers)
+  where
+    genLayer i = do
+        (_, rect, grid) <- genOverlay
+        stamped <- arbitrary
+        gens <- V.fromList <$> vectorOf (V.length grid) (chooseInt (0, 5))
+        pure PaneLayer
+            { pane = PaneId i, rect, cells = grid
+            , gens = if stamped then Just gens else Nothing }
 
 -- Reference interpreter: what a (single-width) terminal would show
 -- after executing the ops.
@@ -96,18 +116,22 @@ spec = do
                 let known r = old V.!? r == new V.!? r && coins !! r
                 in diffFrameKnown known old new === diffFrame old new
 
-    prop "overlayGridRows reports rows taken whole from the grid" $
-        forAll genOverlay $ \(frame, rect, grid) ->
-            let (out, taken) = overlayGridRows frame rect grid
-            in conjoin
-                [ out V.! fr === grid V.! gr | (fr, gr) <- taken ]
-                .&&. (out === overlayGrid frame rect grid)
+    prop "composeRows equals borders-then-overlays composition" $
+        forAll genCompose $ \(chrome, layers) ->
+            let legacy = foldl (\acc l -> overlayGrid acc l.rect l.cells)
+                    (applyBorders (blankFrame smallSize) chrome) layers
+            in fst (composeRows smallSize chrome layers V.empty V.empty)
+                === legacy
 
-    it "reports every row of an exact-fit overlay" $ do
-        let grid = V.replicate 3 (V.replicate 4 (glyphCell 'g' defaultStyle))
-            frame = blankFrame Size { rows = 3, cols = 4 }
-            rect = Rect { startRow = 0, endRow = 3, startCol = 0, endCol = 4 }
-        snd (overlayGridRows frame rect grid) `shouldBe` [(0, 0), (1, 1), (2, 2)]
+    prop "reuses a previous row exactly when provenance matches" $
+        forAll genCompose $ \(chrome, layers) ->
+            let (f1, o1) = composeRows smallSize chrome layers V.empty V.empty
+                poison = V.map (V.map (const (glyphCell '!' defaultStyle))) f1
+                (f2, o2) = composeRows smallSize chrome layers poison o1
+            in conjoin
+                [ f2 V.! r === (if sameOrigin (o1 V.! r) (o2 V.! r)
+                                    then poison else f1) V.! r
+                | r <- [0 .. V.length f1 - 1] ]
 
     prop "overlays a grid clipped to both rect and frame" $
         forAll genOverlay $ \(frame, rect, grid) ->
