@@ -40,7 +40,7 @@ opBuilder :: DrawOp -> BB.Builder
 opBuilder = \case
     ClearAll -> BB.byteString "\ESC[0m\ESC[2J\ESC[H"
     Put pos st txt ->
-        moveTo pos <> BB.byteString (sgr st) <> BB.byteString (TE.encodeUtf8 txt)
+        moveTo pos <> sgrBuilder st <> TE.encodeUtf8Builder txt
     CursorAt pos _visible -> moveTo pos
 
 moveTo :: Pos -> BB.Builder
@@ -50,7 +50,10 @@ moveTo p = BB.byteString "\ESC["
 
 -- | Full SGR for a style, starting from reset so runs are independent.
 sgr :: Style -> ByteString
-sgr st = BL.toStrict . BB.toLazyByteString $
+sgr = BL.toStrict . BB.toLazyByteString . sgrBuilder
+
+sgrBuilder :: Style -> BB.Builder
+sgrBuilder st =
     BB.byteString "\ESC[0"
     <> flag st.bold 1
     <> flag st.faint 2
