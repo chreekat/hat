@@ -87,6 +87,7 @@ library
         Hat.Model.Ids
         Hat.Model.Options
         Hat.Path
+        Hat.PtrEq
         Hat.Server
         Hat.Server.ClientIO
         Hat.Server.ColorScheme

@@ -245,6 +245,7 @@ fakeSession = do
     environVar <- newTVarIO emptyEnviron
     cwdVar <- newTVarIO "/"
     optionsVar <- newTVarIO emptyDelta
+    resolvedVar <- newTVarIO Nothing
     pure Session
         { id = SessionId 9
         , name = nameVar
@@ -255,6 +256,7 @@ fakeSession = do
         , environ = environVar
         , startCwd = cwdVar
         , options = optionsVar
+        , resolvedOptions = resolvedVar
         }
 
 -- A waiter needs a client only for its name; the lightest real one will do.

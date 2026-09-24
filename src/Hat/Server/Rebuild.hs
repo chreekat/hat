@@ -82,11 +82,13 @@ rebuildSession st env mkPane csess = do
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack csess.startCwd)
         optionsVar <- newTVarIO emptyDelta
+        resolvedVar <- newTVarIO Nothing
         let sess = Session
                 { id = sid, name = nameVar, windows = windowsVar
                 , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
-                , startCwd = cwdVar, options = optionsVar }
+                , startCwd = cwdVar, options = optionsVar
+                , resolvedOptions = resolvedVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
             forM_ panes (startPaneReader st sid win)

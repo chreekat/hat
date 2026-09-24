@@ -73,6 +73,7 @@ addSession st n = do
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
         <*> newTVarIO emptyDelta
+        <*> newTVarIO Nothing
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId n) sess)
     pure sess
 
@@ -91,6 +92,7 @@ seedSession start = do
         <*> newTVarIO emptyEnviron
         <*> newTVarIO start
         <*> newTVarIO emptyDelta
+        <*> newTVarIO Nothing
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 

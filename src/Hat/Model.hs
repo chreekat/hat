@@ -94,6 +94,7 @@ import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName)
+import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
@@ -138,6 +139,7 @@ data ServerState = ServerState
     , globalSessionOptions :: TVar OptionsDelta   -- ^ see 'resolveForSession'
     , globalWindowOptions :: TVar OptionsDelta     -- ^ see 'resolveForWindow'
     , schemeOptions :: TVar OptionsDelta            -- ^ see 'resolveGlobal'
+    , resolvedGlobal :: TVar (Maybe ResolvedOpts)   -- ^ see 'memoResolve'
     , globalEnviron :: TVar Environ
         -- ^ server-wide variables (@set-environment -g@, config @NAME=value@
         --   lines); see 'Hat.Server.sessionSpawnEnv' for how they reach panes.
@@ -185,6 +187,7 @@ data Session = Session
     , environ  :: TVar Environ           -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
+    , resolvedOptions :: TVar (Maybe ResolvedOpts)  -- ^ see 'memoResolve'
     }
 
 data Window = Window
@@ -505,6 +508,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO emptyDelta  -- globalSessionOptions
     <*> newTVarIO emptyDelta  -- globalWindowOptions
     <*> newTVarIO emptyDelta  -- schemeOptions
+    <*> newTVarIO Nothing     -- resolvedGlobal
     <*> newTVarIO emptyEnviron
     <*> newTVarIO defaultKeymap
     <*> newTVarIO Seq.empty
@@ -552,7 +556,30 @@ resolveGlobal st = do
     gs <- readTVar st.globalSessionOptions
     sv <- readTVar st.serverOptions
     sc <- readTVar st.schemeOptions
-    pure (resolveOptions [gw, gs, sv, sc])
+    memoResolve st.resolvedGlobal [gw, gs, sv, sc]
+
+-- | An options resolution held with the delta objects it was computed
+-- from; see 'memoResolve'.
+data ResolvedOpts = ResolvedOpts
+    { deltas :: [OptionsDelta]
+    , opts   :: Options
+    }
+
+-- | @resolveOptions deltas@ through a memo: served from the cache when
+-- every delta is the very object of the previous resolution, so any
+-- set-option that writes a scope's TVar naturally misses.
+memoResolve :: TVar (Maybe ResolvedOpts) -> [OptionsDelta] -> STM Options
+memoResolve cache deltas = do
+    hit <- readTVar cache
+    case hit of
+        Just r | sameDeltas r.deltas deltas -> pure r.opts
+        _ -> do
+            let o = resolveOptions deltas
+            writeTVar cache (Just ResolvedOpts { deltas, opts = o })
+            pure o
+  where
+    sameDeltas (a : as) (b : bs) = samePtr a b && sameDeltas as bs
+    sameDeltas as bs = null as && null bs
 
 -- | Resolve the effective options for a session: its own set-option overlay
 -- shadows the global chain, so a bare @set@ affects only that session.
@@ -563,7 +590,7 @@ resolveForSession st sess = do
     gs <- readTVar st.globalSessionOptions
     sv <- readTVar st.serverOptions
     sc <- readTVar st.schemeOptions
-    pure (resolveOptions [s, gw, gs, sv, sc])
+    memoResolve sess.resolvedOptions [s, gw, gs, sv, sc]
 
 -- | Resolve the effective options for a window: its window overlay and its
 -- session's overlay shadow the global chain (window options and session
@@ -571,12 +598,7 @@ resolveForSession st sess = do
 resolveForWindow :: ServerState -> Session -> Window -> STM Options
 resolveForWindow st sess win = do
     w <- readTVar win.options
-    s <- readTVar sess.options
-    gw <- readTVar st.globalWindowOptions
-    gs <- readTVar st.globalSessionOptions
-    sv <- readTVar st.serverOptions
-    sc <- readTVar st.schemeOptions
-    pure (resolveOptions [w, s, gw, gs, sv, sc])
+    applyDelta w <$> resolveForSession st sess
 
 -- | Resolve the effective options for one pane: its own overlay (@set -p@)
 -- shadows its window's chain.
