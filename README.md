@@ -45,8 +45,8 @@ this is not your multiplexer.
 
 ## Why Hat
 
-- **Built to be upgraded.** Your programs outlive Hat itself: its version,
-  its server process, even the machine's uptime.
+- **Built to be upgraded.** Your running programs survive an upgrade, and your
+  sessions survive a reboot.
   - *`hat restart` upgrades in place.* The server `exec`s a new binary and
     hands over every pane's pty, child process, screen, and scrollback;
     attached clients re-exec along with it. Your shells, editors, and
