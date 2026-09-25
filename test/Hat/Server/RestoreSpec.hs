@@ -235,9 +235,12 @@ spec = do
 
     -- A reloaded session must come back at its captured window area, not a
     -- 24x80 placeholder (bug 4b).
+    --
+    -- Only the slave is ours to close: the adopted pane's Handle owns the
+    -- master and closes it when collected.
     describe "reload session size" $
         it "rebuilds a reloaded session at its captured window area" $
-            bracket openPseudoTerminal (\(m, s) -> closeFd m >> closeFd s) $
+            bracket openPseudoTerminal (\(_, s) -> closeFd s) $
                 \(m, _) -> do
             st <- testState
             let lay = emitLayout
