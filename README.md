@@ -47,21 +47,10 @@ this is not your multiplexer.
 
 - **Built to be upgraded.** Your running programs survive an upgrade, and your
   sessions survive a reboot.
-  - *`hat restart` upgrades in place.* The server `exec`s a new binary and
-    hands over every pane's pty, child process, screen, and scrollback;
-    attached clients re-exec along with it. Your shells, editors, and
-    long-running jobs never notice. With tmux, upgrading means killing
-    everything.
-  - *Sessions survive reboots.* The server continuously mirrors the
-    session/window/pane tree (names, layouts, working directories) into
-    SQLite. Relaunch after `kill-server` or a reboot and it's all back, with
-    editors, pagers, and monitors re-run in place. Past trees are kept as
-    history you can browse and restore. No tmux-resurrect, no save key.
-  - *Versioned from day one.* Everything one Hat version hands another (the
-    client/server protocol, the SQLite store, and the restart handover) is
-    versioned and pinned by golden test corpora. The protocol and store
-    tolerate both older and newer peers; the handover only older ones, for
-    now (see the warning above). [CLAUDE.md](CLAUDE.md) has the rules.
+  - `hat restart` upgrades in place.
+  - Sessions survive reboots.
+  - Everything one version hands another is versioned from day one
+    ([CLAUDE.md](CLAUDE.md) has the rules).
 - **libghostty-vt inside.** Each pane is emulated by Ghostty's VT core, so
   what renders in a pane is what renders in Ghostty, and it's fast.
 - **Follows your desktop theme.** On GNOME (or anything exposing its
