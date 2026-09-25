@@ -46,9 +46,7 @@ this is not your multiplexer.
 ## Why Hat
 
 - **libghostty-vt inside.** Each pane is emulated by Ghostty's VT core, so
-  what renders in a pane is what renders in Ghostty, and it's fast. The
-  renderer on top diffs frames by row provenance, so a busy pane doesn't
-  repaint the screen.
+  what renders in a pane is what renders in Ghostty, and it's fast.
 - **`hat restart` upgrades in place.** The server `exec`s a new binary and
   hands over every pane's pty, child process, screen, and scrollback; attached
   clients re-exec along with it. Your shells, editors, and
