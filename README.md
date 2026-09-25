@@ -115,9 +115,8 @@ hat restart-server ./hat       # ...or a specific binary
 hat restart-server -C          # drop scrollback across the handover
 ```
 
-`restart` is an alias. If the new binary can't read the handover (say, a
-downgrade across a format change), it falls back to a clean restart and
-closes the old panes — it never leaves orphaned processes.
+`restart` is an alias. Any version can hand over to any other, older or
+newer.
 
 ### Persistence
 
