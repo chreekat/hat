@@ -31,6 +31,7 @@ dealbreaker for you, this is not your multiplexer.
 > predates the running one can't read the handover, falls back to a clean
 > restart, and kills every pane. Upgrades are fine. Until this is fixed, don't
 > restart into an older build with running programs you care about.
+> Tracked in [#1](https://github.com/chreekat/hat/issues/1).
 
 ## Why HAT
 
@@ -137,8 +138,8 @@ On by default; `HAT_PERSIST=0` in the server's environment turns it off.
   arguments. Set the whitelist (space-separated) with
   `set -g @restore-commands "vim nvim less htop"`; the default covers common
   editors, pagers, and monitors.
-- Scrollback is not persisted across a server exit (only across
-  `hat restart`).
+- Scrollback is not persisted across a server exit, only across
+  `hat restart` ([#2](https://github.com/chreekat/hat/issues/2)).
 - `list-snapshots` shows the stored history generations; `restore-snapshot N`
   recreates one beside the current tree, renaming sessions whose names are
   taken. Keep `N` generations with `set -g @snapshot-limit N` (default 10;
