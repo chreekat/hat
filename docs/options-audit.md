@@ -1,6 +1,6 @@
 # Options behavior audit
 
-A living catalog of every option HAT accepts, tracking whether the stored value
+A living catalog of every option Hat accepts, tracking whether the stored value
 *actually drives the behavior tmux gives it* — not merely that it parses and
 lands in an `Options` field. Built so we never re-derive "which option is
 unimplemented / easiest to pick off next": read this table, pick a row, fix it.

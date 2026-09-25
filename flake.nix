@@ -1,5 +1,5 @@
 {
-  description = "HAT — a terminal multiplexer";
+  description = "Hat — a terminal multiplexer";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
