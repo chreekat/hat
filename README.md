@@ -18,8 +18,10 @@ The author supplied the features wanted, the architecture and testing
 principles ([ARCHITECTURE.md](ARCHITECTURE.md), [CLAUDE.md](CLAUDE.md)), and a
 lot of close back-and-forth — but reviewed very little of the code line by
 line. What keeps it honest is the test suite: unit, property, and integration
-tests that drive the real binary through a pty, plus tmux's own `regress/`
-suite run against HAT. If LLM-written code is a dealbreaker for you, this is
+tests that drive the real binary through a pty; tmux's own `regress/` suite
+run against HAT; and a performance gate that counts instructions retired per
+unit of work (keystrokes typed, scrollback lines carried across a restart), so
+a regression shows up the same on any machine. If LLM-written code is a dealbreaker for you, this is
 not your multiplexer.
 
 ## Why HAT
@@ -167,6 +169,8 @@ set -g @color-scheme-light ~/.config/hat/light.conf
 
 Read [CLAUDE.md](CLAUDE.md) first: build and test norms (everything through
 `cabal` inside `nix develop`; `cabal test` for the suite,
-`tools/run-upstream-tests.sh ~/src/tmux` for tmux's), and the
+`cabal bench hat-perf` for the performance gate against
+`tools/bench/perf-baseline`, `tools/run-upstream-tests.sh ~/src/tmux` for
+tmux's), and the
 compatibility rules any change to a serialized format must follow. Design is
 in [ARCHITECTURE.md](ARCHITECTURE.md), scope in [FEATURES.md](FEATURES.md).
