@@ -69,7 +69,7 @@ check, and **add a row whenever you introduce a new one**:
 |---|---|---|---|
 | Client ↔ server wire | `Hat.Transport.Wire` | Versions exchanged, both speak `min` (`negotiate`); window = every version ≥ floor 4, forever. Append-only CBOR tags; leaves grow under a new dialect level, encoded per-peer. Unknown tag → skip; `Malformed` → fatal. | golden-byte + dialect corpus in `WireSpec` |
 | Persistence store | `Hat.Server.Persist` (SQLite) | Additive schema: core columns never change meaning; evolving fields ride a per-row `extra` JSON column; DDL additive only; reads default anything absent and ignore the unknown (never gate on `schema_version`). The live tables always hold the newest tree; `snapshot` history rows carry whole trees as JSON evolved under the same tolerant rule. | `PersistSpec` "schema compatibility" |
-| Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload. The tree rides inside as the store's snapshot JSON, evolving under the store's additive rule; the era gates only the hot core (fds, pids, modes, screens). A build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. | `ReloadSpec` corpus |
+| Reload handover | `Hat.Server.Reload` | Frozen envelope (`magic`, `reloadEra`, and a version-independent cleanup core of fds) around an era-tagged payload. The tree rides inside as the store's snapshot JSON, evolving under the store's additive rule; the era gates only the hot core (fds, pids, modes, screens). A build decodes-and-migrates every era `1..X`; a newer/undecodable payload → clean restart, never orphaned processes. Reading a *newer* era is the goal but not built yet ([#1](https://github.com/chreekat/hat/issues/1)): until then a downgrade ends every pane. | `ReloadSpec` corpus |
 
 Two valid mechanisms, both delivering the same guarantee (a new build reads old
 data): **additive schema** — one lenient reader handles old *and* new, both
@@ -119,3 +119,20 @@ migration, and a corpus vector.
 Same spirit as the compatibility rule: the system must never look like it did
 something it didn't. A config option or command we don't implement FAILS LOUDLY
 (a visible error) — it is never silently stored or ignored.
+
+## Say each thing once, at its own level
+
+Code, comments, commit messages, and PR descriptions are read at different
+distances. Each says what only it can, and none repeats another.
+
+- **Code explains itself.** Names and structure carry the *what*; don't
+  restate them in prose anywhere else.
+- **Comments explain the *why*** — the constraint, invariant, or hazard the
+  code can't show. Not what the line does, not how the bug was found, not
+  the history of the change.
+- **Commit messages describe *the change*** — what it does and why it's
+  needed. Not the bigger picture (that's the PR), not a walk through the
+  diff (that's the diff).
+- **PR descriptions are the executive summary** of the feature or fix: what
+  it is and why it matters, in a few sentences. Not a list of the commits,
+  not a replay of the investigation or the test log.
