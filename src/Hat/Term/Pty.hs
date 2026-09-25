@@ -101,9 +101,9 @@ spawn s = do
     -- Wrap the master fd FIRST: hSetBuffering NoBuffering on a terminal
     -- handle does a hidden tcsetattr (GHC's setRaw clears ICANON, sets
     -- MIN=1/TIME=0), and a pty pair shares one termios — so this clobbers
-    -- the pane's line discipline. Doing it before the spawn makes the
-    -- child's own tcsetattr (hat_spawn_pty) strictly last; racing it was
-    -- the source of panes coming up non-canonical under load.
+    -- the pane's line discipline. Doing it before the spawn makes
+    -- hat_spawn_pty's tcsetattr strictly last; racing it was the source of
+    -- panes coming up non-canonical under load.
     h <- fdToHandle mFd
     hSetBuffering h NoBuffering
     let Fd m = mFd
