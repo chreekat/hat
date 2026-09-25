@@ -45,24 +45,25 @@ this is not your multiplexer.
 
 ## Why Hat
 
+- **Built to be upgraded.** Your programs outlive Hat itself: its version,
+  its server process, even the machine's uptime.
+  - *`hat restart` upgrades in place.* The server `exec`s a new binary and
+    hands over every pane's pty, child process, screen, and scrollback;
+    attached clients re-exec along with it. Your shells, editors, and
+    long-running jobs never notice. With tmux, upgrading means killing
+    everything.
+  - *Sessions survive reboots.* The server continuously mirrors the
+    session/window/pane tree (names, layouts, working directories) into
+    SQLite. Relaunch after `kill-server` or a reboot and it's all back, with
+    editors, pagers, and monitors re-run in place. Past trees are kept as
+    history you can browse and restore. No tmux-resurrect, no save key.
+  - *Versioned from day one.* Everything one Hat version hands another (the
+    client/server protocol, the SQLite store, and the restart handover) is
+    versioned and pinned by golden test corpora. The protocol and store
+    tolerate both older and newer peers; the handover only older ones, for
+    now (see the warning above). [CLAUDE.md](CLAUDE.md) has the rules.
 - **libghostty-vt inside.** Each pane is emulated by Ghostty's VT core, so
   what renders in a pane is what renders in Ghostty, and it's fast.
-- **`hat restart` upgrades in place.** The server `exec`s a new binary and
-  hands over every pane's pty, child process, screen, and scrollback; attached
-  clients re-exec along with it. Your shells, editors, and
-  long-running jobs never notice. With tmux, upgrading means killing
-  everything.
-- **Sessions survive reboots.** The server continuously mirrors the
-  session/window/pane tree (names, layouts, working directories) into SQLite.
-  Relaunch after `kill-server` or a reboot and it's all back, with editors,
-  pagers, and monitors re-run in place. Past trees are kept as history
-  you can browse and restore. No tmux-resurrect, no save key.
-- **Built to be upgraded.** The three things one binary version hands another
-  — the client/server protocol, the SQLite store, and the restart handover —
-  are all versioned and pinned by golden test corpora. The protocol and store
-  tolerate both older and newer peers; the handover only older ones, for now
-  (see the warning above). The previous two points are only safe because of this; see
-  [CLAUDE.md](CLAUDE.md) for the rules.
 - **Follows your desktop theme.** On GNOME (or anything exposing its
   `color-scheme` setting), Hat restyles its own chrome when you flip
   light/dark, sources a per-scheme config of yours, and tells apps that
