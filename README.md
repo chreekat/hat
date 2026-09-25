@@ -84,6 +84,13 @@ this is not your multiplexer.
 - **September** — performance: frame diffing, the emulator bridge, and a
   much faster `hat restart`.
 
+A personal note on libghostty-vt: it's hilarious to me that I found out about
+it, and about Mitchell Hashimoto's new Superlogical, about two weeks after
+starting Hat. I've watched the retvrn to the console over the last decade with
+delight, and I'm happy that terminal multiplexers are apparently a hot thing
+right now. Let's all benefit from each other. libghostty-vt is fast,
+featureful, bug-free, and easy to use.
+
 ## Getting started
 
 Hat builds with Nix. To try it:
