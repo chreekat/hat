@@ -2,8 +2,8 @@
 
 A tmux-compatible terminal multiplexer, written in Haskell around
 [libghostty-vt](https://github.com/ghostty-org/ghostty). It reads your
-`tmux.conf`, can replace its own binary without killing your programs, and
-brings your sessions back after a reboot.
+`tmux.conf`, can be upgraded in place without interrupting your programs,
+and brings your sessions back after a reboot.
 
 ## Status
 
