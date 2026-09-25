@@ -79,12 +79,14 @@ this is not your multiplexer.
 
 ## Getting started
 
-Hat builds with Nix. To try it:
+Hat builds with Nix or Cabal. To try it on x86_64 or aarch64:
 
 ```sh
 nix run github:chreekat/hat                       # start a server if needed, and attach
 nix run github:chreekat/hat -- -f ~/.tmux.conf    # ...using your tmux config
 ```
+
+...or clone and use cabal.
 
 For a static musl binary you can copy to any Linux machine,
 `nix build github:chreekat/hat#hat-static` — but expect it to take hours: with
