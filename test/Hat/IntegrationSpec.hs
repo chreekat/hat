@@ -162,14 +162,19 @@ teardown h = do
 
 -- Run a hat control command with the isolated HOME so it never resolves
 -- the ambient user config (even when it autostarts a server).
+-- Bounded, so a command a wedged server never answers fails the test (with
+-- the server log) instead of hanging the whole suite.
 hatCtl :: Hat -> [String] -> IO (ExitCode, String, String)
 hatCtl h args = do
     path <- testPath
-    P.readCreateProcessWithExitCode
+    r <- timeout 30_000_000 $ P.readCreateProcessWithExitCode
         (P.proc h.bin (["-S", h.sock] <> args))
             { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
             , P.close_fds = True }
         ""
+    maybe (expectationFailure ("hat " <> unwords args <> ": no reply in 30s")
+            >> pure (ExitFailure 1, "", ""))
+          pure r
 
 -- Stdout of a hat control command.
 ctlOut :: Hat -> [String] -> IO String
