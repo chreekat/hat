@@ -91,7 +91,8 @@ nix run github:chreekat/hat -- -f ~/.tmux.conf    # ...using your tmux config
 ```
 
 For a static musl binary you can copy to any Linux machine,
-`nix build github:chreekat/hat#hat-static`.
+`nix build github:chreekat/hat#hat-static` — but expect it to take hours: with
+nothing cached, it builds GHC from source.
 
 The defaults are tmux's: prefix `C-b`, `d` detach, `c` new window, `%`/`"`
 split, `[` copy mode, `:` command prompt. Commands also work from a shell:
