@@ -83,19 +83,15 @@ dealbreaker for you, this is not your multiplexer.
 
 ## Getting started
 
-HAT builds with Nix.
+HAT builds with Nix. To try it:
 
 ```sh
-nix build github:chreekat/hat               # ./result/bin/hat
-nix build github:chreekat/hat#hat-static    # static musl binary; scp it anywhere
+nix run github:chreekat/hat                       # start a server if needed, and attach
+nix run github:chreekat/hat -- -f ~/.tmux.conf    # ...using your tmux config
 ```
 
-Then:
-
-```sh
-hat                      # start a server if needed, and attach
-hat -f ~/.tmux.conf      # ...using your tmux config
-```
+To keep it, `nix profile install github:chreekat/hat`. For a static musl
+binary you can copy to any Linux machine, `nix build github:chreekat/hat#hat-static`.
 
 The defaults are tmux's: prefix `C-b`, `d` detach, `c` new window, `%`/`"`
 split, `[` copy mode, `:` command prompt. Commands also work from a shell:
