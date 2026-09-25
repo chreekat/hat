@@ -115,8 +115,7 @@ hat restart-server ./hat       # ...or a specific binary
 hat restart-server -C          # drop scrollback across the handover
 ```
 
-`restart` is an alias. Any version can hand over to any other, older or
-newer.
+`restart` is an alias. A new build takes over from any older one.
 
 ### Persistence
 
