@@ -21,8 +21,16 @@ line. What keeps it honest is the test suite: unit, property, and integration
 tests that drive the real binary through a pty; tmux's own `regress/` suite
 run against HAT; and a performance gate that counts instructions retired per
 unit of work (keystrokes typed, scrollback lines carried across a restart), so
-a regression shows up the same on any machine. If LLM-written code is a dealbreaker for you, this is
-not your multiplexer.
+a regression shows up the same on any machine. If LLM-written code is a
+dealbreaker for you, this is not your multiplexer.
+
+> [!WARNING]
+> While updating this README, we found that the forward-compatibility
+> principle had been miscommunicated, and **server downgrades are currently
+> broken**: `hat restart` into an *older* binary whose handover format
+> predates the running one can't read the handover, falls back to a clean
+> restart, and kills every pane. Upgrades are fine. Until this is fixed, don't
+> restart into an older build with running programs you care about.
 
 ## Why HAT
 
@@ -30,9 +38,9 @@ not your multiplexer.
   what renders in a pane is what renders in Ghostty, and it's fast. The
   renderer on top diffs frames by row provenance, so a busy pane doesn't
   repaint the screen.
-- **`hat restart-server` upgrades in place.** The server `exec`s a new binary
-  and hands over every pane's pty, child process, screen, and scrollback;
-  attached clients re-exec along with it. Your shells, editors, and
+- **`hat restart` upgrades in place.** The server `exec`s a new binary and
+  hands over every pane's pty, child process, screen, and scrollback; attached
+  clients re-exec along with it. Your shells, editors, and
   long-running jobs never notice. With tmux, upgrading means killing
   everything.
 - **Sessions survive reboots.** The server continuously mirrors the
@@ -42,8 +50,9 @@ not your multiplexer.
   you can browse and restore. No tmux-resurrect, no save key.
 - **Built to be upgraded.** The three things one binary version hands another
   — the client/server protocol, the SQLite store, and the restart handover —
-  are all versioned and tolerant of older and newer peers, pinned by golden
-  test corpora. The previous two points are only safe because of this; see
+  are all versioned and pinned by golden test corpora. The protocol and store
+  tolerate both older and newer peers; the handover only older ones, for now
+  (see the warning above). The previous two points are only safe because of this; see
   [CLAUDE.md](CLAUDE.md) for the rules.
 - **Follows your desktop theme.** On GNOME (or anything exposing its
   `color-scheme` setting), HAT restyles its own chrome when you flip
@@ -66,11 +75,11 @@ not your multiplexer.
   Daily use starts that week.
 - **July** — copy mode, the command prompt, full tmux.conf compatibility,
   resurrect primitives; then continuous SQLite persistence (07-13) and
-  in-place `restart-server` (07-17).
+  in-place restart (07-17).
 - **2026-08-02** — libvterm swapped for libghostty-vt behind the same seam.
 - **August** — hooks and alerts, snapshot history, desktop theme following.
 - **September** — performance: frame diffing, the emulator bridge, and a
-  much faster `restart-server`.
+  much faster `hat restart`.
 
 ## Getting started
 
@@ -112,12 +121,15 @@ Invocation flags are `-f`, `-L`, `-S`, and `-C` (control mode, partial).
 ### Upgrading in place
 
 ```sh
-hat restart-server             # re-exec the `hat` found on PATH
-hat restart-server ./hat       # ...or a specific binary
-hat restart-server -C          # drop scrollback across the handover
+hat restart             # re-exec the server and every attached client
+                        # into the `hat` found on PATH
+hat restart ./hat       # ...or into a specific binary
+hat restart -C          # drop scrollback across the handover
 ```
 
-`restart` is an alias. A new build takes over from any older one.
+A new build takes over from any older one (but see the downgrade warning
+under [Status](#status)). `restart-server` and `restart-client` are the
+lower-level halves, restarting only the server or only the current client.
 
 ### Persistence
 
@@ -129,7 +141,7 @@ On by default; `HAT_PERSIST=0` in the server's environment turns it off.
   `set -g @restore-commands "vim nvim less htop"`; the default covers common
   editors, pagers, and monitors.
 - Scrollback is not persisted across a server exit (only across
-  `restart-server`).
+  `hat restart`).
 - `list-snapshots` shows the stored history generations; `restore-snapshot N`
   recreates one beside the current tree, renaming sessions whose names are
   taken. Keep `N` generations with `set -g @snapshot-limit N` (default 10;
