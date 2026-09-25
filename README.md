@@ -21,10 +21,10 @@ line. Good results came from being meticulous about testing strategy and
 from shipping small, user-visible improvements that were immediately
 dog-fooded. The tests are unit, property, and integration tests that drive the
 real binary through a pty; tmux's own `regress/` suite run against Hat; and a
-performance gate that counts instructions retired per
-unit of work (keystrokes typed, scrollback lines carried across a restart), so
-a regression shows up the same on any machine. If LLM-written code is a
-dealbreaker for you, this is not your multiplexer.
+performance gate that counts instructions retired per unit of work (keystrokes
+typed, scrollback lines carried across a restart), so a regression shows up the
+same on any machine. Nonetheless, if LLM-written code is a dealbreaker for you,
+this is not your multiplexer.
 
 > [!WARNING]
 > While updating this README, we found that the forward-compatibility
