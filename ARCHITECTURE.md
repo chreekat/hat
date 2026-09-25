@@ -1,6 +1,6 @@
-# HAT Architecture (rough)
+# Hat Architecture (rough)
 
-A working sketch of how HAT is laid out. This is a *guide*, not a spec —
+A working sketch of how Hat is laid out. This is a *guide*, not a spec —
 expect to revise it as we discover things. The goal is to commit early
 to the few decisions that ripple widely (process model, concurrency
 substrate, interface boundaries) and defer the rest until the code asks
@@ -61,7 +61,7 @@ load-bearing in design choices, not just in code review.
 ## Stability and compatibility (long-term goal)
 
 After a stabilization period — *not* something we sweat during the
-fleshing-out phase — HAT should support:
+fleshing-out phase — Hat should support:
 
 - **Back-compat**: new clients connect to older servers. Upgrade the
   client without touching the running server (i.e., without killing
@@ -187,7 +187,7 @@ Haskell's strength here. The shape:
   must observe a completed resize wait on the same generation.
 - **Threads are the queues.** Tmux has per-client command queues plus a
   global one for the config (`cmd-queue.c`, `cfg.c`), with `if-shell`
-  parking its queue item on a job callback. HAT gets the same semantics
+  parking its queue item on a job callback. Hat gets the same semantics
   from its threads: the config/startup thread *is* the global queue (an
   `if-shell` condition blocking it *is* a parked item — green threads
   make that free), and each connection thread is that client's queue.
@@ -223,7 +223,7 @@ pinned to one OS thread for its lifetime. Use cases that *might* apply:
   `signal()` directly we want the main thread, which is bound by
   default.
 - **Calling libraries that require "same thread for init and use"**
-  (GUI toolkits, mostly). N/A for HAT.
+  (GUI toolkits, mostly). N/A for Hat.
 
 `safe` FFI calls release the RTS so other green threads keep running;
 this is the default we want for `ghostty_terminal_vt_write` because callbacks
@@ -327,7 +327,7 @@ Notable interface boundaries — these are where flexibility lives:
 
 Handy when cross-referencing behavior against upstream:
 
-| HAT module                         | tmux file(s)                                  |
+| Hat module                         | tmux file(s)                                  |
 | ---------------------------------- | --------------------------------------------- |
 | `Main` / `Hat.Client`              | `tmux.c`, `client.c`                          |
 | `Hat.Server.Dispatch` / `.Command.*` | `cmd.c`, `cmd-queue.c`, all `cmd-*.c`       |
@@ -514,7 +514,7 @@ redraw.)**
 
 ## The terminal emulator (strangler-pattern wrap)
 
-This is the part of HAT with the most unknown unknowns. We need
+This is the part of Hat with the most unknown unknowns. We need
 something good enough that vim, less, htop, ncurses apps, fzf, and
 modern shells render correctly. Writing it from scratch in Haskell is
 months of work to reach parity with what already exists in other
@@ -565,7 +565,7 @@ sized-struct accessors rather than a callback-per-cell.
 - [`alacritty_terminal`](https://docs.rs/alacritty_terminal/) (crate
   0.26.0) exposes `Grid` and `Term` as a high-level API and bundles
   `vte` internally. The right shape, but pre-1.0 so expect some churn,
-  and using it means cbindgen + cargo wired into the Nix build of HAT.
+  and using it means cbindgen + cargo wired into the Nix build of Hat.
 - [`alacritty/vte`](https://github.com/alacritty/vte) is the parser
   state machine only — same scope as writing the parser ourselves,
   doesn't save us anything meaningful.
@@ -589,7 +589,7 @@ re-pointed at `libghostty-vt` — bug 17 — touching only this seam. Point 4 he
 
 The wrap interface is the seam. It's *ours*; the underlying emulator
 can be libghostty-vt, libvterm, a Rust crate, or eventually pure Haskell,
-without the rest of HAT noticing.
+without the rest of Hat noticing.
 
 ```haskell
 -- Hat.Term.Emulator
@@ -639,7 +639,7 @@ From the libghostty-vt headers:
 - Output bytes (mouse replies, CPR/DA responses) flow through the write_pty
   callback, accumulated for the PTY-writer thread to pick up.
 
-**Concurrency rule for HAT:** each pane owns its libghostty terminal and is
+**Concurrency rule for Hat:** each pane owns its libghostty terminal and is
 touched by one thread at a time, guarded by an internal `MVar`. The PTY reader
 feeds bytes (callbacks land in a plain `IORef` accumulator inside the feed),
 and snapshot/render read the grid only between whole operations, so the
@@ -655,7 +655,7 @@ the pin keeps a `nix flake update` from swapping it out silently.
 
 ### When (if) we replace libghostty-vt with pure Haskell
 
-Not before we have a working HAT. Maybe never. Triggers that would make
+Not before we have a working Hat. Maybe never. Triggers that would make
 us reconsider:
 - libghostty-vt proves hard to drive from Haskell.
 - We want emulator behavior that libghostty-vt doesn't expose.
@@ -706,7 +706,7 @@ substitution. Start with the subset your status line uses
 
 ## Hooks
 
-HAT copies tmux's hook model directly: hooks are named command lists bound
+Hat copies tmux's hook model directly: hooks are named command lists bound
 with `set-hook` at a scope, and server code fires explicit
 `Hat.Server.Hooks.notify` calls at the events tmux defines. No event bus,
 no publish/subscribe layer.
@@ -746,7 +746,7 @@ Why this and not a more general bus:
 
 ## Save and restore (session persistence)
 
-HAT persists the session/window/pane tree itself, natively, rather than
+Hat persists the session/window/pane tree itself, natively, rather than
 leaning on a tmux-resurrect-style shell script. The server continuously
 mirrors the tree to a per-socket SQLite store and rebuilds it on the next
 start, so killing the server (or `kill-server`) and relaunching brings the
@@ -829,7 +829,7 @@ attachment.
 
 Tmux stores options in `options.c` as an in-memory tree. There's no
 on-disk persistence; options reload from `~/.tmux.conf` on every server
-start. **HAT: same.** No SQLite, no JSON dump. The architecture-defaults
+start. **Hat: same.** No SQLite, no JSON dump. The architecture-defaults
 "prefer SQL where it does the work" rule doesn't apply — there's no SQL
 to do here.
 
@@ -886,7 +886,7 @@ Hackage options surveyed:
 - **`katip`** — production-proven (Soostone, years of use), JSON output,
   pluggable scribes (file, stdout, ElasticSearch).
 - **`co-log`** / **`co-log-json`** — composable contravariant design;
-  elegant but a heavier conceptual surface than HAT needs.
+  elegant but a heavier conceptual surface than Hat needs.
 - **`monad-logger-aeson`** — drop-in JSON replacement for
   `monad-logger`; tied to the persistent ecosystem we won't otherwise
   use.
@@ -917,7 +917,7 @@ logEvent :: Logger -> LogEvent -> IO ()
 
 That module *is* the seam the survey was for: `katip` (or `co-log`) can
 replace the hand-rolled writer without touching a single caller. Pulling
-in a logging framework never paid for itself at HAT's volume.
+in a logging framework never paid for itself at Hat's volume.
 
 ## Configuration loading
 
@@ -998,11 +998,11 @@ Realistic caveats:
   `input.c` agree on most VT220/xterm behavior but not all; when they
   diverge, tmux's test is right by definition (the test was authored
   against tmux's emulator). We allowlist with a note per failure.
-- **`TERM=screen` is hardcoded** in the tests. HAT's exported child
+- **`TERM=screen` is hardcoded** in the tests. Hat's exported child
   env will need to advertise `screen` (or `tmux`) until we ship our
   own terminfo entry.
 - **License hygiene.** Tmux is ISC. We do **not** vendor `regress/`
-  into HAT's repo. The tmux source is a flake input (`tmux-src`, pinned
+  into Hat's repo. The tmux source is a flake input (`tmux-src`, pinned
   to a commit), exposed to the dev shell as `$HAT_TMUX_SRC`, so we stay
   clearly on the "use" side of the line and can track upstream as it
   adds tests.
@@ -1067,6 +1067,6 @@ The flexibility we *are* spending design budget on:
 
 ---
 
-This is the shape HAT was built on. The layering map and the concurrency
+This is the shape Hat was built on. The layering map and the concurrency
 model remain the load-bearing decisions — a change that touches either is
 expensive, while most everything else stays local.

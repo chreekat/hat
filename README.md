@@ -1,4 +1,4 @@
-# HAT
+# Hat
 
 A tmux-compatible terminal multiplexer, written in Haskell around
 [libghostty-vt](https://github.com/ghostty-org/ghostty). It reads your
@@ -7,7 +7,7 @@ and brings your sessions back after a reboot.
 
 ## Status
 
-**Alpha, and daily-driven.** HAT has been its author's only multiplexer since
+**Alpha, and daily-driven.** Hat has been its author's only multiplexer since
 the first week of development, so it is heavily dog-fooded — but by one
 person, against one `tmux.conf`. The scope is literally that config (see
 [FEATURES.md](FEATURES.md)): everything it uses works, and much of tmux beyond
@@ -19,7 +19,7 @@ principles ([ARCHITECTURE.md](ARCHITECTURE.md), [CLAUDE.md](CLAUDE.md)), and a
 lot of close back-and-forth — but reviewed very little of the code line by
 line. What keeps it honest is the test suite: unit, property, and integration
 tests that drive the real binary through a pty; tmux's own `regress/` suite
-run against HAT; and a performance gate that counts instructions retired per
+run against Hat; and a performance gate that counts instructions retired per
 unit of work (keystrokes typed, scrollback lines carried across a restart), so
 a regression shows up the same on any machine. If LLM-written code is a
 dealbreaker for you, this is not your multiplexer.
@@ -33,7 +33,7 @@ dealbreaker for you, this is not your multiplexer.
 > restart into an older build with running programs you care about.
 > Tracked in [#1](https://github.com/chreekat/hat/issues/1).
 
-## Why HAT
+## Why Hat
 
 - **libghostty-vt inside.** Each pane is emulated by Ghostty's VT core, so
   what renders in a pane is what renders in Ghostty, and it's fast. The
@@ -56,13 +56,13 @@ dealbreaker for you, this is not your multiplexer.
   (see the warning above). The previous two points are only safe because of this; see
   [CLAUDE.md](CLAUDE.md) for the rules.
 - **Follows your desktop theme.** On GNOME (or anything exposing its
-  `color-scheme` setting), HAT restyles its own chrome when you flip
+  `color-scheme` setting), Hat restyles its own chrome when you flip
   light/dark, sources a per-scheme config of yours, and tells apps that
   subscribe to theme reports (DEC mode 2031).
 - **Speaks tmux.** Same commands, targets, key tables, format strings,
   `if-shell`, `{ }` blocks, hooks, copy mode (emacs and vi), paste buffers,
   and choose-tree. Point it at your existing `~/.tmux.conf`.
-- **Fails loudly.** An option or command HAT doesn't implement is an error,
+- **Fails loudly.** An option or command Hat doesn't implement is an error,
   never silently accepted — so a config that loads cleanly is a config that
   does what it says.
 
@@ -84,7 +84,7 @@ dealbreaker for you, this is not your multiplexer.
 
 ## Getting started
 
-HAT builds with Nix. To try it:
+Hat builds with Nix. To try it:
 
 ```sh
 nix run github:chreekat/hat                       # start a server if needed, and attach
@@ -101,8 +101,8 @@ split, `[` copy mode, `:` command prompt. Commands also work from a shell:
 
 ## Documentation
 
-HAT has no manual of its own yet. `man tmux` is the reference for commands,
-options, and formats; this section covers where HAT differs or adds.
+Hat has no manual of its own yet. `man tmux` is the reference for commands,
+options, and formats; this section covers where Hat differs or adds.
 
 ### Files and environment
 
@@ -147,7 +147,7 @@ On by default; `HAT_PERSIST=0` in the server's environment turns it off.
 
 ### Theme following
 
-With `gsettings` available, HAT tracks
+With `gsettings` available, Hat tracks
 `org.gnome.desktop.interface color-scheme`. On a change it applies a default
 light or dark palette to its chrome (your own `set` still wins) and sources a
 file of your choosing:
@@ -162,7 +162,7 @@ set -g @color-scheme-light ~/.config/hat/light.conf
 - **Not all of tmux.** Missing entirely: mouse support, `display-popup`,
   `display-menu`, `display-panes`, `find-window`, `list-keys`,
   `synchronize-panes`, OSC 52 clipboard, `window-size`, and
-  `terminal-overrides`. Control mode is partial. Because HAT fails loudly, a
+  `terminal-overrides`. Control mode is partial. Because Hat fails loudly, a
   config using any of these reports an error rather than half-working.
 - **No manual.** The section above plus `man tmux` is it. There is no
   `--help`; unknown arguments are treated as a tmux command.

@@ -1,8 +1,8 @@
-# Contributor & agent guidance for HAT
+# Contributor & agent guidance for Hat
 
 Read alongside `ARCHITECTURE.md` (design + rationale) and `FEATURES.md`
 (scope). Your global/personal rules still apply; this file only adds what is
-specific to HAT.
+specific to Hat.
 
 ## Build, test, run
 
@@ -52,7 +52,7 @@ specific to HAT.
 
 ## Forward/backward compatibility is a first-class concern
 
-HAT is built to keep your running programs alive across upgrades — detach and
+Hat is built to keep your running programs alive across upgrades — detach and
 reattach, continuous persistence, and in-place `restart-server`. Every one of
 those means **data written by one version of the binary is read by another.**
 So any serialized format that crosses a version or process boundary must be

@@ -1,11 +1,11 @@
-# HAT Features
+# Hat Features
 
-A list of features important for HAT to be a viable tmux replacement for *me*
+A list of features important for Hat to be a viable tmux replacement for *me*
 (b@chreekat.net). Derived from `man tmux`, browsing `~/src/tmux` (upstream
 source), and — most importantly — reading my own `~/.tmux.conf` and `~/.tmux/`
 helpers. The config is the ground truth: anything I bind, I use.
 
-Features are grouped by priority. P0 = "if this doesn't work, HAT isn't tmux."
+Features are grouped by priority. P0 = "if this doesn't work, Hat isn't tmux."
 P1 = "I'd notice immediately if it were missing." P2 = "I'd notice within a
 week." P3 = "nice to have, can defer."
 
@@ -236,7 +236,7 @@ Tmux-resurrect-equivalent save/restore — and a future native `hat save` /
   status line literally contains 👀; this needs to render at the right width
   or my layout breaks.
 - **Logging**: `tmux -v` server/client/output logs. Invaluable for debugging
-  HAT itself even if no user ever uses it.
+  Hat itself even if no user ever uses it.
 
 ## Explicitly *not* P0/P1 for me
 
@@ -265,12 +265,12 @@ What I'll skip — this informs scope.
   **`-S path`** socket selection.
 - **Sane logging** off by default, opt-in with `-v`.
 - **Single static binary** — or at least a Nix-friendly install. I run NixOS;
-  if HAT can't be packaged cleanly I can't use it.
+  if Hat can't be packaged cleanly I can't use it.
 
 ## Workflows from my config worth calling out
 
 End-to-end behaviors I actively use; each exercises several features above.
-If HAT supports the bullet list above but breaks one of these, I'll notice.
+If Hat supports the bullet list above but breaks one of these, I'll notice.
 
 1. **"Open a new thing in the same directory"**: `prefix C` opens a new window
    at `#{pane_current_path}`; `prefix v` / `prefix s` split with the same.
@@ -300,7 +300,7 @@ If HAT supports the bullet list above but breaks one of these, I'll notice.
 
 ---
 
-If HAT covers everything tagged P0 and P1, plus the six workflows above, I
+If Hat covers everything tagged P0 and P1, plus the six workflows above, I
 can switch to it as my daily driver.
 
 ## Roadmap
@@ -326,7 +326,7 @@ The milestone-driven build-out is complete:
   `@restore-commands`) are re-run; the schema is forward/backward
   compatible; `HAT_PERSIST=0` disables it.
 
-HAT is now in **alpha testing** — daily-driver usable. Everything tagged
+Hat is now in **alpha testing** — daily-driver usable. Everything tagged
 P0 and P1 above is implemented, including the six workflows; copy mode,
 paste buffers, the command prompt, and choose-tree all landed. Still
 missing: mouse, hooks, and popups.
