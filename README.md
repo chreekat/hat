@@ -5,12 +5,13 @@ A tmux-compatible terminal multiplexer, written in Haskell around
 `tmux.conf`, can be upgraded in place without interrupting your programs,
 and brings your sessions back after a reboot.
 
-A personal note on libghostty-vt: it's hilarious to me that I found out about
-it, and about Mitchell Hashimoto's new Superlogical, about two weeks after
-starting Hat. I've watched the retvrn to the console over the last decade with
+[The human would like to add: it's hilarious to me that I found out about
+libghostty-vt, and about Mitchell Hashimoto's new
+[Superlogical](https://www.superlogical.com/), about two weeks after starting
+Hat. I've watched the retvrn to the console over the last decade with
 delight, and I'm happy that terminal multiplexers are apparently a hot thing
 right now. Let's all benefit from each other. libghostty-vt is fast,
-featureful, bug-free, and easy to use.
+featureful, bug-free, and easy to use.]
 
 ## Status
 
