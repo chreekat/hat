@@ -17,7 +17,7 @@ right now. LLMs mean we can all scratch our own itches. Let's go!]
 
 **Alpha, and daily-driven.** Hat has been its author's only multiplexer since
 the first week of development, so it is heavily dog-fooded — but by one
-person, against one `tmux.conf`. The scope is literally that config (see
+person, against one `tmux.conf`. The current scope is literally that config (see
 [FEATURES.md](FEATURES.md)): everything it uses works, and much of tmux beyond
 it does too. What's still missing is listed under [Rough edges](#rough-edges).
 
