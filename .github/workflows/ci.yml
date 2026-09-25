@@ -1,6 +1,9 @@
 name: ci
 on:
+  # Branches are covered by their PR's run; a bare push trigger ran CI twice
+  # for every push to a PR branch.
   push:
+    branches: [main]
   pull_request:
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
