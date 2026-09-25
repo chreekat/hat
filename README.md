@@ -90,8 +90,8 @@ nix run github:chreekat/hat                       # start a server if needed, an
 nix run github:chreekat/hat -- -f ~/.tmux.conf    # ...using your tmux config
 ```
 
-To keep it, `nix profile install github:chreekat/hat`. For a static musl
-binary you can copy to any Linux machine, `nix build github:chreekat/hat#hat-static`.
+For a static musl binary you can copy to any Linux machine,
+`nix build github:chreekat/hat#hat-static`.
 
 The defaults are tmux's: prefix `C-b`, `d` detach, `c` new window, `%`/`"`
 split, `[` copy mode, `:` command prompt. Commands also work from a shell:
