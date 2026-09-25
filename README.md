@@ -71,9 +71,6 @@ this is not your multiplexer.
 - **Speaks tmux.** Same commands, targets, key tables, format strings,
   `if-shell`, `{ }` blocks, hooks, copy mode (emacs and vi), paste buffers,
   and choose-tree. Point it at your existing `~/.tmux.conf`.
-- **Fails loudly.** An option or command Hat doesn't implement is an error,
-  never silently accepted — so a config that loads cleanly is a config that
-  does what it says.
 
 ## History
 
