@@ -18,7 +18,7 @@ module Hat.Server.Command.Session
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_, unless, when)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import System.Environment (getEnvironment)
@@ -33,7 +33,8 @@ import Hat.Server.ClientIO (broadcast)
 import Hat.Server.Hooks (PayloadItem (..), noTarget, notify, sessionTarget)
 import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
-    (LifecycleNotify (..), createSession, killPaneLocsWith)
+    ( LifecycleNotify (..), createSession, killPaneLocsWith, rehomePanes
+    , windowHolders )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -161,18 +162,16 @@ cmdKillSession st mclient args = do
     withTargetSession st mclient (lookup "-t" opts) $ \sess -> do
         (sname, winInfo) <- atomically $ do
             sname <- readTVar sess.name
-            allSess <- readTVar st.sessions
             ws <- Map.toAscList <$> readTVar sess.windows
+            modifyTVar' st.sessions (Map.delete sess.id)
             winInfo <- forM ws $ \(_, win) -> do
                 wname <- readTVar win.name
-                shared <- fmap Prelude.or . forM
-                    [ other | (osid, other) <- Map.toList allSess
-                    , osid /= sess.id ] $ \other -> do
-                        ows <- readTVar other.windows
-                        pure (any (\w -> w.id == win.id) (Map.elems ows))
+                -- a window linked elsewhere survives, homed in a survivor
+                holders <- windowHolders st win
+                forM_ (listToMaybe holders) $ \other ->
+                    rehomePanes other.id win  -- See Note [Pane home]
                 ps <- Map.elems <$> readTVar win.panes
-                pure (win, wname, shared, ps)
-            writeTVar st.sessions (Map.delete sess.id allSess)
+                pure (win, wname, not (null holders), ps)
             pure (sname, winInfo)
         notify st "session-closed" noTarget
             [ ("session", PSessionRef sess.id sname) ]

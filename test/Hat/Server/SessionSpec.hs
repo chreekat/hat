@@ -46,7 +46,7 @@ import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.Session
     (cmdKillSession, cmdNewSession, cmdRenameSession)
-import Hat.Server.Command.Window (cmdRenameWindow)
+import Hat.Server.Command.Window (cmdRenameWindow, cmdUnlinkWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
@@ -957,6 +957,50 @@ spec = do
                 Split LeftRight 0.5 (Leaf pa.id) (Leaf pc.id)
             readTVarIO w0.activeId `shouldReturn` pc.id
             homeOf pc `shouldReturn` Just (SessionId 0, w0.id)
+
+    -- A window changing session changes its panes' alert/notification
+    -- routing; the cached pane home must follow (Note [Pane home]).
+    describe "pane home across window moves" $ do
+        let paneHomedIn sess win n = do
+                p <- stubPane n
+                atomically $ do
+                    modifyTVar' win.panes (Map.insert p.id p)
+                    writeTVar p.home (Just (sess.id, win))
+                pure p
+
+        it "move-window to another session re-homes the window's panes" $ do
+            (st, sess) <- seedSession "/"           -- "work"
+            w0 <- addWindow sess 0
+            p <- paneHomedIn sess w0 0
+            sess2 <- addSession st 1                -- "s"
+            -- target resolution needs a well-formed current view in "s"
+            w2 <- addWindow sess2 2
+            _ <- paneHomedIn sess2 w2 2
+            atomically $ writeTVar sess2.currentIx 2
+            r <- cmdMoveWindow st Nothing ["-s", "work:0", "-t", "s:5"]
+            r `shouldBe` []
+            (Map.member 5 <$> readTVarIO sess2.windows) `shouldReturn` True
+            homeOf p `shouldReturn` Just (SessionId 1, w0.id)
+
+        it "unlink-window re-homes panes into a surviving linked session" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            p <- paneHomedIn sess w0 0
+            sess2 <- addSession st 1
+            atomically $ modifyTVar' sess2.windows (Map.insert 0 w0)
+            [] <- cmdUnlinkWindow st Nothing ["-t", "work:0"]
+            homeOf p `shouldReturn` Just (SessionId 1, w0.id)
+
+        it "kill-session re-homes a shared window's surviving panes" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            p <- paneHomedIn sess w0 0
+            sess2 <- addSession st 1
+            atomically $ modifyTVar' sess2.windows (Map.insert 0 w0)
+            [] <- cmdKillSession st Nothing ["-t", "work"]
+            -- the shared window's pane survives, homed in the survivor
+            readTVarIO p.dead `shouldReturn` False
+            homeOf p `shouldReturn` Just (SessionId 1, w0.id)
 
     describe "serverIdle" $ do
         let idle = IdleInputs

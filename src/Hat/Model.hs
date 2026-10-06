@@ -246,7 +246,9 @@ data Pane = Pane
 -- ('locatePane') on every output chunk is too costly, so the location is
 -- cached in 'home'. 'startPaneReader' seeds it ('Nothing' only in the spawn
 -- race before that), and every transaction that re-parents the pane
--- (break-pane, join-pane) must rewrite it. Teardown never trusts the cache:
+-- (break-pane, join-pane) or moves its window to another session
+-- (move-window; unlink-window and kill-session when the window survives
+-- linked elsewhere) must rewrite it. Teardown never trusts the cache:
 -- 'detachPaneCurrent' scans the tree.
 
 -- | A live @pipe-pane@. Pane output is forwarded to 'toStdin' (@-O@) on the

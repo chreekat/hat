@@ -30,7 +30,7 @@ module Hat.Server.Command.Window
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM, forM, forM_, unless, void, when)
+import Control.Monad (foldM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
@@ -51,7 +51,8 @@ import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
-    , pickActivityTarget, sessionSpawnEnv, startPaneReader, windowActivity )
+    , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
+    , windowActivity, windowHolders )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -477,6 +478,9 @@ cmdMoveWindow st mclient args
                                     else do
                                         modifyTVar' srcSess.windows (Map.delete srcIx)
                                         modifyTVar' dstSess.windows (Map.insert dstIx win)
+                                        when (srcSess.id /= dstSess.id) $
+                                            rehomePanes dstSess.id win
+                                                -- See Note [Pane home]
                                         followFocus srcSess dstSess srcIx dstIx
                                         bumpDirty st
                                         pure (Right ())
@@ -554,13 +558,8 @@ cmdUnlinkWindow st mclient args = do
     case res of
         Left e -> pure [RErr e]
         Right (sess, wix, win, _) -> do
-            elsewhere <- atomically $ do
-                allSess <- readTVar st.sessions
-                fmap Prelude.or . forM
-                    [ other | (osid, other) <- Map.toList allSess
-                    , osid /= sess.id ] $ \other -> do
-                        ows <- readTVar other.windows
-                        pure (any (\w -> w.id == win.id) (Map.elems ows))
+            elsewhere <- atomically $
+                any (\other -> other.id /= sess.id) <$> windowHolders st win
             if not elsewhere && "-k" `notElem` flags
                 then pure [RErr "window only linked to one session"]
                 else do
@@ -575,6 +574,9 @@ cmdUnlinkWindow st mclient args = do
                             forM_ (Map.lookupMin ws') $ \(ix, _) ->
                                 writeTVar sess.currentIx ix
                         modifyTVar' sess.windowHist (filter (/= wix))
+                        holders <- windowHolders st win
+                        forM_ (listToMaybe holders) $ \other ->
+                            rehomePanes other.id win  -- See Note [Pane home]
                         bumpDirty st
                         pure (sname, wname)
                     notify st "window-unlinked" (sessionTarget sess.id)

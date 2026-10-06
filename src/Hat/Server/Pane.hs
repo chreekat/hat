@@ -51,6 +51,8 @@ module Hat.Server.Pane
     , WindowFate (..)
     , pickActivityTarget
     , removePaneFromTree
+    , rehomePanes
+    , windowHolders
     , wrapPaneInWindow
     , paneCommandName
     , globalSpawnEnv
@@ -64,7 +66,7 @@ import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (Exception, IOException, catch, finally, try)
-import Control.Monad (forM, forM_, forever, unless, void, when)
+import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef, writeIORef)
@@ -947,6 +949,20 @@ removePaneFromTree st pid = do
                             forM_ (Map.lookupMin ws') $ \(i, _) ->
                                 writeTVar sess.currentIx i
                 bumpDirty st
+
+-- | Point every pane of @win@ at @(sid, win)@, after the window changed
+-- session. See Note [Pane home].
+rehomePanes :: SessionId -> Window -> STM ()
+rehomePanes sid win =
+    readTVar win.panes >>= mapM_ (\p -> writeTVar p.home (Just (sid, win)))
+
+-- | Every session currently linking @win@.
+windowHolders :: ServerState -> Window -> STM [Session]
+windowHolders st win = do
+    sessions <- Map.elems <$> readTVar st.sessions
+    filterM
+        (fmap (any (\w -> w.id == win.id) . Map.elems) . readTVar . (.windows))
+        sessions
 
 -- | Build a fresh single-pane window around an already-running pane.
 wrapPaneInWindow :: ServerState -> Pane -> IO Window
