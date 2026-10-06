@@ -20,7 +20,7 @@ seedServer :: IO (ServerState, Session)
 seedServer = do
     lg <- newLogger "/dev/null"
     st <- newServerState Map.empty lg "/tmp/hat-environspec.sock" Nothing
-    sess <- Session (SessionId 0)
+    sess <- Session (SessionId 0) 0 0
         <$> newTVarIO "s"
         <*> newTVarIO Map.empty
         <*> newTVarIO 0

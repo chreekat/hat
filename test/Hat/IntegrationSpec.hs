@@ -836,6 +836,7 @@ spec = parallel $ do
                     [ SessionSnap
                         { name = "restored", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
+                        , createdAt = Nothing, restores = 0
                         , windows =
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, paneHist = []
@@ -870,6 +871,7 @@ spec = parallel $ do
                     [ SessionSnap
                         { name = "sized", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
+                        , createdAt = Nothing, restores = 0
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
@@ -896,6 +898,7 @@ spec = parallel $ do
                     [ SessionSnap
                         { name = "stale", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
+                        , createdAt = Nothing, restores = 0
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
@@ -973,6 +976,7 @@ spec = parallel $ do
                     [ SessionSnap
                         { name = "bbsess", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
+                        , createdAt = Nothing, restores = 0
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
@@ -1147,6 +1151,9 @@ spec = parallel $ do
         awaitScreen c1 "0:built0*"
         _ <- ctlOut h ["new-window", "-d", "-t", "1", "-n", "editor"]
         awaitScreen c1 "1:editor"
+        meta0 <- ctlOut h
+            ["list-sessions", "-F", "#{session_created} #{session_restores}"]
+        [created0, "0"] <- pure (words meta0)
 
         -- Kill the server; the tree is saved automatically on the way out.
         _ <- ctlOut h ["kill-server"]
@@ -1159,6 +1166,10 @@ spec = parallel $ do
         c2 <- startClient h
         awaitScreen c2 "0:built0"
         awaitScreen c2 "1:editor"
+        -- Session identity rides along: same creation stamp, one restore.
+        meta1 <- ctlOut h
+            ["list-sessions", "-F", "#{session_created} #{session_restores}"]
+        words meta1 `shouldBe` [created0, "1"]
 
     -- b7: a window's automatic-rename status must survive save/restore, in
     -- both directions -- an auto-renaming window keeps tracking its pane, a

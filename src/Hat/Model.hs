@@ -180,6 +180,8 @@ data ServerState = ServerState
 
 data Session = Session
     { id       :: SessionId
+    , createdAt :: POSIXTime  -- ^ first creation time; see 'Hat.Server.Rebuild.rebuildSession'
+    , restores :: Int  -- ^ rebuilds from serialized state; see 'Hat.Server.Rebuild.rebuildSession'
     , name     :: TVar Text
     , windows  :: TVar (Map Int Window)  -- ^ keyed by window index (sparse)
     , currentIx :: TVar Int

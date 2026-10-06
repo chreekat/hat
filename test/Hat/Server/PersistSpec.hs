@@ -3,8 +3,10 @@ module Hat.Server.PersistSpec (spec) where
 
 import Control.Exception (bracket)
 import Control.Monad (forM_)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Time.Clock.POSIX (POSIXTime)
 import Database.SQLite.Simple (Connection, close, execute_, open)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
@@ -71,13 +73,25 @@ instance Arbitrary SessionSnap where
         ws    <- mapM genWindow ixs
         curIx <- elements (map (.ix) ws)
         winHist <- sublistOf (filter (/= curIx) (map (.ix) ws))
+        created <- genMaybeStamp
+        rest  <- getNonNegative <$> arbitrary
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
-            , windowHist = winHist, windows = ws }
+            , windowHist = winHist, createdAt = created, restores = rest
+            , windows = ws }
     shrink s =
         [ s { windows = ws } | ws <- shrinkList shrink s.windows, not (null ws) ]
         ++ [ s { windowHist = h } | h <- shrinkList (const []) s.windowHist ]
         ++ [ s { startCwd = c } | c <- shrinkText s.startCwd ]
+        ++ [ s { createdAt = Nothing } | isJust s.createdAt ]
+        ++ [ s { restores = 0 } | s.restores /= 0 ]
+
+-- A creation stamp, when present, is whole epoch seconds: the codec floors
+-- on write, so only integral values round-trip.
+genMaybeStamp :: Gen (Maybe POSIXTime)
+genMaybeStamp = oneof
+    [ pure Nothing
+    , Just . fromInteger . getNonNegative <$> arbitrary ]
 
 instance Arbitrary WindowSnap where
     arbitrary = choose (0, 9) >>= genWindow
@@ -270,6 +284,31 @@ spec = do
             map (.savedAt) got `shouldBe` ["2026-01-01T00:00:00Z"]
             map (.snapshot) got `shouldBe` [oneSession "s" "/h" "w" "lay" "/h/x"]
 
+        it "defaults identity fields absent from a session row's extra" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES \
+                    \(0, 's', '/h', 0, '{\"last_stack\":[2]}')"
+                loadSnapshot conn
+            map (\s -> (s.windowHist, s.createdAt, s.restores)) got.sessions
+                `shouldBe` [([2], Nothing, 0)]
+
+        it "reads a session row carrying created_at and restores" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, \
+                    \'{\"created_at\":1725782843,\"restores\":18}')"
+                loadSnapshot conn
+            map (\s -> (s.createdAt, s.restores)) got.sessions
+                `shouldBe` [(Just 1725782843, 18)]
+
+        it "decodes snapshot JSON carrying created_at and restores" $ do
+            let js = "{\"sessions\":[{\"name\":\"s\",\"start_cwd\":\"/h\",\
+                     \\"current_ix\":0,\"created_at\":1725782843,\
+                     \\"restores\":18,\"windows\":[]}]}"
+            fmap (map (\s -> (s.createdAt, s.restores)) . (.sessions))
+                (decodeSnapshotJson js) `shouldBe` Just [(Just 1725782843, 18)]
+
     -- bb: pruned snapshot history, so a bad overwrite can be rolled back.
     describe "snapshot history" $ do
         let snapOf nm = oneSession nm "/h" "w" "lay" ("/h/" <> nm)
@@ -339,6 +378,7 @@ spec = do
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 2
                         , windowHist = [0]
+                        , createdAt = Nothing, restores = 0
                         , windows =
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, paneHist = []
@@ -366,6 +406,7 @@ spec = do
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
                         , windowHist = []
+                        , createdAt = Nothing, restores = 0
                         , windows = [win 0 True, win 1 False] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
@@ -380,6 +421,7 @@ spec = do
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
                         , windowHist = []
+                        , createdAt = Nothing, restores = 0
                         , windows =
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
                                 , active = 0, paneHist = []
@@ -397,6 +439,7 @@ oneSession nm cwd0 wnm lay pcwd = Snapshot
         [ SessionSnap
             { name = nm, startCwd = cwd0, currentIx = 0
             , windowHist = []
+            , createdAt = Nothing, restores = 0
             , windows =
                 [ WindowSnap { ix = 0, name = wnm, layout = lay
                     , active = 0, paneHist = []

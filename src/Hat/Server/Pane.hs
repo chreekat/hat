@@ -1133,6 +1133,7 @@ createSession st mname mrun environ dir sz = do
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
         dir spawnEnv (sz)
+    now <- getPOSIXTime
     nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
@@ -1144,6 +1145,8 @@ createSession st mname mrun environ dir sz = do
     resolvedVar <- newTVarIO Nothing
     let sess = Session
             { id = SessionId sid
+            , createdAt = now
+            , restores = 0
             , name = nameVar
             , windows = windowsVar
             , currentIx = currentVar

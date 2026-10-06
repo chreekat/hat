@@ -60,17 +60,26 @@ instance Arbitrary ReloadTree where
 instance Arbitrary HotSession where
     arbitrary = hotSessionOf =<< arbitrary
     shrink s =
-        [ HotSession s.name s.startCwd s.currentIx s.windowHist ws
+        [ HotSession s.name s.startCwd s.currentIx s.windowHist
+            s.createdAt s.restores ws
         | ws <- shrinkList shrink s.windows, not (null ws) ]
-        ++ [ HotSession s.name s.startCwd s.currentIx h s.windows
+        ++ [ HotSession s.name s.startCwd s.currentIx h
+                s.createdAt s.restores s.windows
            | h <- shrinkList (const []) s.windowHist ]
+        ++ [ HotSession s.name s.startCwd s.currentIx s.windowHist
+                Nothing s.restores s.windows
+           | isJust s.createdAt ]
+        ++ [ HotSession s.name s.startCwd s.currentIx s.windowHist
+                s.createdAt 0 s.windows
+           | s.restores /= 0 ]
 
 hotSessionOf :: SessionSnap -> Gen HotSession
 hotSessionOf s = do
     ws <- mapM hotWindowOf s.windows
     pure HotSession
         { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
-        , windowHist = s.windowHist, windows = ws }
+        , windowHist = s.windowHist, createdAt = s.createdAt
+        , restores = s.restores, windows = ws }
 
 instance Arbitrary HotWindow where
     arbitrary = hotWindowOf =<< arbitrary
@@ -158,7 +167,8 @@ hotOf t = ReloadHot
   where
     sessionOf s = SessionSnap
         { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
-        , windowHist = s.windowHist, windows = map windowOf s.windows }
+        , windowHist = s.windowHist, createdAt = s.createdAt
+        , restores = s.restores, windows = map windowOf s.windows }
     windowOf w = WindowSnap
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename
@@ -201,6 +211,7 @@ treeWith mlast ms sc = ReloadTree
     { sessions =
         [ HotSession
             { name = "work", startCwd = "/home", currentIx = 0, windowHist = []
+            , createdAt = Nothing, restores = 0
             , windows =
                 [ HotWindow
                     { ix = 0, name = "w", layout = "L", active = 0

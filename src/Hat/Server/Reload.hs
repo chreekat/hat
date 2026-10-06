@@ -46,6 +46,7 @@ import Data.Maybe (maybeToList)
 import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Vector qualified as V
 import GHC.Generics (Generic)
 
@@ -129,6 +130,8 @@ data HotSession = HotSession
     , startCwd   :: Text
     , currentIx  :: Int
     , windowHist :: [Int]
+    , createdAt  :: Maybe POSIXTime
+    , restores   :: Int
     , windows    :: [HotWindow]
     }
     deriving (Eq, Show)
@@ -352,7 +355,8 @@ hotTree h = do
         in ( rest
            , HotSession
                { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
-               , windowHist = s.windowHist, windows = ws } )
+               , windowHist = s.windowHist, createdAt = s.createdAt
+               , restores = s.restores, windows = ws } )
     zipWindow hs w =
         let (mine, rest) = splitAt (length w.panes) hs
         in ( rest
@@ -547,7 +551,8 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
   where
     migSession (ReloadSessionV7 nm cwd' ci hist wins) = HotSession
         { name = nm, startCwd = cwd', currentIx = ci
-        , windowHist = hist, windows = map migWindow wins }
+        , windowHist = hist, createdAt = Nothing, restores = 0
+        , windows = map migWindow wins }
     migWindow (ReloadWindowV7 ix' nm lay act hist ar ps) = HotWindow
         { ix = ix', name = nm, layout = lay, active = act
         , paneHist = hist, autoRename = ar, panes = map migPane ps }

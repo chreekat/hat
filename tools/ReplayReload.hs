@@ -102,7 +102,8 @@ treeJson t = encodeSnapshotJson Snapshot
   where
     sessionOf s = SessionSnap
         { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
-        , windowHist = s.windowHist, windows = map windowOf s.windows }
+        , windowHist = s.windowHist, createdAt = s.createdAt
+        , restores = s.restores, windows = map windowOf s.windows }
     windowOf w = WindowSnap
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename

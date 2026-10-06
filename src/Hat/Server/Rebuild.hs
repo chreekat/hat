@@ -17,7 +17,7 @@ import Data.Maybe (fromMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import GHC.Records (HasField)
 
 import Hat.Geometry
@@ -35,6 +35,8 @@ type CapturedSession s w p =
     , HasField "startCwd" s Text
     , HasField "currentIx" s Int
     , HasField "windowHist" s [Int]
+    , HasField "createdAt" s (Maybe POSIXTime)
+    , HasField "restores" s Int
     , HasField "windows" s [w]
     )
 
@@ -52,7 +54,8 @@ type CapturedWindow w p =
 -- | Rebuild one captured session in the live tree, bringing each pane back
 -- with @mkPane@. The session comes up at its captured window area
 -- ('capturedArea'), so the pre-attach reconcile finds every pane already at
--- its layout size.
+-- its layout size. A rebuild counts as one restore; a capture without a
+-- creation stamp adopts now as the session's creation time.
 rebuildSession
     :: CapturedSession s w p
     => ServerState
@@ -74,6 +77,7 @@ rebuildSession st env mkPane csess = do
             -- one; nothing else is a meaningful "last" to return to.
             winHist = List.nub
                 [l | l <- csess.windowHist, l /= curIx, Map.member l winMap]
+        now <- getPOSIXTime
         nameVar    <- newTVarIO csess.name
         windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
@@ -84,7 +88,10 @@ rebuildSession st env mkPane csess = do
         optionsVar <- newTVarIO emptyDelta
         resolvedVar <- newTVarIO Nothing
         let sess = Session
-                { id = sid, name = nameVar, windows = windowsVar
+                { id = sid
+                , createdAt = fromMaybe now csess.createdAt
+                , restores = csess.restores + 1
+                , name = nameVar, windows = windowsVar
                 , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
                 , startCwd = cwdVar, options = optionsVar

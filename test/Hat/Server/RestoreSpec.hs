@@ -47,8 +47,8 @@ sampleSnapshot :: Text -> Snapshot
 sampleSnapshot nm = Snapshot
     { sessions =
         [ SessionSnap
-            { name = nm, startCwd = "/tmp"
-            , currentIx = 0, windowHist = [], windows = [] } ]
+            { name = nm, startCwd = "/tmp", currentIx = 0, windowHist = []
+            , createdAt = Nothing, restores = 0, windows = [] } ]
     , lastActiveSession = Nothing }
 
 emptySnapshot :: Snapshot
@@ -257,7 +257,8 @@ spec = do
                     , paneHist = [], autoRename = True, panes = [(psnap, rp)] }
                 rsess = HotSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
-                    , windowHist = [], windows = [rw] }
+                    , windowHist = [], createdAt = Nothing, restores = 0
+                    , windows = [rw] }
             rebuildReload st ReloadTree
                 { sessions = [rsess]
                 , currentSession = Nothing, lastSession = Nothing }

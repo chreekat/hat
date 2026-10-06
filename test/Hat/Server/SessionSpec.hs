@@ -65,7 +65,7 @@ import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 -- A bare session with the given id inserted into an existing server.
 addSession :: ServerState -> Int -> IO Session
 addSession st n = do
-    sess <- Session (SessionId n)
+    sess <- Session (SessionId n) 0 0
         <$> newTVarIO "s"
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
@@ -84,7 +84,7 @@ seedSession :: FilePath -> IO (ServerState, Session)
 seedSession start = do
     lg <- newLogger "/dev/null"
     st <- newServerState Map.empty lg "/tmp/hat-sessionspec.sock" Nothing
-    sess <- Session (SessionId 0)
+    sess <- Session (SessionId 0) 0 0
         <$> newTVarIO "work"
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
@@ -266,7 +266,13 @@ spec = do
             env <- sessionFormatEnv st sess
             Map.lookup "@v" env `shouldBe` Just "local"
 
-    describe "session format counts" $
+    describe "session format counts" $ do
+        it "session_created and session_restores expose identity metadata" $ do
+            (st, sess) <- seedSession "/"
+            env <- sessionFormatEnv st sess
+            Map.lookup "session_created" env `shouldBe` Just "0"
+            Map.lookup "session_restores" env `shouldBe` Just "0"
+
         it "session_attached and session_windows report live counts" $ do
             (st, sess) <- seedSession "/"
             _ <- addWindow sess 0

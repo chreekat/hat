@@ -39,6 +39,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time.Clock.POSIX (POSIXTime)
 import Database.SQLite.Simple
 
 -- | A point-in-time capture of the whole tree, in restore order:
@@ -61,6 +62,14 @@ data SessionSnap = SessionSnap
                            -- ^ MRU window indices, head = last-active (the one
                            --   @last-window@ returns to); carried in the session
                            --   row's @extra@ JSON. See 'Hat.Server.Mru'.
+    , createdAt :: Maybe POSIXTime
+                           -- ^ when the session was first created, at epoch-
+                           --   second granularity ('Nothing' in a capture that
+                           --   predates the field); carried in the session
+                           --   row's @extra@ JSON.
+    , restores  :: Int     -- ^ times the session was rebuilt from serialized
+                           --   state; carried in the session row's @extra@
+                           --   JSON. See 'Hat.Server.Rebuild.rebuildSession'.
     , windows   :: [WindowSnap]
     }
     deriving (Eq, Show)
@@ -101,31 +110,38 @@ data PaneSnap = PaneSnap
     }
     deriving (Eq, Show)
 
--- | The session row's @extra@ JSON payload. Evolving, optional fields live
--- here rather than in core columns, so old and new binaries interoperate.
-newtype SessionExtra = SessionExtra [Int]  -- ^ MRU window indices, head first
+-- | The session row's @extra@ JSON payload: the MRU window indices (head
+-- first), the creation stamp, and the restore count. Evolving, optional
+-- fields live here rather than in core columns, so old and new binaries
+-- interoperate; a store written before a key existed omits it and the
+-- reader defaults it.
+data SessionExtra = SessionExtra [Int] (Maybe POSIXTime) Int
 
 -- @last_ix@ mirrors the head for readers predating the stack; @last_stack@
 -- carries the whole history. A reader prefers the stack, else lifts the head.
 instance ToJSON SessionExtra where
-    toJSON (SessionExtra hist) = object $
+    toJSON (SessionExtra hist created rest) = object $
         ["last_ix" .= h | h <- take 1 hist]
         ++ ["last_stack" .= hist | not (null hist)]
+        ++ ["created_at" .= (floor c :: Integer) | Just c <- [created]]
+        ++ ["restores" .= rest | rest /= 0]
 
 instance FromJSON SessionExtra where
     parseJSON = withObject "session extra" $ \o -> do
         stack  <- o .:? "last_stack"
         legacy <- o .:? "last_ix"
-        pure (SessionExtra (fromMaybe (maybeToList legacy) stack))
+        created <- fmap fromInteger <$> o .:? "created_at"
+        rest   <- fromMaybe 0 <$> o .:? "restores"
+        pure (SessionExtra (fromMaybe (maybeToList legacy) stack) created rest)
 
-encodeSessionExtra :: [Int] -> Text
-encodeSessionExtra hist =
-    TE.decodeUtf8 (BL.toStrict (encode (SessionExtra hist)))
+encodeSessionExtra :: [Int] -> Maybe POSIXTime -> Int -> Text
+encodeSessionExtra hist created rest =
+    TE.decodeUtf8 (BL.toStrict (encode (SessionExtra hist created rest)))
 
-decodeSessionExtra :: Text -> [Int]
+decodeSessionExtra :: Text -> ([Int], Maybe POSIXTime, Int)
 decodeSessionExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
-    Just (SessionExtra hist) -> hist
-    Nothing                  -> []
+    Just (SessionExtra hist created rest) -> (hist, created, rest)
+    Nothing                               -> ([], Nothing, 0)
 
 -- | The window row's @extra@ JSON payload: the last-active pane ordinal and
 -- the automatic-rename flag. A store written before @auto_rename@ existed
@@ -285,7 +301,8 @@ saveSnapshot conn snap = withTransaction conn $ do
         execute conn
             "INSERT INTO session (seq, name, start_cwd, current_ix, extra) \
             \VALUES (?, ?, ?, ?, ?)"
-            (sseq, s.name, s.startCwd, s.currentIx, encodeSessionExtra s.windowHist)
+            ( sseq, s.name, s.startCwd, s.currentIx
+            , encodeSessionExtra s.windowHist s.createdAt s.restores )
         mapM_ (insertWindow sseq) s.windows
     insertWindow :: Int -> WindowSnap -> IO ()
     insertWindow sseq w = do
@@ -322,9 +339,11 @@ loadSnapshot conn = do
             \WHERE session_seq = ? ORDER BY ix"
             (Only sseq) :: IO [(Int, Text, Text, Int, Text)]
         ws <- mapM (loadWindow sseq) wrows
+        let (hist, created, rest) = decodeSessionExtra sex
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
-            , windowHist = decodeSessionExtra sex, windows = ws }
+            , windowHist = hist, createdAt = created, restores = rest
+            , windows = ws }
     loadWindow :: Int -> (Int, Text, Text, Int, Text) -> IO WindowSnap
     loadWindow sseq (wix, nm, lay, act, wex) = do
         prows <- query conn
@@ -444,6 +463,8 @@ instance ToJSON SessionSnap where
         , "current_ix" .= s.currentIx ]
         <> ["last_ix" .= h | h <- take 1 s.windowHist]
         <> ["last_stack" .= s.windowHist | not (null s.windowHist)]
+        <> ["created_at" .= (floor c :: Integer) | Just c <- [s.createdAt]]
+        <> ["restores" .= s.restores | s.restores /= 0]
         <> ["windows" .= s.windows]
 
 instance FromJSON SessionSnap where
@@ -453,10 +474,13 @@ instance FromJSON SessionSnap where
         curIx  <- fromMaybe 0 <$> o .:? "current_ix"
         stack  <- o .:? "last_stack"
         legacy <- o .:? "last_ix"
+        created <- fmap fromInteger <$> o .:? "created_at"
+        rest   <- fromMaybe 0 <$> o .:? "restores"
         ws     <- fromMaybe [] <$> o .:? "windows"
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
-            , windowHist = fromMaybe (maybeToList legacy) stack, windows = ws }
+            , windowHist = fromMaybe (maybeToList legacy) stack
+            , createdAt = created, restores = rest, windows = ws }
 
 instance ToJSON WindowSnap where
     toJSON w = object $

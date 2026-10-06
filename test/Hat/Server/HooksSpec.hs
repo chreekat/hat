@@ -248,6 +248,8 @@ fakeSession = do
     resolvedVar <- newTVarIO Nothing
     pure Session
         { id = SessionId 9
+        , createdAt = 0
+        , restores = 0
         , name = nameVar
         , windows = windowsVar
         , currentIx = currentVar

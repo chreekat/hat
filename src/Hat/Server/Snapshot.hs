@@ -202,7 +202,9 @@ captureSession s = do
     (wsnaps, panes) <- unzip <$> mapM captureWindow wstructs
     pure ( SessionSnap
              { name = nm, startCwd = T.pack cwd
-             , currentIx = curIx, windowHist = winHist, windows = wsnaps }
+             , currentIx = curIx, windowHist = winHist
+             , createdAt = Just s.createdAt, restores = s.restores
+             , windows = wsnaps }
          , concat panes )
 
 captureWindow :: WindowStruct -> IO (WindowSnap, [Pane])
@@ -330,7 +332,8 @@ restoreArchived st snap = do
         news = uniquifySessionNames taken olds
         rename s n = SessionSnap
             { name = n, startCwd = s.startCwd, currentIx = s.currentIx
-            , windowHist = s.windowHist, windows = s.windows }
+            , windowHist = s.windowHist, createdAt = s.createdAt
+            , restores = s.restores, windows = s.windows }
         renamed = zipWith rename snap.sessions news
     restoreSnapshot st
         Snapshot { sessions = renamed, lastActiveSession = Nothing }

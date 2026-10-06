@@ -228,6 +228,8 @@ sessionFormatEnv st sess = do
         , ("session_id", "$" <> tshow (rawSession sess.id))
         , ("session_attached", tshow nclients)
         , ("session_windows", tshow nwindows)
+        , ("session_created", tshow (floor sess.createdAt :: Integer))
+        , ("session_restores", tshow sess.restores)
         , ("host", T.pack hostname)
         , ("window_active_clients", "0")
         , ("window_width", tshow sz.cols)
