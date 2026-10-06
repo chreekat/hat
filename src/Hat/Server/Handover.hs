@@ -254,11 +254,12 @@ adoptPane st histLimit pid (psnap, rp) = do
     modeVar   <- newTVarIO Nothing
     pipeVar   <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
+    homeVar   <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
-            , options = optionsVar
+            , options = optionsVar, home = homeVar
             , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the

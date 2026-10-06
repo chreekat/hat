@@ -46,6 +46,8 @@ cmdBreakPane st mclient args = do
                     ws <- readTVar sess.windows
                     let ix = nextFreeWindowIndex srvOpts.baseIndex ws
                     modifyTVar' sess.windows (Map.insert ix win2)
+                    writeTVar pane.home (Just (sess.id, win2))
+                        -- See Note [Pane home]
                     unless ("-d" `elem` flags) $ do
                         cur <- readTVar sess.currentIx
                         modifyTVar' sess.windowHist (recordVisit cur ix)
@@ -73,6 +75,8 @@ cmdJoinPane st mclient args = do
                     dstActive <- readTVar dstWin.activeId
                     removePaneFromTree st src.id
                     modifyTVar' dstWin.panes (Map.insert src.id src)
+                    writeTVar src.home (Just (sess.id, dstWin))
+                        -- See Note [Pane home]
                     modifyTVar' dstWin.layout
                         (splitLeaf dstActive orient placement src.id)
                     modifyTVar' dstWin.paneHist (recordVisit dstActive src.id)

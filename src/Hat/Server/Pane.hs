@@ -286,6 +286,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     modeVar <- newTVarIO Nothing
     pipeVar <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
+    homeVar <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
@@ -300,6 +301,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , options = optionsVar
         , pipe = pipeVar
         , readerTid = readerVar
+        , home = homeVar
         , pendingInput = pending
         }
 
@@ -322,18 +324,17 @@ instance Exception PauseReading
 -- the pane's resources and model entry are released however the loop ends
 -- — clean EOF, a hang-up from a kill command, or an exception.
 --
--- The @sid@\/@win@ are the pane's window AT SPAWN. They drive only the
--- best-effort attention markers (bell\/activity) and desktop-notification
--- routing, where a stale window after a re-parent is a harmless misroute — not
--- worth a tree scan on every screen change. Teardown must NOT use them: a
--- re-parented pane's 'closePane' finds its CURRENT window (see
--- 'detachPaneCurrent'), or it would strand the pane in the wrong window.
+-- The @spawnSid@\/@spawnWin@ only seed 'pane.home'; the loop re-reads it per
+-- chunk, so output routing follows the pane across re-parents — see
+-- Note [Pane home].
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
-startPaneReader st sid win pane = do
+startPaneReader st spawnSid spawnWin pane = do
     -- Count the pane live before forking, so a kill that lands before the
     -- reader is scheduled still finds it counted and 'waitIdle' waits for
     -- its reap. Decremented once the reader (and its 'reapPane') is done.
-    atomically $ modifyTVar' st.livePanes (+ 1)
+    atomically $ do
+        writeTVar pane.home (Just (spawnSid, spawnWin))
+        modifyTVar' st.livePanes (+ 1)
     -- Masked for the thread's whole life bar the read itself: once the tid
     -- is published, a 'hangupPane' kill must always reach the cleanup, and
     -- any async exception (a kill, 'ChildExited', 'PauseReading') can land
@@ -382,6 +383,7 @@ startPaneReader st sid win pane = do
                 writeIORef pending Nothing)
             forwardToPipe pane bs
             events <- Emu.feed pane.emulator bs
+            mhome <- readTVarIO pane.home  -- See Note [Pane home]
             forM_ events $ \case
                 Emu.Output out -> Hat.Term.Pty.writePty pane.pty out
                 -- The app asked the current light/dark scheme (CSI ? 996 n);
@@ -400,14 +402,15 @@ startPaneReader st sid win pane = do
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
                 -- the session's attached terminals to raise with the OS.
-                Emu.DesktopNotification raw -> broadcast st sid (Notify raw)
+                Emu.DesktopNotification raw ->
+                    forM_ mhome $ \(sid, _) -> broadcast st sid (Notify raw)
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.
                 Emu.TitleChanged t ->
                     notifyPane st "pane-title-changed" pane
                         [ ("new_title", PText t) ]
-                Emu.Bell -> do
+                Emu.Bell -> forM_ mhome $ \(sid, win) -> do
                     fires <- atomically $ do
                         r <- bellAlerts st win
                         bumpDirty st
@@ -419,7 +422,11 @@ startPaneReader st sid win pane = do
                             (NotifyTarget (Just osid) (Just win.id) Nothing)
                             [ ("session", PSessionRef osid sname)
                             , ("window", PWindowRef win.id wname) ]
-                Emu.ScreenChanged -> windowActivity st sid win
+                -- An unhomed pane (spawn race) repaints unconditionally:
+                -- over-painting is safe, a missed repaint freezes the pane.
+                Emu.ScreenChanged -> case mhome of
+                    Just (sid, win) -> windowActivity st sid win
+                    Nothing -> atomically (bumpDirty st)
                 -- the emulator reported a terminal property hat does not act on;
                 -- surface it as a warning rather than silently dropping it.
                 Emu.UnknownProp kind prop ->

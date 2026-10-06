@@ -201,6 +201,7 @@ stubPane n = do
     modeV <- newTVarIO Nothing
     pipeV <- newTVarIO Nothing
     tidV  <- newTVarIO Nothing
+    homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
     pure Pane
         { id = PaneId n
@@ -213,8 +214,13 @@ stubPane n = do
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV
+        , home = homeV
         , pendingInput = Nothing
         }
+
+-- The pane's cached location ('Pane.home'), projected to ids for assertions.
+homeOf :: Pane -> IO (Maybe (SessionId, WindowId))
+homeOf p = fmap (\(sid, w) -> (sid, w.id)) <$> readTVarIO p.home
 
 -- A 'stubPane' whose pty is a real pty pair adopted around this very process,
 -- for paths that probe the pty (break-pane's window-name sniff). The release
@@ -932,6 +938,7 @@ spec = do
                 readTVarIO w0.layout `shouldReturn` Leaf pb.id
                 readTVarIO w0.activeId `shouldReturn` pb.id
                 readTVarIO sess.currentIx `shouldReturn` 1
+                homeOf pa `shouldReturn` Just (SessionId 0, w1.id)
 
     describe "join-pane" $
         it "splits the -s pane into the current window, closing its emptied window" $ do
@@ -949,6 +956,7 @@ spec = do
             readTVarIO w0.layout `shouldReturn`
                 Split LeftRight 0.5 (Leaf pa.id) (Leaf pc.id)
             readTVarIO w0.activeId `shouldReturn` pc.id
+            homeOf pc `shouldReturn` Just (SessionId 0, w0.id)
 
     describe "serverIdle" $ do
         let idle = IdleInputs

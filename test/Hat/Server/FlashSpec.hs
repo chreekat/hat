@@ -112,6 +112,7 @@ flashStubPane pid = do
     modeV <- newTVarIO Nothing
     pipeV <- newTVarIO Nothing
     tidV <- newTVarIO Nothing
+    homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
     pure Pane
         { id = pid
@@ -124,5 +125,6 @@ flashStubPane pid = do
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV
+        , home = homeV
         , pendingInput = Nothing
         }

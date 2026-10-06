@@ -231,10 +231,23 @@ data Pane = Pane
     , readerTid :: TVar (Maybe ThreadId)
         -- ^ the pane's output-reader thread, stored by the thread itself;
         -- 'Nothing' only in the spawn race before it runs. See 'hangupPane'.
+    , home     :: TVar (Maybe (SessionId, Window))
+        -- ^ the window currently holding the pane, and the session that
+        -- window lives in; see Note [Pane home]
     , pendingInput :: Maybe Text
         -- ^ a one-shot command line the reader types into the pane once its
         -- shell first prints; see 'startPaneReader'. 'Nothing' for a plain pane.
     }
+
+-- Note [Pane home]
+-- ~~~~~~~~~~~~~~~~
+-- The reader thread routes a pane's output — repaints, bells, desktop
+-- notifications — by the window holding the pane NOW, but scanning the tree
+-- ('locatePane') on every output chunk is too costly, so the location is
+-- cached in 'home'. 'startPaneReader' seeds it ('Nothing' only in the spawn
+-- race before that), and every transaction that re-parents the pane
+-- (break-pane, join-pane) must rewrite it. Teardown never trusts the cache:
+-- 'detachPaneCurrent' scans the tree.
 
 -- | A live @pipe-pane@. Pane output is forwarded to 'toStdin' (@-O@) on the
 -- hot path; 'super' owns the subprocess, its handles, and the stdout-pump
