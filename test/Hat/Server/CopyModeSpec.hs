@@ -87,7 +87,8 @@ step keys seps cmd sim = case cmd of
     "next-space-end" -> motion (mNextWordEnd "")
     "previous-space" -> motion (mPreviousWord "")
     "cursor-left" -> motion mCursorLeft
-    "cursor-right" -> motion mCursorRight
+    "cursor-right" -> motion (mCursorRight (selColumnBound st))
+    "rectangle-toggle" -> sim { sState = rectangleToggle st }
     "cursor-up" -> sim { sState = runIdentity (cursorVertical (-1) grid st) }
     "cursor-down" -> sim { sState = runIdentity (cursorVertical 1 grid st) }
     "end-of-line" -> sim { sState = runIdentity (endOfLine keys grid st) }
@@ -201,6 +202,45 @@ spec = do
             vi [ "history-top", "end-of-line", "cursor-down"
                , "begin-selection", "copy-selection" ]
                 `shouldBe` ["e"]  -- row 1 "        Indented line", col 14
+
+    describe "rectangle selection frees the column band" $ do
+        -- Row 0 "A line of words" has content length 15; the grid is 40
+        -- wide. A rectangular selection lets the cursor roam the blank
+        -- space past the content, so a block can cover trailing blanks.
+        let at row col = start.sState { cursorRow = row, cursorCol = col }
+            rect s = s { selection = Just ((s.cursorRow, s.cursorCol), SelRect) }
+            right st = runIdentity
+                (runMotion grid KeysVi viSeparators
+                    (mCursorRight (selColumnBound st)) st)
+        it "cursor-right advances past the last character" $
+            (right (rect (at 0 15))).cursorCol `shouldBe` 16
+        it "cursor-right stops at the grid width" $
+            (right (rect (at 0 40))).cursorCol `shouldBe` 40
+        it "cursor-right still clamps without a rectangle" $
+            (right (at 0 15)).cursorCol `shouldBe` 15
+        it "cursor-down keeps the column" $ do
+            let s = runIdentity (cursorVertical 1 grid (rect (at 0 30)))
+            (s.cursorRow, s.cursorCol) `shouldBe` (1, 30)
+        it "page-up keeps the column" $ do
+            let s = runIdentity (scrollUp scrollGrid.gSy scrollGrid
+                        (rect ((at 29 30) { viewportOffY = 0 })))
+            s.cursorCol `shouldBe` 30
+        it "vi end-of-line lands on the last grid column" $
+            (runIdentity (endOfLine KeysVi grid (rect (at 0 0)))).cursorCol
+                `shouldBe` 39
+        it "emacs end-of-line lands one past the last grid column" $
+            (runIdentity (endOfLine KeysEmacs grid (rect (at 0 0)))).cursorCol
+                `shouldBe` 40
+        it "cursor-left snaps back from blank space to the last character" $ do
+            let s = runIdentity
+                    (runMotion grid KeysVi viSeparators mCursorLeft
+                        (rect (at 0 30)))
+            s.cursorCol `shouldBe` 14
+        it "a full-width block yanks every line whole" $
+            vi [ "history-top", "rectangle-toggle", "end-of-line"
+               , "cursor-down", "cursor-down", "copy-selection" ]
+                `shouldBe`
+                    ["A line of words\n        Indented line\nAnother line..."]
 
     describe "paging and jump motions" $ do
         -- The shared grid has 10 rows (sy = 10, no scrollback), so the

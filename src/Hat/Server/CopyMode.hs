@@ -22,6 +22,8 @@ module Hat.Server.CopyMode
     , mPreviousWord
     , mCursorLeft
     , mCursorRight
+    , ColumnBound (..)
+    , selColumnBound
     , cursorVertical
     , endOfLine
     , scrollUp
@@ -267,18 +269,24 @@ cursorRight g wrap columnBound pastEnd s = do
             then pure s { rc = s.rc + 1 }
             else pure s
 
--- | @grid_reader_cursor_left@.
+-- | @grid_reader_cursor_left@: a cursor out in blank space (rectangular
+-- selection) first snaps back to the line's length.
 cursorLeft :: Monad m => Grid m -> Bool -> Rdr -> m Rdr
-cursorLeft g wrap s
-    | s.rc == 0 && s.rr > 0 = do
-        w <- g.gWrapped (s.rr - 1)
-        if wrap || w
-            then do
-                l <- g.gLineLen (s.rr - 1)
-                pure s { rr = s.rr - 1, rc = l }
-            else pure s
-    | s.rc > 0 = pure s { rc = s.rc - 1 }
-    | otherwise = pure s
+cursorLeft g wrap s0 = do
+    xx <- g.gLineLen s0.rr
+    let s = if s0.rc > xx then s0 { rc = xx } else s0
+    step s
+  where
+    step s
+        | s.rc == 0 && s.rr > 0 = do
+            w <- g.gWrapped (s.rr - 1)
+            if wrap || w
+                then do
+                    l <- g.gLineLen (s.rr - 1)
+                    pure s { rr = s.rr - 1, rc = l }
+                else pure s
+        | s.rc > 0 = pure s { rc = s.rc - 1 }
+        | otherwise = pure s
 
 -- | @grid_reader_cursor_next_word@.
 nextWord :: Monad m => Grid m -> Text -> Rdr -> m Rdr
@@ -406,23 +414,42 @@ mCursorLeft g _ _ = cursorLeft g False
 
 -- | Move one cell right, allowing one column past the last character
 -- (@onemore@) as copy mode does.
-mCursorRight :: Monad m => Motion m
-mCursorRight g _ _ = cursorRight g NoWrap ContentColumns OneMore
+mCursorRight :: Monad m => ColumnBound -> Motion m
+mCursorRight bound g _ _ = cursorRight g NoWrap bound OneMore
 
--- | Move the cursor @d@ rows (negative = up), clamped to the grid, and
--- clamp the column to the destination line's length.
+-- | The column bound the live selection grants: a rectangular selection
+-- frees the cursor to the full grid width, so a block can cover a
+-- line's trailing blanks.
+selColumnBound :: CopyModeState -> ColumnBound
+selColumnBound st = case st.selection of
+    Just (_, SelRect) -> AllColumns
+    _                 -> ContentColumns
+
+-- | Column after a vertical move: clamped to the destination line's
+-- length, except under 'AllColumns' where the band crosses shorter
+-- lines unclamped.
+vertCol :: Monad m => Grid m -> Int -> CopyModeState -> m Int
+vertCol g row st = case selColumnBound st of
+    AllColumns -> pure st.cursorCol
+    ContentColumns -> min st.cursorCol <$> g.gLineLen row
+
+-- | Move the cursor @d@ rows (negative = up), clamped to the grid; the
+-- column clamps per 'vertCol'.
 cursorVertical :: Monad m => Int -> Grid m -> CopyModeState -> m CopyModeState
 cursorVertical d g st = do
     let row' = max 0 (min (gBottom g) (st.cursorRow + d))
-    len <- g.gLineLen row'
-    pure st { cursorRow = row', cursorCol = min st.cursorCol len }
+    col' <- vertCol g row' st
+    pure st { cursorRow = row', cursorCol = col' }
 
--- | Move to the end of the current line. Vi lands on the last cell (so an
--- inclusive selection covers it); emacs lands one cell past it (so an
--- exclusive selection covers it).
+-- | Move to the end of the current line — the full grid width during a
+-- rectangular selection. Vi lands on the last cell (so an inclusive
+-- selection covers it); emacs lands one cell past it (so an exclusive
+-- selection covers it).
 endOfLine :: Monad m => ModeKeys -> Grid m -> CopyModeState -> m CopyModeState
 endOfLine keys g st = do
-    len <- g.gLineLen st.cursorRow
+    len <- case selColumnBound st of
+        AllColumns -> pure g.gSx
+        ContentColumns -> g.gLineLen st.cursorRow
     pure st { cursorCol = endCol len }
   where
     endCol len = case keys of
@@ -457,8 +484,8 @@ scrollUp n g st = do
     let voY' = max 0 (min g.gHsize (st.viewportOffY + n))
         moved = voY' - st.viewportOffY
         row' = max 0 (st.cursorRow - moved)
-    len <- g.gLineLen row'
-    pure st { viewportOffY = voY', cursorRow = row', cursorCol = min st.cursorCol len }
+    col' <- vertCol g row' st
+    pure st { viewportOffY = voY', cursorRow = row', cursorCol = col' }
 
 -- | Scroll the viewport down by @n@ lines (vi @C-f@/@C-d@), the inverse
 -- of 'scrollUp'.
@@ -467,8 +494,8 @@ scrollDown n g st = do
     let voY' = max 0 (min g.gHsize (st.viewportOffY - n))
         moved = st.viewportOffY - voY'
         row' = min (gBottom g) (st.cursorRow + moved)
-    len <- g.gLineLen row'
-    pure st { viewportOffY = voY', cursorRow = row', cursorCol = min st.cursorCol len }
+    col' <- vertCol g row' st
+    pure st { viewportOffY = voY', cursorRow = row', cursorCol = col' }
 
 -- | The absolute grid row currently shown at the top of the viewport.
 viewportTop :: Grid m -> CopyModeState -> Int
@@ -841,14 +868,14 @@ handlers = Map.fromList
     , ("rectangle-toggle",  pureH rectangleToggle)
     , ("other-end",         pureH otherEnd)
     , ("clear-selection",   pureH (\s -> s { selection = Nothing }))
-    , ("next-word",         motionH (\seps -> mNextWord seps))
-    , ("next-word-end",     motionH (\seps -> mNextWordEnd seps))
-    , ("previous-word",     motionH (\seps -> mPreviousWord seps))
-    , ("next-space",        motionH (\_ -> mNextWord ""))
-    , ("next-space-end",    motionH (\_ -> mNextWordEnd ""))
-    , ("previous-space",    motionH (\_ -> mPreviousWord ""))
-    , ("cursor-left",       motionH (\_ -> mCursorLeft))
-    , ("cursor-right",      motionH (\_ -> mCursorRight))
+    , ("next-word",         motionH (\_ seps -> mNextWord seps))
+    , ("next-word-end",     motionH (\_ seps -> mNextWordEnd seps))
+    , ("previous-word",     motionH (\_ seps -> mPreviousWord seps))
+    , ("next-space",        motionH (\_ _ -> mNextWord ""))
+    , ("next-space-end",    motionH (\_ _ -> mNextWordEnd ""))
+    , ("previous-space",    motionH (\_ _ -> mPreviousWord ""))
+    , ("cursor-left",       motionH (\_ _ -> mCursorLeft))
+    , ("cursor-right",      motionH (\st _ -> mCursorRight (selColumnBound st)))
     , ("cursor-up",         gridH (cursorVertical (-1)))
     , ("cursor-down",       gridH (cursorVertical 1))
     , ("page-up",           gridH (\g -> scrollUp g.gSy g))
@@ -896,7 +923,7 @@ handlers = Map.fromList
         opts <- readTVarIO sst.options
         g <- paneGrid pane
         st' <- runMotion g opts.modeKeys opts.wordSeparators
-            (mk opts.wordSeparators) st
+            (mk st opts.wordSeparators) st
         pure (Right (Just st'))
     gridH f _ pane st _ = do
         g <- paneGrid pane
