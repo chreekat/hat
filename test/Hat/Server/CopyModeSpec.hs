@@ -231,11 +231,11 @@ spec = do
         it "emacs end-of-line lands one past the last grid column" $
             (runIdentity (endOfLine KeysEmacs grid (rect (at 0 0)))).cursorCol
                 `shouldBe` 40
-        it "cursor-left snaps back from blank space to the last character" $ do
+        it "cursor-left steps one cell through blank space (bug: snapped to line end)" $ do
             let s = runIdentity
                     (runMotion grid KeysVi viSeparators mCursorLeft
                         (rect (at 0 30)))
-            s.cursorCol `shouldBe` 14
+            s.cursorCol `shouldBe` 29
         it "a full-width block yanks every line whole" $
             vi [ "history-top", "rectangle-toggle", "end-of-line"
                , "cursor-down", "cursor-down", "copy-selection" ]

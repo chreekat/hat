@@ -269,24 +269,18 @@ cursorRight g wrap columnBound pastEnd s = do
             then pure s { rc = s.rc + 1 }
             else pure s
 
--- | @grid_reader_cursor_left@: a cursor out in blank space (rectangular
--- selection) first snaps back to the line's length.
+-- | @grid_reader_cursor_left@.
 cursorLeft :: Monad m => Grid m -> Bool -> Rdr -> m Rdr
-cursorLeft g wrap s0 = do
-    xx <- g.gLineLen s0.rr
-    let s = if s0.rc > xx then s0 { rc = xx } else s0
-    step s
-  where
-    step s
-        | s.rc == 0 && s.rr > 0 = do
-            w <- g.gWrapped (s.rr - 1)
-            if wrap || w
-                then do
-                    l <- g.gLineLen (s.rr - 1)
-                    pure s { rr = s.rr - 1, rc = l }
-                else pure s
-        | s.rc > 0 = pure s { rc = s.rc - 1 }
-        | otherwise = pure s
+cursorLeft g wrap s
+    | s.rc == 0 && s.rr > 0 = do
+        w <- g.gWrapped (s.rr - 1)
+        if wrap || w
+            then do
+                l <- g.gLineLen (s.rr - 1)
+                pure s { rr = s.rr - 1, rc = l }
+            else pure s
+    | s.rc > 0 = pure s { rc = s.rc - 1 }
+    | otherwise = pure s
 
 -- | @grid_reader_cursor_next_word@.
 nextWord :: Monad m => Grid m -> Text -> Rdr -> m Rdr
