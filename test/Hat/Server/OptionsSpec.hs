@@ -90,6 +90,22 @@ spec = do
             setOption Assign defaultOptions "cursor-colour" "zzz"
                 `shouldSatisfy` isLeft
 
+        it "parses display-panes-time as milliseconds" $
+            fmap (.displayPanesTime)
+                (setOption Assign defaultOptions "display-panes-time" "500")
+                `shouldBe` Right 500
+
+        it "stores valid display-panes colours and rejects junk" $ do
+            fmap (.displayPanesColour)
+                (setOption Assign defaultOptions "display-panes-colour" "green")
+                `shouldBe` Right "green"
+            fmap (.displayPanesActiveColour)
+                (setOption Assign defaultOptions
+                    "display-panes-active-colour" "colour208")
+                `shouldBe` Right "colour208"
+            setOption Assign defaultOptions "display-panes-colour" "zzz"
+                `shouldSatisfy` isLeft
+
         it "appends to a string option with -a" $ do
             let set mode opts name v =
                     either (const opts) id (setOption mode opts name v)

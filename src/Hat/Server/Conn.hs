@@ -13,6 +13,7 @@ module Hat.Server.Conn
     , deliversKey
     , escTiming
     , reencodeKey
+    , handleInput  -- ^ exported for the display-panes key tests
     ) where
 
 import Control.Concurrent (forkIO)
@@ -41,6 +42,7 @@ import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
 import Hat.Server.Overlay
 import Hat.Server.Startup
+import Hat.Server.DisplayPanes
 import Hat.Server.Flash
 import Hat.Server.Toast
 import Hat.Server.Keys
@@ -197,6 +199,7 @@ newClient st conn h = do
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
+    displayPanesVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
@@ -227,6 +230,7 @@ newClient st conn h = do
         , flash = flashVar
         , prompt = promptVar
         , picker = pickerVar
+        , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
         , env = h.env
@@ -366,12 +370,54 @@ deliversKey opts paneFocusReport k
 handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
+    mpanes <- readTVarIO client.displayPanes
     mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
-    case (mpicker, mprompt) of
-        (Just pk, _) -> handlePickerInput d st client pk (tokenizeKeys bs)
-        (_, Just pr) -> handlePromptInput d st client pr bs
-        _            -> handleKeys d st client bs
+    case (mpanes, mpicker, mprompt) of
+        (Just dp, _, _) -> handlePanesInput d st client dp (tokenizeKeys bs)
+        (_, Just pk, _) -> handlePickerInput d st client pk (tokenizeKeys bs)
+        (_, _, Just pr) -> handlePromptInput d st client pr bs
+        _               -> handleKeys d st client bs
+
+-- | Keys while the @display-panes@ overlay shows: each key is decided by
+-- 'panesKeyAction'; once the overlay closes, the rest of the chunk flows
+-- through normal key handling.
+handlePanesInput
+    :: Dispatch -> ServerState -> Client -> DisplayPanesState -> [Key] -> IO ()
+handlePanesInput d st client dp = go
+  where
+    go [] = pure ()
+    go (k : ks) = case panesKeyAction dp.hold k.name of
+        PanesSelect num -> do
+            dismissPanes st client
+            selectPaneNumber d st client dp.template num
+            runKeys d st client ks
+        PanesDismiss -> do
+            dismissPanes st client
+            runKeys d st client ks
+        PanesDismissForward -> do
+            dismissPanes st client
+            runKeys d st client (k : ks)
+        PanesForward -> do
+            runKeys d st client [k]
+            go ks
+
+-- | Run the overlay's template against the pane showing @num@ in the
+-- client's current window (@%%@ = that pane's id); showing no such
+-- number, the digit just closes the overlay.
+selectPaneNumber
+    :: Dispatch -> ServerState -> Client -> Text -> Int -> IO ()
+selectPaneNumber d st client template num = do
+    opts <- clientOptions st client
+    mwin <- currentWindowOf st (Just client)
+    forM_ mwin $ \win -> do
+        ps <- readTVarIO win.panes
+        let numbered = zip [opts.paneBaseIndex ..] (Map.keys ps)
+        forM_ (lookup num numbered) $ \pid -> do
+            let target = "%" <> tshow (rawPane pid)
+            toastReplies st client
+                =<< d.runCommandText st (Just client)
+                    (T.replace "%%" target template)
 
 -- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
 -- its copy-mode table before each. A key that enters or leaves copy mode

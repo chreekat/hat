@@ -201,6 +201,7 @@ hookArgSpec = \case
     "bind-key" -> "TN"
     "unbind-key" -> "T"
     "command-prompt" -> "Ip"
+    "display-panes" -> "d"
     "set-hook" -> "tB"
     "show-hooks" -> "tF"
     "wait-for" -> "Fw"
@@ -304,6 +305,7 @@ commandSpecs =
     , (["command-prompt"], cmdCommandPrompt)
     , (["choose-tree"], cmdChooseTree)
     , (["choose-window", "choosew"], cmdChooseWindow)
+    , (["display-panes", "displayp"], cmdDisplayPanes)
     , (["show-buffer", "showb"], cmdShowBuffer)
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)

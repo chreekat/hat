@@ -26,6 +26,7 @@ import Hat.Server.CaptureSpec qualified
 import Hat.Server.ColorSchemeSpec qualified
 import Hat.Server.ConfigSpec qualified
 import Hat.Server.CopyModeSpec qualified
+import Hat.Server.DisplayPanesSpec qualified
 import Hat.Server.EnvironSpec qualified
 import Hat.Server.FlagsSpec qualified
 import Hat.Server.FormatSpec qualified
@@ -104,6 +105,7 @@ main = hspec $ do
     describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
+    describe "Hat.Server.DisplayPanes" Hat.Server.DisplayPanesSpec.spec
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec
     describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec

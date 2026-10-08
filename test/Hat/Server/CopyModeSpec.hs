@@ -133,6 +133,8 @@ spec = do
         let bound key = Map.lookup key =<< Map.lookup "prefix" defaultKeymap
         it "! breaks the pane into a new window" $
             bound "!" `shouldBe` Just [["break-pane"]]
+        it "q shows the pane numbers" $
+            bound "q" `shouldBe` Just [["display-panes"]]
         it "{ swaps the pane with its predecessor" $
             bound "{" `shouldBe` Just [["swap-pane", "-U"]]
         it "} swaps the pane with its successor" $

@@ -29,6 +29,8 @@ module Hat.Model
     , CharSearch (..)
     , Toast (..)
     , Flash (..)
+    , PanesKeyHold (..)
+    , DisplayPanesState (..)
     , PromptState (..)
     , PickerState (..)
     , PickerNode (..)
@@ -347,6 +349,23 @@ data Toast = Toast
                                    --   'Nothing' = until a key is pressed
     }
 
+-- | Whether a non-selecting key closes the @display-panes@ overlay
+-- (default) or leaves it showing (@-N@); see
+-- 'Hat.Server.DisplayPanes.panesKeyAction'.
+data PanesKeyHold = PanesClose | PanesHold
+    deriving (Eq, Show)
+
+-- | The armed @display-panes@ overlay on one client; see
+-- 'Hat.Server.DisplayPanes'.
+data DisplayPanesState = DisplayPanesState
+    { deadline :: !(Maybe Word64)
+        -- ^ monotonic ns, from 'Hat.Server.DisplayPanes.panesDeadline';
+        --   'Nothing' = until a key
+    , hold     :: !PanesKeyHold
+    , template :: !Text  -- ^ run on select, @%%@ = the chosen pane's id
+    }
+    deriving (Eq, Show)
+
 -- | The active-pane highlight shown while the prefix is armed; see
 -- 'Hat.Server.Flash.armFlash'.
 data Flash
@@ -507,6 +526,7 @@ data Client = Client
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
+    , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
     , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see

@@ -284,6 +284,7 @@ fakeClient _ = do
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
+    displayPanesVar <- newTVarIO Nothing
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
     pure Client
@@ -311,6 +312,7 @@ fakeClient _ = do
         , flash = flashVar
         , prompt = promptVar
         , picker = pickerVar
+        , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
         , env = []

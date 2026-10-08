@@ -48,6 +48,7 @@ mkClient = do
     flashV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
     pickV   <- newTVarIO Nothing
+    dpanesV <- newTVarIO Nothing
     focusV  <- newTVarIO True
     envImpV <- newTVarIO ImportEnv
     let client = Client
@@ -61,7 +62,8 @@ mkClient = do
             , lastStatus = statusV
             , lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
-            , picker = pickV, outerFocused = focusV, envImport = envImpV
+            , picker = pickV, displayPanes = dpanesV
+            , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "" }
     re <- newReadEnd b
     pure (client, re)

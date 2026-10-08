@@ -109,6 +109,9 @@ data Options = Options
     , setTitles              :: Bool
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
     , displayTime            :: Int   -- ^ toast duration, ms
+    , displayPanesTime       :: Int   -- ^ pane-number overlay duration, ms; 0 = until a key
+    , displayPanesColour     :: Text  -- ^ tmux colour text
+    , displayPanesActiveColour :: Text  -- ^ tmux colour text, active pane
     , focusEvents            :: Bool
     , aggressiveResize       :: Bool
     , monitorActivity        :: Bool
@@ -161,6 +164,9 @@ defaultOptions = Options
     , setTitles = False
     , escapeTime = 0
     , displayTime = 3000
+    , displayPanesTime = 1000
+    , displayPanesColour = "blue"
+    , displayPanesActiveColour = "red"
     , focusEvents = False
     , aggressiveResize = False
     , monitorActivity = False
@@ -217,6 +223,9 @@ data OptionName
     | OptSetTitles
     | OptEscapeTime
     | OptDisplayTime
+    | OptDisplayPanesTime
+    | OptDisplayPanesColour
+    | OptDisplayPanesActiveColour
     | OptFocusEvents
     | OptAggressiveResize
     | OptMonitorActivity
@@ -329,6 +338,10 @@ applyEntry name val o = case (name, val) of
     (OptSetTitles, OVBool b) -> o { setTitles = b }
     (OptEscapeTime, OVInt n) -> o { escapeTime = n }
     (OptDisplayTime, OVInt n) -> o { displayTime = n }
+    (OptDisplayPanesTime, OVInt n) -> o { displayPanesTime = n }
+    (OptDisplayPanesColour, OVText t) -> o { displayPanesColour = t }
+    (OptDisplayPanesActiveColour, OVText t) ->
+        o { displayPanesActiveColour = t }
     (OptFocusEvents, OVBool b) -> o { focusEvents = b }
     (OptAggressiveResize, OVBool b) -> o { aggressiveResize = b }
     (OptMonitorActivity, OVBool b) -> o { monitorActivity = b }
@@ -425,7 +438,9 @@ allOptionNames =
     , OptPaneBorderStyle, OptPaneActiveBorderStyle, OptModeStyle
     , OptPaneBorderLines, OptPaneBorderIndicators, OptCursorColour
     , OptSetTitles
-    , OptEscapeTime, OptDisplayTime, OptFocusEvents, OptAggressiveResize
+    , OptEscapeTime, OptDisplayTime, OptDisplayPanesTime
+    , OptDisplayPanesColour, OptDisplayPanesActiveColour
+    , OptFocusEvents, OptAggressiveResize
     , OptMonitorActivity, OptMonitorBell, OptMonitorSilence, OptBellAction
     , OptAutomaticRename, OptAutomaticRenameFormat
     , OptRemainOnExit
@@ -516,6 +531,9 @@ optionNameText = \case
     OptSetTitles -> "set-titles"
     OptEscapeTime -> "escape-time"
     OptDisplayTime -> "display-time"
+    OptDisplayPanesTime -> "display-panes-time"
+    OptDisplayPanesColour -> "display-panes-colour"
+    OptDisplayPanesActiveColour -> "display-panes-active-colour"
     OptFocusEvents -> "focus-events"
     OptAggressiveResize -> "aggressive-resize"
     OptMonitorActivity -> "monitor-activity"
@@ -566,6 +584,9 @@ optionValueOf o = \case
     OptSetTitles -> Just (OVBool o.setTitles)
     OptEscapeTime -> Just (OVInt o.escapeTime)
     OptDisplayTime -> Just (OVInt o.displayTime)
+    OptDisplayPanesTime -> Just (OVInt o.displayPanesTime)
+    OptDisplayPanesColour -> Just (OVText o.displayPanesColour)
+    OptDisplayPanesActiveColour -> Just (OVText o.displayPanesActiveColour)
     OptFocusEvents -> Just (OVBool o.focusEvents)
     OptAggressiveResize -> Just (OVBool o.aggressiveResize)
     OptMonitorActivity -> Just (OVBool o.monitorActivity)

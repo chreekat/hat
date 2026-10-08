@@ -5,6 +5,7 @@ import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Control.Exception (finally)
 import Data.IORef (newIORef, readIORef)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Timeout (timeout)
@@ -43,6 +44,8 @@ import Hat.Server
     , welcome, windowActivity
     , zoomTarget )
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
+import Hat.Server.Conn (handleInput)
+import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.Session
     (cmdKillSession, cmdNewSession, cmdRenameSession)
@@ -146,6 +149,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO True     -- outerFocused
         <*> newTVarIO ImportEnv
         <*> pure []
@@ -184,6 +188,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO True
         <*> newTVarIO ImportEnv
         <*> pure clientEnv
@@ -1246,3 +1251,52 @@ spec = do
             _ <- Emu.feed emu "\ESC[>4;2m"
             ((.raw) <$> reencodeKey (Just emu) cEnter)
                 `shouldReturn` "\ESC[27;5;13~"
+
+    describe "display-panes" $ do
+        let arm :: ServerState -> Client -> [Text] -> IO [Reply]
+            arm st client args =
+                runArgv st (Just client) ("display-panes" : args)
+            -- a window of two stub panes, the first active
+            twoPanes sess = do
+                win <- addWindow sess 0
+                p0 <- stubPane 0
+                p1 <- stubPane 1
+                atomically $ writeTVar win.panes
+                    (Map.fromList [(PaneId 0, p0), (PaneId 1, p1)])
+                pure win
+        it "arms the issuing client's overlay, template defaulted" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size 24 80) 1
+            arm st client [] `shouldReturn` []
+            Just dp <- readTVarIO client.displayPanes
+            dp.template `shouldBe` "select-pane -t '%%'"
+            dp.hold `shouldBe` PanesClose
+            dp.deadline `shouldSatisfy` isJust
+        it "-d 0 holds until a key; -N survives non-selecting keys" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size 24 80) 1
+            arm st client ["-N", "-d", "0"] `shouldReturn` []
+            Just dp <- readTVarIO client.displayPanes
+            dp.deadline `shouldBe` Nothing
+            dp.hold `shouldBe` PanesHold
+        it "rejects a malformed -d delay loudly" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size 24 80) 1
+            [RErr e] <- arm st client ["-d", "soon"]
+            e `shouldSatisfy` T.isInfixOf "bad delay"
+        it "a digit selects the pane showing that number and closes" $ do
+            (st, sess) <- seedSession "/"
+            win <- twoPanes sess
+            client <- addClient st sess.id (Size 24 80) 1
+            arm st client [] `shouldReturn` []
+            handleInput dispatch st client "1"
+            readTVarIO win.activeId `shouldReturn` PaneId 1
+            readTVarIO client.displayPanes `shouldReturn` Nothing
+        it "q dismisses without selecting" $ do
+            (st, sess) <- seedSession "/"
+            win <- twoPanes sess
+            client <- addClient st sess.id (Size 24 80) 1
+            arm st client [] `shouldReturn` []
+            handleInput dispatch st client "q"
+            readTVarIO win.activeId `shouldReturn` PaneId 0
+            readTVarIO client.displayPanes `shouldReturn` Nothing

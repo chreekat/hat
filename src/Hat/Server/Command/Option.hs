@@ -652,13 +652,7 @@ scalarOptionEntry mode opts name value = case name of
     "pane-active-border-style" ->
         Right (OptPaneActiveBorderStyle, OVStyle (parseStyle value))
     "mode-style" -> Right (OptModeStyle, OVStyle (parseStyle value))
-    "cursor-colour"
-        -- "default"/"" clear it; anything else must be a colour parseColor
-        -- recognizes (it answers DefaultColor only for those two and junk).
-        | T.null value || value == "default"
-            || parseColor value /= Cell.DefaultColor ->
-                Right (OptCursorColour, OVText value)
-        | otherwise -> Left ("bad colour: " <> value)
+    "cursor-colour" -> withColour OptCursorColour
     "pane-border-lines" -> case value of
         "single" -> Right (OptPaneBorderLines, OVBorderLines BorderSingle)
         "heavy"  -> Right (OptPaneBorderLines, OVBorderLines BorderHeavy)
@@ -675,6 +669,9 @@ scalarOptionEntry mode opts name value = case name of
     "set-titles" -> withOnOff OptSetTitles
     "escape-time" -> withInt OptEscapeTime
     "display-time" -> withInt OptDisplayTime
+    "display-panes-time" -> withInt OptDisplayPanesTime
+    "display-panes-colour" -> withColour OptDisplayPanesColour
+    "display-panes-active-colour" -> withColour OptDisplayPanesActiveColour
     "focus-events" -> withOnOff OptFocusEvents
     "aggressive-resize" -> withOnOff OptAggressiveResize
     "monitor-activity" -> withOnOff OptMonitorActivity
@@ -704,6 +701,12 @@ scalarOptionEntry mode opts name value = case name of
         "on"  -> Right (n, OVBool True)
         "off" -> Right (n, OVBool False)
         _ -> Left (name <> ": on or off")
+    -- "default"/"" pass through; anything else must be a colour parseColor
+    -- recognizes (it answers DefaultColor only for those two and junk).
+    withColour n
+        | T.null value || value == "default"
+            || parseColor value /= Cell.DefaultColor = Right (n, OVText value)
+        | otherwise = Left ("bad colour: " <> value)
     withAppend old = case mode of
         Append -> old <> value
         Assign -> value

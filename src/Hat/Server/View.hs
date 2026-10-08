@@ -35,6 +35,7 @@ import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
+import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
 import Hat.Server.Format (formatReadsTree)
 import Hat.Server.HookTypes (HooksState (..))
@@ -44,6 +45,7 @@ import Hat.Server.FormatEnv
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
+import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -212,20 +214,42 @@ renderOnce st client = do
             pure ( overlayPicker region pk mPreview frame
                  , volatileRows region origins
                  , (Pos 0 0, False) )
+    -- The display-panes overlay stamps each pane's number over its rect.
+    mdpanes <- readTVarIO client.displayPanes
+    (frame'', origins'') <- case (mdpanes, view) of
+        (Just _, Just (_, _, rects, _, ps, active)) -> do
+            let shiftR r = r { startRow = r.startRow + rowOff
+                             , endRow = r.endRow + rowOff }
+                colourFor pid = parseColor $ if pid == active
+                    then opts.displayPanesActiveColour
+                    else opts.displayPanesColour
+                stamps = concat
+                    [ [ ( Pos (p.row + r.startRow) (p.col + r.startCol)
+                        , cell )
+                      | (p, cell) <- DisplayPanes.panesStamp (colourFor pid)
+                            (opts.paneBaseIndex + i)
+                            (r.endCol - r.startCol) (r.endRow - r.startRow) ]
+                    | (pid, rect0) <- rects
+                    , Just i <- [Map.lookupIndex pid ps]
+                    , let r = shiftR rect0 ]
+            pure ( DisplayPanes.stampCells stamps frame'
+                 , List.foldl' (\o (_, rect0) -> volatileRows (shiftR rect0) o)
+                     origins' rects )
+        _ -> pure (frame', origins')
     old <- readIORef client.lastFrame
     oldOrigins <- readIORef client.lastOrigins
     oldCursor <- readIORef client.lastCursor
     -- A diff is only valid between same-sized frames; force full on any
     -- dimension change.
-    let full = fullFlag || frameDims old /= frameDims frame'
-        known r = case (oldOrigins V.!? r, origins' V.!? r) of
+    let full = fullFlag || frameDims old /= frameDims frame''
+        known r = case (oldOrigins V.!? r, origins'' V.!? r) of
             (Just a, Just b) -> sameOrigin a b
             _ -> False
-        ops = if full then fullRedraw frame' else diffFrameKnown known old frame'
+        ops = if full then fullRedraw frame'' else diffFrameKnown known old frame''
         cursorOp = CursorAt (fst cursor') (snd cursor')
         needSend = not (null ops) || cursor' /= oldCursor || full
-    writeIORef client.lastFrame frame'
-    writeIORef client.lastOrigins origins'
+    writeIORef client.lastFrame frame''
+    writeIORef client.lastOrigins origins''
     writeIORef client.lastCursor cursor'
     when needSend $ send client (Draw (ops <> [cursorOp]))
     -- The moved-to pane is now on screen, so a pending move-linger starts its

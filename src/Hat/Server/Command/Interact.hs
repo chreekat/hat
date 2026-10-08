@@ -8,6 +8,7 @@ module Hat.Server.Command.Interact
     , cmdCommandPrompt
     , cmdChooseTree
     , cmdChooseWindow
+    , cmdDisplayPanes
     , buildTreeNodes
     , buildWindowItems
     ) where
@@ -17,6 +18,7 @@ import Control.Monad (forM, forM_)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Geometry
 import Hat.Model
@@ -24,6 +26,7 @@ import Hat.Model.Options
 import Hat.Server.ClientIO (send)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.CopyMode qualified as CopyMode
+import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
@@ -50,6 +53,30 @@ cmdSendPrefix st mclient _ = do
             mpane <- clientActivePane st client
             forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty key.raw
     pure []
+
+-- | @display-panes [-bN] [-d delay-ms] [template]@: overlay each pane's
+-- number on the issuing client; a digit press runs @template@ (default
+-- @select-pane -t '%%'@) against that pane. @-d@ overrides
+-- @display-panes-time@; @-N@ keeps the overlay up on non-selecting keys.
+-- @-b@ is tmux's \"don't block the command queue\" — hat never blocks, so
+-- it is accepted as already satisfied.
+cmdDisplayPanes :: CommandImpl
+cmdDisplayPanes st mclient args = do
+    let (opts, flags, pos) = parseArgs "d" args
+        hold = if "-N" `elem` flags then PanesHold else PanesClose
+        template = case pos of
+            (t : _) -> t
+            [] -> "select-pane -t '%%'"
+        mdelay = case lookup "-d" opts of
+            Nothing -> Right Nothing
+            Just v -> case TR.decimal v of
+                Right (n, rest) | T.null rest -> Right (Just n)
+                _ -> Left ("display-panes: bad delay: " <> v)
+    case (mclient, mdelay) of
+        (_, Left e) -> pure [RErr e]
+        (Nothing, _) -> pure [RErr "display-panes: no client"]
+        (Just client, Right delay) ->
+            [] <$ armPanes st client delay hold template
 
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do

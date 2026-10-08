@@ -54,6 +54,7 @@ defaultKeymap = Map.fromList
         , ("M-3", ["select-layout", "main-horizontal"])
         , ("M-4", ["select-layout", "main-vertical"])
         , ("M-5", ["select-layout", "tiled"])
+        , ("q", ["display-panes"])
         , ("o", ["select-pane", "-t", ":.+"])
         , ("O", ["select-pane", "-t", ":.-"])
         , ("n", ["next-window"])
