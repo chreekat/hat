@@ -35,6 +35,7 @@ import Text.Read (readMaybe)
 
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import Network.Socket qualified as N
 
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ratio ((%))
@@ -560,10 +561,8 @@ spec = parallel $ do
         t1 `shouldSatisfy` B8.isInfixOf "[detached]"
 
         -- Server must still be alive.
-        alive <- connectTo h.sock
-        alive `shouldSatisfy` \case
-            Just _ -> True
-            Nothing -> False
+        alive <- serverUp h.sock
+        alive `shouldBe` True
 
         -- Reattach: the redrawn screen still shows our marker.
         c2 <- startClient h
@@ -1711,9 +1710,15 @@ spec = parallel $ do
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
 pollServerGone path n = do
-    m <- connectTo path
-    case m of
-        Nothing -> pure True
-        Just _ -> do
-            threadDelay 100_000
-            pollServerGone path (n - 1)
+    up <- serverUp path
+    if up
+        then threadDelay 100_000 *> pollServerGone path (n - 1)
+        else pure True
+
+-- | Whether a server answers at the path. The probe is closed before
+-- returning: an open probe counts as an active connection and holds the
+-- server out of its idle exit.
+serverUp :: FilePath -> IO Bool
+serverUp path = connectTo path >>= \case
+    Nothing -> pure False
+    Just sock -> True <$ N.close sock
