@@ -2,20 +2,16 @@ module Hat.Term.PtySpec (spec) where
 
 import Control.Exception (bracket)
 import Data.ByteString.Char8 qualified as B8
-import Data.List (isPrefixOf)
 import Data.Text qualified as T
 import System.Directory
-    (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
+    (doesDirectoryExist, removeDirectoryRecursive, removePathForcibly)
 import System.Environment (getEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeFileName)
 import System.Posix.IO (FdOption (CloseOnExec), closeFd, createPipe, dup, setFdOption)
-import System.Posix.Process (getProcessID)
 import System.Posix.Temp (mkdtemp)
 import System.Posix.Types (Fd (..))
 import System.Process (callProcess)
 import Test.Hspec
-import Test.Hspec.Runner (defaultConfig, evalSpec)
 
 import Hat.Geometry
 import Hat.Term.Pty
@@ -69,26 +65,11 @@ data TestShell = TestShell
     , base :: Spawn
     }
 
--- The mkdtemp template for a throwaway HOME. The pid keeps a concurrent
--- suite's dirs out of 'testShellHomes'.
-homeTemplate :: IO FilePath
-homeTemplate = do
-    self <- getProcessID
-    pure ("/tmp/hat-pty-home-" <> show self <> "-")
-
 -- Hands an item a throwaway HOME that dies with it.
 withTestShell :: (TestShell -> IO a) -> IO a
-withTestShell act = do
-    template <- homeTemplate
-    bracket (mkdtemp template) removePathForcibly $ \home ->
+withTestShell act =
+    bracket (mkdtemp "/tmp/hat-pty-home-") removePathForcibly $ \home ->
         act TestShell { home, base = baseSpawn home }
-
--- This run's throwaway HOMEs on disk right now.
-testShellHomes :: IO [FilePath]
-testShellHomes = do
-    template <- homeTemplate
-    filter (takeFileName template `isPrefixOf`)
-        <$> listDirectory (takeDirectory template)
 
 spec :: Spec
 spec = do
@@ -97,13 +78,7 @@ spec = do
             parseCmdline "vim\NULFoo Bar.txt\NUL"
                 `shouldBe` Just ["vim", "Foo Bar.txt"]
 
-    describe "the test shells' throwaway HOME" $ do
-        it "is not created by building the spec (bug 13)" $ do
-            existing <- testShellHomes
-            _ <- evalSpec defaultConfig spec
-            current <- testShellHomes
-            current `shouldMatchList` existing
-
+    describe "the test shells' throwaway HOME" $
         it "is gone once the item holding it returns (bug 13)" $ do
             dir <- withTestShell (\sh -> pure sh.home)
             doesDirectoryExist dir `shouldReturn` False

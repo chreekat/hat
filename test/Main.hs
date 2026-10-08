@@ -77,9 +77,7 @@ main = hspec $ parallel $ do
     describe "Hat.Intern" Hat.InternSpec.spec
     describe "Hat.Log" Hat.LogSpec.spec
     describe "Hat.Transport.Socket" Hat.Transport.SocketSpec.spec
-    -- Pty's throwaway-HOME meta-items list a directory its other items
-    -- create and destroy, so its items must not overlap each other.
-    describe "Hat.Term.Pty" (sequential Hat.Term.PtySpec.spec)
+    describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
     describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec
     describe "Hat.Term.Emulator" Hat.Term.EmulatorSpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
