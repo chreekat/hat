@@ -116,6 +116,7 @@ spot-read of each suspect consumer.
 | `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
+| `prompt-history-limit` | `pushHistory` (Prompt.hs) on each submitted line, `restoreHistory` (PromptHistory.hs) as the `history-file` loads: the newest entries of each type are kept | implemented ✅ tested | pure (PromptSpec, PromptHistorySpec) |
 | `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
@@ -186,10 +187,8 @@ spot-read of each suspect consumer.
   login-ness differs. `respawn-pane` re-reads `default-shell` where tmux
   reuses the pane's original shell.
 
-- **`history-file`** loads every entry, where tmux keeps the newest
-  `prompt-history-limit` (default 100) of each type; hat's prompt history has
-  no limit yet. Hat has no search prompt, so a file's `search:` entries are
-  only carried through to the next save. Entries are text: a byte that is
+- **`history-file`**: hat has no search prompt, so a file's `search:`
+  entries are only carried through to the next save. Entries are text: a byte that is
   not UTF-8 in a tmux-written entry is rewritten as U+FFFD.
 
 ## The effect-test sweep

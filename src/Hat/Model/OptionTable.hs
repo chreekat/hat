@@ -450,7 +450,7 @@ optionTable =
     , notYet $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
     , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
     , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
-    , notYet $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
+    , live $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
     , live $ scalar "set-clipboard" ServerScope
         (KChoice ["off", "external", "on"]) "external"
     , notYet $ arrayOf "terminal-overrides" ServerScope KString "," ["linux*:AX@"]

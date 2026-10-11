@@ -9,6 +9,7 @@ module Hat.Server.Prompt
     , applyTemplate
     , editPrompt
     , pushHistory
+    , addHistory
     ) where
 
 import Data.Char (isAlphaNum, isSpace)
@@ -200,13 +201,18 @@ xs !? n
         []      -> Nothing
 
 -- | Add a submitted line to the front of the history, most-recent
--- first. Blank lines and consecutive duplicates are dropped.
-pushHistory :: Text -> [Text] -> [Text]
-pushHistory line history
+-- first, keeping at most @limit@ lines. Blank lines are dropped.
+pushHistory :: Int -> Text -> [Text] -> [Text]
+pushHistory limit line history
     | T.null (T.strip line) = history
-    | otherwise = case history of
-        (recent : _) | recent == line -> history
-        _ -> line : history
+    | otherwise = addHistory limit line history
+
+-- | tmux's @prompt_add_history@: the line becomes the newest entry unless it
+-- repeats the newest already, and only the newest @limit@ are kept.
+addHistory :: Int -> Text -> [Text] -> [Text]
+addHistory limit line history = take limit $ case history of
+    recent : _ | recent == line -> history
+    _ -> line : history
 
 -- | Clamp the cursor to @0..length@.
 moveTo :: Int -> PromptState -> PromptState
