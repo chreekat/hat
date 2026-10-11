@@ -49,11 +49,11 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 hooks-notify.sh                 # title stack (CSI 22/23 t) + default-shell option + client-* hooks
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
-customize-mode.sh               # customize-mode unimplemented
-display-panes.sh                # display-panes mode + display-panes-format unimplemented
+customize-mode.sh               # customize-mode unimplemented: needs the option registry (descriptions, types, hook scopes, defaults)
+display-panes.sh                # display-panes as panes-mode (window-panes.c) + display-panes-format + floating panes, pane-scrollbars, pane-border-status
 modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
 mode-kill.sh                    # display-panes as a pane mode (panes-mode, -k) + display-panes-format option
-mode-mutation.sh                # customize-mode unimplemented
+mode-mutation.sh                # customize-mode unimplemented (needs the option registry); the other modes pass
 
 # copy-mode advanced motions/options
 copy-mode-redraw.sh             # needs status + copy-mode-position-format/line-numbers + mode redraw
