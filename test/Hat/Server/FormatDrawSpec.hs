@@ -70,6 +70,8 @@ spec = do
             rowText (draw 12 fmt) `shouldBe` "aaaaBBcccc  "
         it "draws after-list text beside a left list" $
             rowText (draw 8 "#[list=on align=left]abc#[nolist]Z") `shouldBe` "abcZ    "
+        it "draws acs text as its line-drawing glyphs, until noacs" $
+            rowText (draw 4 "#[acs]~q#[noacs]~q") `shouldBe` "\x00b7\x2500~q"
         it "draws wide characters across two cells" $ do
             let row = draw 3 "中a"
             V.length row `shouldBe` 3

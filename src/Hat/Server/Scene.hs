@@ -21,7 +21,6 @@ module Hat.Server.Scene
     , sceneChrome
     , statusBase
     , borderGlyph
-    , acsGlyph
     ) where
 
 import Data.Bits ((.&.), (.|.))
@@ -35,6 +34,7 @@ import Data.Vector qualified as V
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)
 import Hat.Model.Options (BorderLines (..))
+import Hat.Server.FormatDraw (acsGlyph)
 import Hat.Server.Layout (Orientation (..))
 import Hat.Term.Cell qualified as Cell
 
@@ -322,19 +322,3 @@ borderGlyph lns number ct = case lns of
     BorderHeavy -> "\x2503\x2501\x250f\x2513\x2517\x251b\x2533\x253b\x2523\x252b\x254b\x00b7"
         !! fromEnum ct
     BorderSingle -> acsGlyph ("xqlkmjwvtun~" !! fromEnum ct)
-
--- | A VT100 alternate-character-set character as the UTF-8 glyph tmux
--- draws for it (@tty_acs_table@); anything else is itself.
-acsGlyph :: Char -> Char
-acsGlyph c = fromMaybe c (lookup c acsTable)
-  where
-    acsTable =
-        [ ('+', '\x2192'), (',', '\x2190'), ('-', '\x2191'), ('.', '\x2193')
-        , ('0', '\x25ae'), ('`', '\x25c6'), ('a', '\x2592'), ('b', '\x2409')
-        , ('c', '\x240c'), ('d', '\x240d'), ('e', '\x240a'), ('f', '\x00b0')
-        , ('g', '\x00b1'), ('h', '\x2424'), ('i', '\x240b'), ('j', '\x2518')
-        , ('k', '\x2510'), ('l', '\x250c'), ('m', '\x2514'), ('n', '\x253c')
-        , ('o', '\x23ba'), ('p', '\x23bb'), ('q', '\x2500'), ('r', '\x23bc')
-        , ('s', '\x23bd'), ('t', '\x251c'), ('u', '\x2524'), ('v', '\x2534')
-        , ('w', '\x252c'), ('x', '\x2502'), ('y', '\x2264'), ('z', '\x2265')
-        , ('{', '\x03c0'), ('|', '\x2260'), ('}', '\x00a3'), ('~', '\x00b7') ]

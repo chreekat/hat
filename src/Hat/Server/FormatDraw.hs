@@ -14,6 +14,7 @@ module Hat.Server.FormatDraw
     , styleParse
     , styleCell
     , colourValue
+    , acsGlyph
       -- * Drawing
     , formatDraw
       -- * Style-aware measuring
@@ -65,6 +66,7 @@ data DrawStyle = DrawStyle
     , defaultType :: DefaultType
     , ignore :: Bool
     , width :: Maybe Width
+    , acs :: Bool  -- ^ text draws from the VT100 line-drawing set ('acsGlyph')
     }
     deriving (Eq, Show)
 
@@ -72,7 +74,7 @@ defaultDrawStyle :: DrawStyle
 defaultDrawStyle = DrawStyle
     { cell = Cell.defaultStyle, fill = Nothing, align = AlignDefault
     , list = ListOff, defaultType = DefaultBase, ignore = False
-    , width = Nothing }
+    , width = Nothing, acs = False }
 
 -- | A style option's cell attributes (tmux's @style_apply@ over the default
 -- cell); an unparseable style is the default.
@@ -90,7 +92,7 @@ styleParse base sy0 =
     token tok0 sy
         | T.length tok0 > 255 = Nothing
         | otherwise = case T.toLower tok0 of
-            "default" -> Just sy { cell = base }
+            "default" -> Just sy { cell = base, acs = False }
             "ignore" -> Just sy { ignore = True }
             "noignore" -> Just sy { ignore = False }
             "push-default" -> Just sy { defaultType = DefaultPush }
@@ -99,7 +101,7 @@ styleParse base sy0 =
             "nolist" -> Just sy { list = ListOff }
             "norange" -> Just sy
             "noalign" -> Just sy { align = AlignDefault }
-            "none" -> Just sy { cell = clearAttrs sy.cell }
+            "none" -> Just sy { cell = clearAttrs sy.cell, acs = False }
             tok
                 | Just v <- T.stripPrefix "list=" tok -> case v of
                     "on" -> Just sy { list = ListOn }
@@ -129,7 +131,8 @@ styleParse base sy0 =
                 | T.length tok > 2, Just v <- T.stripPrefix "no" tok ->
                     if v == "link" || v == "attr"
                         then Just sy
-                        else (\f -> sy { cell = f False sy.cell }) <$> attrs v
+                        else (\f -> sy { cell = f False sy.cell
+                                        , acs = sy.acs && not (namesAcs v) }) <$> attrs v
                 | Just v <- nonEmpty "width=" tok -> case T.unsnoc v of
                     Just (n, '%') | not (T.null n) ->
                         (\w -> sy { width = Just (WidthPercent (fromInteger w)) }) <$> number 0 100 n
@@ -137,7 +140,8 @@ styleParse base sy0 =
                         <$> number 0 4294967295 v
                 | Just v <- nonEmpty "pad=" tok -> sy <$ number 0 4294967295 v
                 | "link=" `T.isPrefixOf` tok -> Just sy
-                | otherwise -> (\f -> sy { cell = f True sy.cell }) <$> attrs tok
+                | otherwise -> (\f -> sy { cell = f True sy.cell
+                                          , acs = sy.acs || namesAcs tok }) <$> attrs tok
     nonEmpty pre tok = case T.stripPrefix pre tok of
         Just v | not (T.null v) -> Just v
         _ -> Nothing
@@ -188,7 +192,8 @@ colourValue v = case List.lookup (T.toLower v) themeColours of
         , ("thememagenta", 5) ]
 
 -- | tmux's @attributes_fromstring@ as a setter for the attributes hat's
--- cells carry; @hidden@, @overline@ and @acs@ are accepted but not drawn.
+-- cells carry; @hidden@ and @overline@ are accepted but not drawn, and
+-- @acs@ is the draw style's own ('namesAcs').
 attrs :: Text -> Maybe (Bool -> Cell.Style -> Cell.Style)
 attrs t
     | T.null t || edge (T.take 1 t) || edge (T.takeEnd 1 t) = Nothing
@@ -216,6 +221,10 @@ attrs t
         "overline" -> Just (\_ s -> s)
         _ -> Nothing
     underline on s = s { Cell.underline = on }
+
+-- | Whether an attribute list names @acs@.
+namesAcs :: Text -> Bool
+namesAcs = elem "acs" . T.split (`elem` (" ,|" :: String))
 
 clearAttrs :: Cell.Style -> Cell.Style
 clearAttrs s = s
@@ -319,7 +328,7 @@ putChars cs w = w { sections = Map.alter (Just . add . fromMaybe Seq.empty)
                                     w.current w.sections }
   where
     sty = w.sy.cell
-    add sq = List.foldl' put sq cs
+    add sq = List.foldl' put sq (if w.sy.acs then map acsGlyph cs else cs)
     put sq c = case charWidth c of
         0 | c < ' ' || c == '\DEL' -> sq
           | otherwise -> attach c sq
@@ -626,3 +635,18 @@ formatTrimRight limit t
             Just (body, rest') -> "#[" <> body <> "]" <> go w rest'
         | otherwise = go w rest
 
+-- | A VT100 alternate-character-set character as the UTF-8 glyph tmux
+-- draws for it (@tty_acs_table@); anything else is itself.
+acsGlyph :: Char -> Char
+acsGlyph c = fromMaybe c (lookup c acsTable)
+  where
+    acsTable =
+        [ ('+', '\x2192'), (',', '\x2190'), ('-', '\x2191'), ('.', '\x2193')
+        , ('0', '\x25ae'), ('`', '\x25c6'), ('a', '\x2592'), ('b', '\x2409')
+        , ('c', '\x240c'), ('d', '\x240d'), ('e', '\x240a'), ('f', '\x00b0')
+        , ('g', '\x00b1'), ('h', '\x2424'), ('i', '\x240b'), ('j', '\x2518')
+        , ('k', '\x2510'), ('l', '\x250c'), ('m', '\x2514'), ('n', '\x253c')
+        , ('o', '\x23ba'), ('p', '\x23bb'), ('q', '\x2500'), ('r', '\x23bc')
+        , ('s', '\x23bd'), ('t', '\x251c'), ('u', '\x2524'), ('v', '\x2534')
+        , ('w', '\x252c'), ('x', '\x2502'), ('y', '\x2264'), ('z', '\x2265')
+        , ('{', '\x03c0'), ('|', '\x2260'), ('}', '\x00a3'), ('~', '\x00b7') ]
