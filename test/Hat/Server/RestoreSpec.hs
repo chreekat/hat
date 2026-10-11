@@ -10,6 +10,7 @@ import Data.Map.Strict qualified as Map
 import Data.Vector qualified as V
 import System.Posix.IO (closeFd)
 import System.Posix.Terminal (openPseudoTerminal)
+import System.Process (createProcess, getPid, proc, terminateProcess)
 import Test.Hspec
 
 import Hat.Geometry (Size (..))
@@ -34,6 +35,7 @@ import Hat.Server
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
     (HotPane (..), HotSession (..), HotWindow (..), ReloadModes (..),
@@ -64,6 +66,17 @@ testState :: IO ServerState
 testState = do
     lg <- newLogger "/dev/null"
     newServerState Map.empty lg "/tmp/hat-restorespec.sock" Nothing
+
+-- | Run with the pid of a live child process (signalled afterwards), for an
+-- adopted pane whose reaper must not find its child already gone.
+withLiveChild :: (Int -> IO a) -> IO a
+withLiveChild body = bracket
+    (do (_, _, _, ph) <- createProcess (proc "sleep" ["600"])
+        mpid <- getPid ph
+        pure (ph, maybe (error "sleep exited at once") fromIntegral mpid))
+    -- The adopted pane's own reaper collects it.
+    (terminateProcess . fst)
+    (body . snd)
 
 spec :: Spec
 spec = do
@@ -256,17 +269,18 @@ spec = do
     -- master and closes it when collected.
     describe "reload session size" $
         it "rebuilds a reloaded session at its captured window area" $
+            withLiveChild $ \cpid ->
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
                 \(m, _) -> do
             st <- testState
             let lay = emitLayout (fitLayout Size { rows = 30, cols = 100 } (singlePane (PaneId 0)))
                 rp = HotPane
-                    { masterFd = fromIntegral m, childPid = 999999
+                    { masterFd = fromIntegral m, childPid = cpid
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
-                    { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                 rw = HotWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, panes = [(psnap, rp)] }
@@ -284,17 +298,18 @@ spec = do
     -- See Note [Captured links].
     describe "reload links and groups" $
         it "shares a linked window and a group's window map, adopting each pane once" $
+            withLiveChild $ \cpid ->
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
                 \(m, _) -> do
             st <- testState
             let lay = emitLayout (fitLayout Size { rows = 24, cols = 80 } (singlePane (PaneId 0)))
                 rp = HotPane
-                    { masterFd = fromIntegral m, childPid = 999999
+                    { masterFd = fromIntegral m, childPid = cpid
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
-                    { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                 win wix k l ps = HotWindow
                     { ix = wix, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = k, linkOf = l

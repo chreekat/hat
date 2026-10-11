@@ -16,6 +16,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist
 import Hat.Server.PersistSpec ()  -- the tree generators, shared with the store
 import Hat.Server.Reload
@@ -243,7 +244,7 @@ treeWith mlast ms sc = ReloadTree
                     , panes =
                         [ ( PaneSnap
                               { cwd = "/tmp", command = Nothing
-                              , shellSpawned = False }
+                              , shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                           , HotPane
                               { masterFd = 7, childPid = 100
                               , modes = ms, screen = sc
@@ -282,7 +283,34 @@ currentTree = ReloadTree
     , currentSession = Just "work"
     , lastSession = Just "prev" }
   where
-    snap = PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
+    snap = PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+
+-- The current-era representative: 'currentTree' with a third, empty pane —
+-- no fd or child, a stored launch command, its input off and a title — to
+-- pin era 12.
+emptyPaneTree :: ReloadTree
+emptyPaneTree = ReloadTree
+    { sessions =
+        [ HotSession
+            { name = "work", startCwd = "/home", currentIx = 0, windowHist = []
+            , createdAt = Nothing, restores = 0, group = Nothing
+            , windows =
+                [ HotWindow
+                    { ix = 0, name = "w", layout = "L", active = 0
+                    , paneHist = [], autoRename = True
+                    , key = Nothing, linkOf = Nothing
+                    , panes = currentPanes <> [(emptySnap, emptyHot)] } ] } ]
+    , currentSession = Just "work"
+    , lastSession = Just "prev" }
+  where
+    currentPanes = concat
+        [ w.panes | se <- currentTree.sessions, w <- se.windows ]
+    emptySnap = (plainPane "/srv")
+        { kind = EmptyPane, inputOff = True, title = Just "idle" }
+    emptyHot = HotPane
+        { masterFd = -1, childPid = 0
+        , modes = fixedModes, screen = fixedScreen
+        , start = StartCommand "pwd", death = Nothing }
 
 -- A non-trivial captured screen, to pin the current era's encoding: an
 -- alt-screen pane with one styled painted row and one blank scrollback line.
@@ -428,6 +456,27 @@ corpus =
         \9f6376696d63612062ff8184008103801a6553f100ff81647072\
         \6576"
       , fixedCleanup, currentTree )
+    , ( 12
+      , "851a484154520c039f82071864ff5901cd840079010d7b226c61\
+        \73745f6163746976655f73657373696f6e223a22776f726b222c\
+        \2273657373696f6e73223a5b7b2263757272656e745f6978223a\
+        \302c226e616d65223a22776f726b222c2273746172745f637764\
+        \223a222f686f6d65222c2277696e646f7773223a5b7b22616374\
+        \697665223a302c226175746f5f72656e616d65223a747275652c\
+        \226978223a302c226c61796f7574223a224c222c226e616d6522\
+        \3a2277222c2270616e6573223a5b7b22637764223a222f746d70\
+        \227d2c7b22637764223a222f746d70227d2c7b22637764223a22\
+        \2f737276222c22656d707479223a747275652c22696e7075745f\
+        \6f6666223a747275652c227469746c65223a2269646c65227d5d\
+        \7d5d7d5d7d9f87000718648600f5f402f5038900f50102f5019f\
+        \481b5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4f4f4\
+        \8201686d616b65202d6a328087002018658600f5f402f5038900\
+        \f50102f5019f481b5b303b33316d78ff9f40ff8a0081008100f4\
+        \f4f4f4f4f4f482029f6376696d63612062ff8184008103801a65\
+        \53f100870020008600f5f402f5038900f50102f5019f481b5b30\
+        \3b33316d78ff9f40ff8a0081008100f4f4f4f4f4f4f482016370\
+        \776480ff816470726576"
+      , fixedCleanup, emptyPaneTree )
     ]
 
 spec :: Spec
@@ -478,7 +527,7 @@ spec = describe "reload handover" $ do
     -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
     -- one is a compat bug.
     it "encodes the current era to stable bytes" $
-        hexOf (encodeHandover fixedCleanup (hotOf currentTree))
+        hexOf (encodeHandover fixedCleanup (hotOf emptyPaneTree))
             `shouldBe` currentGolden
   where
     decodesToTree (e, hex, cl, t) =

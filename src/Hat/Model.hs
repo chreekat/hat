@@ -95,6 +95,7 @@ import System.Posix.Files qualified as PFiles
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
@@ -264,12 +265,6 @@ data Pane = Pane
     , inputOff :: TVar Bool
         -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
     }
-
--- | Whether a pane runs a program, or is one of tmux's empty panes
--- (@split-window -E@ and friends): no process, only what is written to its
--- screen.
-data PaneKind = ProgramPane | EmptyPane
-    deriving (Eq, Show)
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart

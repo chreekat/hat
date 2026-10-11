@@ -48,7 +48,8 @@ import Hat.Path (hatPath, render, (</:>))
 import Hat.Server.Persist
     (Archived (..), PaneSnap (..), SessionSnap (..), Snapshot (..)
     , WindowSnap (..), archiveSnapshot, clearLive, listArchived
-    , loadArchived, loadSnapshot, saveSnapshot, withStore)
+    , loadArchived, loadSnapshot, plainPane, saveSnapshot, withStore)
+import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 import Hat.Server.Command.Types (CommandImpl, Reply (..))
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
@@ -235,14 +236,24 @@ captureSession (seenWins, seenGroups) s = do
 captureWindow :: WindowStruct -> IO (WindowSnap, [Pane])
 captureWindow ws = do
     psnaps <- forM ws.wsPanes $ \pane -> do
-        dir  <- paneCurrentPath pane
-        -- The whole argv, so a restore re-opens the same file; the
-        -- whitelist (see 'restoreRun') decides whether it is re-run.
-        argv <- Hat.Term.Pty.foregroundArgv pane.pty
-        -- Whether that program was a child of the pane's interactive shell,
-        -- so a restore can relaunch it through the shell (see 'restoreRun').
-        shellSp <- Hat.Term.Pty.foregroundIsChild pane.pty
-        pure PaneSnap { cwd = T.pack dir, command = argv, shellSpawned = shellSp }
+        off <- readTVarIO pane.inputOff
+        t <- Emu.title pane.emulator
+        let common p = p
+                { kind = pane.kind, inputOff = off
+                , title = if T.null t then Nothing else Just t }
+        case pane.kind of
+            EmptyPane -> pure (common (plainPane (T.pack pane.startCwd)))
+            ProgramPane -> do
+                dir  <- paneCurrentPath pane
+                -- The whole argv, so a restore re-opens the same file; the
+                -- whitelist (see 'restoreRun') decides whether it is re-run.
+                argv <- Hat.Term.Pty.foregroundArgv pane.pty
+                -- Whether that program was a child of the pane's interactive
+                -- shell, so a restore can relaunch it through the shell (see
+                -- 'restoreRun').
+                shellSp <- Hat.Term.Pty.foregroundIsChild pane.pty
+                pure (common (plainPane (T.pack dir)))
+                    { command = argv, shellSpawned = shellSp }
     pure ( WindowSnap
              { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
              , active = ws.wsActive, paneHist = ws.wsLastActive
@@ -313,8 +324,12 @@ restorePane
 restorePane st shellCmd env whitelist sid sz psnap = do
     pid <- PaneId <$> atomically (freshId st.nextPane)
     let origin = if psnap.shellSpawned then ShellSpawned else Direct
-    spawnPane st pid sid shellCmd (restoreRun whitelist origin psnap.command)
-        (T.unpack psnap.cwd) env sz
+        dir = T.unpack psnap.cwd
+    pane <- case psnap.kind of
+        EmptyPane -> emptyPane st pid FreshShell dir sz
+        ProgramPane -> spawnPane st pid sid shellCmd
+            (restoreRun whitelist origin psnap.command) dir env sz
+    pane <$ restorePaneState pane psnap.inputOff psnap.title
 
 -- | @list-snapshots@: the store's history generations, newest first —
 -- one line each: generation, capture time, session\/window counts.

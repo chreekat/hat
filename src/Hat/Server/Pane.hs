@@ -47,6 +47,8 @@ module Hat.Server.Pane
     , paneExitWaitMicros
     , hangupPane
     , typeIntoPane
+    , setScreenTitle
+    , restorePaneState
     , detachPaneCurrent
     , closePane
     , detachPane
@@ -702,6 +704,17 @@ noteOuterFocus st client k
 -- stalls on a stubborn one. See 'closePane'.
 paneExitWaitMicros :: Int
 paneExitWaitMicros = 400_000
+
+-- | Set the title on a pane's screen, as its program would with OSC 2.
+setScreenTitle :: Pane -> Text -> IO ()
+setScreenTitle pane t =
+    void (Emu.feed pane.emulator ("\ESC]2;" <> TE.encodeUtf8 t <> "\ESC\\"))
+
+-- | Give a rebuilt pane the input state and title it was captured with.
+restorePaneState :: Pane -> Bool -> Maybe Text -> IO ()
+restorePaneState pane off mtitle = do
+    atomically (writeTVar pane.inputOff off)
+    forM_ mtitle (setScreenTitle pane)
 
 -- | Write keyboard input — typed, sent or pasted — to a pane's program,
 -- unless @select-pane -d@ turned its input off.

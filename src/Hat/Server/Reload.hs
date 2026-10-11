@@ -54,7 +54,7 @@ import GHC.Generics (Generic)
 
 import Hat.Server.Persist
     (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
-    , decodeSnapshotJson)
+    , decodeSnapshotJson, plainPane)
 import Hat.Term.Cell (Cell, Style)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator.Types (paintLineBytes)
@@ -79,7 +79,8 @@ data ReloadHot = ReloadHot
 -- everything durable about it (its cwd, its foreground command) is in the
 -- tree instead.
 data HotPane = HotPane
-    { masterFd :: Int          -- ^ @-1@ for a dead pane, which has none
+    { masterFd :: Int          -- ^ @-1@ for a dead or empty pane, which has
+                               --   none
     , childPid :: Int
     , modes    :: ReloadModes  -- ^ replayed into the adopted pane's fresh
                                --   emulator; see 'Hat.Server.adoptPane'
@@ -314,7 +315,7 @@ data Handover = Handover
 -- through to safe cleanup rather than misdecode. The golden-byte test pins the
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 11
+reloadEra = 12
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -371,9 +372,10 @@ decodeHandover bs =
 -- shape, and adds an @e == X@ arm below.
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    -- Era 10 differs only by the two fields 'HotPane' appended in era 11,
-    -- which its decoder defaults.
-    | e == reloadEra || e == 10 = hotTree =<< deser
+    -- Era 12 let a pane be empty (its tree 'PaneSnap' says so; it has no fd
+    -- or child), which eras 10 and 11 never wrote; era 10 differs only by the
+    -- two fields 'HotPane' appended in era 11, which its decoder defaults.
+    | e == reloadEra || e == 11 || e == 10 = hotTree =<< deser
     -- Eras 8 and 9 differ from today only by cell-grid screens ('migrateV9'
     -- paints them) and, for era 8, the key protocols 'ReloadModes' defaults.
     | e == 9 || e == 8 = hotTree . migrateV9 =<< deser
@@ -624,7 +626,7 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
         , paneHist = hist, autoRename = ar, key = Nothing, linkOf = Nothing
         , panes = map migPane ps }
     migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
-        ( PaneSnap { cwd = cwd', command = Nothing, shellSpawned = False }
+        ( plainPane cwd'
         , HotPane { masterFd = mfd, childPid = cpid, modes = ms
                   , screen = paintScreenV9 sc
                   , start = StartShell, death = Nothing } )

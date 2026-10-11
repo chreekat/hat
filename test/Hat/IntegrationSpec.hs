@@ -41,6 +41,7 @@ import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
 import Hat.Server.Persist qualified as Persist
 import Hat.Term.Pty (setWinsize)
@@ -866,12 +867,12 @@ spec = parallel $ do
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
-                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -902,7 +903,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -929,7 +930,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1007,7 +1008,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap

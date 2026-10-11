@@ -86,6 +86,7 @@ library
         Hat.Model
         Hat.Model.Ids
         Hat.Model.Options
+        Hat.Model.PaneKind
         Hat.Model.PasteBuffers
         Hat.Path
         Hat.PtrEq

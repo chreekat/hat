@@ -51,7 +51,7 @@ import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     ( LifecycleNotify (..), hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
-    , emptyPane, launchOf, respawnStart, sessionSpawnEnv, spawnPane, startPaneReader )
+    , emptyPane, launchOf, respawnStart, setScreenTitle, sessionSpawnEnv, spawnPane, startPaneReader )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowLayoutAt)
@@ -604,7 +604,7 @@ setPaneTitle st sess win wp raw = do
     title <- T.filter (\c -> c >= ' ' && c /= '\DEL') <$> expandFormat st env raw
     old <- Emu.title wp.emulator
     when (title /= old) $ do
-        _ <- Emu.feed wp.emulator ("\ESC]2;" <> TE.encodeUtf8 title <> "\ESC\\")
+        setScreenTitle wp title
         atomically (bumpDirty st)
         notifyPane st "pane-title-changed" wp [ ("new_title", PText title) ]
 
