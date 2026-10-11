@@ -1005,7 +1005,10 @@ socket); feature logic gets fast unit tests instead.
 `perf stat`, fits `instructions = slope × N + intercept` per series, and
 judges each slope against `tools/bench/perf-baseline` (±20%). Instruction
 counts per unit of work, not wall time, so a regression reads the same on
-any machine. `HAT_PERF_RECORD=1` re-records the baseline.
+any machine. `HAT_PERF_RECORD=1` re-records the baseline. Where there is
+no PMU (VMs), `hat_perf --counter valgrind` counts with callgrind instead,
+for A/B comparisons between builds: its counts are its own scale, never
+judged against the perf-stat baseline.
 
 **No test-only typeclasses.** If something's awkward to test because
 it's tangled with I/O, extract pure functions. The emulator core is

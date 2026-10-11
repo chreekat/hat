@@ -34,6 +34,8 @@ TMUX_BIN=tmux
 BIN=""
 OUT="$PWD/bench-out"
 KEEP=0
+COUNTER=perf
+KEY_INTERVAL=""
 
 usage() {
     cat <<'USAGE'
@@ -49,6 +51,12 @@ usage: hat_perf [options]
   --bin PATH             measure this hat binary instead of building one
   --out DIR              where perf CSVs land (default ./bench-out)
   --keep                 keep each run's scratch HOME for debugging
+  --counter C            how instructions are counted: perf (perf stat, the
+                         default) or valgrind (callgrind, for machines
+                         without a PMU; its counts are not comparable with
+                         perf's)
+  --key-interval SECS    pause between typed keys (default 0.02; 0.1 under
+                         valgrind, slow enough that keys never coalesce)
 
 Each workload is fixed so runs stay comparable; vary only the sizes.
 USAGE
@@ -63,6 +71,8 @@ while [ $# -gt 0 ]; do
         --bin) BIN="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
+        --counter) COUNTER="$2"; shift 2 ;;
+        --key-interval) KEY_INTERVAL="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "hat_perf: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -92,7 +102,21 @@ if [ -z "$BIN" ]; then
 fi
 dev cabal build -v0 bench-report
 REPORT=$(dev cabal list-bin bench-report)
-PERF=$(dev sh -c 'command -v perf')
+# COUNT CSV -- CMD... runs CMD, writing its instructions retired to CSV.
+case "$COUNTER" in
+    perf)
+        PERF=$(dev sh -c 'command -v perf')
+        COUNT=("$PERF" stat -x, -e instructions -o)
+        SLOWDOWN=1  # how many times slower than native the counter runs
+        : "${KEY_INTERVAL:=0.02}"
+        ;;
+    valgrind)
+        COUNT=("$(dirname "$(readlink -f "$0")")/valgrind_count")
+        SLOWDOWN=50
+        : "${KEY_INTERVAL:=0.1}"
+        ;;
+    *) echo "hat_perf: unknown counter: $COUNTER" >&2; exit 2 ;;
+esac
 
 SOCKNAME="hat-perf-$$"
 
@@ -109,9 +133,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Sync on observable state, never a fixed sleep.
+# Sync on observable state, never a fixed sleep. The deadline stretches
+# with the counter's slowdown.
 await() {
-    local n=$1; shift
+    local n=$(($1 * SLOWDOWN)); shift
     while [ "$n" -gt 0 ]; do
         if "$@" >/dev/null 2>&1; then return 0; fi
         n=$((n - 1))
@@ -126,10 +151,11 @@ typing_wl() {
     case "$1" in type|type4|typeh|typestatus) return 0 ;; *) return 1 ;; esac
 }
 
-# Feed N keystrokes into fd $2 at ~50/s: 79 letters then Enter, repeating.
-# The pace between keys comes from a timed read on an empty fifo ($3), so no
-# process is spawned per key; ~50/s stays under the muxes' frame coalescing,
-# giving one echoed frame per key, like a human typist.
+# Feed N keystrokes into fd $2, one per KEY_INTERVAL: 79 letters then
+# Enter, repeating. The pace between keys comes from a timed read on an empty
+# fifo ($3), so no process is spawned per key. The default ~50/s stays under
+# the muxes' frame coalescing, giving one echoed frame per key, like a human
+# typist; a slowed counter needs a longer interval to keep that.
 feed_keys() {
     local n=$1 kfd=$2 pacefd=$3 i=0
     while [ "$i" -lt "$n" ]; do
@@ -138,7 +164,7 @@ feed_keys() {
         else
             printf 'x' >&"$kfd"
         fi
-        read -r -t 0.02 -u "$pacefd" || true
+        read -r -t "$KEY_INTERVAL" -u "$pacefd" || true
         i=$((i + 1))
     done
 }
@@ -205,7 +231,7 @@ EOF
     CTL=(env "HOME=$WORK" "TMUX_TMPDIR=$WORK" "${client[@]}")
 
     env "HOME=$WORK" "TMUX_TMPDIR=$WORK" \
-        "$PERF" stat -x, -e instructions -o "$server_csv" -- \
+        "${COUNT[@]}" "$server_csv" -- \
         "${server[@]}" > "$WORK/server.log" 2>&1 &
     local server_job=$!
 
@@ -230,7 +256,7 @@ EOF
     # sized before the mux starts so both muxes render the same screen.
     script -qefc "stty rows 50 cols 200; \
         exec env HOME='$WORK' TMUX_TMPDIR='$WORK' TERM=xterm-256color \
-        '$PERF' stat -x, -e instructions -o '$client_csv' -- \
+        $(printf '%q ' "${COUNT[@]}") '$client_csv' -- \
         $(printf '%q ' "${client[@]}") new-session 'sh $WORK/work.sh'" \
         /dev/null < "$stdin_src" > "$WORK/client.log" 2>&1 &
     local client_job=$!

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# valgrind_count CSV -- CMD...: hat_perf's instruction counter for machines
+# without a PMU. Runs CMD under callgrind and writes the instructions it
+# retired (every thread, every image an in-place execve swaps in) as the row
+# `perf stat -x, -e instructions` writes, so bench-report reads either. The
+# per-image profiles stay beside the CSV for callgrind_annotate.
+
+[ $# -ge 3 ] && [ "$2" = -- ] || {
+    echo "usage: valgrind_count CSV -- CMD..." >&2
+    exit 2
+}
+csv=$1
+shift 2
+
+rm -f "$csv".callgrind.*
+
+# One capability. Valgrind runs one thread at a time, so a capability that
+# spins on an STM or blackhole lock held by a descheduled one burns a whole
+# timeslice: counts swing several-fold run to run. GHCRTS set by the caller
+# wins.
+export GHCRTS=${GHCRTS--N1}
+
+# Callgrind loses an image's profile at execve unless it dumps first, and
+# counts the successor image only when it follows the exec. The skip list
+# only spares the pane programs the slowdown, since the sum below takes the
+# measured pid alone.
+"${HAT_PERF_VALGRIND:-valgrind}" -q --tool=callgrind \
+    --callgrind-out-file="$csv.callgrind.%p.%n" \
+    --dump-before='*execve' \
+    --trace-children=yes \
+    --trace-children-skip='*/sh,*/bash,*/dash,*/env,*/cat,*/awk,*/gawk,*/sleep,*/touch,*/coreutils' \
+    -- "$@" <&0 &
+pid=$!  # explicit <&0: a background job would otherwise read /dev/null
+status=0
+wait "$pid" || status=$?
+
+# Forked children dump too, at their own execve; they are not the measured
+# process.
+for f in "$csv".callgrind.*; do
+    case "$f" in "$csv.callgrind.$pid".*) ;; *) rm -f "$f" ;; esac
+done
+total=0
+for f in "$csv.callgrind.$pid".*; do
+    [ -e "$f" ] || continue
+    n=$(awk '/^(totals|summary):/ { print $2; exit }' "$f")
+    total=$((total + ${n:-0}))
+done
+if [ "$total" -gt 0 ]; then
+    printf '%d,,instructions,,,,\n' "$total" > "$csv"
+else
+    echo "valgrind_count: no callgrind profile for pid $pid" >&2
+    [ "$status" -ne 0 ] || status=1
+fi
+exit "$status"
