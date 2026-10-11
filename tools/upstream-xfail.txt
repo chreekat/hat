@@ -47,7 +47,7 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # needs pane-mode-changed + title stack + respawn-pane + pane-moved + resize-pane -x/-y + client-* hooks + control mode
+hooks-notify.sh                 # needs #{pane_in_mode} of the hook's pane in pane-mode-changed + title stack + respawn-pane + pane-moved + resize-pane -x/-y + client-* hooks
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
 choose-buffer.sh                # choose-buffer + mode-screen rendering unimplemented
@@ -67,7 +67,7 @@ copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/sele
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
-format-modifiers.sh             # new-pane floating panes (P/z order) + -C control-mode attach (L loop)
+format-modifiers.sh             # new-pane floating panes (P/z order)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
@@ -106,7 +106,7 @@ pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, re
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # renumber-windows option + invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
 session-ops.sh                  # detach-on-destroy option + invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
-lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications + refresh-client -B
+lifecycle-deferred.sh           # needs the detach-on-destroy option + choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + floating panes
