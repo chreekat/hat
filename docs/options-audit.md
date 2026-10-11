@@ -70,6 +70,7 @@ spot-read of each suspect consumer.
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
+| `renumber-windows` | `renumberIfSet` (Winlink.hs): window destruction, `move-window`, `kill-window -a` | implemented ✅ tested | model (SessionSpec) |
 | `xterm-keys` | none — tmux keeps it only for compatibility, with no effect | implemented (by design) | — |
 
 ## Defects (the backlog)

@@ -1,3 +1,5 @@
+{-# LANGUAGE RoleAnnotations #-}
+
 -- | Window links: a session's window map entries (tmux's winlinks). A
 -- window may be linked into several sessions, or several times into one;
 -- a session group's members share one window map. These are the
@@ -9,6 +11,10 @@ module Hat.Server.Winlink
     , Step (..)
     , stepWindow
     , shuffleUp
+    , Renumbered (..)
+    , renumberSession
+    , repackSession
+    , renumberIfSet
     , groupMembers
     , resyncGroup
     , windowLinks
@@ -22,11 +28,13 @@ import Control.Concurrent.STM
 import Control.Monad (forM, forM_, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
+import Data.Maybe (mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 
 import Hat.Model
+import Hat.Model.Options (Options (..), optionFlag)
 import Hat.Server.Mru (popOnClose)
 
 -- | A session's current window and last-window stack once its window map
@@ -72,6 +80,53 @@ shuffleUp :: Int -> Map.Map Int a -> [(Int, Int)]
 shuffleUp ix ws = [(i, i + 1) | i <- [free - 1, free - 2 .. ix]]
   where
     free = until (`Map.notMember` ws) (+ 1) ix
+
+-- | A session's window state after a renumber: the re-keyed window map,
+-- the current window's new index, and the remapped last-window stack.
+type role Renumbered representational
+data Renumbered a = Renumbered
+    { windows :: Map.Map Int a
+    , current :: Int
+    , history :: [Int]
+    }
+    deriving (Eq, Show)
+
+-- | tmux's @session_renumber_windows@: the windows keep their order and
+-- take consecutive indices from @base-index@, closing every gap. The
+-- current window and the last-window stack follow their windows; a history
+-- entry naming no window drops out rather than aliasing a renumbered one.
+renumberSession :: Int -> [Int] -> Int -> Map.Map Int a -> Renumbered a
+renumberSession cur hist base ws = Renumbered
+    { windows = Map.fromList (zip fresh (Map.elems ws))
+    , current = Map.findWithDefault cur cur remap
+    , history = mapMaybe (`Map.lookup` remap) hist
+    }
+  where
+    fresh = [base ..]
+    remap = Map.fromList (zip (Map.keys ws) fresh)
+
+-- | 'renumberSession' applied to @sess@ and every member of its group,
+-- from @sess@'s @base-index@.
+repackSession :: ServerState -> Session -> STM ()
+repackSession st sess = do
+    sopts <- resolveForSession st sess
+    members <- groupMembers st sess
+    forM_ members $ \s -> do
+        ws <- readTVar s.windows
+        cur <- readTVar s.currentIx
+        hist <- readTVar s.windowHist
+        let r = renumberSession cur hist sopts.baseIndex ws
+        writeTVar s.windows r.windows
+        writeTVar s.currentIx r.current
+        writeTVar s.windowHist r.history
+    bumpDirty st
+
+-- | tmux's @server_renumber_session@: 'repackSession' when @sess@ has
+-- @renumber-windows@ on.
+renumberIfSet :: ServerState -> Session -> STM ()
+renumberIfSet st sess = do
+    sopts <- resolveForSession st sess
+    when (optionFlag "renumber-windows" sopts) (repackSession st sess)
 
 -- | The sessions sharing @sess@'s window map — its session group — with
 -- @sess@ first; just @[sess]@ for an ungrouped session.
@@ -124,8 +179,9 @@ detachWindow st sess ix = do
     Map.null <$> readTVar sess.windows
 
 -- | Unlink @win@ from every session holding it, as its destruction does
--- (tmux's @server_kill_window@). Yields the sessions it emptied, already
--- removed from the server ('dropSessionGroup').
+-- (tmux's @server_kill_window@), renumbering each survivor that asks for it
+-- ('renumberIfSet'). Yields the sessions it emptied, already removed from
+-- the server ('dropSessionGroup').
 unlinkEverywhere :: ServerState -> Window -> STM [Session]
 unlinkEverywhere st win = do
     links <- windowLinks st win
@@ -137,7 +193,11 @@ unlinkEverywhere st win = do
                 empty <- detachWindow st s ix
                 if empty then dropSessionGroup st s else pure []
             _ -> pure []
-    pure (List.nubBy (\a b -> a.id == b.id) (concat emptied))
+    let gone = List.nubBy (\a b -> a.id == b.id) (concat emptied)
+        survivors = List.nubBy (\a b -> a.id == b.id)
+            [ s | (s, _) <- links, s.id `notElem` map (.id) gone ]
+    mapM_ (renumberIfSet st) survivors
+    pure gone
 
 -- | Remove @sess@ and every session sharing its window map from the server
 -- (tmux's @server_destroy_session_group@), returning the removed sessions.

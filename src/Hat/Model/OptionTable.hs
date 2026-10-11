@@ -405,7 +405,7 @@ optionTable =
     , refusing (noneKey "prefix") $ live $
         scalar "prefix" SessionScope KKey "C-b"
     , notYet $ scalar "prefix2" SessionScope KKey "None"
-    , notYet $ scalar "renumber-windows" SessionScope KFlag "off"
+    , live $ scalar "renumber-windows" SessionScope KFlag "off"
     , notYet $ scalar "repeat-time" SessionScope (KNumber 0 2000000) "500"
     , live $ scalar "set-titles" SessionScope KFlag "off"
     , notYet $ scalar "set-titles-string" SessionScope KString

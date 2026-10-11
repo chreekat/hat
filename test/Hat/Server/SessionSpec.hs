@@ -670,6 +670,28 @@ spec = do
             wsA <- readTVarIO sessA.windows
             Map.keys wsA `shouldBe` [0, 5]
 
+    describe "renumber-windows" $ do
+        -- Windows 0 1 2 9, each with one stub pane; window 1's pane closes.
+        let closeWindowOne setting = do
+                (st, sess) <- seedSession "/"
+                ws <- mapM (addWindow sess) [0, 1, 2, 9]
+                ps <- mapM stubPane [0, 1, 2, 9]
+                atomically $ do
+                    mapM_ (\(w, p) -> modifyTVar' w.panes (Map.insert p.id p))
+                        (zip ws ps)
+                    writeTVar sess.currentIx 9
+                    writeTVar sess.options
+                        (singletonDelta "renumber-windows" (OVScalar setting))
+                _ <- atomically (detachPane st (ws !! 1) (ps !! 1))
+                (,) <$> (map (fmap (.id)) . Map.toList <$> readTVarIO sess.windows)
+                    <*> readTVarIO sess.currentIx
+        it "closes the gap a destroyed window leaves when on" $
+            closeWindowOne "on" `shouldReturn`
+                ([(0, WindowId 0), (1, WindowId 2), (2, WindowId 9)], 2)
+        it "leaves the gap when off" $
+            closeWindowOne "off" `shouldReturn`
+                ([(0, WindowId 0), (2, WindowId 2), (9, WindowId 9)], 9)
+
     describe "current-window attention flags" $ do
         let small = Size { rows = 24, cols = 80 }
         -- tmux shows no bell/activity marker on the window you are looking
