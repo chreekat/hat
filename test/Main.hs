@@ -22,6 +22,7 @@ import Hat.Model.PasteBuffersSpec qualified
 import Hat.Server.PersistSpec qualified
 import Hat.Server.FlashSpec qualified
 import Hat.Term.PtySpec qualified
+import Hat.Server.AlertsSpec qualified
 import Hat.Server.BufferSpec qualified
 import Hat.Server.CaptureSpec qualified
 import Hat.Server.ClipboardSpec qualified
@@ -115,6 +116,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.PaneCommand" Hat.Server.PaneCommandSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
+    describe "Hat.Server.Alerts" Hat.Server.AlertsSpec.spec
     describe "Hat.Server.Buffer" Hat.Server.BufferSpec.spec
     describe "Hat.Server.Capture" Hat.Server.CaptureSpec.spec
     describe "Hat.Server.Clipboard" Hat.Server.ClipboardSpec.spec

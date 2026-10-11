@@ -118,6 +118,8 @@ spot-read of each suspect consumer.
 | `default-shell` | `paneShell`/`paneProgram` (Pane.hs) for every spawn; `checkValue` (Command/Option.hs) refuses an unsuitable shell; seeded from `$SHELL` at start (`seedDefaultShell`) | implemented ✅ tested | pure |
 | `default-command` | `shellStart` (Pane.hs) at new-session, new-window, split-window | implemented ✅ tested | pure |
 | `default-size` | `defaultSizeOf` (Resize.hs): detached `new-session`, `resize-window -A`/`-a` | implemented ✅ tested | integration |
+| `bell-action` / `activity-action` / `silence-action` | `alertApplies` (Alerts.hs) in `bellAlerts`/`activityAlert` (Pane.hs) and `silenceSweep` (HookMonitor.hs): whether a window's alert fires its hook and reaches the session's clients | implemented ✅ tested | pure (AlertsSpec) + regress `alerts` |
+| `visual-bell` / `visual-activity` / `visual-silence` | `alertNotice` via `deliverAlert` (Alerts.hs): each client of the session hears the bell, sees "… in window N", or both | implemented ✅ tested | pure (AlertsSpec) + model (SessionSpec) |
 | `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |

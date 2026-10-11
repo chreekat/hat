@@ -483,7 +483,7 @@ optionTable =
     , notYet $ scalar "variation-selector-always-wide" ServerScope KFlag "on"
 
     -- Session options.
-    , notYet $ scalar "activity-action" SessionScope (KChoice bellActions) "other"
+    , live $ scalar "activity-action" SessionScope (KChoice bellActions) "other"
     , live $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
     , live $ scalar "base-index" SessionScope (KNumber 0 intMax) "0"
     , live $ scalar "bell-action" SessionScope (KChoice bellActions) "any"
@@ -525,7 +525,7 @@ optionTable =
     , live $ scalar "set-titles" SessionScope KFlag "off"
     , notYet $ scalar "set-titles-string" SessionScope KString
         "#S:#I:#W - \"#T\" #{session_alerts}"
-    , notYet $ scalar "silence-action" SessionScope (KChoice bellActions) "other"
+    , live $ scalar "silence-action" SessionScope (KChoice bellActions) "other"
     , live $ scalar "status" SessionScope
         (KChoice ["off", "on", "2", "3", "4", "5"]) "on"
     , live $ scalar "status-bg" SessionScope KColour "default"
@@ -561,9 +561,9 @@ optionTable =
     , live $ arrayOf "update-environment" SessionScope KString " ,"
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
         , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]
-    , notYet $ scalar "visual-activity" SessionScope (KChoice visualBell) "off"
-    , notYet $ scalar "visual-bell" SessionScope (KChoice visualBell) "off"
-    , notYet $ scalar "visual-silence" SessionScope (KChoice visualBell) "off"
+    , live $ scalar "visual-activity" SessionScope (KChoice visualBell) "off"
+    , live $ scalar "visual-bell" SessionScope (KChoice visualBell) "off"
+    , live $ scalar "visual-silence" SessionScope (KChoice visualBell) "off"
     , live $ scalar "word-separators" SessionScope KString
         "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
 

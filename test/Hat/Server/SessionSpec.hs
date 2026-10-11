@@ -30,7 +30,8 @@ import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
     (ArrayKey (..), Options (..), OptionValue (..)
-    , defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
+    , applyDelta, defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
+import Hat.Server.Alerts (AlertKind (..), deliverAlert)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
     , IdleVerdict (..), serverIdle
@@ -358,6 +359,14 @@ spec = do
             frame <- readIORef client.lastFrame
             let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
             row0 `shouldSatisfy` T.isInfixOf "[0/3]"
+
+    describe "alert delivery (visual-bell)" $
+        it "shows a message instead of the bell under visual-bell on" $ do
+            (st, sess) <- seedSession "/"
+            (client, _peer) <- wiredClient st Attached
+            let opts = applyDelta (singletonDelta "visual-bell" (OVScalar "on")) defaultOptions
+            deliverAlert st sess opts BellAlert 1
+            fmap (.text) <$> readTVarIO client.toast `shouldReturn` Just "Bell in window 1"
 
     describe "pane colours" $
         it "window-style and pane-colours paint what a client sees of a pane" $ do
