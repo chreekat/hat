@@ -663,10 +663,11 @@ spec = do
             readTVarIO win.autoRename `shouldReturn` False
 
     describe "run-shell -C" $
-        it "runs its format-expanded argument as commands" $ do
+        it "runs its argument as commands" $ do
             (st, _) <- seedSession "/"
-            _ <- runArgv st Nothing ["run-shell", "-C", "set -g @ran #{session_name}"]
-            Map.lookup "@ran" . (.user) <$> readTVarIO st.options `shouldReturn` Just "work"
+            _ <- runArgv st Nothing ["run-shell", "-C", "set -g @ran yes; set -g @also too"]
+            o <- readTVarIO st.options
+            map (`Map.lookup` o.user) ["@ran", "@also"] `shouldBe` [Just "yes", Just "too"]
     describe "snapshot commands without persistence" $
         it "list-snapshots and restore-snapshot fail loudly, never silently (bb)" $ do
             (st, _) <- seedSession "/"
