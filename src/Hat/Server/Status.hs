@@ -6,6 +6,7 @@
 module Hat.Server.Status
     ( statusBaseStyle
     , statusRows
+    , statusFormats
     , styleOption
     ) where
 
@@ -39,6 +40,13 @@ statusBaseStyle ctx opts = sty
     over c t = case colourValue t of
         Just (Just col) | col /= Cell.DefaultColor -> col
         _ -> c
+
+-- | The @status-format@ entries the status line's lines draw.
+statusFormats :: Options -> [Text]
+statusFormats opts = case optionValue "status-format" opts of
+    OVArray m -> [ f | i <- [0 .. opts.statusLines - 1]
+                     , Just f <- [Map.lookup (KeyIndex (fromIntegral i)) m] ]
+    OVScalar _ -> []
 
 -- | The status line's rows, @width@ cells each: line @i@ draws
 -- @status-format[i]@, or is blank when that entry is unset.

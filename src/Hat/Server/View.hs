@@ -19,7 +19,7 @@ import Control.Monad (foldM, forM, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -38,12 +38,14 @@ import Hat.Server.Flash (startLingerClock)
 import Hat.Server.Format (formatReadsLoops)
 import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
-import Hat.Server.FormatEnv (formatCtxFor, sessionFormatEnv, windowOwnEnv)
+import Hat.Server.FormatEnv
+    (WindowFlagState (..), activeClientCounts, formatCtxFor, reachableValues,
+     sessionFormatEnv, windowFlags, windowOwnEnv)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
-import Hat.Server.Status (statusRows)
+import Hat.Server.Status (statusFormats, statusRows)
 import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -631,13 +633,15 @@ statusCells :: ServerState -> Session -> Int -> IO [V.Vector Cell.Cell]
 statusCells st sess width = do
     sopts <- atomically (resolveForSession st sess)
     (env, wins) <- gatherStatus st sess
-    renderStatus st sopts env wins width
+    winEnvs <- mapM snd wins
+    renderStatus st sopts env winEnvs width
 
 -- | 'statusCells' through the client's render-side cache: the rows are
 -- re-expanded only when something their expansion consumes changed —
--- including the clock, at second granularity. Bypassed inside a hook's
--- ambient context, and for formats that read the live tree beyond the
--- gathered window list ('formatReadsLoops'), where the inputs cannot be
+-- including the clock, at second granularity, which also bounds how stale
+-- a window variable outside the cheap per-window key can go. Bypassed
+-- inside a hook's ambient context, and for formats that read the live tree
+-- beyond the window list ('formatReadsLoops'), where the inputs cannot be
 -- enumerated.
 statusRowsCached
     :: ServerState -> Client -> Session -> Options -> Int
@@ -646,11 +650,12 @@ statusRowsCached st client sess sopts width = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
     (env, wins) <- gatherStatus st sess
+    let winKeys = map fst wins
     shells <- readTVarIO st.shellCache
     sec <- floor <$> getPOSIXTime
     mc <- readIORef client.lastStatus
-    let usesAny toks = any (formatReadsLoops toks)
-            (optionArray "status-format" sopts <> Map.elems env)
+    let usesAny toks = any (formatReadsLoops toks) $
+            reachableValues (formatReadsLoops toks) env (statusFormats sopts)
         (plain, animated) = case mc of
             Just c | samePtr c.opts sopts -> (c.plain, c.animated)
             _ -> (not (usesAny ["S", "P", "L", "N", "C", "A"]), usesAny ["A"])
@@ -658,23 +663,43 @@ statusRowsCached st client sess sopts width = do
         Just c | isNothing mamb, plain
                , samePtr c.opts sopts, samePtr c.shells shells
                , c.second == sec, c.width == width
-               , c.env == env, c.wins == wins -> pure c.rowCells
+               , c.env == env, c.wins == winKeys -> pure c.rowCells
         _ -> do
-            rows <- renderStatus st sopts env wins width
+            winEnvs <- mapM snd wins
+            rows <- renderStatus st sopts env winEnvs width
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
                     { opts = sopts, shells, second = sec, width
-                    , env, wins, plain, animated, rowCells = rows }
+                    , env, wins = winKeys, plain, animated, rowCells = rows }
             pure rows
 
 -- | Everything the status rows' expansion consumes beyond the options,
--- read fresh: the session's format environment and each window's own
--- (the @W:@ loop's items).
-gatherStatus :: ServerState -> Session -> IO (Map.Map Text Text, [Map.Map Text Text])
+-- read fresh: the session's format environment and, for each window (the
+-- @W:@ loop's items), a cheap key and the action reading its full format
+-- variables.
+gatherStatus
+    :: ServerState -> Session
+    -> IO (Map.Map Text Text, [(WindowKey, IO (Map.Map Text Text))])
 gatherStatus st sess = do
     env <- sessionFormatEnv st sess
-    ws <- readTVarIO sess.windows
-    wins <- forM (Map.toAscList ws) $ \(ix, win) -> windowOwnEnv st sess ix win
+    (ws, cur, mlast, counts) <- atomically $ (,,,)
+        <$> (Map.toAscList <$> readTVar sess.windows) <*> readTVar sess.currentIx
+        <*> (listToMaybe <$> readTVar sess.windowHist) <*> activeClientCounts st
+    wins <- forM ws $ \(ix, win) -> do
+        key <- atomically $ do
+            (wname, bell, act, sil, zoom, wopts) <- (,,,,,)
+                <$> readTVar win.name <*> readTVar win.bellFlag
+                <*> readTVar win.activity <*> readTVar win.silenceFlag
+                <*> readTVar win.zoomed <*> readTVar win.options
+            let flags = windowFlags WindowFlagState
+                    { flagCurrent = ix == cur, flagLast = Just ix == mlast
+                    , flagBell = bell, flagActivity = act, flagSilence = sil
+                    , flagZoomed = isJust zoom }
+            pure WindowKey
+                { index = ix, name = wname, flags
+                , viewers = Map.findWithDefault 0 win.id counts
+                , options = wopts }
+        pure (key, windowOwnEnv st sess ix win)
     pure (env, wins)
 
 -- | Expand and draw the status rows from gathered inputs; see
@@ -683,7 +708,7 @@ renderStatus
     :: ServerState -> Options -> Map.Map Text Text -> [Map.Map Text Text]
     -> Int -> IO [V.Vector Cell.Cell]
 renderStatus st sopts env wins width = do
-    ctx <- formatCtxFor st env (optionArray "status-format" sopts)
+    ctx <- formatCtxFor st env (statusFormats sopts)
     let rows = statusRows ctx { F.windows = wins, F.animate = F.Animate }
             sopts width
     pure $! foldr seq rows rows

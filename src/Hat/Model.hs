@@ -18,6 +18,7 @@ module Hat.Model
     , RowOrigin (..)
     , ChromeCache (..)
     , StatusCache (..)
+    , WindowKey (..)
     , EnvImport (..)
     , StartupPhase (..)
     , AcceptGate (..)
@@ -551,13 +552,25 @@ data ChromeCache = ChromeCache
 -- 'Hat.Server.View.statusRowsCached'.
 -- Fields are strict so the identity-matched ones hold the very objects
 -- they were built from, never a selector thunk 'samePtr' would miss on.
+-- | What a window's status entry usually changes with, cheap to read each
+-- frame: the status cache's per-window key. See
+-- 'Hat.Server.View.statusRowsCached'.
+data WindowKey = WindowKey
+    { index   :: !Int
+    , name    :: !Text
+    , flags   :: !Text  -- ^ @#{window_flags}@
+    , viewers :: !Int   -- ^ @#{window_active_clients}@
+    , options :: !OptionsDelta
+    }
+    deriving (Eq)
+
 data StatusCache = StatusCache
     { opts    :: !Options                    -- ^ matched by object identity
     , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
     , second  :: !Int                        -- ^ POSIX second of the render
     , width   :: !Int
     , env     :: !(Map Text Text)
-    , wins    :: ![Map Text Text]  -- ^ each window's own format variables
+    , wins    :: ![WindowKey]
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
     , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
     , rowCells :: ![V.Vector Cell.Cell]

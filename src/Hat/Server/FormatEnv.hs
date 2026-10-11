@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , resolveShell
     , expandFormat
     , formatCtxFor
+    , reachableValues
     , WindowFlagState (..)
     , windowFlags
     ) where
@@ -395,7 +396,7 @@ formatCtxFor st env0 fmts = do
                 val <- resolveShell st (evaluateCtx jobCtx inner)
                 modifyIORef' resolved (Map.insert inner val)
                 collect (T.drop (2 + T.length inner + 1) rest)
-    mapM_ collect (reachable env fmts)
+    mapM_ collect (reachableValues ("#(" `T.isInfixOf`) env fmts)
     vals <- readIORef resolved
     -- Deferred reads: the caller's strict use of the expansion keeps them
     -- inside its own call.
@@ -412,17 +413,6 @@ formatCtxFor st env0 fmts = do
         , paneLines = visibleLines
         }
   where
-    -- The formats plus every variable value they name that holds a
-    -- @#(…)@, transitively: what an @E:@ or @T:@ expansion can reach.
-    reachable env = go Set.empty
-      where
-        shelly = Map.filter ("#(" `T.isInfixOf`) env
-        go _ [] = []
-        go seen (t : ts) =
-            let named = [ k | k <- Map.keys shelly, not (Set.member k seen)
-                            , k `T.isInfixOf` t ]
-                seen' = foldr Set.insert seen named
-            in t : go seen' (ts <> [ v | k <- named, Just v <- [Map.lookup k shelly] ])
     breakBalanced = go (0 :: Int) ""
       where
         go depth acc t = case T.uncons t of
@@ -432,6 +422,21 @@ formatCtxFor st env0 fmts = do
                 | c == '(' -> go (depth + 1) (acc <> T.singleton c) rest
                 | c == ')' -> go (depth - 1) (acc <> T.singleton c) rest
                 | otherwise -> go depth (acc <> T.singleton c) rest
+
+-- | The formats plus every variable value satisfying @p@ that they name
+-- (as @{name}@ or @:name}@), transitively: what their @E:@ or @T:@
+-- expansions can reach.
+reachableValues :: (Text -> Bool) -> FormatEnv -> [Text] -> [Text]
+reachableValues p env = go Set.empty
+  where
+    wanted = Map.filter p env
+    names k t = ("{" <> k <> "}") `T.isInfixOf` t || (":" <> k <> "}") `T.isInfixOf` t
+    go _ [] = []
+    go seen (t : ts) =
+        let named = [ k | k <- Map.keys wanted, not (Set.member k seen)
+                        , names k t ]
+            seen' = foldr Set.insert seen named
+        in t : go seen' (ts <> [ v | k <- named, Just v <- [Map.lookup k wanted] ])
 
 -- | The conditions that produce a window's @#{window_flags}@ string.
 data WindowFlagState = WindowFlagState
