@@ -13,6 +13,8 @@ module Hat.Server.Command.Pane
     , cmdSelectPane
     , cmdLastPane
     , cmdKillPane
+    , cmdRespawnPane
+    , cmdRespawnWindow
     , cmdSwapPane
     , cmdClearHistory
     , cmdResizePane
@@ -24,7 +26,7 @@ import Control.Concurrent.STM
 import Control.Monad (forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -44,7 +46,8 @@ import Hat.Server.Hooks
 import Hat.Server.Locate (findTarget, locatePane, paneIndexOf, siblingPane, targetPane, withCurrentWindow)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
-    (killPaneLocs, sessionSpawnEnv, shellStart, spawnPane, startPaneReader)
+    ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, respawnPane
+    , respawnStart, sessionSpawnEnv, shellStart, spawnPane, startPaneReader )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowArrange)
@@ -541,6 +544,110 @@ cmdKillPane st mclient args = do
         mloc <- atomically (locatePane st pane.id)
         forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
     pure []
+
+-- | @respawn-pane [-k] [-c dir] [-e VAR=value] [-t pane] [command ...]@:
+-- run a new process in a dead pane, or with @-k@ in a live one.
+cmdRespawnPane :: CommandImpl
+cmdRespawnPane st mclient args = do
+    let (opts, flags, pos) = parseArgs "cet" args
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case (respawnFlagError flags, res) of
+        (Just e, _) -> pure [RErr e]
+        (_, Left e) -> pure [RErr e]
+        (_, Right (sess, wix, win, pane)) -> do
+            live <- isNothing <$> readTVarIO pane.exited
+            if live && "-k" `notElem` flags
+                then do
+                    sname <- readTVarIO sess.name
+                    pix <- paneIndexOf st win pane
+                    pure [RErr ("respawn pane failed: pane " <> sname <> ":"
+                        <> tshow wix <> "." <> tshow pix <> " still active")]
+                else respawnReply "respawn pane failed: "
+                    <$> respawnIn st mclient sess win pane opts pos
+
+-- | @respawn-window [-k] [-c dir] [-e VAR=value] [-t window] [command ...]@:
+-- reduce the window to its first pane and respawn that.
+cmdRespawnWindow :: CommandImpl
+cmdRespawnWindow st mclient args = do
+    let (opts, flags, pos) = parseArgs "cet" args
+    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+    case (respawnFlagError flags, res) of
+        (Just e, _) -> pure [RErr e]
+        (_, Left e) -> pure [RErr e]
+        (_, Right (sess, wix, win, _)) -> do
+            panes <- Map.elems <$> readTVarIO win.panes
+            live <- or <$> mapM (fmap isNothing . readTVarIO . (.exited)) panes
+            case panes of
+                _ | live && "-k" `notElem` flags -> do
+                    sname <- readTVarIO sess.name
+                    pure [RErr ("respawn window failed: window " <> sname
+                        <> ":" <> tshow wix <> " still active")]
+                [] -> pure [RErr "respawn window failed: no panes"]
+                first : others -> do
+                    killPaneLocsWith QuietLifecycle st
+                        [ (sess.id, win, p) | p <- others ]
+                    atomically $ do
+                        writeTVar win.activeId first.id
+                        writeTVar win.paneHist []
+                    respawnReply "respawn window failed: "
+                        <$> respawnIn st mclient sess win first opts pos
+
+-- | Respawn's flags beyond @-k@ that hat refuses rather than ignores.
+respawnFlagError :: [Text] -> Maybe Text
+respawnFlagError flags = case filter (/= "-k") flags of
+    [] -> Nothing
+    "-E" : _ -> Just "respawn: -E (an empty pane) is not supported"
+    f : _ -> Just ("unknown flag " <> f)
+
+respawnReply :: Text -> Either Text () -> [Reply]
+respawnReply prefix = either (\e -> [RErr (prefix <> e)]) (const [])
+
+-- | Replace @pane@'s process: the given command (one word for the shell,
+-- several exec'd directly), else the pane's own launch; in @-c@ (a format;
+-- a relative one resolves as tmux's @server_client_get_cwd@: against a
+-- command client's directory, else the session's), else the pane's start
+-- directory.
+respawnIn
+    :: ServerState -> Maybe Client -> Session -> Window -> Pane
+    -> [(Text, Text)] -> [Text] -> IO (Either Text ())
+respawnIn st mclient sess win pane opts pos = do
+    dir <- case lookup "-c" opts of
+        Nothing -> pure pane.startCwd
+        Just d -> do
+            env <- sessionFormatEnv st sess
+            expanded <- T.unpack <$> expandFormat st env d
+            base <- case mclient of
+                Just c | c.role == Control -> pure (T.unpack c.cwd)
+                _ -> readTVarIO sess.startCwd
+            pure $ case expanded of
+                '/' : _ -> expanded
+                "" -> base
+                rel -> base <> "/" <> rel
+    environ0 <- sessionSpawnEnv st sess
+    let envPairs = reverse
+            [ (n, T.drop 1 v) | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
+        environ = environ0 <> envPairs
+        shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
+        how = case pos of
+            [] -> respawnStart pane.start
+            [c] -> ShellCommand c
+            argv -> ExecArgv argv
+    mnew <- respawnPane st sess.id win pane shellCmd how dir environ
+    case mnew of
+        Nothing -> pure (Left "pane no longer exists")
+        Just new -> do
+            applySessionSize st sess.id
+            notifyPane st "pane-created" new
+                [ ("pane_command", PText (spawnedCommand shellCmd how))
+                , ("pane_current_path", PText (T.pack dir))
+                , ("created_empty", PInt 0)
+                , ("created_respawn", PInt 1) ]
+            pure (Right ())
+  where
+    spawnedCommand shellCmd = \case
+        ShellCommand c -> c
+        ExecArgv argv -> T.unwords (map quoteIfNeeded argv)
+        _ -> T.pack shellCmd
 
 -- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
 -- positions. @src@ defaults to the active pane; without @-d@ the active

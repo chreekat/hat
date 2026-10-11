@@ -19,6 +19,10 @@ module Hat.Server.Pane
     , shellLine
     , shellStart
     , spawnPane
+    , respawnPane
+    , dismissDeadPane
+    , deadNoticeBytes
+    , respawnStart
     , newWindowWithPane
     , startPaneReader
     , pauseReaders
@@ -65,24 +69,26 @@ import Control.Concurrent
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Exception (Exception, IOException, catch, finally, try)
+import Control.Exception (Exception, IOException, catch, finally)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set qualified as Set
+import Data.Vector qualified as V
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Char (isAlphaNum)
 import System.Environment (getEnvironment)
 import System.IO (Handle, hFlush)
 import System.Posix.Process (getProcessID)
+import System.Exit (ExitCode (..))
+import System.Posix.Process qualified as Posix
 import System.Process
     (CreateProcess (..), StdStream (..), shell, withCreateProcess)
 import System.Timeout (timeout)
@@ -99,7 +105,11 @@ import Hat.Server.Layout
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyPane
     , sessionTarget )
+import Hat.Server.FormatEnv (expandFormat, paneEnvById)
 import Hat.Server.Locate (locatePane)
+import Hat.Server.Style (applyStyle)
+import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator.Types (paintLineBytes)
 import Hat.Server.Mru (popOnClose, scrub)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Term.Emulator qualified as Emu
@@ -152,20 +162,6 @@ resumeArgv :: Text -> [Text] -> [Text]
 resumeArgv "claude" (prog : _) = [prog, "--continue"]
 resumeArgv _        argv       = argv
 
--- | The program a captured foreground command names: its last path
--- segment with NixOS's @.<name>-wrapped@ decoration stripped, so a pane
--- running @\/nix\/store\/…\/.vim-wrapped@ is recorded (and matched) as
--- @vim@.
-commandName :: Text -> Text
-commandName raw =
-    let base  = T.takeWhileEnd (/= '/') (firstWord raw)
-        undot = T.dropWhile (== '.') base
-    in fromMaybe undot (T.stripSuffix "-wrapped" undot)
-  where
-    firstWord t = case T.words t of
-        (w : _) -> w
-        []      -> ""
-
 newWindowWithPane
     :: ServerState -> SessionId -> FilePath -> Maybe Text -> FilePath
     -> [(Text, Text)] -> Size -> IO (Window, Pane)
@@ -209,17 +205,6 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
     pure (win, pane)
   where
     baseName = Prelude.reverse . takeWhile (/= '/') . Prelude.reverse
-
--- | How a freshly-spawned pane chooses its process.
-data PaneStart
-    = FreshShell         -- ^ the session's login shell, no command
-    | ShellCommand Text  -- ^ a user-supplied command line, run via @sh -c@
-                         --   (@new-window@\/@split-window@ with an argument)
-    | ExecArgv [Text]    -- ^ exec this argv directly, no shell. See
-                         --   'restoreRun'.
-    | ShellInject [Text] -- ^ spawn a fresh interactive shell and type this
-                         --   argv into it as a command line. See 'restoreRun'.
-    deriving (Eq, Show)
 
 -- | Where a captured program was running: as a child of the pane's
 -- interactive shell (the user typed it), or as the pane's own top-level
@@ -290,6 +275,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     readerVar <- newTVarIO Nothing
     homeVar <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
+    exitedVar <- newTVarIO Nothing
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
     pure Pane
@@ -305,7 +291,44 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , readerTid = readerVar
         , home = homeVar
         , pendingInput = pending
+        , start = mrun
+        , exited = exitedVar
         }
+
+-- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
+-- its id, slot, size and options; a fresh emulator, process and reader take
+-- over, so the screen and any copy mode start clean (tmux's
+-- @screen_reinit@). The old record is retired — marked so its reader's
+-- teardown only reaps — and swapped out atomically, then hung up if its
+-- process still runs. 'Nothing' when the pane left the tree meanwhile (a
+-- kill or its own exit won the race); the new process is then hung up.
+respawnPane
+    :: ServerState -> SessionId -> Window -> Pane -> FilePath -> PaneStart
+    -> FilePath -> [(Text, Text)] -> IO (Maybe Pane)
+respawnPane st sid win old shellCmd how dir environ = do
+    sz <- readTVarIO old.size
+    new <- spawnPane st old.id sid shellCmd how dir environ sz
+    swapped <- atomically $ do
+        gone <- readTVar old.dead
+        if gone then pure Nothing else do
+            writeTVar old.dead True
+            writeTVar new.options =<< readTVar old.options
+            modifyTVar' win.panes (Map.insert new.id new)
+            bumpDirty st
+            Just . isNothing <$> readTVar old.exited
+    case swapped of
+        Nothing -> Nothing <$ hangupPane new
+        Just wasLive -> do
+            when wasLive (hangupPane old)
+            startPaneReader st sid win new
+            pure (Just new)
+
+-- | What @respawn-pane@ without a command re-runs: the pane's own launch. A
+-- restored program typed into a fresh shell respawns as that shell.
+respawnStart :: PaneStart -> PaneStart
+respawnStart = \case
+    ShellInject _ -> FreshShell
+    other         -> other
 
 -- | Signals a pane's reader that its shell child has exited. See
 -- 'startPaneReader'.
@@ -331,12 +354,17 @@ instance Exception PauseReading
 -- Note [Pane home].
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
 startPaneReader st spawnSid spawnWin pane = do
+    atomically $ writeTVar pane.home (Just (spawnSid, spawnWin))
+    -- A dead pane adopted across a reload has no process left to read.
+    dead <- readTVarIO pane.exited
+    unless (isJust dead) (runPaneReader st pane)
+
+runPaneReader :: ServerState -> Pane -> IO ()
+runPaneReader st pane = do
     -- Count the pane live before forking, so a kill that lands before the
     -- reader is scheduled still finds it counted and 'waitIdle' waits for
     -- its reap. Decremented once the reader (and its 'reapPane') is done.
-    atomically $ do
-        writeTVar pane.home (Just (spawnSid, spawnWin))
-        modifyTVar' st.livePanes (+ 1)
+    atomically $ modifyTVar' st.livePanes (+ 1)
     -- Masked for the thread's whole life bar the read itself: once the tid
     -- is published, a 'hangupPane' kill must always reach the cleanup, and
     -- any async exception (a kill, 'ChildExited', 'PauseReading') can land
@@ -646,27 +674,100 @@ hangupPane pane = do
         Just tid -> killThread tid
         Nothing  -> Hat.Term.Pty.closePty pane.pty
 
--- | The reader saw EOF: with @remain-on-exit@ on, the pane stays in the
--- tree showing its last screen (reaped, @pane-died@ fired) until a kill;
--- otherwise it is torn down ('closePane').
+-- | The reader saw EOF. A pane already retired from the tree — killed, or
+-- replaced by a respawn — is only reaped. Otherwise @remain-on-exit@
+-- decides: the pane is torn down ('closePane'), or it stays in the tree as a
+-- dead pane showing its last screen until a kill or a respawn
+-- ('markPaneDead').
 paneEof :: ServerState -> Pane -> IO ()
 paneEof st pane = do
-    keep <- do
+    retired <- readTVarIO pane.dead
+    remain <- if retired then pure RemainOff else paneRemainOnExit st pane
+    if remain == RemainOff then closePane st pane else do
+        status <- reapPane st pane
+        if remain == RemainFailed && status == Just (Posix.Exited ExitSuccess)
+            then teardownPane st pane (pure ())
+            else markPaneDead st pane status
+
+-- | The pane's resolved @remain-on-exit@, read where the pane lives now.
+paneRemainOnExit :: ServerState -> Pane -> IO RemainOnExit
+paneRemainOnExit st pane = atomically $ do
+    mloc <- locatePane st pane.id
+    case mloc of
+        Nothing -> pure RemainOff
+        Just (sid, win) -> do
+            msess <- Map.lookup sid <$> readTVar st.sessions
+            case msess of
+                Nothing -> pure RemainOff
+                Just sess -> (.remainOnExit) <$> resolveForPane st sess win pane
+
+-- | Keep an exited (and already reaped) pane in the tree as a dead pane:
+-- record how its program ended, draw @remain-on-exit-format@ on a fresh
+-- bottom line with the cursor hidden, and fire @pane-died@.
+markPaneDead :: ServerState -> Pane -> Maybe Posix.ProcessStatus -> IO ()
+markPaneDead st pane status = do
+    now <- getPOSIXTime
+    let (code, sig) = case status of
+            Just (Posix.Exited ExitSuccess)     -> (Just 0, Nothing)
+            Just (Posix.Exited (ExitFailure n)) -> (Just n, Nothing)
+            Just (Posix.Terminated s _)         -> (Nothing, Just (fromIntegral s))
+            _                                   -> (Nothing, Nothing)
+    atomically $ do
+        writeTVar pane.readerTid Nothing
+        writeTVar pane.exited
+            (Just PaneExit { status = code, signal = sig, diedAt = now })
+    notifyPane st "pane-died" pane []
+    menv <- paneEnvById st pane.id
+    forM_ menv $ \env -> do
+        fmt <- paneRemainFormat st pane
+        unless (T.null fmt) $ do
+            notice <- expandFormat st env fmt
+            sz <- readTVarIO pane.size
+            void (Emu.feed pane.emulator (deadNoticeBytes sz notice))
+    atomically (bumpDirty st)
+
+-- | A key typed into a dead pane under @remain-on-exit key@ closes it.
+-- Whether the key was consumed so.
+dismissDeadPane :: ServerState -> Pane -> IO Bool
+dismissDeadPane st pane = do
+    dead <- isJust <$> readTVarIO pane.exited
+    remain <- if dead then paneRemainOnExit st pane else pure RemainOff
+    if remain /= RemainKey then pure False else do
         mloc <- atomically (locatePane st pane.id)
-        case mloc of
-            Nothing -> pure False
-            Just (sid, win) -> do
-                msess <- Map.lookup sid <$> readTVarIO st.sessions
-                case msess of
-                    Nothing -> pure False
-                    Just sess -> (.remainOnExit)
-                        <$> atomically (resolveForPane st sess win pane)
-    if keep
-        then do
-            reapPane st pane
-            atomically (writeTVar pane.readerTid Nothing)
-            notifyPane st "pane-died" pane []
-        else closePane st pane
+        forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
+        pure True
+
+-- | The pane's resolved @remain-on-exit-format@.
+paneRemainFormat :: ServerState -> Pane -> IO Text
+paneRemainFormat st pane = atomically $ do
+    mloc <- locatePane st pane.id
+    case mloc of
+        Nothing -> pure ""
+        Just (sid, win) -> do
+            msess <- Map.lookup sid <$> readTVar st.sessions
+            case msess of
+                Nothing -> pure ""
+                Just sess ->
+                    (.remainOnExitFormat) <$> resolveForPane st sess win pane
+
+-- | The bytes that draw a dead pane's notice the way tmux does: scroll the
+-- whole screen up one line, write the expanded format (its @#[…]@ styles
+-- applied, cut to the pane width) on the bottom row, and hide the cursor.
+deadNoticeBytes :: Size -> Text -> B.ByteString
+deadNoticeBytes sz notice =
+    "\ESC[r\ESC[" <> B8.pack (show sz.rows) <> ";1H\n\ESC[0m"
+        <> paintLineBytes (V.fromList
+            (take (fromIntegral sz.cols) (styledRun Cell.defaultStyle notice)))
+        <> "\ESC[0m\ESC[?25l"
+  where
+    styledRun sty t = case T.breakOn "#[" t of
+        (pre, rest) ->
+            [ Cell.glyphCell c sty | c <- T.unpack pre ]
+            <> case T.breakOn "]" (T.drop 2 rest) of
+                _ | T.null rest -> []
+                (spec, close)
+                    | T.null close -> [ Cell.glyphCell c sty | c <- T.unpack rest ]
+                    | otherwise -> styledRun (applyStyle sty spec) (T.drop 1 close)
 
 -- | The model half of the reader thread's teardown: detach the pane from the
 -- window it lives in NOW. A pane is mobile — break-pane, join-pane, and
@@ -688,7 +789,13 @@ detachPaneCurrent st pane = do
 -- so no teardown path can forget a resource. (The emulator frees itself via
 -- its finalizer.)
 closePane :: ServerState -> Pane -> IO ()
-closePane st pane = do
+closePane st pane = teardownPane st pane (void (reapPane st pane))
+
+-- | 'closePane' with the OS-side reap supplied: run between the end-of-life
+-- notifications and the emptied session's @Exited@, or a no-op when the
+-- caller already reaped.
+teardownPane :: ServerState -> Pane -> IO () -> IO ()
+teardownPane st pane reap = do
     mctx <- atomically $ do
         mloc <- locatePane st pane.id
         traverse
@@ -723,7 +830,7 @@ closePane st pane = do
             (NotifyTarget Nothing Nothing (Just pane.id))
             [ ("pane", PPaneRef pane.id) ]
         (AlreadyDetached, _) -> pure ()
-    reapPane st pane
+    reap
     forM_ msid $ \sid ->
         when (r == Detached WindowRemoved SessionEmptied) $
             broadcast st sid Exited
@@ -807,15 +914,18 @@ data SessionFate = SessionSurvives | SessionEmptied
 -- always fills the exit slot, so the second wait is guaranteed to
 -- complete) — then release the pty. Runs once, in the reader thread's
 -- @finally@ (see 'closePane').
-reapPane :: ServerState -> Pane -> IO ()
+reapPane :: ServerState -> Pane -> IO (Maybe Posix.ProcessStatus)
 reapPane st pane = do
     stopPipe pane
     reaped <- timeout paneExitWaitMicros (Hat.Term.Pty.waitExit pane.pty)
-    when (reaped == Nothing) $ do
-        Hat.Term.Pty.signalKill pane.pty
-        void $ Hat.Term.Pty.waitExit pane.pty
+    status <- case reaped of
+        Just s -> pure s
+        Nothing -> do
+            Hat.Term.Pty.signalKill pane.pty
+            Hat.Term.Pty.waitExit pane.pty
     Hat.Term.Pty.closePty pane.pty
     logEvent st.logger PaneExited { pane = rawPane pane.id }
+    pure status
 
 -- | Detach a whole set of located panes in one transaction, so a window —
 -- and a session emptied with it — collapses atomically. Returns the
@@ -1099,22 +1209,6 @@ oscColorReply target term scheme =
     terminator = case term of
         Emu.TermBel -> "\a"
         Emu.TermSt  -> "\ESC\\"
-
--- | A pane's foreground program (from @/proc@) as a display name:
--- normalized by 'commandName', so a NixOS-wrapped @vim@ shows as @vim@
--- everywhere (window titles, @#{pane_current_command}@, the persisted
--- tree). Falls back to @sh@.
-paneCommandName :: Pane -> IO Text
-paneCommandName pane = do
-    mfg <- Hat.Term.Pty.foregroundCommand pane.pty
-    raw <- case mfg of
-        Just cmd -> pure cmd
-        Nothing -> do
-            r <- try (TIO.readFile ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/comm"))
-            pure $ case r of
-                Right s -> let t = T.strip s in if T.null t then "sh" else t
-                Left (_ :: IOException) -> "sh"
-    pure (commandName raw)
 
 -- | 'sessionSpawnEnv' for spawn paths that have seed pairs but no 'Session'
 -- to read yet (session creation, restore).

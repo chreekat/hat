@@ -2,6 +2,7 @@
 -- 'Cell.Style'. Unknown tokens are ignored, matching tmux's tolerance.
 module Hat.Server.Style
     ( parseStyle
+    , applyStyle
     , parseColor
     ) where
 
@@ -16,7 +17,12 @@ import Hat.Term.Cell qualified as Cell
 
 -- | Fold a comma-separated style string onto the default style.
 parseStyle :: Text -> Cell.Style
-parseStyle = List.foldl' apply Cell.defaultStyle . map T.strip . T.splitOn ","
+parseStyle = applyStyle Cell.defaultStyle
+
+-- | Fold a comma-separated style string onto a base style, as successive
+-- @#[…]@ directives in a drawn format accumulate.
+applyStyle :: Cell.Style -> Text -> Cell.Style
+applyStyle base = List.foldl' apply base . map T.strip . T.splitOn ","
   where
     apply sty tok
         | Just c <- T.stripPrefix "fg=" tok = sty { Cell.fg = parseColor c }

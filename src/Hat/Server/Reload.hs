@@ -20,6 +20,8 @@
 module Hat.Server.Reload
     ( ReloadHot (..)
     , HotPane (..)
+    , ReloadStart (..)
+    , ReloadDeath (..)
     , ReloadTree (..)
     , HotSession (..)
     , HotWindow (..)
@@ -74,16 +76,68 @@ data ReloadHot = ReloadHot
     deriving (Eq, Show)
 
 -- | The live OS handles and emulator state a pane carries across the re-exec;
--- everything durable about it (its cwd, its command) is in the tree instead.
+-- everything durable about it (its cwd, its foreground command) is in the
+-- tree instead.
 data HotPane = HotPane
-    { masterFd :: Int
+    { masterFd :: Int          -- ^ @-1@ for a dead pane, which has none
     , childPid :: Int
     , modes    :: ReloadModes  -- ^ replayed into the adopted pane's fresh
                                --   emulator; see 'Hat.Server.adoptPane'
     , screen   :: ReloadScreen -- ^ the live grid and scrollback, replayed into
                                --   the adopted pane; see 'Hat.Server.adoptPane'
+    , start    :: ReloadStart  -- ^ what @respawn-pane@ re-runs (era 11)
+    , death    :: Maybe ReloadDeath
+        -- ^ how a dead (@remain-on-exit@) pane's program ended; such a pane
+        -- has no fd or child to adopt (era 11)
     }
     deriving (Eq, Show)
+
+-- | A pane's launch command, as @respawn-pane@ re-runs it. A restored
+-- program typed into a fresh shell travels as 'StartShell': the shell is
+-- what the pane runs.
+data ReloadStart
+    = StartShell
+    | StartCommand Text  -- ^ a command line for @sh -c@
+    | StartArgv [Text]   -- ^ an argv exec'd directly
+    deriving (Eq, Show)
+
+instance Serialise ReloadStart where
+    encode = \case
+        StartShell     -> encodeListLen 1 <> encodeWord 0
+        StartCommand t -> encodeListLen 2 <> encodeWord 1 <> encode t
+        StartArgv argv -> encodeListLen 2 <> encodeWord 2 <> encode argv
+    decode = do
+        len <- decodeListLen
+        tag <- decodeWord
+        r <- case tag of
+            0 -> pure StartShell
+            1 -> StartCommand <$> decode
+            2 -> StartArgv <$> decode
+            _ -> fail ("unknown reload start tag " <> show tag)
+        let used = if tag == 0 then 1 else 2
+        replicateM_ (max 0 (len - used)) (() <$ decodeTerm)
+        pure r
+
+-- | How a dead pane's program ended: exit status or terminating signal
+-- (neither when the reap failed), and when, in POSIX seconds.
+data ReloadDeath = ReloadDeath
+    { status :: Maybe Int
+    , signal :: Maybe Int
+    , diedAt :: Int
+    }
+    deriving (Eq, Show)
+
+instance Serialise ReloadDeath where
+    encode d =
+           encodeListLen 4
+        <> encodeWord 0
+        <> encode d.status <> encode d.signal <> encode d.diedAt
+    decode = do
+        len <- decodeListLen
+        _   <- decodeWord
+        d <- ReloadDeath <$> decode <*> decode <*> decode
+        replicateM_ (max 0 (len - 4)) (() <$ decodeTerm)
+        pure d
 
 -- Hand-written appendable list codecs, as 'ReloadScreen' uses: the encoding is
 -- (constructor-tag word, then fields), and a longer list from a newer writer
@@ -101,17 +155,22 @@ instance Serialise ReloadHot where
         replicateM_ (max 0 (len - 4)) (() <$ decodeTerm)
         pure h
 
+-- Eras ≤ 10 wrote the first four fields only: their panes are all live, and
+-- their launch command was never recorded, so it defaults to a shell.
 instance Serialise HotPane where
     encode p =
-           encodeListLen 5
+           encodeListLen 7
         <> encodeWord 0
         <> encode p.masterFd <> encode p.childPid
         <> encode p.modes <> encode p.screen
+        <> encode p.start <> encode p.death
     decode = do
         len <- decodeListLen
         _   <- decodeWord
         p <- HotPane <$> decode <*> decode <*> decode <*> decode
-        replicateM_ (max 0 (len - 5)) (() <$ decodeTerm)
+            <*> (if len >= 6 then decode else pure StartShell)
+            <*> (if len >= 7 then decode else pure Nothing)
+        replicateM_ (max 0 (len - 7)) (() <$ decodeTerm)
         pure p
 
 -- | A decoded handover: the captured tree with every pane paired to its hot
@@ -252,7 +311,7 @@ data Handover = Handover
 -- through to safe cleanup rather than misdecode. The golden-byte test pins the
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 10
+reloadEra = 11
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -309,7 +368,9 @@ decodeHandover bs =
 -- shape, and adds an @e == X@ arm below.
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    | e == reloadEra = hotTree =<< deser
+    -- Era 10 differs only by the two fields 'HotPane' appended in era 11,
+    -- which its decoder defaults.
+    | e == reloadEra || e == 10 = hotTree =<< deser
     -- Eras 8 and 9 differ from today only by cell-grid screens ('migrateV9'
     -- paints them) and, for era 8, the key protocols 'ReloadModes' defaults.
     | e == 9 || e == 8 = hotTree . migrateV9 =<< deser
@@ -418,7 +479,8 @@ migrateV9 :: ReloadHotV9 -> ReloadHot
 migrateV9 (ReloadHotV9 tr hots lst) = ReloadHot
     { tree = tr
     , hot = [ HotPane { masterFd = mfd, childPid = cpid, modes = ms
-                      , screen = paintScreenV9 sc }
+                      , screen = paintScreenV9 sc
+                      , start = StartShell, death = Nothing }
             | HotPaneV9 mfd cpid ms sc <- hots ]
     , lastSession = lst }
 
@@ -559,4 +621,5 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
     migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
         ( PaneSnap { cwd = cwd', command = Nothing, shellSpawned = False }
         , HotPane { masterFd = mfd, childPid = cpid, modes = ms
-                  , screen = paintScreenV9 sc } )
+                  , screen = paintScreenV9 sc
+                  , start = StartShell, death = Nothing } )

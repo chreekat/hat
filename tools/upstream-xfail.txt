@@ -20,7 +20,6 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-decrqm-sync.sh                  # remain-on-exit
 floating-pane-geometry.sh
 if-shell-error.sh
 input-keys.sh
@@ -42,7 +41,7 @@ session-group-resize.sh         # control mode
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
-utf8-test.sh                    # remain-on-exit
+utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (tmux: per sequence); NUL/DEL capture differs
 
 # Baseline re-recorded 2026-07-31 against the pinned tmux master corpus
 # (flake input tmux-src). Each reason names the unimplemented subsystem
@@ -95,7 +94,7 @@ show-options-output.sh          # needs status-format + string array keys + hook
 input-cursor.sh                 # literal tabs in capture output (emulator expands tabs)
 input-malformed.sh              # emulator: accepts malformed OSC 8, no DECRQSS error reply, U+FFFD per byte (+ perl locale noise in csi-param-discard)
 input-modes.sh                  # emulator: OSC 133;A starts a fresh line; no OSC 133 per-line metadata
-input-osc.sh                    # respawn-pane
+input-osc.sh                    # capture-pane -F/-H flags (hyperlink); then set-clipboard for the OSC 52 part
 input-raw-controls.sh           # emulator: ACS CHARSET attr, CLEARED after RIS
 input-raw-edit.sh               # emulator: CLEARED on default-bg erases, TAB cells
 input-raw-history.sh            # scroll-on-clear (ED at home pushes the screen into history)
@@ -103,23 +102,21 @@ input-raw-scroll.sh             # emulator: a scroll region's top line is not pu
 input-raw-sgr.sh                # emulator: OSC 8 id= (linkid) not exposed
 input-raw-unicode.sh            # emulator: no grapheme clustering of RI pairs / VS16 (mode 2027 off)
 input-reflow-stress.sh          # load-buffer + copy-mode -H + respawn-*
-input-replies.sh                # remain-on-exit + respawn-window (blocks before DSR/DA/DECRQM checks)
-input-requests.sh               # respawn-window + get-clipboard + OSC-4/OSC-52 request round-trips
-input-scroll.sh                 # respawn-pane + detached window height
+input-replies.sh                # set-clipboard/get-clipboard options missing (stops before the DSR/DA/DECRQM checks)
+input-requests.sh               # OSC 4/OSC 52 requests not forwarded to the outer terminal (first: OSC 4;99;?)
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 
 # buffers: subsystem is a stub
 buffers.sh                      # no -F/-f, buffer_* formats, set-buffer -n, buffer-limit, load-buffer
 
-pane-ops.sh                     # needs new-window -E/-I, respawn-pane -E, resize-pane -T, split -Z/-e/-s
+pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, resize-pane -T, respawn -E (empty panes)
 
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # unlink/swap/rotate-window and move-window -k/-a/-r absent
 session-ops.sh                  # grouped sessions, new-session -A/-t, detach-on-destroy, kill-session -a/-C/-f
-pipe-pane.sh                    # pipe-pane works but the test needs remain-on-exit (dead-pane model)
 lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + floating panes
 screen-redraw-menus.sh          # needs display-menu window menus + menu styles
-theme-report.sh                 # needs respawn-window + window-style + remain-on-exit + nested attach
+theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report

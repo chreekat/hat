@@ -184,6 +184,8 @@ hookArgSpec = \case
     "attach-session" -> "tc"
     "new-window" -> "nct"
     "split-window" -> "ctlpeF"
+    "respawn-pane" -> "cet"
+    "respawn-window" -> "cet"
     "capture-pane" -> "bESt"
     "select-pane" -> "tT"
     "copy-mode" -> "st"
@@ -289,6 +291,8 @@ commandSpecs =
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
+    , (["respawn-pane", "respawnp"], cmdRespawnPane)
+    , (["respawn-window", "respawnw"], cmdRespawnWindow)
     , (["swap-pane", "swapp"], cmdSwapPane)
     , (["clear-history", "clearhist"], cmdClearHistory)
     , (["break-pane", "breakp"], cmdBreakPane)

@@ -37,7 +37,7 @@ import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
     (HotPane (..), HotSession (..), HotWindow (..), ReloadModes (..),
-     ReloadScreen (..), ReloadTree (..), emptyReloadScreen)
+     ReloadScreen (..), ReloadStart (..), ReloadTree (..), emptyReloadScreen)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -149,7 +149,8 @@ spec = do
             captured.altScreen `shouldBe` True
             let rp = HotPane
                     { masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0 False 0, screen = captured }
+                    , modes = ReloadModes False False 0 False 0, screen = captured
+                    , start = StartShell, death = Nothing }
                 (bytes, sb) = replayPane rp
             dst <- Emu.newEmulator sz 1000
             _ <- Emu.feed dst bytes
@@ -175,7 +176,8 @@ spec = do
                 captured <- captureReloadScreen KeepScrollback src
                 let rp = HotPane
                         { masterFd = 0, childPid = 0
-                        , modes = ReloadModes False False 0 False 0, screen = captured }
+                        , modes = ReloadModes False False 0 False 0, screen = captured
+                    , start = StartShell, death = Nothing }
                     (bytes, _) = replayPane rp
                 dst <- Emu.newEmulator sz 1000
                 _ <- Emu.feed dst bytes
@@ -197,7 +199,8 @@ spec = do
                 let sz = Size { rows = 3, cols = 20 }
                     rp = HotPane
                         { masterFd = 0, childPid = 0
-                        , modes = ms, screen = emptyReloadScreen }
+                        , modes = ms, screen = emptyReloadScreen
+                        , start = StartShell, death = Nothing }
                     (bytes, _) = replayPane rp
                 dst <- Emu.newEmulator sz 1000
                 _ <- Emu.feed dst bytes
@@ -233,7 +236,8 @@ spec = do
                     , pen = Cell.defaultStyle }
                 rp = HotPane
                     { masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0 False 0, screen = sc }
+                    , modes = ReloadModes False False 0 False 0, screen = sc
+                    , start = StartShell, death = Nothing }
                 esz = fromMaybe (Size 24 80) (captureSize sc)
             esz `shouldBe` Size 42 330
             e <- Emu.newEmulator esz 1000
@@ -260,7 +264,8 @@ spec = do
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = 999999
                     , modes = ReloadModes False False 0 False 0
-                    , screen = emptyReloadScreen }
+                    , screen = emptyReloadScreen
+                    , start = StartShell, death = Nothing }
                 psnap = PaneSnap
                     { cwd = "/tmp", command = Nothing, shellSpawned = False }
                 rw = HotWindow

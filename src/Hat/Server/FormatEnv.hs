@@ -44,7 +44,6 @@ import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
-import Hat.Server.Pane (paneCommandName)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -99,7 +98,17 @@ paneFormatEnv st sess wix win pix pane = do
     active <- readTVarIO win.activeId
     sz <- readTVarIO pane.size
     paneUser <- deltaUserVars <$> readTVarIO pane.options
-    pure $ Map.union paneUser $ Map.union (Map.fromList
+    mexit <- readTVarIO pane.exited
+    -- A signal is reported by number, as tmux does where libc has no
+    -- @sys_signame@ (glibc).
+    let deadVars = case mexit of
+            Nothing -> [("pane_dead", "0")]
+            Just e ->
+                [ ("pane_dead", "1")
+                , ("pane_dead_time", tshow (floor e.diedAt :: Integer)) ]
+                <> [ ("pane_dead_status", tshow n) | Just n <- [e.status] ]
+                <> [ ("pane_dead_signal", tshow n) | Just n <- [e.signal] ]
+    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
         , ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))

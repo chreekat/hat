@@ -28,6 +28,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import System.Directory
     (renameFile)
+import System.Exit (ExitCode (..))
+import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Types (Fd (..))
 
 import Hat.Geometry
@@ -38,7 +40,7 @@ import Hat.Server.Persist (PaneSnap (..), encodeSnapshotJson)
 import Hat.Server.Reload
     (Handover (..), HotPane (..), HotSession (..), HotWindow (..)
     , ReloadCleanup (..), ReloadHot (..), ReloadModes (..), ReloadScreen (..)
-    , ReloadTree (..), decodeHandover)
+    , ReloadDeath (..), ReloadStart (..), ReloadTree (..), decodeHandover)
 import Hat.Term.Pty qualified
 import Hat.Server.ColorScheme
     ( ColorScheme, schemeReport )
@@ -89,7 +91,8 @@ captureReload carry st = do
         mapConcurrently (captureHotPane carry) panes
     pure ( ReloadCleanup
              { listenFd = fromMaybe (-1) mfd
-             , live = [(p.masterFd, p.childPid) | p <- hots] }
+             , live = [ (p.masterFd, p.childPid)
+                      | p <- hots, Nothing <- [p.death] ] }
          , ReloadHot
              { tree = encodeSnapshotJson snap, hot = hots
              , lastSession = lsName } )
@@ -100,11 +103,21 @@ captureHotPane carry pane = do
     ms <- Emu.modes pane.emulator
     km <- Emu.keyModes pane.emulator
     sc <- captureReloadScreen carry pane.emulator
+    mexit <- readTVarIO pane.exited
     pure HotPane
-        { masterFd = fromIntegral fd
+        { masterFd = maybe (fromIntegral fd) (const (-1)) mexit
         , childPid = fromIntegral (Hat.Term.Pty.pid pane.pty)
         , modes = reloadModesOf ms km
-        , screen = sc }
+        , screen = sc
+        , start = case pane.start of
+            ShellCommand t -> StartCommand t
+            ExecArgv argv  -> StartArgv argv
+            FreshShell     -> StartShell
+            ShellInject _  -> StartShell
+        , death = deathOf <$> mexit }
+  where
+    deathOf e = ReloadDeath
+        { status = e.status, signal = e.signal, diedAt = floor e.diedAt }
 
 -- | Freeze a pane's emulator into the reload payload: its live grid and cursor,
 -- its alt-screen flag, and its scrollback (oldest line first), each line
@@ -229,8 +242,11 @@ adoptPane st histLimit pid (psnap, rp) = do
     -- Trace each adopt phase so a resume that stalls names the pane and the
     -- step it stalled on (fd adopt vs. screen replay) instead of going silent.
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "start" }
-    pty <- Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
-                              (fromIntegral rp.childPid)
+    pty <- case rp.death of
+        Nothing -> Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
+                                      (fromIntegral rp.childPid)
+        Just d  -> Hat.Term.Pty.exitedPty (fromIntegral rp.childPid)
+                                          (processStatusOf d)
     -- Adopt at the size the pane was CAPTURED at, not a default: replaying a
     -- capture into a smaller grid wraps and clamps it into a state whose
     -- later reflow-resize aborts inside the emulator ("screen_resize failed
@@ -256,17 +272,32 @@ adoptPane st histLimit pid (psnap, rp) = do
     readerVar <- newTVarIO Nothing
     homeVar   <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
+    exitedVar <- newTVarIO (paneExitOf <$> rp.death)
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
             , options = optionsVar, home = homeVar
-            , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing }
+            , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing
+            , start = case rp.start of
+                StartShell     -> FreshShell
+                StartCommand t -> ShellCommand t
+                StartArgv argv -> ExecArgv argv
+            , exited = exitedVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the
     -- pre-reload scheme until the OS scheme next changes (bug f3).
     scheme <- readTVarIO st.colorScheme
     forM_ (reloadSchemePush rp.modes scheme) (Hat.Term.Pty.writePty pty)
     pure pane
+  where
+    paneExitOf d = PaneExit
+        { status = d.status, signal = d.signal
+        , diedAt = fromIntegral d.diedAt }
+    processStatusOf d = case (d.status, d.signal) of
+        (Just 0, _)  -> Just (Exited ExitSuccess)
+        (Just n, _)  -> Just (Exited (ExitFailure n))
+        (_, Just sg) -> Just (Terminated (fromIntegral sg) False)
+        _            -> Nothing
 
 -- | Rebuild the emulator mode subscriptions a reload carried. @altScreen@ is
 -- left off here; 'adoptPane' sets it from the captured screen before replaying

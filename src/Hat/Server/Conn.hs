@@ -21,7 +21,7 @@ import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (forM_, forever, void, when)
+import Control.Monad (forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.IORef
 import Data.List (nub)
@@ -494,8 +494,12 @@ runKeys d st client keys = do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
                     forM_ actions $ \case
-                        Passthrough raw ->
-                            forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw
+                        Passthrough raw -> forM_ mpane $ \pane -> do
+                            dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
+                                then pure False
+                                else dismissDeadPane st pane
+                            unless dismissed $
+                                Hat.Term.Pty.writePty pane.pty raw
                         RunCommands cmds -> withCommandBatch st $
                             forM_ cmds $ \argv ->
                                 toastReplies st client
