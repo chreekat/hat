@@ -335,7 +335,8 @@ spec = do
                 modifyTVar' win.panes (Map.insert p.id p)
                 writeTVar p.mode (Just (copyModeAt 3))
                 -- status off: statusCells would touch the stub pane
-                modifyTVar' st.options $ \o -> o { statusLines = 0 }
+                writeTVar st.globalSessionOptions
+                    (singletonDelta "status" (OVScalar "off"))
             (client, _peer) <- wiredClient st Attached
             renderOnce st client
             frame <- readIORef client.lastFrame
@@ -642,11 +643,12 @@ spec = do
                 modifyTVar' sessB.windows (Map.insert 1 shared)
                 writeTVar sessA.currentIx 2   -- A looks at its own window
                 writeTVar sessB.currentIx 1   -- B looks at the shared one
-                modifyTVar' st.options $ \o ->
-                    o { windowStatusFormat = "#I#{?window_active_clients,<eyes>,}" }
+                writeTVar st.globalWindowOptions $ singletonDelta
+                    "window-status-format"
+                    (OVScalar "#I#{?window_active_clients,<eyes>,}")
             _ <- addClient st sessB.id (Size { rows = 24, cols = 80 }) 1
-            row <- statusCells st sessA 80
-            T.pack (concatMap Cell.cluster (V.toList row))
+            rows <- statusCells st sessA 80
+            T.pack (concatMap (concatMap Cell.cluster . V.toList) rows)
                 `shouldSatisfy` T.isInfixOf "1<eyes>"
 
     describe "move-window -r" $

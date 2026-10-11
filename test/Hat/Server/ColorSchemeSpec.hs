@@ -14,8 +14,9 @@ import Test.Hspec
 
 import Hat.Model.Options
     ( Options (..), OptionValue (..)
-    , resolveOptions, singletonDelta )
+    , optionText, resolveOptions, singletonDelta )
 import Hat.Server.ColorScheme
+import Hat.Server.FormatDraw (styleCell)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -97,10 +98,10 @@ spec = do
         it "adapts the default chrome to the scheme" $ do
             let dark = resolveOptions [applyPalette SchemeDark]
                 light = resolveOptions [applyPalette SchemeLight]
-            dark.statusStyle.bg `shouldBe` Cell.Indexed 22
-            dark.windowStatusCurrentStyle.bold `shouldBe` True
-            light.statusStyle.bg `shouldBe` Cell.Indexed 151
-            light.statusStyle.fg `shouldBe` Cell.Indexed 22
+            (styleCell (optionText "status-style" dark)).bg `shouldBe` Cell.Indexed 22
+            (styleCell (optionText "window-status-current-style" dark)).bold `shouldBe` True
+            (styleCell (optionText "status-style" light)).bg `shouldBe` Cell.Indexed 151
+            (styleCell (optionText "status-style" light)).fg `shouldBe` Cell.Indexed 22
             -- borders must not vanish against either background, yet
             -- inactive borders must stay clearly lighter than the active
             -- one. On a dark background 65 is a receding gray; on a light
@@ -140,8 +141,7 @@ spec = do
             let userStyle = Cell.defaultStyle { Cell.bg = Cell.Indexed 196 }
                 userDelta = singletonDelta "status-style" (OVScalar "bg=colour196")
                 dark = resolveOptions [userDelta, applyPalette SchemeDark]
-            dark.statusStyle `shouldBe` userStyle
-            dark.statusStyle.bg `shouldBe` Cell.Indexed 196
+            styleCell (optionText "status-style" dark) `shouldBe` userStyle
             -- options the user did not set still adapt
             dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
 
@@ -157,9 +157,9 @@ spec = do
             dark.fg `shouldBe` Cell.Indexed 153
             light.bg `shouldBe` Cell.Indexed 153
             light.fg `shouldBe` Cell.Indexed 24
-            dark.bg `shouldNotBe` darkOpts.statusStyle.bg
+            dark.bg `shouldNotBe` (styleCell (optionText "status-style" darkOpts)).bg
             dark.bg `shouldNotBe` darkOpts.modeStyle.bg
-            light.bg `shouldNotBe` lightOpts.statusStyle.bg
+            light.bg `shouldNotBe` (styleCell (optionText "status-style" lightOpts)).bg
             light.bg `shouldNotBe` lightOpts.modeStyle.bg
 
         it "falls back to basic blue when no scheme is detected" $

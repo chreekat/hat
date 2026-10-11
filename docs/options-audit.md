@@ -43,16 +43,25 @@ spot-read of each suspect consumer.
 | `history-limit` | emulator scrollback cap (Server.hs) | implemented ✅ tested | integration |
 | `default-terminal` | `$TERM` for new panes (Server.hs) | implemented ✅ tested | integration |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
-| `status-left` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
-| `status-left-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
-| `status-right` | `expandFormat`→`renderFormat` (View.hs) | implemented ✅ tested | rendered (FormatSpec) |
-| `status-right-length` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
-| `window-status-format` | `windowEntryFormat` (View.hs) | implemented ✅ tested | pure |
-| `window-status-current-format` | `windowEntryFormat` (View.hs) | implemented ✅ tested | pure |
-| `status-style` | `assembleStatusRow` (View.hs) | implemented ✅ tested | pure |
-| `window-status-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
-| `window-status-current-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
-| `window-status-bell-style` | `windowEntryStyle` (View.hs) | implemented ✅ tested | pure |
+| `status-left` | `#{T:status-left}` in `status-format[0]` (`statusRows`, Status.hs) | implemented ✅ tested | pure (StatusSpec) |
+| `status-left-length` | `#{=/…:status-left}` in `status-format[0]` | implemented ✅ tested | rendered (FormatSpec) |
+| `status-right` | `#{T:status-right}` in `status-format[0]` (`statusRows`, Status.hs) | implemented ✅ tested | pure (StatusSpec) |
+| `status-right-length` | `#{=/…:status-right}` in `status-format[0]` | implemented ✅ tested | rendered (FormatSpec) |
+| `window-status-format` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `window-status-current-format` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `status-style` | `statusBaseStyle` (Status.hs) | implemented ✅ tested | pure (StatusSpec) |
+| `window-status-style` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `window-status-current-style` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `window-status-bell-style` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `status` | `statusLayout` (View.hs), `statusRows` (Status.hs): one row per line | implemented ✅ tested | pure (StatusSpec) |
+| `status-format` | `statusRows` (Status.hs) draws entry *i* on line *i* via `formatDraw` | implemented ✅ tested | pure (StatusSpec) |
+| `status-bg` / `status-fg` | `statusBaseStyle` (Status.hs) | implemented ✅ tested | pure (StatusSpec) |
+| `status-justify` | `#[list=on align=#{status-justify}]` in `status-format[0..2]` | implemented ✅ tested | pure (StatusSpec) |
+| `status-left-style` / `status-right-style` | `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `window-status-separator` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `window-status-last-style` / `window-status-activity-style` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
+| `pane-status-style` / `pane-status-current-style` / `window-pane-status-format` / `window-pane-current-status-format` | `#{P:}` loop in `status-format[1]` | implemented ✅ tested | pure (StatusSpec) |
+| `session-status-style` / `session-status-current-style` | `#{S:}` loop in `status-format[2]` | implemented (format-driven, as tmux) | rendered |
 | `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |

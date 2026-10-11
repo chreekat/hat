@@ -10,9 +10,6 @@ module Hat.Server.View
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
-    , windowEntryStyle  -- ^ exported for the window-status-style effect test
-    , windowEntryFormat  -- ^ exported for the window-status-format effect test
-    , assembleStatusRow  -- ^ exported for the status-bar assembly effect test
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
@@ -21,7 +18,7 @@ import Control.Monad (foldM, forM, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -37,14 +34,14 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
-import Hat.Server.Format (formatReadsTree)
+import Hat.Server.Format (formatReadsLoops)
+import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
-import Hat.Server.FormatEnv
-    (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
-     windowFlags)
+import Hat.Server.FormatEnv (formatCtxFor, sessionFormatEnv, windowOwnEnv)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
+import Hat.Server.Status (statusRows)
 import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -107,9 +104,6 @@ renderOnce st client = do
     (csize, fullFlag) <- atomically $
         (,) <$> readTVar client.size <*> swapTVar client.needsFull False
     opts <- readTVarIO st.options
-    let (rowOff, mStatusRowIx) =
-            statusLayout opts.statusPosition opts.statusLines
-                (fromIntegral csize.rows)
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions
@@ -125,6 +119,12 @@ renderOnce st client = do
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
                         pure (Just (sess, win, rects, borders, ps, active))
+    sopts <- case view of
+        Just (sess, _, _, _, _, _) -> atomically (resolveForSession st sess)
+        Nothing -> pure opts
+    let (rowOff, mStatusRowIx) =
+            statusLayout sopts.statusPosition sopts.statusLines
+                (fromIntegral csize.rows)
     (frame, origins, cursor, mActiveRect) <- case view of
         Nothing -> pure
             ( blankFrame csize
@@ -169,26 +169,26 @@ renderOnce st client = do
                 -- when the persistent bar is off; the bar itself draws only
                 -- when status is on.
                 bottomIx = fromIntegral csize.rows - 1
-            mBarRow <-
-                if csize.rows < 2
-                    then pure Nothing
-                    else case (mprompt, mtoast) of
-                        (Just pr, _) ->
-                            pure (Just (fromMaybe bottomIx mStatusRowIx, promptCells pr w))
-                        (Nothing, Just t) ->
-                            pure (Just (fromMaybe bottomIx mStatusRowIx, toastCells t.text w))
-                        (Nothing, Nothing) -> case mStatusRowIx of
-                            Just ix -> Just . (,) ix
-                                <$> statusCellsCached st client sess w
-                            Nothing -> pure Nothing
-            let (withStatus, statusOrigins) = case mBarRow of
-                    Just (ix, cells) ->
-                        ( flashed V.// [(ix, cells)]
-                        , flashedOrigins V.//
-                            [ (ix, VolatileRow) | ix < V.length flashedOrigins ] )
-                    Nothing -> (flashed, flashedOrigins)
-            cur <- case (mprompt, mBarRow) of
-                (Just pr, Just (ix, _)) ->
+                msgIx = maybe bottomIx (+ messageLine sopts) mStatusRowIx
+                fits = csize.rows >= 2
+            barRows <- case mStatusRowIx of
+                Just ix | fits -> zip [ix ..]
+                    <$> statusRowsCached st client sess sopts w
+                _ -> pure []
+            let msgRow = case (mprompt, mtoast) of
+                    _ | not fits -> []
+                    (Just pr, _) -> [(msgIx, promptCells pr w)]
+                    (Nothing, Just t) -> [(msgIx, toastCells t.text w)]
+                    (Nothing, Nothing) -> []
+                overRows = [ r | r@(ix, _) <- barRows <> msgRow
+                               , ix >= 0, ix < V.length flashed ]
+                (withStatus, statusOrigins) =
+                    ( flashed V.// overRows
+                    , flashedOrigins V.//
+                        [ (ix, VolatileRow) | (ix, _) <- overRows
+                        , ix < V.length flashedOrigins ] )
+            cur <- case (mprompt, msgRow) of
+                (Just pr, (ix, _) : _) ->
                     pure (Pos { row = ix
                               , col = min (w - 1) (promptCursorCol pr) }, True)
                 _ -> pure $ case Map.lookup active paneViews of
@@ -605,138 +605,68 @@ promptCells pr width = lineCells promptStyle width (pr.promptLabel <> pr.input)
 promptCursorCol :: PromptState -> Int
 promptCursorCol pr = T.length pr.promptLabel + pr.cursor
 
-statusCells :: ServerState -> Session -> Int -> IO (V.Vector Cell.Cell)
+-- | The status line's rows for a session at @width@ cells (see
+-- 'Hat.Server.Status.statusRows').
+statusCells :: ServerState -> Session -> Int -> IO [V.Vector Cell.Cell]
 statusCells st sess width = do
-    (opts, env, wins) <- gatherStatus st sess
-    renderStatus st opts env wins width
+    sopts <- atomically (resolveForSession st sess)
+    (env, wins) <- gatherStatus st sess
+    renderStatus st sopts env wins width
 
--- | 'statusCells' through the client's render-side cache: the row is
--- re-expanded only when something its expansion consumes changed —
+-- | 'statusCells' through the client's render-side cache: the rows are
+-- re-expanded only when something their expansion consumes changed —
 -- including the clock, at second granularity. Bypassed inside a hook's
--- ambient context, and for formats that read the live tree
--- ('formatReadsTree'), where the inputs cannot be enumerated.
-statusCellsCached
-    :: ServerState -> Client -> Session -> Int -> IO (V.Vector Cell.Cell)
-statusCellsCached st client sess width = do
+-- ambient context, and for formats that read the live tree beyond the
+-- gathered window list ('formatReadsLoops'), where the inputs cannot be
+-- enumerated.
+statusRowsCached
+    :: ServerState -> Client -> Session -> Options -> Int
+    -> IO [V.Vector Cell.Cell]
+statusRowsCached st client sess sopts width = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
-    (opts, env, wins) <- gatherStatus st sess
+    (env, wins) <- gatherStatus st sess
     shells <- readTVarIO st.shellCache
     sec <- floor <$> getPOSIXTime
     mc <- readIORef client.lastStatus
     let plain = case mc of
-            Just c | samePtr c.opts opts -> c.plain
-            _ -> not $ any formatReadsTree
-                [ opts.statusLeft, opts.statusRight
-                , opts.windowStatusFormat, opts.windowStatusCurrentFormat ]
+            Just c | samePtr c.opts sopts -> c.plain
+            _ -> not $ any (formatReadsLoops ["S", "P", "L", "N", "C"])
+                (optionArray "status-format" sopts <> Map.elems env)
     case mc of
         Just c | isNothing mamb, plain
-               , samePtr c.opts opts, samePtr c.shells shells
+               , samePtr c.opts sopts, samePtr c.shells shells
                , c.second == sec, c.width == width
                , c.env == env, c.wins == wins -> pure c.rowCells
         _ -> do
-            row <- renderStatus st opts env wins width
+            rows <- renderStatus st sopts env wins width
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
-                    { opts, shells, second = sec, width
-                    , env, wins, plain, rowCells = row }
-            pure row
+                    { opts = sopts, shells, second = sec, width
+                    , env, wins, plain, rowCells = rows }
+            pure rows
 
--- | Everything the status row's expansion consumes, read fresh: the
--- resolved options, the session's format environment, and each window's
--- entry inputs (index, name, flags, active clients, current, bell).
-gatherStatus
-    :: ServerState -> Session
-    -> IO (Options, Map.Map Text Text, [(Int, Text, Text, Int, Bool, Bool)])
+-- | Everything the status rows' expansion consumes beyond the options,
+-- read fresh: the session's format environment and each window's own
+-- (the @W:@ loop's items).
+gatherStatus :: ServerState -> Session -> IO (Map.Map Text Text, [Map.Map Text Text])
 gatherStatus st sess = do
-    opts <- readTVarIO st.options
     env <- sessionFormatEnv st sess
     ws <- readTVarIO sess.windows
-    cur <- readTVarIO sess.currentIx
-    mlast <- listToMaybe <$> readTVarIO sess.windowHist
-    counts <- atomically (activeClientCounts st)
-    wins <- forM (Map.toAscList ws) $ \(ix, win) -> do
-        (wname, bell, act, sil, zoom) <- atomically $ (,,,,)
-            <$> readTVar win.name <*> readTVar win.bellFlag
-            <*> readTVar win.activity <*> readTVar win.silenceFlag
-            <*> readTVar win.zoomed
-        let flags = windowFlags WindowFlagState
-                { flagCurrent = ix == cur
-                , flagLast = Just ix == mlast
-                , flagBell = bell
-                , flagActivity = act
-                , flagSilence = sil
-                , flagZoomed = isJust zoom
-                }
-        pure ( ix, wname, flags
-             , Map.findWithDefault 0 win.id counts, ix == cur, bell )
-    pure (opts, env, wins)
+    wins <- forM (Map.toAscList ws) $ \(ix, win) -> windowOwnEnv st sess ix win
+    pure (env, wins)
 
--- | Expand and lay the status row from gathered inputs; see 'statusCells'.
+-- | Expand and draw the status rows from gathered inputs; see
+-- 'statusCells'.
 renderStatus
-    :: ServerState -> Options -> Map.Map Text Text
-    -> [(Int, Text, Text, Int, Bool, Bool)] -> Int
-    -> IO (V.Vector Cell.Cell)
-renderStatus st opts env wins width = do
-    entries <- forM wins $ \(ix, wname, flags, activeClients, isCur, bell) -> do
-        let wenv = Map.union (Map.fromList
-                [ ("window_index", tshow ix)
-                , ("window_name", wname)
-                , ("window_flags", flags)
-                , ("window_active_clients", tshow activeClients)
-                ]) env
-        txt <- expandFormat st wenv (windowEntryFormat opts isCur)
-        pure (txt, windowEntryStyle opts isCur bell)
-    left <- expandFormat st env opts.statusLeft
-    right <- expandFormat st env opts.statusRight
-    pure (assembleStatusRow opts width left right entries)
+    :: ServerState -> Options -> Map.Map Text Text -> [Map.Map Text Text]
+    -> Int -> IO [V.Vector Cell.Cell]
+renderStatus st sopts env wins width = do
+    ctx <- formatCtxFor st env (optionArray "status-format" sopts)
+    let rows = statusRows ctx { F.windows = wins } sopts width
+    pure $! foldr seq rows rows
 
--- | The style a window's status entry takes: the current window uses
--- @window-status-current-style@, one with a pending bell
--- @window-status-bell-style@, otherwise @window-status-style@. See
--- 'statusCells'.
-windowEntryStyle :: Options -> Bool -> Bool -> Cell.Style
-windowEntryStyle opts isCurrent bell
-    | isCurrent = opts.windowStatusCurrentStyle
-    | bell      = opts.windowStatusBellStyle
-    | otherwise = opts.windowStatusStyle
-
--- | The format a window's status entry renders through: the current window
--- uses @window-status-current-format@, every other @window-status-format@.
--- See 'statusCells'.
-windowEntryFormat :: Options -> Bool -> Text
-windowEntryFormat opts isCurrent
-    | isCurrent = opts.windowStatusCurrentFormat
-    | otherwise = opts.windowStatusFormat
-
--- | Lay a status bar of @width@ cells: @status-left@ (capped at
--- @status-left-length@) and the window entries flush left, @status-right@
--- (capped at @status-right-length@) flush right, all padded with
--- @status-style@; when they overflow, right-truncate the whole row. See
--- 'statusCells'.
-assembleStatusRow
-    :: Options -> Int -> Text -> Text -> [(Text, Cell.Style)]
-    -> V.Vector Cell.Cell
-assembleStatusRow opts width left right entries =
-    V.fromList (take width (cells <> repeat blank))
-  where
-    sty = opts.statusStyle
-    blank = blankOf sty
-    sep = styledCells sty " "
-    leftCells = styledCells sty (T.take opts.statusLeftLength left)
-    rightCells = styledCells sty (T.take opts.statusRightLength right)
-    entryCells =
-        List.intercalate sep [ styledCells est etxt | (etxt, est) <- entries ]
-    body = leftCells <> entryCells
-    pad = width - length body - length rightCells
-    cells
-        | pad >= 0  = body <> replicate pad blank <> rightCells
-        | otherwise = take width (body <> sep <> rightCells)
-
--- | One cell per character, all in the given style.
-styledCells :: Cell.Style -> Text -> [Cell.Cell]
-styledCells sty t =
-    [ Cell.glyphCell c sty | c <- T.unpack t ]
-
-blankOf :: Cell.Style -> Cell.Cell
-blankOf sty = Cell.glyphCell ' ' sty
+-- | The status line (0-based) the prompt and messages take: @message-line@,
+-- or the last line when there are fewer.
+messageLine :: Options -> Int
+messageLine sopts = max 0 (min (optionNumber "message-line" sopts) (sopts.statusLines - 1))

@@ -34,7 +34,6 @@ screen-redraw-indicators.sh
 screen-redraw-outside.sh
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
-screen-redraw-status.sh
 screen-redraw-tiled.sh
 screen-redraw-window-style.sh
 session-group-resize.sh         # control mode (-C new, refresh-client -C) + per-window sizes (hat sizes a group's shared windows per session)
@@ -84,9 +83,8 @@ menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click 
 new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
 
 # option engine breadth: flat scalar table, global-only read-back
-options-array.sh                # needs status-format, user-keys, pane-colours (registered, not yet live)
+options-array.sh                # needs user-keys, pane-colours (registered, not yet live)
 options-values.sh               # needs status-keys, status-bg, default-shell, default-client-command (not yet live)
-show-options-output.sh          # needs status-format (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that
 # asserts a tmux grid-storage detail libghostty-vt does not record stays

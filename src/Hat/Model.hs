@@ -522,9 +522,9 @@ data ChromeCache = ChromeCache
     , chrome  :: Chrome
     }
 
--- | A client's rendered status row with everything its expansion
+-- | A client's rendered status rows with everything their expansion
 -- consumed; the render thread's cache. See
--- 'Hat.Server.View.statusCellsCached'.
+-- 'Hat.Server.View.statusRowsCached'.
 -- Fields are strict so the identity-matched ones hold the very objects
 -- they were built from, never a selector thunk 'samePtr' would miss on.
 data StatusCache = StatusCache
@@ -533,10 +533,9 @@ data StatusCache = StatusCache
     , second  :: !Int                        -- ^ POSIX second of the render
     , width   :: !Int
     , env     :: !(Map Text Text)
-    , wins    :: ![(Int, Text, Text, Int, Bool, Bool)]
-        -- ^ per window: index, name, flags, active clients, current, bell
-    , plain   :: !Bool  -- ^ no format reads the tree; see 'Hat.Server.Format.formatReadsTree'
-    , rowCells :: !(V.Vector Cell.Cell)
+    , wins    :: ![Map Text Text]  -- ^ each window's own format variables
+    , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@; see 'Hat.Server.Format.formatReadsLoops'
+    , rowCells :: ![V.Vector Cell.Cell]
     }
 
 data Client = Client

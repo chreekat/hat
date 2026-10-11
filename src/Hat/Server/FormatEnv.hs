@@ -3,6 +3,7 @@
 -- listing, choose, capture, and display commands format against.
 module Hat.Server.FormatEnv
     ( windowFormatEnv
+    , windowOwnEnv
     , paneFormatEnv
     , paneEnvById
     , refreshAutoNames
@@ -12,6 +13,7 @@ module Hat.Server.FormatEnv
     , paneModeEnv
     , resolveShell
     , expandFormat
+    , formatCtxFor
     , WindowFlagState (..)
     , windowFlags
     ) where
@@ -24,6 +26,7 @@ import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -51,8 +54,13 @@ import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
-windowFormatEnv st sess ix win = do
-    base <- sessionFormatEnv st sess
+windowFormatEnv st sess ix win =
+    Map.union <$> windowOwnEnv st sess ix win <*> sessionFormatEnv st sess
+
+-- | A window's own variables (and its window options), without its
+-- session's: what a @W:@ loop item adds over the session's environment.
+windowOwnEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
+windowOwnEnv st sess ix win = do
     eff <- readTVarIO sess.lastSize
     (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
@@ -73,8 +81,10 @@ windowFormatEnv st sess ix win = do
             , flagZoomed = isJust zoom
             }
     winUser <- deltaFormats <$> readTVarIO win.options
-    pure $ Map.union winUser $ Map.union (Map.fromList
+    viewers <- Map.findWithDefault 0 win.id <$> atomically (activeClientCounts st)
+    pure $ Map.union winUser $ Map.fromList
         [ ("window_index", tshow ix)
+        , ("window_active_clients", tshow viewers)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
         , ("window_layout", emitLayout (sizeRect (eff)) lay)
@@ -91,7 +101,8 @@ windowFormatEnv st sess ix win = do
         , ("window_linked_sessions", tshow (length
             (List.nubBy (\a b -> a.windows == b.windows) links)))
         , ("window_linked_sessions_list", T.intercalate "," linkNames)
-        ]) base
+        , ("window_last_flag", if Just ix == mlast then "1" else "0")
+        ]
 
 -- | The full format environment for a specific pane, including the
 -- fields tmux-resurrect's @save.sh@ dumps (pid, command, cursor,
@@ -105,7 +116,10 @@ paneFormatEnv st sess wix win pix pane = do
     scr <- Emu.snapshot pane.emulator
     hsize <- Emu.scrollbackLength pane.emulator
     pendingWrap <- Emu.cursorPendingWrap pane.emulator
-    active <- readTVarIO win.activeId
+    (active, lastPane, zoom) <- atomically $ (,,)
+        <$> readTVar win.activeId <*> (listToMaybe <$> readTVar win.paneHist)
+        <*> readTVar win.zoomed
+    title <- Emu.title pane.emulator
     sz <- readTVarIO pane.size
     paneUser <- deltaFormats <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
@@ -125,6 +139,11 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_current_path", T.pack dir)
         , ("pane_current_command", cmd)
         , ("pane_active", if pane.id == active then "1" else "0")
+        , ("pane_title", title)
+        , ("pane_flags", T.concat
+            [ if pane.id == active then "*" else ""
+            , if Just pane.id == lastPane then "-" else ""
+            , if zoom == Just pane.id then "Z" else "" ])
         , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
         , ("cursor_y", tshow scr.cursor.row)
         , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
@@ -223,6 +242,7 @@ sessionFormatEnv st sess = do
             Just win -> do
                 wname <- readTVar win.name
                 pure [ ("window_index", tshow cur)
+                     , ("window_id", "@" <> tshow (rawWindow win.id))
                      , ("window_name", wname)
                      , ( "window_active_clients"
                        , tshow (Map.findWithDefault 0 win.id counts) )
@@ -230,7 +250,8 @@ sessionFormatEnv st sess = do
         mactive <- maybe (pure Nothing) activePane mwin
         cs <- sessionClients st sess.id
         gEnv <- groupEnv
-        pure (sname, wEnv <> gEnv, mactive, length cs, nwindows)
+        alerts <- sessionAlerts sess
+        pure (sname, wEnv <> gEnv <> alerts, mactive, length cs, nwindows)
     pEnv <- case mactive of
         Nothing -> pure []
         Just pane -> do
@@ -275,6 +296,22 @@ sessionFormatEnv st sess = do
                  , ("session_group_attached", tshow attached)
                  , ("session_group_many_attached", if attached > 1 then "1" else "0")
                  ]
+
+-- | tmux's @session_alert@ (each alert kind once, in @#!~@ order) and
+-- @session_alerts@ (each alerted window's index and its alert marks).
+sessionAlerts :: Session -> STM [(Text, Text)]
+sessionAlerts sess = do
+    ws <- Map.toAscList <$> readTVar sess.windows
+    marks <- forM ws $ \(ix, win) -> do
+        (act, bell, sil) <- (,,) <$> readTVar win.activity
+            <*> readTVar win.bellFlag <*> readTVar win.silenceFlag
+        pure (ix, [ c | (on, c) <- [(act, '#'), (bell, '!'), (sil, '~')], on ])
+    let alerted = filter (not . null . snd) marks
+        kinds = List.foldl' (\seen c -> if c `elem` seen then seen else seen <> [c])
+            [] (concatMap snd alerted)
+    pure [ ("session_alert", T.pack kinds)
+         , ("session_alerts", T.intercalate ","
+             [ tshow ix <> T.pack cs | (ix, cs) <- alerted ]) ]
 
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
 -- plus @copy_cursor_{x,y,line}@ while in mode.
@@ -327,7 +364,16 @@ resolveShell st cmdText = do
 -- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)
 -- overlay the caller's environment.
 expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
-expandFormat st env0 fmt = do
+expandFormat st env fmt = do
+    ctx <- formatCtxFor st env [fmt]
+    pure $! renderFormatCtx ctx fmt
+
+-- | The evaluation context for expanding @fmts@ against @env0@: the hook
+-- overlay, every @#(…)@ the formats (or the option values they can reach
+-- through @E:@\/@T:@) name, resolved through the cache, and the loop and
+-- search data, gathered only if an expansion demands it.
+formatCtxFor :: ServerState -> FormatEnv -> [Text] -> IO FormatCtx
+formatCtxFor st env0 fmts = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
     let env = maybe env0 (\amb -> Map.union amb.formats env0) mamb
@@ -340,25 +386,35 @@ expandFormat st env0 fmt = do
                 val <- resolveShell st inner
                 modifyIORef' resolved (Map.insert inner val)
                 collect (T.drop (2 + T.length inner + 1) rest)
-    collect fmt
+    mapM_ collect (reachable env fmts)
     vals <- readIORef resolved
     now <- getZonedTime
-    -- Loop/search context, gathered only when the format demands it; the
-    -- strict return keeps every deferred read inside this call.
+    -- Deferred reads: the caller's strict use of the expansion keeps them
+    -- inside its own call.
     sessionItems <- unsafeInterleaveIO (loopSessionEnvs st)
     windowItems <- unsafeInterleaveIO (loopWindowEnvs st env)
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
-    let ctx = (formatCtx env (\c -> Map.findWithDefault "" c vals) now)
-            { sessions = sessionItems
-            , windows = windowItems
-            , panes = paneItems
-            , clients = clientItems
-            , paneLines = visibleLines
-            }
-    pure $! renderFormatCtx ctx fmt
+    pure (formatCtx env (\c -> Map.findWithDefault "" c vals) now)
+        { sessions = sessionItems
+        , windows = windowItems
+        , panes = paneItems
+        , clients = clientItems
+        , paneLines = visibleLines
+        }
   where
+    -- The formats plus every variable value they name that holds a
+    -- @#(…)@, transitively: what an @E:@ or @T:@ expansion can reach.
+    reachable env = go Set.empty
+      where
+        shelly = Map.filter ("#(" `T.isInfixOf`) env
+        go _ [] = []
+        go seen (t : ts) =
+            let named = [ k | k <- Map.keys shelly, not (Set.member k seen)
+                            , k `T.isInfixOf` t ]
+                seen' = foldr Set.insert seen named
+            in t : go seen' (ts <> [ v | k <- named, Just v <- [Map.lookup k shelly] ])
     breakBalanced = go (0 :: Int) ""
       where
         go depth acc t = case T.uncons t of

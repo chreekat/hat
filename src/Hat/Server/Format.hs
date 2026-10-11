@@ -14,6 +14,7 @@ module Hat.Server.Format
     , renderFormat
     , renderFormatCtx
     , formatReadsTree
+    , formatReadsLoops
     , truthy
     ) where
 
@@ -431,12 +432,16 @@ collectMods = List.foldl' step emptyModState
 -- not a function of the caller's environment alone. Conservative — text
 -- that merely resembles such a modifier also answers True.
 formatReadsTree :: Text -> Bool
-formatReadsTree t = case T.breakOn "#{" t of
+formatReadsTree = formatReadsLoops ["S", "W", "P", "L", "N", "C"]
+
+-- | 'formatReadsTree' for the given modifiers only.
+formatReadsLoops :: [Text] -> Text -> Bool
+formatReadsLoops toks t = case T.breakOn "#{" t of
     (_, rest)
         | T.null rest -> False
         | otherwise -> any (`T.isInfixOf` rest)
             [ tok <> d
-            | tok <- ["S", "W", "P", "L", "N", "C"]
+            | tok <- toks
             , d <- [":", "/", ";"]
             ]
 

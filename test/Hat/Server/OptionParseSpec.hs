@@ -111,10 +111,10 @@ spec = do
 
     describe "implementation gate" $ do
         it "refuses an unimplemented choice of a live option" $
-            supportedValue (def "status") "3"
-                `shouldBe` Left "status: value not yet supported by hat: 3"
+            supportedValue (def "pane-border-lines") "number"
+                `shouldBe` Left "pane-border-lines: value not yet supported by hat: number"
         it "passes an implemented choice" $
-            supportedValue (def "status") "off" `shouldBe` Right ()
+            supportedValue (def "pane-border-lines") "double" `shouldBe` Right ()
 
     describe "commands" $ do
         it "accepts a command that parses" $

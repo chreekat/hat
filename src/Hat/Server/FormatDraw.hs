@@ -13,6 +13,7 @@ module Hat.Server.FormatDraw
     , defaultDrawStyle
     , styleParse
     , styleCell
+    , colourValue
       -- * Drawing
     , formatDraw
       -- * Style-aware measuring
@@ -114,17 +115,17 @@ styleParse base sy0 =
                     "absolute-centre" -> Just sy { align = AlignAbsCentre }
                     _ -> Nothing
                 | Just v <- nonEmpty "fill=" tok -> do
-                    c <- colourOf v
+                    c <- colourValue v
                     Just sy { fill = c }
                 | Just v <- nonEmpty "dim=" tok ->
                     sy <$ number 0 100 (fromMaybe v (T.stripSuffix "%" v))
                 | Just v <- nonEmpty "fg=" tok -> do
-                    c <- colourOf v
+                    c <- colourValue v
                     Just sy { cell = sy.cell { Cell.fg = fromMaybe base.fg c } }
                 | Just v <- nonEmpty "bg=" tok -> do
-                    c <- colourOf v
+                    c <- colourValue v
                     Just sy { cell = sy.cell { Cell.bg = fromMaybe base.bg c } }
-                | Just v <- nonEmpty "us=" tok -> sy <$ colourOf v
+                | Just v <- nonEmpty "us=" tok -> sy <$ colourValue v
                 | T.length tok > 2, Just v <- T.stripPrefix "no" tok ->
                     if v == "link" || v == "attr"
                         then Just sy
@@ -167,8 +168,8 @@ number lo hi v = case TR.signed TR.decimal v of
 -- | tmux's @colour_fromstring@ as a cell colour: 'Nothing' inside is
 -- @default@ (the caller's base). Theme colours take their terminal colour,
 -- tmux's @theme terminal@ choice.
-colourOf :: Text -> Maybe (Maybe Cell.Color)
-colourOf v = case List.lookup (T.toLower v) themeColours of
+colourValue :: Text -> Maybe (Maybe Cell.Color)
+colourValue v = case List.lookup (T.toLower v) themeColours of
     Just n -> Just (Just (Cell.Indexed n))
     Nothing -> colourFromText v >>= \case
         CDefault -> Just Nothing
