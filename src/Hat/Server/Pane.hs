@@ -378,6 +378,7 @@ newPane pid pty emu sz dir pending start kind = do
     -- A new pane is titled with the host's name until its program sets one.
     host <- Posix.nodeName <$> Posix.getSystemID
     _ <- Emu.feed emu ("\ESC]2;" <> TE.encodeUtf8 (T.pack host) <> "\ESC\\")
+    alternateVar <- newTVarIO False
     pure Pane
         { id = pid
         , pty = pty
@@ -395,6 +396,7 @@ newPane pid pty emu sz dir pending start kind = do
         , exited = exitedVar
         , kind = kind
         , inputOff = inputOffVar
+        , onAlternate = alternateVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -500,6 +502,7 @@ runPaneReader st pane = do
             modifyTVar' st.readsInFlight (+ 1)
         (do bs <- rd
             events <- if B8.null bs then pure [] else Emu.feed pane.emulator bs
+            noteAlternate st pane
             pure (bs, events))
             `finally` atomically (modifyTVar' st.readsInFlight (subtract 1))
     -- @pending@ is a one-shot: a restored program's command line, typed into
@@ -1496,3 +1499,15 @@ sessionSpawnEnv st sess = atomically $ do
     g <- readTVar st.globalEnviron
     s <- readTVar sess.environ
     pure (environPairs (environMerge g s))
+
+-- | Track whether a pane's program is on the alternate screen, waking the
+-- renderer and the reconcile loop when it moves: the pane's scrollbar
+-- comes and goes with it ('Hat.Server.Resize.windowArrange').
+noteAlternate :: ServerState -> Pane -> IO ()
+noteAlternate st pane = do
+    alt <- Emu.onAlternateScreen pane.emulator
+    atomically $ do
+        was <- readTVar pane.onAlternate
+        when (was /= alt) $ do
+            writeTVar pane.onAlternate alt
+            bumpDirty st

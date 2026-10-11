@@ -646,12 +646,12 @@ optionTable =
     , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle
         "fg=themelightgrey"
     , notYet $ arrayOf "pane-colours" WindowPaneScope KColour " ," []
-    , notYet $ scalar "pane-scrollbars" WindowScope
+    , choicesOnly ["off", "on"] $ live $ scalar "pane-scrollbars" WindowScope
         (KChoice ["off", "modal", "on", "auto-hide"]) "off"
     , notYet $ scalar "pane-scrollbars-timeout" WindowScope (KNumber 0 intMax) "500"
-    , notYet $ scalar "pane-scrollbars-style" WindowPaneScope KStyle
+    , paneLocal $ live $ scalar "pane-scrollbars-style" WindowPaneScope KStyle
         "bg=themedarkgrey,fg=themelightgrey,width=1,pad=0"
-    , notYet $ scalar "pane-scrollbars-position" WindowScope
+    , live $ scalar "pane-scrollbars-position" WindowScope
         (KChoice ["right", "left"]) "right"
     , notYet $ scalar "popup-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themewhite"

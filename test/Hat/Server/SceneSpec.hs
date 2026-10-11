@@ -25,7 +25,7 @@ picture look scene =
 plainLook :: ChromeLook
 plainLook = ChromeLook
     { borderLines = BorderSingle, windowStyle = Cell.defaultStyle
-    , paneStyles = Map.empty, active = Nothing, marked = Nothing
+    , paneStyles = Map.empty, scrollbarLooks = Map.empty, active = Nothing, marked = Nothing
     , numbers = Map.fromList [ (PaneId i, fromIntegral i) | i <- [0 .. 9] ]
     , paneLines = Map.empty
     , fillInside = Cell.glyphCell ' ' Cell.defaultStyle
@@ -42,7 +42,8 @@ cross = SceneInput
     , panes =
         [ (PaneId 0, rect 0 2 0 3), (PaneId 1, rect 0 2 4 7)
         , (PaneId 2, rect 3 5 0 3), (PaneId 3, rect 3 5 4 7) ]
-    , paneStatus = PaneStatusOff, twoPane = Nothing }
+    , paneStatus = PaneStatusOff, twoPane = Nothing
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
 
 spec :: Spec
 spec = do
@@ -59,7 +60,8 @@ spec = do
                     { window = Size { rows = 2, cols = 3 }
                     , area = Size { rows = 4, cols = 6 }
                     , panes = [ (PaneId 0, rect 0 2 0 3) ]
-                    , paneStatus = PaneStatusOff, twoPane = Nothing }
+                    , paneStatus = PaneStatusOff, twoPane = Nothing
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
             picture plainLook (buildScene inp) `shouldBe`
                 [ "...│~~"
                 , "...│~~"
@@ -77,12 +79,46 @@ spec = do
             let inp = SceneInput
                     { window = Size { rows = 4, cols = 3 }, area = Size { rows = 4, cols = 3 }
                     , panes = [ (PaneId 0, rect 0 4 0 1), (PaneId 1, rect 0 4 2 3) ]
-                    , paneStatus = PaneStatusOff, twoPane = Just LeftRight }
+                    , paneStatus = PaneStatusOff, twoPane = Just LeftRight
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
                 owners = [ case (buildScene inp V.! y) V.! 1 of
                                SceneBorder b -> b.styleOwner
                                _ -> Nothing
                          | y <- [0 .. 3] ]
             owners `shouldBe` map (Just . PaneId) [0, 0, 0, 1]
+    describe "scrollbars" $ do
+        let look = plainLook { scrollbarLooks = Map.singleton (PaneId 0) ScrollbarLook
+                { style = ScrollbarStyle
+                    { colours = Cell.defaultStyle { Cell.fg = Cell.Indexed 7, Cell.bg = Cell.Indexed 0 }
+                    , width = 1, pad = 1 }
+                , slider = (2, 1), padStyle = Cell.defaultStyle, onLeft = False } }
+            inp = SceneInput
+                { window = Size { rows = 3, cols = 5 }, area = Size { rows = 3, cols = 5 }
+                , panes = [ (PaneId 0, rect 0 3 0 3) ], paneStatus = PaneStatusOff
+                , twoPane = Nothing, scrollbars = Map.singleton (PaneId 0) 2
+                , scrollbarSide = ScrollbarRight }
+            chrome = sceneChrome look (buildScene inp)
+            bgAt x y = (.style.bg) <$> lookup (Pos y x) chrome
+        it "takes the columns between the pane and its border" $
+            picture look (buildScene inp) `shouldBe` [ "...  ", "...  ", "...  " ]
+        it "pads beside the pane, draws the bar, swaps colours on the slider" $
+            map (\y -> (bgAt 3 y, bgAt 4 y)) [0, 2] `shouldBe`
+                [ (Just Cell.DefaultColor, Just (Cell.Indexed 0))
+                , (Just Cell.DefaultColor, Just (Cell.Indexed 7)) ]
+    describe "sliderOf" $ do
+        it "with no history fills the bar" $
+            sliderOf 10 10 0 Nothing `shouldBe` (0, 10)
+        it "sits at the bottom, sized by the screen's share of the history" $
+            sliderOf 10 10 30 Nothing `shouldBe` (8, 2)
+        it "in copy mode follows the viewport's offset" $
+            sliderOf 10 10 30 (Just (0, 30)) `shouldBe` (0, 2)
+    describe "scrollbarStyle" $ do
+        it "reads width and pad" $
+            (\s -> (s.width, s.pad)) (scrollbarStyle terminalTheme "width=2,pad=1") `shouldBe` (2, 1)
+        it "keeps the default for what the option leaves" $
+            (scrollbarStyle terminalTheme "fg=red").colours.bg `shouldBe` Cell.Indexed 0
+        it "is at least a cell wide" $
+            (scrollbarStyle terminalTheme "width=0").width `shouldBe` 1
     describe "fillCell" $ do
         let border = Cell.defaultStyle { Cell.fg = Cell.Indexed 7, Cell.bold = True }
         it "draws the expanded fill-character over the border style" $ do

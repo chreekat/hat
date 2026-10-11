@@ -288,6 +288,9 @@ data Pane = Pane
     , kind     :: PaneKind
     , inputOff :: TVar Bool
         -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
+    , onAlternate :: TVar Bool
+        -- ^ whether the pane's program is on the alternate screen, as of
+        -- the last output its reader fed
     }
 
 -- | How a freshly-spawned pane chooses its process.

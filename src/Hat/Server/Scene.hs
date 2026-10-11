@@ -18,6 +18,11 @@ module Hat.Server.Scene
     , statusAdjust
       -- * Drawing
     , ChromeLook (..)
+    , ScrollbarSide (..)
+    , ScrollbarStyle (..)
+    , ScrollbarLook (..)
+    , scrollbarStyle
+    , sliderOf
     , sceneChrome
     , statusBase
     , borderGlyph
@@ -36,10 +41,15 @@ import Data.Vector qualified as V
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)
 import Hat.Model.Options (BorderLines (..))
-import Hat.Server.FormatDraw (acsGlyph, formatDraw)
+import Hat.Server.FormatDraw
+    (DrawStyle (..), Width (..), acsGlyph, formatDraw, styleParse, themedDrawStyle)
 import Hat.Server.Layout (Orientation (..))
 import Hat.Server.Theme (Theme)
 import Hat.Term.Cell qualified as Cell
+
+-- | @pane-scrollbars-position@.
+data ScrollbarSide = ScrollbarRight | ScrollbarLeft
+    deriving (Eq, Show)
 
 -- | @pane-border-status@.
 data PaneStatus = PaneStatusOff | PaneStatusTop | PaneStatusBottom
@@ -73,6 +83,9 @@ data SceneCell
     | SceneStatus PaneId Int CellType
         -- ^ a pane's status line: the column within it, and the border
         -- type the line was drawn over
+    | SceneScrollbar PaneId Int Int
+        -- ^ a pane's scrollbar: the pane row, and the column within the
+        -- scrollbar (its padding included)
     deriving (Eq, Show)
 
 -- | Rows of cells.
@@ -90,6 +103,9 @@ data SceneInput = SceneInput
     , twoPane :: Maybe Orientation
         -- ^ for the colour indicator: the layout's split when it holds
         -- exactly two panes (tmux's @redraw_check_two_pane_colours@)
+    , scrollbars :: Map PaneId Int
+        -- ^ the panes showing a scrollbar, with its width and padding
+    , scrollbarSide :: ScrollbarSide
     }
     deriving (Eq, Show)
 
@@ -159,12 +175,31 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
     -- redraw_window_to_scene: the window's far edge is still drawable.
     inScene x y = x >= 0 && y >= 0 && x <= wsx && y <= wsy && x < ssx && y < ssy
 
-    markPane m (pid, r) = markStatus pid r (markBorders pid r m)
+    markPane m (pid, r) = markScrollbar pid r (markStatus pid r (markBorders pid r m))
+
+    sbWidth pid = Map.findWithDefault 0 pid inp.scrollbars
+    sbLeft = inp.scrollbarSide == ScrollbarLeft
+
+    -- redraw_mark_pane_scrollbar, for a scrollbar beside the pane.
+    markScrollbar pid r m = case sbWidth pid of
+        0 -> m
+        w ->
+            let x0 = if sbLeft then r.startCol - w else r.endCol
+            in List.foldl' (\acc (x, y) -> Map.insert (x, y)
+                    (SceneScrollbar pid (y - r.startRow) (x - x0)) acc)
+                m [ (x, y) | y <- [r.startRow .. r.endRow - 1], x <- [x0 .. x0 + w - 1]
+                           , inScene x y ]
 
     edges r = (r.startCol - 1, r.endCol, r.startRow - 1, r.endRow)
 
-    markBorders pid r m0 =
+    -- A scrollbar sits between the pane and its border.
+    borderEdges pid r =
         let (lft, rgt, tp, btm) = edges r
+            w = sbWidth pid
+        in if sbLeft then (lft - w, rgt, tp, btm) else (lft, rgt + w, tp, btm)
+
+    markBorders pid r m0 =
+        let (lft, rgt, tp, btm) = borderEdges pid r
             markTop = tp >= 0 && inp.paneStatus /= PaneStatusBottom
             markBottom = btm <= wsy && inp.paneStatus /= PaneStatusTop
             markLeft = lft >= 0
@@ -207,7 +242,7 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
     markStatus pid r m = case inp.paneStatus of
         PaneStatusOff -> m
         st ->
-            let (_, rgt, tp, btm) = edges r
+            let (_, rgt, tp, btm) = borderEdges pid r
                 y = if st == PaneStatusTop then tp else btm
                 sx = r.startCol + 2
             in List.foldl' (\acc (x, off) ->
@@ -239,6 +274,7 @@ data ChromeLook = ChromeLook
     , paneStyles :: Map PaneId Cell.Style
         -- ^ each pane's own border style (@pane-active-border-style@ for
         -- the active pane)
+    , scrollbarLooks :: Map PaneId ScrollbarLook
     , active :: Maybe PaneId
     , marked :: Maybe PaneId
     , numbers :: Map PaneId Int  -- ^ each pane's index, for @number@ lines
@@ -261,6 +297,7 @@ sceneChrome look scene =
   where
     cellAt pos = \case
         ScenePane _ -> Nothing
+        SceneScrollbar pid y off -> scrollbarCell y off <$> Map.lookup pid look.scrollbarLooks
         SceneOutside -> Just look.fillOutside
         SceneEmpty -> Just look.fillInside
         SceneStatus pid off ct -> Just $
@@ -344,3 +381,73 @@ fillCell th border expanded = Cell.Cell drawn.content Cell.Style
     drawn = formatDraw th Cell.defaultStyle expanded (V.singleton Cell.blankCell) V.! 0
     f = drawn.style
     pick c dflt = if c == Cell.DefaultColor then dflt else c
+
+-- | A pane's @pane-scrollbars-style@: its colours, and the scrollbar's
+-- width and padding in cells.
+data ScrollbarStyle = ScrollbarStyle
+    { colours :: Cell.Style
+    , width :: Int
+    , pad :: Int
+    }
+    deriving (Eq, Show)
+
+-- | tmux's @style_set_scrollbar_style_from_option@: the option over the
+-- registry default, the default alone when the option does not parse; at
+-- least a cell wide.
+scrollbarStyle :: Theme -> Text -> ScrollbarStyle
+scrollbarStyle th raw = ScrollbarStyle
+    { colours = sy.cell
+    , width = case sy.width of
+        Just (WidthCells n) | n >= 1 -> n
+        Just (WidthPercent n) | n >= 1 -> n
+        _ -> 1
+    , pad = fromMaybe 0 sy.pad }
+  where
+    base = themedDrawStyle th
+    dflt = fromMaybe base (styleParse Cell.defaultStyle base defaultScrollbarStyle)
+    sy = fromMaybe dflt (styleParse Cell.defaultStyle dflt raw)
+
+defaultScrollbarStyle :: Text
+defaultScrollbarStyle = "bg=themedarkgrey,fg=themelightgrey,width=1,pad=0"
+
+-- | How one pane's scrollbar draws.
+data ScrollbarLook = ScrollbarLook
+    { style :: ScrollbarStyle
+    , slider :: (Int, Int)  -- ^ the slider's first row and height
+    , padStyle :: Cell.Style  -- ^ the pane's own default colours
+    , onLeft :: Bool
+    }
+    deriving (Eq, Show)
+
+-- | The slider's first row and height in a scrollbar @height@ rows tall
+-- (tmux's @redraw_draw_scrollbar_span@): over the pane's history and
+-- screen, at the bottom; in copy mode, at the viewport's offset into the
+-- history.
+sliderOf :: Int -> Int -> Int -> Maybe (Int, Int) -> (Int, Int)
+sliderOf height screenRows hsize copy = (clampY y0, max 1 h0)
+  where
+    sbh = fromIntegral height :: Double
+    (y0, h0) = case copy of
+        Nothing ->
+            let total = fromIntegral (screenRows + hsize)
+                h = truncate (sbh * (sbh / total))
+            in (height - max 0 h, h)
+        Just (offset, size) ->
+            let total = fromIntegral size + sbh
+            in ( truncate ((sbh + 1) * (fromIntegral offset / total))
+               , truncate (sbh * (sbh / total)) )
+    clampY y = if y >= height then height - 1 else y
+
+scrollbarCell :: Int -> Int -> ScrollbarLook -> Cell.Cell
+scrollbarCell y off look
+    | isPad = Cell.glyphCell ' ' look.padStyle
+    | y >= sy && y < sy + sh =
+        Cell.glyphCell ' ' sty { Cell.fg = sty.bg, Cell.bg = sty.fg }
+    | otherwise = Cell.glyphCell ' ' sty
+  where
+    sty = look.style.colours
+    (sy, sh) = look.slider
+    w = look.style.width
+    isPad
+        | look.onLeft = off >= w && off < w + look.style.pad
+        | otherwise = off < look.style.pad

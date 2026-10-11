@@ -29,6 +29,7 @@ import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
+import Hat.Server.Resize (scrollbarReserve)
 import Hat.Server.Scene
 import Hat.Server.View (messageLine, statusLayout)
 import Hat.Term.Cell qualified as Cell
@@ -108,11 +109,13 @@ spec = do
                     { window = Size { rows = 3, cols = 5 }, area = Size { rows = 3, cols = 5 }
                     , panes = [ (PaneId 0, rect 0 3 0 2), (PaneId 1, rect 0 1 3 5)
                               , (PaneId 2, rect 2 3 3 5) ]
-                    , paneStatus = PaneStatusOff, twoPane = Nothing }
+                    , paneStatus = PaneStatusOff, twoPane = Nothing
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
                 look ind = ChromeLook
                     { borderLines = BorderSingle, windowStyle = Cell.defaultStyle
                     , paneStyles = Map.fromList
                         [ (PaneId 0, borderSty), (PaneId 1, activeSty), (PaneId 2, borderSty) ]
+                    , scrollbarLooks = Map.empty
                     , active = Just (PaneId 1), marked = Nothing, numbers = Map.empty
                     , paneLines = Map.empty
                     , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
@@ -127,6 +130,17 @@ spec = do
                 (Cell.baseChar . snd <$> List.find ((== Pos 1 2) . fst)
                     (sceneChrome (look (Map.singleton (Pos 1 2) '\x25b6')) (buildScene input)))
                     `shouldBe` Just '\x25b6'
+
+        -- pane-scrollbars-position: a reserved scrollbar takes its
+        -- columns from that side of the pane, leaving at least one.
+        describe "pane-scrollbars-position picks the side a scrollbar takes" $ do
+            let r = Rect { startRow = 0, endRow = 5, startCol = 10, endCol = 20 }
+            it "right" $
+                scrollbarReserve ScrollbarRight 2 r `shouldBe` r { endCol = 18 }
+            it "left" $
+                scrollbarReserve ScrollbarLeft 2 r `shouldBe` r { startCol = 12 }
+            it "a pane too narrow keeps one column" $
+                scrollbarReserve ScrollbarLeft 12 r `shouldBe` r { startCol = 19 }
 
         -- message-line: the status line the prompt and messages take,
         -- clamped to the last line there is.

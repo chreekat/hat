@@ -36,6 +36,7 @@ module Hat.Term.Emulator
     , cursorState
     , currentPen
     , modes
+    , onAlternateScreen
     , bracketedPaste
     , modeReplayBytes
     , restoreBytes
@@ -487,6 +488,11 @@ modes e = withMVar e.lock $ \_ -> do
             , focusReport = foc /= 0
             , colorReport = cr
             }
+
+-- | Whether the alternate screen is the active one.
+onAlternateScreen :: Emulator -> IO Bool
+onAlternateScreen e = withMVar e.lock $ \_ ->
+    withForeignPtr e.term $ \t -> (== screenAlternate) <$> c_get t dataActiveScreen
 
 -- | Whether the app enabled bracketed paste (?2004).
 bracketedPaste :: Emulator -> IO Bool

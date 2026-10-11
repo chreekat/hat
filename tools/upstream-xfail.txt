@@ -31,7 +31,7 @@ screen-redraw-floating.sh
 screen-redraw-indicators.sh
 screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
 screen-redraw-popups.sh
-screen-redraw-scrollbars.sh
+screen-redraw-scrollbars.sh     # floating panes (new-pane) + copy-mode -H (hide the position indicator)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh

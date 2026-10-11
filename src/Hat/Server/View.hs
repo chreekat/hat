@@ -42,7 +42,7 @@ import Hat.Server.FormatEnv
      paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
      windowFormatEnv, windowOwnEnv)
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
-import Hat.Server.Resize (windowArrange, windowPaneStatus)
+import Hat.Server.Resize (paneScrollbars, windowArrange, windowPaneStatus)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme)
@@ -160,7 +160,7 @@ renderOnce st client = do
             -- Snapshot each visible pane once; its cells and its cursor both
             -- come from that one read.
             th <- clientTheme st
-            paneViews <- fmap (Map.fromList . concat) $ forM rects $ \(pidL, _) ->
+            painted <- fmap concat $ forM rects $ \(pidL, _) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure []
                     Just pane -> do
@@ -168,12 +168,15 @@ renderOnce st client = do
                         popts <- atomically (resolveForPane st sess win pane)
                         ws <- paneStyleOption st th sess win pane popts "window-style"
                         was <- paneStyleOption st th sess win pane popts "window-active-style"
-                        pure [(pidL, withPaneDefaults (paneDefaults (pidL == active) ws was) pv)]
+                        let dflt = paneDefaults (pidL == active) ws was
+                        pure [(pidL, (withPaneDefaults dflt pv, dflt))]
+            let paneViews = Map.fromList [ (p, pv) | (p, (pv, _)) <- painted ]
+                defaults = Map.fromList [ (p, d) | (p, (_, d)) <- painted ]
             prevFrame <- readIORef client.lastFrame
             prevOrigins <- readIORef client.lastOrigins
             let sceneArea = csize
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
-            chrome <- cachedChrome st th client sess win eff sceneArea rects active rowOff
+            chrome <- cachedChrome st th client sess win eff sceneArea rects defaults active rowOff
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect rect
                                 , cells = pv.cells, gens = pv.rowGens }
@@ -348,12 +351,13 @@ windowCompositeCells st win size = do
         pure (r, ps, a, s)
     let input = SceneInput
             { window = size, area = size, panes = markingOrder rects, paneStatus = status
-            , twoPane = Nothing }
+            , twoPane = Nothing, scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
         look = ChromeLook
             { borderLines = opts.paneBorderLines
             , windowStyle = styleCell th (optionText "pane-border-style" opts)
             , paneStyles = Map.singleton active
                 (styleCell th (optionText "pane-active-border-style" opts))
+            , scrollbarLooks = Map.empty
             , active = Just active, marked = Nothing, numbers = Map.empty
             , paneLines = Map.empty
             , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
@@ -444,10 +448,23 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 -- and every row's chrome provenance stays matchable.
 cachedChrome
     :: ServerState -> Theme -> Client -> Session -> Window -> Size -> Size
-    -> [(PaneId, Rect)] -> PaneId -> Int -> IO Chrome
-cachedChrome st th client sess win eff sceneArea rects active rowOff = do
+    -> [(PaneId, Rect)] -> Map.Map PaneId (Cell.Color, Cell.Color) -> PaneId -> Int
+    -> IO Chrome
+cachedChrome st th client sess win eff sceneArea rects defaults active rowOff = do
     mcc <- readIORef client.lastChrome
-    (input, look1, panes) <- atomically (chromeInputs st th sess win eff sceneArea rects active)
+    (input, look2, panes) <- atomically (chromeInputs st th sess win eff sceneArea rects active)
+    bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
+        \(cp, _) -> do
+            let height = maybe 0 (\r -> r.endRow - r.startRow) (List.lookup cp.pane.id rects)
+                (dfg, dbg) = Map.findWithDefault (Cell.DefaultColor, Cell.DefaultColor)
+                    cp.pane.id defaults
+            slider <- paneSlider cp.pane height
+            pure (cp.pane.id, ScrollbarLook
+                { style = scrollbarStyle th (optionText "pane-scrollbars-style" cp.options)
+                , slider
+                , padStyle = Cell.defaultStyle { Cell.fg = dfg, Cell.bg = dbg }
+                , onLeft = input.scrollbarSide == ScrollbarLeft })
+    let look1 = look2 { scrollbarLooks = Map.fromList bars }
     let scene = case mcc of
             Just cc | cc.input == input -> cc.scene
             _ -> buildScene input
@@ -498,6 +515,19 @@ withPaneDefaults dflt pv
     | dflt == (Cell.DefaultColor, Cell.DefaultColor) = pv
     | otherwise = pv { cells = paintDefaults dflt pv.cells, rowGens = Nothing }
 
+-- | Where a pane's scrollbar slider sits in a scrollbar @height@ rows
+-- tall: over its history and screen, or its copy-mode viewport.
+paneSlider :: Pane -> Int -> IO (Int, Int)
+paneSlider pane height = do
+    mmode <- readTVarIO pane.mode
+    case mmode of
+        Just pm -> pure $ sliderOf height pm.frozen.fgSy pm.frozen.fgHsize
+            (Just (pm.frozen.fgHsize - pm.copyState.viewportOffY, pm.frozen.fgHsize))
+        Nothing -> do
+            sz <- readTVarIO pane.size
+            hsize <- Emu.scrollbackLength pane.emulator
+            pure (sliderOf height (fromIntegral sz.rows) hsize Nothing)
+
 -- | One visible pane's part in its window's chrome.
 data ChromePane = ChromePane
     { pane :: Pane
@@ -513,6 +543,7 @@ chromeInputs
 chromeInputs st th sess win eff sceneArea rects active = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
+    (side, bars) <- paneScrollbars st win
     lay <- readTVar win.layout
     ps <- readTVar win.panes
     marked <- readTVar st.markedPane
@@ -535,11 +566,12 @@ chromeInputs st th sess win eff sceneArea rects active = do
     let useArrows = indicators `elem` [IndicatorsArrows, IndicatorsBoth]
         input = SceneInput
             { window = eff, area = sceneArea, panes = markingOrder rects
-            , paneStatus = status, twoPane }
+            , paneStatus = status, twoPane, scrollbars = bars, scrollbarSide = side }
         look = ChromeLook
             { borderLines = wopts.paneBorderLines
             , windowStyle = styleCell th (optionText "pane-border-style" wopts)
             , paneStyles = Map.empty
+            , scrollbarLooks = Map.empty
             , active = Just active
             , marked
             , numbers = Map.fromList [ (cp.pane.id, cp.number) | cp <- panes ]

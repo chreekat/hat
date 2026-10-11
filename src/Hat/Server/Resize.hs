@@ -20,6 +20,8 @@ module Hat.Server.Resize
     , rectSize
     , windowArrange
     , windowPaneStatus
+    , paneScrollbars
+    , scrollbarReserve
     , windowLayoutAt
     ) where
 
@@ -29,6 +31,7 @@ import Control.Monad (forM, forM_, when)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -39,7 +42,9 @@ import Hat.Model.Options
 import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
-import Hat.Server.Scene (PaneStatus (..), statusAdjust)
+import Hat.Server.Scene
+    (PaneStatus (..), ScrollbarSide (..), ScrollbarStyle (..), scrollbarStyle, statusAdjust)
+import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
@@ -330,8 +335,12 @@ windowArrange st eff win = do
     lay <- readTVar win.layout
     ps <- readTVar win.panes
     status <- windowPaneStatus st win
+    (side, bars) <- paneScrollbars st win
     let adjust (rects, borders) =
-            ([ (p, statusAdjust status (fromIntegral eff.rows) r) | (p, r) <- rects ], borders)
+            ( [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
+                        (statusAdjust status (fromIntegral eff.rows) r))
+              | (p, r) <- rects ]
+            , borders )
     case mz of
         Just zpid | Map.member zpid ps -> pure (adjust ([(zpid, sizeRect eff)], []))
         _ -> do
@@ -344,13 +353,53 @@ windowArrange st eff win = do
                     writeTVar win.arrangeCache (Just ((rect, lay), res))
                     pure (adjust res)
 
--- | A window's @pane-border-status@: its own value, else the global
--- window table's, else the default.
+-- | A window's @pane-border-status@.
 windowPaneStatus :: ServerState -> Window -> STM PaneStatus
 windowPaneStatus st win = do
-    own <- lookupDelta "pane-border-status" <$> readTVar win.options
-    global <- lookupDelta "pane-border-status" <$> readTVar st.globalWindowOptions
-    pure $ case maybe "off" valueText (maybe global Just own) of
+    v <- chainText [win.options, st.globalWindowOptions] "pane-border-status"
+    pure $ case v of
         "top" -> PaneStatusTop
         "bottom" -> PaneStatusBottom
         _ -> PaneStatusOff
+
+-- | Which side a window's scrollbars take, and the width (padding
+-- included) of each pane's scrollbar beside it (tmux's
+-- @window_pane_scrollbar_reserve@): @pane-scrollbars on@ shows one for
+-- every pane not on its alternate screen.
+paneScrollbars :: ServerState -> Window -> STM (ScrollbarSide, Map.Map PaneId Int)
+paneScrollbars st win = do
+    mode <- chainText [win.options, st.globalWindowOptions] "pane-scrollbars"
+    pos <- chainText [win.options, st.globalWindowOptions] "pane-scrollbars-position"
+    let side = if pos == "left" then ScrollbarLeft else ScrollbarRight
+    if mode /= "on" then pure (side, Map.empty) else do
+        ps <- Map.elems <$> readTVar win.panes
+        bars <- fmap concat $ forM ps $ \p -> do
+            alt <- readTVar p.onAlternate
+            raw <- chainText [p.options, win.options, st.globalWindowOptions]
+                "pane-scrollbars-style"
+            let sb = scrollbarStyle terminalTheme raw
+            pure [ (p.id, sb.width + sb.pad) | not alt ]
+        pure (side, Map.fromList bars)
+
+-- | A pane's content once its scrollbar takes its columns (tmux's
+-- @layout_fix_panes@), leaving at least one.
+scrollbarReserve :: ScrollbarSide -> Int -> Rect -> Rect
+scrollbarReserve _ 0 r = r
+scrollbarReserve side w r
+    | sx - w < 1 = case side of
+        ScrollbarLeft -> r { startCol = r.endCol - 1 }
+        ScrollbarRight -> r { endCol = r.startCol + 1 }
+    | otherwise = case side of
+        ScrollbarLeft -> r { startCol = r.startCol + w }
+        ScrollbarRight -> r { endCol = r.endCol - w }
+  where
+    sx = r.endCol - r.startCol
+
+-- | An option's text in the nearest of a chain of tables, else its
+-- registry default.
+chainText :: [TVar OptionsDelta] -> Text -> STM Text
+chainText tables name = do
+    found <- mapM (fmap (lookupDelta name) . readTVar) tables
+    pure $ case [ v | Just v <- found ] of
+        (v : _) -> valueText v
+        [] -> maybe "" (valueText . (.defaultValue)) (lookupOptionDef name)

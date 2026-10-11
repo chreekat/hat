@@ -70,6 +70,7 @@ data DrawStyle = DrawStyle
     , width :: Maybe Width
     , acs :: Bool  -- ^ text draws from the VT100 line-drawing set ('acsGlyph')
     , theme :: Theme  -- ^ what its theme colours draw as
+    , pad :: Maybe Int  -- ^ @pad=@: a scrollbar's padding
     }
     deriving (Eq, Show)
 
@@ -77,7 +78,7 @@ defaultDrawStyle :: DrawStyle
 defaultDrawStyle = DrawStyle
     { cell = Cell.defaultStyle, fill = Nothing, align = AlignDefault
     , list = ListOff, defaultType = DefaultBase, ignore = False
-    , width = Nothing, acs = False, theme = terminalTheme }
+    , width = Nothing, acs = False, theme = terminalTheme, pad = Nothing }
 
 -- | The default style, drawing theme colours from a theme.
 themedDrawStyle :: Theme -> DrawStyle
@@ -145,7 +146,8 @@ styleParse base sy0 =
                         (\w -> sy { width = Just (WidthPercent (fromInteger w)) }) <$> number 0 100 n
                     _ -> (\w -> sy { width = Just (WidthCells (fromInteger w)) })
                         <$> number 0 4294967295 v
-                | Just v <- nonEmpty "pad=" tok -> sy <$ number 0 4294967295 v
+                | Just v <- nonEmpty "pad=" tok ->
+                    (\n -> sy { pad = Just (fromInteger n) }) <$> number 0 4294967295 v
                 | "link=" `T.isPrefixOf` tok -> Just sy
                 | otherwise -> (\f -> sy { cell = f True sy.cell
                                           , acs = sy.acs || namesAcs tok }) <$> attrs tok
