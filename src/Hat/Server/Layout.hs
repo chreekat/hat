@@ -10,7 +10,6 @@ module Hat.Server.Layout
     , PaneIndex (..)
     , parsePaneIndex
     , resolvePaneIndex
-    , ResizeMode (..)
     , effectiveWindowSize
     , sessionWindowArea
     , nextLayoutName
@@ -42,38 +41,40 @@ import Data.Text.Read qualified as TR
 
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)
+import Hat.Model.Options (WindowSizeMode (..))
 
 data Orientation = LeftRight | TopBottom
     deriving (Eq, Show)
 
--- | How a window chooses its size among the clients attached to its session.
--- See 'effectiveWindowSize'.
-data ResizeMode
-    = SmallestClient  -- ^ shrink to fit every attached client
-    | ActiveClient    -- ^ track the most-recently-active client (aggressive-resize)
-    deriving (Eq, Show)
-
 -- | The size a window takes for the sizes of the clients attached to its
--- session. 'SmallestClient' intersects every client so the window fits them
--- all (the tmux default). 'ActiveClient' (@aggressive-resize on@) follows the
--- most-recently-active client — the one with the largest activity stamp —
--- letting smaller clients clip. With no clients attached the window keeps its
--- @fallback@ (its last size).
-effectiveWindowSize :: ResizeMode -> Size -> [(Int, Size)] -> Size
+-- session, under @window-size@ (tmux's @clients_calculate_size@).
+-- 'SizeSmallest' intersects every client so the window fits them all;
+-- 'SizeLargest' covers the biggest, letting smaller clients clip;
+-- 'SizeLatest' follows the most-recently-active client — the one with the
+-- largest activity stamp — and with a single client is the same as
+-- smallest. With no clients attached, or under 'SizeManual', the window keeps
+-- its @fallback@ (its current size; only @resize-window@ moves a manual one).
+effectiveWindowSize :: WindowSizeMode -> Size -> [(Int, Size)] -> Size
+effectiveWindowSize SizeManual fallback _ = fallback
 effectiveWindowSize _ fallback [] = fallback
-effectiveWindowSize SmallestClient _ clients = Size
-    { rows = minimum (map (\(_, s) -> s.rows) clients)
-    , cols = minimum (map (\(_, s) -> s.cols) clients)
-    }
-effectiveWindowSize ActiveClient _ clients =
-    snd (List.maximumBy (comparing fst) clients)
+effectiveWindowSize mode _ clients = case mode of
+    SizeLargest -> combine maximum clients
+    SizeLatest -> snd (List.maximumBy (comparing fst) clients)
+    _ -> combine minimum clients
+  where
+    combine pick cs = Size
+        { rows = pick (map (\(_, s) -> s.rows) cs)
+        , cols = pick (map (\(_, s) -> s.cols) cs)
+        }
 
 -- | The pane area of a session's window: its 'effectiveWindowSize' with the
--- status bar's @statusLines@ rows carved out when a client is attached to draw
--- it. A detached session keeps its full size — tmux draws no status line
--- without a client, so @new-session -d -x W -y H@ gives an H-row window, not
--- H-1 — and @status off@ (0 lines) carves nothing even when attached.
-sessionWindowArea :: Int -> ResizeMode -> Size -> [(Int, Size)] -> Size
+-- status bar's @statusLines@ rows carved out of the clients' sizes when a
+-- client is attached to draw it. A detached session keeps its full size —
+-- tmux draws no status line without a client, so @new-session -d -x W -y H@
+-- gives an H-row window, not H-1 — and @status off@ (0 lines) carves nothing
+-- even when attached. A manual size is the window's own and is never carved.
+sessionWindowArea :: Int -> WindowSizeMode -> Size -> [(Int, Size)] -> Size
+sessionWindowArea _ SizeManual fallback _ = fallback
 sessionWindowArea _ _ fallback [] = fallback
 sessionWindowArea statusLines mode fallback clients =
     let s = effectiveWindowSize mode fallback clients

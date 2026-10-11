@@ -19,7 +19,7 @@ import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), Toast (..), newServerState)
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), Options (..)
-    , StatusPosition (..), defaultOptions )
+    , StatusPosition (..), WindowSizeMode (..), defaultOptions )
 import Hat.Server
     ( Reply (..), deliversKey, escTiming, mainPaneRatio, resizeModeOf
     , runCommands, toastDeadline, toastExpired )
@@ -27,7 +27,7 @@ import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
 import Hat.Server.Keys (EscTiming (..), Key (..))
-import Hat.Server.Layout (LayoutName (..), ResizeMode (..))
+import Hat.Server.Layout (LayoutName (..))
 import Hat.Server.View
     ( assembleStatusRow, borderCells, mapGlyph, statusLayout
     , windowEntryFormat, windowEntryStyle )
@@ -180,14 +180,12 @@ spec = do
             it "off (status 0): no bar, content fills the height" $
                 statusLayout StatusBottom 0 24 `shouldBe` (0, Nothing)
 
-        -- aggressive-resize: on follows the active client, off fits the
-        -- smallest.
-        describe "aggressive-resize picks the resize mode" $ do
-            it "off (default): fit the smallest client" $
-                resizeModeOf defaultOptions `shouldBe` SmallestClient
-            it "on: follow the active client" $
-                resizeModeOf (defaultOptions { aggressiveResize = True })
-                    `shouldBe` ActiveClient
+        describe "window-size picks the resize mode" $ do
+            it "latest by default, as in tmux" $
+                resizeModeOf defaultOptions `shouldBe` SizeLatest
+            it "follows the option" $
+                resizeModeOf (defaultOptions { windowSize = SizeManual })
+                    `shouldBe` SizeManual
 
         -- update-environment: on attach, each listed pattern pulls matching
         -- vars from the client's env into the session; a pattern matching

@@ -595,7 +595,7 @@ withCommandBatch st = bracket_
 
 -- | Stamp a client as the most-recently-active on its session: advance the
 -- server's activity clock and record the new value on the client, so
--- 'effectiveWindowSize' in @ActiveClient@ mode (aggressive-resize) sizes a
+-- 'effectiveWindowSize' under @window-size latest@ sizes a
 -- window to whichever client most recently drove it.
 markActive :: ServerState -> Client -> STM ()
 markActive st client = do

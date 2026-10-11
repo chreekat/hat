@@ -30,7 +30,8 @@ import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
-    , defaultOptions, emptyDelta, insertDelta, singletonDelta)
+    , WindowSizeMode (..), defaultOptions, emptyDelta, insertDelta, lookupDelta
+    , singletonDelta)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
@@ -49,7 +50,7 @@ import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.Session
     (cmdKillSession, cmdNewSession, cmdRenameSession)
-import Hat.Server.Command.Window (cmdRenameWindow, cmdUnlinkWindow)
+import Hat.Server.Command.Window (cmdRenameWindow, cmdResizeWindow, cmdUnlinkWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
@@ -409,19 +410,52 @@ spec = do
             touchSocket client.sock
             got `shouldBe` Nothing
 
-    describe "aggressive-resize sizing" $ do
+    describe "window-size sizing" $ do
         let big = Size { rows = 50, cols = 200 }
             small = Size { rows = 24, cols = 80 }
             -- an attached client's window area is its viewport minus the status row
             pane s = s { rows = s.rows - 1 }
-        it "follows the most-recently-active client under aggressive-resize" $ do
+        it "follows the most-recently-active client by default (latest)" $ do
             (st, sess) <- seedSession "/"
-            atomically $ writeTVar st.globalWindowOptions
-                (singletonDelta OptAggressiveResize (OVBool True))
             _ <- addClient st (SessionId 0) big 2      -- bigger client is newer
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
             readTVarIO sess.lastSize `shouldReturn` pane big
+        it "fits the smallest client under window-size smallest" $ do
+            (st, sess) <- seedSession "/"
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta OptWindowSize (OVWindowSize SizeSmallest))
+            _ <- addClient st (SessionId 0) big 2
+            _ <- addClient st (SessionId 0) small 1
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` pane small
+        it "keeps a manual size whatever the clients" $ do
+            (st, sess) <- seedSession "/"
+            sz0 <- readTVarIO sess.lastSize
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta OptWindowSize (OVWindowSize SizeManual))
+            _ <- addClient st (SessionId 0) big 1
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` sz0
+        it "resize-window sizes the window and pins it to manual" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            _ <- addClient st (SessionId 0) big 1
+            cmdResizeWindow st Nothing ["-t", "work", "-x", "33", "-y", "7"]
+                `shouldReturn` []
+            readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 33 }
+            -- a later client change no longer moves it
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 33 }
+        it "resize-window rejects an out-of-range width" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            cmdResizeWindow st Nothing ["-t", "work", "-x", "0"]
+                `shouldReturn` [RErr "width too small"]
         it "carves no status row when status is off" $ do
             (st, sess) <- seedSession "/"
             atomically $ writeTVar st.globalSessionOptions
@@ -466,7 +500,25 @@ spec = do
             environFind "MYVAR" env
                 `shouldBe` Just (EnvEntry (Just "new") EnvVisible)
 
-    describe "new-session" $
+    describe "new-session" $ do
+        it "sizes a detached session from default-size, overridden by -x/-y" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-newsess-size.sock" Nothing
+            atomically $ writeTVar st.globalSessionOptions
+                (singletonDelta OptDefaultSize (OVText "50x20"))
+            cmdNewSession st Nothing ["-d", "-x", "0"]
+                `shouldReturn` [RErr "width too small"]
+            [] <- cmdNewSession st Nothing ["-d", "-s", "a", "-y", "7", "sleep 30"]
+            [sess] <- Map.elems <$> readTVarIO st.sessions
+            [win] <- Map.elems <$> readTVarIO sess.windows
+            [pane] <- Map.elems <$> readTVarIO win.panes
+            let reap = do
+                    _ <- cmdKillSession st Nothing ["-t", "a"]
+                    () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
+            flip finally reap $ do
+                readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 50 }
+                lookupDelta OptDefaultSize <$> readTVarIO sess.options
+                    `shouldReturn` Just (OVText "50x7")
         it "creates a named session with its first window; a duplicate name is refused" $ do
             lg <- newLogger "/dev/null"
             st <- newServerState Map.empty lg "/tmp/hat-newsess.sock" Nothing

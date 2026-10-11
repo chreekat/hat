@@ -10,6 +10,7 @@ module Hat.Model.Options
     , alertAllows
     , BorderLines (..)
     , BorderIndicators (..)
+    , WindowSizeMode (..)
     , Keymap
     , defaultOptions
     , OptionName (..)
@@ -79,6 +80,11 @@ data BorderIndicators
     = IndicatorsOff | IndicatorsColour | IndicatorsArrows | IndicatorsBoth
     deriving (Eq, Show)
 
+-- | @window-size@: how a window's size follows its clients. See
+-- 'Hat.Server.Layout.effectiveWindowSize'.
+data WindowSizeMode = SizeLargest | SizeSmallest | SizeManual | SizeLatest
+    deriving (Eq, Show)
+
 data Options = Options
     { prefix          :: Text  -- ^ key name, e.g. \"C-b\", \"C-Space\"
     , baseIndex       :: Int
@@ -114,6 +120,8 @@ data Options = Options
     , displayPanesActiveColour :: Text  -- ^ tmux colour text, active pane
     , focusEvents            :: Bool
     , aggressiveResize       :: Bool
+    , windowSize             :: WindowSizeMode
+    , defaultSize            :: Text  -- ^ @WxH@, as tmux's pattern admits; see 'Hat.Server.Resize.defaultSizeOf'
     , monitorActivity        :: Bool
     , monitorBell            :: Bool
     , monitorSilence         :: Int   -- ^ seconds of quiet before alert-silence; 0 disables
@@ -169,6 +177,8 @@ defaultOptions = Options
     , displayPanesActiveColour = "red"
     , focusEvents = False
     , aggressiveResize = False
+    , windowSize = SizeLatest
+    , defaultSize = "80x24"
     , monitorActivity = False
     , monitorBell = True
     , monitorSilence = 0
@@ -228,6 +238,8 @@ data OptionName
     | OptDisplayPanesActiveColour
     | OptFocusEvents
     | OptAggressiveResize
+    | OptWindowSize
+    | OptDefaultSize
     | OptMonitorActivity
     | OptMonitorBell
     | OptMonitorSilence
@@ -257,6 +269,7 @@ data OptionValue
     | OVBorderLines BorderLines
     | OVBorderIndicators BorderIndicators
     | OVAlertAction AlertAction
+    | OVWindowSize WindowSizeMode
     | OVIndexed (Map Int Text)  -- ^ an array option's entries, by index
     deriving (Eq, Show)
 
@@ -344,6 +357,8 @@ applyEntry name val o = case (name, val) of
         o { displayPanesActiveColour = t }
     (OptFocusEvents, OVBool b) -> o { focusEvents = b }
     (OptAggressiveResize, OVBool b) -> o { aggressiveResize = b }
+    (OptWindowSize, OVWindowSize m) -> o { windowSize = m }
+    (OptDefaultSize, OVText t) -> o { defaultSize = t }
     (OptMonitorActivity, OVBool b) -> o { monitorActivity = b }
     (OptMonitorBell, OVBool b) -> o { monitorBell = b }
     (OptMonitorSilence, OVInt n) -> o { monitorSilence = n }
@@ -376,6 +391,7 @@ optionScopeClass = \case
     OptModeKeys -> WindowOption
     OptWordSeparators -> WindowOption
     OptAggressiveResize -> WindowOption
+    OptWindowSize -> WindowOption
     OptMonitorActivity -> WindowOption
     OptMonitorBell -> WindowOption
     OptMonitorSilence -> WindowOption
@@ -440,7 +456,7 @@ allOptionNames =
     , OptSetTitles
     , OptEscapeTime, OptDisplayTime, OptDisplayPanesTime
     , OptDisplayPanesColour, OptDisplayPanesActiveColour
-    , OptFocusEvents, OptAggressiveResize
+    , OptFocusEvents, OptAggressiveResize, OptWindowSize, OptDefaultSize
     , OptMonitorActivity, OptMonitorBell, OptMonitorSilence, OptBellAction
     , OptAutomaticRename, OptAutomaticRenameFormat
     , OptRemainOnExit
@@ -536,6 +552,8 @@ optionNameText = \case
     OptDisplayPanesActiveColour -> "display-panes-active-colour"
     OptFocusEvents -> "focus-events"
     OptAggressiveResize -> "aggressive-resize"
+    OptWindowSize -> "window-size"
+    OptDefaultSize -> "default-size"
     OptMonitorActivity -> "monitor-activity"
     OptMonitorBell -> "monitor-bell"
     OptMonitorSilence -> "monitor-silence"
@@ -589,6 +607,8 @@ optionValueOf o = \case
     OptDisplayPanesActiveColour -> Just (OVText o.displayPanesActiveColour)
     OptFocusEvents -> Just (OVBool o.focusEvents)
     OptAggressiveResize -> Just (OVBool o.aggressiveResize)
+    OptWindowSize -> Just (OVWindowSize o.windowSize)
+    OptDefaultSize -> Just (OVText o.defaultSize)
     OptMonitorActivity -> Just (OVBool o.monitorActivity)
     OptMonitorBell -> Just (OVBool o.monitorBell)
     OptMonitorSilence -> Just (OVInt o.monitorSilence)
@@ -631,6 +651,11 @@ formatOptionValue = \case
         AlertNone -> "none"
         AlertCurrent -> "current"
         AlertOther -> "other"
+    OVWindowSize m -> case m of
+        SizeLargest -> "largest"
+        SizeSmallest -> "smallest"
+        SizeManual -> "manual"
+        SizeLatest -> "latest"
     OVBorderIndicators i -> case i of
         IndicatorsOff -> "off"
         IndicatorsColour -> "colour"
