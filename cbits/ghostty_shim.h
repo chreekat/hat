@@ -21,6 +21,30 @@ typedef struct {
     uint32_t bg_val;
 } GhostShimCell;
 
+/* One cell with everything libghostty-vt records about it, for capture-pane's
+ * raw cell dump: unlike GhostShimCell nothing is folded, so the dump can tell
+ * apart what the renderer never needs to (underline style and color, hidden,
+ * overline, a hyperlink, a blank that carries only an erase background).
+ *   content: a GhosttyCellContentTag; wide: a GhosttyCellWide.
+ *   attrs: 1 bold, 2 faint, 4 italic, 8 blink, 16 inverse, 32 invisible,
+ *          64 strikethrough, 128 overline.
+ *   underline: a GHOSTTY_SGR_UNDERLINE_* value.
+ * Color tags and values as in GhostShimCell. */
+typedef struct {
+    uint32_t codepoint;
+    int      content;
+    int      wide;
+    int      has_link;
+    unsigned attrs;
+    int      underline;
+    int      fg_tag;
+    uint32_t fg_val;
+    int      bg_tag;
+    uint32_t bg_val;
+    int      us_tag;
+    uint32_t us_val;
+} GhostShimRawCell;
+
 /* Point tags mirrored from GhosttyPointTag for ghost_shim_cell. */
 #define GHOST_SHIM_ACTIVE   0
 #define GHOST_SHIM_VIEWPORT 1
@@ -63,6 +87,21 @@ long  ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
 long  ghost_shim_format_history(void *t, uint32_t from, uint32_t to,
                                 uint16_t cols, uint8_t **out);
 void  ghost_shim_format_release(uint8_t *buf, size_t len);
+
+/* Read a whole row as GhostShimRawCells (see above). Returns 1 on success, 0
+ * when the row is unavailable (out is left zeroed). */
+int   ghost_shim_raw_row(void *t, int tag, uint32_t y, uint16_t cols,
+                         GhostShimRawCell *out);
+
+/* Copy the hyperlink URI of the cell at (x, y) into buf. Returns the URI's
+ * full length (0 for no link; retry with a bigger buffer when it exceeds
+ * buflen), or -1 when the cell is unavailable. */
+long  ghost_shim_cell_link(void *t, int tag, uint16_t x, uint32_t y,
+                           uint8_t *buf, size_t buflen);
+
+/* The row at y's GhosttyRowSemanticPrompt (OSC 133 prompt marking), or -1
+ * when the row is unavailable. */
+int   ghost_shim_row_prompt(void *t, int tag, uint32_t y);
 
 /* Whether the row at y under a point tag soft-wraps onto the next row.
  * Returns 1 wrapped, 0 not wrapped or unavailable. */

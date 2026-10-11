@@ -94,6 +94,7 @@ paneFormatEnv st sess wix win pix pane = do
     cmd <- paneCommandName pane
     scr <- Emu.snapshot pane.emulator
     hsize <- Emu.scrollbackLength pane.emulator
+    pendingWrap <- Emu.cursorPendingWrap pane.emulator
     active <- readTVarIO win.activeId
     sz <- readTVarIO pane.size
     paneUser <- deltaUserVars <$> readTVarIO pane.options
@@ -104,7 +105,7 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_current_path", T.pack dir)
         , ("pane_current_command", cmd)
         , ("pane_active", if pane.id == active then "1" else "0")
-        , ("cursor_x", tshow scr.cursor.col)
+        , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
         , ("cursor_y", tshow scr.cursor.row)
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
