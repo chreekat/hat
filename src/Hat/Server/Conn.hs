@@ -627,6 +627,7 @@ controlLoop d st re client = do
     case m of
         Just (Known (Command cmds)) -> do
             awaitStartup st client.autostart cmds
+            syncAllPanes st
             open <- newTVarIO True
             let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
             replies <- d.runCommands st (Just granted) cmds

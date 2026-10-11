@@ -9,6 +9,8 @@ module Hat.Model
     , Session (..)
     , Window (..)
     , Pane (..)
+    , OutputSync (..)
+    , noOutputSync
     , PaneStart (..)
     , PaneKind (..)
     , PaneExit (..)
@@ -265,7 +267,19 @@ data Pane = Pane
     , kind     :: PaneKind
     , inputOff :: TVar Bool
         -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
+    , outputSync :: TVar OutputSync
+        -- ^ requests that the reader catch up on pending output; see
+        -- 'Hat.Server.Pane.syncPanes'.
     }
+
+-- | Generations of a pane's output-sync requests.
+data OutputSync = OutputSync
+    { requested :: !Word64  -- ^ the latest request posted
+    , answered  :: !Word64  -- ^ the latest request the reader has served
+    }
+
+noOutputSync :: OutputSync
+noOutputSync = OutputSync { requested = 0, answered = 0 }
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart

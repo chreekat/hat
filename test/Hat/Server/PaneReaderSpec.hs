@@ -1,7 +1,7 @@
 module Hat.Server.PaneReaderSpec (spec) where
 
 import Control.Concurrent (threadDelay, threadWaitRead)
-import Control.Concurrent.Async (async)
+import Control.Concurrent.Async (async, asyncThreadId, poll, wait)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
 import Control.Exception (bracket)
@@ -25,7 +25,8 @@ import Test.Hspec
 import Hat.Geometry
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Server.Pane (hangupPane, newWindowWithPane, pauseReaders, startPaneReader)
+import Hat.Server.Pane
+    (hangupPane, newWindowWithPane, pauseReaders, startPaneReader, syncPanes)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified as Pty
 
@@ -133,3 +134,22 @@ spec = describe "pane reader" $ do
         awaitTrue "the reader to park" $
             maybe (pure True) (fmap (== ThreadBlocked BlockedOnSTM) . threadStatus) tid
         rawReadsUntil fd kept `shouldReturn` True
+
+    it "syncPanes returns only once output already pending is fed" $
+        withStalledReader $ \st pane stall _ -> do
+        let fd = Pty.masterFd pane.pty
+            echoed = B8.pack "sync-pending"
+        Pty.writePty pane.pty echoed  -- echoed back as pane output
+        _ <- timeout 10_000_000 (threadWaitRead fd)
+        syncer <- async (syncPanes st [pane])
+        awaitTrue "the sync to block or finish" $ do
+            finished <- isJust <$> poll syncer
+            blocked <- (== ThreadBlocked BlockedOnSTM)
+                <$> threadStatus (asyncThreadId syncer)
+            pure (finished || blocked)
+        early <- isJust <$> poll syncer
+        when early $ expectationFailure "sync returned while the reader stalled"
+        putMVar stall.hold ()
+        wait syncer
+        fed <- screenHas echoed pane.emulator
+        unless fed $ expectationFailure "sync returned before the pending output was fed"

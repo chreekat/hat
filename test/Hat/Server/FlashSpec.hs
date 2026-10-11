@@ -117,6 +117,7 @@ flashStubPane pid = do
     optsV <- newTVarIO emptyDelta
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
+    syncV <- newTVarIO noOutputSync
     pure Pane
         { id = pid
         , pty = error "flashStubPane: pty never touched"
@@ -134,4 +135,5 @@ flashStubPane pid = do
         , exited = exitedV
         , kind = ProgramPane
         , inputOff = inputOffV
+        , outputSync = syncV
         }
