@@ -58,7 +58,7 @@ import Hat.Server.Locate
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
-    , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
+    , paneShell, shellStart, pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
     , windowActivity )
 import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
 import Hat.Server.FormatEnv
@@ -189,8 +189,9 @@ createWindow st sess opts flags pos requested = do
         Right _ -> do
             eff <- readTVarIO sess.lastSize
             environ <- sessionSpawnEnv st sess
-            let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
-                mrun = case pos of
+            sopts <- atomically (resolveForSession st sess)
+            shellCmd <- paneShell sopts
+            let mrun = case pos of
                     [] -> Nothing
                     ws -> Just (T.unwords ws)
             dir <- case lookup "-c" opts of
@@ -198,8 +199,9 @@ createWindow st sess opts flags pos requested = do
                 Just d -> do
                     env <- sessionFormatEnv st sess
                     T.unpack <$> expandFormat st env d
-            (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
-                environ (eff)
+            (win, pane) <- newWindowWithPane st sess.id shellCmd
+                (shellStart (optionText "default-command" sopts) mrun) dir
+                environ eff
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False

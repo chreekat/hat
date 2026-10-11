@@ -63,6 +63,8 @@ spot-read of each suspect consumer.
 | `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented ✅ tested | pure |
 | `window-size` | `resizeModeOf`/`effectiveWindowSize` (Resize.hs, Layout.hs) | implemented ✅ tested | pure |
+| `default-shell` | `paneShell`/`paneProgram` (Pane.hs) for every spawn; `checkValue` (Command/Option.hs) refuses an unsuitable shell; seeded from `$SHELL` at start (`seedDefaultShell`) | implemented ✅ tested | pure |
+| `default-command` | `shellStart` (Pane.hs) at new-session, new-window, split-window | implemented ✅ tested | pure |
 | `default-size` | `defaultSizeOf` (Resize.hs): detached `new-session`, `resize-window -A`/`-a` | implemented ✅ tested | integration |
 | `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
@@ -115,6 +117,12 @@ spot-read of each suspect consumer.
   size a window only from clients whose *current* window it is; hat sizes all
   of a session's windows together from that session's own clients, so the
   option could only matter for a window linked into several sessions.
+
+- **`default-shell`** runs as a plain interactive shell named by its path,
+  where tmux starts a login shell (`-name`) and runs `-c` commands under the
+  shell's base name (see `paneProgram`). The shell chosen is tmux's; only the
+  login-ness differs. `respawn-pane` re-reads `default-shell` where tmux
+  reuses the pane's original shell.
 
 ## The effect-test sweep
 

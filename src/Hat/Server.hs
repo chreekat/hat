@@ -104,10 +104,10 @@ import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, displayException,
      throwIO, try)
-import Control.Monad (forM_, forever, unless, void, when)
+import Control.Monad (filterM, forM_, forever, unless, void, when)
 import Data.IORef
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust)
+import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -119,6 +119,7 @@ import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
 import System.Posix.IO qualified as PIO
+import System.Posix.User (getRealUserID, getUserEntryForID, userShell)
 import System.Process
     (CreateProcess (..), StdStream (..), proc,
      readCreateProcess, withCreateProcess)
@@ -188,6 +189,7 @@ runServerWith path mconfig mhandover = do
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
     installHooks st
+    seedDefaultShell st
     -- On a reload, read the handover the outgoing image left. An era match
     -- yields the tree to adopt (and the socket fd to reuse); an incompatible
     -- or corrupt payload yields only the cleanup core, so we hang the
@@ -291,6 +293,20 @@ runServerWith path mconfig mhandover = do
                 preserve <- readTVarIO st.preserveStore
                 unless preserve $ forM_ mstore (retireStore st)
                 removeFile path `catch` \(_ :: IOException) -> pure ()
+
+-- | tmux's start-up @default-shell@: the server's @$SHELL@, else the user's
+-- login shell, when suitable ('suitableShell'); the registry's @/bin/sh@
+-- otherwise.
+seedDefaultShell :: ServerState -> IO ()
+seedDefaultShell st = do
+    fromEnv <- lookupEnv "SHELL"
+    fromPasswd <- (Just . userShell <$> (getUserEntryForID =<< getRealUserID))
+        `catch` \(_ :: IOException) -> pure Nothing
+    found <- filterM suitableShell (catMaybes [fromEnv, fromPasswd])
+    forM_ (listToMaybe found) $ \sh -> atomically $ do
+        modifyTVar' st.globalSessionOptions
+            (insertDelta "default-shell" (OVScalar (T.pack sh)))
+        refreshGlobalOptions st
 
 -- | Run @body@ with each daemon alive under 'withAsync', so all are cancelled
 -- when @body@ returns or throws (the bracket pattern: no leaked threads, and

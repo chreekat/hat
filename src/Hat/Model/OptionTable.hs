@@ -370,8 +370,8 @@ optionTable =
     , notYet $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
     , live $ scalar "base-index" SessionScope (KNumber 0 intMax) "0"
     , live $ scalar "bell-action" SessionScope (KChoice bellActions) "any"
-    , notYet $ scalar "default-command" SessionScope KString ""
-    , notYet $ scalar "default-shell" SessionScope KString "/bin/sh"
+    , live $ scalar "default-command" SessionScope KString ""
+    , live $ scalar "default-shell" SessionScope KString "/bin/sh"
     , live $ (scalar "default-size" SessionScope KString "80x24")
         { pattern = Just "[0-9]*x[0-9]*" }
     , live $ scalar "destroy-unattached" SessionScope

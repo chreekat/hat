@@ -47,6 +47,7 @@ import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPaneScoped, targetSession )
 import Hat.Server.OptionParse
+import Hat.Server.Pane (suitableShell)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.Target qualified as Target
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
@@ -320,10 +321,34 @@ runSet cmd st mclient args = do
                             (Right sc, PlainOption) -> case requirePaneValues sc mdef of
                                 Left e -> pure [RErr e]
                                 Right () -> do
-                                    when (has "-U") $
-                                        clearPaneCopies st mclient mtarget sc n mkey
-                                    writeOption st sc n
-                                        (\own eff -> plan own eff mvalue)
+                                    checked <- checkValue st sc n req mvalue
+                                    case checked of
+                                        Left e -> pure [RErr e]
+                                        Right (req', mvalue') -> do
+                                            when (has "-U") $
+                                                clearPaneCopies st mclient mtarget sc n mkey
+                                            writeOption st sc n
+                                                (\own eff -> planSet mdef req' spelled
+                                                    mkey own eff mvalue')
+
+-- | tmux's @options_from_string_check@ for what the registry's kinds cannot
+-- say: a @default-shell@ must name a 'suitableShell'. A checked append
+-- becomes the assignment of the value it checked, so no later write can
+-- slip an unchecked value in between.
+checkValue
+    :: ServerState -> Scope -> Text -> SetRequest -> Maybe Text
+    -> IO (Either Text (SetRequest, Maybe Text))
+checkValue st sc n req mvalue = case (n, req.unsetting, mvalue) of
+    ("default-shell", SetValue, Just v) -> do
+        own <- atomically (ownValue st sc n)
+        let new = case (req.mode, own) of
+                (Append, Just old) -> valueText old <> v
+                _ -> v
+        ok <- suitableShell (T.unpack new)
+        pure $ if ok
+            then Right (SetRequest Assign req.unsetting req.overwrite req.quietness, Just new)
+            else Left ("not a suitable shell: " <> new)
+    _ -> pure (Right (req, mvalue))
 
 -- | Which store a name addresses: the hook store for a hook row or a
 -- @\@user@ name given to @set-hook@, else the option tables.
