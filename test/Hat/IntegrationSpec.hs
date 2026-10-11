@@ -1174,6 +1174,34 @@ spec = parallel $ do
             ["list-sessions", "-F", "#{session_created} #{session_restores}"]
         words meta1 `shouldBe` [created0, "1"]
 
+    -- See Note [Captured links].
+    it "restores a linked window and a session group as shared, not copied" $
+        withHatPersist hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        _ <- ctlOut h ["new-window", "-d", "-t", "0:1", "-n", "shared"]
+        _ <- ctlOut h ["new-session", "-d", "-s", "other"]
+        _ <- ctlOut h ["link-window", "-d", "-s", "0:1", "-t", "other:5"]
+        _ <- ctlOut h ["new-session", "-d", "-s", "grp", "-t", "0"]
+        let probe = do
+                linked <- ctlOut h ["display-message", "-p", "-t", "other:5"
+                    , "#{window_linked_sessions_list}"]
+                grouped <- ctlOut h ["display-message", "-p", "-t", "grp:"
+                    , "#{session_group_list}"]
+                panes <- ctlOut h ["list-panes", "-a", "-F", "#{pane_id}"]
+                pure (lines linked, lines grouped, length (lines panes))
+        saved <- probe
+        saved `shouldBe` (["0,other,grp"], ["0,grp"], 6)
+
+        _ <- ctlOut h ["kill-server"]
+        _ <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "server did not die"
+
+        c2 <- startClient h
+        awaitScreen c2 "shared"
+        probe `shouldReturn` saved
+
     -- b7: a window's automatic-rename status must survive save/restore, in
     -- both directions -- an auto-renaming window keeps tracking its pane, a
     -- manually-named window stays pinned.
