@@ -70,7 +70,7 @@ import Control.Concurrent
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Exception (Exception, IOException, catch, finally)
+import Control.Exception (Exception, IOException, catch, finally, mask_)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -339,13 +339,6 @@ data ChildExited = ChildExited
 
 instance Exception ChildExited
 
--- | Signals a pane's reader to park until the read gate reopens. See
--- 'pauseReaders'.
-data PauseReading = PauseReading
-    deriving Show
-
-instance Exception PauseReading
-
 -- | The reader thread owns a pane's lifetime: it pumps pty output into
 -- the emulator until end-of-file, and 'closePane' runs in a @finally@ so
 -- the pane's resources and model entry are released however the loop ends
@@ -367,12 +360,11 @@ runPaneReader st pane = do
     -- reader is scheduled still finds it counted and 'waitIdle' waits for
     -- its reap. Decremented once the reader (and its 'reapPane') is done.
     atomically $ modifyTVar' st.livePanes (+ 1)
-    -- Masked for the thread's whole life bar the read itself: once the tid
-    -- is published, a 'hangupPane' kill must always reach the cleanup, and
-    -- any async exception (a kill, 'ChildExited', 'PauseReading') can land
-    -- only in the blocked read — a chunk already read is always fully fed
-    -- before the exception takes the loop.
-    void $ forkIOWithUnmask $ \unmask -> do
+    -- Masked for the thread's whole life except between chunks: once the
+    -- tid is published, a 'hangupPane' kill must always reach the
+    -- cleanup, and an async exception (a kill, 'ChildExited') never lands
+    -- between consuming a chunk and feeding it.
+    void $ mask_ $ forkIOWithUnmask $ \unmask -> do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
         pendingRef <- newIORef pane.pendingInput
@@ -386,35 +378,40 @@ runPaneReader st pane = do
         -- the 'finally' cleanup, so a late async 'ChildExited' can never land in
         -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
-            \_ -> parkable
-                (readLoop (unmask (Hat.Term.Pty.readPtyBuf pane.pty rbuf))
-                    pendingRef)
+            \_ -> readLoop unmask (Hat.Term.Pty.awaitOutput pane.pty)
+                    (Hat.Term.Pty.readPtyBuf pane.pty rbuf) pendingRef
                 `catch` \ChildExited -> do
                     writeIORef pendingRef Nothing
-                    parkable (readLoop
-                        (unmask (Hat.Term.Pty.readAvailBuf pane.pty rbuf))
-                        pendingRef))
+                    readLoop unmask (pure ())
+                        (Hat.Term.Pty.readAvailBuf pane.pty rbuf) pendingRef)
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
-    -- A 'PauseReading' parks the loop until the read gate reopens (the
-    -- failed-exec fallback; a reload that execs never resumes it).
-    parkable body = body `catch` \PauseReading -> do
-        atomically (readTVar st.readGate >>= check . (== ReadersFlowing))
-        parkable body
+    -- Consume one chunk and feed it, counted in flight from the read gate
+    -- through the feed. See 'pauseReaders'.
+    feedChunk rd = do
+        atomically $ do
+            readTVar st.readGate >>= check . (== ReadersFlowing)
+            modifyTVar' st.readsInFlight (+ 1)
+        (do bs <- rd
+            events <- if B8.null bs then pure [] else Emu.feed pane.emulator bs
+            pure (bs, events))
+            `finally` atomically (modifyTVar' st.readsInFlight (subtract 1))
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
-    -- it), then dropped. Enter is a bare CR, as a real keyboard sends. @rd@ is
-    -- the read step: blocking during the pane's life, a non-blocking drain
-    -- once the shell has exited (an empty result ends the loop either way).
-    readLoop rd pending = do
-        bs <- rd
+    -- it), then dropped. Enter is a bare CR, as a real keyboard sends.
+    -- @await@ waits for output without consuming it, and @rd@ is the read
+    -- step: blocking during the pane's life, a non-blocking drain once the
+    -- shell has exited (an empty result ends the loop either way).
+    readLoop unmask await rd pending = do
+        unmask await
+        (bs, events) <- feedChunk rd
         unless (B8.null bs) $ do
+          unmask $ do
             readIORef pending >>= mapM_ (\line -> do
                 Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
                 writeIORef pending Nothing)
             forwardToPipe pane bs
-            events <- Emu.feed pane.emulator bs
             mhome <- readTVarIO pane.home  -- See Note [Pane home]
             forM_ events $ \case
                 Emu.Output out -> Hat.Term.Pty.writePty pane.pty out
@@ -476,19 +473,16 @@ runPaneReader st pane = do
                         { pane = rawPane pane.id
                         , payload = T.pack (show raw)
                         }
-            readLoop rd pending
+          readLoop unmask await rd pending
 
 -- | Quiesce the pane readers for a reload capture: close the read gate,
--- then interrupt each reader out of its read. 'throwTo' returns only once
--- its exception is delivered, and delivery can land only in the read
--- itself, so on return no reader holds an unfed chunk: every pane byte is
--- either in its emulator (captured) or still in the kernel pty buffer
+-- then wait out every chunk already in flight, so on return every pane byte
+-- is either in its emulator (captured) or still in the kernel pty buffer
 -- (survives the exec).
-pauseReaders :: ServerState -> [Pane] -> IO ()
-pauseReaders st panes = do
+pauseReaders :: ServerState -> IO ()
+pauseReaders st = do
     atomically $ writeTVar st.readGate ReadersPaused
-    forM_ panes $ \p ->
-        readTVarIO p.readerTid >>= mapM_ (`throwTo` PauseReading)
+    atomically $ readTVar st.readsInFlight >>= check . (== 0)
 
 -- | Reopen the read gate so parked readers resume; the failed-reload
 -- fallback.
