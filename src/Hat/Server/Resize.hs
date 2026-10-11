@@ -45,6 +45,7 @@ import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Floating (stacking)
+import Hat.Server.Menu (refitMenu)
 import Hat.Server.Scene
     ( FloatingPane (..), PaneStatus (..), ScrollbarSide (..), ScrollbarStyle (..), scrollbarStyle
     , statusAdjust )
@@ -245,12 +246,22 @@ paneSizeTargets st = do
     areas <- windowAreas st
     fmap concat $ forM areas $ \(win, eff) -> do
         _ <- windowLayoutAt eff win
+        refitWindowMenu eff win
         (rects, _) <- windowArrange st eff win
         ps <- readTVar win.panes
         pure [ (p, rectSize rect)
              | (pidL, rect) <- rects
              , Just p <- [Map.lookup pidL ps]
              ]
+
+-- | A window's menu kept inside it as it is resized (tmux's
+-- @menu_resize@ from @window_resize@).
+refitWindowMenu :: Size -> Window -> STM ()
+refitWindowMenu eff win = do
+    mmenu <- readTVar win.menu
+    forM_ mmenu $ \wm -> do
+        let wm' = refitMenu (fromIntegral eff.cols) (fromIntegral eff.rows) wm
+        when (wm' /= wm) $ writeTVar win.menu (Just wm')
 
 -- | Every window once, with the window area its panes are laid out at.
 windowAreas :: ServerState -> STM [(Window, Size)]

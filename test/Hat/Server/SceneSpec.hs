@@ -30,7 +30,7 @@ plainLook = ChromeLook
     , paneLines = Map.empty, lineSets = Map.empty
     , fillInside = Cell.glyphCell ' ' Cell.defaultStyle
     , fillOutside = Cell.glyphCell '~' Cell.defaultStyle
-    , arrows = Map.empty }
+    , arrows = Map.empty, menuCells = V.empty }
 
 rect :: Int -> Int -> Int -> Int -> Rect
 rect r0 r1 c0 c1 = Rect { startRow = r0, endRow = r1, startCol = c0, endCol = c1 }
@@ -43,7 +43,7 @@ cross = SceneInput
         [ (PaneId 0, rect 0 2 0 3), (PaneId 1, rect 0 2 4 7)
         , (PaneId 2, rect 3 5 0 3), (PaneId 3, rect 3 5 4 7) ]
     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
 
 spec :: Spec
 spec = do
@@ -61,7 +61,7 @@ spec = do
                     , area = Size { rows = 4, cols = 6 }
                     , panes = [ (PaneId 0, rect 0 2 0 3) ]
                     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
             picture plainLook (buildScene inp) `shouldBe`
                 [ "...│~~"
                 , "...│~~"
@@ -74,6 +74,19 @@ spec = do
             [ (off, ct) | SceneStatus (PaneId 1) off ct <- V.toList (scene V.! 0) ]
                 `shouldBe` [ (0, CellLR) ]
             picture plainLook scene !! 0 `shouldBe` "───┬───"
+    describe "the window's menu" $
+        it "covers every pane, border and floating pane under its box, clipped to the window" $ do
+            let float = FloatingPane
+                    { pane = PaneId 9, rect = rect 2 3 2 5, lineSet = BorderSingle, status = PaneStatusOff }
+                menuLook = plainLook { menuCells = V.fromList
+                    [ V.fromList [ Cell.glyphCell c Cell.defaultStyle | c <- row ] | row <- ["abcd", "efgh"] ] }
+            picture menuLook (buildScene cross { floats = [float], menu = Just (rect 1 3 5 9) })
+                `shouldBe`
+                [ "...│..."
+                , ".┌───ab"
+                , "─│...ef"
+                , ".└───┘."
+                , "...│..." ]
     describe "floating panes" $ do
         let whole = cross { panes = [ (PaneId 0, rect 0 5 0 7) ] }
             float r = FloatingPane
@@ -131,7 +144,7 @@ spec = do
                     { window = Size { rows = 4, cols = 3 }, area = Size { rows = 4, cols = 3 }
                     , panes = [ (PaneId 0, rect 0 4 0 1), (PaneId 1, rect 0 4 2 3) ]
                     , paneStatus = PaneStatusOff, twoPane = Just LeftRight
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
                 owners = [ case (buildScene inp V.! y) V.! 1 of
                                SceneBorder b -> b.styleOwner
                                _ -> Nothing
@@ -147,7 +160,7 @@ spec = do
                 { window = Size { rows = 3, cols = 5 }, area = Size { rows = 3, cols = 5 }
                 , panes = [ (PaneId 0, rect 0 3 0 3) ], paneStatus = PaneStatusOff
                 , twoPane = Nothing, scrollbars = Map.singleton (PaneId 0) 2
-                , scrollbarSide = ScrollbarRight, floats = [] }
+                , scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
             chrome = sceneChrome look (buildScene inp)
             bgAt x y = (.style.bg) <$> lookup (Pos y x) chrome
         it "takes the columns between the pane and its border" $

@@ -65,6 +65,7 @@ import Hat.Server.Command.Wait (cmdWaitFor)
 import Hat.Server.Hooks
     (PayloadItem (..), inHook, installEventSink, installHookEngine, notify)
 import Hat.Server.Command.Buffer
+import Hat.Server.Command.Menu (cmdDisplayMenu)
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
 import Hat.Server.Command.Option
@@ -374,6 +375,7 @@ commandSpecs =
     , (["choose-tree"], cmdChooseTree)
     , (["choose-window", "choosew"], cmdChooseWindow)
     , (["display-panes", "displayp"], cmdDisplayPanes)
+    , (["display-menu", "menu"], cmdDisplayMenu)
     , (["show-buffer", "showb"], cmdShowBuffer)
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)

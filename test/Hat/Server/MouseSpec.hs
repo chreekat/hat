@@ -161,6 +161,12 @@ spec = do
         it "tracks all motion for focus-follows-mouse or a pane that wants it" $ do
             outerMouseMode True True 0 [0] `shouldBe` 3
             outerMouseMode True False 0 [0, 3] `shouldBe` 3
+        it "over a menu or popup, takes the overlay's own, raised to drags by mouse" $ do
+            overlayMouseMode False False 3 `shouldBe` 3
+            overlayMouseMode False False 0 `shouldBe` 0
+            overlayMouseMode True False 0 `shouldBe` 2
+            overlayMouseMode True False 3 `shouldBe` 3
+            overlayMouseMode True True 1 `shouldBe` 3
         it "clears every mode before asking for the new one" $ do
             mouseModeBytes 0 `shouldBe` "\ESC[?1006l\ESC[?1000l\ESC[?1002l\ESC[?1003l"
             mouseModeBytes 2 `shouldBe`

@@ -778,6 +778,18 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
+    it "opens a display-menu over the client's window and runs the item its key picks" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["display-menu", "-T", "Pick", "Alpha", "a", "set -g @picked alpha"]
+        awaitScreen c "Alpha (a)"
+        typeInto c "a"
+        awaitTrue "the item's command" $ do
+            (_, out, _) <- hatCtl h ["show", "-gv", "@picked"]
+            pure (out == "alpha\n")
+        awaitWith "the menu to close" (fmap (not . T.isInfixOf "Alpha (a)") . screenText) c
+
     it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
         withHat hatBin $ \h -> do
         let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]

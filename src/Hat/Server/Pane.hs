@@ -225,6 +225,8 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing
     floatsVar     <- newTVarIO noFloats
+    menuVar       <- newTVarIO Nothing
+    menuLastVar   <- newTVarIO (0, 0)
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -242,6 +244,8 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
             , options = optionsVar
             , arrangeCache = arrangeVar
             , floats = floatsVar
+            , menu = menuVar
+            , menuLast = menuLastVar
             }
     pure (win, pane)
 
@@ -1581,6 +1585,8 @@ wrapPaneInWindow st pane = do
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar <- newTVarIO Nothing
     floatsVar <- newTVarIO noFloats
+    menuVar <- newTVarIO Nothing
+    menuLastVar <- newTVarIO (0, 0)
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -1598,6 +1604,8 @@ wrapPaneInWindow st pane = do
         , options = optionsVar
         , arrangeCache = arrangeVar
         , floats = floatsVar
+        , menu = menuVar
+        , menuLast = menuLastVar
         }
 
 -- | @-O@: whether pane output is tapped into the process's stdin.

@@ -87,6 +87,8 @@ data SceneCell
     | SceneScrollbar PaneId Int Int
         -- ^ a pane's scrollbar: the pane row, and the column within the
         -- scrollbar (its padding included)
+    | SceneMenu Int Int
+        -- ^ the window's menu: the column and row within its box
     deriving (Eq, Show)
 
 -- | Rows of cells.
@@ -109,6 +111,8 @@ data SceneInput = SceneInput
     , scrollbarSide :: ScrollbarSide
     , floats :: [FloatingPane]
         -- ^ the floating panes, back to front
+    , menu :: Maybe Rect
+        -- ^ the window's menu box, in window coordinates
     }
     deriving (Eq, Show)
 
@@ -178,9 +182,11 @@ markingOrder = List.sortOn (Down . fst)
 -- floating pane's border among it) hides any content the scene gave to it.
 
 -- | tmux's @redraw_build_cells@: the tiled panes, then the floating ones
--- back to front, each over everything before it.
+-- back to front, each over everything before it, then the window's menu
+-- above them all.
 buildScene :: SceneInput -> Scene
-buildScene inp = split (List.foldl' markFloat (List.foldl' markPane blank inp.panes) inp.floats)
+buildScene inp =
+    split (markMenu (List.foldl' markFloat (List.foldl' markPane blank inp.panes) inp.floats))
   where
     wsx = fromIntegral inp.window.cols
     wsy = fromIntegral inp.window.rows
@@ -310,6 +316,14 @@ buildScene inp = split (List.foldl' markFloat (List.foldl' markPane blank inp.pa
                 clamped = (lft, rgt, tp, btm)
             in statusRow f.status f.pane f.rect clamped m4
 
+    -- redraw_mark_menu: the box takes every cell under it.
+    markMenu m = case inp.menu of
+        Nothing -> m
+        Just r -> List.foldl'
+            (\acc (x, y) -> Map.insert (x, y) (SceneMenu (x - r.startCol) (y - r.startRow)) acc) m
+            [ (x, y) | y <- [r.startRow .. r.endRow - 1], x <- [r.startCol .. r.endCol - 1]
+                     , inScene x y ]
+
     -- redraw_mark_border_cell for a floating pane: it takes any cell, only
     -- merging with a border it already owns.
     markFloatCell f x y ownTop ownBottom msk m
@@ -366,6 +380,8 @@ data ChromeLook = ChromeLook
     , fillOutside :: Cell.Cell
     , arrows :: Map Pos Char
         -- ^ indicator glyphs replacing the border at those cells
+    , menuCells :: V.Vector (V.Vector Cell.Cell)
+        -- ^ the window's menu as it draws itself
     }
     deriving (Eq, Show)
 
@@ -381,6 +397,7 @@ sceneChrome look scene =
     cellAt pos = \case
         ScenePane _ -> Nothing
         SceneScrollbar pid y off -> scrollbarCell y off <$> Map.lookup pid look.scrollbarLooks
+        SceneMenu x y -> look.menuCells V.!? y >>= (V.!? x)
         SceneOutside -> Just look.fillOutside
         SceneEmpty -> Just look.fillInside
         SceneStatus pid off ct -> Just $

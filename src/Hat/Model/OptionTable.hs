@@ -441,13 +441,13 @@ optionTable =
     , live $ scalar "history-file" ServerScope KString ""
     , notYet $ scalar "input-buffer-size" ServerScope
         (KNumber 1048576 uintMax) "1048576"
-    , notYet $ scalar "menu-style" WindowScope KStyle
+    , live $ scalar "menu-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themewhite"
-    , notYet $ scalar "menu-selected-style" WindowScope KStyle
+    , live $ scalar "menu-selected-style" WindowScope KStyle
         "bg=themeyellow,fg=themeblack"
-    , notYet $ scalar "menu-border-style" WindowScope KStyle
+    , live $ scalar "menu-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
-    , notYet $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
+    , live $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
     , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
     , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
     , live $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"

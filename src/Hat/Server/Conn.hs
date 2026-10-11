@@ -483,34 +483,42 @@ deliversKey opts paneFocusReport k
 handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
-    owner <- keyOwner client
+    owner <- keyOwner st client
     case owner of
         KeyTables -> handleKeys d st client bs
         _ -> deliverKeys d st client (tokenizeKeys bs)
 
 -- | What a client's keystrokes go to: an open overlay, else its key tables.
 data KeyOwner
-    = PanesOverlay DisplayPanesState
+    = MenuOverlay Window
+    | PanesOverlay DisplayPanesState
     | PickerOverlay PickerState
     | PromptOverlay PromptState
     | KeyTables
 
-keyOwner :: Client -> IO KeyOwner
-keyOwner client = do
+keyOwner :: ServerState -> Client -> IO KeyOwner
+keyOwner st client = do
+    menuWin <- atomically $ clientView st client >>= \case
+        Just (_, win) -> (\m -> win <$ m) <$> readTVar win.menu
+        Nothing -> pure Nothing
     mpanes <- readTVarIO client.displayPanes
     mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
-    pure $ case (mpanes, mpicker, mprompt) of
-        (Just dp, _, _) -> PanesOverlay dp
-        (_, Just pk, _) -> PickerOverlay pk
-        (_, _, Just pr) -> PromptOverlay pr
+    pure $ case (menuWin, mpanes, mpicker, mprompt) of
+        (Just win, _, _, _) -> MenuOverlay win
+        (_, Just dp, _, _) -> PanesOverlay dp
+        (_, _, Just pk, _) -> PickerOverlay pk
+        (_, _, _, Just pr) -> PromptOverlay pr
         _               -> KeyTables
 
 -- | Hand each key to whatever owns the keyboard once the keys before it
 -- have run.
 deliverKeys :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
 deliverKeys _ _ _ [] = pure ()
-deliverKeys d st client keys = keyOwner client >>= \case
+deliverKeys d st client keys@(k : ks) = keyOwner st client >>= \case
+    MenuOverlay win -> do
+        handleMenuInput d st client win k
+        deliverKeys d st client ks
     PanesOverlay dp -> handlePanesInput d st client dp keys
     PickerOverlay pk -> deliverKeys d st client =<< handlePickerInput d st client pk keys
     PromptOverlay pr -> deliverKeys d st client =<< handlePromptInput d st client pr keys
@@ -691,7 +699,7 @@ runInputs d st client keys = do
                 flashTransition mpane kst kst''
                 -- A key that opened an overlay hands it the rest; overlays
                 -- take no mouse input.
-                keyOwner client >>= \case
+                keyOwner st client >>= \case
                     KeyTables -> loop kst'' rest
                     _ -> do
                         writeIORef client.keyState kst''

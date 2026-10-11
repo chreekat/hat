@@ -96,6 +96,7 @@ library
         Hat.Server.ArgNumber
         Hat.Server.ClientIO
         Hat.Server.Clock
+        Hat.Server.Box
         Hat.Server.Clipboard
         Hat.Server.ClientSession
         Hat.Server.ColorScheme
@@ -106,6 +107,7 @@ library
         Hat.Server.Command.Hook
         Hat.Server.Command.Interact
         Hat.Server.Command.Layout
+        Hat.Server.Command.Menu
         Hat.Server.Command.Option
         Hat.Server.Command.Pane
         Hat.Server.Command.Session
@@ -119,6 +121,7 @@ library
         Hat.Server.CopyMode
         Hat.Server.Dispatch
         Hat.Server.DisplayPanes
+        Hat.Server.DisplayPos
         Hat.Server.Environ
         Hat.Server.Flash
         Hat.Server.Floating
@@ -134,6 +137,7 @@ library
         Hat.Server.Hooks
         Hat.Server.Keymap
         Hat.Server.Keys
+        Hat.Server.Menu
         Hat.Server.Message
         Hat.Server.Mouse
         Hat.Server.MouseIO
@@ -319,6 +323,7 @@ test-suite hat-test
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec
+        Hat.Server.MenuSpec
         Hat.Server.MessageSpec
         Hat.Server.MouseSpec
         Hat.Server.MruSpec

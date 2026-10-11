@@ -192,6 +192,8 @@ rebuildWindow st mkPane sz cwin = do
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing
     floatsVar     <- newTVarIO noFloats { zorder, modal }
+    menuVar       <- newTVarIO Nothing
+    menuLastVar   <- newTVarIO (0, 0)
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
@@ -200,5 +202,6 @@ rebuildWindow st mkPane sz cwin = do
             , activity = activityVar, zoomed = zoomVar
             , silenceFlag = silenceVar, activityAt = activityAtVar
             , autoRename = autoRenameVar, options = optionsVar
-            , arrangeCache = arrangeVar, floats = floatsVar }
+            , arrangeCache = arrangeVar, floats = floatsVar
+            , menu = menuVar, menuLast = menuLastVar }
     pure (win, panes)

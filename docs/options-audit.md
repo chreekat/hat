@@ -139,6 +139,8 @@ spot-read of each suspect consumer.
 | `exit-unattached` | `serverIdle`/`waitIdle` → `shutDownServer` (Server.hs, Dispatch.hs) | implemented ✅ tested | pure + integration |
 | `renumber-windows` | `renumberIfSet` (Winlink.hs): window destruction, `move-window`, `kill-window -a` | implemented ✅ tested | model (SessionSpec) |
 | `xterm-keys` | none — tmux keeps it only for compatibility, with no effect | implemented (by design) | — |
+| `menu-style` / `menu-selected-style` / `menu-border-style` | `withMenu` (View.hs) → `menuGrid` (Menu.hs): re-read and format-expanded on every frame, the `display-menu` `-s`/`-H`/`-S` colours over them (`overrideColours`) | implemented ✅ tested | pure (MenuSpec) |
+| `menu-border-lines` | `cmdDisplayMenu` (Command/Menu.hs) when `-b` is not given → `drawBox`/`drawHLine` (Box.hs) | implemented ✅ tested | pure (MenuSpec) |
 
 ## Defects (the backlog)
 

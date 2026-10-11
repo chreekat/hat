@@ -59,6 +59,9 @@ import Hat.Server.Scene
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
+import Hat.Server.Menu
+    (MenuLook (..), MenuMouse (..), WindowMenu (..), menuGrid, menuHeight, menuWidth
+    , overrideColours)
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
 import Hat.Server.Mouse qualified as Mouse
 import Hat.Server.FormatDraw (DrawRange)
@@ -299,6 +302,11 @@ renderOnce st client = do
                  , List.foldl' (\o (_, rect0) -> volatileRows (shiftR rect0) o)
                      origins' rects )
         _ -> pure (frame', origins')
+    -- A menu's screen has no cursor.
+    menuShown <- case view of
+        Just (_, win, _, _, _, _) -> isJust <$> readTVarIO win.menu
+        Nothing -> pure False
+    let cursor'' = if menuShown then (fst cursor', False) else cursor'
     old <- readIORef client.lastFrame
     oldOrigins <- readIORef client.lastOrigins
     oldCursor <- readIORef client.lastCursor
@@ -309,11 +317,11 @@ renderOnce st client = do
             (Just a, Just b) -> sameOrigin a b
             _ -> False
         ops = if full then fullRedraw frame'' else diffFrameKnown known old frame''
-        cursorOp = CursorAt (fst cursor') (snd cursor')
-        needSend = not (null ops) || cursor' /= oldCursor || full
+        cursorOp = CursorAt (fst cursor'') (snd cursor'')
+        needSend = not (null ops) || cursor'' /= oldCursor || full
     writeIORef client.lastFrame frame''
     writeIORef client.lastOrigins origins''
-    writeIORef client.lastCursor cursor'
+    writeIORef client.lastCursor cursor''
     when needSend $ send client (Draw (ops <> [cursorOp]))
     -- The moved-to pane is now on screen, so a pending move-linger starts its
     -- countdown from here rather than from the command.
@@ -384,8 +392,13 @@ hex2 w = T.pack [digit (w `div` 16), digit (w `mod` 16)]
 -- it. A pane in a mode tracks nothing, as its mode's screen does in tmux.
 syncMouseMode :: ServerState -> Client -> Maybe (Session, Window, Map.Map PaneId Pane, PaneId) -> IO ()
 syncMouseMode st client view = do
+    mmenu <- maybe (pure Nothing) (\(_, win, _, _) -> readTVarIO win.menu) view
     want <- case view of
         Nothing -> pure 0
+        Just (sess, _, _, _) | Just wm <- mmenu -> do
+            o <- atomically (resolveForSession st sess)
+            pure $ Mouse.overlayMouseMode (optionFlag "mouse" o) (optionFlag "focus-follows-mouse" o)
+                (if wm.mouse == MenuMouseOn then 3 else 0)
         Just (sess, win, ps, active) -> do
             tracking <- forM (Map.toList ps) $ \(pid, pane) -> do
                 inMode <- isJust <$> readTVarIO pane.mode
@@ -451,7 +464,7 @@ windowCompositeCells st win size = do
     let input = SceneInput
             { window = size, area = size, panes = tiledOf floats rects, paneStatus = status
             , twoPane = Nothing, scrollbars = Map.empty, scrollbarSide = ScrollbarRight
-            , floats }
+            , floats, menu = Nothing }
         look = ChromeLook
             { borderLines = opts.paneBorderLines
             , lineSets = Map.fromList [ (f.pane, f.lineSet) | f <- floats ]
@@ -462,7 +475,7 @@ windowCompositeCells st win size = do
             , active = Just active, marked = Nothing, numbers = Map.empty
             , paneLines = Map.empty
             , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
-            , arrows = Map.empty }
+            , arrows = Map.empty, menuCells = V.empty }
     panes <- foldM (\acc (pid, rect) -> case Map.lookup pid ps of
               Nothing   -> pure acc
               Just pane -> do
@@ -556,8 +569,9 @@ cachedChrome
     -> Int -> IO Chrome
 cachedChrome st th client sess win eff sceneArea rects floats defaults active rowOff = do
     mcc <- readIORef client.lastChrome
+    mmenu <- readTVarIO win.menu
     (input, look2, panes) <- atomically
-        (chromeInputs st th sess win eff sceneArea rects floats active)
+        (chromeInputs st th sess win eff sceneArea rects floats active mmenu)
     bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
         \(cp, _) -> do
             let height = maybe 0 (\r -> r.endRow - r.startRow) (List.lookup cp.pane.id rects)
@@ -580,6 +594,7 @@ cachedChrome st th client sess win eff sceneArea rects floats defaults active ro
     let look0 = look1 { paneStyles = Map.fromList styles }
     look <- withStatusLines st th sess win scene panes look0
         >>= withFills st th sess win scene
+        >>= withMenu st th sess win mmenu
     case mcc of
         Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
             pure cc.chrome
@@ -632,8 +647,9 @@ data ChromePane = ChromePane
 -- pane status line is drawn.
 chromeInputs
     :: ServerState -> Theme -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
-    -> [FloatingPane] -> PaneId -> STM (SceneInput, ChromeLook, [ChromePane])
-chromeInputs st th sess win eff sceneArea rects floats active = do
+    -> [FloatingPane] -> PaneId -> Maybe WindowMenu
+    -> STM (SceneInput, ChromeLook, [ChromePane])
+chromeInputs st th sess win eff sceneArea rects floats active mmenu = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
     (side, bars) <- paneScrollbars st win
@@ -655,7 +671,7 @@ chromeInputs st th sess win eff sceneArea rects floats active = do
         input = SceneInput
             { window = eff, area = sceneArea, panes = tiledOf floats rects
             , paneStatus = status, twoPane, scrollbars = bars, scrollbarSide = side
-            , floats }
+            , floats, menu = menuRect <$> mmenu }
         look = ChromeLook
             { borderLines = wopts.paneBorderLines
             , lineSets = Map.fromList [ (f.pane, f.lineSet) | f <- floats ]
@@ -670,8 +686,44 @@ chromeInputs st th sess win eff sceneArea rects floats active = do
             , fillOutside = Cell.blankCell
             , arrows = if useArrows
                 then maybe Map.empty edgeArrows (List.lookup active rects)
-                else Map.empty }
+                else Map.empty
+            , menuCells = V.empty }
     pure (input, look, panes)
+  where
+    menuRect wm = Rect
+        { startRow = wm.py, endRow = wm.py + menuHeight wm.menu
+        , startCol = wm.px, endCol = wm.px + menuWidth wm.menu }
+
+-- | The window's menu drawn, in its styles: @menu-style@,
+-- @menu-selected-style@ and @menu-border-style@, re-read on every frame
+-- (as tmux's @menu_reapply_styles@) and expanded in the menu's target's
+-- context, under the colours its flags give.
+withMenu
+    :: ServerState -> Theme -> Session -> Window -> Maybe WindowMenu -> ChromeLook
+    -> IO ChromeLook
+withMenu st th sess win mmenu look = case mmenu of
+    Nothing -> pure look
+    Just wm -> do
+        (wix, wopts, ps) <- atomically $ (,,)
+            <$> readTVar sess.currentIx <*> resolveForWindow st sess win <*> readTVar win.panes
+        let (_, _, pid) = wm.target
+        env <- case Map.lookup pid ps of
+            Just pane -> do
+                pix <- paneIndexOf st win pane
+                paneFormatEnv st sess wix win pix pane
+            Nothing -> windowFormatEnv st sess wix win
+        let styleOf name = do
+                let raw = optionText name wopts
+                expanded <- if "#{" `T.isInfixOf` raw then expandFormat st env raw else pure raw
+                pure (styleCell th expanded)
+        sty <- styleOf "menu-style"
+        sel <- styleOf "menu-selected-style"
+        bdr <- styleOf "menu-border-style"
+        let mlook = MenuLook
+                { style = overrideColours th sty wm.style
+                , selected = overrideColours th sel wm.selectedStyle
+                , border = overrideColours th bdr wm.borderStyle }
+        pure look { menuCells = menuGrid th mlook wm }
 
 -- | The window's @fill-character@ cells, when the scene has room for them.
 withFills :: ServerState -> Theme -> Session -> Window -> Scene -> ChromeLook -> IO ChromeLook

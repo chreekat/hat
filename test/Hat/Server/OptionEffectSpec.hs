@@ -117,7 +117,7 @@ spec = do
                     , panes = [ (PaneId 0, rect 0 3 0 2), (PaneId 1, rect 0 1 3 5)
                               , (PaneId 2, rect 2 3 3 5) ]
                     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
                 look ind = ChromeLook
                     { borderLines = BorderSingle, lineSets = Map.empty, windowStyle = Cell.defaultStyle
                     , paneStyles = Map.fromList
@@ -126,7 +126,7 @@ spec = do
                     , active = Just (PaneId 1), marked = Nothing, numbers = Map.empty
                     , paneLines = Map.empty
                     , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
-                    , arrows = ind }
+                    , arrows = ind, menuCells = mempty }
                 styleAt p = (.style) <$> lookup p (sceneChrome (look Map.empty) (buildScene input))
             it "a border beside the active pane takes its style" $
                 styleAt (Pos { row = 1, col = 4 }) `shouldBe` Just activeSty

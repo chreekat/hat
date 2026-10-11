@@ -41,6 +41,7 @@ module Hat.Server.Mouse
     , wheel
       -- * The outer terminal
     , outerMouseMode
+    , overlayMouseMode
     , mouseModeBytes
     ) where
 
@@ -563,6 +564,16 @@ outerMouseMode :: Bool -> Bool -> Int -> [Int] -> Int
 outerMouseMode mouse ffm active panes
     | not mouse = active
     | ffm || 3 `elem` panes = 3
+    | otherwise = 2
+
+-- | The mouse tracking a client asks of its terminal over a menu or popup
+-- (tmux's @server_client_reset_state@ with an overlay): the overlay's own,
+-- with @mouse@ on raised to drags, or to all motion for
+-- @focus-follows-mouse@.
+overlayMouseMode :: Bool -> Bool -> Int -> Int
+overlayMouseMode mouse ffm own
+    | not mouse = own
+    | ffm || own == 3 = 3
     | otherwise = 2
 
 -- | tmux's @tty_update_mode@: clear every mouse mode, then ask for the new

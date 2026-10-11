@@ -3,24 +3,31 @@
 -- @bind-key@ speak exactly the same language.
 module Hat.Server.Keymap
     ( defaultKeymap
+    , menuBindings
     ) where
 
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
+import Data.Text qualified as T
 
+import Hat.Command.Parser (parseCommandLine)
 import Hat.Model (tshow)
 import Hat.Server.Keys (Binding (..), Keymap, Repeat (..))
 
 defaultKeymap :: Keymap
 defaultKeymap = Map.fromList
-    [ ("prefix", Map.fromList (map bindArgv prefixBindings <> map repeatArgv repeatBindings))
-    , ("root", Map.fromList (map once rootMouseBindings))
+    [ ("prefix", Map.fromList (map bindArgv prefixBindings <> map repeatArgv repeatBindings
+        <> menusIn "prefix"))
+    , ("root", Map.fromList (map once rootMouseBindings <> menusIn "root"))
     , ("copy-mode", Map.fromList (map copyBind copyModeBindings <> map once copyMouseBindings))
     , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings
         <> map once (digitBinds <> searchBinds <> copyMouseBindings)))
     ]
   where
+    menusIn table = [ once (k, parsed cmd) | (t, k, cmd) <- menuBindings, t == table ]
+    parsed cmd = either (error . T.unpack) id (parseCommandLine cmd)
     -- tmux's default mouse bindings, less those whose commands Hat lacks
-    -- (display-menu, the scrollbars).
+    -- (the scrollbars); those opening menus are 'menuBindings'.
     inModeOrTracking = "#{||:#{pane_in_mode},#{mouse_any_flag}}"
     clickCopy sel =
         "copy-mode -H; send-keys -X " <> sel
@@ -164,3 +171,117 @@ defaultKeymap = Map.fromList
         , ("Left", "cursor-left"), ("Right", "cursor-right")
         , ("Up", "cursor-up"), ("Down", "cursor-down")
         ]
+
+-- | tmux's default bindings that open menus, by table and key, in its own
+-- command syntax.
+menuBindings :: [(Text, Text, Text)]
+menuBindings =
+    [ ("prefix", "<", "display-menu -xW -yW -T '#[align=centre]#{window_index}:#{window_name}' "
+        <> windowMenu)
+    , ("prefix", ">", "display-menu -xP -yP -T '#[align=centre]#{pane_index} (#{pane_id})' "
+        <> paneMenu)
+    , ("root", "MouseDown1Control9", "display-menu -t= -xM -yM -O -T 'Kill pane #{pane_index}?' "
+        <> "'Yes' 'y' { kill-pane -t= } 'No' 'n' {}")
+    , ("root", "MouseDown3StatusLeft", sessionMenuCommand)
+    , ("root", "M-MouseDown3StatusLeft", sessionMenuCommand)
+    , ("root", "MouseDown3Status", windowMenuCommand)
+    , ("root", "M-MouseDown3Status", windowMenuCommand)
+    , ("root", "MouseDown3Pane", "if -Ft= '#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},"
+        <> "#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}' { select-pane -t=; send -M } { "
+        <> paneMenuCommand <> " }")
+    , ("root", "M-MouseDown3Pane", paneMenuCommand)
+    , ("root", "MouseDown3Empty", emptyMenuCommand)
+    , ("root", "M-MouseDown3Empty", emptyMenuCommand)
+    ]
+  where
+    sessionMenuCommand = "run -C \"display-menu -t= -xM -yW -T '#[align=centre]#{session_name}' "
+        <> sessionMenu <> "\""
+    windowMenuCommand = "display-menu -t= -xW -yW -T '#[align=centre]#{window_index}:#{window_name}' "
+        <> windowMenu
+    paneMenuCommand = "display-menu -t= -xM -yM -T '#[align=centre]#{pane_index} (#{pane_id})' "
+        <> paneMenu
+    emptyMenuCommand = "display-menu -t= -xM -yM -T '#[align=centre]#{window_index}:#{window_name}' "
+        <> emptyMenu
+
+-- tmux's DEFAULT_SESSION_MENU and its kin (@key-bindings.c@).
+sessionMenu, windowMenu, emptyMenu, paneMenu, moveMenu, moveResizeMenu :: Text
+sessionMenu = T.concat
+    [ " #{S/t:#{?#{&&:#{<:#{loop_index},6},#{!:#{session_active}}},'Switch To #[underscore]#{session_name}' '' {switch-client -t=#{session_id}#} ,}}"
+    , " ''"
+    , " 'Renumber' 'N' {move-window -r}"
+    , " 'Rename' 'r' {command-prompt -I '#S' {rename-session -- '%%'}}"
+    , " 'Detach' 'd' {detach-client}"
+    , " ''"
+    , " 'New Session' 's' {new-session}"
+    , " 'New Window' 'w' {new-window}" ]
+windowMenu = T.concat
+    [ " '#{?#{>:#{session_windows},1},,-}Swap Left' 'l' {swap-window -t:-1}"
+    , " '#{?#{>:#{session_windows},1},,-}Swap Right' 'r' {swap-window -t:+1}"
+    , " '#{?pane_marked_set,,-}Swap Marked' 's' {swap-window}"
+    , " ''"
+    , " 'Kill' 'X' {kill-window}"
+    , " 'Respawn' 'R' {respawn-window -k}"
+    , " '#{?pane_marked,Unmark,Mark}' 'm' {select-pane -m}"
+    , " 'Rename' 'n' {command-prompt -FI \"#W\" {rename-window -t '#{window_id}' -- '%%'}}"
+    , " ''"
+    , " 'New After' 'w' {new-window -a}"
+    , " 'New At End' 'W' {new-window}" ]
+emptyMenu = T.concat
+    [ " 'New Pane' 'p' {new-pane; join-pane}"
+    , " 'New Window' 'w' {new-window}" ]
+paneMenu = T.concat
+    [ " '#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}' '<' {send -X history-top}"
+    , " '#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Bottom,}' '>' {send -X history-bottom}"
+    , " ''"
+    , " '#{?#{==:#{pane_mode},copy-mode},#{?copy_line_numbers,Hide Line Numbers,Show Line Numbers},}' 'L' {send -X line-numbers-toggle}"
+    , " '#{?#{==:#{pane_mode},copy-mode},#{?refresh_active,Refresh Off,Refresh On},}' 'r' {send -X refresh-toggle}"
+    , " ''"
+    , " '#{?#{&&:#{buffer_size},#{!:#{pane_in_mode}}},Paste #[underscore]#{=/9/...:buffer_sample},}' 'p' {paste-buffer}"
+    , " ''"
+    , " '#{?mouse_word,Search For #[underscore]#{=/9/...:mouse_word},}' 'C-r' {if -F '#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}' 'copy-mode -t='; send -Xt= search-backward -- \"#{q:mouse_word}\"}"
+    , " '#{?mouse_word,Type #[underscore]#{=/9/...:mouse_word},}' 'C-y' {copy-mode -q; send-keys -l -- \"#{q:mouse_word}\"}"
+    , " '#{?mouse_word,Copy #[underscore]#{=/9/...:mouse_word},}' 'c' {copy-mode -q; set-buffer -- \"#{q:mouse_word}\"}"
+    , " '#{?mouse_line,Copy Line,}' 'l' {copy-mode -q; set-buffer -- \"#{q:mouse_line}\"}"
+    , " ''"
+    , " '#{?mouse_hyperlink,Type #[underscore]#{=/9/...:mouse_hyperlink},}' 'C-h' {copy-mode -q; send-keys -l -- \"#{q:mouse_hyperlink}\"}"
+    , " '#{?mouse_hyperlink,Copy #[underscore]#{=/9/...:mouse_hyperlink},}' 'h' {copy-mode -q; set-buffer -- \"#{q:mouse_hyperlink}\"}"
+    , " ''"
+    , " '#{?#{#{pane_floating_flag}},Move,}' '' {display-menu -xL -yL -T '#[align=centre]Move' " <> moveMenu <> " }"
+    , " '#{?#{#{pane_floating_flag}},Move & Resize,}' '' {display-menu -xL -yL -T '#[align=centre]Move & Resize' " <> moveResizeMenu <> " }"
+    , " '#{?#{#{pane_floating_flag}},Tile,}' 't' { join-pane }"
+    , " '#{?#{!:#{pane_floating_flag}},Float,}' 'f' { break-pane -W }"
+    , " '#{?#{!:#{pane_floating_flag}},Horizontal Split,}' 'h' {split-window -h}"
+    , " '#{?#{!:#{pane_floating_flag}},Vertical Split,}' 'v' {split-window -v}"
+    , " ''"
+    , " '#{?#{&&:#{!:#{pane_floating_flag}},#{>:#{window_panes},1}},Swap Up,}' 'u' {swap-pane -U}"
+    , " '#{?#{&&:#{!:#{pane_floating_flag}},#{>:#{window_panes},1}},Swap Down,}' 'd' {swap-pane -D}"
+    , " '#{?pane_marked_set,,-}Swap Marked' 's' {swap-pane}"
+    , " ''"
+    , " 'Kill' 'X' {kill-pane}"
+    , " 'Respawn' 'R' {respawn-pane -k}"
+    , " '#{?pane_marked,Unmark,Mark}' 'm' {select-pane -m}"
+    , " '#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}' 'z' {resize-pane -Z}" ]
+moveMenu = T.concat
+    [ " 'Centre' 'c' {move-pane -P centre}"
+    , " ''"
+    , " 'Top Left' '1' {move-pane -P top-left}"
+    , " 'Top Right' '2' {move-pane -P top-right}"
+    , " 'Bottom Left' '3' {move-pane -P bottom-left}"
+    , " 'Bottom Right' '4' {move-pane -P bottom-right}"
+    , " ''"
+    , " 'Top' 't' {move-pane -P top-centre}"
+    , " 'Bottom' 'b' {move-pane -P bottom-centre}"
+    , " 'Left' 'l' {move-pane -P centre-left}"
+    , " 'Right' 'r' {move-pane -P centre-right}" ]
+moveResizeMenu = T.concat
+    [ " 'Fill' '0' {resize-pane -x100% -y100%; move-pane -P top-left}"
+    , " ''"
+    , " 'Top Left' '1' {resize-pane -x50% -y50%; move-pane -P top-left}"
+    , " 'Top Right' '2' {resize-pane -x50% -y50%; move-pane -P top-right}"
+    , " 'Bottom Left' '3' {resize-pane -x50% -y50%; move-pane -P bottom-left}"
+    , " 'Bottom Right' '4' {resize-pane -x50% -y50%; move-pane -P bottom-right}"
+    , " ''"
+    , " 'Top' 't' {resize-pane -x100% -y50%; move-pane -P top-centre}"
+    , " 'Bottom' 'b' {resize-pane -x100% -y50%; move-pane -P bottom-centre}"
+    , " 'Left' 'l' {resize-pane -x50% -y100%; move-pane -P centre-left}"
+    , " 'Right' 'r' {resize-pane -x50% -y100%; move-pane -P centre-right}" ]

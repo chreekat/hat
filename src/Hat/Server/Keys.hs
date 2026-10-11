@@ -59,6 +59,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Read qualified as TR
 
+import Hat.Model.Ids (PaneId, SessionId, WindowId)
 import Hat.Model.OptionTable (ArrayKey (..))
 import Hat.Server.Mouse
     (Drag, MouseEvent, MouseState, initialMouseState, isMouseKey, isMoveKey
@@ -539,6 +540,9 @@ data KeyState = KeyState
     , drag :: Maybe Drag
         -- ^ what a mouse drag in progress moves (tmux's
         --   @mouse_drag_update@)
+    , commandState :: Maybe (SessionId, WindowId, PaneId)
+        -- ^ the pane the commands being run act on by default, when it is
+        --   not the client's own (tmux's queue state, as a menu sets it)
     }
     deriving (Eq, Show)
 
@@ -554,7 +558,7 @@ initialKeyState :: KeyState
 initialKeyState = KeyState
     { table = Nothing, tableSince = 0, repeating = Nothing
     , bracketPasting = False, mouse = initialMouseState, mouseEvent = Nothing
-    , drag = Nothing }
+    , drag = Nothing, commandState = Nothing }
 
 -- | Whether the client is in the prefix table.
 prefixArmed :: KeyState -> Bool

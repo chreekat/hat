@@ -128,6 +128,7 @@ import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.Server.Floating (FloatState)
+import Hat.Server.Menu (WindowMenu)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeLook, Scene, SceneInput)
@@ -272,6 +273,9 @@ data Window = Window
     , floats     :: TVar FloatState
         -- ^ the floating panes' stacking and the modal pane; their cells
         -- live in 'layout'
+    , menu       :: TVar (Maybe WindowMenu)  -- ^ the menu shown over the window
+    , menuLast   :: TVar (Int, Int)
+        -- ^ where the window's last menu was placed (@-x L@\/@-y L@)
     }
 
 data Pane = Pane

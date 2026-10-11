@@ -58,7 +58,6 @@ format-render-contexts.sh       # status-interval option + choose-tree/customize
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
 # mouse: commands its bindings and tests reach
-menu-mouse.sh                   # display-menu
 new-pane-mouse.sh               # display-menu (the MouseDown3Empty menu)
 
 # option engine breadth: flat scalar table, global-only read-back
@@ -88,5 +87,5 @@ session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot 
 lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
-screen-redraw-menus.sh          # needs display-menu window menus + menu styles
+screen-redraw-menus.sh          # menu-clipped scene: capture-pane -e emits an SGR reset on an empty line after a coloured one
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report

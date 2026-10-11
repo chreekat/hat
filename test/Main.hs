@@ -59,6 +59,7 @@ import Hat.Server.RestoreSpec qualified
 import Hat.Server.SessionSpec qualified
 import Hat.Server.SendSpec qualified
 import Hat.Server.StatusSpec qualified
+import Hat.Server.MenuSpec qualified
 import Hat.Server.MessageSpec qualified
 import Hat.Server.MouseSpec qualified
 import Hat.Server.StyleSpec qualified
@@ -126,6 +127,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Status" Hat.Server.StatusSpec.spec
+    describe "Hat.Server.Menu" Hat.Server.MenuSpec.spec
     describe "Hat.Server.Message" Hat.Server.MessageSpec.spec
     describe "Hat.Server.Mouse" Hat.Server.MouseSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
