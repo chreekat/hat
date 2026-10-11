@@ -92,10 +92,17 @@ spec = do
     describe "pane default colours (window-style, window-active-style)" $ do
         let ws = defaultStyle { fg = Indexed 2, bg = Indexed 4 }
             was = defaultStyle { bg = Indexed 1 }
+            none = (DefaultColor, DefaultColor)
         it "the active pane takes window-active-style where it sets a colour" $
-            paneDefaults True ws was `shouldBe` (Indexed 2, Indexed 1)
+            paneDefaults True none ws was `shouldBe` (Indexed 2, Indexed 1)
         it "other panes take window-style" $
-            paneDefaults False ws was `shouldBe` (Indexed 2, Indexed 4)
+            paneDefaults False none ws was `shouldBe` (Indexed 2, Indexed 4)
+        it "the program's own colours show where the styles leave them" $
+            paneDefaults False (RGB 1 1 1, RGB 2 2 2) defaultStyle { fg = Indexed 3 } was
+                `shouldBe` (Indexed 3, RGB 2 2 2)
+        it "the active pane's own background beats window-style" $
+            paneDefaults True (DefaultColor, RGB 2 2 2) ws defaultStyle
+                `shouldBe` (Indexed 2, RGB 2 2 2)
         it "a pane palette recolours its palette entries" $ do
             let cells = V.singleton (V.fromList
                     [ glyphCell 'a' defaultStyle { fg = Indexed 1, bg = Indexed 2 }

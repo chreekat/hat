@@ -21,7 +21,6 @@ cursor-test4.sh
 floating-pane-geometry.sh       # floating panes (new-pane, move-pane -X/-Y/-P/-z, break-pane -W) unimplemented
 if-shell-error.sh
 input-keys.sh
-osc-11colours.sh
 prompt-keys.sh
 prompt-mechanics.sh
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)

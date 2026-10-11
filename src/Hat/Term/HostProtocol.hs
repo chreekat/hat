@@ -41,6 +41,7 @@ module Hat.Term.HostProtocol
     , QuerySignal (..)
     , CsSignal (..)
     , nextQuery
+    , normaliseColourSets
     , honoredSignals
     , partitionPassthrough
     ) where
@@ -48,9 +49,43 @@ module Hat.Term.HostProtocol
 import Control.Applicative ((<|>))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as BC
+import Data.Text.Encoding qualified as TE
+
+import Hat.Server.Format.Colour (colourParseX11)
 
 -- | Which color an OSC query asks about: OSC 10 (foreground) or 11
 -- (background).
+-- | Rewrite each OSC 10\/11\/12 colour a program sets to the colour tmux
+-- reads from its spec ('colourParseX11'), spelled @rgb:rr\/gg\/bb@; a spec
+-- tmux cannot read is dropped, as tmux ignores it. Queries pass untouched.
+normaliseColourSets :: ByteString -> ByteString
+normaliseColourSets bs = case B.breakSubstring "\ESC]1" bs of
+    (before, rest)
+        | B.null rest -> bs
+        | Just (code, afterCode) <- B.uncons (B.drop 3 rest)
+        , code `elem` [0x30, 0x31, 0x32]
+        , Just afterSemi <- B.stripPrefix ";" afterCode
+        , Just (spec, term, more) <- terminated afterSemi
+        , spec /= "?" ->
+            let colour = colourParseX11 (TE.decodeUtf8Lenient spec)
+                rewritten = case colour of
+                    Nothing -> ""
+                    Just c -> "\ESC]1" <> B.singleton code <> ";rgb:"
+                        <> hex2 (c `div` 65536) <> "/" <> hex2 (c `div` 256 `mod` 256)
+                        <> "/" <> hex2 (c `mod` 256) <> term
+            in before <> rewritten <> normaliseColourSets more
+        | otherwise -> before <> B.take 3 rest <> normaliseColourSets (B.drop 3 rest)
+  where
+    terminated r = case B.elemIndex 0x07 r of
+        Just i | noEsc (B.take i r) -> Just (B.take i r, "\a", B.drop (i + 1) r)
+        _ -> case B.breakSubstring "\ESC\\" r of
+            (spec, st) | not (B.null st), noEsc spec -> Just (spec, "\ESC\\", B.drop 2 st)
+            _ -> Nothing
+    noEsc = B.notElem 0x1b
+    hex2 n = BC.pack [digit (n `div` 16), digit (n `mod` 16)]
+    digit d = "0123456789abcdef" !! d
+
 data OscColorTarget = Foreground | Background
     deriving (Eq, Show)
 

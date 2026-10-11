@@ -39,6 +39,7 @@ module Hat.Term.Emulator
     , onAlternateScreen
     , Rgb
     , appCursorColour
+    , appDefaultColours
     , paletteOverrides
     , setPaletteDefaults
     , bracketedPaste
@@ -231,7 +232,7 @@ feed e bs0 = withMVar e.lock $ \_ -> do
         unhandled = [UnhandledPassthrough r | (_, r) <- parts, not (B.null r)]
     passEvs <- concat <$> mapM (applySignal e) (concatMap fst parts)
     (interleaved, oscTitleEvs) <- withForeignPtr e.term $ \t -> do
-        ievs <- feedSegments e t scrubbed
+        ievs <- feedSegments e t (normaliseColourSets scrubbed)
         (,) ievs <$> pollTitle e t
     s1 <- readIORef e.state
     pure $ passEvs
@@ -514,9 +515,18 @@ onAlternateScreen e = withMVar e.lock $ \_ ->
 -- | The cursor colour the program set (OSC 12), if it set one.
 appCursorColour :: Emulator -> IO (Maybe Rgb)
 appCursorColour e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    allocaBytes 3 $ \p -> do
-        r <- c_get_into t dataColorCursor (castPtr p)
-        if r /= resSuccess then pure Nothing else Just <$> rgbAt p 0
+    getRgb t dataColorCursor
+
+-- | The default foreground and background the program set (OSC 10, 11),
+-- where it set them.
+appDefaultColours :: Emulator -> IO (Maybe Rgb, Maybe Rgb)
+appDefaultColours e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    (,) <$> getRgb t dataColorForeground <*> getRgb t dataColorBackground
+
+getRgb :: Ptr CTerm -> CInt -> IO (Maybe Rgb)
+getRgb t sel = allocaBytes 3 $ \p -> do
+    r <- c_get_into t sel (castPtr p)
+    if r /= resSuccess then pure Nothing else Just <$> rgbAt p 0
 
 -- | The palette entries the program changed (OSC 4), by index.
 paletteOverrides :: Emulator -> IO (Map Int Rgb)

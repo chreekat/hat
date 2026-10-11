@@ -56,6 +56,8 @@ module Hat.Term.Ghostty
     , dataActiveScreen
     , dataScrollbackRows
     , dataColorCursor
+    , dataColorForeground
+    , dataColorBackground
     , dataColorPalette
     , dataColorPaletteDefault
     , optColorPalette
@@ -225,8 +227,11 @@ dataScrollbackRows = #{const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS}
 
 -- Colour selectors for 'c_get_into': a @GhosttyColorRgb@ (three bytes) or
 -- a palette of 256 of them.
-dataColorCursor, dataColorPalette, dataColorPaletteDefault :: CInt
+dataColorCursor, dataColorForeground, dataColorBackground, dataColorPalette,
+    dataColorPaletteDefault :: CInt
 dataColorCursor = #{const GHOSTTY_TERMINAL_DATA_COLOR_CURSOR}
+dataColorForeground = #{const GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND}
+dataColorBackground = #{const GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND}
 dataColorPalette = #{const GHOSTTY_TERMINAL_DATA_COLOR_PALETTE}
 dataColorPaletteDefault = #{const GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT}
 

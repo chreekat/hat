@@ -562,6 +562,19 @@ spec = do
             appCursorColour e `shouldReturn` Just (255, 128, 0)
             _ <- feedStr e "\ESC]112\a"
             appCursorColour e `shouldReturn` Nothing
+        it "an OSC 10/11 colour is read as tmux reads X11 colour specs" $ do
+            let bgOf colour = do
+                    e <- fresh
+                    _ <- feedStr e ("\ESC]11;" <> colour <> "\a")
+                    snd <$> appDefaultColours e
+            bgOf "cmy:0.9373/0.6941/0.4549" `shouldReturn` Just (15, 78, 139)
+            bgOf "cmyk:0.88/0.44/0.00/0.45" `shouldReturn` Just (16, 78, 140)
+            bgOf "16,78,139" `shouldReturn` Just (16, 78, 139)
+            bgOf "#10004E008B00" `shouldReturn` Just (16, 78, 139)
+            bgOf "rgb:1000/4E00/8B00" `shouldReturn` Just (16, 78, 139)
+            bgOf "  DodgerBlue4 " `shouldReturn` Just (16, 78, 139)
+            bgOf "grey3" `shouldReturn` Just (8, 8, 8)
+            bgOf "nosuchcolour" `shouldReturn` Nothing
         it "an OSC 4 change is a palette override" $ do
             e <- fresh
             _ <- feedStr e "\ESC]4;1;#010203\a"

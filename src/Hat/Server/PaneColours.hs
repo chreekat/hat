@@ -53,7 +53,9 @@ paneDefaultColours st th sess win pane popts = do
     active <- readTVarIO win.activeId
     ws <- paneStyleOption st th sess win pane popts "window-style"
     was <- paneStyleOption st th sess win pane popts "window-active-style"
-    pure (paneDefaults (pane.id == active) ws was)
+    (pfg, pbg) <- Emu.appDefaultColours pane.emulator
+    let rgb = maybe Cell.DefaultColor (\(r, g, b) -> Cell.RGB r g b)
+    pure (paneDefaults (pane.id == active) (rgb pfg, rgb pbg) ws was)
 
 -- | A pane's palette (tmux's @colour_palette_get@): the colours its
 -- program set (OSC 4) over its @pane-colours@, which also become the

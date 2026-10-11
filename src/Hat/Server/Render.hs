@@ -224,12 +224,16 @@ applyBorders frame borders = frame V.// updates
         ]
 
 -- | A pane's default foreground and background (tmux's
--- @tty_default_colours@): for the active pane, @window-active-style@'s
--- where it sets one, else @window-style@'s.
-paneDefaults :: Bool -> Style -> Style -> (Color, Color)
-paneDefaults active ws was =
-    ( if active && was.fg /= DefaultColor then was.fg else ws.fg
-    , if active && was.bg /= DefaultColor then was.bg else ws.bg )
+-- @tty_default_colours@): the program's own (OSC 10, 11) under
+-- @window-style@ — or, for the active pane, under @window-active-style@
+-- when that leaves a colour.
+paneDefaults :: Bool -> (Color, Color) -> Style -> Style -> (Color, Color)
+paneDefaults active (pfg, pbg) ws was =
+    ( pick (over pfg was.fg) (over pfg ws.fg)
+    , pick (over pbg was.bg) (over pbg ws.bg) )
+  where
+    over c s = if s /= DefaultColor then s else c
+    pick a i = if active && a /= DefaultColor then a else i
 
 -- | Draw a pane's default-coloured cells in its default colours.
 paintDefaults :: (Color, Color) -> V.Vector (V.Vector Cell) -> V.Vector (V.Vector Cell)
