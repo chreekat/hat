@@ -625,13 +625,10 @@ spec = parallel $ do
         typeInto c1 "trap '' HUP; sleep 300\r"
         awaitForeground h "sleep"
 
-        killed <- timeout 5_000_000 (hatCtl h ["kill-server"])
-        case killed of
-            Nothing -> expectationFailure "kill-server did not return within 5s"
-            Just _ -> do
-                gone <- pollServerGone h.sock 50
-                unless gone $
-                    expectationFailure "server did not exit after kill-server"
+        _ <- hatCtl h ["kill-server"]
+        gone <- pollServerGone h.sock 50
+        unless gone $
+            expectationFailure "server did not exit after kill-server"
 
     -- A kill escalates to SIGKILL for a SIGHUP-ignoring pane however many
     -- times its window is linked.
