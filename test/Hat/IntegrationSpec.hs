@@ -1389,6 +1389,38 @@ spec = parallel $ do
         (code, err) `shouldBe` (ExitSuccess, "")
         ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
 
+    it "remain-on-exit keeps an exited pane, dead, with its status" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "on", ";"
+            , "new", "-d", "-x", "60", "-y", "5", "echo DEADBEACON; exit 3" ]
+        awaitTrue "the pane to die" $
+            (== "1 3\n") <$> ctlOut h
+                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
+        screen <- ctlOut h ["capture-pane", "-p", "-S", "-"]
+        screen `shouldSatisfy` List.isInfixOf "DEADBEACON"
+        screen `shouldSatisfy` List.isInfixOf "Pane is dead (status 3, "
+
+    it "remain-on-exit failed drops a pane whose program succeeded" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "failed", ";", "new", "-d", ";"
+            , "new-window", "-d", "true", ";", "new-window", "-d", "exit 1" ]
+        awaitTrue "only the failed pane to remain" $
+            (== "0 0\n2 1\n") <$> ctlOut h
+                ["list-panes", "-a", "-F", "#{window_index} #{pane_dead}"]
+
+    it "remain-on-exit key closes a dead pane on the next key" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "remain-on-exit", "key"]
+        typeInto c "exit\r"
+        awaitScreen c "Pane is dead"
+        typeInto c "x"
+        _ <- awaitExit c
+        pure ()
+
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
     -- runs, or the pane spawns before `set -g default-terminal` applies.

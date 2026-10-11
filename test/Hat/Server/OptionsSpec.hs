@@ -16,7 +16,7 @@ import Test.Hspec
 import Hat.Command.Parser (parseConfig)
 import Hat.Model.Options
     ( Options (..), defaultOptions
-    , OptionName (..), OptionValue (..), ScopeClass (..)
+    , OptionName (..), OptionValue (..), RemainOnExit (..), ScopeClass (..)
     , emptyDelta, singletonDelta, deleteDelta, mergeDeltas, resolveOptions
     , optionScopeClass, validateScope, resolveOptionName
     , lookupCommandAlias
@@ -89,6 +89,13 @@ spec = do
                 `shouldBe` Right "red"
             setOption Assign defaultOptions "cursor-colour" "zzz"
                 `shouldSatisfy` isLeft
+
+        it "parses remain-on-exit's four choices and rejects junk" $ do
+            let roe v = (.remainOnExit)
+                    <$> setOption Assign defaultOptions "remain-on-exit" v
+            mapM roe ["off", "on", "failed", "key"]
+                `shouldBe` Right [RemainOff, RemainOn, RemainFailed, RemainKey]
+            roe "yes" `shouldSatisfy` isLeft
 
         it "parses display-panes-time as milliseconds" $
             fmap (.displayPanesTime)

@@ -8,6 +8,7 @@ module Hat.Model.Options
     , ModeKeys (..)
     , AlertAction (..)
     , alertAllows
+    , RemainOnExit (..)
     , BorderLines (..)
     , BorderIndicators (..)
     , Keymap
@@ -70,6 +71,12 @@ alertAllows action isCurrent = case action of
     AlertCurrent -> isCurrent
     AlertOther -> not isCurrent
 
+-- | @remain-on-exit@: whether a pane whose program exited stays in the tree
+-- as a dead pane — always, only when it failed (nonzero exit or a signal), or
+-- until a key is pressed in it.
+data RemainOnExit = RemainOff | RemainOn | RemainFailed | RemainKey
+    deriving (Eq, Show)
+
 -- | @pane-border-lines@: which box-drawing glyph set draws pane borders.
 data BorderLines = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
     deriving (Eq, Show)
@@ -119,7 +126,8 @@ data Options = Options
     , monitorSilence         :: Int   -- ^ seconds of quiet before alert-silence; 0 disables
     , bellAction             :: AlertAction
     , automaticRename        :: Bool   -- ^ windows track their foreground command
-    , remainOnExit           :: Bool   -- ^ a dead pane stays until killed; see 'Hat.Server.Pane.paneEof'
+    , remainOnExit           :: RemainOnExit  -- ^ see 'Hat.Server.Pane.paneEof'
+    , remainOnExitFormat     :: Text   -- ^ the line a dead pane shows; @\"\"@ = none
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
@@ -174,7 +182,12 @@ defaultOptions = Options
     , monitorSilence = 0
     , bellAction = AlertAny
     , automaticRename = True
-    , remainOnExit = False
+    , remainOnExit = RemainOff
+    , remainOnExitFormat =
+        "Pane is dead ("
+        <> "#{?#{!=:#{pane_dead_status},},status #{pane_dead_status},}"
+        <> "#{?#{!=:#{pane_dead_signal},},signal #{pane_dead_signal},}, "
+        <> "#{t:pane_dead_time})"
     , automaticRenameFormat = "#{pane_current_command}"
     , updateEnvironment =
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
@@ -234,6 +247,7 @@ data OptionName
     | OptBellAction
     | OptAutomaticRename
     | OptRemainOnExit
+    | OptRemainOnExitFormat
     | OptAutomaticRenameFormat
     | OptUpdateEnvironment
     | OptMainPaneWidth
@@ -257,6 +271,7 @@ data OptionValue
     | OVBorderLines BorderLines
     | OVBorderIndicators BorderIndicators
     | OVAlertAction AlertAction
+    | OVRemainOnExit RemainOnExit
     | OVIndexed (Map Int Text)  -- ^ an array option's entries, by index
     deriving (Eq, Show)
 
@@ -349,7 +364,8 @@ applyEntry name val o = case (name, val) of
     (OptMonitorSilence, OVInt n) -> o { monitorSilence = n }
     (OptBellAction, OVAlertAction a) -> o { bellAction = a }
     (OptAutomaticRename, OVBool b) -> o { automaticRename = b }
-    (OptRemainOnExit, OVBool b) -> o { remainOnExit = b }
+    (OptRemainOnExit, OVRemainOnExit r) -> o { remainOnExit = r }
+    (OptRemainOnExitFormat, OVText t) -> o { remainOnExitFormat = t }
     (OptAutomaticRenameFormat, OVText t) -> o { automaticRenameFormat = t }
     (OptUpdateEnvironment, OVTextList ts) -> o { updateEnvironment = ts }
     (OptMainPaneWidth, OVInt n) -> o { mainPaneWidth = n }
@@ -381,6 +397,7 @@ optionScopeClass = \case
     OptMonitorSilence -> WindowOption
     OptAutomaticRename -> WindowOption
     OptRemainOnExit -> WindowOption
+    OptRemainOnExitFormat -> WindowOption
     OptAutomaticRenameFormat -> WindowOption
     OptMainPaneWidth -> WindowOption
     OptMainPaneHeight -> WindowOption
@@ -404,6 +421,8 @@ allowedAtPane :: OptionName -> Bool
 allowedAtPane = \case
     OptUser _ -> True
     OptCursorColour -> True
+    OptRemainOnExit -> True
+    OptRemainOnExitFormat -> True
     _ -> False
 
 -- | Reject setting an option at a scope its class forbids (e.g. @setw prefix@),
@@ -443,7 +462,7 @@ allOptionNames =
     , OptFocusEvents, OptAggressiveResize
     , OptMonitorActivity, OptMonitorBell, OptMonitorSilence, OptBellAction
     , OptAutomaticRename, OptAutomaticRenameFormat
-    , OptRemainOnExit
+    , OptRemainOnExit, OptRemainOnExitFormat
     , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
     , OptCommandAlias
     ]
@@ -542,6 +561,7 @@ optionNameText = \case
     OptBellAction -> "bell-action"
     OptAutomaticRename -> "automatic-rename"
     OptRemainOnExit -> "remain-on-exit"
+    OptRemainOnExitFormat -> "remain-on-exit-format"
     OptAutomaticRenameFormat -> "automatic-rename-format"
     OptUpdateEnvironment -> "update-environment"
     OptMainPaneWidth -> "main-pane-width"
@@ -594,7 +614,8 @@ optionValueOf o = \case
     OptMonitorSilence -> Just (OVInt o.monitorSilence)
     OptBellAction -> Just (OVAlertAction o.bellAction)
     OptAutomaticRename -> Just (OVBool o.automaticRename)
-    OptRemainOnExit -> Just (OVBool o.remainOnExit)
+    OptRemainOnExit -> Just (OVRemainOnExit o.remainOnExit)
+    OptRemainOnExitFormat -> Just (OVText o.remainOnExitFormat)
     OptAutomaticRenameFormat -> Just (OVText o.automaticRenameFormat)
     OptUpdateEnvironment -> Just (OVTextList o.updateEnvironment)
     OptMainPaneWidth -> Just (OVInt o.mainPaneWidth)
@@ -631,6 +652,11 @@ formatOptionValue = \case
         AlertNone -> "none"
         AlertCurrent -> "current"
         AlertOther -> "other"
+    OVRemainOnExit r -> case r of
+        RemainOff -> "off"
+        RemainOn -> "on"
+        RemainFailed -> "failed"
+        RemainKey -> "key"
     OVBorderIndicators i -> case i of
         IndicatorsOff -> "off"
         IndicatorsColour -> "colour"

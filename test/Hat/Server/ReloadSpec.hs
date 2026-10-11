@@ -102,10 +102,29 @@ hotWindowOf w = do
 
 instance Arbitrary HotPane where
     arbitrary = HotPane <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        <*> arbitrary <*> arbitrary
     shrink p =
-        [ HotPane fd cpid ms sc
-        | (fd, cpid, ms, sc) <-
-            shrink (p.masterFd, p.childPid, p.modes, p.screen) ]
+        [ HotPane fd cpid ms sc start death
+        | (fd, cpid, ms, sc, (start, death)) <-
+            shrink (p.masterFd, p.childPid, p.modes, p.screen
+                   , (p.start, p.death)) ]
+
+instance Arbitrary ReloadStart where
+    arbitrary = oneof
+        [ pure StartShell
+        , StartCommand <$> genText
+        , StartArgv <$> listOf genText ]
+    shrink = \case
+        StartShell -> []
+        StartCommand t -> StartShell : (StartCommand . T.pack <$> shrink (T.unpack t))
+        StartArgv argv -> StartShell
+            : (StartArgv . map T.pack <$> shrink (map T.unpack argv))
+
+instance Arbitrary ReloadDeath where
+    arbitrary = ReloadDeath <$> arbitrary <*> arbitrary <*> arbitrary
+    shrink d =
+        [ ReloadDeath st sg at
+        | (st, sg, at) <- shrink (d.status, d.signal, d.diedAt) ]
 
 instance Arbitrary ReloadModes where
     arbitrary = ReloadModes
@@ -222,9 +241,42 @@ treeWith mlast ms sc = ReloadTree
                               , shellSpawned = False }
                           , HotPane
                               { masterFd = 7, childPid = 100
-                              , modes = ms, screen = sc } ) ] } ] } ]
+                              , modes = ms, screen = sc
+                              , start = StartShell, death = Nothing } ) ] } ] } ]
     , currentSession = Just "work"
     , lastSession = mlast }
+
+-- The current-era representative: 'fixedTree' with a launch command on its
+-- pane plus a second, dead pane, to pin era 11's appended fields.
+currentTree :: ReloadTree
+currentTree = ReloadTree
+    { sessions =
+        [ HotSession
+            { name = "work", startCwd = "/home", currentIx = 0, windowHist = []
+            , createdAt = Nothing, restores = 0
+            , windows =
+                [ HotWindow
+                    { ix = 0, name = "w", layout = "L", active = 0
+                    , paneHist = [], autoRename = True
+                    , panes =
+                        [ ( snap
+                          , HotPane
+                              { masterFd = 7, childPid = 100
+                              , modes = fixedModes, screen = fixedScreen
+                              , start = StartCommand "make -j2"
+                              , death = Nothing } )
+                        , ( snap
+                          , HotPane
+                              { masterFd = -1, childPid = 101
+                              , modes = fixedModes, screen = fixedScreen
+                              , start = StartArgv ["vim", "a b"]
+                              , death = Just ReloadDeath
+                                  { status = Just 3, signal = Nothing
+                                  , diedAt = 1700000000 } } ) ] } ] } ]
+    , currentSession = Just "work"
+    , lastSession = Just "prev" }
+  where
+    snap = PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
 
 -- A non-trivial captured screen, to pin the current era's encoding: an
 -- alt-screen pane with one styled painted row and one blank scrollback line.
@@ -353,6 +405,23 @@ corpus =
         \019f481b5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4\
         \f4f4ff816470726576"
       , fixedCleanup, fixedTree )
+    , ( 11
+      , "851a484154520b039f82071864ff59015c840078d17b226c61\
+        \73745f6163746976655f73657373696f6e223a22776f726b222c\
+        \2273657373696f6e73223a5b7b2263757272656e745f6978223a\
+        \302c226e616d65223a22776f726b222c2273746172745f637764\
+        \223a222f686f6d65222c2277696e646f7773223a5b7b22616374\
+        \697665223a302c226175746f5f72656e616d65223a747275652c\
+        \226978223a302c226c61796f7574223a224c222c226e616d6522\
+        \3a2277222c2270616e6573223a5b7b22637764223a222f746d70\
+        \227d2c7b22637764223a222f746d70227d5d7d5d7d5d7d9f8700\
+        \0718648600f5f402f5038900f50102f5019f481b5b303b33316d\
+        \78ff9f40ff8a0081008100f4f4f4f4f4f4f48201686d616b6520\
+        \2d6a328087002018658600f5f402f5038900f50102f5019f481b\
+        \5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4f4f48202\
+        \9f6376696d63612062ff8184008103801a6553f100ff81647072\
+        \6576"
+      , fixedCleanup, currentTree )
     ]
 
 spec :: Spec
@@ -403,7 +472,7 @@ spec = describe "reload handover" $ do
     -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
     -- one is a compat bug.
     it "encodes the current era to stable bytes" $
-        hexOf (encodeHandover fixedCleanup (hotOf fixedTree))
+        hexOf (encodeHandover fixedCleanup (hotOf currentTree))
             `shouldBe` currentGolden
   where
     decodesToTree (e, hex, cl, t) =

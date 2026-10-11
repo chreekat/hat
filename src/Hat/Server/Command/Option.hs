@@ -684,7 +684,13 @@ scalarOptionEntry mode opts name value = case name of
         "other" -> Right (OptBellAction, OVAlertAction AlertOther)
         _ -> Left "bell-action: any, none, current, or other"
     "automatic-rename" -> withOnOff OptAutomaticRename
-    "remain-on-exit" -> withOnOff OptRemainOnExit
+    "remain-on-exit" -> case value of
+        "off" -> Right (OptRemainOnExit, OVRemainOnExit RemainOff)
+        "on" -> Right (OptRemainOnExit, OVRemainOnExit RemainOn)
+        "failed" -> Right (OptRemainOnExit, OVRemainOnExit RemainFailed)
+        "key" -> Right (OptRemainOnExit, OVRemainOnExit RemainKey)
+        _ -> Left "remain-on-exit: off, on, failed, or key"
+    "remain-on-exit-format" -> Right (OptRemainOnExitFormat, OVText value)
     "automatic-rename-format" -> Right (OptAutomaticRenameFormat, OVText value)
     "update-environment" ->
         Right (OptUpdateEnvironment, OVTextList (T.words value))

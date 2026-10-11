@@ -9,6 +9,8 @@ module Hat.Model
     , Session (..)
     , Window (..)
     , Pane (..)
+    , PaneStart (..)
+    , PaneExit (..)
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
@@ -53,6 +55,8 @@ module Hat.Model
     , activePane
     , windowPanes
     , paneCurrentPath
+    , paneCommandName
+    , commandName
     , findPaneById
     , findWindowById
     , findSessionById
@@ -71,6 +75,7 @@ import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM)
 import Data.IORef (IORef)
 import Data.List qualified as List
+import Data.Maybe (fromMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -78,6 +83,7 @@ import Data.Sequence (Seq)
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Vector qualified as V
@@ -241,7 +247,33 @@ data Pane = Pane
     , pendingInput :: Maybe Text
         -- ^ a one-shot command line the reader types into the pane once its
         -- shell first prints; see 'startPaneReader'. 'Nothing' for a plain pane.
+    , start    :: PaneStart
+        -- ^ what the pane was launched with; see 'Hat.Server.Pane.respawnStart'.
+    , exited   :: TVar (Maybe PaneExit)
+        -- ^ 'Just' for a dead pane: its program ended and @remain-on-exit@
+        -- kept it; see 'Hat.Server.Pane.paneEof'.
     }
+
+-- | How a freshly-spawned pane chooses its process.
+data PaneStart
+    = FreshShell         -- ^ the session's login shell, no command
+    | ShellCommand Text  -- ^ a user-supplied command line, run via @sh -c@
+                         --   (@new-window@\/@split-window@ with an argument)
+    | ExecArgv [Text]    -- ^ exec this argv directly, no shell. See
+                         --   'Hat.Server.Pane.restoreRun'.
+    | ShellInject [Text] -- ^ spawn a fresh interactive shell and type this
+                         --   argv into it as a command line. See
+                         --   'Hat.Server.Pane.restoreRun'.
+    deriving (Eq, Show)
+
+-- | How a dead pane's program ended: its exit status or terminating signal
+-- (neither when the reap itself failed), and when.
+data PaneExit = PaneExit
+    { status :: Maybe Int
+    , signal :: Maybe Int
+    , diedAt :: POSIXTime
+    }
+    deriving (Eq, Show)
 
 -- Note [Pane home]
 -- ~~~~~~~~~~~~~~~~
@@ -699,11 +731,53 @@ windowPanes win = Map.elems <$> readTVar win.panes
 -- | Where is a pane's child process now? /proc, with a fallback.
 paneCurrentPath :: Pane -> IO FilePath
 paneCurrentPath pane = do
-    r <- try (PFiles.readSymbolicLink
-        ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/cwd"))
-    pure $ case r of
-        Left (_ :: IOException) -> pane.startCwd
-        Right dir -> dir
+    closed <- Hat.Term.Pty.isClosed pane.pty
+    if closed then pure pane.startCwd else do
+        r <- try (PFiles.readSymbolicLink
+            ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/cwd"))
+        pure $ case r of
+            Left (_ :: IOException) -> pane.startCwd
+            Right dir -> dir
+
+-- | The program a captured foreground command names: its last path
+-- segment with NixOS's @.<name>-wrapped@ decoration stripped, so a pane
+-- running @\/nix\/store\/…\/.vim-wrapped@ is recorded (and matched) as
+-- @vim@.
+commandName :: Text -> Text
+commandName raw =
+    let base  = T.takeWhileEnd (/= '/') (firstWord raw)
+        undot = T.dropWhile (== '.') base
+    in fromMaybe undot (T.stripSuffix "-wrapped" undot)
+  where
+    firstWord t = case T.words t of
+        (w : _) -> w
+        []      -> ""
+
+-- | A pane's foreground program (from @/proc@) as a display name:
+-- normalized by 'commandName', so a NixOS-wrapped @vim@ shows as @vim@
+-- everywhere (window titles, @#{pane_current_command}@, the persisted
+-- tree). Falls back to @sh@. A dead pane's pid may already belong to some
+-- other process, so it names what the pane was started with instead.
+paneCommandName :: Pane -> IO Text
+paneCommandName pane = do
+    closed <- Hat.Term.Pty.isClosed pane.pty
+    mfg <- if closed then pure (Just (startedCommand pane.start))
+        else Hat.Term.Pty.foregroundCommand pane.pty
+    raw <- case mfg of
+        Just cmd -> pure cmd
+        Nothing -> do
+            r <- try (TIO.readFile ("/proc/" <> show (Hat.Term.Pty.pid pane.pty) <> "/comm"))
+            pure $ case r of
+                Right s -> let t = T.strip s in if T.null t then "sh" else t
+                Left (_ :: IOException) -> "sh"
+    pure (commandName raw)
+
+-- | The command line a pane was launched with, for naming a dead pane.
+startedCommand :: PaneStart -> Text
+startedCommand = \case
+    ShellCommand t -> t
+    ExecArgv argv@(_ : _) -> T.unwords argv
+    _ -> "sh"
 
 -- | Find a pane by its numeric id across every session and window.
 findPaneById :: ServerState -> Int -> STM (Maybe Pane)

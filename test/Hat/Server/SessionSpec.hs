@@ -47,6 +47,7 @@ import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
+import Hat.Server.Pane (deadNoticeBytes)
 import Hat.Server.Command.Session
     (cmdKillSession, cmdNewSession, cmdRenameSession)
 import Hat.Server.Command.Window (cmdRenameWindow, cmdUnlinkWindow)
@@ -208,6 +209,7 @@ stubPane n = do
     tidV  <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
+    exitedV <- newTVarIO Nothing
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -221,6 +223,8 @@ stubPane n = do
         , readerTid = tidV
         , home = homeV
         , pendingInput = Nothing
+        , start = FreshShell
+        , exited = exitedV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -258,6 +262,23 @@ copyModeAt hsize = PaneMode
 
 spec :: Spec
 spec = do
+    describe "deadNoticeBytes" $
+        it "scrolls a line and draws the styled notice, cursor hidden" $ do
+            let sz = Size { rows = 3, cols = 8 }
+            e <- Emu.newEmulator sz 100
+            _ <- Emu.feed e "a\r\nb\r\nc"
+            _ <- Emu.feed e (deadNoticeBytes sz "x#[fg=red]dead#[bold]!too long")
+            scr <- Emu.snapshot e
+            let glyphs row = [ ch | Cell.Cell { content = Cell.Glyph ch _ _ }
+                                        <- V.toList row ]
+            map glyphs (V.toList scr.cells)
+                `shouldBe` ["b       ", "c       ", "xdead!to"]
+            let styleAt col = ((scr.cells V.! 2) V.! col).style
+            (styleAt 0).fg `shouldBe` Cell.DefaultColor
+            (styleAt 1).fg `shouldBe` Cell.Indexed 1
+            ((styleAt 5).fg, (styleAt 5).bold) `shouldBe` (Cell.Indexed 1, True)
+            snd <$> Emu.cursorState e `shouldReturn` False
+
     -- User options resolve per scope: a session-local @set @v@ is visible
     -- to formats and shadows the global value (upstream format-strings.sh).
     describe "user options in formats" $
