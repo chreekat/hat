@@ -26,6 +26,7 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
+import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import Numeric (showOct)
 
@@ -215,8 +216,10 @@ cmdCapturePane st mclient args = do
                         Right txt
                             | has "-p" -> pure
                                 [ROutput (fromMaybe txt (T.stripSuffix "\n" txt))]
-                            | otherwise -> [] <$ atomically
-                                (storeBuffer st (lookup "-b" opts) txt)
+                            | otherwise ->
+                                either (\e -> [RErr e]) (const [])
+                                    <$> storeBuffer st (lookup "-b" opts)
+                                            (TE.encodeUtf8 txt)
 
 -- | Capture a pane's rows per tmux's source selection: @-a@ asks for the
 -- screen saved behind an active alternate screen (which libghostty keeps

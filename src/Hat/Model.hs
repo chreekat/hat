@@ -74,8 +74,6 @@ import Data.List qualified as List
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Sequence (Seq)
-import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime)
@@ -88,6 +86,7 @@ import System.Posix.Files qualified as PFiles
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
+import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( BorderIndicators, BorderLines, Keymap, Options, OptionsDelta, applyDelta
@@ -110,7 +109,6 @@ data ServerState = ServerState
     , nextWindow  :: TVar Int
     , nextPane    :: TVar Int
     , nextClient  :: TVar Int
-    , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , reconciled  :: TVar Int    -- ^ dirty generation reconcileLoop has resized
                                 --   panes through; see 'awaitReconciled'
@@ -147,8 +145,7 @@ data ServerState = ServerState
         -- ^ server-wide variables (@set-environment -g@, config @NAME=value@
         --   lines); see 'Hat.Server.sessionSpawnEnv' for how they reach panes.
     , keymap      :: TVar Keymap
-    , buffers     :: TVar (Seq (Text, Text))
-        -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
+    , buffers     :: TVar PasteStore
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
@@ -544,7 +541,6 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
-    <*> newTVarIO 0
     <*> newTVarIO 0      -- dirty
     <*> newTVarIO 0      -- reconciled
     <*> newTVarIO 0      -- commandDepth
@@ -567,7 +563,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Nothing     -- resolvedGlobal
     <*> newTVarIO emptyEnviron
     <*> newTVarIO defaultKeymap
-    <*> newTVarIO Seq.empty
+    <*> newTVarIO emptyPasteStore
     <*> newTVarIO Map.empty
     <*> newTVarIO []
     <*> newTVarIO Nothing  -- markedPane

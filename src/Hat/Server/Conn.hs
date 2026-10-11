@@ -29,6 +29,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import Network.Socket qualified as N
 import Hat.Geometry
@@ -326,6 +327,7 @@ inputLoop d st re client = loop
                     forM_ replies $ \case
                         ROutput out -> showToast st client out
                         RErr e -> showToast st client ("error: " <> e)
+                        RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)
                     loop
                 ClientHello {} -> pure ()
 
@@ -563,6 +565,7 @@ controlLoop d st re client = do
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
                 RErr e -> send client (ServerError e)
+                RData bytes -> send client (Message (TE.decodeUtf8Lenient bytes))
             -- Report done only once any layout change the command made has
             -- been reconciled into the panes, so a caller that immediately
             -- inspects a pane's size never races the pty resize.
