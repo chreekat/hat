@@ -11,6 +11,7 @@ module Hat.Server.ControlTypes
     , ControlFlags (..)
     , defaultControlFlags
     , Subscription (..)
+    , SubscriptionKey (..)
     , newControlState
     ) where
 
@@ -25,7 +26,7 @@ import Data.Word (Word64)
 
 import Hat.Geometry (Size)
 import Hat.Model.Ids
-import Hat.Server.HookTypes (MonitorKey, MonitorTarget)
+import Hat.Server.HookTypes (MonitorTarget)
 import Hat.Transport.Wire (ExitWait (..))
 
 -- | One entry of a control client's outbound stream, in send order.
@@ -62,11 +63,20 @@ defaultControlFlags :: ControlFlags
 defaultControlFlags = ControlFlags
     { output = SendOutput, exitWait = ExitNow, pauseAfter = Nothing }
 
+-- | What one sampled value of a subscription belongs to: the session, or
+-- a pane or window (by id) at a window index.
+data SubscriptionKey
+    = SubSession
+    | SubPane Int Int
+    | SubWindow Int Int
+    deriving (Eq, Ord, Show)
+
 -- | A @refresh-client -B@ subscription and the values it last reported.
 data Subscription = Subscription
-    { target :: MonitorTarget
+    { serial :: Int  -- ^ tells a re-added subscription from the one it replaced
+    , target :: MonitorTarget
     , format :: Text
-    , lastValues :: Map MonitorKey Text
+    , lastValues :: Map SubscriptionKey Text
     }
 
 data ControlState = ControlState
@@ -87,6 +97,7 @@ data ControlState = ControlState
         -- ^ @refresh-client -C \@id:WxH@; 'Nothing' until any is set
     , subscriptions :: TVar (Map Text Subscription)
     , commandNumber :: TVar Int  -- ^ the last @%begin@ number used
+    , subscriptionSerial :: TVar Int  -- ^ the last 'serial' handed out
     }
 
 newControlState :: IO ControlState
@@ -102,4 +113,5 @@ newControlState = ControlState
     <*> newTVarIO Nothing
     <*> newTVarIO Nothing
     <*> newTVarIO Map.empty
+    <*> newTVarIO 0
     <*> newTVarIO 0

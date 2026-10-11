@@ -22,10 +22,12 @@ module Hat.Server.Control
     , ControlSize (..)
     , parseControlSize
     , cmdRefreshClient
+    , subscriptionLoop
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM_, unless, when)
+import Control.Concurrent (threadDelay)
+import Control.Monad (forM, forM_, forever, unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
@@ -51,7 +53,11 @@ import Hat.Server.ClientIO (sendDirect)
 import Hat.Server.Command.Types
 import Hat.Server.ControlQueue
 import Hat.Server.ControlTypes
-import Hat.Server.FormatEnv (expandFormat, windowFormatEnv)
+import Hat.Server.FormatEnv
+    (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
+import Hat.Server.HookMonitor (parseMonitorSpec)
+import Hat.Server.HookTypes (MonitorTarget (..))
+import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.HookTypes (EventSink, PayloadItem (..))
 import Hat.Server.Hooks (clientNameOf)
 import Hat.Server.Resize (applySessionSize, awaitReconciled)
@@ -371,6 +377,73 @@ controlClients st = atomically $ do
             pure [(c, ctl, if Map.member sid sessions then Just sid else Nothing)])
         $ cs
 
+-- Subscriptions -----------------------------------------------------------
+
+-- | Sample the client's @refresh-client -B@ subscriptions once a second
+-- (tmux's monitor timer), reporting each value that is new or changed.
+subscriptionLoop :: ServerState -> Client -> ControlState -> IO ()
+subscriptionLoop st client cs = forever $ do
+    threadDelay 1000000
+    msess <- atomically $ do
+        sid <- readTVar client.session
+        findSessionById st sid
+    subs <- Map.toAscList <$> readTVarIO cs.subscriptions
+    forM_ msess $ \sess -> forM_ subs $ \(name, sub) -> do
+        samples <- sampleSubscription st sess sub
+        atomically $ do
+            current <- Map.lookup name <$> readTVar cs.subscriptions
+            forM_ current $ \cur -> when (cur.serial == sub.serial) $ do
+                let fresh = Map.fromList [ (k, v) | (k, _, v) <- samples ]
+                    changed = [ (k, ref, v) | (k, ref, v) <- samples
+                              , Map.lookup k cur.lastValues /= Just v ]
+                modifyTVar' cs.subscriptions $ Map.insert name cur
+                    { lastValues = case cur.target of
+                        -- The all-panes/all-windows sets forget what is gone.
+                        MonAllPanes -> fresh
+                        MonAllWindows -> fresh
+                        _ -> Map.union fresh cur.lastValues }
+                forM_ changed $ \(_, ref, v) ->
+                    controlNotify cs ("%subscription-changed " <> TE.encodeUtf8 name
+                        <> " " <> ref <> " : " <> TE.encodeUtf8 v)
+
+-- | One subscription's current values in a session, each with its key and
+-- the @$s \@w idx %p@ reference its change is reported under.
+sampleSubscription
+    :: ServerState -> Session -> Subscription
+    -> IO [(SubscriptionKey, ByteString, Text)]
+sampleSubscription st sess sub = do
+    ws <- Map.toAscList <$> readTVarIO sess.windows
+    case sub.target of
+        MonSession -> do
+            env <- sessionFormatEnv st sess
+            v <- expandFormat st env sub.format
+            pure [(SubSession, sref <> " - - -", v)]
+        MonWindow n -> concat <$> forM [ (ix, w) | (ix, w) <- ws, rawWindow w.id == n ]
+            (uncurry windowValue)
+        MonAllWindows -> concat <$> forM ws (uncurry windowValue)
+        MonPane n -> fmap concat . forM ws $ \(ix, w) -> do
+            ps <- atomically (windowPanes w)
+            concat <$> forM [ p | p <- ps, rawPane p.id == n ] (paneValue ix w)
+        MonAllPanes -> fmap concat . forM ws $ \(ix, w) -> do
+            ps <- atomically (windowPanes w)
+            concat <$> forM ps (paneValue ix w)
+  where
+    sref = "$" <> B8.pack (show (rawSession sess.id))
+    wref ix w = sref <> " @" <> B8.pack (show (rawWindow w.id))
+        <> " " <> B8.pack (show ix)
+    windowValue ix w = do
+        env <- windowFormatEnv st sess ix w
+        v <- expandFormat st env sub.format
+        pure [(SubWindow (rawWindow w.id) ix, wref ix w <> " -", v)]
+    paneValue ix w p = do
+        gone <- readTVarIO p.dead
+        if gone then pure [] else do
+            pix <- paneIndexOf st w p
+            env <- paneFormatEnv st sess ix w pix p
+            v <- expandFormat st env sub.format
+            pure [ ( SubPane (rawPane p.id) ix
+                   , wref ix w <> " %" <> B8.pack (show (rawPane p.id)), v ) ]
+
 -- refresh-client ----------------------------------------------------------
 
 -- | One @refresh-client -f@ item: a flag set or cleared (@!flag@).
@@ -455,8 +528,8 @@ cmdRefreshClient st mclient args
                 Just cs
                     | isJust' "-A" -> [] <$ mapM_ (paneFlow cs)
                         [ v | ("-A", v) <- opts ]
-                    | isJust' "-B" -> pure
-                        [RErr "refresh-client -B: not supported"]
+                    | isJust' "-B" -> [] <$ mapM_ (subscribe cs)
+                        [ v | ("-B", v) <- opts ]
                     | Just arg <- lookup "-C" opts -> controlSize client cs arg
                     | otherwise -> redraw client
   where
@@ -506,6 +579,14 @@ cmdRefreshClient st mclient args
     dropPane cs pid = modifyTVar' cs.queue $ Seq.filter $ \case
         ControlOutput p _ _ -> p /= pid
         ControlLine _ -> True
+    -- An unparseable spec names a subscription to drop.
+    subscribe cs spec = atomically $ case parseMonitorSpec spec of
+        Left _ -> modifyTVar' cs.subscriptions (Map.delete spec)
+        Right (name, tgt, fmt) -> do
+            n <- stateTVar cs.subscriptionSerial (\k -> (k + 1, k + 1))
+            modifyTVar' cs.subscriptions $ Map.insert name Subscription
+                { serial = n, target = tgt, format = fmt
+                , lastValues = Map.empty }
     controlSize client cs arg = case parseControlSize arg of
         Left e -> pure [RErr e]
         Right change -> do

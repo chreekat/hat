@@ -42,7 +42,9 @@ import Hat.Term.Pty qualified
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
-import Hat.Server.Control (BlockOrigin (..), controlWriter, feedControlInput, runControlCommands)
+import Hat.Server.Control
+    ( BlockOrigin (..), controlWriter, feedControlInput, runControlCommands
+    , subscriptionLoop )
 import Hat.Server.ControlQueue (requestExit)
 import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Overlay
@@ -634,15 +636,17 @@ controlModeSession
     -> IO ()
 controlModeSession d st re client cs setup = do
     awaitStartup st client.autostart setup
-    withAsync (controlWriter client cs) $ \writer -> do
-        runControlCommands d st client cs SetupCommand setup
-        msess <- currentSession st client
-        case msess of
-            -- tmux's client that is left unattached by its command exits.
-            Nothing -> atomically (requestExit cs Nothing)
-            Just sess -> refreshSessionEnv st sess client
-        pendingRef <- newIORef B.empty
-        void (race (reader pendingRef) (wait writer))
+    withAsync (subscriptionLoop st client cs) $ \subs -> do
+        link subs
+        withAsync (controlWriter client cs) $ \writer -> do
+            runControlCommands d st client cs SetupCommand setup
+            msess <- currentSession st client
+            case msess of
+                -- tmux's client that is left unattached by its command exits.
+                Nothing -> atomically (requestExit cs Nothing)
+                Just sess -> refreshSessionEnv st sess client
+            pendingRef <- newIORef B.empty
+            void (race (reader pendingRef) (wait writer))
   where
     reader pendingRef = recvMessage re >>= \case
         Nothing -> pure ()

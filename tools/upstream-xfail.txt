@@ -47,8 +47,6 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # (flake input tmux-src). Each reason names the unimplemented subsystem
 # the script hinges on.
 
-# control mode (-C): whole subsystem unimplemented
-control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
 hooks-notify.sh                 # needs pane-mode-changed + title stack + respawn-pane + pane-moved + resize-pane -x/-y + client-* hooks + control mode
