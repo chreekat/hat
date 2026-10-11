@@ -1,14 +1,18 @@
 -- | The option and environment commands: @set-option@\/@set-window-option@,
--- @show-options@, and @set-environment@\/@show-environment@ — parsing an
--- option value ('setOption'), routing a write to its scope ('chooseScope'),
--- and the effects a changed option triggers.
+-- @show-options@, and @set-environment@\/@show-environment@. Option
+-- handling is generic over the registry ("Hat.Model.OptionTable"), following
+-- tmux's @cmd-set-option.c@ and @cmd-show-options.c@: an option's row picks
+-- its scope, its kind validates the value ("Hat.Server.OptionParse"), and
+-- its gate refuses what hat does not implement.
 module Hat.Server.Command.Option
     ( SetDefault (..)
-    , SetScope (..)
     , SetMode (..)
-    , chooseScope
     , setOption
-    , listingLines
+    , ShowLine (..)
+    , Inheritance (..)
+    , Display (..)
+    , ValuePresence (..)
+    , renderShowLine
     , cmdSet
     , cmdShow
     , cmdSetEnvironment
@@ -19,121 +23,331 @@ module Hat.Server.Command.Option
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM_, when)
-import Data.List qualified as List
-import Data.Map.Strict (Map)
+import Control.Monad (forM, forM_, when)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Read qualified as TR
 
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Environ
-import Hat.Server.Keys
-import Hat.Server.Format (FormatEnv)
+import Hat.Server.Format (FormatEnv, quoteArgsT)
 import Hat.Server.FormatEnv (paneEnvById, paneFormatEnv)
-import Hat.Server.HookTypes (HookAmbient (..))
-import Hat.Server.Hooks (ambientFor)
+import Hat.Server.HookTypes (HookAmbient (..), HookEntry (..), HookScope (..))
+import Hat.Server.Hooks (ambientFor, hookEntriesAt)
 import Hat.Server.Locate
-    ( currentResolved, findTarget, locatePane, noSuchTarget, paneIndexOf
+    ( findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPaneScoped, targetSession )
+import Hat.Server.OptionParse
 import Hat.Server.Target qualified as Target
-import Hat.Server.Style (parseColor, parseStyle)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
-import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
+-- | Which command was typed: @set-window-option@ addresses windows for a
+-- @\@user@ option the way @-w@ does.
 data SetDefault = DefaultSession | DefaultWindow
     deriving (Eq, Show)
 
--- | The overlay table a @set-option@ writes into. See 'chooseScope'.
-data SetScope
-    = SetServer
-    | SetGlobalSession
-    | SetGlobalWindow
-    | SetLocalSession
-    | SetLocalWindow
-    | SetLocalPane
+-- | The option table a @set-option@ or @show-options@ addresses.
+data Scope
+    = ServerTable
+    | GlobalSessionTable
+    | GlobalWindowTable
+    | SessionTable Session
+    | WindowTable Window
+    | PaneTable Pane
+
+-- | tmux's @options_scope_from_name@: a registered option's row fixes its
+-- table (@-g@ picks the global one, @-p@ a pane for a window-and-pane
+-- option); a @\@user@ option goes by the flags ('scopeFromFlags').
+scopeFor
+    :: ServerState -> Maybe Client -> Maybe Text -> SetDefault -> [Text]
+    -> Maybe OptionDef -> IO (Either Text Scope)
+scopeFor st mclient mtarget sd flags = \case
+    Nothing -> scopeFromFlags st mclient mtarget sd flags
+    Just d -> case d.scope of
+        ServerScope -> pure (Right ServerTable)
+        SessionScope
+            | "-g" `elem` flags -> pure (Right GlobalSessionTable)
+            | otherwise -> sessionScope st mclient mtarget
+        WindowPaneScope | "-p" `elem` flags -> paneScope st mclient mtarget
+        _   | "-g" `elem` flags -> pure (Right GlobalWindowTable)
+            | otherwise -> windowScope st mclient mtarget
+
+-- | tmux's @options_scope_from_flags@.
+scopeFromFlags
+    :: ServerState -> Maybe Client -> Maybe Text -> SetDefault -> [Text]
+    -> IO (Either Text Scope)
+scopeFromFlags st mclient mtarget sd flags
+    | has "-s" = pure (Right ServerTable)
+    | has "-p" = paneScope st mclient mtarget
+    | sd == DefaultWindow || has "-w" = if has "-g"
+        then pure (Right GlobalWindowTable)
+        else windowScope st mclient mtarget
+    | has "-g" = pure (Right GlobalSessionTable)
+    | otherwise = sessionScope st mclient mtarget
+  where
+    has f = f `elem` flags
+
+sessionScope, windowScope, paneScope
+    :: ServerState -> Maybe Client -> Maybe Text -> IO (Either Text Scope)
+sessionScope st mclient mtarget =
+    maybe (Left (noSuchTarget "session" mtarget)) (Right . SessionTable)
+        <$> targetSession st mclient mtarget
+windowScope st mclient mtarget =
+    maybe (Left (noSuchTarget "window" mtarget)) (Right . WindowTable)
+        <$> targetWindowScoped st mclient mtarget
+paneScope st mclient mtarget =
+    maybe (Left (noSuchTarget "pane" mtarget)) (Right . PaneTable)
+        <$> targetPaneScoped st mclient mtarget
+
+deltaVar :: ServerState -> Scope -> TVar OptionsDelta
+deltaVar st = \case
+    ServerTable -> st.serverOptions
+    GlobalSessionTable -> st.globalSessionOptions
+    GlobalWindowTable -> st.globalWindowOptions
+    SessionTable s -> s.options
+    WindowTable w -> w.options
+    PaneTable p -> p.options
+
+-- | Whether a registered option row lists at a table (tmux's
+-- @oe->scope & scope@).
+listsAt :: Scope -> OptionScope -> Bool
+listsAt sc os = case sc of
+    ServerTable -> os == ServerScope
+    GlobalSessionTable -> os == SessionScope
+    SessionTable _ -> os == SessionScope
+    GlobalWindowTable -> os `elem` [WindowScope, WindowPaneScope]
+    WindowTable _ -> os `elem` [WindowScope, WindowPaneScope]
+    PaneTable _ -> os == WindowPaneScope
+
+-- | A table's own value for an option. tmux's global tables hold every
+-- registered option, so there an unset entry reads as the color scheme's
+-- value or the registry default.
+ownValue :: ServerState -> Scope -> Text -> STM (Maybe OptionValue)
+ownValue st sc n = do
+    own <- lookupDelta n <$> readTVar (deltaVar st sc)
+    case (own, lookupOptionDef n) of
+        (Just v, _) -> pure (Just v)
+        (Nothing, Just d) | globalTable sc, d.role == PlainOption -> do
+            scheme <- lookupDelta n <$> readTVar st.schemeOptions
+            pure (Just (fromMaybe d.defaultValue scheme))
+        _ -> pure Nothing
+  where
+    globalTable = \case
+        ServerTable -> True
+        GlobalSessionTable -> True
+        GlobalWindowTable -> True
+        _ -> False
+
+-- | The tables an option inherits from, nearest first.
+parentScopes :: ServerState -> Scope -> STM [Scope]
+parentScopes st = \case
+    SessionTable _ -> pure [GlobalSessionTable]
+    WindowTable _ -> pure [GlobalWindowTable]
+    PaneTable p -> do
+        mloc <- locatePane st p.id
+        pure (maybe [] (\(_, w) -> [WindowTable w]) mloc <> [GlobalWindowTable])
+    _ -> pure []
+
+-- | The value in effect at a table: its own, else the nearest parent's.
+inheritedValue :: ServerState -> Scope -> Text -> STM (Maybe OptionValue)
+inheritedValue st sc n = do
+    ps <- parentScopes st sc
+    firstJust <$> mapM (\p -> ownValue st p n) ps
+  where
+    firstJust = listToMaybe . concatMap (maybe [] pure)
+
+-- | Refuse an option the registry knows but hat does not implement.
+requireLive :: OptionDef -> Either Text ()
+requireLive d = case d.gate of
+    NotYet -> Left (notYetError d.name)
+    Live _ -> Right ()
+
+-- | Refuse a pane-scope value of an option whose consumer reads only the
+-- window's.
+requirePaneValues :: Scope -> Maybe OptionDef -> Either Text ()
+requirePaneValues sc md = case (sc, md) of
+    (PaneTable _, Just d)
+        | Live s <- d.gate, s.paneValues == PaneValuesIgnored ->
+            Left (d.name <> ": pane values not yet supported by hat")
+    _ -> Right ()
+
+-- | Whether @set -u@\/@-U@ removes the option rather than setting it.
+data Unsetting = SetValue | UnsetValue
     deriving (Eq, Show)
 
--- | Route a set to its scope from the command's default, its flags, and the
--- option's class. @-g@ is lenient (it picks the session- or window-global
--- table by the option's class, never erroring, so a real @~/.tmux.conf@'s
--- @set -g mode-keys@ / @set -gw display-time@ both load). An /explicit/ local
--- window scope (@setw@ or @-w@ without @-g@) or @-s@ that contradicts the
--- option's class fails loud, matching tmux's @setw prefix@ rejection.
-chooseScope :: SetDefault -> [Text] -> OptionName -> Either Text SetScope
-chooseScope def flags name
-    | hasS = SetServer <$ validateScope ServerOption name
-    | hasG = Right $ case cls of
-        WindowOption -> SetGlobalWindow
-        ServerOption -> SetServer
-        SessionOption -> SetGlobalSession
-    | hasP = if allowedAtPane name
-        then Right SetLocalPane
-        else Left (optionNameText name <> " is not a pane option")
-    | wantWindow = SetLocalWindow <$ validateScope WindowOption name
-    | otherwise = Right $ case cls of
-        WindowOption -> SetLocalWindow
-        ServerOption -> SetServer
-        SessionOption -> SetLocalSession
+-- | @set -o@: refuse to replace a value the table already holds.
+data Overwrite = OverwriteAny | OnlyIfUnset
+    deriving (Eq, Show)
+
+-- | @-q@: swallow the errors tmux lets it swallow.
+data Quietness = Loud | Quiet
+    deriving (Eq, Show)
+
+data SetRequest = SetRequest
+    { mode :: SetMode
+    , unsetting :: Unsetting
+    , overwrite :: Overwrite
+    , quietness :: Quietness
+    }
+
+-- | What a set does to its table's entry.
+data SetAction = WriteValue OptionValue | RemoveValue | LeaveValue
+
+-- | tmux's @cmd_set_option_exec@ decision for one option at one table,
+-- given the table's own value and the value in effect there.
+planSet
+    :: Maybe OptionDef  -- ^ the option's row; 'Nothing' for a @\@user@ option
+    -> SetRequest
+    -> Text             -- ^ the option as typed, for messages
+    -> Maybe ArrayKey
+    -> Maybe OptionValue  -- ^ the table's own value
+    -> Maybe OptionValue  -- ^ the value in effect at the table
+    -> Maybe Text         -- ^ the value given, if any
+    -> Either Text SetAction
+planSet mdef req spelled mkey own effective mvalue
+    | isJust mkey, not isArray = Left ("not an array: " <> spelled)
+    | req.unsetting == SetValue, req.overwrite == OnlyIfUnset, alreadySet =
+        if req.quietness == Quiet then Right LeaveValue
+        else Left ("already set: " <> spelled)
+    | req.unsetting == UnsetValue = Right $ case (own, mkey) of
+        (Nothing, _) -> LeaveValue
+        (Just (OVArray m), Just k) -> WriteValue (OVArray (Map.delete k m))
+        _ -> RemoveValue
+    | otherwise = WriteValue <$> case mdef of
+        Nothing -> case mvalue of
+            Nothing -> Left "empty value"
+            Just v -> Right $ OVScalar $ case (req.mode, own) of
+                (Append, Just old) -> scalarText old <> v
+                _ -> v
+        Just d | Nothing <- d.array -> do
+            new <- parseScalar d req.mode (scalarText <$> own)
+                (maybe "" scalarText effective) mvalue
+            supportedValue d new
+            pure (OVScalar new)
+        Just d -> case mvalue of
+            Nothing -> Left "empty value"
+            Just v -> OVArray <$> case mkey of
+                Nothing -> assignArray d
+                    (if req.mode == Append then ownArray else Map.empty) v
+                Just k -> setArrayKey d req.mode ownArray k v
   where
-    cls = optionScopeClass name
-    hasS = "-s" `elem` flags
-    hasG = "-g" `elem` flags
-    hasP = "-p" `elem` flags
-    wantWindow = "-w" `elem` flags || def == DefaultWindow
+    isArray = maybe False (isJust . (.array)) mdef
+    ownArray = case own of
+        Just (OVArray m) -> m
+        _ -> Map.empty
+    alreadySet = case mkey of
+        Nothing -> isJust own
+        Just k -> Map.member k ownArray
+
+scalarText :: OptionValue -> Text
+scalarText = valueText
+
+-- | Apply one @set-option@ to a resolved 'Options' as though it were the
+-- global table — the config-load burn-down's model of @set -g@.
+setOption :: SetMode -> Options -> Text -> Text -> Either Text Options
+setOption mode opts spelled value = do
+    (n, mkey) <- either (\(MatchError e) -> Left e) Right (matchOptionName spelled)
+    let mdef = lookupOptionDef n
+        own = if "@" `T.isPrefixOf` n
+            then OVScalar <$> Map.lookup n opts.user
+            else Map.lookup n opts.values
+    mapM_ requireLive mdef
+    act <- planSet mdef (SetRequest mode SetValue OverwriteAny Loud)
+        spelled mkey own own (Just value)
+    pure $ case act of
+        WriteValue v -> applyEntry n v opts
+        _ -> opts
 
 cmdSet :: SetDefault -> CommandImpl
-cmdSet def st mclient args = do
+cmdSet sd st mclient args = do
     let (opts, flags, pos) = parseArgs "t" args
-        mode = if "-a" `elem` flags then Append else Assign
+        has f = f `elem` flags
         mtarget = lookup "-t" opts
-        quiet = "-q" `elem` flags   -- tolerate unknown/ambiguous names
-        unsetPanes = "-U" `elem` flags
-        unset = "-u" `elem` flags || unsetPanes
+        quiet = if has "-q" then Quiet else Loud
+        req = SetRequest
+            { mode = if has "-a" then Append else Assign
+            , unsetting = if has "-u" || has "-U" then UnsetValue else SetValue
+            , overwrite = if has "-o" then OnlyIfUnset else OverwriteAny
+            , quietness = quiet }
+        orQuiet e = pure [RErr e | quiet == Loud]
     case pos of
-        (nameT : rest) -> case resolveIndexedName nameT of
-            Left err -> pure [RErr err | not quiet]
-            Right (n, midx) -> case chooseScope def flags n of
-                Left err -> pure [RErr err]
-                Right scope -> do
-                    etv <- scopeTargetVar st mclient mtarget scope
-                    case etv of
-                        Left err -> pure [RErr err]
-                        Right deltaVar
-                            | unset, (v : _) <- rest ->
-                                pure [RErr ("value passed to unset option: " <> v)]
-                            | unset, Just i <- midx -> do
-                                curOpts <- currentResolved st mclient mtarget
-                                case optionValueOf curOpts n of
-                                    Just (OVIndexed m) -> writeScoped st
-                                        deltaVar n (OVIndexed (Map.delete i m))
-                                    _ -> pure [RErr (optionNameText n
-                                        <> " is not an array option")]
-                            | unset -> do
-                                unsetScoped st deltaVar n
-                                when unsetPanes $
-                                    clearPaneCopies st mclient mtarget scope n
-                                pure []
-                            | otherwise -> do
-                                curOpts <- currentResolved st mclient mtarget
-                                value <- if "-F" `elem` flags
-                                    then do
-                                        env <- setFormatEnv st mclient mtarget
-                                        expandFormat st env (T.unwords rest)
-                                    else pure (T.unwords rest)
-                                case setOptionEntry mode curOpts
-                                        (spelled n midx) value of
-                                    Left err -> pure [RErr err]
-                                    Right (n', v) -> writeScoped st deltaVar n' v
-        [] -> pure [RErr "usage: set [-gsw] [-t target] option value"]
+        [] -> pure [RErr "usage: set-option [-aFgopqsuUw] [-t target] option [value]"]
+        (spelled : rest) -> case matchOptionName spelled of
+            Left (MatchError e) -> orQuiet e
+            Right (n, mkey) -> do
+                let mdef = lookupOptionDef n
+                mvalue <- case rest of
+                    [] -> pure Nothing
+                    _ | has "-F" -> do
+                        env <- setFormatEnv st mclient mtarget
+                        Just <$> expandFormat st env (T.unwords rest)
+                      | otherwise -> pure (Just (T.unwords rest))
+                case mapM_ requireLive mdef of
+                    Left e -> pure [RErr e]
+                    Right ()
+                        | Just d <- mdef, d.role == HookOption ->
+                            pure [RErr (n <> ": set hooks with set-hook")]
+                        | otherwise -> do
+                            esc <- scopeFor st mclient mtarget sd flags mdef
+                            case esc of
+                                Left e -> orQuiet e
+                                Right sc -> case requirePaneValues sc mdef of
+                                    Left e -> pure [RErr e]
+                                    Right () -> do
+                                        when (has "-U") $
+                                            clearPaneCopies st mclient mtarget sc n mkey
+                                        writeOption st sc n
+                                            (\own eff -> planSet mdef req spelled
+                                                mkey own eff mvalue)
+
+-- | Decide and write one option's entry atomically, refreshing the cached
+-- global resolution; a changed @history-limit@ reaches open panes.
+writeOption
+    :: ServerState -> Scope -> Text
+    -> (Maybe OptionValue -> Maybe OptionValue -> Either Text SetAction)
+    -> IO [Reply]
+writeOption st sc n decide = do
+    result <- atomically $ do
+        own <- ownValue st sc n
+        inherited <- inheritedValue st sc n
+        case decide own (maybe inherited Just own) of
+            Left e -> pure (Left e)
+            Right LeaveValue -> pure (Right ())
+            Right act -> do
+                modifyTVar' (deltaVar st sc) $ case act of
+                    WriteValue v -> insertDelta n v
+                    _ -> deleteDelta n
+                refreshGlobalOptions st
+                bumpDirty st
+                pure (Right ())
+    case result of
+        Left e -> pure [RErr e]
+        Right () -> do
+            when (n == "history-limit") (applyHistoryLimit st)
+            pure []
+
+-- | @set -U@ at a window table: also drop the option (or its key) from
+-- each of the target window's panes, so they fall back to inheritance.
+clearPaneCopies
+    :: ServerState -> Maybe Client -> Maybe Text -> Scope -> Text
+    -> Maybe ArrayKey -> IO ()
+clearPaneCopies st mclient mtarget sc n mkey = case sc of
+    WindowTable win -> clear win
+    GlobalWindowTable -> mapM_ clear =<< targetWindowScoped st mclient mtarget
+    _ -> pure ()
   where
-    spelled n midx = optionNameText n
-        <> maybe "" (\i -> "[" <> T.pack (show i) <> "]") midx
+    clear win = atomically $ do
+        ps <- readTVar win.panes
+        forM_ (Map.elems ps) $ \p -> modifyTVar' p.options $ \d ->
+            case (mkey, lookupDelta n d) of
+                (Just k, Just (OVArray m)) -> insertDelta n (OVArray (Map.delete k m)) d
+                (Just _, _) -> d
+                (Nothing, _) -> deleteDelta n d
+        bumpDirty st
 
 -- | The window a @-w@ option scope acts on: a full window target
 -- (@sess:ix@) via the cmd-find grammar, else the target session's current
@@ -146,9 +360,9 @@ targetWindowScoped st mclient mtarget = do
         Right (_, _, win, _) -> pure (Just win)
         Left _ -> targetCurrentWindow st mclient mtarget
 
--- | The environment a @set -F@ value expands against: the target pane's
--- (the hook context's pane when a hook command has no explicit target),
--- degrading to the target session's.
+-- | The environment a @set -F@ value (or a @show -F@ template) expands
+-- against: the target pane's (the hook context's pane when a hook command
+-- has no explicit target), degrading to the target session's.
 setFormatEnv :: ServerState -> Maybe Client -> Maybe Text -> IO FormatEnv
 setFormatEnv st mclient mtarget = do
     mamb <- ambientFor st
@@ -172,77 +386,6 @@ setFormatEnv st mclient mtarget = do
                 Just sess -> sessionFormatEnv st sess
                 -- No session yet: user options still resolve as #{@foo}.
                 Nothing -> (.user) <$> readTVarIO st.options
-
-
--- | Insert a resolved entry into its scope's overlay, refresh the cached
--- global resolution ('ServerState.options'), and push a changed
--- @history-limit@ into each session's open panes.
-writeScoped
-    :: ServerState -> TVar OptionsDelta -> OptionName -> OptionValue
-    -> IO [Reply]
-writeScoped st deltaVar n v = do
-    atomically $ do
-        modifyTVar' deltaVar (insertDelta n v)
-        refreshGlobalOptions st
-        bumpDirty st
-    when (n == OptHistoryLimit) (applyHistoryLimit st)
-    pure []
-
--- | @set -u@: drop a scope's own entry so the parent scopes (or the compiled
--- default) show through, with the same cache refresh as 'writeScoped'.
-unsetScoped :: ServerState -> TVar OptionsDelta -> OptionName -> IO ()
-unsetScoped st deltaVar n = do
-    atomically $ do
-        modifyTVar' deltaVar (deleteDelta n)
-        refreshGlobalOptions st
-        bumpDirty st
-    when (n == OptHistoryLimit) (applyHistoryLimit st)
-
--- | @set -U@ on a window scope: additionally clear each pane's own copy, so
--- every pane in the window (or everywhere, under @-g@) falls back to
--- inheritance.
-clearPaneCopies
-    :: ServerState -> Maybe Client -> Maybe Text -> SetScope -> OptionName
-    -> IO ()
-clearPaneCopies st mclient mtarget scope n = case scope of
-    SetLocalWindow -> do
-        mwin <- targetWindowScoped st mclient mtarget
-        forM_ mwin $ \win -> atomically $ do
-            clearWindow win
-            bumpDirty st
-    SetGlobalWindow -> atomically $ do
-        sessions <- readTVar st.sessions
-        forM_ (Map.elems sessions) $ \sess -> do
-            ws <- readTVar sess.windows
-            mapM_ clearWindow (Map.elems ws)
-        bumpDirty st
-    _ -> pure ()
-  where
-    clearWindow win = do
-        ps <- readTVar win.panes
-        forM_ (Map.elems ps) $ \p -> modifyTVar' p.options (deleteDelta n)
-
--- | The overlay table a scope writes into, resolving the target session,
--- its current window, or a pane; a missing target fails loud, naming the
--- target and the scope's kind (upstream options-scope.sh).
-scopeTargetVar
-    :: ServerState -> Maybe Client -> Maybe Text -> SetScope
-    -> IO (Either Text (TVar OptionsDelta))
-scopeTargetVar st mclient mtarget = \case
-    SetServer -> pure (Right st.serverOptions)
-    SetGlobalSession -> pure (Right st.globalSessionOptions)
-    SetGlobalWindow -> pure (Right st.globalWindowOptions)
-    SetLocalSession -> do
-        msess <- targetSession st mclient mtarget
-        pure (orNoSuch "session" ((.options) <$> msess))
-    SetLocalWindow -> do
-        mwin <- targetWindowScoped st mclient mtarget
-        pure (orNoSuch "window" ((.options) <$> mwin))
-    SetLocalPane -> do
-        mpane <- targetPaneScoped st mclient mtarget
-        pure (orNoSuch "pane" ((.options) <$> mpane))
-  where
-    orNoSuch kind = maybe (Left (noSuchTarget kind mtarget)) Right
 
 -- | Recompute the cached global option resolution. Runs in the same
 -- transaction as every global-scope delta write so the cache never drifts.
@@ -277,178 +420,202 @@ applyHistoryLimit st = do
             forM_ (Map.elems paneMap) $ \pane ->
                 Emu.setScrollbackLimit pane.emulator limit
 
--- | @show-options@. tmux semantics: a plain read answers from the target
--- scope's own table only — no parent walk — so an option unset at that scope
--- prints nothing (success); @-A@ walks the parents and marks an inherited
--- value with a trailing @*@. The global scopes answer from the resolved
--- global chain, which includes the compiled defaults. Without a name, the
--- scope's own entries are listed (@-H@ adds the hook table, which hat keeps
--- empty).
+-- Showing ---------------------------------------------------------------
+
+-- | Whether a shown value is the table's own or inherited (@-A@'s @*@).
+data Inheritance = OwnValue | InheritedValue
+    deriving (Eq, Show)
+
+-- | @show -v@: the value alone, or the name and the value.
+data Display = ValueOnly | NameAndValue
+    deriving (Eq, Show)
+
+-- | An empty array shows its bare name: it has no value to print.
+data ValuePresence = HasValue | NoValue
+    deriving (Eq, Show)
+
+-- | One @show-options@ line before rendering: the fields tmux's
+-- @SHOW_OPTIONS_TEMPLATE@ (and a @-F@ template) reads.
+data ShowLine = ShowLine
+    { option :: Text
+    , definition :: Maybe OptionDef  -- ^ 'Nothing' for a @\@user@ option
+    , key :: Maybe ArrayKey
+    , value :: Text
+    , inheritance :: Inheritance
+    , presence :: ValuePresence
+    }
+
+-- | tmux's default @show-options@ template: string values are quoted as
+-- command arguments, everything else prints bare.
+renderShowLine :: Display -> ShowLine -> Text
+renderShowLine display l = case display of
+    ValueOnly -> l.value
+    NameAndValue -> l.option
+        <> maybe "" (\k -> "[" <> arrayKeyText k <> "]") l.key
+        <> (if l.inheritance == InheritedValue then "*" else "")
+        <> case l.presence of
+            NoValue -> ""
+            HasValue -> " " <> if isString l then quoteArgsT l.value else l.value
+
+isString :: ShowLine -> Bool
+isString l = case (.kind) <$> l.definition of
+    Nothing -> True
+    Just KString -> True
+    Just KStyle -> True
+    Just KColourString -> True
+    Just _ -> False
+
+-- | The @option_*@ formats a @show -F@ template reads for one line.
+showLineFormats :: Display -> ShowLine -> FormatEnv
+showLineFormats display l = Map.fromList
+    [ ("option_name", l.option)
+    , ("option_value", l.value)
+    , ("option_value_only", bit (display == ValueOnly))
+    , ("option_is_parent", bit (l.inheritance == InheritedValue))
+    , ("option_is_array", bit (maybe False (isJust . (.array)) l.definition))
+    , ("option_is_string", bit (isString l))
+    , ("option_is_hook", bit (fmap (.role) l.definition == Just HookOption))
+    , ("option_is_user", bit (isNothing l.definition))
+    , ("option_has_value", bit (l.presence == HasValue))
+    , ("option_array_key", maybe "" arrayKeyText l.key)
+    , ("option_has_array_key", bit (isJust l.key))
+    ]
+  where
+    bit b = if b then "1" else "0"
+
+-- | tmux's @cmd_show_options_print@: an array without a key yields one line
+-- per entry, or a valueless line when empty.
+optionLines
+    :: Text -> Maybe OptionDef -> Maybe ArrayKey -> Inheritance
+    -> OptionValue -> [ShowLine]
+optionLines n md mkey inh v = case (v, mkey) of
+    (OVArray m, Just k) -> [line (Just k) (Map.findWithDefault "" k m) HasValue]
+    (OVArray m, Nothing)
+        | Map.null m -> [line Nothing "" NoValue]
+        | otherwise -> [ line (Just k) t HasValue | (k, t) <- Map.toAscList m ]
+    (OVScalar t, _) -> [line Nothing t HasValue]
+  where
+    line k t p = ShowLine
+        { option = n, definition = md, key = k, value = t
+        , inheritance = inh, presence = p }
+
+-- | Render lines through the default template (where @-v@ drops a
+-- valueless line) or a @-F@ one.
+renderLines
+    :: ServerState -> Maybe Client -> Maybe Text -> Display -> Maybe Text
+    -> [ShowLine] -> IO [Reply]
+renderLines st mclient mtarget display mfmt ls = case mfmt of
+    Nothing -> pure
+        [ ROutput (renderShowLine display l)
+        | l <- ls, display == NameAndValue || l.presence == HasValue ]
+    Just fmt -> do
+        base <- setFormatEnv st mclient mtarget
+        forM ls $ \l ->
+            ROutput <$> expandFormat st (Map.union (showLineFormats display l) base) fmt
+
+-- | @show-options@: one option, or (with no name) the table's listing.
 cmdShow :: CommandImpl
 cmdShow st mclient args = do
-    let (opts, flags, pos) = parseArgs "t" args
+    let (opts, flags, pos) = parseArgs "tF" args
+        has f = f `elem` flags
         mtarget = lookup "-t" opts
-        valueOnly = "-v" `elem` flags
-        quiet = "-q" `elem` flags
-        withParents = "-A" `elem` flags
+        mfmt = lookup "-F" opts
+        display = if has "-v" then ValueOnly else NameAndValue
+        quiet = has "-q"
+        orQuiet e = pure [RErr e | not quiet]
     case pos of
-        [] -> showListing st mclient mtarget flags
-        [nameT] -> case resolveIndexedName nameT of
-            Left err -> pure [RErr err | not quiet]
-            Right (n, midx) -> case chooseScope DefaultSession flags n of
-                Left err -> pure [RErr err]
-                Right scope -> do
-                    ev <- showScopeValue st mclient mtarget withParents scope n
-                    pure $ case ev of
-                        Left err -> [RErr err]
-                        Right Nothing -> []
-                        Right (Just (v, inherited)) ->
-                            let render nm t = ROutput $ if valueOnly
-                                    then t
-                                    else nm <> (if inherited then "*" else "")
-                                        <> " " <> quoteIfNeeded t
-                            in case (v, midx) of
-                                (OVIndexed m, Just i) ->
-                                    [ render (indexedName n i) t
-                                    | Just t <- [Map.lookup i m] ]
-                                (OVIndexed m, Nothing) ->
-                                    [ render (indexedName n i) t
-                                    | (i, t) <- Map.toAscList m ]
-                                _ -> [render (optionNameText n)
-                                        (formatOptionValue v)]
-        _ -> pure [RErr "usage: show-options [-AgHpqsvw] [-t target] [option]"]
-
--- | One option's value at one scope: 'Nothing' when the scope does not set
--- it (or, with the parent walk on, when nothing in the chain does); the
--- 'Bool' is the @-A@ inherited marker. See 'cmdShow'.
-showScopeValue
-    :: ServerState -> Maybe Client -> Maybe Text -> Bool -> SetScope
-    -> OptionName -> IO (Either Text (Maybe (OptionValue, Bool)))
-showScopeValue st mclient mtarget withParents scope n = case scope of
-    SetServer -> globalAnswer
-    SetGlobalSession -> globalAnswer
-    SetGlobalWindow -> globalAnswer
-    SetLocalSession -> do
-        msess <- targetSession st mclient mtarget
-        case msess of
-            Nothing -> pure (Left (noSuchTarget "session" mtarget))
-            Just sess -> ownOr sess.options (resolveGlobal st)
-    SetLocalWindow -> do
-        mwin <- targetWindowScoped st mclient mtarget
-        case mwin of
-            Nothing -> pure (Left (noSuchTarget "window" mtarget))
-            Just win -> ownOr win.options (resolveGlobal st)
-    SetLocalPane -> do
-        mpane <- targetPaneScoped st mclient mtarget
-        case mpane of
-            Nothing -> pure (Left (noSuchTarget "pane" mtarget))
-            Just pane -> do
-                mloc <- atomically (locatePane st pane.id)
-                let parentChain = case mloc of
-                        Just (sid, win) -> do
-                            msess <- Map.lookup sid <$> readTVar st.sessions
-                            case msess of
-                                Just sess -> resolveForWindow st sess win
-                                Nothing -> resolveGlobal st
-                        Nothing -> resolveGlobal st
-                ownOr pane.options parentChain
+        [] -> do
+            esc <- scopeFromFlags st mclient mtarget DefaultSession flags
+            case esc of
+                Left e -> orQuiet e
+                Right sc -> do
+                    ls <- showListing st sc (has "-A") (has "-H")
+                    renderLines st mclient mtarget display mfmt ls
+        [spelled] -> case matchOptionName spelled of
+            Left (MatchError e) -> orQuiet e
+            Right (n, mkey) -> do
+                let mdef = lookupOptionDef n
+                case mapM_ requireLive mdef of
+                    Left e -> pure [RErr e]
+                    Right () -> do
+                        esc <- scopeFor st mclient mtarget DefaultSession flags mdef
+                        case esc of
+                            Left e -> orQuiet e
+                            Right sc -> do
+                                found <- lookupShown st sc mdef n (has "-A")
+                                case found of
+                                    Just (v, inh) -> renderLines st mclient mtarget
+                                        display mfmt
+                                        (optionLines n mdef mkey
+                                            (emptyArrayOwn mkey v inh) v)
+                                    Nothing
+                                        | isJust mdef -> pure []
+                                        | otherwise -> orQuiet ("invalid option: " <> spelled)
+        _ -> pure [RErr "usage: show-options [-AgHpqsvw] [-F format] [-t target] [option]"]
   where
-    globalAnswer = do
-        resolved <- atomically (resolveGlobal st)
-        pure (Right (asOwn <$> optionValueOf resolved n))
-    ownOr deltaVar parentChain = do
-        own <- readTVarIO deltaVar
-        case lookupDelta n own of
-            Just v -> pure (Right (Just (asOwn v)))
+    -- A named empty array never shows the inherited marker.
+    emptyArrayOwn mkey v inh = case (mkey, v) of
+        (Nothing, OVArray m) | Map.null m -> OwnValue
+        _ -> inh
+
+-- | One option's value at a table — its own, or with @-A@ the inherited
+-- one — and whether it was inherited.
+lookupShown
+    :: ServerState -> Scope -> Maybe OptionDef -> Text -> Bool
+    -> IO (Maybe (OptionValue, Inheritance))
+lookupShown st sc mdef n withParents = case mdef of
+    Just d | d.role == HookOption -> do
+        own <- hookValue st sc n
+        pure ((\v -> (v, OwnValue)) <$> own)
+    _ -> atomically $ do
+        own <- ownValue st sc n
+        case own of
+            Just v -> pure (Just (v, OwnValue))
             Nothing
-                | withParents -> do
-                    resolved <- atomically parentChain
-                    pure (Right (asInherited <$> optionValueOf resolved n))
-                | otherwise -> pure (Right Nothing)
-    asOwn v = (v, False)
-    asInherited v = (v, True)
+                | withParents -> fmap (\v -> (v, InheritedValue)) <$> inheritedValue st sc n
+                | otherwise -> pure Nothing
 
--- | The no-name form of @show-options@: list the scope's own table (plus,
--- under @-A@, the parent tables' unshadowed entries). See 'cmdShow'.
-showListing :: ServerState -> Maybe Client -> Maybe Text -> [Text] -> IO [Reply]
-showListing st mclient mtarget flags = do
-    etables <- scopeTables
-    case etables of
-        Left err -> pure [RErr err]
-        Right (own, parents) -> do
-            let ls = listingLines valueOnly own
-                    (if withParents then parents else [])
-                hooks = if withHooks && hasG && not (hasW || hasS)
-                    then hookNames else []
-            pure (map ROutput (List.sort (ls <> hooks)))
+-- | A hook's commands at a table, as the array tmux keeps them in. The
+-- global tables hold every hook, so there an unbound one is an empty array.
+hookValue :: ServerState -> Scope -> Text -> IO (Maybe OptionValue)
+hookValue st sc n = case hookScopeOf sc of
+    Nothing -> pure Nothing
+    Just hs -> do
+        entries <- hookEntriesAt st hs
+        pure $ case (Map.lookup n entries, hs) of
+            (Just e, _) -> Just (OVArray (Map.fromList
+                (zip (map KeyIndex [0 ..]) e.commands)))
+            (Nothing, HookGlobal) -> Just (OVArray Map.empty)
+            _ -> Nothing
+
+hookScopeOf :: Scope -> Maybe HookScope
+hookScopeOf = \case
+    ServerTable -> Nothing
+    GlobalSessionTable -> Just HookGlobal
+    GlobalWindowTable -> Just HookGlobal
+    SessionTable s -> Just (HookSession s.id)
+    WindowTable w -> Just (HookWindow w.id)
+    PaneTable p -> Just (HookPane p.id)
+
+-- | tmux's @cmd_show_options_all@: the table's @\@user@ options, then every
+-- registered option that lists there, in registry order — own values, plus
+-- inherited ones under @-A@; hooks only under @-H@. Options hat does not
+-- implement are left out.
+showListing :: ServerState -> Scope -> Bool -> Bool -> IO [ShowLine]
+showListing st sc withParents withHooks = do
+    own <- readTVarIO (deltaVar st sc)
+    let users = concat
+            [ optionLines n Nothing Nothing OwnValue v
+            | (n, v) <- deltaEntries own, "@" `T.isPrefixOf` n ]
+    rows <- forM (filter shown optionTable) $ \d -> do
+        found <- lookupShown st sc (Just d) d.name withParents
+        pure $ case found of
+            Just (v, inh) -> optionLines d.name (Just d) Nothing inh v
+            Nothing -> []
+    pure (users <> concat rows)
   where
-    hasS = "-s" `elem` flags
-    hasG = "-g" `elem` flags
-    hasW = "-w" `elem` flags
-    hasP = "-p" `elem` flags
-    valueOnly = "-v" `elem` flags
-    withParents = "-A" `elem` flags
-    withHooks = "-H" `elem` flags
-    noParents d = Right (d, [])
-    scopeTables
-        | hasS = noParents <$> readTVarIO st.serverOptions
-        | hasG && hasW = noParents <$> readTVarIO st.globalWindowOptions
-        | hasG = noParents <$> readTVarIO st.globalSessionOptions
-        | hasP = do
-            mpane <- targetPaneScoped st mclient mtarget
-            case mpane of
-                Nothing -> pure (Left (noSuchTarget "pane" mtarget))
-                Just pane -> do
-                    own <- readTVarIO pane.options
-                    mloc <- atomically (locatePane st pane.id)
-                    gw <- readTVarIO st.globalWindowOptions
-                    parents <- case mloc of
-                        Just (_, win) -> do
-                            w <- readTVarIO win.options
-                            pure [w, gw]
-                        Nothing -> pure [gw]
-                    pure (Right (own, parents))
-        | hasW = do
-            mwin <- targetWindowScoped st mclient mtarget
-            case mwin of
-                Nothing -> pure (Left (noSuchTarget "window" mtarget))
-                Just win -> do
-                    own <- readTVarIO win.options
-                    gw <- readTVarIO st.globalWindowOptions
-                    pure (Right (own, [gw]))
-        | otherwise = do
-            msess <- targetSession st mclient mtarget
-            case msess of
-                Nothing -> pure (Left (noSuchTarget "session" mtarget))
-                Just sess -> do
-                    own <- readTVarIO sess.options
-                    gs <- readTVarIO st.globalSessionOptions
-                    pure (Right (own, [gs]))
-
--- | Format a scope's entries plus unshadowed parent entries (marked @*@),
--- name-ordered, as @show-options@ prints them.
-listingLines :: Bool -> OptionsDelta -> [OptionsDelta] -> [Text]
-listingLines valueOnly own parents = concatMap lines' (List.sortOn name entries)
-  where
-    parentMerged = mergeDeltas parents
-    entries = deltaEntries own <>
-        [ e | e@(n, _) <- deltaEntries parentMerged
-        , Nothing <- [lookupDelta n own] ]
-    name (n, _) = optionNameText n
-    inherited (n, _) = deltaMember n parentMerged && not (deltaMember n own)
-    lines' e@(n, v) = case v of
-        -- An array prints one line per entry, index in the name.
-        OVIndexed m ->
-            [ line e (indexedName n i) t | (i, t) <- Map.toAscList m ]
-        _ -> [ line e (optionNameText n) (formatOptionValue v) ]
-    line e nm v
-        | valueOnly = v
-        | otherwise = nm <> (if inherited e then "*" else "")
-            <> " " <> quoteIfNeeded v
-
--- | @show-options@'s spelling of one array entry: @command-alias[0]@.
-indexedName :: OptionName -> Int -> Text
-indexedName n i = optionNameText n <> "[" <> T.pack (show i) <> "]"
+    shown d = isLive d && listsAt sc d.scope
+        && (withHooks || d.role == PlainOption)
 
 -- | The environment store a command's flags address: the global scope under
 -- @-g@, else the target session's. Like tmux, @-g@ ignores any @-t@.
@@ -541,172 +708,3 @@ cmdShowEnvironment st mclient args
     line (name, entry)
         | entry.visibility == wanted = [ROutput (renderEnvLine form name entry)]
         | otherwise = []
-
--- | Whether a @set-option@ replaces the option or concatenates onto it.
-data SetMode
-    = Assign  -- ^ replace the current value outright
-    | Append  -- ^ tmux's @-a@: append onto a string option's current value
-    deriving (Eq)
-
--- | Apply a @set-option@. For string-valued options 'Append' concatenates
--- onto the current value (used to build up @status-right@ across several
--- lines). Unknown non-@\@@ options are rejected so a config never looks
--- supported when its behavior is not yet implemented.
-setOption :: SetMode -> Options -> Text -> Text -> Either Text Options
-setOption mode opts name value = do
-    (n, v) <- setOptionEntry mode opts name value
-    pure (applyEntry n v opts)
-
--- | Parse and validate a @set-option@ into the single scoped entry it writes.
--- For string-valued options 'Append' concatenates onto the current value (used
--- to build up @status-right@ across several lines). Unknown non-@\@@ options
--- are rejected so a config never looks supported when its behavior is not yet
--- implemented.
-setOptionEntry
-    :: SetMode -> Options -> Text -> Text
-    -> Either Text (OptionName, OptionValue)
-setOptionEntry mode opts spelledName value = do
-    (name, midx) <- splitArrayIndex spelledName
-    case midx of
-        Just i -> indexedOptionEntry mode opts name i value
-        Nothing -> scalarOptionEntry mode opts name value
-
--- | A single-index array set: @command-alias[100] zoom=…@ replaces (or, with
--- @-a@, extends) just that entry of the current array.
-indexedOptionEntry
-    :: SetMode -> Options -> Text -> Int -> Text
-    -> Either Text (OptionName, OptionValue)
-indexedOptionEntry mode opts name i value = case name of
-    "command-alias" -> Right
-        (OptCommandAlias, OVIndexed (Map.alter place i opts.commandAlias))
-    _ -> Left (name <> " is not an array option")
-  where
-    place old = Just $ case (mode, old) of
-        (Append, Just prev) -> prev <> value
-        _ -> value
-
--- | A whole-array set: values split on tmux's @,@ separator; an append
--- continues after the highest existing index.
-arrayEntries :: SetMode -> Map Int Text -> Text -> Map Int Text
-arrayEntries mode current value = case mode of
-    Assign -> Map.fromList (zip [0 ..] items)
-    Append -> Map.union current (Map.fromList (zip [next ..] items))
-  where
-    items = if T.null value then [] else T.splitOn "," value
-    next = maybe 0 ((+ 1) . fst) (Map.lookupMax current)
-
-scalarOptionEntry
-    :: SetMode -> Options -> Text -> Text
-    -> Either Text (OptionName, OptionValue)
-scalarOptionEntry mode opts name value = case name of
-    "command-alias" ->
-        Right (OptCommandAlias,
-            OVIndexed (arrayEntries mode opts.commandAlias value))
-    "prefix" -> case parseKeyName value of
-        Just k -> Right (OptPrefix, OVText k.name)
-        Nothing -> Left ("bad prefix key: " <> value)
-    "base-index" -> withInt OptBaseIndex
-    "pane-base-index" -> withInt OptPaneBaseIndex
-    "history-limit" -> withInt OptHistoryLimit
-    "default-terminal" -> Right (OptDefaultTerminal, OVText value)
-    "word-separators" -> Right (OptWordSeparators, OVText value)
-    "status" -> case value of
-        "off" -> Right (OptStatus, OVStatusLines 0)
-        "on"  -> Right (OptStatus, OVStatusLines 1)
-        -- tmux accepts 2..5 too, but each extra line needs its own
-        -- status-format[i] (pane/session lists via #{P:}/#{S:}), which hat
-        -- does not model yet; reject loudly rather than draw a blank bar.
-        _ | value `elem` ["2", "3", "4", "5"] ->
-                Left "status: multi-line status (2-5) not yet supported"
-          | otherwise -> Left "status: off, on, or 2-5"
-    "status-position" -> case value of
-        "top" -> Right (OptStatusPosition, OVStatusPosition StatusTop)
-        "bottom" -> Right (OptStatusPosition, OVStatusPosition StatusBottom)
-        _ -> Left "status-position: top or bottom"
-    "mode-keys" -> case value of
-        "vi" -> Right (OptModeKeys, OVModeKeys KeysVi)
-        "emacs" -> Right (OptModeKeys, OVModeKeys KeysEmacs)
-        _ -> Left "mode-keys: vi or emacs"
-    "status-left" ->
-        Right (OptStatusLeft, OVText (withAppend opts.statusLeft))
-    "status-left-length" -> withInt OptStatusLeftLength
-    "status-right" ->
-        Right (OptStatusRight, OVText (withAppend opts.statusRight))
-    "status-right-length" -> withInt OptStatusRightLength
-    "status-interval" -> withInt OptStatusInterval
-    "window-status-format" ->
-        Right (OptWindowStatusFormat,
-            OVText (withAppend opts.windowStatusFormat))
-    "window-status-current-format" ->
-        Right (OptWindowStatusCurrentFormat,
-            OVText (withAppend opts.windowStatusCurrentFormat))
-    "status-style" -> Right (OptStatusStyle, OVStyle (parseStyle value))
-    "window-status-style" ->
-        Right (OptWindowStatusStyle, OVStyle (parseStyle value))
-    "window-status-current-style" ->
-        Right (OptWindowStatusCurrentStyle, OVStyle (parseStyle value))
-    "window-status-bell-style" ->
-        Right (OptWindowStatusBellStyle, OVStyle (parseStyle value))
-    "pane-border-style" ->
-        Right (OptPaneBorderStyle, OVStyle (parseStyle value))
-    "pane-active-border-style" ->
-        Right (OptPaneActiveBorderStyle, OVStyle (parseStyle value))
-    "mode-style" -> Right (OptModeStyle, OVStyle (parseStyle value))
-    "cursor-colour" -> withColour OptCursorColour
-    "pane-border-lines" -> case value of
-        "single" -> Right (OptPaneBorderLines, OVBorderLines BorderSingle)
-        "heavy"  -> Right (OptPaneBorderLines, OVBorderLines BorderHeavy)
-        "double" -> Right (OptPaneBorderLines, OVBorderLines BorderDouble)
-        "simple" -> Right (OptPaneBorderLines, OVBorderLines BorderSimple)
-        _ -> Left "pane-border-lines: single, heavy, double, or simple"
-    "pane-border-indicators" -> case value of
-        "off"    -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsOff)
-        "colour" -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsColour)
-        "color"  -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsColour)
-        "arrows" -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsArrows)
-        "both"   -> Right (OptPaneBorderIndicators, OVBorderIndicators IndicatorsBoth)
-        _ -> Left "pane-border-indicators: off, colour, arrows, or both"
-    "set-titles" -> withOnOff OptSetTitles
-    "escape-time" -> withInt OptEscapeTime
-    "display-time" -> withInt OptDisplayTime
-    "display-panes-time" -> withInt OptDisplayPanesTime
-    "display-panes-colour" -> withColour OptDisplayPanesColour
-    "display-panes-active-colour" -> withColour OptDisplayPanesActiveColour
-    "focus-events" -> withOnOff OptFocusEvents
-    "aggressive-resize" -> withOnOff OptAggressiveResize
-    "monitor-activity" -> withOnOff OptMonitorActivity
-    "monitor-bell" -> withOnOff OptMonitorBell
-    "monitor-silence" -> withInt OptMonitorSilence
-    "bell-action" -> case value of
-        "any" -> Right (OptBellAction, OVAlertAction AlertAny)
-        "none" -> Right (OptBellAction, OVAlertAction AlertNone)
-        "current" -> Right (OptBellAction, OVAlertAction AlertCurrent)
-        "other" -> Right (OptBellAction, OVAlertAction AlertOther)
-        _ -> Left "bell-action: any, none, current, or other"
-    "automatic-rename" -> withOnOff OptAutomaticRename
-    "remain-on-exit" -> withOnOff OptRemainOnExit
-    "automatic-rename-format" -> Right (OptAutomaticRenameFormat, OVText value)
-    "update-environment" ->
-        Right (OptUpdateEnvironment, OVTextList (T.words value))
-    "main-pane-width" -> withInt OptMainPaneWidth
-    "main-pane-height" -> withInt OptMainPaneHeight
-    _
-        | "@" `T.isPrefixOf` name -> Right (OptUser name, OVText value)
-        | otherwise -> Left ("invalid option: " <> name)
-  where
-    withInt n = case TR.decimal value of
-        Right (m, restT) | T.null restT -> Right (n, OVInt m)
-        _ -> Left (name <> ": not a number: " <> value)
-    withOnOff n = case value of
-        "on"  -> Right (n, OVBool True)
-        "off" -> Right (n, OVBool False)
-        _ -> Left (name <> ": on or off")
-    -- "default"/"" pass through; anything else must be a colour parseColor
-    -- recognizes (it answers DefaultColor only for those two and junk).
-    withColour n
-        | T.null value || value == "default"
-            || parseColor value /= Cell.DefaultColor = Right (n, OVText value)
-        | otherwise = Left ("bad colour: " <> value)
-    withAppend old = case mode of
-        Append -> old <> value
-        Assign -> value

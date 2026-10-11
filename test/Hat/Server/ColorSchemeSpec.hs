@@ -13,7 +13,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 import Hat.Model.Options
-    ( Options (..), OptionName (..), OptionValue (..)
+    ( Options (..), OptionValue (..)
     , resolveOptions, singletonDelta )
 import Hat.Server.ColorScheme
 import Hat.Term.Cell qualified as Cell
@@ -138,7 +138,7 @@ spec = do
             -- the scheme is the lowest layer, so a user's set-option (here a
             -- session overlay) always wins on resolution.
             let userStyle = Cell.defaultStyle { Cell.bg = Cell.Indexed 196 }
-                userDelta = singletonDelta OptStatusStyle (OVStyle userStyle)
+                userDelta = singletonDelta "status-style" (OVScalar "bg=colour196")
                 dark = resolveOptions [userDelta, applyPalette SchemeDark]
             dark.statusStyle `shouldBe` userStyle
             dark.statusStyle.bg `shouldBe` Cell.Indexed 196

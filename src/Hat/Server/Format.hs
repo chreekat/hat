@@ -10,6 +10,7 @@ module Hat.Server.Format
     , formatCtx
     , evaluate
     , evaluateCtx
+    , quoteArgsT
     , renderFormat
     , renderFormatCtx
     , formatReadsTree

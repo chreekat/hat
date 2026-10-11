@@ -4,16 +4,20 @@
 module Hat.Server.Format.Colour
     ( Colour (..)
     , colourFromText
+    , colourToText
     , colourToHex
     , colourToEscape
     ) where
 
+import Control.Applicative ((<|>))
 import Data.Char (digitToInt, isHexDigit)
 import Data.List qualified as List
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Numeric (showHex)
+
+import Hat.Server.Format.X11Colours (x11Colours)
 
 -- | A parsed tmux colour. 'CBase' holds the classic SGR index (0-7 or the
 -- bright 90-97); 'C256' a palette index; 'CRGB' a packed @0xRRGGBB@.
@@ -33,7 +37,7 @@ colourFromText t0
     | Just n <- indexed "color" = Just (C256 n)
     | Just rgb <- hexColour t = Just (CRGB rgb)
     | Just n <- List.lookup t namedColours = Just (CBase n)
-    | otherwise = Nothing
+    | otherwise = CRGB <$> colourByName t
   where
     t = T.toLower (T.strip t0)
     indexed pre = do
@@ -41,6 +45,35 @@ colourFromText t0
         case TR.decimal rest of
             Right (n, "") | n >= (0 :: Int) && n <= 255 -> Just n
             _ -> Nothing
+
+-- | tmux's @colour_tostring@: the canonical spelling @show-options@ prints.
+colourToText :: Colour -> Text
+colourToText = \case
+    CDefault -> "default"
+    CTerminal -> "terminal"
+    C256 n -> "colour" <> T.pack (show n)
+    CRGB v -> "#" <> T.pack (pad (showHex v ""))
+    CBase n
+        | n >= 90 -> "bright" <> baseName (n - 90)
+        | otherwise -> baseName n
+  where
+    pad s = replicate (6 - length s) '0' <> s
+    baseName i = maybe "invalid" fst (List.find ((== i) . snd) (take 8 namedColours))
+
+-- tmux's @colour_byname@ over a lowercased name: @grayN@\/@greyN@ is a
+-- 0-100 ramp, anything else an X11 name.
+colourByName :: Text -> Maybe Int
+colourByName t
+    | Just rest <- T.stripPrefix "gray" t <|> T.stripPrefix "grey" t =
+        if T.null rest then Just 0xbebebe else case TR.decimal rest of
+            Right (n, "") | n <= (100 :: Int) ->
+                let c = roundHalfUp (2.55 * fromIntegral n)
+                in Just (c * 65536 + c * 256 + c)
+            _ -> Nothing
+    | otherwise = List.lookup t x11Colours
+  where
+    roundHalfUp :: Double -> Int
+    roundHalfUp x = floor (x + 0.5)
 
 -- Base names, their bright forms, and the numeric aliases tmux accepts.
 namedColours :: [(Text, Int)]

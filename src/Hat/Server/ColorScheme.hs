@@ -35,8 +35,8 @@ import Data.Word (Word8)
 import System.Exit (ExitCode)
 
 import Hat.Model.Options
-    ( OptionName (..), OptionValue (..), OptionsDelta
-    , emptyDelta, insertDelta )
+    ( OptionValue (..), OptionsDelta, emptyDelta, insertDelta )
+import Hat.Server.Style (styleText)
 import Hat.Term.Cell qualified as Cell
 
 data ColorScheme = SchemeLight | SchemeDark
@@ -157,13 +157,16 @@ schemeReport SchemeLight = "\ESC[?997;2n"
 -- detected scheme nothing is applied, so the classic defaults stand.
 applyPalette :: ColorScheme -> OptionsDelta
 applyPalette scheme = foldr (uncurry insertDelta) emptyDelta
-    [ (OptStatusStyle, OVStyle p.bar)
-    , (OptWindowStatusStyle, OVStyle p.bar)
-    , (OptWindowStatusCurrentStyle, OVStyle p.current)
-    , (OptWindowStatusBellStyle, OVStyle p.bell)
-    , (OptPaneBorderStyle, OVStyle p.border)
-    , (OptPaneActiveBorderStyle, OVStyle p.activeBorder)
-    , (OptModeStyle, OVStyle p.mode)
+    [ (n, OVScalar (styleText sty))
+    | (n, sty) <-
+        [ ("status-style", p.bar)
+        , ("window-status-style", p.bar)
+        , ("window-status-current-style", p.current)
+        , ("window-status-bell-style", p.bell)
+        , ("pane-border-style", p.border)
+        , ("pane-active-border-style", p.activeBorder)
+        , ("mode-style", p.mode)
+        ]
     ]
   where
     p = palette scheme

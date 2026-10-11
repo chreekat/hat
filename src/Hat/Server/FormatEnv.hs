@@ -433,5 +433,5 @@ idNum pre key env = do
 -- @-prefixed user options set at one scope, as format variables.
 deltaUserVars :: OptionsDelta -> Map.Map Text Text
 deltaUserVars d = Map.fromList
-    [ (nm, v) | (OptUser nm, OVText v) <- deltaEntries d ]
+    [ (nm, valueText v) | (nm, v) <- deltaEntries d, "@" `T.isPrefixOf` nm ]
 

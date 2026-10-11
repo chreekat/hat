@@ -17,7 +17,7 @@ import Hat.Log (newLogger)
 import Hat.Model
     (PaneId (..), ServerState (..), Session (..), StartupPhase (..),
      newServerState)
-import Hat.Model.Options (OptionName (..), OptionValue (..), applyEntry)
+import Hat.Model.Options (OptionValue (..), applyEntry)
 import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
@@ -477,12 +477,12 @@ spec = do
         it "reads @snapshot-limit from the options" $ do
             st <- testState
             atomically $ modifyTVar' st.options
-                (applyEntry (OptUser "@snapshot-limit") (OVText "3"))
+                (applyEntry "@snapshot-limit" (OVScalar "3"))
             snapshotHistoryLimit st `shouldReturn` 3
 
         it "defaults to 10, also for an unparsable value" $ do
             st <- testState
             snapshotHistoryLimit st `shouldReturn` 10
             atomically $ modifyTVar' st.options
-                (applyEntry (OptUser "@snapshot-limit") (OVText "many"))
+                (applyEntry "@snapshot-limit" (OVScalar "many"))
             snapshotHistoryLimit st `shouldReturn` 10

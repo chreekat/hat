@@ -1,11 +1,10 @@
--- | The config-load burn-down: loading the author's real @~/.tmux.conf@
--- must reject exactly the options whose behavior hat has not yet
--- implemented — never silently accept them. As each milestone lands its
--- behavior, its option leaves 'expectedUnimplemented' and this list
--- shrinks toward empty.
+-- | The option registry and @set@\/@show@ machinery over it, plus the
+-- config-load burn-down: loading the author's real @~/.tmux.conf@ must
+-- reject exactly the options whose behavior hat has not yet implemented —
+-- never silently accept them.
 module Hat.Server.OptionsSpec (spec) where
 
-import Data.Either (isLeft, lefts)
+import Data.Either (lefts)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -15,18 +14,16 @@ import Test.Hspec
 
 import Hat.Command.Parser (parseConfig)
 import Hat.Model.Options
-    ( Options (..), defaultOptions
-    , OptionName (..), OptionValue (..), ScopeClass (..)
-    , emptyDelta, singletonDelta, deleteDelta, mergeDeltas, resolveOptions
-    , optionScopeClass, validateScope, resolveOptionName
-    , lookupCommandAlias
-    )
 import Hat.Server
-    ( SetMode (..), setOption, chooseScope, SetScope (..), SetDefault (..)
+    ( SetMode (..), setOption
     , Insert (..), WindowPlacement (..), Replace (..)
     , Renumbered (..), renumberSession
-    , applyShifts, listingLines, placeWindow, selectNamed
+    , applyShifts, placeWindow, selectNamed
     )
+import Hat.Server.Command.Option
+    ( Display (..), Inheritance (..), ShowLine (..), ValuePresence (..)
+    , renderShowLine )
+import Hat.Server.OptionParse (parseScalar)
 
 -- Apply every top-level @set@ in a config, returning the errors it logs.
 loadSetErrors :: [[Text]] -> [Text]
@@ -49,12 +46,45 @@ argvSet (cmd : rest)
              , name, T.unwords valueWords )
 argvSet _ = Nothing
 
+set :: SetMode -> Options -> Text -> Text -> Options
+set mode opts name v = either (const opts) id (setOption mode opts name v)
+
+idx :: Integer -> ArrayKey
+idx = KeyIndex
+
 spec :: Spec
 spec = do
+    describe "the registry" $ do
+        it "decodes every registered default into the record" $
+            -- forcing every field: a field no row binds would throw
+            length (show defaultOptions) `shouldSatisfy` (> 0)
+
+        it "registers every live option's default as a value it would accept" $
+            [ d.name
+            | d <- optionTable, isLive d, d.role == PlainOption
+            , OVScalar t <- [d.defaultValue]
+            , parseScalar d Assign Nothing t (Just t) /= Right t ]
+                `shouldBe` []
+
+        it "lists options in tmux's table order" $
+            take 3 [ d.name | d <- optionTable ]
+                `shouldBe` ["backspace", "buffer-limit", "command-alias"]
+
+        it "places each option at tmux's scope" $ do
+            (.scope) <$> lookupOptionDef "prefix" `shouldBe` Just SessionScope
+            (.scope) <$> lookupOptionDef "mode-keys" `shouldBe` Just WindowScope
+            (.scope) <$> lookupOptionDef "focus-events" `shouldBe` Just ServerScope
+            (.scope) <$> lookupOptionDef "cursor-colour"
+                `shouldBe` Just WindowPaneScope
+
     describe "setOption" $ do
         it "rejects an unknown option instead of silently storing it" $
             setOption Assign defaultOptions "no-such-option" "x"
                 `shouldBe` Left "invalid option: no-such-option"
+
+        it "refuses a registered option hat does not implement" $
+            setOption Assign defaultOptions "synchronize-panes" "on"
+                `shouldBe` Left "synchronize-panes: option not yet supported by hat"
 
         it "stores @-options in the user map" $
             fmap (Map.lookup "@foo" . (.user))
@@ -76,83 +106,72 @@ spec = do
 
         it "rejects a multi-line status bar loudly (unsupported)" $
             setOption Assign defaultOptions "status" "3"
-                `shouldBe`
-                    Left "status: multi-line status (2-5) not yet supported"
+                `shouldBe` Left "status: value not yet supported by hat: 3"
 
         it "rejects a junk status value" $
             setOption Assign defaultOptions "status" "yes"
-                `shouldBe` Left "status: off, on, or 2-5"
+                `shouldBe` Left "unknown value: yes"
 
         it "stores a valid cursor-colour and rejects junk" $ do
             fmap (.cursorColour)
                 (setOption Assign defaultOptions "cursor-colour" "red")
                 `shouldBe` Right "red"
             setOption Assign defaultOptions "cursor-colour" "zzz"
-                `shouldSatisfy` isLeft
+                `shouldBe` Left "invalid colour: zzz"
 
-        it "parses display-panes-time as milliseconds" $
-            fmap (.displayPanesTime)
-                (setOption Assign defaultOptions "display-panes-time" "500")
-                `shouldBe` Right 500
-
-        it "stores valid display-panes colours and rejects junk" $ do
-            fmap (.displayPanesColour)
-                (setOption Assign defaultOptions "display-panes-colour" "green")
-                `shouldBe` Right "green"
-            fmap (.displayPanesActiveColour)
-                (setOption Assign defaultOptions
-                    "display-panes-active-colour" "colour208")
-                `shouldBe` Right "colour208"
-            setOption Assign defaultOptions "display-panes-colour" "zzz"
-                `shouldSatisfy` isLeft
+        it "accepts a historical -color spelling" $
+            fmap (.cursorColour)
+                (setOption Assign defaultOptions "cursor-color" "red")
+                `shouldBe` Right "red"
 
         it "appends to a string option with -a" $ do
-            let set mode opts name v =
-                    either (const opts) id (setOption mode opts name v)
-                opts0 = set Assign defaultOptions "status-right" "a"
-                opts1 = set Append opts0 "status-right" "b" :: Options
-            (opts1.statusRight :: Text) `shouldBe` "ab"
+            let opts0 = set Assign defaultOptions "status-right" "a"
+                opts1 = set Append opts0 "status-right" "b"
+            opts1.statusRight `shouldBe` "ab"
 
-        it "sets one command-alias index, keeping the other entries" $ do
+        it "sets one command-alias key, keeping the other entries" $ do
             let r = setOption Assign defaultOptions
                         "command-alias[100]" "zoom=resize-pane -Z"
-            fmap (Map.lookup 100 . (.commandAlias)) r
+            fmap (Map.lookup (idx 100) . (.commandAlias)) r
                 `shouldBe` Right (Just "zoom=resize-pane -Z")
-            fmap (Map.lookup 1 . (.commandAlias)) r
+            fmap (Map.lookup (idx 1) . (.commandAlias)) r
                 `shouldBe` Right (Just "splitp=split-window")
 
-        it "appends onto one array index with -a" $ do
-            let set mode opts name v =
-                    either (const opts) id (setOption mode opts name v)
-                opts0 = set Assign defaultOptions
+        it "keeps a string key alongside numeric ones" $
+            fmap (Map.keys . (.commandAlias))
+                (setOption Assign defaultOptions "command-alias[zoom]" "z=x")
+                `shouldBe` Right [idx 0, idx 1, KeyName "zoom"]
+
+        it "appends onto one array key with -a" $ do
+            let opts0 = set Assign defaultOptions
                     "command-alias[7]" "zoom=resize-pane"
-                opts1 = set Append opts0 "command-alias[7]" " -Z" :: Options
-            Map.lookup 7 opts1.commandAlias `shouldBe` Just "zoom=resize-pane -Z"
+                opts1 = set Append opts0 "command-alias[7]" " -Z"
+            Map.lookup (idx 7) opts1.commandAlias
+                `shouldBe` Just "zoom=resize-pane -Z"
 
         it "whole-array assign replaces the array, split on commas" $
             fmap (.commandAlias)
                 (setOption Assign defaultOptions "command-alias" "a=b,c=d")
-                `shouldBe` Right (Map.fromList [(0, "a=b"), (1, "c=d")])
+                `shouldBe` Right (Map.fromList [(idx 0, "a=b"), (idx 1, "c=d")])
 
-        it "whole-array append continues after the highest index" $
-            -- the defaults occupy 0 and 1
-            fmap (Map.lookup 2 . (.commandAlias))
+        it "whole-array append fills the next free index" $
+            fmap (Map.lookup (idx 2) . (.commandAlias))
                 (setOption Append defaultOptions "command-alias" "x=y")
                 `shouldBe` Right (Just "x=y")
 
-        it "rejects an index on a non-array option" $
+        it "rejects a key on a non-array option" $
             setOption Assign defaultOptions "status-left[0]" "x"
-                `shouldBe` Left "status-left is not an array option"
+                `shouldBe` Left "not an array: status-left[0]"
 
-        it "rejects a malformed array index" $
-            setOption Assign defaultOptions "command-alias[x]" "v"
-                `shouldBe` Left "bad array index: command-alias[x]"
+        it "rejects an empty array key" $
+            setOption Assign defaultOptions "command-alias[]" "v"
+                `shouldBe` Left "invalid option: command-alias[]"
 
     describe "lookupCommandAlias" $ do
-        it "resolves the first name= match in index order" $ do
+        it "resolves the first name= match in key order" $ do
             let opts = defaultOptions
                     { commandAlias =
-                        Map.fromList [(2, "z=first"), (5, "z=second")] }
+                        Map.fromList [(idx 2, "z=first"), (idx 5, "z=second")] }
             lookupCommandAlias opts "z" `shouldBe` Just "first"
 
         it "resolves the default splitp alias" $
@@ -162,28 +181,31 @@ spec = do
         it "answers Nothing for a name no entry aliases" $
             lookupCommandAlias defaultOptions "zoom" `shouldBe` Nothing
 
-    describe "resolveOptionName" $ do
+    describe "matchOptionName" $ do
         it "resolves an exact name" $
-            resolveOptionName "status-left" `shouldBe` Right OptStatusLeft
+            matchOptionName "status-left" `shouldBe` Right ("status-left", Nothing)
 
         it "resolves a unique prefix" $
-            resolveOptionName "hist" `shouldBe` Right OptHistoryLimit
+            matchOptionName "history-l" `shouldBe` Right ("history-limit", Nothing)
 
         it "prefers an exact name over a longer collision" $
-            -- "status-left" is itself a prefix of "status-left-length"
-            resolveOptionName "status-left-l"
-                `shouldBe` Right OptStatusLeftLength
+            matchOptionName "status-left-l"
+                `shouldBe` Right ("status-left-length", Nothing)
 
         it "rejects an ambiguous prefix in tmux's words" $
-            resolveOptionName "status-l"
-                `shouldBe` Left "ambiguous option: status-l"
+            matchOptionName "status-l"
+                `shouldBe` Left (MatchError "ambiguous option: status-l")
 
         it "rejects an unknown name in tmux's words" $
-            resolveOptionName "no-such-option"
-                `shouldBe` Left "invalid option: no-such-option"
+            matchOptionName "no-such-option"
+                `shouldBe` Left (MatchError "invalid option: no-such-option")
 
         it "passes @-options through untouched" $
-            resolveOptionName "@foo" `shouldBe` Right (OptUser "@foo")
+            matchOptionName "@foo" `shouldBe` Right ("@foo", Nothing)
+
+        it "normalises a numeric key" $
+            matchOptionName "status-format[01]"
+                `shouldBe` Right ("status-format", Just (idx 1))
 
     describe "option-scope overlays" $ do
         it "resolves an empty chain to the defaults" $
@@ -193,142 +215,59 @@ spec = do
             resolveOptions [emptyDelta] `shouldBe` defaultOptions
 
         it "a single delta overrides only its own field" $ do
-            let opts = resolveOptions [singletonDelta OptPrefix (OVText "C-a")]
+            let opts = resolveOptions [singletonDelta "prefix" (OVScalar "C-a")]
             opts.prefix `shouldBe` "C-a"
             opts.baseIndex `shouldBe` defaultOptions.baseIndex
 
         it "a more-specific delta wins field-by-field" $ do
             let global = mergeDeltas
-                    [ singletonDelta OptPrefix (OVText "C-a")
-                    , singletonDelta OptBaseIndex (OVInt 0) ]
-                session = singletonDelta OptBaseIndex (OVInt 1)
-                -- most-specific first: session shadows global
+                    [ singletonDelta "prefix" (OVScalar "C-a")
+                    , singletonDelta "base-index" (OVScalar "0") ]
+                session = singletonDelta "base-index" (OVScalar "1")
                 opts = resolveOptions [session, global]
-            opts.prefix `shouldBe` "C-a"      -- only set globally
-            opts.baseIndex `shouldBe` 1       -- session overrides global
+            opts.prefix `shouldBe` "C-a"
+            opts.baseIndex `shouldBe` 1
 
         it "deleting a scope's entry reveals the inherited value" $ do
-            let g = singletonDelta OptStatusLeft (OVText "GLOBAL")
-                s = singletonDelta OptStatusLeft (OVText "SESSION")
-            (resolveOptions [deleteDelta OptStatusLeft s, g]).statusLeft
+            let g = singletonDelta "status-left" (OVScalar "GLOBAL")
+                s = singletonDelta "status-left" (OVScalar "SESSION")
+            (resolveOptions [deleteDelta "status-left" s, g]).statusLeft
                 `shouldBe` "GLOBAL"
-            -- and at the top, the compiled default
-            (resolveOptions [deleteDelta OptStatusLeft g]).statusLeft
+            (resolveOptions [deleteDelta "status-left" g]).statusLeft
                 `shouldBe` defaultOptions.statusLeft
 
-        it "window scope beats session beats global" $ do
-            let g = singletonDelta OptHistoryLimit (OVInt 1)
-                s = singletonDelta OptHistoryLimit (OVInt 2)
-                w = singletonDelta OptHistoryLimit (OVInt 3)
-            (resolveOptions [w, s, g]).historyLimit `shouldBe` 3
-            (resolveOptions [s, g]).historyLimit `shouldBe` 2
-            (resolveOptions [g]).historyLimit `shouldBe` 1
+        it "exposes any registered option through the typed accessors" $ do
+            let opts = resolveOptions [singletonDelta "xterm-keys" (OVScalar "off")]
+            optionFlag "xterm-keys" opts `shouldBe` False
+            optionFlag "xterm-keys" defaultOptions `shouldBe` True
+            optionNumber "display-time" defaultOptions `shouldBe` 3000
+            optionArray "update-environment" defaultOptions
+                `shouldBe` defaultOptions.updateEnvironment
 
-    describe "option-scope classification" $ do
-        it "classifies prefix as a session option" $
-            optionScopeClass OptPrefix `shouldBe` SessionOption
-
-        it "classifies history-limit as a session option" $
-            optionScopeClass OptHistoryLimit `shouldBe` SessionOption
-
-        it "classifies mode-keys as a window option" $
-            optionScopeClass OptModeKeys `shouldBe` WindowOption
-
-        it "classifies monitor-activity as a window option" $
-            optionScopeClass OptMonitorActivity `shouldBe` WindowOption
-
-        it "accepts a session option at session scope" $
-            validateScope SessionOption OptPrefix `shouldBe` Right ()
-
-        it "rejects a session option set at window scope (setw prefix)" $
-            validateScope WindowOption OptPrefix `shouldSatisfy` isLeft
-
-        it "rejects a window option set at session scope" $
-            validateScope SessionOption OptMonitorActivity `shouldSatisfy` isLeft
-
-    describe "set-option scope routing" $ do
-        it "bare set scopes a session option to the current session" $
-            chooseScope DefaultSession [] OptPrefix
-                `shouldBe` Right SetLocalSession
-
-        it "set -g scopes a session option to the global session table" $
-            chooseScope DefaultSession ["-g"] OptPrefix
-                `shouldBe` Right SetGlobalSession
-
-        it "set -g routes a window option to the global window table by class" $
-            chooseScope DefaultSession ["-g"] OptModeKeys
-                `shouldBe` Right SetGlobalWindow
-
-        it "set -gw on a session option stays global-session (real-config case)" $
-            -- the author's ~/.tmux.conf has `set -gw display-time 1500`
-            chooseScope DefaultSession ["-g", "-w"] OptDisplayTime
-                `shouldBe` Right SetGlobalSession
-
-        it "setw routes a window option to the current window" $
-            chooseScope DefaultWindow [] OptModeKeys
-                `shouldBe` Right SetLocalWindow
-
-        it "setw on a session option fails loud (like tmux's setw prefix)" $
-            chooseScope DefaultWindow [] OptPrefix `shouldSatisfy` isLeft
-
-        it "set -s scopes a server option to the server table" $
-            chooseScope DefaultSession ["-s"] OptDefaultTerminal
-                `shouldBe` Right SetServer
-
-        it "set -s on a session option fails loud" $
-            chooseScope DefaultSession ["-s"] OptPrefix `shouldSatisfy` isLeft
-
-        it "set -s @user routes a user option to the server table" $
-            -- @-prefixed user options are valid at every scope in tmux, so
-            -- `set -s @done yes` (as if-shell-nested.sh does) must not be rejected.
-            chooseScope DefaultSession ["-s"] (OptUser "@done")
-                `shouldBe` Right SetServer
-
-        it "setw @user routes a user option to the current window" $
-            chooseScope DefaultWindow [] (OptUser "@x")
-                `shouldBe` Right SetLocalWindow
-
-        it "set -p routes a user option to the pane table" $
-            chooseScope DefaultSession ["-p"] (OptUser "@u")
-                `shouldBe` Right SetLocalPane
-
-        it "set -p routes cursor-colour (window-and-pane) to the pane" $
-            chooseScope DefaultSession ["-p"] OptCursorColour
-                `shouldBe` Right SetLocalPane
-
-        it "bare set on cursor-colour infers the window scope" $
-            chooseScope DefaultSession [] OptCursorColour
-                `shouldBe` Right SetLocalWindow
-
-        it "set -p on a non-pane option fails loud" $
-            chooseScope DefaultSession ["-p"] OptStatusLeft
-                `shouldSatisfy` isLeft
-
-    describe "show-options listings" $ do
-        it "lists own entries plain and inherited entries starred" $
-            listingLines False
-                (singletonDelta (OptUser "@own") (OVText "mine"))
-                [singletonDelta OptStatusLeft (OVText "GLOBAL")]
-                `shouldBe` ["@own mine", "status-left* GLOBAL"]
-
-        it "an own entry shadows the parent's copy" $
-            listingLines False
-                (singletonDelta OptStatusLeft (OVText "SESSION"))
-                [singletonDelta OptStatusLeft (OVText "GLOBAL")]
-                `shouldBe` ["status-left SESSION"]
-
-        it "quotes values that would not re-parse bare" $
-            listingLines False
-                (singletonDelta OptStatusLeft (OVText "[#{session_name}] "))
-                []
-                `shouldBe` ["status-left \"[#{session_name}] \""]
-
-        it "prints one indexed line per array entry" $
-            listingLines False
-                (singletonDelta OptCommandAlias
-                    (OVIndexed (Map.fromList [(0, "a=b"), (100, "z=y x")])))
-                []
-                `shouldBe` ["command-alias[0] a=b", "command-alias[100] \"z=y x\""]
+    describe "show-options lines" $ do
+        let line n v = ShowLine
+                { option = n, definition = lookupOptionDef n, key = Nothing
+                , value = v, inheritance = OwnValue, presence = HasValue }
+        it "quotes string values as command arguments" $ do
+            renderShowLine NameAndValue (line "@words" "two words")
+                `shouldBe` "@words \"two words\""
+            renderShowLine NameAndValue (line "status-left" "")
+                `shouldBe` "status-left ''"
+        it "prints non-string values bare" $
+            renderShowLine NameAndValue (line "display-time" "1234")
+                `shouldBe` "display-time 1234"
+        it "marks an inherited value and names an array key" $
+            renderShowLine NameAndValue
+                (line "update-environment" "AAA")
+                    { key = Just (idx 0), inheritance = InheritedValue }
+                `shouldBe` "update-environment[0]* AAA"
+        it "prints an empty array's bare name" $
+            renderShowLine NameAndValue
+                (line "update-environment" "") { presence = NoValue }
+                `shouldBe` "update-environment"
+        it "prints only the value under -v" $
+            renderShowLine ValueOnly (line "@words" "two words")
+                `shouldBe` "two words"
 
     describe "new-window index placement" $ do
         let ws = Map.fromList [(100 :: Int, ())]

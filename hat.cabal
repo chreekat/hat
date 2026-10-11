@@ -85,6 +85,7 @@ library
         Hat.Log
         Hat.Model
         Hat.Model.Ids
+        Hat.Model.OptionTable
         Hat.Model.Options
         Hat.Path
         Hat.PtrEq
@@ -112,6 +113,7 @@ library
         Hat.Server.Format
         Hat.Server.Format.Colour
         Hat.Server.Format.Fuzzy
+        Hat.Server.Format.X11Colours
         Hat.Server.FormatEnv
         Hat.Server.Handover
         Hat.Server.HookMonitor
@@ -123,6 +125,7 @@ library
         Hat.Server.LayoutString
         Hat.Server.Locate
         Hat.Server.Mru
+        Hat.Server.OptionParse
         Hat.Server.Overlay
         Hat.Server.Pane
         Hat.Server.Persist
@@ -288,6 +291,7 @@ test-suite hat-test
         Hat.Server.LayoutStringSpec
         Hat.Server.MruSpec
         Hat.Server.OptionEffectSpec
+        Hat.Server.OptionParseSpec
         Hat.Server.OptionsSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec

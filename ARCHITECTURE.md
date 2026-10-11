@@ -841,6 +841,25 @@ corpus pins one serialized vector per era. Attached clients ride through
 via `RestartClient`: each re-execs itself in place, keeping the
 attachment.
 
+## Options registry
+
+Every tmux option is a row in `Hat.Model.OptionTable`, in
+`options-table.c`'s order: name, scope, kind (string, style, colour,
+number with bounds, key, flag, choice list, command), array separator,
+default, and an implementation gate. The rows drive everything generic:
+name matching (unique prefixes, `-color` spellings, `name[key]`), scope
+routing, typed validation with tmux's messages (`Hat.Server.OptionParse`),
+and `set-option`/`show-options` (`Hat.Server.Command.Option`), so each
+behaves like tmux for every option at once. A row that is `notYet` stays
+registered — names still match as tmux's do — but `set` and `show` refuse
+it loudly; a live row may still narrow what it honours (`choicesOnly`,
+`paneLocal`, `refusing`). Giving an option behaviour touches its row and
+its own subsystem, which reads the resolved value through the typed
+accessors in `Hat.Model.Options` (`optionFlag`, `optionNumber`, …); the
+long-standing options also decode into fields of the `Options` record.
+Hooks are rows too, but their values live in the hook store
+(`Hat.Server.Hooks`).
+
 ## Options persistence (resolved)
 
 Tmux stores options in `options.c` as an in-memory tree. There's no

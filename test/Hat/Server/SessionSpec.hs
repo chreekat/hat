@@ -29,7 +29,7 @@ import Hat.Log (newLogger)
 import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
-    (Options (..), OptionName (..), OptionValue (..)
+    (Options (..), OptionValue (..)
     , defaultOptions, emptyDelta, insertDelta, singletonDelta)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..), serverIdle
@@ -267,7 +267,7 @@ spec = do
                 modifyTVar' st.options $ \o ->
                     o { user = Map.singleton "@v" "global" }
                 modifyTVar' sess.options
-                    (insertDelta (OptUser "@v") (OVText "local"))
+                    (insertDelta "@v" (OVScalar "local"))
             env <- sessionFormatEnv st sess
             Map.lookup "@v" env `shouldBe` Just "local"
 
@@ -417,7 +417,7 @@ spec = do
         it "follows the most-recently-active client under aggressive-resize" $ do
             (st, sess) <- seedSession "/"
             atomically $ writeTVar st.globalWindowOptions
-                (singletonDelta OptAggressiveResize (OVBool True))
+                (singletonDelta "aggressive-resize" (OVScalar "on"))
             _ <- addClient st (SessionId 0) big 2      -- bigger client is newer
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
@@ -425,7 +425,7 @@ spec = do
         it "carves no status row when status is off" $ do
             (st, sess) <- seedSession "/"
             atomically $ writeTVar st.globalSessionOptions
-                (singletonDelta OptStatus (OVStatusLines 0))
+                (singletonDelta "status" (OVScalar "off"))
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
             readTVarIO sess.lastSize `shouldReturn` small
@@ -537,11 +537,11 @@ spec = do
             lg <- newLogger "/dev/null"
             st <- newServerState Map.empty lg "/tmp/hat-scopespec.sock" Nothing
             atomically $ writeTVar st.globalSessionOptions
-                (singletonDelta OptPrefix (OVText "C-b"))
+                (singletonDelta "prefix" (OVScalar "C-b"))
             sessA <- addSession st 0
             sessB <- addSession st 1
             atomically $ writeTVar sessA.options
-                (singletonDelta OptPrefix (OVText "C-a"))
+                (singletonDelta "prefix" (OVScalar "C-a"))
             a <- atomically (resolveForSession st sessA)
             b <- atomically (resolveForSession st sessB)
             a.prefix `shouldBe` "C-a"   -- session A's own set
@@ -629,7 +629,7 @@ spec = do
         it "raises the activity marker on the current window when no viewer is focused" $ do
             (st, sess) <- seedSession "/"
             atomically $ writeTVar st.globalWindowOptions
-                (singletonDelta OptMonitorActivity (OVBool True))
+                (singletonDelta "monitor-activity" (OVScalar "on"))
             w0 <- addWindow sess 0
             c  <- addClient st sess.id small 1
             atomically $ writeTVar c.outerFocused False
@@ -1178,7 +1178,7 @@ spec = do
         it "repaints a monitored background window only when its flag rises" $ do
             (st, _, back, _) <- watchedPair
             atomically $ writeTVar st.globalWindowOptions
-                (singletonDelta OptMonitorActivity (OVBool True))
+                (singletonDelta "monitor-activity" (OVScalar "on"))
             gen <- readTVarIO st.dirty
             windowActivity st (SessionId 0) back
             gen' <- readTVarIO st.dirty

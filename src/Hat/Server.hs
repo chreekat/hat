@@ -23,10 +23,7 @@ module Hat.Server
     , Reply (..)           -- ^ exported for the reload-in-progress guard test
     , setOption  -- ^ exported for the config-load burn-down test
     , SetMode (..)  -- ^ exported for the config-load burn-down test
-    , chooseScope  -- ^ exported for the scope-routing test
-    , SetScope (..)
     , SetDefault (..)
-    , listingLines  -- ^ exported for the show-options listing test
     , finallyReady  -- ^ exported for the startup-gate test
     , startupGate, StartupGate (..)  -- ^ exported for the startup-gate test
     , idleArming, IdleArming (..)    -- ^ exported for the idle-arming test

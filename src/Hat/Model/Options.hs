@@ -1,7 +1,10 @@
--- | Server options and the key-binding tables. Every option hat accepts
--- also has behavior somewhere; unknown options are rejected at 'setOption'
--- rather than silently stored, so a config never looks supported when it
--- isn't.
+-- | Resolved options and the scope overlays they resolve from. Which options
+-- exist, their types and defaults, and whether hat implements them is the
+-- registry's business ("Hat.Model.OptionTable"); this module folds the
+-- per-scope overlays ('OptionsDelta') onto those defaults into an 'Options'
+-- value that consumers read — through a typed record field for the options
+-- hat has long had, or through the typed accessors ('optionFlag' and
+-- friends) for any registered option.
 module Hat.Model.Options
     ( Options (..)
     , StatusPosition (..)
@@ -12,10 +15,8 @@ module Hat.Model.Options
     , BorderIndicators (..)
     , Keymap
     , defaultOptions
-    , OptionName (..)
-    , OptionValue (..)
+      -- * Overlays
     , OptionsDelta
-    , ScopeClass (..)
     , emptyDelta
     , singletonDelta
     , insertDelta
@@ -27,19 +28,16 @@ module Hat.Model.Options
     , applyEntry
     , applyDelta
     , resolveOptions
-    , optionScopeClass
-    , validateScope
-    , allowedAtPane
-    , optionNameText
-    , resolveOptionName
-    , splitArrayIndex
-    , isArrayOption
-    , resolveIndexedName
+      -- * Typed reads of any registered option
+    , optionValue
+    , optionText
+    , optionFlag
+    , optionNumber
+    , optionArray
+      -- * Odds and ends
     , lookupCommandAlias
-    , optionValueOf
-    , formatOptionValue
     , quoteIfNeeded
-    , hookNames
+    , module Hat.Model.OptionTable
     ) where
 
 import Data.Map.Strict (Map)
@@ -49,6 +47,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
+import Hat.Model.OptionTable
+import Hat.Server.Style (parseStyle)
 import Hat.Term.Cell qualified as Cell
 
 data StatusPosition = StatusTop | StatusBottom
@@ -79,6 +79,8 @@ data BorderIndicators
     = IndicatorsOff | IndicatorsColour | IndicatorsArrows | IndicatorsBoth
     deriving (Eq, Show)
 
+-- | One scope chain's resolved options. Every field below is decoded from
+-- its registry row ('fieldBindings'), so its default is that row's.
 data Options = Options
     { prefix          :: Text  -- ^ key name, e.g. \"C-b\", \"C-Space\"
     , baseIndex       :: Int
@@ -109,7 +111,7 @@ data Options = Options
     , setTitles              :: Bool
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
     , displayTime            :: Int   -- ^ toast duration, ms
-    , displayPanesTime       :: Int   -- ^ pane-number overlay duration, ms; 0 = until a key
+    , displayPanesTime       :: Int   -- ^ pane-number overlay duration, ms
     , displayPanesColour     :: Text  -- ^ tmux colour text
     , displayPanesActiveColour :: Text  -- ^ tmux colour text, active pane
     , focusEvents            :: Bool
@@ -124,178 +126,198 @@ data Options = Options
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
     , mainPaneHeight         :: Int
-    , commandAlias    :: Map Int Text   -- ^ array of @name=command@ entries; see 'lookupCommandAlias'
+    , commandAlias    :: Map ArrayKey Text   -- ^ array of @name=command@ entries; see 'lookupCommandAlias'
     , user            :: Map Text Text  -- ^ @\@foo@ options
+    , values          :: Map Text OptionValue
+        -- ^ every registered option's resolved value, for the typed
+        -- accessors ('optionFlag' …)
     }
     deriving (Eq, Show)
 
 -- | table name -> key name -> command sequence (argv lists)
 type Keymap = Map Text (Map Text [[Text]])
 
+-- | The registry's defaults, decoded. The record starts with no field set:
+-- every field must be bound by some row in 'fieldBindings', which the
+-- @OptionsSpec@ check that forces 'defaultOptions' enforces.
 defaultOptions :: Options
-defaultOptions = Options
-    { prefix = "C-b"
-    , baseIndex = 0
-    , paneBaseIndex = 0
-    , statusLines = 1
-    , statusPosition = StatusBottom
-    , modeKeys = KeysEmacs
-    , historyLimit = 50000
-    , defaultTerminal = "tmux-256color"
-    , wordSeparators = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
-    , statusLeft = "[#{session_name}] "  -- tmux's default spelling (#S expands the same)
-    , statusLeftLength = 10
-    , statusRight = "%H:%M %d-%b-%y #H"
-    , statusRightLength = 40
-    , statusInterval = 15
-    , windowStatusFormat = "#I:#W#F"
-    , windowStatusCurrentFormat = "#I:#W#F"
-    , statusStyle = barStyle
-    , windowStatusStyle = barStyle
-    -- tmux underscores the current window (window-status-current-style default).
-    , windowStatusCurrentStyle = barStyle { Cell.underline = True }
-    , windowStatusBellStyle = barStyle
-    , paneBorderStyle = Cell.defaultStyle
-    , paneActiveBorderStyle = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
-    , modeStyle = Cell.defaultStyle { Cell.reverse = True }
-    , paneBorderLines = BorderSingle
-    , paneBorderIndicators = IndicatorsColour
-    , cursorColour = ""
-    , setTitles = False
-    , escapeTime = 0
-    , displayTime = 3000
-    , displayPanesTime = 1000
-    , displayPanesColour = "blue"
-    , displayPanesActiveColour = "red"
-    , focusEvents = False
-    , aggressiveResize = False
-    , monitorActivity = False
-    , monitorBell = True
-    , monitorSilence = 0
-    , bellAction = AlertAny
-    , automaticRename = True
-    , remainOnExit = False
-    , automaticRenameFormat = "#{pane_current_command}"
-    , updateEnvironment =
-        [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
-        , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]
-    , mainPaneWidth = 80
-    , mainPaneHeight = 24
-    -- tmux's default aliases, minus the ones naming commands hat lacks.
-    , commandAlias = Map.fromList
-        [ (0, "split-pane=split-window")
-        , (1, "splitp=split-window") ]
-    , user = Map.empty
-    }
+defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
+    [ d | d <- optionTable, d.role == PlainOption ]
   where
-    -- The default status bar: black on green.
-    barStyle = Cell.defaultStyle
-        { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 2 }
+    unbound = Options
+        { prefix = missing "prefix", baseIndex = missing "base-index"
+        , paneBaseIndex = missing "pane-base-index"
+        , statusLines = missing "status"
+        , statusPosition = missing "status-position"
+        , modeKeys = missing "mode-keys", historyLimit = missing "history-limit"
+        , defaultTerminal = missing "default-terminal"
+        , wordSeparators = missing "word-separators"
+        , statusLeft = missing "status-left"
+        , statusLeftLength = missing "status-left-length"
+        , statusRight = missing "status-right"
+        , statusRightLength = missing "status-right-length"
+        , statusInterval = missing "status-interval"
+        , windowStatusFormat = missing "window-status-format"
+        , windowStatusCurrentFormat = missing "window-status-current-format"
+        , statusStyle = missing "status-style"
+        , windowStatusStyle = missing "window-status-style"
+        , windowStatusCurrentStyle = missing "window-status-current-style"
+        , windowStatusBellStyle = missing "window-status-bell-style"
+        , paneBorderStyle = missing "pane-border-style"
+        , paneActiveBorderStyle = missing "pane-active-border-style"
+        , modeStyle = missing "mode-style"
+        , paneBorderLines = missing "pane-border-lines"
+        , paneBorderIndicators = missing "pane-border-indicators"
+        , cursorColour = missing "cursor-colour"
+        , setTitles = missing "set-titles", escapeTime = missing "escape-time"
+        , displayTime = missing "display-time"
+        , displayPanesTime = missing "display-panes-time"
+        , displayPanesColour = missing "display-panes-colour"
+        , displayPanesActiveColour = missing "display-panes-active-colour"
+        , focusEvents = missing "focus-events"
+        , aggressiveResize = missing "aggressive-resize"
+        , monitorActivity = missing "monitor-activity"
+        , monitorBell = missing "monitor-bell"
+        , monitorSilence = missing "monitor-silence"
+        , bellAction = missing "bell-action"
+        , automaticRename = missing "automatic-rename"
+        , remainOnExit = missing "remain-on-exit"
+        , automaticRenameFormat = missing "automatic-rename-format"
+        , updateEnvironment = missing "update-environment"
+        , mainPaneWidth = missing "main-pane-width"
+        , mainPaneHeight = missing "main-pane-height"
+        , commandAlias = missing "command-alias"
+        , user = Map.empty
+        , values = Map.empty
+        }
+    missing n = error ("Hat.Model.Options: no binding decodes " <> n)
 
--- | The closed set of options hat implements, plus @\@foo@ user options.
-data OptionName
-    = OptPrefix
-    | OptBaseIndex
-    | OptPaneBaseIndex
-    | OptStatus
-    | OptStatusPosition
-    | OptModeKeys
-    | OptHistoryLimit
-    | OptDefaultTerminal
-    | OptWordSeparators
-    | OptStatusLeft
-    | OptStatusLeftLength
-    | OptStatusRight
-    | OptStatusRightLength
-    | OptStatusInterval
-    | OptWindowStatusFormat
-    | OptWindowStatusCurrentFormat
-    | OptStatusStyle
-    | OptWindowStatusStyle
-    | OptWindowStatusCurrentStyle
-    | OptWindowStatusBellStyle
-    | OptPaneBorderStyle
-    | OptPaneActiveBorderStyle
-    | OptModeStyle
-    | OptPaneBorderLines
-    | OptPaneBorderIndicators
-    | OptCursorColour
-    | OptSetTitles
-    | OptEscapeTime
-    | OptDisplayTime
-    | OptDisplayPanesTime
-    | OptDisplayPanesColour
-    | OptDisplayPanesActiveColour
-    | OptFocusEvents
-    | OptAggressiveResize
-    | OptMonitorActivity
-    | OptMonitorBell
-    | OptMonitorSilence
-    | OptBellAction
-    | OptAutomaticRename
-    | OptRemainOnExit
-    | OptAutomaticRenameFormat
-    | OptUpdateEnvironment
-    | OptMainPaneWidth
-    | OptMainPaneHeight
-    | OptCommandAlias
-    | OptUser Text   -- ^ the option name, including its @\@@ prefix
-    deriving (Eq, Ord, Show)
+-- | The record fields decoded from registry rows. A value reaching a binding
+-- has already been validated against its row's type, so decoding is total;
+-- the fallbacks only guard a row/binding mismatch.
+fieldBindings :: Map Text (OptionValue -> Options -> Options)
+fieldBindings = Map.fromList
+    [ ("prefix", text (\v o -> o { prefix = v }))
+    , ("base-index", int (\v o -> o { baseIndex = v }))
+    , ("pane-base-index", int (\v o -> o { paneBaseIndex = v }))
+    , ("status", text (\v o -> o { statusLines = statusCount v }))
+    , ("status-position", text (\v o -> o
+        { statusPosition = if v == "top" then StatusTop else StatusBottom }))
+    , ("mode-keys", text (\v o -> o
+        { modeKeys = if v == "vi" then KeysVi else KeysEmacs }))
+    , ("history-limit", int (\v o -> o { historyLimit = v }))
+    , ("default-terminal", text (\v o -> o { defaultTerminal = v }))
+    , ("word-separators", text (\v o -> o { wordSeparators = v }))
+    , ("status-left", text (\v o -> o { statusLeft = v }))
+    , ("status-left-length", int (\v o -> o { statusLeftLength = v }))
+    , ("status-right", text (\v o -> o { statusRight = v }))
+    , ("status-right-length", int (\v o -> o { statusRightLength = v }))
+    , ("status-interval", int (\v o -> o { statusInterval = v }))
+    , ("window-status-format", text (\v o -> o { windowStatusFormat = v }))
+    , ("window-status-current-format", text (\v o -> o
+        { windowStatusCurrentFormat = v }))
+    , ("status-style", style (\v o -> o { statusStyle = v }))
+    , ("window-status-style", style (\v o -> o { windowStatusStyle = v }))
+    , ("window-status-current-style", style (\v o -> o
+        { windowStatusCurrentStyle = v }))
+    , ("window-status-bell-style", style (\v o -> o
+        { windowStatusBellStyle = v }))
+    , ("pane-border-style", style (\v o -> o { paneBorderStyle = v }))
+    , ("pane-active-border-style", style (\v o -> o
+        { paneActiveBorderStyle = v }))
+    , ("mode-style", style (\v o -> o { modeStyle = v }))
+    , ("pane-border-lines", text (\v o -> o { paneBorderLines = case v of
+        "heavy" -> BorderHeavy
+        "double" -> BorderDouble
+        "simple" -> BorderSimple
+        _ -> BorderSingle }))
+    , ("pane-border-indicators", text (\v o -> o
+        { paneBorderIndicators = case v of
+            "off" -> IndicatorsOff
+            "arrows" -> IndicatorsArrows
+            "both" -> IndicatorsBoth
+            _ -> IndicatorsColour }))
+    , ("cursor-colour", text (\v o -> o { cursorColour = v }))
+    , ("set-titles", flag (\v o -> o { setTitles = v }))
+    , ("escape-time", int (\v o -> o { escapeTime = v }))
+    , ("display-time", int (\v o -> o { displayTime = v }))
+    , ("display-panes-time", int (\v o -> o { displayPanesTime = v }))
+    , ("display-panes-colour", text (\v o -> o { displayPanesColour = v }))
+    , ("display-panes-active-colour", text (\v o -> o
+        { displayPanesActiveColour = v }))
+    , ("focus-events", flag (\v o -> o { focusEvents = v }))
+    , ("aggressive-resize", flag (\v o -> o { aggressiveResize = v }))
+    , ("monitor-activity", flag (\v o -> o { monitorActivity = v }))
+    , ("monitor-bell", flag (\v o -> o { monitorBell = v }))
+    , ("monitor-silence", int (\v o -> o { monitorSilence = v }))
+    , ("bell-action", text (\v o -> o { bellAction = case v of
+        "none" -> AlertNone
+        "current" -> AlertCurrent
+        "other" -> AlertOther
+        _ -> AlertAny }))
+    , ("automatic-rename", flag (\v o -> o { automaticRename = v }))
+    , ("remain-on-exit", text (\v o -> o { remainOnExit = v == "on" }))
+    , ("automatic-rename-format", text (\v o -> o
+        { automaticRenameFormat = v }))
+    , ("update-environment", arr (\v o -> o { updateEnvironment = Map.elems v }))
+    , ("main-pane-width", int (\v o -> o { mainPaneWidth = v }))
+    , ("main-pane-height", int (\v o -> o { mainPaneHeight = v }))
+    , ("command-alias", arr (\v o -> o { commandAlias = v }))
+    ]
+  where
+    text f v = f (scalarOf v)
+    int f v = f (decimalOf (scalarOf v))
+    flag f v = f (scalarOf v == "on")
+    style f v = f (parseStyle (scalarOf v))
+    arr f = \case
+        OVArray m -> f m
+        OVScalar _ -> f Map.empty
+    statusCount = \case
+        "off" -> 0
+        "on" -> 1
+        n -> decimalOf n
 
--- | A parsed, validated option value. Each 'OptionName' pairs with exactly one
--- constructor here; the pairing is maintained by the parser and consumed by
--- 'applyEntry'.
-data OptionValue
-    = OVText Text
-    | OVInt Int
-    | OVBool Bool
-    | OVTextList [Text]
-    | OVStatusLines Int
-    | OVStatusPosition StatusPosition
-    | OVModeKeys ModeKeys
-    | OVStyle Cell.Style
-    | OVBorderLines BorderLines
-    | OVBorderIndicators BorderIndicators
-    | OVAlertAction AlertAction
-    | OVIndexed (Map Int Text)  -- ^ an array option's entries, by index
-    deriving (Eq, Show)
+scalarOf :: OptionValue -> Text
+scalarOf = \case
+    OVScalar t -> t
+    OVArray m -> T.unwords (Map.elems m)
 
--- | The options a @set@ at one scope carries: only the fields it actually set,
--- so lower scopes show through on resolution. See 'resolveOptions'.
-newtype OptionsDelta = OptionsDelta (Map OptionName OptionValue)
-    deriving (Eq, Show)
+decimalOf :: Text -> Int
+decimalOf t = case TR.signed TR.decimal t of
+    Right (n, "") -> n
+    _ -> 0
 
--- | Which scope level an option lives at (tmux's server/session/window split).
--- See 'optionScopeClass' and 'validateScope'.
-data ScopeClass = ServerOption | SessionOption | WindowOption
+-- | The options a @set@ at one scope carries: only the entries it actually
+-- set (keyed by option name, @\@user@ names included), so lower scopes show
+-- through on resolution. See 'resolveOptions'.
+newtype OptionsDelta = OptionsDelta (Map Text OptionValue)
     deriving (Eq, Show)
 
 emptyDelta :: OptionsDelta
 emptyDelta = OptionsDelta Map.empty
 
-singletonDelta :: OptionName -> OptionValue -> OptionsDelta
+singletonDelta :: Text -> OptionValue -> OptionsDelta
 singletonDelta name val = OptionsDelta (Map.singleton name val)
 
-insertDelta :: OptionName -> OptionValue -> OptionsDelta -> OptionsDelta
+insertDelta :: Text -> OptionValue -> OptionsDelta -> OptionsDelta
 insertDelta name val (OptionsDelta m) = OptionsDelta (Map.insert name val m)
 
 -- | Remove a scope's own entry (@set -u@), so resolution falls through to
--- the parent scopes (or the compiled default at the top).
-deleteDelta :: OptionName -> OptionsDelta -> OptionsDelta
+-- the parent scopes (or the registry default at the top).
+deleteDelta :: Text -> OptionsDelta -> OptionsDelta
 deleteDelta name (OptionsDelta m) = OptionsDelta (Map.delete name m)
 
 -- | Whether an option was set in this delta (used to tell a user's set apart
 -- from a color-scheme default). See 'Hat.Server.ColorScheme.applyPalette'.
-deltaMember :: OptionName -> OptionsDelta -> Bool
+deltaMember :: Text -> OptionsDelta -> Bool
 deltaMember name (OptionsDelta m) = Map.member name m
 
 -- | A scope's own entry for one option, if any — never the inherited value.
--- @show-options@ without @-A@ reads exactly this.
-lookupDelta :: OptionName -> OptionsDelta -> Maybe OptionValue
+lookupDelta :: Text -> OptionsDelta -> Maybe OptionValue
 lookupDelta name (OptionsDelta m) = Map.lookup name m
 
--- | Everything set at one scope, in name order, for @show-options@ listings.
-deltaEntries :: OptionsDelta -> [(OptionName, OptionValue)]
+-- | Everything set at one scope, in name order.
+deltaEntries :: OptionsDelta -> [(Text, OptionValue)]
 deltaEntries (OptionsDelta m) = Map.toAscList m
 
 -- | Collapse overlapping deltas into one, most-specific first: when two deltas
@@ -304,60 +326,12 @@ mergeDeltas :: [OptionsDelta] -> OptionsDelta
 mergeDeltas = OptionsDelta . Map.unions . map (\(OptionsDelta m) -> m)
 
 -- | Fold one validated option entry into a resolved 'Options'.
-applyEntry :: OptionName -> OptionValue -> Options -> Options
-applyEntry name val o = case (name, val) of
-    (OptPrefix, OVText t) -> o { prefix = t }
-    (OptBaseIndex, OVInt n) -> o { baseIndex = n }
-    (OptPaneBaseIndex, OVInt n) -> o { paneBaseIndex = n }
-    (OptStatus, OVStatusLines n) -> o { statusLines = n }
-    (OptStatusPosition, OVStatusPosition p) -> o { statusPosition = p }
-    (OptModeKeys, OVModeKeys k) -> o { modeKeys = k }
-    (OptHistoryLimit, OVInt n) -> o { historyLimit = n }
-    (OptDefaultTerminal, OVText t) -> o { defaultTerminal = t }
-    (OptWordSeparators, OVText t) -> o { wordSeparators = t }
-    (OptStatusLeft, OVText t) -> o { statusLeft = t }
-    (OptStatusLeftLength, OVInt n) -> o { statusLeftLength = n }
-    (OptStatusRight, OVText t) -> o { statusRight = t }
-    (OptStatusRightLength, OVInt n) -> o { statusRightLength = n }
-    (OptStatusInterval, OVInt n) -> o { statusInterval = n }
-    (OptWindowStatusFormat, OVText t) -> o { windowStatusFormat = t }
-    (OptWindowStatusCurrentFormat, OVText t) ->
-        o { windowStatusCurrentFormat = t }
-    (OptStatusStyle, OVStyle s) -> o { statusStyle = s }
-    (OptWindowStatusStyle, OVStyle s) -> o { windowStatusStyle = s }
-    (OptWindowStatusCurrentStyle, OVStyle s) ->
-        o { windowStatusCurrentStyle = s }
-    (OptWindowStatusBellStyle, OVStyle s) -> o { windowStatusBellStyle = s }
-    (OptPaneBorderStyle, OVStyle s) -> o { paneBorderStyle = s }
-    (OptPaneActiveBorderStyle, OVStyle s) -> o { paneActiveBorderStyle = s }
-    (OptModeStyle, OVStyle s) -> o { modeStyle = s }
-    (OptPaneBorderLines, OVBorderLines l) -> o { paneBorderLines = l }
-    (OptPaneBorderIndicators, OVBorderIndicators i) ->
-        o { paneBorderIndicators = i }
-    (OptCursorColour, OVText t) -> o { cursorColour = t }
-    (OptSetTitles, OVBool b) -> o { setTitles = b }
-    (OptEscapeTime, OVInt n) -> o { escapeTime = n }
-    (OptDisplayTime, OVInt n) -> o { displayTime = n }
-    (OptDisplayPanesTime, OVInt n) -> o { displayPanesTime = n }
-    (OptDisplayPanesColour, OVText t) -> o { displayPanesColour = t }
-    (OptDisplayPanesActiveColour, OVText t) ->
-        o { displayPanesActiveColour = t }
-    (OptFocusEvents, OVBool b) -> o { focusEvents = b }
-    (OptAggressiveResize, OVBool b) -> o { aggressiveResize = b }
-    (OptMonitorActivity, OVBool b) -> o { monitorActivity = b }
-    (OptMonitorBell, OVBool b) -> o { monitorBell = b }
-    (OptMonitorSilence, OVInt n) -> o { monitorSilence = n }
-    (OptBellAction, OVAlertAction a) -> o { bellAction = a }
-    (OptAutomaticRename, OVBool b) -> o { automaticRename = b }
-    (OptRemainOnExit, OVBool b) -> o { remainOnExit = b }
-    (OptAutomaticRenameFormat, OVText t) -> o { automaticRenameFormat = t }
-    (OptUpdateEnvironment, OVTextList ts) -> o { updateEnvironment = ts }
-    (OptMainPaneWidth, OVInt n) -> o { mainPaneWidth = n }
-    (OptMainPaneHeight, OVInt n) -> o { mainPaneHeight = n }
-    (OptCommandAlias, OVIndexed m) -> o { commandAlias = m }
-    (OptUser k, OVText t) -> o { user = Map.insert k t o.user }
-    -- Unreachable: the parser never pairs a name with a foreign value.
-    _ -> o
+applyEntry :: Text -> OptionValue -> Options -> Options
+applyEntry name val o
+    | "@" `T.isPrefixOf` name = o { user = Map.insert name (scalarOf val) o.user }
+    | otherwise = bind val o { values = Map.insert name val o.values }
+  where
+    bind = Map.findWithDefault (\_ x -> x) name fieldBindings
 
 applyDelta :: OptionsDelta -> Options -> Options
 applyDelta (OptionsDelta m) o = Map.foldrWithKey applyEntry o m
@@ -367,306 +341,41 @@ applyDelta (OptionsDelta m) o = Map.foldrWithKey applyEntry o m
 resolveOptions :: [OptionsDelta] -> Options
 resolveOptions deltas = applyDelta (mergeDeltas deltas) defaultOptions
 
--- | The scope level an option belongs to, mirroring tmux's options table.
-optionScopeClass :: OptionName -> ScopeClass
-optionScopeClass = \case
-    OptDefaultTerminal -> ServerOption
-    OptEscapeTime -> ServerOption
-    OptCommandAlias -> ServerOption
-    OptModeKeys -> WindowOption
-    OptWordSeparators -> WindowOption
-    OptAggressiveResize -> WindowOption
-    OptMonitorActivity -> WindowOption
-    OptMonitorBell -> WindowOption
-    OptMonitorSilence -> WindowOption
-    OptAutomaticRename -> WindowOption
-    OptRemainOnExit -> WindowOption
-    OptAutomaticRenameFormat -> WindowOption
-    OptMainPaneWidth -> WindowOption
-    OptMainPaneHeight -> WindowOption
-    OptWindowStatusFormat -> WindowOption
-    OptWindowStatusCurrentFormat -> WindowOption
-    OptWindowStatusStyle -> WindowOption
-    OptWindowStatusCurrentStyle -> WindowOption
-    OptWindowStatusBellStyle -> WindowOption
-    OptPaneBorderStyle -> WindowOption
-    OptPaneActiveBorderStyle -> WindowOption
-    OptModeStyle -> WindowOption
-    OptPaneBorderLines -> WindowOption
-    OptPaneBorderIndicators -> WindowOption
-    OptCursorColour -> WindowOption
-    OptUser _ -> SessionOption
-    _ -> SessionOption
+-- | A registered option's resolved value. Calling it with an unregistered
+-- name is a programming error, not a user-facing condition.
+optionValue :: Text -> Options -> OptionValue
+optionValue n o = case Map.lookup n o.values of
+    Just v -> v
+    Nothing -> error ("Hat.Model.Options: unregistered option " <> T.unpack n)
 
--- | Whether an option may live in a pane's own table: tmux's
--- window-and-pane options, plus @\@foo@ user options.
-allowedAtPane :: OptionName -> Bool
-allowedAtPane = \case
-    OptUser _ -> True
-    OptCursorColour -> True
-    _ -> False
+-- | A scalar option's canonical text: a string, style, colour, key, or
+-- choice name.
+optionText :: Text -> Options -> Text
+optionText n = scalarOf . optionValue n
 
--- | Reject setting an option at a scope its class forbids (e.g. @setw prefix@),
--- so a mis-scoped set fails loud rather than landing in the wrong table.
-validateScope :: ScopeClass -> OptionName -> Either Text ()
-validateScope requested name = case name of
-    -- @-prefixed user options are valid at every scope (server/session/window).
-    OptUser _ -> Right ()
-    _ | optionScopeClass name == requested -> Right ()
-      | otherwise -> Left (scopeError requested name)
+optionFlag :: Text -> Options -> Bool
+optionFlag n = (== "on") . optionText n
 
-scopeError :: ScopeClass -> OptionName -> Text
-scopeError requested name =
-    optionNameText name <> " is a " <> className (optionScopeClass name)
-        <> " option, not a " <> className requested <> " option"
-  where
-    className = \case
-        ServerOption -> "server"
-        SessionOption -> "session"
-        WindowOption -> "window"
+optionNumber :: Text -> Options -> Int
+optionNumber n = decimalOf . optionText n
 
--- | Every non-user option, for name resolution and listing. Keep in sync
--- with 'OptionName' (a new constructor must be appended here).
-allOptionNames :: [OptionName]
-allOptionNames =
-    [ OptPrefix, OptBaseIndex, OptPaneBaseIndex, OptStatus, OptStatusPosition
-    , OptModeKeys, OptHistoryLimit, OptDefaultTerminal, OptWordSeparators
-    , OptStatusLeft, OptStatusLeftLength, OptStatusRight
-    , OptStatusRightLength, OptStatusInterval, OptWindowStatusFormat
-    , OptWindowStatusCurrentFormat, OptStatusStyle, OptWindowStatusStyle
-    , OptWindowStatusCurrentStyle, OptWindowStatusBellStyle
-    , OptPaneBorderStyle, OptPaneActiveBorderStyle, OptModeStyle
-    , OptPaneBorderLines, OptPaneBorderIndicators, OptCursorColour
-    , OptSetTitles
-    , OptEscapeTime, OptDisplayTime, OptDisplayPanesTime
-    , OptDisplayPanesColour, OptDisplayPanesActiveColour
-    , OptFocusEvents, OptAggressiveResize
-    , OptMonitorActivity, OptMonitorBell, OptMonitorSilence, OptBellAction
-    , OptAutomaticRename, OptAutomaticRenameFormat
-    , OptRemainOnExit
-    , OptUpdateEnvironment, OptMainPaneWidth, OptMainPaneHeight
-    , OptCommandAlias
-    ]
-
--- | Resolve a user-typed option name as tmux does: @\@foo@ passes through,
--- an exact name wins outright, and otherwise a unique prefix resolves —
--- anything else is invalid or ambiguous, in tmux's words.
-resolveOptionName :: Text -> Either Text OptionName
-resolveOptionName t
-    | "@" `T.isPrefixOf` t = Right (OptUser t)
-    | Just n <- lookup t table = Right n
-    | otherwise = case filter ((t `T.isPrefixOf`) . fst) table of
-        [(_, n)] -> Right n
-        []       -> Left ("invalid option: " <> t)
-        _        -> Left ("ambiguous option: " <> t)
-  where
-    table = [(optionNameText n, n) | n <- allOptionNames]
-
--- | Split an option spelling from its array index: @command-alias[100]@
--- becomes @(command-alias, Just 100)@. A malformed index fails loud.
-splitArrayIndex :: Text -> Either Text (Text, Maybe Int)
-splitArrayIndex t = case T.breakOn "[" t of
-    (base, idx)
-        | T.null idx -> Right (t, Nothing)
-        | Just inner <- T.stripSuffix "]" (T.drop 1 idx)
-        , Right (i, rest) <- TR.decimal inner
-        , T.null rest, i >= (0 :: Int) -> Right (base, Just i)
-        | otherwise -> Left ("bad array index: " <> t)
-
--- | Whether an option holds an indexed array of strings ('OVIndexed').
-isArrayOption :: OptionName -> Bool
-isArrayOption = \case
-    OptCommandAlias -> True
-    _ -> False
-
--- | Resolve a possibly-indexed option spelling ('splitArrayIndex' +
--- 'resolveOptionName'); an index demands an array option.
-resolveIndexedName :: Text -> Either Text (OptionName, Maybe Int)
-resolveIndexedName spelled = do
-    (baseT, midx) <- splitArrayIndex spelled
-    n <- resolveOptionName baseT
-    case midx of
-        Just _ | not (isArrayOption n) ->
-            Left (optionNameText n <> " is not an array option")
-        _ -> Right (n, midx)
+-- | An array option's entries in key order.
+optionArray :: Text -> Options -> [Text]
+optionArray n o = case optionValue n o of
+    OVArray m -> Map.elems m
+    OVScalar t -> [t]
 
 -- | The command a name aliases, if any: the first @name=command@ entry in
--- index order, as tmux's @cmd_get_alias@ resolves it. See
+-- key order, as tmux's @cmd_get_alias@ resolves it. See
 -- 'Hat.Server.Dispatch.runArgv' for when aliases apply.
 lookupCommandAlias :: Options -> Text -> Maybe Text
 lookupCommandAlias o wanted = listToMaybe
     [ T.drop 1 rhs
-    | (_, entry) <- Map.toAscList o.commandAlias
+    | entry <- Map.elems o.commandAlias
     , let (nm, rhs) = T.breakOn "=" entry
     , not (T.null rhs), nm == wanted ]
 
-optionNameText :: OptionName -> Text
-optionNameText = \case
-    OptPrefix -> "prefix"
-    OptBaseIndex -> "base-index"
-    OptPaneBaseIndex -> "pane-base-index"
-    OptStatus -> "status"
-    OptStatusPosition -> "status-position"
-    OptModeKeys -> "mode-keys"
-    OptHistoryLimit -> "history-limit"
-    OptDefaultTerminal -> "default-terminal"
-    OptWordSeparators -> "word-separators"
-    OptStatusLeft -> "status-left"
-    OptStatusLeftLength -> "status-left-length"
-    OptStatusRight -> "status-right"
-    OptStatusRightLength -> "status-right-length"
-    OptStatusInterval -> "status-interval"
-    OptWindowStatusFormat -> "window-status-format"
-    OptWindowStatusCurrentFormat -> "window-status-current-format"
-    OptStatusStyle -> "status-style"
-    OptWindowStatusStyle -> "window-status-style"
-    OptWindowStatusCurrentStyle -> "window-status-current-style"
-    OptWindowStatusBellStyle -> "window-status-bell-style"
-    OptPaneBorderStyle -> "pane-border-style"
-    OptPaneActiveBorderStyle -> "pane-active-border-style"
-    OptModeStyle -> "mode-style"
-    OptPaneBorderLines -> "pane-border-lines"
-    OptPaneBorderIndicators -> "pane-border-indicators"
-    OptCursorColour -> "cursor-colour"
-    OptSetTitles -> "set-titles"
-    OptEscapeTime -> "escape-time"
-    OptDisplayTime -> "display-time"
-    OptDisplayPanesTime -> "display-panes-time"
-    OptDisplayPanesColour -> "display-panes-colour"
-    OptDisplayPanesActiveColour -> "display-panes-active-colour"
-    OptFocusEvents -> "focus-events"
-    OptAggressiveResize -> "aggressive-resize"
-    OptMonitorActivity -> "monitor-activity"
-    OptMonitorBell -> "monitor-bell"
-    OptMonitorSilence -> "monitor-silence"
-    OptBellAction -> "bell-action"
-    OptAutomaticRename -> "automatic-rename"
-    OptRemainOnExit -> "remain-on-exit"
-    OptAutomaticRenameFormat -> "automatic-rename-format"
-    OptUpdateEnvironment -> "update-environment"
-    OptMainPaneWidth -> "main-pane-width"
-    OptMainPaneHeight -> "main-pane-height"
-    OptCommandAlias -> "command-alias"
-    OptUser k -> k
-
--- | Project one option back out of a resolved 'Options' (inverse of
--- 'applyEntry'), so a global-scope @show@ can answer from the resolved
--- chain (which includes the compiled defaults). 'Nothing' only for an
--- unset user option.
-optionValueOf :: Options -> OptionName -> Maybe OptionValue
-optionValueOf o = \case
-    OptPrefix -> Just (OVText o.prefix)
-    OptBaseIndex -> Just (OVInt o.baseIndex)
-    OptPaneBaseIndex -> Just (OVInt o.paneBaseIndex)
-    OptStatus -> Just (OVStatusLines o.statusLines)
-    OptStatusPosition -> Just (OVStatusPosition o.statusPosition)
-    OptModeKeys -> Just (OVModeKeys o.modeKeys)
-    OptHistoryLimit -> Just (OVInt o.historyLimit)
-    OptDefaultTerminal -> Just (OVText o.defaultTerminal)
-    OptWordSeparators -> Just (OVText o.wordSeparators)
-    OptStatusLeft -> Just (OVText o.statusLeft)
-    OptStatusLeftLength -> Just (OVInt o.statusLeftLength)
-    OptStatusRight -> Just (OVText o.statusRight)
-    OptStatusRightLength -> Just (OVInt o.statusRightLength)
-    OptStatusInterval -> Just (OVInt o.statusInterval)
-    OptWindowStatusFormat -> Just (OVText o.windowStatusFormat)
-    OptWindowStatusCurrentFormat -> Just (OVText o.windowStatusCurrentFormat)
-    OptStatusStyle -> Just (OVStyle o.statusStyle)
-    OptWindowStatusStyle -> Just (OVStyle o.windowStatusStyle)
-    OptWindowStatusCurrentStyle -> Just (OVStyle o.windowStatusCurrentStyle)
-    OptWindowStatusBellStyle -> Just (OVStyle o.windowStatusBellStyle)
-    OptPaneBorderStyle -> Just (OVStyle o.paneBorderStyle)
-    OptPaneActiveBorderStyle -> Just (OVStyle o.paneActiveBorderStyle)
-    OptModeStyle -> Just (OVStyle o.modeStyle)
-    OptPaneBorderLines -> Just (OVBorderLines o.paneBorderLines)
-    OptPaneBorderIndicators -> Just (OVBorderIndicators o.paneBorderIndicators)
-    OptCursorColour -> Just (OVText o.cursorColour)
-    OptSetTitles -> Just (OVBool o.setTitles)
-    OptEscapeTime -> Just (OVInt o.escapeTime)
-    OptDisplayTime -> Just (OVInt o.displayTime)
-    OptDisplayPanesTime -> Just (OVInt o.displayPanesTime)
-    OptDisplayPanesColour -> Just (OVText o.displayPanesColour)
-    OptDisplayPanesActiveColour -> Just (OVText o.displayPanesActiveColour)
-    OptFocusEvents -> Just (OVBool o.focusEvents)
-    OptAggressiveResize -> Just (OVBool o.aggressiveResize)
-    OptMonitorActivity -> Just (OVBool o.monitorActivity)
-    OptMonitorBell -> Just (OVBool o.monitorBell)
-    OptMonitorSilence -> Just (OVInt o.monitorSilence)
-    OptBellAction -> Just (OVAlertAction o.bellAction)
-    OptAutomaticRename -> Just (OVBool o.automaticRename)
-    OptRemainOnExit -> Just (OVBool o.remainOnExit)
-    OptAutomaticRenameFormat -> Just (OVText o.automaticRenameFormat)
-    OptUpdateEnvironment -> Just (OVTextList o.updateEnvironment)
-    OptMainPaneWidth -> Just (OVInt o.mainPaneWidth)
-    OptMainPaneHeight -> Just (OVInt o.mainPaneHeight)
-    OptCommandAlias -> Just (OVIndexed o.commandAlias)
-    OptUser k -> OVText <$> Map.lookup k o.user
-
--- | Render an option value the way tmux's @show-options -v@ does: the raw
--- text, with no quoting.
-formatOptionValue :: OptionValue -> Text
-formatOptionValue = \case
-    OVText t -> t
-    OVInt n -> T.pack (show n)
-    OVBool b -> if b then "on" else "off"
-    OVTextList ts -> T.unwords ts
-    OVStatusLines n -> case n of
-        0 -> "off"
-        1 -> "on"
-        _ -> T.pack (show n)
-    OVStatusPosition p -> case p of
-        StatusTop -> "top"
-        StatusBottom -> "bottom"
-    OVModeKeys k -> case k of
-        KeysVi -> "vi"
-        KeysEmacs -> "emacs"
-    OVStyle s -> styleText s
-    OVBorderLines l -> case l of
-        BorderSingle -> "single"
-        BorderHeavy -> "heavy"
-        BorderDouble -> "double"
-        BorderSimple -> "simple"
-    OVAlertAction a -> case a of
-        AlertAny -> "any"
-        AlertNone -> "none"
-        AlertCurrent -> "current"
-        AlertOther -> "other"
-    OVBorderIndicators i -> case i of
-        IndicatorsOff -> "off"
-        IndicatorsColour -> "colour"
-        IndicatorsArrows -> "arrows"
-        IndicatorsBoth -> "both"
-    -- Scalar contexts join an array with the assign separator; listings
-    -- print one indexed line per entry instead ('listingLines').
-    OVIndexed m -> T.intercalate "," (Map.elems m)
-
--- | Display form of a parsed style (a set never round-trips its original
--- spelling; this is for @show-options@ output only).
-styleText :: Cell.Style -> Text
-styleText s = case parts of
-    [] -> "default"
-    ps -> T.intercalate "," ps
-  where
-    parts = concat
-        [ [ "fg=" <> colorText s.fg | s.fg /= Cell.DefaultColor ]
-        , [ "bg=" <> colorText s.bg | s.bg /= Cell.DefaultColor ]
-        , [ "bold" | s.bold ], [ "underscore" | s.underline ]
-        , [ "italics" | s.italic ], [ "reverse" | s.reverse ]
-        , [ "strikethrough" | s.strike ], [ "blink" | s.blink ]
-        , [ "dim" | s.faint ]
-        ]
-    colorText = \case
-        Cell.DefaultColor -> "default"
-        Cell.Indexed n -> "colour" <> T.pack (show n)
-        Cell.RGB r g b -> T.pack (printfHex r g b)
-    printfHex r g b = '#' : concatMap hex2 [r, g, b]
-    hex2 w = [hexDigit (w `div` 16), hexDigit (w `mod` 16)]
-    hexDigit d
-        | d < 10 = toEnum (fromEnum '0' + fromIntegral d)
-        | otherwise = toEnum (fromEnum 'a' + fromIntegral d - 10)
-
--- | Double-quote a value for a name-and-value @show-options@ line when it
--- would not survive re-parsing bare, as tmux does.
+-- | Double-quote a value when it would not survive re-parsing bare.
 quoteIfNeeded :: Text -> Text
 quoteIfNeeded t
     | T.null t || T.any needs t =
@@ -678,28 +387,3 @@ quoteIfNeeded t
         '"' -> "\\\""
         '\\' -> "\\\\"
         _ -> T.singleton c
-
--- | tmux's built-in hook names (its options table's @IS_HOOK@ entries,
--- minus the per-command @after-*@ family). @show-options -H@ lists them;
--- they are also the names @set-hook@ and @wait-for -E@ accept — see
--- 'Hat.Server.Hooks'.
-hookNames :: [Text]
-hookNames =
-    [ "alert-activity", "alert-bell", "alert-silence"
-    , "client-active", "client-attached", "client-closed", "client-created"
-    , "client-dark-theme", "client-detached", "client-focus-in"
-    , "client-focus-out", "client-light-theme", "client-resized"
-    , "client-session-changed", "command-error", "marked-pane-changed"
-    , "pane-activity", "pane-bell", "pane-command-finished"
-    , "pane-command-started", "pane-created", "pane-died", "pane-exited"
-    , "pane-focus-in", "pane-focus-out", "pane-mode-changed"
-    , "pane-mode-entered", "pane-mode-exited", "pane-moved"
-    , "pane-prompt-closed", "pane-prompt-opened", "pane-resized"
-    , "pane-set-clipboard", "pane-shell-prompt", "pane-title-changed"
-    , "session-added-to-group", "session-closed", "session-created"
-    , "session-removed-from-group", "session-renamed"
-    , "session-window-changed", "window-closed", "window-created"
-    , "window-layout-changed", "window-linked", "window-pane-changed"
-    , "window-renamed", "window-resized", "window-unlinked"
-    , "window-unzoomed", "window-zoomed"
-    ]
