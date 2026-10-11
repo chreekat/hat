@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , resolveShell
     , expandFormat
     , formatCtxFor
+    , clientTheme
     , reachableValues
     , WindowFlagState (..)
     , windowFlags
@@ -52,6 +53,7 @@ import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
 import Hat.Server.Resize (windowArea)
+import Hat.Server.Theme (Theme, clientColours, resolveTheme)
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
@@ -442,13 +444,25 @@ formatCtxFor st env0 = do
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
+    th <- clientTheme st
     pure (formatCtx env job now)
-        { sessions = sessionItems
+        { theme = th
+        , sessions = sessionItems
         , windows = windowItems
         , panes = paneItems
         , clients = clientItems
         , paneLines = visibleLines
         }
+
+-- | The theme a hat client draws with (see 'resolveTheme'): every client
+-- shares the server's colour scheme and draws RGB colours.
+clientTheme :: ServerState -> IO Theme
+clientTheme st = do
+    opts <- readTVarIO st.options
+    scheme <- readTVarIO st.colorScheme
+    now <- getZonedTime
+    let ctx = formatCtx (Map.singleton "client_colours" clientColours) (const "") now
+    pure (resolveTheme (evaluateCtx ctx) opts scheme)
 
 -- | The formats plus every variable value satisfying @p@ that they name
 -- (as @{name}@ or @:name}@), transitively: what their @E:@ or @T:@
@@ -537,6 +551,7 @@ clientFormatVars c = do
     focused <- readTVarIO c.outerFocused
     pure
         [ ("client_name", "client" <> tshow (rawClient c.id))
+        , ("client_colours", clientColours)
         , ("client_control_mode", if isJust c.control then "1" else "0")
         , ("client_flags", T.intercalate "," $
             ["attached"] <> [ "focused" | focused ] <> controlFlags)

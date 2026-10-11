@@ -38,12 +38,13 @@ import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatDraw (formatDraw, styleCell)
 import Hat.Server.FormatEnv
-    (WindowFlagState (..), activeClientCounts, expandFormat, formatCtxFor,
+    (WindowFlagState (..), activeClientCounts, clientTheme, expandFormat, formatCtxFor,
      paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
      windowFormatEnv, windowOwnEnv)
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (windowArrange, windowPaneStatus)
 import Hat.Server.Scene
+import Hat.Server.Theme (Theme)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
@@ -333,6 +334,7 @@ windowCompositeCells
     :: ServerState -> Window -> Size -> IO (V.Vector (V.Vector Cell.Cell))
 windowCompositeCells st win size = do
     opts <- readTVarIO st.options
+    th <- clientTheme st
     (rects, ps, active, status) <- atomically $ do
         (r, _) <- windowArrange st size win
         ps     <- readTVar win.panes
@@ -344,9 +346,9 @@ windowCompositeCells st win size = do
             , twoPane = Nothing }
         look = ChromeLook
             { borderLines = opts.paneBorderLines
-            , windowStyle = styleCell (optionText "pane-border-style" opts)
+            , windowStyle = styleCell th (optionText "pane-border-style" opts)
             , paneStyles = Map.singleton active
-                (styleCell (optionText "pane-active-border-style" opts))
+                (styleCell th (optionText "pane-active-border-style" opts))
             , active = Just active, marked = Nothing, numbers = Map.empty
             , paneLines = Map.empty
             , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
@@ -440,12 +442,13 @@ cachedChrome
     -> [(PaneId, Rect)] -> PaneId -> Int -> IO Chrome
 cachedChrome st client sess win eff sceneArea rects active rowOff = do
     mcc <- readIORef client.lastChrome
-    (input, look0, panes) <- atomically (chromeInputs st sess win eff sceneArea rects active)
+    th <- clientTheme st
+    (input, look0, panes) <- atomically (chromeInputs st th sess win eff sceneArea rects active)
     let scene = case mcc of
             Just cc | cc.input == input -> cc.scene
             _ -> buildScene input
-    look <- withStatusLines st sess win input.paneStatus scene panes look0
-        >>= withFills st sess win scene
+    look <- withStatusLines st th sess win input.paneStatus scene panes look0
+        >>= withFills st th sess win scene
     case mcc of
         Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
             pure cc.chrome
@@ -469,9 +472,9 @@ data ChromePane = ChromePane
 -- | The scene a window's panes make and how its chrome looks, before any
 -- pane status line is drawn.
 chromeInputs
-    :: ServerState -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
+    :: ServerState -> Theme -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
     -> PaneId -> STM (SceneInput, ChromeLook, [ChromePane])
-chromeInputs st sess win eff sceneArea rects active = do
+chromeInputs st th sess win eff sceneArea rects active = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
     lay <- readTVar win.layout
@@ -493,7 +496,7 @@ chromeInputs st sess win eff sceneArea rects active = do
             pure [ ChromePane
                 { pane, options = popts
                 , number = wopts.paneBaseIndex + fromMaybe 0 (List.elemIndex pid order) } ]
-    let paneStyle cp = styleCell $ optionText
+    let paneStyle cp = styleCell th $ optionText
             (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
             cp.options
         useArrows = indicators `elem` [IndicatorsArrows, IndicatorsBoth]
@@ -502,7 +505,7 @@ chromeInputs st sess win eff sceneArea rects active = do
             , paneStatus = status, twoPane }
         look = ChromeLook
             { borderLines = wopts.paneBorderLines
-            , windowStyle = styleCell (optionText "pane-border-style" wopts)
+            , windowStyle = styleCell th (optionText "pane-border-style" wopts)
             , paneStyles = Map.fromList [ (cp.pane.id, paneStyle cp) | cp <- panes ]
             , active = Just active
             , marked
@@ -516,14 +519,14 @@ chromeInputs st sess win eff sceneArea rects active = do
     pure (input, look, panes)
 
 -- | The window's @fill-character@ cells, when the scene has room for them.
-withFills :: ServerState -> Session -> Window -> Scene -> ChromeLook -> IO ChromeLook
-withFills st sess win scene look
+withFills :: ServerState -> Theme -> Session -> Window -> Scene -> ChromeLook -> IO ChromeLook
+withFills st th sess win scene look
     | not (V.any (V.any isFill) scene) = pure look
     | otherwise = do
         (wix, wopts) <- atomically $
             (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
         env <- windowFormatEnv st sess wix win
-        let fill inside = fillCell look.windowStyle <$> expandFormat st
+        let fill inside = fillCell th look.windowStyle <$> expandFormat st
                 (Map.insert "is_inside" (flag inside)
                     (Map.insert "is_outside" (flag (not inside)) env))
                 (optionText "fill-character" wopts)
@@ -540,9 +543,9 @@ withFills st sess win scene look
 -- | Draw each pane's @pane-border-format@ over the border its status line
 -- replaces (tmux's @window_make_pane_status@).
 withStatusLines
-    :: ServerState -> Session -> Window -> PaneStatus -> Scene -> [ChromePane]
+    :: ServerState -> Theme -> Session -> Window -> PaneStatus -> Scene -> [ChromePane]
     -> ChromeLook -> IO ChromeLook
-withStatusLines st sess win status scene panes look
+withStatusLines st th sess win status scene panes look
     | status == PaneStatusOff = pure look
     | otherwise = do
         wix <- atomically (readTVar sess.currentIx)
@@ -553,7 +556,7 @@ withStatusLines st sess win status scene panes look
                 Just base -> do
                     env <- paneFormatEnv st sess wix win cp.number cp.pane
                     expanded <- expandFormat st env (optionText "pane-border-format" cp.options)
-                    pure [ (cp.pane.id, formatDraw sty expanded base) ]
+                    pure [ (cp.pane.id, formatDraw th sty expanded base) ]
         pure look { paneLines = Map.fromList (concat lines') }
 
 -- | An arrow at the midpoint of each of a pane's four border edges,

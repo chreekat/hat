@@ -6,6 +6,7 @@ import Data.Vector qualified as V
 import Test.Hspec
 
 import Hat.Server.FormatDraw
+import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Cell qualified as Cell
 
 base :: Cell.Style
@@ -13,7 +14,7 @@ base = Cell.defaultStyle { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 2 }
 
 -- | Draw onto a row of @w@ blanks in the base style.
 draw :: Int -> Text -> V.Vector Cell.Cell
-draw w fmt = formatDraw base fmt (V.replicate w (Cell.glyphCell ' ' base))
+draw w fmt = formatDraw terminalTheme base fmt (V.replicate w (Cell.glyphCell ' ' base))
 
 rowText :: V.Vector Cell.Cell -> Text
 rowText = T.pack . map Cell.baseChar . V.toList

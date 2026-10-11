@@ -11,6 +11,7 @@ module Hat.Server.FormatDraw
     , DefaultType (..)
     , Width (..)
     , defaultDrawStyle
+    , themedDrawStyle
     , styleParse
     , styleCell
     , colourValue
@@ -35,7 +36,8 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Data.Vector qualified as V
 
-import Hat.Server.Format.Colour (Colour (..), colourFromText)
+import Hat.Server.Format.Colour (colourFromText)
+import Hat.Server.Theme (Theme, colourCell, terminalTheme, themeColour)
 import Hat.TextWidth (charWidth)
 import Hat.Term.Cell qualified as Cell
 
@@ -67,6 +69,7 @@ data DrawStyle = DrawStyle
     , ignore :: Bool
     , width :: Maybe Width
     , acs :: Bool  -- ^ text draws from the VT100 line-drawing set ('acsGlyph')
+    , theme :: Theme  -- ^ what its theme colours draw as
     }
     deriving (Eq, Show)
 
@@ -74,13 +77,17 @@ defaultDrawStyle :: DrawStyle
 defaultDrawStyle = DrawStyle
     { cell = Cell.defaultStyle, fill = Nothing, align = AlignDefault
     , list = ListOff, defaultType = DefaultBase, ignore = False
-    , width = Nothing, acs = False }
+    , width = Nothing, acs = False, theme = terminalTheme }
+
+-- | The default style, drawing theme colours from a theme.
+themedDrawStyle :: Theme -> DrawStyle
+themedDrawStyle th = defaultDrawStyle { theme = th }
 
 -- | A style option's cell attributes (tmux's @style_apply@ over the default
 -- cell); an unparseable style is the default.
-styleCell :: Text -> Cell.Style
-styleCell t = maybe Cell.defaultStyle (.cell)
-    (styleParse Cell.defaultStyle defaultDrawStyle t)
+styleCell :: Theme -> Text -> Cell.Style
+styleCell th t = maybe Cell.defaultStyle (.cell)
+    (styleParse Cell.defaultStyle defaultDrawStyle { theme = th } t)
 
 -- | tmux's @style_parse@: fold a style string onto @sy@, where @default@ and
 -- a @default@ colour mean @base@'s. Any bad token rejects the whole string.
@@ -117,17 +124,17 @@ styleParse base sy0 =
                     "absolute-centre" -> Just sy { align = AlignAbsCentre }
                     _ -> Nothing
                 | Just v <- nonEmpty "fill=" tok -> do
-                    c <- colourValue v
+                    c <- colourValue sy.theme v
                     Just sy { fill = c }
                 | Just v <- nonEmpty "dim=" tok ->
                     sy <$ number 0 100 (fromMaybe v (T.stripSuffix "%" v))
                 | Just v <- nonEmpty "fg=" tok -> do
-                    c <- colourValue v
+                    c <- colourValue sy.theme v
                     Just sy { cell = sy.cell { Cell.fg = fromMaybe base.fg c } }
                 | Just v <- nonEmpty "bg=" tok -> do
-                    c <- colourValue v
+                    c <- colourValue sy.theme v
                     Just sy { cell = sy.cell { Cell.bg = fromMaybe base.bg c } }
-                | Just v <- nonEmpty "us=" tok -> sy <$ colourValue v
+                | Just v <- nonEmpty "us=" tok -> sy <$ colourValue sy.theme v
                 | T.length tok > 2, Just v <- T.stripPrefix "no" tok ->
                     if v == "link" || v == "attr"
                         then Just sy
@@ -170,26 +177,11 @@ number lo hi v = case TR.signed TR.decimal v of
     _ -> Nothing
 
 -- | tmux's @colour_fromstring@ as a cell colour: 'Nothing' inside is
--- @default@ (the caller's base). Theme colours take their terminal colour,
--- tmux's @theme terminal@ choice.
-colourValue :: Text -> Maybe (Maybe Cell.Color)
-colourValue v = case List.lookup (T.toLower v) themeColours of
-    Just n -> Just (Just (Cell.Indexed n))
-    Nothing -> colourFromText v >>= \case
-        CDefault -> Just Nothing
-        CTerminal -> Just (Just Cell.DefaultColor)
-        CBase n
-            | n >= 90 -> Just (Just (Cell.Indexed (fromIntegral (n - 90 + 8))))
-            | otherwise -> Just (Just (Cell.Indexed (fromIntegral n)))
-        C256 n -> Just (Just (Cell.Indexed (fromIntegral n)))
-        CRGB rgb -> Just (Just (Cell.RGB (byte 16) (byte 8) (byte 0)))
-          where byte s = fromIntegral ((rgb `div` (2 ^ (s :: Int))) `mod` 256)
-  where
-    themeColours =
-        [ ("themeblack", 0), ("themewhite", 7), ("themelightgrey", 7)
-        , ("themedarkgrey", 0), ("themegreen", 2), ("themeyellow", 3)
-        , ("themered", 1), ("themeblue", 4), ("themecyan", 6)
-        , ("thememagenta", 5) ]
+-- @default@ (the caller's base). Theme colours take the theme's colour.
+colourValue :: Theme -> Text -> Maybe (Maybe Cell.Color)
+colourValue th v = case themeColour th v of
+    Just c -> Just (Just c)
+    Nothing -> colourCell <$> colourFromText v
 
 -- | tmux's @attributes_fromstring@ as a setter for the attributes hat's
 -- cells carry; @hidden@ and @overline@ are accepted but not drawn, and
@@ -259,15 +251,15 @@ data ListState = NoList | InList | AfterList
 
 -- | tmux's @format_draw@: draw an expanded format over a row (the area,
 -- already holding whatever lies beneath), in @base@ style.
-formatDraw :: Cell.Style -> Text -> V.Vector Cell.Cell -> V.Vector Cell.Cell
-formatDraw base expanded area = case walk start (T.unpack expanded) of
+formatDraw :: Theme -> Cell.Style -> Text -> V.Vector Cell.Cell -> V.Vector Cell.Cell
+formatDraw th base expanded area = case walk start (T.unpack expanded) of
     Nothing -> area  -- an unterminated #[ draws nothing
     Just w -> arrange w (filled w)
   where
     available = V.length area
     start = Walk
         { sections = Map.empty, current = SLeft
-        , sy = defaultDrawStyle { cell = base }
+        , sy = defaultDrawStyle { cell = base, theme = th }
         , currentDefault = base, baseDefault = base
         , focusStart = Nothing, focusEnd = Nothing
         , listState = NoList, listAlign = AlignDefault

@@ -38,6 +38,7 @@ import Hat.Model.Ids (PaneId)
 import Hat.Model.Options (BorderLines (..))
 import Hat.Server.FormatDraw (acsGlyph, formatDraw)
 import Hat.Server.Layout (Orientation (..))
+import Hat.Server.Theme (Theme)
 import Hat.Term.Cell qualified as Cell
 
 -- | @pane-border-status@.
@@ -329,8 +330,8 @@ borderGlyph lns number ct = case lns of
 -- @window_copy_fill_cell@): the expanded @fill-character@ drawn into one
 -- cell, laid over the border style — its glyph and attributes added, its
 -- colours taken where it sets them.
-fillCell :: Cell.Style -> Text -> Cell.Cell
-fillCell border expanded = Cell.Cell drawn.content Cell.Style
+fillCell :: Theme -> Cell.Style -> Text -> Cell.Cell
+fillCell th border expanded = Cell.Cell drawn.content Cell.Style
     { Cell.fg = pick f.fg border.fg, Cell.bg = pick f.bg border.bg
     , Cell.bold = f.bold || border.bold
     , Cell.underline = f.underline || border.underline
@@ -340,6 +341,6 @@ fillCell border expanded = Cell.Cell drawn.content Cell.Style
     , Cell.blink = f.blink || border.blink
     , Cell.faint = f.faint || border.faint }
   where
-    drawn = formatDraw Cell.defaultStyle expanded (V.singleton Cell.blankCell) V.! 0
+    drawn = formatDraw th Cell.defaultStyle expanded (V.singleton Cell.blankCell) V.! 0
     f = drawn.style
     pick c dflt = if c == Cell.DefaultColor then dflt else c

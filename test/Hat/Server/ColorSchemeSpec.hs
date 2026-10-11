@@ -16,7 +16,8 @@ import Hat.Model.Options
     ( Options (..), OptionValue (..)
     , optionText, resolveOptions, singletonDelta )
 import Hat.Server.ColorScheme
-import Hat.Server.FormatDraw (styleCell)
+import Hat.Server.FormatDraw qualified as FD
+import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -98,10 +99,10 @@ spec = do
         it "adapts the default chrome to the scheme" $ do
             let dark = resolveOptions [applyPalette SchemeDark]
                 light = resolveOptions [applyPalette SchemeLight]
-            (styleCell (optionText "status-style" dark)).bg `shouldBe` Cell.Indexed 22
-            (styleCell (optionText "window-status-current-style" dark)).bold `shouldBe` True
-            (styleCell (optionText "status-style" light)).bg `shouldBe` Cell.Indexed 151
-            (styleCell (optionText "status-style" light)).fg `shouldBe` Cell.Indexed 22
+            (FD.styleCell terminalTheme (optionText "status-style" dark)).bg `shouldBe` Cell.Indexed 22
+            (FD.styleCell terminalTheme (optionText "window-status-current-style" dark)).bold `shouldBe` True
+            (FD.styleCell terminalTheme (optionText "status-style" light)).bg `shouldBe` Cell.Indexed 151
+            (FD.styleCell terminalTheme (optionText "status-style" light)).fg `shouldBe` Cell.Indexed 22
             -- borders must not vanish against either background, yet
             -- inactive borders must stay clearly lighter than the active
             -- one. On a dark background 65 is a receding gray; on a light
@@ -141,7 +142,7 @@ spec = do
             let userStyle = Cell.defaultStyle { Cell.bg = Cell.Indexed 196 }
                 userDelta = singletonDelta "status-style" (OVScalar "bg=colour196")
                 dark = resolveOptions [userDelta, applyPalette SchemeDark]
-            styleCell (optionText "status-style" dark) `shouldBe` userStyle
+            FD.styleCell terminalTheme (optionText "status-style" dark) `shouldBe` userStyle
             -- options the user did not set still adapt
             dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
 
@@ -157,9 +158,9 @@ spec = do
             dark.fg `shouldBe` Cell.Indexed 153
             light.bg `shouldBe` Cell.Indexed 153
             light.fg `shouldBe` Cell.Indexed 24
-            dark.bg `shouldNotBe` (styleCell (optionText "status-style" darkOpts)).bg
+            dark.bg `shouldNotBe` (FD.styleCell terminalTheme (optionText "status-style" darkOpts)).bg
             dark.bg `shouldNotBe` darkOpts.modeStyle.bg
-            light.bg `shouldNotBe` (styleCell (optionText "status-style" lightOpts)).bg
+            light.bg `shouldNotBe` (FD.styleCell terminalTheme (optionText "status-style" lightOpts)).bg
             light.bg `shouldNotBe` lightOpts.modeStyle.bg
 
         it "falls back to basic blue when no scheme is detected" $

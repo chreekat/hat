@@ -153,6 +153,7 @@ library
         Hat.Server.Status
         Hat.Server.Style
         Hat.Server.Target
+        Hat.Server.Theme
         Hat.Server.Title
         Hat.Server.Toast
         Hat.Server.View
@@ -320,6 +321,7 @@ test-suite hat-test
         Hat.Server.PromptHistorySpec
         Hat.Server.ReloadSpec
         Hat.Server.SceneSpec
+        Hat.Server.ThemeSpec
         Hat.Server.SendSpec
         Hat.Server.StatusSpec
         Hat.Server.StyleSpec

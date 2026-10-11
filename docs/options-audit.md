@@ -73,6 +73,7 @@ spot-read of each suspect consumer.
 | `pane-border-format` | `withStatusLines` (View.hs) over `statusBase` (Scene.hs) | implemented ✅ tested | regress `screen-redraw-tiled` |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
+| `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
@@ -126,6 +127,13 @@ spot-read of each suspect consumer.
   integration test.
 
 ## Minor divergences (not defects)
+
+- **`theme`** `detect` reads the desktop colour scheme hat already follows
+  (`Hat.Server.ColorScheme`), not each client terminal's own report, so
+  every client shares one theme. Hat clients draw RGB directly, so
+  `client_colours` is always 16777216 and the palettes' rich colours apply.
+  Styles decoded into `Options` record fields (`mode-style`) still draw
+  theme colours as the terminal default.
 
 - **`pane-border-indicators`** `arrows` draws hat's triangles at each edge's
   midpoint, where tmux draws ACS arrows next to the pane's corner (a
