@@ -8,8 +8,9 @@ import Test.Hspec
 import Hat.Geometry (Size (..))
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout
-    ( Layout (..), Orientation (..), Placement (..), SplitSpan (..), SplitSpec (..)
-    , fitLayout, layoutPanes, singlePane, splitPane )
+    ( FloatGeom (..), Layout (..), Orientation (..), Placement (..), SplitSpan (..)
+    , SplitSpec (..), fitLayout, floatGeom, floatPane, layoutPanes, singlePane
+    , splitPane, tiledPanes )
 import Hat.Server.LayoutString
 
 area :: Size
@@ -23,6 +24,12 @@ halves :: Orientation -> Maybe Layout
 halves o = splitPane (SplitSpec o Nothing After SpanPane) (PaneId 0) (PaneId 1)
     (fitLayout area (singlePane (PaneId 0)))
 
+-- | One pane with two floating panes beside it, %2 overhanging the top left.
+floated :: Maybe Layout
+floated = floatPane (Just (PaneId 0)) (PaneId 1) (FloatGeom 18 4 9 4)
+    (fitLayout area (singlePane (PaneId 0)))
+    >>= floatPane (Just (PaneId 1)) (PaneId 2) (FloatGeom 10 3 (-2) (-1))
+
 spec :: Spec
 spec = do
     describe "emitLayout" $ do
@@ -35,7 +42,35 @@ spec = do
             fmap emitLayout (halves TopBottom)
                 `shouldBe` Just (prefixed "80x24,0,0[80x12,0,0,0,80x11,0,13,1]")
 
+        it "lists floating cells in the tree and again, front first, in <>" $
+            fmap (emitLayoutZ [PaneId 2, PaneId 1]) floated
+                `shouldBe` Just (prefixed
+                    "80x24,0,0[80x24,0,0,0,18x4,9,4,1,10x3,-2,-1,2]\
+                    \<10x3,-2,-1,2,18x4,9,4,1>")
+
+    describe "restoreLayout" $ do
+        it "reads back floating panes and their stacking onto new panes" $ case floated of
+            Nothing -> expectationFailure "no float"
+            Just lay -> do
+                let str = emitLayoutZ [PaneId 2, PaneId 1] lay
+                    pids = [PaneId 10, PaneId 11, PaneId 12]
+                    back = restoreLayout str pids
+                fmap (tiledPanes . fst) back `shouldBe` Right [PaneId 10]
+                fmap snd back `shouldBe` Right [PaneId 12, PaneId 11]
+                fmap (floatGeom (PaneId 12) . fst) back
+                    `shouldBe` Right (Just (FloatGeom 10 3 (-2) (-1)))
+        it "reads a string without floating panes as select-layout does" $
+            fmap fst (restoreLayout (prefixed "80x24,0,0{40x24,0,0,0,39x24,41,0,1}")
+                [PaneId 0, PaneId 1])
+                `shouldBe` layoutFromString (prefixed "80x24,0,0{40x24,0,0,0,39x24,41,0,1}")
+                    [PaneId 0, PaneId 1]
+
     describe "layoutFromString" $ do
+        it "rejects a floating pane list, as tmux's parser does" $
+            case fmap emitLayout floated of
+                Nothing -> expectationFailure "no float"
+                Just str -> layoutFromString str (map PaneId [0, 1, 2])
+                    `shouldBe` Left "invalid layout"
         it "maps the cells onto the panes in order" $
             fmap layoutPanes (layoutFromString
                 (prefixed "80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]}")

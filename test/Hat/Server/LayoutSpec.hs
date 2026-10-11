@@ -30,12 +30,26 @@ genLayout = do
     foldM grow start [1 .. n]
   where
     grow lay k = do
-        target <- elements (layoutPanes lay)
+        target <- elements (tiledPanes lay)
         o <- elements [LeftRight, TopBottom]
         sz <- oneof [pure Nothing, Just <$> chooseInt (0, 40)]
         pl <- elements [Before, After]
         sp <- elements [SpanPane, SpanWindow]
-        pure (fromMaybe lay (splitPane (SplitSpec o sz pl sp) target (PaneId k) lay))
+        g <- genGeom
+        floater <- elements (layoutPanes lay)
+        frequency
+            [ (6, pure (fromMaybe lay (splitPane (SplitSpec o sz pl sp) target (PaneId k) lay)))
+            , (1, pure (fromMaybe lay (floatPane (Just floater) (PaneId k) g lay)))
+            -- Floating a pane keeps at least one tiled: a window of only
+            -- floating panes tiles nothing.
+            , (1, pure $ if length (tiledPanes lay) > 1
+                then fromMaybe lay (floatTiled target g lay) else lay)
+            ]
+
+-- Any floating geometry, overhanging the window included.
+genGeom :: Gen FloatGeom
+genGeom = FloatGeom <$> chooseInt (1, 30) <*> chooseInt (1, 15)
+    <*> chooseInt (-10, 60) <*> chooseInt (-5, 30)
 
 -- Shrink toward 'PaneNext' so a failing 'PanePrev' case also reports as
 -- 'PaneNext' if that simpler case reproduces it.
@@ -79,14 +93,20 @@ split1 o sz pl sp target new = splitPane (SplitSpec o sz pl sp) (PaneId target) 
 -- Every node's children exactly fill it, their offsets laid out in order.
 consistent :: Layout -> Bool
 consistent l = case l.cell of
-    LeafCell _ -> True
-    NodeCell o cs -> all consistent cs && case o of
+    -- A node of only floating panes tiles nothing.
+    NodeCell o cs0 | cs@(_ : _) <- filter tiled cs0 -> all consistent cs && case o of
         LeftRight -> all (\c -> c.sy == l.sy && c.yoff == l.yoff) cs
             && sum [ c.sx + 1 | c <- cs ] - 1 == l.sx
             && and (zipWith (\a b -> b.xoff == a.xoff + a.sx + 1) cs (drop 1 cs))
         TopBottom -> all (\c -> c.sx == l.sx && c.xoff == l.xoff) cs
             && sum [ c.sy + 1 | c <- cs ] - 1 == l.sy
             && and (zipWith (\a b -> b.yoff == a.yoff + a.sy + 1) cs (drop 1 cs))
+    _ -> True
+  where
+    tiled c = case c.cell of
+        LeafCell _ -> True
+        FloatCell _ -> False
+        NodeCell _ cs -> any tiled cs
 
 spec :: Spec
 spec = do
@@ -196,6 +216,57 @@ spec = do
                     === Just (Set.fromList (layoutPanes lay))
         prop "removing the only pane empties the layout" $ \n ->
             removePane (PaneId n) (singlePane (PaneId n)) === Nothing
+
+    describe "floating cells" $ do
+        let one = fitLayout windowSize (leaf 0)
+            geom = FloatGeom { width = 20, height = 6, left = 8, top = 3 }
+            withFloat = floatPane (Just (PaneId 0)) (PaneId 1) geom one
+        it "float beside their target, out of the tiling" $ do
+            fmap layoutPanes withFloat `shouldBe` Just [PaneId 0, PaneId 1]
+            fmap tiledPanes withFloat `shouldBe` Just [PaneId 0]
+            fmap (fst . arrange (sizeRect windowSize)) withFloat
+                `shouldBe` fmap (fst . arrange (sizeRect windowSize)) (Just one)
+            (withFloat >>= floatGeom (PaneId 1)) `shouldBe` Just geom
+        it "keep their geometry through a window resize" $
+            (withFloat >>= floatGeom (PaneId 1)
+                . fitLayout Size { rows = 10, cols = 30 }) `shouldBe` Just geom
+        it "close without disturbing the tiled panes" $
+            (withFloat >>= removePane (PaneId 1)) `shouldBe` Just one
+        it "outlive the last tiled pane, the window keeping only them" $ do
+            let floated = withFloat >>= removePane (PaneId 0)
+            fmap tiledPanes floated `shouldBe` Just []
+            (floated >>= floatGeom (PaneId 1)) `shouldBe` Just geom
+        it "take a tiled pane out of the tiling, its space to its neighbour" $ do
+            let two = fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1])
+                floated = floatTiled (PaneId 0) geom two
+            (floated >>= cellOf 1) `shouldBe` Just (120, 40)
+            (floated >>= floatGeom (PaneId 0)) `shouldBe` Just geom
+            fmap layoutPanes floated `shouldBe` Just [PaneId 0, PaneId 1]
+        it "tile back where they came from, halving the neighbour" $ do
+            let two = fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1])
+                back = floatTiled (PaneId 0) geom two
+                    >>= tileFloating windowSize (PaneId 0)
+            fmap (fst . arrange (sizeRect windowSize)) back
+                `shouldBe` Just (fst (arrange (sizeRect windowSize)
+                    (fitLayout windowSize (fromMaybe one
+                        (split1 LeftRight Nothing After SpanPane 0 1 one)))))
+        it "tile as the whole window when no tiled pane is left" $ do
+            let only = withFloat >>= removePane (PaneId 0)
+                    >>= tileFloating windowSize (PaneId 1)
+            fmap (fst . arrange (sizeRect windowSize)) only
+                `shouldBe` Just [(PaneId 1, sizeRect windowSize)]
+        it "are left out when sharing a node's space evenly" $ do
+            let three = fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1, leaf 2])
+                lay = floatTiled (PaneId 1) geom three
+                    >>= Just . spreadOut (PaneId 0)
+            (lay >>= cellOf 0) `shouldBe` Just (60, 40)
+            (lay >>= cellOf 2) `shouldBe` Just (59, 40)
+        it "stay floating, after the tiled panes, through a named layout" $ do
+            let lay = withFloat >>= splitPane (SplitSpec LeftRight Nothing After SpanPane)
+                    (PaneId 0) (PaneId 2)
+                    >>= relayoutNamed defaultNamedSizes windowSize Tiled
+            fmap tiledPanes lay `shouldBe` Just [PaneId 0, PaneId 2]
+            (lay >>= floatGeom (PaneId 1)) `shouldBe` Just geom
 
     describe "swapLeaves" $ do
         it "exchanges two panes' positions" $

@@ -45,6 +45,17 @@ module Hat.Server.Layout
     , resizePaneTo
     , spreadOut
     , namedLayout
+    , relayoutNamed
+    , tiledPanes
+    , floatingCells
+    , isFloating
+    , FloatGeom (..)
+    , cellGeom
+    , floatGeom
+    , setFloatGeom
+    , floatPane
+    , floatTiled
+    , tileFloating
     , neighbor
     , directionalTarget
     ) where
@@ -119,11 +130,31 @@ data Layout = Layout
     }
     deriving (Eq, Show)
 
--- | What a cell holds: one pane, or two or more children laid along an axis.
+-- | What a cell holds: one tiled pane, one floating pane, or two or more
+-- children laid along an axis. See Note [Floating cells].
 data Cell
     = LeafCell PaneId
+    | FloatCell PaneId
+        -- ^ a floating pane: the cell's size and (possibly negative) offset
+        -- are its content box in window coordinates
     | NodeCell Orientation [Layout]
     deriving (Eq, Show)
+
+-- Note [Floating cells]
+-- ~~~~~~~~~~~~~~~~~~~~~
+-- As in tmux, a floating pane keeps a cell in the layout tree, beside the
+-- cell it was spawned from (or tiled at before @break-pane -W@), so tiling
+-- it back reinserts it where it came from. Tiling skips it: offsets, sizes,
+-- borders and the space shared out among siblings consider only tiled
+-- leaves and nodes holding one ('tiledish'). A few of tmux's walks do not
+-- skip floating cells — the space a cell can give up ('spare'), the
+-- children 'sizeFits' counts, the siblings a resize may borrow from — and
+-- so count a floating pane's size as tiled space, leaving a node's children
+-- no longer filling it; here they skip them too.
+--
+-- The tree's leaf order is the pane index order for floating panes too,
+-- where tmux appends a new floating pane to its pane list instead; the two
+-- agree when the new pane's target is the window's last pane.
 
 -- | tmux's @PANE_MINIMUM@: the smallest a pane may be along either axis.
 paneMinimum :: Int
@@ -155,8 +186,32 @@ setExtent TopBottom n l = l { sy = n }
 
 isLeaf :: Layout -> Bool
 isLeaf l = case l.cell of
-    LeafCell _ -> True
     NodeCell _ _ -> False
+    _ -> True
+
+-- | A tiled pane's cell (@layout_cell_is_tiled@).
+isTiled :: Layout -> Bool
+isTiled l = case l.cell of
+    LeafCell _ -> True
+    _ -> False
+
+-- | A node with a tiled pane somewhere below it
+-- (@layout_cell_has_tiled_child@).
+hasTiledChild :: Layout -> Bool
+hasTiledChild l = case l.cell of
+    NodeCell _ cs -> any tiledish cs
+    _ -> False
+
+-- | A cell tiling lays out: a tiled pane, or a node holding one.
+tiledish :: Layout -> Bool
+tiledish c = isTiled c || hasTiledChild c
+
+-- | The pane a leaf cell holds, tiled or floating.
+leafPane :: Layout -> Maybe PaneId
+leafPane l = case l.cell of
+    LeafCell p -> Just p
+    FloatCell p -> Just p
+    NodeCell _ _ -> Nothing
 
 -- Paths ---------------------------------------------------------------------
 
@@ -165,9 +220,9 @@ type Path = [Int]
 
 pathTo :: PaneId -> Layout -> Maybe Path
 pathTo pid l = case l.cell of
-    LeafCell p -> if p == pid then Just [] else Nothing
     NodeCell _ cs -> listToMaybe
         [ i : p | (i, c) <- zip [0 ..] cs, Just p <- [pathTo pid c] ]
+    _ -> if leafPane l == Just pid then Just [] else Nothing
 
 at :: Path -> Layout -> Layout
 at [] l = l
@@ -180,7 +235,7 @@ modifyAt [] f l = f l
 modifyAt (i : p) f l = case l.cell of
     NodeCell t cs -> l { cell = NodeCell t
         [ if j == i then modifyAt p f c else c | (j, c) <- zip [0 ..] cs ] }
-    LeafCell _ -> l
+    _ -> l
 
 modifyChild :: Int -> (Layout -> Layout) -> [Layout] -> [Layout]
 modifyChild i f cs = [ if j == i then f c else c | (j, c) <- zip [0 ..] cs ]
@@ -190,20 +245,23 @@ modifyChild i f cs = [ if j == i then f c else c | (j, c) <- zip [0 ..] cs ]
 -- | How much a cell can give up along an axis (@layout_resize_check@).
 spare :: Orientation -> Layout -> Int
 spare o l = case l.cell of
-    LeafCell _ -> max 0 (extent o l - paneMinimum)
-    NodeCell t cs
-        | t == o -> sum (map (spare o) cs)
-        | otherwise -> minimum (map (spare o) cs)
+    NodeCell t cs0 | cs <- filter tiledish cs0 -> case cs of
+        [] -> 0
+        _ | t == o -> sum (map (spare o) cs)
+          | otherwise -> minimum (map (spare o) cs)
+    _ -> max 0 (extent o l - paneMinimum)
 
 -- | Grow or shrink a cell along an axis, spreading the change over its
 -- children one cell at a time (@layout_resize_adjust@). The change must
 -- already be bounded by what the cell can give.
 adjust :: Orientation -> Int -> Layout -> Layout
 adjust o change l0 = case l.cell of
-    LeafCell _ -> l
     NodeCell t cs
-        | t /= o -> l { cell = NodeCell t (map (adjust o change) cs) }
+        | t /= o -> l { cell = NodeCell t
+            [ if tiledish c then adjust o change c else c | c <- cs ] }
+        | not (hasTiledChild l) -> l
         | otherwise -> l { cell = NodeCell t (spread change cs) }
+    _ -> l
   where
     l = setExtent o (extent o l0 + change) l0
     spread 0 cs = cs
@@ -212,34 +270,43 @@ adjust o change l0 = case l.cell of
         (_, _, acc) -> reverse acc
     step (ch, changed, acc) c
         | ch == 0 = (ch, changed, c : acc)
+        | not (tiledish c) = (ch, changed, c : acc)
         | ch > 0 = (ch - 1, True, adjust o 1 c : acc)
         | spare o c > 0 = (ch + 1, True, adjust o (-1) c : acc)
         | otherwise = (ch, changed, c : acc)
 
--- | Lay every cell's offset out from its siblings' sizes, the root at the
--- origin (@layout_fix_offsets@).
+-- | Lay every tiled cell's offset out from its siblings' sizes, the root
+-- at the origin (@layout_fix_offsets@); a floating cell keeps its own.
 fixOffsets :: Layout -> Layout
-fixOffsets = place 0 0
+fixOffsets root = case root.cell of
+    FloatCell _ -> root
+    _ -> place 0 0 root
   where
     place x y l = case l.cell of
-        LeafCell _ -> l'
         NodeCell LeftRight cs -> l' { cell = NodeCell LeftRight (alongX x cs) }
         NodeCell TopBottom cs -> l' { cell = NodeCell TopBottom (alongY y cs) }
+        _ -> l'
       where
         l' = l { xoff = x, yoff = y }
         alongX _ [] = []
-        alongX cx (c : rest) = place cx y c : alongX (cx + c.sx + 1) rest
+        alongX cx (c : rest)
+            | tiledish c = place cx y c : alongX (cx + c.sx + 1) rest
+            | otherwise = c : alongX cx rest
         alongY _ [] = []
-        alongY cy (c : rest) = place x cy c : alongY (cy + c.sy + 1) rest
+        alongY cy (c : rest)
+            | tiledish c = place x cy c : alongY (cy + c.sy + 1) rest
+            | otherwise = c : alongY cy rest
 
 -- | Resize the whole layout to a window size (@layout_resize@): never below
 -- what its panes can give up, so a window too small for its panes leaves the
 -- layout overhanging it.
 fitLayout :: Size -> Layout -> Layout
-fitLayout sz =
-    fixOffsets
+fitLayout sz root = case root.cell of
+    FloatCell _ -> root
+    _ -> fixOffsets
         . fitAxis TopBottom (fromIntegral sz.rows)
         . fitAxis LeftRight (fromIntegral sz.cols)
+        $ root
   where
     fitAxis o target l
         | change /= 0 = adjust o change l
@@ -261,7 +328,9 @@ newPaneSize prev c o size countLeft sizeLeft
     | otherwise =
         let ext = extent o c
             mn = max ((paneMinimum + 1) * (countLeft - 1)) (ext - spare o c)
-            ns = (ext * size) `div` prev
+            -- A node a floating pane took out of the tiling has no size
+            -- to share; tmux divides by zero there.
+            ns = if prev > 0 then (ext * size) `div` prev else 0
             mx = sizeLeft - mn
             -- A negative bound is tmux's unsigned wrap: no limit at all.
             ns' = if mx >= 0 && ns > mx then mx else ns
@@ -271,9 +340,8 @@ newPaneSize prev c o size countLeft sizeLeft
 -- (@layout_set_size_check@).
 sizeFits :: Orientation -> Int -> Layout -> Bool
 sizeFits o size l = case l.cell of
-    LeafCell _ -> size >= paneMinimum
-    NodeCell t cs
-        | t == o ->
+    NodeCell t cs0
+        | cs <- filter tiledish cs0, t == o ->
             let count = length cs
                 prev = extent o l
                 go _ _ [] = True
@@ -283,18 +351,21 @@ sizeFits o size l = case l.cell of
                     in need <= avail && sizeFits o ns c
                         && go (idx + 1) (avail - need) rest
             in size >= count * 2 - 1 && go (0 :: Int) size cs
-        | otherwise -> and [ sizeFits o size c | c <- cs, not (isLeaf c) ]
+        | otherwise -> and [ sizeFits o size c | c <- cs0, not (isLeaf c) ]
+    _ -> size >= paneMinimum
 
 -- | Refit a node's children proportionally into its (changed) size
 -- (@layout_resize_child_cells@).
 resizeChildCells :: Layout -> Layout
 resizeChildCells l = case l.cell of
-    LeafCell _ -> l
     NodeCell t cs ->
-        let count = length cs
-            prev = sum (map (extent t) cs) + count - 1
+        let tiledKids = filter tiledish cs
+            count = length tiledKids
+            prev = sum (map (extent t) tiledKids) + count - 1
             go _ _ [] = []
-            go idx avail (c : rest) =
+            go idx avail (c : rest)
+                | not (tiledish c) = c : go idx avail rest
+                | otherwise =
                 let left = count - idx
                     (c1, avail1) = case t of
                         TopBottom -> (c { sx = l.sx, xoff = l.xoff }, avail)
@@ -308,14 +379,33 @@ resizeChildCells l = case l.cell of
                             in (c1 { sy = h }, avail1 - (h + 1))
                 in resizeChildCells c2 : go (idx + 1) avail2 rest
         in l { cell = NodeCell t (go (0 :: Int) (extent t l) cs) }
+    _ -> l
 
 -- Queries -------------------------------------------------------------------
 
--- | The panes in layout order.
+-- | The panes in layout order, floating ones included.
 layoutPanes :: Layout -> [PaneId]
 layoutPanes l = case l.cell of
-    LeafCell p -> [p]
     NodeCell _ cs -> concatMap layoutPanes cs
+    _ -> maybe [] pure (leafPane l)
+
+-- | The tiled panes in layout order.
+tiledPanes :: Layout -> [PaneId]
+tiledPanes l = case l.cell of
+    LeafCell p -> [p]
+    FloatCell _ -> []
+    NodeCell _ cs -> concatMap tiledPanes cs
+
+-- | The floating panes' cells, in layout order.
+floatingCells :: Layout -> [(PaneId, Layout)]
+floatingCells l = case l.cell of
+    FloatCell p -> [(p, l)]
+    LeafCell _ -> []
+    NodeCell _ cs -> concatMap floatingCells cs
+
+-- | Whether a pane floats (@window_pane_is_floating@).
+isFloating :: PaneId -> Layout -> Bool
+isFloating pid l = maybe False (\c -> not (isTiled c)) (paneCell pid l)
 
 -- | A window's panes in tmux's pane order (what @pane_index@ counts): the
 -- layout's leaf order, then any pane the layout does not hold.
@@ -356,8 +446,12 @@ arrange rect lay =
 project :: Layout -> ([(PaneId, Rect)], [(Pos, Char)])
 project l = case l.cell of
     LeafCell p -> ([(p, Rect l.yoff (l.yoff + l.sy) l.xoff (l.xoff + l.sx))], [])
-    NodeCell t cs -> mconcat (map project cs) <> ([], concatMap (divider t) (init cs))
+    FloatCell _ -> ([], [])
+    NodeCell t cs ->
+        let kids = filter tiledish cs
+        in mconcat (map project kids) <> ([], concatMap (divider t) (dropLast kids))
   where
+    dropLast xs = take (length xs - 1) xs
     divider LeftRight c =
         [ (Pos { row = r, col = c.xoff + c.sx }, '│') | r <- [l.yoff .. l.yoff + l.sy - 1] ]
     divider TopBottom c =
@@ -456,7 +550,7 @@ splitPane spec target new root = do
             [] -> False
             _ -> case (at (init lcPath) root).cell of
                 NodeCell t _ -> t == o
-                LeafCell _ -> False
+                _ -> False
     guard (ss >= paneMinimum * 2 + 1)
     guard (not full || sizeFits o newSize lc)
     pure $ fixOffsets $ case lc.cell of
@@ -464,12 +558,12 @@ splitPane spec target new root = do
             let i = last lcPath
             in modifyAt (init lcPath) (\p -> case p.cell of
                     NodeCell t cs -> p { cell = NodeCell t (take i cs <> pair <> drop (i + 1) cs) }
-                    LeafCell _ -> p) root
+                    _ -> p) root
         NodeCell t cs | full, t == o ->
             let resized = setExtent o ss (resizeChildCells (setExtent o newSize lc))
                 kids = case resized.cell of
                     NodeCell _ ks -> ks
-                    LeafCell _ -> cs
+                    _ -> cs
                 added = setExtent o (ss - 1 - newSize) $ case o of
                     LeftRight -> fresh { sy = lc.sy }
                     TopBottom -> fresh { sx = lc.sx }
@@ -493,32 +587,169 @@ destroyBottomRight root = do
     pure (fixOffsets (destroyAt p root))
   where
     bottomRight l = case l.cell of
-        LeafCell _ -> []
         NodeCell _ cs -> (length cs - 1) : bottomRight (last cs)
+        _ -> []
 
--- | Remove the cell at a (non-root) path: the next sibling — the previous
--- one for a last child — absorbs its space and border, and a parent left
--- with one child is replaced by it (@layout_destroy_cell@).
+-- | Remove the cell at a (non-root) path: a tiled cell's space and border
+-- go to its 'neighbourOf' — or, with none, its parent leaves the tiling
+-- ('removeTileAt') — and a parent left with one child is replaced by it
+-- (@layout_destroy_cell@).
 destroyAt :: Path -> Layout -> Layout
-destroyAt p = modifyAt (init p) collapse
+destroyAt p root = modifyAt parentPath collapse given
   where
+    parentPath = init p
     i = last p
+    given = case (at parentPath root).cell of
+        NodeCell t cs
+            | (gone : _) <- drop i cs, isTiled gone -> case neighbourOf i cs of
+                Just j -> modifyAt (parentPath <> [j]) (adjust t (extent t gone + 1)) root
+                Nothing -> removeTileAt parentPath root
+        _ -> root
     collapse parent = case parent.cell of
-        NodeCell t cs ->
-            let gone = cs !! i
-                j = if i == length cs - 1 then i - 1 else i + 1
-                grown = modifyChild j (adjust t (extent t gone + 1)) cs
-                kept = [ c | (k, c) <- zip [0 ..] grown, k /= i ]
-            in case kept of
-                [only] -> only
-                _ -> parent { cell = NodeCell t kept }
-        LeafCell _ -> parent
+        NodeCell t cs -> case [ c | (k, c) <- zip [0 ..] cs, k /= i ] of
+            [only]
+                | null parentPath && isTiled only -> only { xoff = 0, yoff = 0 }
+                | otherwise -> only
+            kept -> parent { cell = NodeCell t kept }
+        _ -> parent
+
+-- | The sibling whose space a cell at index @i@ takes or gives when it
+-- leaves or rejoins the tiling: the nearest tiled one after it — before it,
+-- for the last child — else the nearest on the other side
+-- (@layout_cell_get_neighbour@).
+neighbourOf :: Int -> [Layout] -> Maybe Int
+neighbourOf i cs = search first <|> search second
+  where
+    n = length cs
+    after = [i + 1 .. n - 1]
+    before = [i - 1, i - 2 .. 0]
+    (first, second) = if i == n - 1 then (before, after) else (after, before)
+    search = List.find (\j -> tiledish (cs !! j))
+
+-- Floating ------------------------------------------------------------------
+
+-- | A floating pane's content box in window coordinates; the offsets may be
+-- negative, and the box may overhang the window.
+data FloatGeom = FloatGeom
+    { width  :: Int
+    , height :: Int
+    , left   :: Int
+    , top    :: Int
+    }
+    deriving (Eq, Show)
+
+-- | A floating cell's geometry.
+cellGeom :: Layout -> FloatGeom
+cellGeom l = FloatGeom { width = l.sx, height = l.sy, left = l.xoff, top = l.yoff }
+
+withGeom :: FloatGeom -> Layout -> Layout
+withGeom g l = l { sx = g.width, sy = g.height, xoff = g.left, yoff = g.top }
+
+-- | A floating pane's geometry; 'Nothing' for a tiled or absent pane.
+floatGeom :: PaneId -> Layout -> Maybe FloatGeom
+floatGeom pid lay = case paneCell pid lay of
+    Just c | FloatCell _ <- c.cell -> Just (cellGeom c)
+    _ -> Nothing
+
+-- | Move or resize a floating pane; a tiled pane is left alone.
+setFloatGeom :: PaneId -> FloatGeom -> Layout -> Layout
+setFloatGeom pid g lay = case pathTo pid lay of
+    Just q | FloatCell _ <- (at q lay).cell -> modifyAt q (withGeom g) lay
+    _ -> lay
+
+-- | Add a floating pane's cell after @target@'s — or after the whole tree
+-- with no target — wrapping a root cell in a top-bottom node first
+-- (@layout_floating_pane@). 'Nothing' when the target is not in the tree.
+floatPane :: Maybe PaneId -> PaneId -> FloatGeom -> Layout -> Maybe Layout
+floatPane mtarget new g root = do
+    q <- maybe (Just []) (`pathTo` root) mtarget
+    let fresh = withGeom g (Layout 0 0 0 0 (FloatCell new))
+    pure $ case q of
+        [] -> root { cell = NodeCell TopBottom [root, fresh] }
+        _ -> modifyAt (init q) (\parent -> case parent.cell of
+                NodeCell t cs ->
+                    let (pre, post) = splitAt (last q + 1) cs
+                    in parent { cell = NodeCell t (pre <> [fresh] <> post) }
+                _ -> parent) root
+
+-- | Take a tiled pane out of the tiling into a floating cell at @g@, its
+-- space going to its neighbour (@layout_remove_tile@, as @break-pane -W@
+-- uses it). 'Nothing' unless the pane is tiled.
+floatTiled :: PaneId -> FloatGeom -> Layout -> Maybe Layout
+floatTiled pid g root = do
+    q <- pathTo pid root
+    guard (isTiled (at q root))
+    let removed = removeTileAt q root
+    pure (fixOffsets (modifyAt q (\c -> withGeom g c { cell = FloatCell pid }) removed))
+
+-- | Give a cell's space and border to its neighbour and zero its geometry,
+-- leaving the tiling to the rest; a cell with no tiled neighbour takes its
+-- parent out instead. The root keeps its size (@layout_remove_tile@).
+removeTileAt :: Path -> Layout -> Layout
+removeTileAt q root = case (at q root).cell of
+    FloatCell _ -> root
+    _ | null q -> root
+      | otherwise ->
+        let lc = at q root
+            parentPath = init q
+            given = case (at parentPath root).cell of
+                NodeCell t cs -> case neighbourOf (last q) cs of
+                    Just j -> modifyAt (parentPath <> [j])
+                        (adjust t (extent t lc + 1)) root
+                    Nothing -> removeTileAt parentPath root
+                _ -> root
+        in modifyAt q (\c -> c { sx = 0, sy = 0, xoff = 0, yoff = 0 }) given
+
+-- | Tile a floating pane back where its cell sits, taking half its
+-- neighbour's space, in a window of @area@ (@layout_insert_tile@, as
+-- @join-pane@ of a floating pane onto itself uses it). 'Nothing' when the
+-- pane is not floating or the neighbour has no room to split.
+tileFloating :: Size -> PaneId -> Layout -> Maybe Layout
+tileFloating area pid root = do
+    q <- pathTo pid root
+    guard (not (isTiled (at q root)))
+    inserted <- insertTileAt area q root
+    pure (fixOffsets (modifyAt q (\c -> c { cell = LeafCell pid }) inserted))
+
+-- | @layout_insert_tile@ on the cell at a path.
+insertTileAt :: Size -> Path -> Layout -> Maybe Layout
+insertTileAt area q root
+    | isTiled (at q root) = Nothing
+    | null q = Just (modifyAt [] (\c -> c
+        { sx = fromIntegral area.cols, sy = fromIntegral area.rows
+        , xoff = 0, yoff = 0 }) root)
+    | otherwise = case (at parentPath root).cell of
+        NodeCell t cs -> case neighbourOf i cs of
+            Nothing -> do
+                -- tmux tiles the parent and ignores whether that worked.
+                let root1 = fromMaybe root (insertTileAt area parentPath root)
+                    size1 = extent t (at parentPath root1)
+                pure (across t (modifyAt q (setSize t size1) root1))
+            Just j -> do
+                let nb = cs !! j
+                    ss = extent t nb
+                    s2 = max paneMinimum (min (ss - 2) (((ss + 1) `div` 2) - 1))
+                    s1 = ss - 1 - s2
+                guard (ss >= paneMinimum * 2 + 1)
+                pure (across t (modifyAt q (setSize t s1)
+                    (modifyAt (parentPath <> [j]) (setSize t s2) root)))
+        _ -> Nothing
+  where
+    parentPath = init q
+    i = last q
+    setSize o n c = adjust o (n - extent o c) c
+    across t r =
+        let o' = case t of
+                LeftRight -> TopBottom
+                TopBottom -> LeftRight
+        in modifyAt q (setSize o' (extent o' (at parentPath r))) r
 
 -- Rearranging ---------------------------------------------------------------
 
 mapLeaves :: (PaneId -> PaneId) -> Layout -> Layout
 mapLeaves f l = case l.cell of
     LeafCell p -> l { cell = LeafCell (f p) }
+    FloatCell p -> l { cell = FloatCell (f p) }
     NodeCell t cs -> l { cell = NodeCell t (map (mapLeaves f) cs) }
 
 -- | Exchange two panes' positions in the tree; a pane absent from the tree
@@ -558,24 +789,30 @@ resizeAnchor o p root = go p
 
 -- | Move a pane's right\/bottom border by @change@ cells — its left\/top
 -- one for a last child — taking the space from the nearest sibling that has
--- some, on either side (@layout_resize_pane@ with @opposite@).
+-- some, on either side (@layout_resize_pane@ with @opposite@). A floating
+-- pane is left alone: it resizes by its own geometry ('setFloatGeom').
 resizePane :: PaneId -> Orientation -> Int -> Layout -> Layout
 resizePane pid o change root = fromMaybe root $ do
     p <- pathTo pid root
+    guard (isTiled (at p root))
     q <- resizeAnchor o p root
     let parentPath = init q
-        n = case (at parentPath root).cell of
-            NodeCell _ cs -> length cs
-            LeafCell _ -> 1
+        kids = case (at parentPath root).cell of
+            NodeCell _ cs -> cs
+            _ -> []
         i0 = last q
-        i = if i0 == n - 1 then i0 - 1 else i0
+        -- A last child moves its left/top border: resize the previous
+        -- tiled sibling instead.
+        i | i0 == length kids - 1
+          , (j : _) <- [ k | k <- [i0 - 1, i0 - 2 .. 0], tiledish (kids !! k) ] = j
+          | otherwise = i0
     pure (fixOffsets (modifyAt parentPath (resizeAmong o i change) root))
 
 -- | @layout_resize_layout@ on the @i@th child of a node.
 resizeAmong :: Orientation -> Int -> Int -> Layout -> Layout
 resizeAmong o i change parent = case parent.cell of
     NodeCell t cs -> parent { cell = NodeCell t (loop change cs) }
-    LeafCell _ -> parent
+    _ -> parent
   where
     loop needed cs
         | needed == 0 = cs
@@ -585,16 +822,16 @@ resizeAmong o i change parent = case parent.cell of
         | otherwise = case shrink needed cs of
             Nothing -> cs
             Just (s, cs') -> loop (needed + s) cs'
-    giving cs = List.find (\j -> spare o (cs !! j) > 0)
+    giving cs = List.find (\j -> tiledish (cs !! j) && spare o (cs !! j) > 0)
     grow needed cs = do
         j <- giving cs [i + 1 .. length cs - 1] <|> giving cs [i - 1, i - 2 .. 0]
         let s = min (spare o (cs !! j)) needed
         pure (s, modifyChild i (adjust o s) (modifyChild j (adjust o (negate s)) cs))
     shrink needed cs = do
         j <- giving cs [i, i - 1 .. 0]
-        guard (i + 1 < length cs)
+        k <- List.find (\k -> tiledish (cs !! k)) [i + 1 .. length cs - 1]
         let s = min (spare o (cs !! j)) (negate needed)
-        pure (s, modifyChild (i + 1) (adjust o s) (modifyChild j (adjust o (negate s)) cs))
+        pure (s, modifyChild k (adjust o s) (modifyChild j (adjust o (negate s)) cs))
 
 -- | Resize a pane to @newSize@ cells along an axis (@layout_resize_pane_to@).
 resizePaneTo :: PaneId -> Orientation -> Int -> Layout -> Layout
@@ -604,7 +841,7 @@ resizePaneTo pid o newSize root = fromMaybe root $ do
     let lc = at q root
         isLast = case (at (init q) root).cell of
             NodeCell _ cs -> last q == length cs - 1
-            LeafCell _ -> False
+            _ -> False
         cur = extent o lc
         change = if isLast then cur - newSize else newSize - cur
     pure (resizePane pid o change root)
@@ -622,24 +859,27 @@ spreadOut pid root = fromMaybe root $ do
         Nothing | null q -> Nothing
                 | otherwise -> go (init q)
 
--- | Share a node's space evenly among its children, any remainder going to
--- the first ones (@layout_spread_cell@). 'Nothing' when nothing changes.
+-- | Share a node's space evenly among its tiled panes, any remainder going
+-- to the first ones (@layout_spread_cell@, which counts only the children
+-- that are tiled panes). 'Nothing' when nothing changes.
 spreadCell :: Layout -> Maybe Layout
 spreadCell parent = case parent.cell of
     NodeCell t cs -> do
-        let number = length cs
+        let number = length (filter isTiled cs)
             total = extent t parent
             each = (total - (number - 1)) `div` number
             remainder = total - number * (each + 1) + 1
             go _ [] = []
-            go r (c : rest) =
-                let this = each + (if r > 0 then 1 else 0)
-                in adjust t (this - extent t c) c : go (r - 1) rest
+            go r (c : rest)
+                | not (isTiled c) = c : go r rest
+                | otherwise =
+                    let this = each + (if r > 0 then 1 else 0)
+                    in adjust t (this - extent t c) c : go (r - 1) rest
             cs' = go remainder cs
         guard (number > 1 && total >= number - 1 && each > 0)
         guard (cs' /= cs)
         pure parent { cell = NodeCell t cs' }
-    LeafCell _ -> Nothing
+    _ -> Nothing
 
 -- Named layouts -------------------------------------------------------------
 
@@ -709,10 +949,21 @@ data NamedSizes = NamedSizes
 defaultNamedSizes :: NamedSizes
 defaultNamedSizes = NamedSizes "80" "24" "0" "0" 0
 
--- | Arrange @pids@ (in window order) into a named layout for a window of
--- @area@. 'Nothing' for fewer than two panes, which tmux leaves alone.
+-- | Arrange @pids@ (in window order, all tiled) into a named layout for a
+-- window of @area@. 'Nothing' for fewer than two panes, which tmux leaves
+-- alone.
 namedLayout :: NamedSizes -> Size -> LayoutName -> [PaneId] -> Maybe Layout
-namedLayout sizes area name pids = do
+namedLayout sizes area name pids =
+    relayoutNamed sizes area name (Layout 0 0 0 0 (NodeCell LeftRight
+        [ Layout 0 0 0 0 (LeafCell p) | p <- pids ]))
+
+-- | Rearrange a layout's tiled panes into a named layout for a window of
+-- @area@, keeping its floating cells: at the root's tail, or — as tmux's
+-- @layout-set.c@ links them — among the even layouts' panes and the main
+-- layouts' other panes, in window order. 'Nothing' for fewer than two
+-- tiled panes, which tmux leaves alone.
+relayoutNamed :: NamedSizes -> Size -> LayoutName -> Layout -> Maybe Layout
+relayoutNamed sizes area name lay = do
     guard (n > 1)
     pure $ fixOffsets $ case name of
         EvenHorizontal -> evenLayout LeftRight
@@ -723,18 +974,28 @@ namedLayout sizes area name pids = do
         MainVerticalMirrored -> mainLayout LeftRight True
         Tiled -> tiledLayout
   where
+    slots = leafCells lay
+    leafCells l = case l.cell of
+        NodeCell _ cs -> concatMap leafCells cs
+        LeafCell p -> [Right p]
+        FloatCell _ -> [Left l]
+    pids = [ p | Right p <- slots ]
+    floats = [ c | Left c <- slots ]
     n = length pids
     wsx = fromIntegral area.cols
     wsy = fromIntegral area.rows
     leaf w h p = Layout w h 0 0 (LeafCell p)
     node t w h cs = Layout w h 0 0 (NodeCell t cs)
+    linkFloating c = case c.cell of
+        NodeCell t cs -> c { cell = NodeCell t (cs <> floats) }
+        _ -> c
     spreadOrKeep c = fromMaybe c (spreadCell c)
     evenLayout t =
         let needed = n * (paneMinimum + 1) - 1
             (w, h) = case t of
                 LeftRight -> (max needed wsx, wsy)
                 TopBottom -> (wsx, max needed wsy)
-        in spreadOrKeep (node t w h [ leaf wsx wsy p | p <- pids ])
+        in spreadOrKeep (node t w h (map (either id (leaf wsx wsy)) slots))
     -- The main pane along @t@ (its first child), the rest stacked across.
     mainLayout t mirrored =
         let others = n - 1
@@ -766,16 +1027,18 @@ namedLayout sizes area name pids = do
         in case pids of
             m : rest ->
                 let mainCell = mk mainS m
-                    otherCell = case rest of
-                        [o] -> mk otherS o
-                        _ ->
-                            let (w, h) = sized acrossS otherS
-                                cross = if t == TopBottom then LeftRight else TopBottom
-                                small p = let (lw, lh) = sized paneMinimum otherS
-                                          in leaf lw lh p
-                            in spreadOrKeep (node cross w h (map small rest))
-                in node t rootW rootH
-                    (if mirrored then [otherCell, mainCell] else [mainCell, otherCell])
+                    otherSlots = filter (/= Right m) slots
+                    pair otherCell =
+                        node t rootW rootH
+                            (if mirrored then [otherCell, mainCell] else [mainCell, otherCell])
+                in case rest of
+                    [o] -> linkFloating (pair (mk otherS o))
+                    _ ->
+                        let (w, h) = sized acrossS otherS
+                            cross = if t == TopBottom then LeftRight else TopBottom
+                            small p = let (lw, lh) = sized paneMinimum otherS
+                                      in leaf lw lh p
+                        in pair (spreadOrKeep (node cross w h (map (either id small) otherSlots)))
             [] -> node t rootW rootH []
     tiledLayout =
         let maxc = sizes.maxColumns
@@ -805,8 +1068,8 @@ namedLayout sizes area name pids = do
                 | wsy > usedH = init rowCells <> [adjust TopBottom (wsy - usedH) (last rowCells)]
                 | otherwise = rowCells
         in case rowCells' of
-            [only] -> only
-            _ -> node TopBottom rootW rootH rowCells'
+            [only] | null floats -> only
+            _ -> linkFloating (node TopBottom rootW rootH rowCells')
 
 -- Pane navigation -----------------------------------------------------------
 
