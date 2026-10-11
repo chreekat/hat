@@ -119,6 +119,7 @@ library
         Hat.Server.DisplayPanes
         Hat.Server.Environ
         Hat.Server.Flash
+        Hat.Server.Floating
         Hat.Server.Format
         Hat.Server.Format.Colour
         Hat.Server.FormatDraw
@@ -307,6 +308,7 @@ test-suite hat-test
         Hat.Server.EnvironSpec
         Hat.Server.FlagsSpec
         Hat.Server.FlashSpec
+        Hat.Server.FloatingSpec
         Hat.Server.FormatSpec
         Hat.Server.FormatDrawSpec
         Hat.Server.HooksSpec

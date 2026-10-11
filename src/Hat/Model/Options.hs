@@ -13,6 +13,7 @@ module Hat.Model.Options
     , alertAllows
     , RemainOnExit (..)
     , BorderLines (..)
+    , borderLinesOf
     , BorderIndicators (..)
     , WindowSizeMode (..)
     , defaultOptions
@@ -87,6 +88,17 @@ data BorderLines
     | BorderSpaces
     | BorderNone
     deriving (Eq, Show)
+
+-- | A @pane-border-lines@ value.
+borderLinesOf :: Text -> BorderLines
+borderLinesOf = \case
+    "heavy" -> BorderHeavy
+    "double" -> BorderDouble
+    "simple" -> BorderSimple
+    "number" -> BorderNumber
+    "spaces" -> BorderSpaces
+    "none" -> BorderNone
+    _ -> BorderSingle
 
 -- | @pane-border-indicators@: how the active pane's border is marked.
 data BorderIndicators
@@ -203,14 +215,7 @@ fieldBindings = Map.fromList
     , ("pane-active-border-style", style (\v o -> o
         { paneActiveBorderStyle = v }))
     , ("mode-style", style (\v o -> o { modeStyle = v }))
-    , ("pane-border-lines", text (\v o -> o { paneBorderLines = case v of
-        "heavy" -> BorderHeavy
-        "double" -> BorderDouble
-        "simple" -> BorderSimple
-        "number" -> BorderNumber
-        "spaces" -> BorderSpaces
-        "none" -> BorderNone
-        _ -> BorderSingle }))
+    , ("pane-border-lines", text (\v o -> o { paneBorderLines = borderLinesOf v }))
     , ("pane-border-indicators", text (\v o -> o
         { paneBorderIndicators = case v of
             "off" -> IndicatorsOff

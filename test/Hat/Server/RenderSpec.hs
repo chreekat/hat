@@ -148,10 +148,11 @@ spec = do
                 let known r = old V.!? r == new V.!? r && coins !! r
                 in diffFrameKnown known old new === diffFrame old new
 
-    prop "composeRows equals borders-then-overlays composition" $
+    prop "composeRows equals overlays-then-borders composition" $
         forAll genCompose $ \(cells, layers) ->
-            let legacy = foldl (\acc l -> overlayGrid acc l.rect l.cells)
-                    (applyBorders (blankFrame smallSize) cells) layers
+            let legacy = applyBorders
+                    (foldl (\acc l -> overlayGrid acc l.rect l.cells) (blankFrame smallSize) layers)
+                    cells
                 chrome = chromeFromCells cells
             in fst (composeRows smallSize chrome layers V.empty V.empty)
                 === legacy

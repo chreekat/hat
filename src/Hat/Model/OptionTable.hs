@@ -637,10 +637,10 @@ optionTable =
         \#[range=control|9][x]#[norange],}"
     , live $ scalar "pane-border-indicators" WindowScope
         (KChoice ["off", "colour", "arrows", "both"]) "colour"
-    , live $ scalar "pane-border-lines" WindowPaneScope
+    , paneLocal $ live $ scalar "pane-border-lines" WindowPaneScope
             (KChoice ["single", "double", "heavy", "simple", "number", "spaces", "none"])
             "single"
-    , live $ scalar "pane-border-status" WindowPaneScope
+    , paneLocal $ live $ scalar "pane-border-status" WindowPaneScope
         (KChoice ["off", "top", "bottom", "top-floating", "bottom-floating"]) "off"
     , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle
         "fg=themelightgrey"

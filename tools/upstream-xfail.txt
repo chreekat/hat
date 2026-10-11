@@ -18,18 +18,15 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-floating-pane-geometry.sh       # floating panes (new-pane, move-pane -X/-Y/-P/-z, break-pane -W) unimplemented
 if-shell-error.sh
 prompt-keys.sh
 prompt-mechanics.sh
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
-screen-redraw-floating.sh
-screen-redraw-indicators.sh
+screen-redraw-indicators.sh     # hat's triangle indicators (see border-arrows.sh); capture-pane -e emits an SGR reset on an empty line after a coloured one
 screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
 screen-redraw-popups.sh
-screen-redraw-scrollbars.sh     # floating panes (new-pane) + copy-mode -H (hide the position indicator)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
@@ -48,7 +45,7 @@ choose-client.sh                # choose-client + list-clients unimplemented
 choose-tree.sh                  # needs list-clients + interactive mode-screen
 customize-mode.sh               # customize-mode unimplemented
 display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
-modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
+modal-pane.sh                   # modal model passes up to the mouse half: needs mouse + focus-follows-mouse options, MouseDown bindings, click/drag routing, then editor-as-modal-pane (choose-buffer e, customize-mode)
 mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
@@ -59,13 +56,12 @@ copy-mode-selection-scroll.sh   # copy-mode copy-selection-no-clear, stop-select
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
-format-modifiers.sh             # new-pane floating panes (P/z order)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
 # mouse: commands its bindings and tests reach
 menu-mouse.sh                   # display-menu
-new-pane-mouse.sh               # list-keys + new-pane -M drag
+new-pane-mouse.sh               # display-menu (the MouseDown3Empty menu)
 
 # option engine breadth: flat scalar table, global-only read-back
 options-values.sh               # needs default-client-command (not yet live)
@@ -94,6 +90,5 @@ session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot 
 lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
-screen-redraw-fill-character.sh # needs fill-character + floating panes
 screen-redraw-menus.sh          # needs display-menu window menus + menu styles
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report

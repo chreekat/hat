@@ -305,7 +305,7 @@ spec = do
                     { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                 rw = HotWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
-                    , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, panes = [(psnap, rp)] }
+                    , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, modal = Nothing, panes = [(psnap, rp)] }
                 rsess = HotSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
                     , windowHist = [], createdAt = Nothing, restores = 0
@@ -333,7 +333,7 @@ spec = do
                 win wix k l ps = HotWindow
                     { ix = wix, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = k, linkOf = l
-                    , panes = ps }
+                    , modal = Nothing, panes = ps }
                 sess nm g ws = HotSession
                     { name = nm, startCwd = "/tmp", currentIx = 0
                     , windowHist = [], createdAt = Nothing, restores = 0

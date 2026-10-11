@@ -44,8 +44,9 @@ import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, clientTheme, expandFormat, formatCtxFor,
      paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
      windowFormatEnv, windowOwnEnv)
-import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
-import Hat.Server.Resize (paneScrollbars, windowArrange, windowPaneStatus)
+import Hat.Server.Floating (FloatState (..))
+import Hat.Server.Layout (paneOrder, twoPaneSplit)
+import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
@@ -143,9 +144,10 @@ renderOnce st client = do
                     Just win -> do
                         eff <- readTVar sess.lastSize
                         (rects, _) <- windowArrange st eff win
+                        floats <- windowFloats st win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
-                        pure (Just (sess, win, rects, eff, ps, active))
+                        pure (Just (sess, win, rects, (eff, floats), ps, active))
     sopts <- case view of
         Just (sess, _, _, _, _, _) -> atomically (resolveForSession st sess)
         Nothing -> pure opts
@@ -157,7 +159,7 @@ renderOnce st client = do
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
             , (Pos 0 0, False), Nothing )
-        Just (sess, win, rects, eff, ps, active) -> do
+        Just (sess, win, rects, (eff, floats), ps, active) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
@@ -180,11 +182,16 @@ renderOnce st client = do
             prevOrigins <- readIORef client.lastOrigins
             let sceneArea = csize
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
-            chrome <- cachedChrome st th client sess win eff sceneArea rects defaults active rowOff
+            chrome <- cachedChrome st th client sess win eff sceneArea rects floats defaults
+                active rowOff
             let layers =
-                    [ PaneLayer { pane = pidL, rect = shiftRect rect
-                                , cells = pv.cells, gens = pv.rowGens }
+                    [ PaneLayer { pane = pidL, rect = shiftRect shown
+                                , cells = V.map (V.drop skip.col) (V.drop skip.row pv.cells)
+                                , gens = V.drop skip.row <$> pv.rowGens }
                     | (pidL, rect) <- rects
+                    , let (shown, skip)
+                            | pidL `elem` map (.pane) floats = clipToWindow eff rect
+                            | otherwise = (rect, Pos 0 0)
                     , Just pv <- [Map.lookup pidL paneViews] ]
                 (base, baseOrigins) = composeRows csize
                     chrome layers prevFrame prevOrigins
@@ -409,17 +416,20 @@ windowCompositeCells
 windowCompositeCells st win size = do
     opts <- readTVarIO st.options
     th <- clientTheme st
-    (rects, ps, active, status) <- atomically $ do
+    (rects, floats, ps, active, status) <- atomically $ do
         (r, _) <- windowArrange st size win
+        fl     <- windowFloats st win
         ps     <- readTVar win.panes
         a      <- readTVar win.activeId
         s      <- windowPaneStatus st win
-        pure (r, ps, a, s)
+        pure (r, fl, ps, a, s)
     let input = SceneInput
-            { window = size, area = size, panes = markingOrder rects, paneStatus = status
-            , twoPane = Nothing, scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
+            { window = size, area = size, panes = tiledOf floats rects, paneStatus = status
+            , twoPane = Nothing, scrollbars = Map.empty, scrollbarSide = ScrollbarRight
+            , floats }
         look = ChromeLook
             { borderLines = opts.paneBorderLines
+            , lineSets = Map.fromList [ (f.pane, f.lineSet) | f <- floats ]
             , windowStyle = styleCell th (optionText "pane-border-style" opts)
             , paneStyles = Map.singleton active
                 (styleCell th (optionText "pane-active-border-style" opts))
@@ -428,12 +438,15 @@ windowCompositeCells st win size = do
             , paneLines = Map.empty
             , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
             , arrows = Map.empty }
-        base = applyBorders (blankFrame size) (sceneChrome look (buildScene input))
-    foldM (\acc (pid, rect) -> case Map.lookup pid ps of
+    panes <- foldM (\acc (pid, rect) -> case Map.lookup pid ps of
               Nothing   -> pure acc
               Just pane -> do
                   cells <- paneViewCells st pane
-                  pure (overlayGrid acc rect cells)) base rects
+                  let (shown, skip) = clipToWindow size rect
+                  pure (overlayGrid acc shown
+                      (V.map (V.drop skip.col) (V.drop skip.row cells))))
+        (blankFrame size) rects
+    pure (applyBorders panes (sceneChrome look (buildScene input)))
 
 -- | Preview a session as a vertical stack of its windows: each window's
 -- index\/name on a coloured label bar dividing it from the window above,
@@ -514,11 +527,12 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 -- and every row's chrome provenance stays matchable.
 cachedChrome
     :: ServerState -> Theme -> Client -> Session -> Window -> Size -> Size
-    -> [(PaneId, Rect)] -> Map.Map PaneId (Cell.Color, Cell.Color) -> PaneId -> Int
-    -> IO Chrome
-cachedChrome st th client sess win eff sceneArea rects defaults active rowOff = do
+    -> [(PaneId, Rect)] -> [FloatingPane] -> Map.Map PaneId (Cell.Color, Cell.Color) -> PaneId
+    -> Int -> IO Chrome
+cachedChrome st th client sess win eff sceneArea rects floats defaults active rowOff = do
     mcc <- readIORef client.lastChrome
-    (input, look2, panes) <- atomically (chromeInputs st th sess win eff sceneArea rects active)
+    (input, look2, panes) <- atomically
+        (chromeInputs st th sess win eff sceneArea rects floats active)
     bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
         \(cp, _) -> do
             let height = maybe 0 (\r -> r.endRow - r.startRow) (List.lookup cp.pane.id rects)
@@ -539,7 +553,7 @@ cachedChrome st th client sess win eff sceneArea rects defaults active rowOff = 
         forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st th sess win cp.pane
             cp.options (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
     let look0 = look1 { paneStyles = Map.fromList styles }
-    look <- withStatusLines st th sess win input.paneStatus scene panes look0
+    look <- withStatusLines st th sess win scene panes look0
         >>= withFills st th sess win scene
     case mcc of
         Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
@@ -593,8 +607,8 @@ data ChromePane = ChromePane
 -- pane status line is drawn.
 chromeInputs
     :: ServerState -> Theme -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
-    -> PaneId -> STM (SceneInput, ChromeLook, [ChromePane])
-chromeInputs st th sess win eff sceneArea rects active = do
+    -> [FloatingPane] -> PaneId -> STM (SceneInput, ChromeLook, [ChromePane])
+chromeInputs st th sess win eff sceneArea rects floats active = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
     (side, bars) <- paneScrollbars st win
@@ -604,12 +618,7 @@ chromeInputs st th sess win eff sceneArea rects active = do
     let order = paneOrder lay ps
         indicators = wopts.paneBorderIndicators
         colourSplit = indicators `elem` [IndicatorsColour, IndicatorsBoth]
-        twoPane = case lay.cell of
-            NodeCell o [a, b] | colourSplit, isLeaf a, isLeaf b -> Just o
-            _ -> Nothing
-        isLeaf l = case l.cell of
-            LeafCell _ -> True
-            NodeCell _ _ -> False
+        twoPane = if colourSplit then twoPaneSplit lay else Nothing
     panes <- fmap concat $ forM rects $ \(pid, _) -> case Map.lookup pid ps of
         Nothing -> pure []
         Just pane -> do
@@ -619,10 +628,12 @@ chromeInputs st th sess win eff sceneArea rects active = do
                 , number = wopts.paneBaseIndex + fromMaybe 0 (List.elemIndex pid order) } ]
     let useArrows = indicators `elem` [IndicatorsArrows, IndicatorsBoth]
         input = SceneInput
-            { window = eff, area = sceneArea, panes = markingOrder rects
-            , paneStatus = status, twoPane, scrollbars = bars, scrollbarSide = side }
+            { window = eff, area = sceneArea, panes = tiledOf floats rects
+            , paneStatus = status, twoPane, scrollbars = bars, scrollbarSide = side
+            , floats }
         look = ChromeLook
             { borderLines = wopts.paneBorderLines
+            , lineSets = Map.fromList [ (f.pane, f.lineSet) | f <- floats ]
             , windowStyle = styleCell th (optionText "pane-border-style" wopts)
             , paneStyles = Map.empty
             , scrollbarLooks = Map.empty
@@ -662,21 +673,38 @@ withFills st th sess win scene look
 -- | Draw each pane's @pane-border-format@ over the border its status line
 -- replaces (tmux's @window_make_pane_status@).
 withStatusLines
-    :: ServerState -> Theme -> Session -> Window -> PaneStatus -> Scene -> [ChromePane]
+    :: ServerState -> Theme -> Session -> Window -> Scene -> [ChromePane]
     -> ChromeLook -> IO ChromeLook
-withStatusLines st th sess win status scene panes look
-    | status == PaneStatusOff = pure look
+withStatusLines st th sess win scene panes look
+    | not (V.any (V.any isStatus) scene) = pure look
     | otherwise = do
         wix <- atomically (readTVar sess.currentIx)
         lines' <- forM panes $ \cp -> do
             let sty = Map.findWithDefault look.windowStyle cp.pane.id look.paneStyles
-            case statusBase look.borderLines sty cp.number scene cp.pane.id of
+                lineSet = Map.findWithDefault look.borderLines cp.pane.id look.lineSets
+            case statusBase lineSet sty cp.number scene cp.pane.id of
                 Nothing -> pure []
                 Just base -> do
                     env <- paneFormatEnv st sess wix win cp.number cp.pane
                     expanded <- expandFormat st env (optionText "pane-border-format" cp.options)
                     pure [ (cp.pane.id, formatDraw th sty expanded base) ]
         pure look { paneLines = Map.fromList (concat lines') }
+  where
+    isStatus = \case
+        SceneStatus {} -> True
+        _ -> False
+
+-- | The tiled panes' rects, in the order their scene marks them.
+tiledOf :: [FloatingPane] -> [(PaneId, Rect)] -> [(PaneId, Rect)]
+tiledOf floats rects = markingOrder [ r | r@(p, _) <- rects, p `notElem` map (.pane) floats ]
+
+-- | The part of a floating pane's content the window shows, and where in
+-- its content that part starts.
+clipToWindow :: Size -> Rect -> (Rect, Pos)
+clipToWindow area r =
+    ( Rect { startRow = max 0 r.startRow, endRow = min (fromIntegral area.rows) r.endRow
+           , startCol = max 0 r.startCol, endCol = min (fromIntegral area.cols) r.endCol }
+    , Pos { row = max 0 (negate r.startRow), col = max 0 (negate r.startCol) } )
 
 -- | An arrow at the midpoint of each of a pane's four border edges,
 -- pointing inward.
@@ -873,10 +901,11 @@ gatherStatus st sess = do
                 <$> readTVar win.name <*> readTVar win.bellFlag
                 <*> readTVar win.activity <*> readTVar win.silenceFlag
                 <*> readTVar win.zoomed <*> readTVar win.options
+            fs <- readTVar win.floats
             let flags = windowFlags WindowFlagState
                     { flagCurrent = ix == cur, flagLast = Just ix == mlast
                     , flagBell = bell, flagActivity = act, flagSilence = sil
-                    , flagZoomed = isJust zoom }
+                    , flagModal = isJust fs.modal, flagZoomed = isJust zoom }
             pure WindowKey
                 { index = ix, name = wname, flags
                 , viewers = Map.findWithDefault 0 win.id counts

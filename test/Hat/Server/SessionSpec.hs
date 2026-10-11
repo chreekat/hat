@@ -67,6 +67,7 @@ import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
     , sendMessage )
+import Hat.Server.Floating (noFloats)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
@@ -136,6 +137,7 @@ addWindow sess n = do
         <*> newTVarIO True
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
+        <*> newTVarIO noFloats
     atomically $ modifyTVar' sess.windows (Map.insert n win)
     pure win
 

@@ -8,6 +8,7 @@
 module Hat.Server.Scene
     ( -- * Building
       SceneInput (..)
+    , FloatingPane (..)
     , PaneStatus (..)
     , Scene
     , SceneCell (..)
@@ -106,6 +107,18 @@ data SceneInput = SceneInput
     , scrollbars :: Map PaneId Int
         -- ^ the panes showing a scrollbar, with its width and padding
     , scrollbarSide :: ScrollbarSide
+    , floats :: [FloatingPane]
+        -- ^ the floating panes, back to front
+    }
+    deriving (Eq, Show)
+
+-- | A floating pane as its scene draws it.
+data FloatingPane = FloatingPane
+    { pane :: PaneId
+    , rect :: Rect
+        -- ^ its content, in window coordinates, unclipped
+    , lineSet :: BorderLines
+    , status :: PaneStatus
     }
     deriving (Eq, Show)
 
@@ -154,9 +167,20 @@ statusAdjust st windowRows r = case st of
 markingOrder :: [(PaneId, a)] -> [(PaneId, a)]
 markingOrder = List.sortOn (Down . fst)
 
--- | tmux's @redraw_build_cells@ for tiled panes.
+-- Note [Chrome over panes]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~
+-- A scene gives each cell to exactly one thing: a pane's content, or
+-- chrome. A floating pane takes the cells under its box from whatever was
+-- there, tiled panes and borders alike, so pane rects overlap but the
+-- scene's chrome never sits where it shows a pane. A frame therefore draws
+-- each pane's whole rect back to front, then stamps the chrome over them:
+-- a later pane hides the content of one behind it, and the chrome (a
+-- floating pane's border among it) hides any content the scene gave to it.
+
+-- | tmux's @redraw_build_cells@: the tiled panes, then the floating ones
+-- back to front, each over everything before it.
 buildScene :: SceneInput -> Scene
-buildScene inp = split (List.foldl' markPane blank inp.panes)
+buildScene inp = split (List.foldl' markFloat (List.foldl' markPane blank inp.panes) inp.floats)
   where
     wsx = fromIntegral inp.window.cols
     wsy = fromIntegral inp.window.rows
@@ -168,6 +192,8 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
         | otherwise = SceneOutside
     get m x y = case Map.lookup (x, y) m of
         Just c -> c
+        -- Tiled panes' insides go unmarked: no cell but a floating pane's
+        -- covers them.
         Nothing -> case [ pid | (pid, r) <- inp.panes, inRect r x y ] of
             (pid : _) -> ScenePane pid
             [] -> reset x y
@@ -227,7 +253,7 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
             SceneOutside -> Map.insert (x, y) (SceneBorder (own fresh)) m
             _ -> m
       where
-        fresh = BorderCell Nothing Nothing Nothing Nothing Nothing 0
+        fresh = freshBorder
         own b0 =
             let b1 = if ownTop then b0 { top = Just pid } else b0
                 b2 = if ownBottom then b1 { bottom = Just pid } else b1
@@ -237,13 +263,14 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
                    | otherwise = b2
             in b3 { mask = b3.mask .|. msk }
 
+    markStatus pid r m = statusRow inp.paneStatus pid r (borderEdges pid r) m
+
     -- redraw_mark_border_status: the pane's status line takes the border
     -- cells of its status row from two columns in to its right border.
-    markStatus pid r m = case inp.paneStatus of
+    statusRow st pid r (_, rgt, tp, btm) m = case st of
         PaneStatusOff -> m
-        st ->
-            let (_, rgt, tp, btm) = borderEdges pid r
-                y = if st == PaneStatusTop then tp else btm
+        _ ->
+            let y = if st == PaneStatusTop then tp else btm
                 sx = r.startCol + 2
             in List.foldl' (\acc (x, off) ->
                     if not (inScene x y) then acc else case get acc x y of
@@ -251,6 +278,56 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
                             (SceneStatus pid off (cellTypeOf b.mask)) acc
                         _ -> acc)
                 m (zip [sx .. rgt - 1] [0 ..])
+
+    -- redraw_mark_pane for a floating pane: its inside and its border
+    -- (clipped to the window, the edges the window cuts off not drawn)
+    -- replace whatever they cover.
+    markFloat m0 f = markScrollbar f.pane f.rect (markFloatBorders f (markInside f m0))
+
+    markInside f m = List.foldl' (\acc (x, y) -> Map.insert (x, y) (ScenePane f.pane) acc) m
+        [ (x, y) | y <- [max 0 f.rect.startRow .. min wsy f.rect.endRow - 1]
+                 , x <- [max 0 f.rect.startCol .. min wsx f.rect.endCol - 1]
+                 , inScene x y ]
+
+    markFloatBorders f m0
+        | f.lineSet == BorderNone = m0
+        | otherwise =
+            let (lft0, rgt0, tp0, btm0) = borderEdges f.pane f.rect
+                (lft, rgt, tp, btm) =
+                    (max 0 lft0, min (wsx - 1) rgt0, max 0 tp0, min (wsy - 1) btm0)
+                horiz y ownTop ownBottom m = List.foldl'
+                    (\acc x -> markFloatCell f x y ownTop ownBottom
+                        ((if x > lft then borderL else 0) .|. (if x < rgt then borderR else 0)) acc)
+                    m [lft .. rgt]
+                vert x m = List.foldl'
+                    (\acc y -> markFloatCell f x y False False
+                        ((if y > tp then borderU else 0) .|. (if y < btm then borderD else 0)) acc)
+                    m [tp .. btm]
+                m1 = if tp0 >= 0 then horiz tp False True m0 else m0
+                m2 = if btm0 < wsy then horiz btm True False m1 else m1
+                m3 = if lft0 >= 0 then vert lft m2 else m2
+                m4 = if rgt0 < wsx then vert rgt m3 else m3
+                clamped = (lft, rgt, tp, btm)
+            in statusRow f.status f.pane f.rect clamped m4
+
+    -- redraw_mark_border_cell for a floating pane: it takes any cell, only
+    -- merging with a border it already owns.
+    markFloatCell f x y ownTop ownBottom msk m
+        | not (inScene x y) = m
+        | otherwise = Map.insert (x, y) (SceneBorder (own base)) m
+      where
+        pid = f.pane
+        base = case get m x y of
+            SceneBorder b | hasPane b pid -> b
+            _ -> freshBorder
+        own b0 =
+            let b1 = if ownTop then b0 { top = Just pid } else b0
+                b2 = if ownBottom then b1 { bottom = Just pid } else b1
+                b3 | msk .&. (borderU .|. borderD) == 0 = b2
+                   | x < f.rect.startCol = b2 { right = Just pid }
+                   | x >= f.rect.endCol = b2 { left = Just pid }
+                   | otherwise = b2
+            in b3 { mask = b3.mask .|. msk }
 
     split m = V.generate ssy $ \y -> V.generate ssx $ \x ->
         twoPaneOwner x y (get m x y)
@@ -266,9 +343,15 @@ buildScene inp = split (List.foldl' markPane blank inp.panes)
             _ -> b
         c -> c
 
+freshBorder :: BorderCell
+freshBorder = BorderCell Nothing Nothing Nothing Nothing Nothing 0
+
 -- | How a scene's chrome looks.
 data ChromeLook = ChromeLook
     { borderLines :: BorderLines
+        -- ^ the window's @pane-border-lines@
+    , lineSets :: Map PaneId BorderLines
+        -- ^ a floating pane's own @pane-border-lines@
     , windowStyle :: Cell.Style
         -- ^ the window's @pane-border-style@, for cells no pane owns
     , paneStyles :: Map PaneId Cell.Style
@@ -286,7 +369,7 @@ data ChromeLook = ChromeLook
     }
     deriving (Eq, Show)
 
--- | Every non-pane cell of a scene, drawn.
+-- | Every non-pane cell of a scene, drawn. See Note [Chrome over panes].
 sceneChrome :: ChromeLook -> Scene -> [(Pos, Cell.Cell)]
 sceneChrome look scene =
     [ (pos, c)
@@ -301,7 +384,7 @@ sceneChrome look scene =
         SceneOutside -> Just look.fillOutside
         SceneEmpty -> Just look.fillInside
         SceneStatus pid off ct -> Just $
-            fromMaybe (Cell.glyphCell (borderGlyph look.borderLines Nothing ct) look.windowStyle)
+            fromMaybe (Cell.glyphCell (borderGlyph (linesOf look (Just pid)) Nothing ct) look.windowStyle)
                 (Map.lookup pid look.paneLines >>= (V.!? off))
         SceneBorder b ->
             let owner = borderOwner look.active b
@@ -310,10 +393,15 @@ sceneChrome look scene =
                 marked = maybe False (hasPane b) look.marked
                 sty' = if marked then sty { Cell.reverse = not sty.reverse } else sty
                 glyph = fromMaybe
-                    (borderGlyph look.borderLines (owner >>= (`Map.lookup` look.numbers))
+                    (borderGlyph (linesOf look owner) (owner >>= (`Map.lookup` look.numbers))
                         (cellTypeOf b.mask))
                     (Map.lookup pos look.arrows)
             in Just (Cell.glyphCell glyph sty')
+
+-- | The line set a pane's border draws in (tmux's
+-- @window_pane_get_pane_lines@): a floating pane's own, else the window's.
+linesOf :: ChromeLook -> Maybe PaneId -> BorderLines
+linesOf look = maybe look.borderLines (\p -> Map.findWithDefault look.borderLines p look.lineSets)
 
 -- | The pane whose border style colours a border cell (tmux's
 -- @redraw_get_pane_for_border_style@): its two-pane owner, else the active

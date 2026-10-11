@@ -11,6 +11,7 @@ noFlags = WindowFlagState
     , flagBell = False
     , flagActivity = False
     , flagSilence = False
+    , flagModal = False
     , flagZoomed = False
     }
 
@@ -36,5 +37,6 @@ spec = do
             , flagBell = True
             , flagActivity = True
             , flagSilence = True
+            , flagModal = True
             , flagZoomed = True
-            } `shouldBe` "*!#~Z"
+            } `shouldBe` "*!#~OZ"

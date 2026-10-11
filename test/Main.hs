@@ -21,6 +21,7 @@ import Hat.PathSpec qualified
 import Hat.Model.PasteBuffersSpec qualified
 import Hat.Server.PersistSpec qualified
 import Hat.Server.FlashSpec qualified
+import Hat.Server.FloatingSpec qualified
 import Hat.Term.PtySpec qualified
 import Hat.Server.BufferSpec qualified
 import Hat.Server.CaptureSpec qualified
@@ -143,3 +144,4 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Control" Hat.Server.ControlSpec.spec
     describe "Hat.Server.Flags" Hat.Server.FlagsSpec.spec
     describe "Hat.Server.Flash" Hat.Server.FlashSpec.spec
+    describe "Hat.Server.Floating" Hat.Server.FloatingSpec.spec

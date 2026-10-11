@@ -71,6 +71,8 @@ module Hat.Server.Pane
     , WindowFate (..)
     , pickActivityTarget
     , removePaneFromTree
+    , releaseModal
+    , switchActive
     , rehomePanes
     , windowHolders
     , wrapPaneInWindow
@@ -125,6 +127,7 @@ import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
+import Hat.Server.Floating (ModalReturn (..), Restack (..), loseModal, modalPane, noFloats, restack)
 import Hat.Server.Layout
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
@@ -136,7 +139,7 @@ import Hat.Server.Style (applyStyle)
 import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator.Types (paintLineBytes)
-import Hat.Server.Mru (popOnClose, scrub)
+import Hat.Server.Mru (popOnClose, recordVisit, scrub)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -215,6 +218,7 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing
+    floatsVar     <- newTVarIO noFloats
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -231,6 +235,7 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
             , autoRename = autoRenameVar
             , options = optionsVar
             , arrangeCache = arrangeVar
+            , floats = floatsVar
             }
     pure (win, pane)
 
@@ -1182,6 +1187,7 @@ detachPane st win pane = do
     claimed <- claimPane pane
     if not claimed then pure AlreadyDetached else do
         modifyTVar' win.panes (Map.delete pane.id)
+        releaseModal win pane.id
         lay <- readTVar win.layout
         mz <- readTVar win.zoomed
         when (mz == Just pane.id) $ writeTVar win.zoomed Nothing
@@ -1205,6 +1211,36 @@ detachPane st win pane = do
                 pure $ Detached WindowRemoved $ case emptied of
                     [] -> SessionSurvives
                     _ -> SessionsEmptied (map (.id) emptied)
+
+-- | The modal half of @window_lost_pane@, for a pane already gone from its
+-- window's pane map: it drops out of the floating state, and the modal
+-- pane's going hands the window back to the pane active before it, zoomed
+-- again if the window was.
+releaseModal :: Window -> PaneId -> STM ()
+releaseModal win pid = do
+    (fs', mret) <- loseModal pid <$> readTVar win.floats
+    writeTVar win.floats fs'
+    ps <- readTVar win.panes
+    forM_ mret $ \ret -> forM_ ret.returnTo $ \back -> when (Map.member back ps) $ do
+        writeTVar win.activeId back
+        modifyTVar' win.paneHist (filter (/= back))
+        when ret.rezoom $ writeTVar win.zoomed (Just back)
+
+-- | Make a pane its window's active one (@window_set_active_pane@), unless
+-- a modal pane holds the window; a floating pane comes to the front of
+-- the stacking (@window_redraw_active_switch@). Whether it changed.
+switchActive :: Window -> PaneId -> STM Bool
+switchActive win pid = do
+    active <- readTVar win.activeId
+    fs <- readTVar win.floats
+    lay <- readTVar win.layout
+    let held = maybe False (/= pid) (modalPane fs)
+    if active == pid || held then pure False else do
+        when (isFloating pid lay) $
+            writeTVar win.floats (restack ToFront pid fs lay)
+        modifyTVar' win.paneHist (recordVisit active pid)
+        writeTVar win.activeId pid
+        pure True
 
 -- | What 'detachPane' did. See 'detachPane'.
 data DetachResult = AlreadyDetached | Detached WindowFate SessionFate
@@ -1380,6 +1416,7 @@ removePaneFromTree st pid = do
                 (before, after) = break (== pid) order
                 neighbour = listToMaybe (reverse before) <|> listToMaybe (drop 1 after)
             writeTVar win.panes (Map.delete pid ps)
+            releaseModal win pid
             mz <- readTVar win.zoomed
             when (mz == Just pid) $ writeTVar win.zoomed Nothing
             bumpDirty st
@@ -1430,6 +1467,7 @@ wrapPaneInWindow st pane = do
     silenceVar <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar <- newTVarIO Nothing
+    floatsVar <- newTVarIO noFloats
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -1446,6 +1484,7 @@ wrapPaneInWindow st pane = do
         , autoRename = autoRenameVar
         , options = optionsVar
         , arrangeCache = arrangeVar
+        , floats = floatsVar
         }
 
 -- | @-O@: whether pane output is tapped into the process's stdin.

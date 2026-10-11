@@ -231,6 +231,7 @@ captureSession (seenWins, seenGroups) s = do
         { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
         , active = ws.wsActive, paneHist = ws.wsLastActive
         , autoRename = ws.wsAutoRename, key = Nothing, linkOf = Nothing
+        , modal = Nothing
         , panes = [] }
 
 captureWindow :: WindowStruct -> IO (WindowSnap, [Pane])
@@ -258,6 +259,7 @@ captureWindow ws = do
              { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
              , active = ws.wsActive, paneHist = ws.wsLastActive
              , autoRename = ws.wsAutoRename, key = Nothing, linkOf = Nothing
+             , modal = ws.wsModal
              , panes = psnaps }
          , ws.wsPanes )
 

@@ -87,8 +87,8 @@ overlayRowAt rect grid r frameRow
 data RowOrigin = VolatileRow | ComposedRow [RowSpan]
     deriving Show
 
--- | One contribution to a composed frame row, in draw order: the chrome
--- stamped beneath the panes — carried as its row's 'Chrome' generation,
+-- | One contribution to a composed frame row: the chrome stamped over the
+-- panes — carried as its row's 'Chrome' generation,
 -- 0 when the row has no chrome cells at all — or one pane's slice.
 data RowSpan
     = ChromeSpan Int
@@ -142,8 +142,8 @@ chromeFromCells cells = Chrome
         [ (p.row, [(p.col, cell)]) | (p, cell) <- cells ]
     }
 
--- | Compose a client frame row by row — chrome cells onto blanks, then
--- each pane's slice in draw order — reusing the previous frame's row
+-- | Compose a client frame row by row — each pane's slice in draw order,
+-- then the chrome over them (see Note [Chrome over panes]) — reusing the previous frame's row
 -- wherever the row's provenance matches ('sameOrigin'): a matched row is
 -- the old frame's very vector, never recomposed, and the caller's diff
 -- may skip it unread. Rows whose provenance promises nothing (a pane
@@ -199,13 +199,13 @@ composeRows sz chrome layers old oldOrigins = (frame, origins)
                 (fromMaybe VolatileRow (oldOrigins V.!? r)) -> prev
         _ -> composeRow r
     blankRow = V.replicate colsN blankCell
-    composeRow r = List.foldl' paneOver chromed (layersAt r)
+    -- A chrome-free row starts as the shared blank row itself, so a
+    -- full-width pane pass-through composes without any copy.
+    composeRow r = case chromeAt r of
+        [] -> panes
+        cs -> panes V.// [ (c, cell) | (c, cell) <- cs, c < colsN ]
       where
-        -- A chrome-free row starts as the shared blank row itself, so a
-        -- full-width pane pass-through composes without any copy.
-        chromed = case chromeAt r of
-            [] -> blankRow
-            cs -> blankRow V.// [ (c, cell) | (c, cell) <- cs, c < colsN ]
+        panes = List.foldl' paneOver blankRow (layersAt r)
         paneOver row l = overlayRowAt l.rect l.cells r row
 
 -- | Stamp pre-styled border cells onto a frame. The caller chooses each

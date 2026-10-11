@@ -14,6 +14,7 @@ import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options (emptyDelta)
 import Hat.Server.Flash (lingerDeadline, flashExpired)
+import Hat.Server.Floating (noFloats)
 import Hat.Server.Layout (Orientation (..), singlePane)
 import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame, tintInnerRing)
@@ -102,6 +103,7 @@ splitWindow = do
         <*> newTVarIO True
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
+        <*> newTVarIO noFloats
     mapM_
         (\n -> do
             p <- flashStubPane (PaneId n)

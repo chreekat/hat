@@ -27,7 +27,7 @@ plainLook = ChromeLook
     { borderLines = BorderSingle, windowStyle = Cell.defaultStyle
     , paneStyles = Map.empty, scrollbarLooks = Map.empty, active = Nothing, marked = Nothing
     , numbers = Map.fromList [ (PaneId i, fromIntegral i) | i <- [0 .. 9] ]
-    , paneLines = Map.empty
+    , paneLines = Map.empty, lineSets = Map.empty
     , fillInside = Cell.glyphCell ' ' Cell.defaultStyle
     , fillOutside = Cell.glyphCell '~' Cell.defaultStyle
     , arrows = Map.empty }
@@ -43,7 +43,7 @@ cross = SceneInput
         [ (PaneId 0, rect 0 2 0 3), (PaneId 1, rect 0 2 4 7)
         , (PaneId 2, rect 3 5 0 3), (PaneId 3, rect 3 5 4 7) ]
     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
 
 spec :: Spec
 spec = do
@@ -61,7 +61,7 @@ spec = do
                     , area = Size { rows = 4, cols = 6 }
                     , panes = [ (PaneId 0, rect 0 2 0 3) ]
                     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
             picture plainLook (buildScene inp) `shouldBe`
                 [ "...│~~"
                 , "...│~~"
@@ -74,13 +74,64 @@ spec = do
             [ (off, ct) | SceneStatus (PaneId 1) off ct <- V.toList (scene V.! 0) ]
                 `shouldBe` [ (0, CellLR) ]
             picture plainLook scene !! 0 `shouldBe` "───┬───"
+    describe "floating panes" $ do
+        let whole = cross { panes = [ (PaneId 0, rect 0 5 0 7) ] }
+            float r = FloatingPane
+                { pane = PaneId 9, rect = r, lineSet = BorderSingle, status = PaneStatusOff }
+        it "draw their own box over the tiled panes" $
+            picture plainLook (buildScene whole { floats = [ float (rect 2 3 2 5) ] })
+                `shouldBe`
+                [ "......."
+                , ".┌───┐."
+                , ".│...│."
+                , ".└───┘."
+                , "......." ]
+        it "cover the tiled borders, never joining them" $
+            picture plainLook (buildScene cross { floats = [ float (rect 2 3 2 5) ] })
+                `shouldBe`
+                [ "...│..."
+                , ".┌───┐."
+                , "─│...│─"
+                , ".└───┘."
+                , "...│..." ]
+        it "stop at the window's edges, dropping the border cut off there" $
+            take 3 (picture plainLook (buildScene whole { floats = [ float (rect 0 2 5 9) ] }))
+                `shouldBe` [ "....│..", "....│..", "....└──" ]
+        it "the frontmost covers those behind" $
+            picture plainLook (buildScene whole
+                    { floats = [ float (rect 1 2 1 4), (float (rect 2 3 3 6)) { pane = PaneId 8 } ] })
+                `shouldBe`
+                [ "┌───┐.."
+                , "│.┌───┐"
+                , "└─│...│"
+                , "..└───┘"
+                , "......." ]
+        it "draw no border under pane-border-lines none" $
+            picture plainLook (buildScene whole
+                    { floats = [ (float (rect 2 3 2 5)) { lineSet = BorderNone } ] })
+                `shouldBe` replicate 5 "......."
+        it "draw their border in their own line set" $
+            picture plainLook { lineSets = Map.singleton (PaneId 9) BorderDouble }
+                    (buildScene whole { floats = [ float (rect 2 3 2 5) ] }) !! 1
+                `shouldBe` ".╔═══╗."
+        it "carry their own pane status line" $ do
+            let scene = buildScene whole
+                    { floats = [ (float (rect 2 3 1 6)) { status = PaneStatusTop } ] }
+            [ (off, ct) | SceneStatus (PaneId 9) off ct <- V.toList (scene V.! 1) ]
+                `shouldBe` [ (0, CellLR), (1, CellLR), (2, CellLR) ]
+        it "take their scrollbar inside their border" $ do
+            let scene = buildScene whole
+                    { floats = [ float (rect 2 3 2 4) ]
+                    , scrollbars = Map.singleton (PaneId 9) 1 }
+            (scene V.! 2) V.! 4 `shouldBe` SceneScrollbar (PaneId 9) 0 0
+            picture plainLook scene !! 1 `shouldBe` ".┌───┐."
     describe "two-pane colours" $
         it "splits the dividing border between the panes beside it" $ do
             let inp = SceneInput
                     { window = Size { rows = 4, cols = 3 }, area = Size { rows = 4, cols = 3 }
                     , panes = [ (PaneId 0, rect 0 4 0 1), (PaneId 1, rect 0 4 2 3) ]
                     , paneStatus = PaneStatusOff, twoPane = Just LeftRight
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [] }
                 owners = [ case (buildScene inp V.! y) V.! 1 of
                                SceneBorder b -> b.styleOwner
                                _ -> Nothing
@@ -96,7 +147,7 @@ spec = do
                 { window = Size { rows = 3, cols = 5 }, area = Size { rows = 3, cols = 5 }
                 , panes = [ (PaneId 0, rect 0 3 0 3) ], paneStatus = PaneStatusOff
                 , twoPane = Nothing, scrollbars = Map.singleton (PaneId 0) 2
-                , scrollbarSide = ScrollbarRight }
+                , scrollbarSide = ScrollbarRight, floats = [] }
             chrome = sceneChrome look (buildScene inp)
             bgAt x y = (.style.bg) <$> lookup (Pos y x) chrome
         it "takes the columns between the pane and its border" $

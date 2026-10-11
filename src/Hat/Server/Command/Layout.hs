@@ -16,7 +16,7 @@ module Hat.Server.Command.Layout
 import Control.Concurrent.STM
 import Control.Monad (forM_, unless, when)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -28,13 +28,16 @@ import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, unknownFlag
 import Hat.Server.Command.Window
     ( SourceLink (..), applyShifts, closeSessions, linkWindow, nextFreeWindowIndex
     , switchToWindow )
+import Hat.Server.Floating
+    ( Border (..), FloatState (..), Restack (..), borderOf, floatingGeom, GeomArgs (..), modalPane, parseRestack
+    , parseSpot, placeAt, restack, restackTo )
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane, notifyWindow)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Pane (rehomePanes, removePaneFromTree, wrapPaneInWindow)
+import Hat.Server.Pane (rehomePanes, removePaneFromTree, switchActive, wrapPaneInWindow)
 import Hat.Server.Resize (applySessionSize, windowArea, windowLayoutAt)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Winlink (attachWindow, shuffleUp)
@@ -47,14 +50,15 @@ import Hat.Server.Winlink (attachWindow, shuffleUp)
 cmdBreakPane :: CommandImpl
 cmdBreakPane st mclient args
     | Just e <- unknownFlag "break-pane" "abdPW" flags = pure [RErr e]
-    | "-W" `elem` flags = pure [RErr "break-pane -W (floating panes) is not implemented"]
-    | f : _ <- [ f | f <- ["-x", "-X", "-y", "-Y"], isJust (lookup f opts) ] =
-        pure [RErr ("break-pane " <> f <> " (floating panes) is not implemented")]
     | otherwise = do
         srcRes <- findTarget st mclient Target.FindPane (lookup "-s" opts)
         dstRes <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        modal <- either (const (pure Nothing))
+            (\(_, _, swin, _) -> modalPane <$> readTVarIO swin.floats) srcRes
         case (srcRes, dstRes) of
             (Left e, _) -> pure [RErr e]
+            (Right (_, _, _, pane), _) | modal == Just pane.id -> pure [RErr "pane is modal"]
+            (Right (ssess, _, swin, pane), _) | "-W" `elem` flags -> floatOut ssess swin pane
             (_, Left e) -> pure [RErr e]
             (Right (ssess, swix, swin, pane), Right (dst, mix)) -> do
                 atomically $ writeTVar swin.zoomed Nothing
@@ -65,6 +69,42 @@ cmdBreakPane st mclient args
   where
     (opts, flags, _) = parseArgs "FnstxXyY" args
     detached = "-d" `elem` flags
+    -- -W: float the pane where it is (@cmd_break_pane_float@), at the
+    -- -x/-y/-X/-Y geometry with the window's border.
+    floatOut sess win pane = do
+        eff <- atomically (windowArea st win)
+        border <- borderOf . (.paneBorderLines) <$> atomically (resolveForWindow st sess win)
+        env <- sessionFormatEnv st sess
+        let expand v = case T.stripSuffix "%" v of
+                Just body -> (<> "%") <$> expandFormat st env body
+                Nothing -> expandFormat st env v
+        geomArgs <- GeomArgs
+            <$> traverse expand (lookup "-x" opts)
+            <*> traverse expand (lookup "-y" opts)
+            <*> traverse expand (lookup "-X" opts)
+            <*> traverse expand (lookup "-Y" opts)
+        r <- atomically $ do
+            lay <- windowLayoutAt eff win
+            fs <- readTVar win.floats
+            zoomed <- isJust <$> readTVar win.zoomed
+            if | isFloating pane.id lay -> pure (Left "pane is already floating")
+               | zoomed -> pure (Left "can't float a pane while window is zoomed")
+               | otherwise -> case floatingGeom eff border Nothing fs.lastNew geomArgs of
+                    Left e -> pure (Left ("failed to float pane: " <> e))
+                    Right (g, cascade) -> case floatTiled pane.id g lay of
+                        Nothing -> pure (Left "pane is already floating")
+                        Just lay' -> do
+                            writeTVar win.layout lay'
+                            writeTVar win.floats
+                                (restack ToFront pane.id fs { lastNew = cascade } lay')
+                            unless detached (() <$ switchActive win pane.id)
+                            Right () <$ bumpDirty st
+        case r of
+            Left e -> pure [RErr e]
+            Right () -> do
+                applySessionSize st sess.id
+                notifyWindow st "window-layout-changed" (Just sess.id) win []
+                pure []
     shuffle = if
         | "-b" `elem` flags -> Just 0
         | "-a" `elem` flags -> Just 1
@@ -169,29 +209,134 @@ cmdJoinPane st mclient args
   where
     (opts, flags, _) = parseArgs "lpst" args
 
--- | @move-pane@: on this tmux branch it repositions a /floating/ pane, and
--- hat has none, so every pane it can target is refused as tmux refuses a
--- tiled one. @-M@ without a mouse event does nothing.
+-- | @move-pane@ (@cmd-join-pane.c@): reposition a floating pane — to a
+-- named spot or a stacking move (@-P@), a stacking depth (@-z@), a
+-- position (@-X@\/@-Y@) or by a cell (@-U@\/@-D@\/@-L@\/@-R@) — or, with
+-- none of those, join the source to it as @join-pane@ does. A tiled target
+-- is refused. @-M@ without a mouse event does nothing.
 cmdMovePane :: CommandImpl
 cmdMovePane st mclient args
     | Just e <- unknownFlag "move-pane" "bdDfhLMRUv" flags = pure [RErr e]
     | "-M" `elem` flags = pure []
     | otherwise = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
-        pure $ case res of
-            Left e -> [RErr e]
-            Right _ -> [RErr "pane is not floating"]
+        case res of
+            Left e -> pure [RErr e]
+            Right dst@(dsess, _, win, pane) -> do
+                eff <- atomically (windowArea st win)
+                floating <- atomically $ do
+                    z <- readTVar win.zoomed
+                    lay <- readTVar win.layout
+                    pure (isNothing z && isFloating pane.id lay)
+                let moved = isJust (lookup "-X" opts) || isJust (lookup "-Y" opts)
+                        || any (`elem` flags) ["-U", "-D", "-L", "-R"]
+                if | not floating -> pure [RErr "pane is not floating"]
+                   | Just s <- lookup "-P" opts ->
+                        reposition dsess win eff pane (placeFloat s)
+                   | Just s <- lookup "-z" opts -> case strtonum 0 maxBound s of
+                        Left e -> pure [RErr ("z-index " <> e)]
+                        Right z -> reposition dsess win eff pane
+                            (\pid _ _ lay fs -> Right (lay, restackTo z pid fs lay))
+                   | moved -> do
+                        env <- sessionFormatEnv st dsess
+                        let expand v = case T.stripSuffix "%" v of
+                                Just body -> (<> "%") <$> expandFormat st env body
+                                Nothing -> expandFormat st env v
+                        mx <- traverse expand (lookup "-X" opts)
+                        my <- traverse expand (lookup "-Y" opts)
+                        reposition dsess win eff pane (shiftFloat mx my)
+                   | otherwise -> do
+                        srcTok <- maybe (markedTarget st) (pure . Just) (lookup "-s" opts)
+                        srcRes <- findTarget st mclient Target.FindPane srcTok
+                        case srcRes of
+                            Left e -> pure [RErr e]
+                            Right src -> joinPane st dst src opts flags
   where
     (opts, flags, _) = parseArgs "lPstXYz" args
+    -- Change the window's layout and floating state, unzoomed, as one
+    -- step; @how@ sees the pane, the window area, the pane's border, and
+    -- both.
+    reposition sess win eff pane how = do
+        border <- borderOf . (.paneBorderLines)
+            <$> atomically (resolveForPane st sess win pane)
+        r <- atomically $ do
+            writeTVar win.zoomed Nothing
+            lay <- windowLayoutAt eff win
+            fs <- readTVar win.floats
+            case how pane.id eff border lay fs of
+                Left e -> pure (Left e)
+                Right (lay', fs') -> do
+                    writeTVar win.layout lay'
+                    writeTVar win.floats fs'
+                    Right () <$ bumpDirty st
+        case r of
+            Left e -> pure [RErr e]
+            Right () -> do
+                notifyWindow st "window-layout-changed" (Just sess.id) win []
+                pure []
+    placeFloat s target eff border lay fs = case (parseRestack s, parseSpot s) of
+        (Just how, _) -> Right (lay, restack how target fs lay)
+        (_, Just spot) -> Right (moveTo (placeAt eff border spot), fs)
+        _ -> Left ("unknown position: " <> s)
+      where
+        moveTo f = maybe lay (\g -> setFloatGeom target (f g) lay) (floatGeom target lay)
+    shiftFloat mx my target eff border lay fs = do
+        let wsx = fromIntegral eff.cols
+            wsy = fromIntegral eff.rows
+            shift = if border == Bordered then 1 else 0
+            position e = either (Left . ("position " <>)) Right e
+        g <- maybe (Left "pane is not floating") Right (floatGeom target lay)
+        x <- maybe (Right g.left)
+            (\v -> (+ shift) <$> position (stringPercentage (negate wsx) wsx wsx v)) mx
+        y <- maybe (Right g.top)
+            (\v -> (+ shift) <$> position (stringPercentage (negate wsy) wsy wsy v)) my
+        steps <- traverse (\f -> either (Left . ("offset " <>)) (Right . (,) f)
+                (strtonum minBound maxBound "1"))
+            [ f | f <- ["-U", "-D", "-L", "-R"], f `elem` flags ]
+        let (x', y') = foldl (\(cx, cy) (f, n) -> case f of
+                "-U" -> (cx, cy - n)
+                "-D" -> (cx, cy + n)
+                "-L" -> (cx - n, cy)
+                _ -> (cx + n, cy)) (x, y) steps
+        pure (setFloatGeom target (FloatGeom g.width g.height x' y') lay, fs)
 
 joinPane
     :: ServerState -> (Session, Int, Window, Pane) -> (Session, Int, Window, Pane)
     -> [(Text, Text)] -> [Text] -> IO [Reply]
-joinPane st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) opts flags = do
+joinPane st dst@(dsess, _, dwin, dpane) src@(_, _, swin, spane) opts flags = do
+    (smodal, dmodal) <- atomically $
+        (,) <$> (modalPane <$> readTVar swin.floats) <*> (modalPane <$> readTVar dwin.floats)
     atomically $ writeTVar dwin.zoomed Nothing >> writeTVar swin.zoomed Nothing
-    if spane.id == dpane.id
-        then pure [RErr "source and target panes must be different"]
-        else do
+    floating <- atomically (isFloating spane.id <$> readTVar swin.layout)
+    dfloating <- atomically (isFloating dpane.id <$> readTVar dwin.layout)
+    if | smodal == Just spane.id || dmodal == Just dpane.id -> pure [RErr "pane is modal"]
+       | spane.id == dpane.id && floating -> tileBack st dsess dwin spane flags
+       | spane.id == dpane.id -> pure [RErr "source and target panes must be different"]
+       | dfloating -> pure [RErr "size or position can't split a floating pane"]
+       | otherwise -> joinTiled st dst src opts flags
+
+-- | Tile a floating pane back where its cell sits (@cmd_join_pane_tile@).
+tileBack :: ServerState -> Session -> Window -> Pane -> [Text] -> IO [Reply]
+tileBack st sess win pane flags = do
+    eff <- atomically (windowArea st win)
+    ok <- atomically $ do
+        lay <- windowLayoutAt eff win
+        case tileFloating eff pane.id lay of
+            Nothing -> pure False
+            Just lay' -> do
+                writeTVar win.layout lay'
+                unless ("-d" `elem` flags) (() <$ switchActive win pane.id)
+                True <$ bumpDirty st
+    if not ok then pure [RErr "no space for a new pane"] else do
+        applySessionSize st sess.id
+        notifyWindow st "window-layout-changed" (Just sess.id) win []
+        pure []
+
+-- | 'joinPane' into a tiled target.
+joinTiled
+    :: ServerState -> (Session, Int, Window, Pane) -> (Session, Int, Window, Pane)
+    -> [(Text, Text)] -> [Text] -> IO [Reply]
+joinTiled st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) opts flags = do
             eff <- atomically (windowArea st dwin)
             lay <- atomically (windowLayoutAt eff dwin)
             let expand t = sessionFormatEnv st dsess >>= \env -> expandFormat st env t

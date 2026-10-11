@@ -21,6 +21,7 @@ module Hat.Server.Resize
     , windowArrange
     , unzoomedArrange
     , windowPaneStatus
+    , windowFloats
     , paneScrollbars
     , scrollbarReserve
     , windowLayoutAt
@@ -43,8 +44,10 @@ import Hat.Model.Options
 import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.Floating (stacking)
 import Hat.Server.Scene
-    (PaneStatus (..), ScrollbarSide (..), ScrollbarStyle (..), scrollbarStyle, statusAdjust)
+    ( FloatingPane (..), PaneStatus (..), ScrollbarSide (..), ScrollbarStyle (..), scrollbarStyle
+    , statusAdjust )
 import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -326,37 +329,84 @@ windowLayoutAt eff win = do
     if lay' == lay then pure lay else lay' <$ writeTVar win.layout lay'
 
 -- | Pane rects and borders for a window, honoring zoom and leaving room
--- for the window's pane status line. Arranging is pure in the window rect
--- and the layout tree, so the last result is kept until either input
--- changes — renderers hit this every frame.
+-- for the window's pane status line: the tiled panes, then the floating
+-- ones back to front. Arranging is pure in the window rect and the layout
+-- tree, so the last result is kept until either input changes — renderers
+-- hit this every frame.
 windowArrange
     :: ServerState -> Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
 windowArrange st eff win = do
     mz <- readTVar win.zoomed
-    lay <- readTVar win.layout
     ps <- readTVar win.panes
-    status <- windowPaneStatus st win
-    (side, bars) <- paneScrollbars st win
-    let adjust (rects, borders) =
-            ( [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
-                        (statusAdjust status (fromIntegral eff.rows) r))
-              | (p, r) <- rects ]
-            , borders )
     case mz of
-        Just zpid | Map.member zpid ps -> pure (adjust ([(zpid, sizeRect eff)], []))
-        _ -> adjust <$> cachedArrange eff win lay
+        Just zpid | Map.member zpid ps -> do
+            (side, bars) <- paneScrollbars st win
+            status <- windowPaneStatus st win
+            pure ( [ (zpid, scrollbarReserve side (Map.findWithDefault 0 zpid bars)
+                        (statusAdjust status (fromIntegral eff.rows) (sizeRect eff))) ]
+                 , [] )
+        _ -> unzoomedArrange' st eff win
 
 -- | Pane rects as 'windowArrange' would give them were the window not
 -- zoomed.
 unzoomedArrange :: ServerState -> Size -> Window -> STM [(PaneId, Rect)]
-unzoomedArrange st eff win = do
+unzoomedArrange st eff win = fst <$> unzoomedArrange' st eff win
+
+unzoomedArrange'
+    :: ServerState -> Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
+unzoomedArrange' st eff win = do
     lay <- readTVar win.layout
     status <- windowPaneStatus st win
     (side, bars) <- paneScrollbars st win
-    (rects, _) <- cachedArrange eff win lay
-    pure [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
+    (rects, borders) <- cachedArrange eff win lay
+    floats <- floatingPanes st win
+    pure ( [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
                     (statusAdjust status (fromIntegral eff.rows) r))
-         | (p, r) <- rects ]
+           | (p, r) <- rects ]
+           <> [ (f.pane, f.rect) | f <- floats ]
+         , borders )
+
+-- | A window's floating panes as its scene draws them, back to front; none
+-- while it is zoomed, as tmux's zoom leaves no pane floating.
+windowFloats :: ServerState -> Window -> STM [FloatingPane]
+windowFloats st win = do
+    mz <- readTVar win.zoomed
+    case mz of
+        Just _ -> pure []
+        Nothing -> floatingPanes st win
+
+floatingPanes :: ServerState -> Window -> STM [FloatingPane]
+floatingPanes st win = do
+    lay <- readTVar win.layout
+    fs <- readTVar win.floats
+    ps <- readTVar win.panes
+    (side, bars) <- paneScrollbars st win
+    fmap concat . forM (reverse (stacking fs lay)) $ \pid ->
+        case (floatGeom pid lay, Map.lookup pid ps) of
+            (Just g, Just p) -> do
+                let chain = [p.options, win.options, st.globalWindowOptions]
+                lineSet <- borderLinesOf <$> chainText chain "pane-border-lines"
+                raw <- chainText chain "pane-border-status"
+                let box = Rect { startRow = g.top, endRow = g.top + g.height
+                               , startCol = g.left, endCol = g.left + g.width }
+                pure [ FloatingPane
+                    { pane = pid
+                    , rect = scrollbarReserve side (Map.findWithDefault 0 pid bars) box
+                    , lineSet
+                    , status = floatingStatus lineSet raw } ]
+            _ -> pure []
+
+-- | A floating pane's @pane-border-status@ (tmux's
+-- @window_pane_get_pane_status@): its own, the floating-only positions
+-- included; none without a border to carry it.
+floatingStatus :: BorderLines -> Text -> PaneStatus
+floatingStatus BorderNone _ = PaneStatusOff
+floatingStatus _ v = case v of
+    "top" -> PaneStatusTop
+    "top-floating" -> PaneStatusTop
+    "bottom" -> PaneStatusBottom
+    "bottom-floating" -> PaneStatusBottom
+    _ -> PaneStatusOff
 
 -- | 'arrange' through the window's cache of its last result.
 cachedArrange :: Size -> Window -> Layout -> STM ([(PaneId, Rect)], [(Pos, Char)])

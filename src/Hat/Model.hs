@@ -114,6 +114,7 @@ import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
+import Hat.Server.Floating (FloatState)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeLook, Scene, SceneInput)
@@ -255,6 +256,9 @@ data Window = Window
     , arrangeCache :: TVar (Maybe ((Rect, Layout), ([(PaneId, Rect)], [(Pos, Char)])))
         -- ^ the last layout arrangement, keyed by its inputs; see
         -- 'Hat.Server.Resize.windowArrange'
+    , floats     :: TVar FloatState
+        -- ^ the floating panes' stacking and the modal pane; their cells
+        -- live in 'layout'
     }
 
 data Pane = Pane
