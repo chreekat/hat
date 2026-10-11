@@ -339,7 +339,7 @@ captureLinks pane copts altFlag copyFlag sflag eflag
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args
     | Just e <- unknownFlag "split-window" "bdEfhIkPvWZ" flags = pure [RErr e]
-    | f : _ <- [ f | f <- ["-B", "-S", "-R", "-s", "-m", "-T"], Just _ <- [lookup f opts] ]
+    | f : _ <- [ f | f <- ["-B", "-S", "-R", "-s", "-m"], Just _ <- [lookup f opts] ]
         <> [ f | f <- ["-k", "-W"], f `elem` flags ] =
         pure [RErr ("split-window " <> f <> " is not implemented")]
     | Left e <- launch = pure [RErr e]
@@ -418,6 +418,7 @@ cmdSplitWindow st mclient args
                 if not placed
                     then [RErr "no space for a new pane"] <$ hangupPane pane
                     else do
+                        forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
                         startPaneReader st sess.id win pane
                         when ("-I" `elem` flags) $ feedStdin pane
                         applySessionSize st sess.id
