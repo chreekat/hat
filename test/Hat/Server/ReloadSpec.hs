@@ -85,11 +85,12 @@ hotSessionOf s = do
 instance Arbitrary HotWindow where
     arbitrary = hotWindowOf =<< arbitrary
     shrink w =
-        [ hw w.paneHist w.autoRename w.key w.linkOf ps
+        [ hw w.paneHist w.autoRename w.key w.linkOf w.modal ps
         | ps <- shrinkList shrinkHot w.panes, not (null ps) ]
-        ++ [ hw h w.autoRename w.key w.linkOf w.panes
+        ++ [ hw h w.autoRename w.key w.linkOf w.modal w.panes
            | h <- shrinkList (const []) w.paneHist ]
-        ++ [ hw w.paneHist False w.key w.linkOf w.panes | w.autoRename ]
+        ++ [ hw w.paneHist False w.key w.linkOf w.modal w.panes | w.autoRename ]
+        ++ [ hw w.paneHist w.autoRename w.key w.linkOf Nothing w.panes | isJust w.modal ]
       where
         hw = HotWindow w.ix w.name w.layout w.active
         shrinkHot (p, hp) =
@@ -101,7 +102,7 @@ hotWindowOf w = do
     pure HotWindow
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename
-        , key = w.key, linkOf = w.linkOf, panes = ps }
+        , key = w.key, linkOf = w.linkOf, modal = w.modal, panes = ps }
 
 instance Arbitrary HotPane where
     arbitrary = HotPane <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
@@ -195,7 +196,7 @@ hotOf t = ReloadHot
     windowOf w = WindowSnap
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename
-        , key = w.key, linkOf = w.linkOf, panes = map fst w.panes }
+        , key = w.key, linkOf = w.linkOf, modal = w.modal, panes = map fst w.panes }
 
 -- Re-encode a handover at an arbitrary era, to exercise the era gate. Mirrors
 -- 'encodeHandover' exactly except for the era field; the golden-byte test
@@ -240,7 +241,7 @@ treeWith mlast ms sc = ReloadTree
                 [ HotWindow
                     { ix = 0, name = "w", layout = "L", active = 0
                     , paneHist = [], autoRename = True
-                    , key = Nothing, linkOf = Nothing
+                    , key = Nothing, linkOf = Nothing, modal = Nothing
                     , panes =
                         [ ( PaneSnap
                               { cwd = "/tmp", command = Nothing
@@ -264,7 +265,7 @@ currentTree = ReloadTree
                 [ HotWindow
                     { ix = 0, name = "w", layout = "L", active = 0
                     , paneHist = [], autoRename = True
-                    , key = Nothing, linkOf = Nothing
+                    , key = Nothing, linkOf = Nothing, modal = Nothing
                     , panes =
                         [ ( snap
                           , HotPane
@@ -298,7 +299,7 @@ emptyPaneTree = ReloadTree
                 [ HotWindow
                     { ix = 0, name = "w", layout = "L", active = 0
                     , paneHist = [], autoRename = True
-                    , key = Nothing, linkOf = Nothing
+                    , key = Nothing, linkOf = Nothing, modal = Nothing
                     , panes = currentPanes <> [(emptySnap, emptyHot)] } ] } ]
     , currentSession = Just "work"
     , lastSession = Just "prev" }

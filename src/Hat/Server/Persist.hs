@@ -12,6 +12,7 @@ module Hat.Server.Persist
     ( Snapshot (..)
     , SessionSnap (..)
     , WindowSnap (..)
+    , ModalSnap (..)
     , PaneSnap (..)
     , plainPane
     , schemaVersion
@@ -104,9 +105,35 @@ data WindowSnap = WindowSnap
                            --   entry links rather than carries; carried in the
                            --   window row's @extra@ JSON. See Note [Captured
                            --   links].
+    , modal      :: Maybe ModalSnap
+                           -- ^ the window's modal pane; carried in the window
+                           --   row's @extra@ JSON. Its floating panes ride in
+                           --   'layout' ('Hat.Server.LayoutString.emitLayoutZ').
     , panes      :: [PaneSnap] -- ^ in layout order
     }
     deriving (Eq, Show)
+
+-- | A window's modal pane ('Hat.Server.Floating.Modal'), its panes named by
+-- ordinal in 'panes' order.
+data ModalSnap = ModalSnap
+    { pane     :: Int
+    , returnTo :: Maybe Int
+    , rezoom   :: Bool
+    }
+    deriving (Eq, Show)
+
+instance ToJSON ModalSnap where
+    toJSON m = object $
+        ["pane" .= m.pane]
+        <> ["return_to" .= r | Just r <- [m.returnTo]]
+        <> ["rezoom" .= True | m.rezoom]
+
+instance FromJSON ModalSnap where
+    parseJSON = withObject "modal" $ \o -> do
+        p <- fromMaybe 0 <$> o .:? "pane"
+        r <- o .:? "return_to"
+        z <- fromMaybe False <$> o .:? "rezoom"
+        pure ModalSnap { pane = p, returnTo = r, rezoom = z }
 
 -- Note [Captured links]
 -- ~~~~~~~~~~~~~~~~~~~~~
@@ -184,18 +211,19 @@ decodeSessionExtra t = fromMaybe (SessionExtra [] Nothing 0 Nothing)
 -- the automatic-rename flag. A store written before @auto_rename@ existed
 -- omits the key; it defaults to 'False', matching the old restore behavior
 -- of pinning a restored window's name.
-data WindowExtra = WindowExtra [Int] Bool (Maybe Int) (Maybe Int)
-    -- ^ MRU pane ordinals (head first), auto-rename, key, link
+data WindowExtra = WindowExtra [Int] Bool (Maybe Int) (Maybe Int) (Maybe ModalSnap)
+    -- ^ MRU pane ordinals (head first), auto-rename, key, link, modal pane
 
 -- @last_active@ mirrors the head for readers predating the stack;
 -- @last_active_stack@ carries the whole history. See 'SessionExtra'.
 instance ToJSON WindowExtra where
-    toJSON (WindowExtra hist auto k l) =
+    toJSON (WindowExtra hist auto k l m) =
         object (["last_active" .= h | h <- take 1 hist]
                 ++ ["last_active_stack" .= hist | not (null hist)]
                 ++ ["auto_rename" .= auto | auto]
                 ++ ["key" .= v | Just v <- [k]]
-                ++ ["link_of" .= v | Just v <- [l]])
+                ++ ["link_of" .= v | Just v <- [l]]
+                ++ ["modal" .= v | Just v <- [m]])
 
 instance FromJSON WindowExtra where
     parseJSON = withObject "window extra" $ \o -> do
@@ -204,14 +232,15 @@ instance FromJSON WindowExtra where
         auto   <- fromMaybe False <$> o .:? "auto_rename"
         k      <- o .:? "key"
         l      <- o .:? "link_of"
-        pure (WindowExtra (fromMaybe (maybeToList legacy) stack) auto k l)
+        m      <- o .:? "modal"
+        pure (WindowExtra (fromMaybe (maybeToList legacy) stack) auto k l m)
 
 encodeWindowExtra :: WindowSnap -> Text
 encodeWindowExtra w = TE.decodeUtf8 (BL.toStrict (encode
-    (WindowExtra w.paneHist w.autoRename w.key w.linkOf)))
+    (WindowExtra w.paneHist w.autoRename w.key w.linkOf w.modal)))
 
 decodeWindowExtra :: Text -> WindowExtra
-decodeWindowExtra t = fromMaybe (WindowExtra [] False Nothing Nothing)
+decodeWindowExtra t = fromMaybe (WindowExtra [] False Nothing Nothing Nothing)
     (decode (BL.fromStrict (TE.encodeUtf8 t)))
 
 -- | The pane row's @extra@ JSON payload: every 'PaneSnap' field but the
@@ -403,10 +432,10 @@ loadSnapshot conn = do
             "SELECT cwd, extra FROM pane \
             \WHERE session_seq = ? AND window_ix = ? ORDER BY ordinal"
             (sseq, wix) :: IO [(Text, Text)]
-        let WindowExtra paneOrds auto k l = decodeWindowExtra wex
+        let WindowExtra paneOrds auto k l m = decodeWindowExtra wex
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
-            , paneHist = paneOrds, autoRename = auto, key = k, linkOf = l
+            , paneHist = paneOrds, autoRename = auto, key = k, linkOf = l, modal = m
             , panes = [ decodeExtra c ex | (c, ex) <- prows ] }
 
 -- Snapshot history --------------------------------------------------------
@@ -546,6 +575,7 @@ instance ToJSON WindowSnap where
         <> ["auto_rename" .= True | w.autoRename]
         <> ["key" .= k | Just k <- [w.key]]
         <> ["link_of" .= l | Just l <- [w.linkOf]]
+        <> ["modal" .= m | Just m <- [w.modal]]
         <> ["panes" .= w.panes]
 
 instance FromJSON WindowSnap where
@@ -559,11 +589,12 @@ instance FromJSON WindowSnap where
         auto   <- fromMaybe False <$> o .:? "auto_rename"
         k      <- o .:? "key"
         l      <- o .:? "link_of"
+        m      <- o .:? "modal"
         ps     <- fromMaybe [] <$> o .:? "panes"
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
             , paneHist = fromMaybe (maybeToList legacy) stack, autoRename = auto
-            , key = k, linkOf = l, panes = ps }
+            , key = k, linkOf = l, modal = m, panes = ps }
 
 instance ToJSON PaneSnap where
     toJSON p = object (("cwd" .= p.cwd) : paneFields p)

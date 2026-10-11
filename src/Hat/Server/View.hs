@@ -9,6 +9,8 @@ module Hat.Server.View
     , flashTarget
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
+    , floatScene  -- ^ exported for the floating-pane drawing test
+    , outsideCells  -- ^ exported for the outside-window drawing test
     , statusLayout  -- ^ exported for the status-position effect test
     , windowEntryStyle  -- ^ exported for the window-status-style effect test
     , windowEntryFormat  -- ^ exported for the window-status-format effect test
@@ -18,6 +20,7 @@ module Hat.Server.View
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, when)
+import Data.Bits ((.&.), (.|.))
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -37,6 +40,8 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
+import Hat.Server.Floating (Border (..), borderOf, modalPane, stacking)
+import Hat.Server.Layout (FloatGeom (..), floatGeom)
 import Hat.Server.Format (formatReadsTree)
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatEnv
@@ -121,16 +126,18 @@ renderOnce st client = do
                     Nothing -> pure Nothing
                     Just win -> do
                         eff <- readTVar sess.lastSize
-                        (rects, borders) <- windowArrange (eff) win
+                        (tiled, borders) <- windowArrange (eff) win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
-                        pure (Just (sess, win, rects, borders, ps, active))
+                        floats <- floatsToDraw st sess win eff
+                        let rects = tiled <> [ (f.pane, f.content) | f <- floats ]
+                        pure (Just (sess, win, rects, borders, ps, active, floats, eff))
     (frame, origins, cursor, mActiveRect) <- case view of
         Nothing -> pure
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
             , (Pos 0 0, False), Nothing )
-        Just (sess, _, rects, borders, ps, active) -> do
+        Just (sess, _, rects, borders, ps, active, floats, eff) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
@@ -145,15 +152,30 @@ renderOnce st client = do
                         pure [(pidL, pv)]
             prevFrame <- readIORef client.lastFrame
             prevOrigins <- readIORef client.lastOrigins
+            let scene = Size
+                    { rows = fromIntegral (max 0 (fromIntegral csize.rows
+                        - maybe 0 (const opts.statusLines) mStatusRowIx :: Int))
+                    , cols = csize.cols }
+                tiledRects = [ r | (pidL, r) <- rects, pidL `notElem` map (.pane) floats ]
             chrome <- cachedChrome client opts (List.lookup active rects)
-                rowOff borders
-            let layers =
+                rowOff (borders <> outsideCells eff scene tiledRects borders)
+            let floating = map (.pane) floats
+                layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect rect
                                 , cells = pv.cells, gens = pv.rowGens }
-                    | (pidL, rect) <- rects
+                    | (pidL, rect) <- rects, pidL `notElem` floating
                     , Just pv <- [Map.lookup pidL paneViews] ]
-                (base, baseOrigins) = composeRows csize
+                (tiledFrame, tiledOrigins) = composeRows csize
                     chrome layers prevFrame prevOrigins
+                -- Floating panes go over the tiled scene, back to front.
+                drawFloat (fr, os) f = case Map.lookup f.pane paneViews of
+                    Nothing -> (fr, os)
+                    Just pv ->
+                        ( applyBorders (overlayGrid fr (shiftRect f.content)
+                                (floatContent f pv.cells))
+                            [ (p { row = p.row + rowOff }, c) | (p, c) <- f.border ]
+                        , volatileRows (shiftRect f.box) os )
+                (base, baseOrigins) = List.foldl' drawFloat (tiledFrame, tiledOrigins) floats
             mflash <- readTVarIO client.flash
             scheme <- readTVarIO st.colorScheme
             let (flashed, flashedOrigins)
@@ -217,7 +239,8 @@ renderOnce st client = do
     -- The display-panes overlay stamps each pane's number over its rect.
     mdpanes <- readTVarIO client.displayPanes
     (frame'', origins'') <- case (mdpanes, view) of
-        (Just _, Just (_, _, rects, _, _, active)) -> do
+        (Just _, Just (_, win, rects, _, _, active, _, _)) -> do
+            order <- atomically (map (.id) <$> windowPanes win)
             let shiftR r = r { startRow = r.startRow + rowOff
                              , endRow = r.endRow + rowOff }
                 colourFor pid = parseColor $ if pid == active
@@ -230,7 +253,7 @@ renderOnce st client = do
                             (opts.paneBaseIndex + i)
                             (r.endCol - r.startCol) (r.endRow - r.startRow) ]
                     | (pid, rect0) <- rects
-                    , Just i <- [List.elemIndex pid (map fst rects)]
+                    , Just i <- [List.elemIndex pid order]
                     , let r = shiftR rect0 ]
             pure ( DisplayPanes.stampCells stamps frame'
                  , List.foldl' (\o (_, rect0) -> volatileRows (shiftR rect0) o)
@@ -259,7 +282,7 @@ renderOnce st client = do
     -- the outer terminal's cursor (OSC 12), resetting it (OSC 112) when the
     -- pane in view no longer has one.
     colour <- case view of
-        Just (sess, win, _, _, ps, active)
+        Just (sess, win, _, _, ps, active, _, _)
             | Just pane <- Map.lookup active ps ->
                 (.cursorColour) <$> atomically (resolveForPane st sess win pane)
         _ -> pure ""
@@ -271,6 +294,140 @@ renderOnce st client = do
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
+
+-- | A floating pane as a frame draws it: its content rect and its box,
+-- both clipped to the window, the pane's own offset into its content (for
+-- a box overhanging the window's top or left), and its styled border cells.
+data FloatDraw = FloatDraw
+    { pane    :: PaneId
+    , content :: Rect
+    , box     :: Rect
+    , skip    :: Pos
+    , border  :: [(Pos, Cell.Cell)]
+    }
+
+-- | The floating panes of a window of @area@ to draw, back to front; none
+-- while it is zoomed, as tmux's zoom leaves no pane floating.
+floatsToDraw :: ServerState -> Session -> Window -> Size -> STM [FloatDraw]
+floatsToDraw st sess win area = do
+    zoomed <- readTVar win.zoomed
+    lay <- readTVar win.layout
+    fs <- readTVar win.floats
+    ps <- readTVar win.panes
+    active <- readTVar win.activeId
+    marked <- readTVar st.markedPane
+    case zoomed of
+        Just _ -> pure []
+        Nothing -> fmap concat . forM (reverse (stacking fs lay)) $ \pid ->
+            case (floatGeom pid lay, Map.lookup pid ps) of
+                (Just g, Just pane) -> do
+                    popts <- resolveForPane st sess win pane
+                    wopts <- resolveForWindow st sess win
+                    let sty | pid == active = wopts.paneActiveBorderStyle
+                            | otherwise = wopts.paneBorderStyle
+                        sty' | marked == Just pid = sty { Cell.reverse = not sty.reverse }
+                             | otherwise = sty
+                        borderLines = popts.paneBorderLines
+                        (content, box, cells) = floatScene area (borderOf borderLines) g
+                    pure [ FloatDraw
+                        { pane = pid, content, box
+                        , skip = Pos { row = max 0 (negate g.top), col = max 0 (negate g.left) }
+                        , border = [ (p, Cell.glyphCell (mapGlyph borderLines ch) sty') | (p, ch) <- cells ] } ]
+                _ -> pure []
+
+-- | A floating pane's content cells from its own offset into them.
+floatContent :: FloatDraw -> V.Vector (V.Vector Cell.Cell) -> V.Vector (V.Vector Cell.Cell)
+floatContent f = V.map (V.drop f.skip.col) . V.drop f.skip.row
+
+-- | Where a floating pane with box @g@ draws in a window of @area@
+-- (@redraw_mark_pane_inside@ and @redraw_mark_pane_borders@): its content
+-- rect, the rect its border spans, and its border cells as single-line
+-- glyphs. Content and border stop at the window's edges, and a border the
+-- window's edge cuts off is not drawn; the border is one box of its own,
+-- never joined to the borders it covers.
+floatScene :: Size -> Border -> FloatGeom -> (Rect, Rect, [(Pos, Char)])
+floatScene area border g = (content, box, cells)
+  where
+    wsx = fromIntegral area.cols
+    wsy = fromIntegral area.rows
+    content = Rect
+        { startRow = max 0 g.top, endRow = min wsy (g.top + g.height)
+        , startCol = max 0 g.left, endCol = min wsx (g.left + g.width) }
+    (left, right, top, bottom) = (g.left - 1, g.left + g.width, g.top - 1, g.top + g.height)
+    (l, r, t, b) = (max 0 left, min (wsx - 1) right, max 0 top, min (wsy - 1) bottom)
+    box = case border of
+        Borderless -> content
+        Bordered -> Rect { startRow = t, endRow = b + 1, startCol = l, endCol = r + 1 }
+    masks = Map.fromListWith (.|.) $ case border of
+        Borderless -> []
+        Bordered -> concat
+            [ [ (Pos t x, horiz x) | top >= 0, x <- [l .. r] ]
+            , [ (Pos b x, horiz x) | bottom < wsy, x <- [l .. r] ]
+            , [ (Pos y l, vert y) | left >= 0, y <- [t .. b] ]
+            , [ (Pos y r, vert y) | right < wsx, y <- [t .. b] ] ]
+    horiz x = (if x > l then maskL else 0) .|. (if x < r then maskR else 0)
+    vert y = (if y > t then maskU else 0) .|. (if y < b then maskD else 0)
+    cells = [ (p, borderGlyph m) | (p, m) <- Map.toList masks ]
+
+-- | Border arms, as tmux's @REDRAW_BORDER_*@ mask bits.
+maskL, maskR, maskU, maskD :: Int
+maskL = 1
+maskR = 2
+maskU = 4
+maskD = 8
+
+-- | The single-line glyph for a border cell's arms (@redraw_get_cell_type@).
+borderGlyph :: Int -> Char
+borderGlyph m = case (has maskL || has maskR, has maskU || has maskD) of
+    _ | m == maskL + maskR + maskU + maskD -> '\x253c'
+      | m == maskL + maskR + maskU -> '\x2534'
+      | m == maskL + maskR + maskD -> '\x252c'
+      | m == maskL + maskU + maskD -> '\x2524'
+      | m == maskR + maskU + maskD -> '\x251c'
+      | m == maskL + maskU -> '\x2518'
+      | m == maskL + maskD -> '\x2510'
+      | m == maskR + maskU -> '\x2514'
+      | m == maskR + maskD -> '\x250c'
+    (True, False) -> '\x2500'
+    _ -> '\x2502'
+  where
+    has bit = m .&. bit /= 0
+
+-- | The cells of a client's scene that no pane draws, for a window of
+-- @area@ in a scene of @scene@ (@redraw_reset_cell@ and the panes' borders
+-- at the window's edge): where the scene is larger, the window's right and
+-- bottom edges carry its panes' outer borders and everything beyond them
+-- takes the outside fill; a window with no tiled pane takes the inside fill
+-- (both @·@, as tmux's default @fill-character@ draws).
+outsideCells :: Size -> Size -> [Rect] -> [(Pos, Char)] -> [(Pos, Char)]
+outsideCells area scene tiled borders = edges <> beyond <> empty
+  where
+    wsx = fromIntegral area.cols
+    wsy = fromIntegral area.rows
+    ssx = fromIntegral scene.cols
+    ssy = fromIntegral scene.rows
+    glyphs = Map.fromList borders
+    rightEdge = wsx < ssx && not (null tiled)
+    bottomEdge = wsy < ssy && not (null tiled)
+    armRight q = Map.lookup q glyphs `elem` map Just "\x2500\x253c\x252c\x2534\x251c"
+    armDown q = Map.lookup q glyphs `elem` map Just "\x2502\x253c\x252c\x2524\x251c"
+    edges = concat
+        [ [ (Pos y wsx, if armRight (Pos y (wsx - 1)) then '\x2524' else '\x2502')
+          | rightEdge, y <- [0 .. min wsy ssy - 1] ]
+        , [ (Pos wsy x, if armDown (Pos (wsy - 1) x) then '\x2534' else '\x2500')
+          | bottomEdge, x <- [0 .. min wsx ssx - 1] ]
+        , [ (Pos wsy wsx, '\x2518') | rightEdge, bottomEdge ] ]
+    edgeCols = if rightEdge then 1 else 0
+    edgeRows = if bottomEdge then 1 else 0
+    beyond = concat
+        [ [ (Pos y x, fill) | y <- [0 .. min (wsy + edgeRows) ssy - 1]
+                            , x <- [wsx + edgeCols .. ssx - 1] ]
+        , [ (Pos y x, fill) | y <- [wsy + edgeRows .. ssy - 1], x <- [0 .. ssx - 1] ] ]
+    empty
+        | null tiled = [ (Pos y x, fill) | y <- [0 .. min wsy ssy - 1]
+                                         , x <- [0 .. min wsx ssx - 1] ]
+        | otherwise = []
+    fill = '\x00b7'
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them
 -- owns them now.
@@ -478,16 +635,23 @@ mapGlyph bl ch = case bl of
     BorderDouble -> dbl ch
     BorderSimple -> simple ch
   where
-    -- Straight runs and every junction the layout can emit (see
-    -- 'Hat.Server.Layout.junction': │ ─ ┼ ┤ ├ ┬ ┴).
+    -- Straight runs, every junction the layout can emit (see
+    -- 'Hat.Server.Layout.junction': │ ─ ┼ ┤ ├ ┬ ┴), and the corners of a
+    -- floating pane's box (┌ ┐ └ ┘).
+    heavy '\x250c' = '\x250f'; heavy '\x2510' = '\x2513'
+    heavy '\x2514' = '\x2517'; heavy '\x2518' = '\x251b'
     heavy '\x2502' = '\x2503'; heavy '\x2500' = '\x2501'
     heavy '\x253c' = '\x254b'; heavy '\x2524' = '\x252b'
     heavy '\x251c' = '\x2523'; heavy '\x252c' = '\x2533'
     heavy '\x2534' = '\x253b'; heavy c = c
+    dbl '\x250c' = '\x2554'; dbl '\x2510' = '\x2557'
+    dbl '\x2514' = '\x255a'; dbl '\x2518' = '\x255d'
     dbl '\x2502' = '\x2551'; dbl '\x2500' = '\x2550'
     dbl '\x253c' = '\x256c'; dbl '\x2524' = '\x2563'
     dbl '\x251c' = '\x2560'; dbl '\x252c' = '\x2566'
     dbl '\x2534' = '\x2569'; dbl c = c
+    simple '\x250c' = '+'; simple '\x2510' = '+'
+    simple '\x2514' = '+'; simple '\x2518' = '+'
     simple '\x2502' = '|'; simple '\x2500' = '-'
     simple '\x253c' = '+'; simple '\x2524' = '+'; simple '\x251c' = '+'
     simple '\x252c' = '+'; simple '\x2534' = '+'; simple c = c
@@ -660,12 +824,14 @@ gatherStatus st sess = do
             <$> readTVar win.name <*> readTVar win.bellFlag
             <*> readTVar win.activity <*> readTVar win.silenceFlag
             <*> readTVar win.zoomed
+        fs <- readTVarIO win.floats
         let flags = windowFlags WindowFlagState
                 { flagCurrent = ix == cur
                 , flagLast = Just ix == mlast
                 , flagBell = bell
                 , flagActivity = act
                 , flagSilence = sil
+                , flagModal = isJust (modalPane fs)
                 , flagZoomed = isJust zoom
                 }
         pure ( ix, wname, flags

@@ -18,7 +18,7 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-floating-pane-geometry.sh       # floating panes (new-pane, move-pane -X/-Y/-P/-z, break-pane -W) unimplemented
+floating-pane-geometry.sh       # needs pane-border-lines as a pane option with the value none (new-pane -B none, set -w pane-border-lines none)
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh
@@ -27,9 +27,9 @@ prompt-mechanics.sh
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
 screen-redraw-cache.sh
-screen-redraw-floating.sh
+screen-redraw-floating.sh       # floating scenes draw right; blocked on pane-border-format/pane-border-status, per-pane pane-border-lines (-B), fill-character, pane-scrollbars options
 screen-redraw-indicators.sh
-screen-redraw-outside.sh
+screen-redraw-outside.sh        # outside-window scenes draw right; blocked on refresh-client -U/-L/-D/-R viewport panning
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
 screen-redraw-status.sh
@@ -53,8 +53,8 @@ choose-buffer.sh                # choose-buffer + mode-screen rendering unimplem
 choose-client.sh                # choose-client + list-clients unimplemented
 choose-tree.sh                  # needs list-clients + interactive mode-screen
 customize-mode.sh               # customize-mode unimplemented
-display-panes.sh                # display-panes mode + display-panes-format unimplemented
-modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
+display-panes.sh                # needs the display-panes-format option
+modal-pane.sh                   # modal model passes up to the mouse half: needs mouse + focus-follows-mouse options, MouseDown bindings, click/drag routing, then editor-as-modal-pane (choose-buffer e, customize-mode)
 mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes + display-panes-format
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
@@ -66,7 +66,6 @@ copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/sele
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
-format-modifiers.sh             # new-pane floating panes (P/z order)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
@@ -108,6 +107,6 @@ session-ops.sh                  # detach-on-destroy option + invalid-UTF-8 sessi
 lifecycle-deferred.sh           # needs the detach-on-destroy option + choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
-screen-redraw-fill-character.sh # needs fill-character + floating panes
+screen-redraw-fill-character.sh # needs the fill-character option (floating panes now draw)
 screen-redraw-menus.sh          # needs display-menu window menus + menu styles
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report

@@ -10,6 +10,7 @@ module Hat.Server.Command.Pane
     , captureText
     , cmdCapturePane
     , cmdSplitWindow
+    , cmdNewPane
     , cmdSelectPane
     , cmdLastPane
     , cmdKillPane
@@ -44,9 +45,12 @@ import Hat.Server.Command.Option (SetDefault (..), cmdSet, cmdShow)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
 import Hat.Server.ArgNumber (stringPercentage)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Server.Floating
+    ( Border (..), FloatSplit (..), FloatState (..), GeomArgs (..), Modal (..), borderOf
+    , floatingGeom, modalPane, splitFloatingGeom, stackNew, swapStacked )
 import Hat.Server.Format (truthy)
 import Hat.Server.Layout
-import Hat.Model.Options (quoteIfNeeded)
+import Hat.Model.Options (Options (..), quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
@@ -54,7 +58,8 @@ import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     ( LifecycleNotify (..), hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
-    , emptyPane, launchOf, respawnStart, setScreenTitle, sessionSpawnEnv, spawnPane, startPaneReader )
+    , emptyPane, launchOf, respawnStart, setScreenTitle, sessionSpawnEnv, spawnPane, startPaneReader
+    , switchActive )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowArea, windowLayoutAt)
@@ -337,10 +342,28 @@ captureLinks pane copts altFlag copyFlag sflag eflag
             | otherwise      = ""
 
 -- | @split-window@ (@cmd-split-window.c@): give part of the target pane —
--- or with @-f@ of the whole window — to a new pane.
+-- or with @-f@ of the whole window — to a new pane. A floating target's
+-- box is split into two floating panes instead.
 cmdSplitWindow :: CommandImpl
-cmdSplitWindow st mclient args
-    | Just e <- unknownFlag "split-window" "bdEfhIkPvWZ" flags = pure [RErr e]
+cmdSplitWindow = spawnInWindow SplitEntry
+
+-- | @new-pane@ (@cmd-split-window.c@): a new floating pane, at the @-x@\/
+-- @-y@ size and @-X@\/@-Y@ position or cascading from the last; with @-L@
+-- a tiled one, as @split-window@ makes. @-O@ makes it the window's modal
+-- pane.
+cmdNewPane :: CommandImpl
+cmdNewPane = spawnInWindow NewPaneEntry
+
+-- | Which command is spawning the pane; they share @cmd_split_window_exec@.
+data SpawnEntry = SplitEntry | NewPaneEntry
+    deriving (Eq)
+
+spawnInWindow :: SpawnEntry -> CommandImpl
+spawnInWindow entry st mclient args
+    | Just e <- unknownFlag entryName boolFlags flags = pure [RErr e]
+    -- tmux closes a modal pane made with -C when a click lands outside it;
+    -- hat has no mouse input to click with.
+    | "-C" `elem` flags = pure [RErr "new-pane -C is not implemented"]
     | Left e <- launch = pure [RErr e]
     | otherwise = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
@@ -349,16 +372,79 @@ cmdSplitWindow st mclient args
             Right (sess, wix, win, target) -> do
                 eff <- atomically (windowArea st win)
                 lay <- atomically (windowLayoutAt eff win)
-                msize <- splitSizeArg st sess orient spanning eff target.id lay opts
-                case msize of
-                    Left e -> pure [RErr ("invalid tiled geometry " <> e)]
-                    Right size -> do
-                        let spec = SplitSpec
-                                { orient = orient, size = size
-                                , placement = placement, span = spanning }
-                        splitInto sess wix win target spec eff
+                fs <- readTVarIO win.floats
+                let floating = case entry of
+                        NewPaneEntry -> "-L" `notElem` flags
+                        SplitEntry -> isFloating target.id lay
+                if | modalFlag && not floating ->
+                        pure [RErr "modal pane must be floating"]
+                   | modalFlag && isJust fs.modal ->
+                        pure [RErr "window already has a modal pane"]
+                   -- -M sizes the pane by the mouse drag that ran it; with
+                   -- no drag there is nothing to make.
+                   | "-M" `elem` flags && floating -> pure []
+                   | floating -> do
+                        border <- borderFor sess win
+                        mgeom <- floatingCellGeom sess eff border lay fs target
+                        case mgeom of
+                            Left e -> pure [RErr e]
+                            Right (targetGeom, g, cascade) ->
+                                spawnFloating sess wix win target eff targetGeom g cascade
+                   | otherwise -> do
+                        msize <- splitSizeArg st sess orient spanning eff target.id lay opts
+                        case msize of
+                            _ | isFloating target.id lay ->
+                                pure [RErr "can't split a floating pane"]
+                            Left e -> pure [RErr ("invalid tiled geometry " <> e)]
+                            Right size -> do
+                                let spec = SplitSpec
+                                        { orient = orient, size = size
+                                        , placement = placement, span = spanning }
+                                splitInto sess wix win target eff
+                                    (\pid lay' fs' -> (\l -> (l, fs')) <$> splitPane spec target.id pid lay')
   where
-    (opts, flags, pos) = parseArgs "BceFlmpRsStT" args
+    (entryName, boolFlags, valueFlags) = case entry of
+        SplitEntry -> ("split-window", "bdEfhIkPvWZ", "BceFlmpRsStT")
+        NewPaneEntry -> ("new-pane", "bCdEfhIkLMOPvWZ", "BceFlmpRsStTxXyY")
+    (opts, flags, pos) = parseArgs valueFlags args
+    modalFlag = "-O" `elem` flags
+    -- A floating pane's border, which its geometry counts: -B's, else the
+    -- window's pane-border-lines.
+    borderFor sess win = case lookup "-B" opts of
+        Just "none" -> pure Borderless
+        Just _ -> pure Bordered
+        Nothing -> do
+            wopts <- atomically (resolveForWindow st sess win)
+            pure (borderOf wopts.paneBorderLines)
+    -- The new floating pane's box, and the target's own when a split of a
+    -- floating pane reshapes it too (@layout_get_floating_cell@).
+    floatingCellGeom sess eff border lay fs target = case entry of
+        SplitEntry -> pure $ case floatGeom target.id lay of
+            Nothing -> Left "can't split a floating pane"
+            Just tg -> do
+                (tg', g) <- splitFloatingGeom eff border FloatSplit
+                    { across = "-h" `elem` flags
+                    , before = "-b" `elem` flags
+                    , fullSpan = "-f" `elem` flags } tg
+                pure (Just tg', g, fs.lastNew)
+        NewPaneEntry -> do
+            env <- sessionFormatEnv st sess
+            let expand v = case T.stripSuffix "%" v of
+                    Just body -> (<> "%") <$> expandFormat st env body
+                    Nothing -> expandFormat st env v
+            geomArgs <- GeomArgs
+                <$> traverse expand (lookup "-x" opts)
+                <*> traverse expand (lookup "-y" opts)
+                <*> traverse expand (lookup "-X" opts)
+                <*> traverse expand (lookup "-Y" opts)
+            pure $ (\(g, cascade) -> (Nothing, g, cascade))
+                <$> floatingGeom eff border Nothing fs.lastNew geomArgs
+    spawnFloating sess wix win target eff targetGeom g cascade =
+        splitInto sess wix win target eff $ \pid lay fs -> do
+            let resized = maybe lay (\tg -> setFloatGeom target.id tg lay) targetGeom
+            let spot = if "-b" `elem` flags then FloatBefore target.id else FloatLast
+            lay' <- floatPane spot pid g resized
+            pure (lay', (stackNew pid fs lay') { lastNew = cascade })
     -- The pane options the flags set (tmux's order); the first a
     -- @set-option -p@ refuses is the command's error.
     setPaneOptions pane = firstError
@@ -396,12 +482,16 @@ cmdSplitWindow st mclient args
     -- it is always empty.
     launch = launchOf ("-E" `elem` flags || "-I" `elem` flags) pos
     (how, kind) = either (const (FreshShell, ProgramPane)) id launch
-    splitInto sess wix win target spec eff = do
+    -- Place the new pane's cell with @place@, spawn it at that size, and
+    -- make it active as tmux's @spawn_pane@ does: a modal pane always, any
+    -- other unless -d or while a modal pane holds the window.
+    splitInto sess wix win target eff place = do
         pid <- PaneId <$> atomically (freshId st.nextPane)
         planned <- atomically $ do
             lay <- windowLayoutAt eff win
-            pure (splitPane spec target.id pid lay)
-        case planned >>= paneCell pid of
+            fs <- readTVar win.floats
+            pure (place pid lay fs)
+        case planned >>= paneCell pid . fst of
             Nothing -> pure [RErr "no space for a new pane"]
             Just newCell -> do
                 dir <- case lookup "-c" opts of
@@ -419,20 +509,35 @@ cmdSplitWindow st mclient args
                     EmptyPane -> emptyPane st pid how dir cellSize
                 placed <- atomically $ do
                     lay <- windowLayoutAt eff win
-                    case splitPane spec target.id pid lay of
+                    fs <- readTVar win.floats
+                    case place pid lay fs of
                         Nothing -> pure False
-                        Just lay' -> do
+                        Just (lay', fs') -> do
                             modifyTVar' win.panes (Map.insert pane.id pane)
                             writeTVar win.layout lay'
                             active <- readTVar win.activeId
-                            unless ("-d" `elem` flags) $ do
-                                modifyTVar' win.paneHist (recordVisit active pane.id)
-                                writeTVar win.activeId pane.id
+                            wasZoomed <- isJust <$> readTVar win.zoomed
+                            let makeActive = do
+                                    modifyTVar' win.paneHist (recordVisit active pane.id)
+                                    writeTVar win.activeId pane.id
+                            if modalFlag
+                                then do
+                                    writeTVar win.floats fs'
+                                        { modal = Just Modal
+                                            { pane = pane.id, returnTo = Just active
+                                            , rezoom = wasZoomed } }
+                                    makeActive
+                                else do
+                                    writeTVar win.floats fs'
+                                    when ("-d" `notElem` flags && isNothing fs.modal)
+                                        makeActive
                             -- tmux's window_push_zoom/window_pop_zoom: the
-                            -- split unzooms, and -Z zooms the active pane again.
+                            -- new pane unzooms the window, and for a tiled
+                            -- one -Z zooms the active pane again.
                             active' <- readTVar win.activeId
                             writeTVar win.zoomed
-                                (if "-Z" `elem` flags then Just active' else Nothing)
+                                (if "-Z" `elem` flags && not (isFloating pane.id lay')
+                                    then Just active' else Nothing)
                             True <$ bumpDirty st
                 optErr <- if placed then setPaneOptions pane else pure Nothing
                 if | not placed -> [RErr "no space for a new pane"] <$ hangupPane pane
@@ -628,13 +733,12 @@ lastPaneOf st sess win flags = do
 activate :: ServerState -> Session -> Window -> Pane -> Bool -> IO ()
 activate st sess win wp keepZoom = noteActiveChange st win $ do
     changed <- atomically $ do
-        active <- readTVar win.activeId
-        if active == wp.id then pure False else do
-            zoomed <- readTVar win.zoomed
-            modifyTVar' win.paneHist (recordVisit active wp.id)
-            writeTVar win.activeId wp.id
+        zoomed <- readTVar win.zoomed
+        switched <- switchActive win wp.id
+        when switched $ do
             writeTVar win.zoomed (if keepZoom && isJust zoomed then Just wp.id else Nothing)
-            True <$ bumpDirty st
+            bumpDirty st
+        pure switched
     when changed (applySessionSize st sess.id)
 
 setInputOff :: ServerState -> Pane -> Bool -> IO ()
@@ -817,7 +921,12 @@ cmdSwapPane st mclient args
         case dstRes of
             Left e -> pure [RErr e]
             Right (dsess, dwix, dwin, dpane) -> do
+                dfloating <- atomically (isFloating dpane.id <$> readTVar dwin.layout)
                 srcRes <- if
+                    | "-D" `elem` flags, dfloating ->
+                        pure (Left "cannot swap down on floating pane")
+                    | "-U" `elem` flags, dfloating ->
+                        pure (Left "cannot swap up on floating pane")
                     | "-D" `elem` flags -> sibling dsess dwix dwin dpane 1
                     | "-U" `elem` flags -> sibling dsess dwix dwin dpane (-1)
                     | otherwise -> do
@@ -825,14 +934,23 @@ cmdSwapPane st mclient args
                         findTarget st mclient Target.FindPane tok
                 case srcRes of
                     Left e -> pure [RErr e]
-                    Right src -> [] <$ swapPanes st (dsess, dwix, dwin, dpane) src
-                        ("-d" `elem` flags) ("-Z" `elem` flags)
+                    Right src@(_, _, swin, spane) -> do
+                        modal <- atomically $ (,)
+                            <$> (modalPane <$> readTVar swin.floats)
+                            <*> (modalPane <$> readTVar dwin.floats)
+                        if fst modal == Just spane.id || snd modal == Just dpane.id
+                            then pure [RErr "pane is modal"]
+                            else [] <$ swapPanes st (dsess, dwix, dwin, dpane) src
+                                ("-d" `elem` flags) ("-Z" `elem` flags)
   where
     (opts, flags, _) = parseArgs "st" args
+    -- The next or previous tiled pane, wrapping.
     sibling sess wix win pane step = do
-        order <- atomically (map (.id) <$> windowPanes win)
+        (order0, lay) <- atomically $
+            (,) <$> (map (.id) <$> windowPanes win) <*> readTVar win.layout
         ps <- readTVarIO win.panes
-        let n = length order
+        let order = filter (\p -> p == pane.id || not (isFloating p lay)) order0
+            n = length order
             i = fromMaybe 0 (List.elemIndex pane.id order)
             pick = order !! ((i + step) `mod` n)
         pure $ case Map.lookup pick ps of
@@ -851,6 +969,7 @@ swapPanes st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) detached keep
         pure (keepZoom && isJust z)
     unless (spane.id == dpane.id) $ do
         atomically $ do
+            forM_ wins $ \w -> modifyTVar' w.floats (swapStacked spane.id dpane.id)
             if sameWindow
                 then modifyTVar' dwin.layout (swapLeaves spane.id dpane.id)
                 else do
@@ -943,13 +1062,18 @@ cmdResizePane st mclient args
                     pure (isJust z)
                 when wasZoomed $
                     notifyWindow st "window-unzoomed" (Just sess.id) win []
-                case resizeSteps pane.id eff opts flags pos of
+                border <- borderOf . (.paneBorderLines)
+                    <$> atomically (resolveForPane st sess win pane)
+                r <- atomically $ do
+                    lay <- windowLayoutAt eff win
+                    case resizeSteps pane.id border eff opts flags pos lay of
+                        Left e -> pure (Left e)
+                        Right lay' -> do
+                            writeTVar win.layout lay'
+                            Right () <$ bumpDirty st
+                case r of
                     Left e -> pure [RErr e]
-                    Right resize -> do
-                        atomically $ do
-                            lay <- windowLayoutAt eff win
-                            writeTVar win.layout (resize lay)
-                            bumpDirty st
+                    Right () -> do
                         applySessionSize st sess.id
                         notifyWindow st "window-layout-changed" (Just sess.id) win []
                         pure []
@@ -959,29 +1083,53 @@ cmdResizePane st mclient args
 -- | The layout change a non-zoom @resize-pane@ makes to a pane in a window of
 -- @area@: an absolute @-x@\/@-y@ (cells, or a percentage of the window), then
 -- each of @-U@\/@-D@\/@-L@\/@-R@ moving it by the positional count (default
--- 1). Fails with tmux's message on a bad size or count.
+-- 1). A floating pane's box changes instead, its @-x@\/@-y@ counting its
+-- border (@layout_resize_floating_pane_to@) and @-U@\/@-L@ growing it up
+-- and left. Fails with tmux's message on a bad size or count.
 resizeSteps
-    :: PaneId -> Size -> [(Text, Text)] -> [Text] -> [Text]
-    -> Either Text (Layout -> Layout)
-resizeSteps pid area opts flags pos = do
+    :: PaneId -> Border -> Size -> [(Text, Text)] -> [Text] -> [Text]
+    -> Layout -> Either Text Layout
+resizeSteps pid border area opts flags pos lay0 = do
     xs <- absolute "-x" "width" (fromIntegral area.cols) LeftRight
     ys <- absolute "-y" "height" (fromIntegral area.rows) TopBottom
     rs <- traverse relative [ f | f <- ["-U", "-D", "-L", "-R"], f `elem` flags ]
-    pure (foldr (flip (.)) id (xs <> ys <> rs))
+    foldl (>>=) (Right lay0) (xs <> ys <> rs)
   where
     absolute flag what whole o = case lookup flag opts of
         Nothing -> Right []
         Just v -> case stringPercentage 0 10000 whole v of
             Left e -> Left (what <> " " <> e)
-            Right n -> Right [resizePaneTo pid o n]
+            Right n -> Right [\lay -> case floatGeom pid lay of
+                Nothing -> Right (resizePaneTo pid o n lay)
+                Just g -> do
+                    let size | border == Bordered && n >= 3 = n - 2
+                             | otherwise = n
+                    if size < 1 || size > 10000
+                        then Left "size size is too big or too small"
+                        else Right (setFloatGeom pid (case o of
+                            LeftRight -> FloatGeom size g.height g.left g.top
+                            TopBottom -> FloatGeom g.width size g.left g.top) lay)]
     relative flag = do
         n <- either (Left . ("adjustment " <>)) Right
             (strtonum minBound maxBound (fromMaybe "1" (listToMaybe pos)))
-        pure $ case flag of
-            "-U" -> resizePane pid TopBottom (negate n)
-            "-D" -> resizePane pid TopBottom n
-            "-L" -> resizePane pid LeftRight (negate n)
-            _ -> resizePane pid LeftRight n
+        pure $ \lay -> case floatGeom pid lay of
+            Nothing -> Right $ case flag of
+                "-U" -> resizePane pid TopBottom (negate n) lay
+                "-D" -> resizePane pid TopBottom n lay
+                "-L" -> resizePane pid LeftRight (negate n) lay
+                _ -> resizePane pid LeftRight n lay
+            Just g -> do
+                let vertical = flag `elem` ["-U", "-D"]
+                    opposite = flag `elem` ["-U", "-L"]
+                    size = (if vertical then g.height else g.width) + n
+                    g' | vertical = FloatGeom g.width size g.left
+                            (if opposite then g.top - n else g.top)
+                       | otherwise = FloatGeom size g.height
+                            (if opposite then g.left - n else g.left) g.top
+                if n == 0 then Right lay
+                else if size < 1 || size > 10000
+                    then Left "adjustment change is too big or too small"
+                    else Right (setFloatGeom pid g' lay)
 
 -- | Toggle zoom on the target pane's window, the pane becoming active first
 -- so the toggle keys off it: @resize-pane -t ! -Z@ zooms the alternate pane

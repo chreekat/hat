@@ -53,7 +53,7 @@ import Data.Vector qualified as V
 import GHC.Generics (Generic)
 
 import Hat.Server.Persist
-    (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
+    (ModalSnap (..), PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , decodeSnapshotJson, plainPane)
 import Hat.Term.Cell (Cell, Style)
 import Hat.Term.Cell qualified as Cell
@@ -208,6 +208,7 @@ data HotWindow = HotWindow
     , autoRename :: Bool
     , key        :: Maybe Int
     , linkOf     :: Maybe Int
+    , modal      :: Maybe ModalSnap
     , panes      :: [(PaneSnap, HotPane)]
     }
     deriving (Eq, Show)
@@ -429,7 +430,7 @@ hotTree h = do
            , HotWindow
                { ix = w.ix, name = w.name, layout = w.layout, active = w.active
                , paneHist = w.paneHist, autoRename = w.autoRename
-               , key = w.key, linkOf = w.linkOf
+               , key = w.key, linkOf = w.linkOf, modal = w.modal
                , panes = zip w.panes mine } )
 
 -- Era ≤ 9 payload shapes, frozen: screens travelled as cell grids, which
@@ -624,7 +625,7 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
     migWindow (ReloadWindowV7 ix' nm lay act hist ar ps) = HotWindow
         { ix = ix', name = nm, layout = lay, active = act
         , paneHist = hist, autoRename = ar, key = Nothing, linkOf = Nothing
-        , panes = map migPane ps }
+        , modal = Nothing, panes = map migPane ps }
     migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
         ( plainPane cwd'
         , HotPane { masterFd = mfd, childPid = cpid, modes = ms

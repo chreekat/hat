@@ -45,9 +45,16 @@ genWindow wix = do
     auto  <- arbitrary
     k     <- genMaybeKey
     l     <- genMaybeKey
+    m     <- oneof [pure Nothing, Just <$> genModal npane]
     pure WindowSnap
         { ix = wix, name = nm, layout = lay, active = act
-        , paneHist = hist, autoRename = auto, key = k, linkOf = l, panes = ps }
+        , paneHist = hist, autoRename = auto, key = k, linkOf = l, modal = m
+        , panes = ps }
+
+-- A modal pane among a window's @n@ panes, by ordinal.
+genModal :: Int -> Gen ModalSnap
+genModal n = ModalSnap <$> choose (0, n - 1)
+    <*> oneof [pure Nothing, Just <$> choose (0, n - 1)] <*> arbitrary
 
 -- A window's capture key or link, when present: a window id.
 genMaybeKey :: Gen (Maybe Int)
@@ -111,6 +118,7 @@ instance Arbitrary WindowSnap where
         ++ [ w { paneHist = h } | h <- shrinkList (const []) w.paneHist ]
         ++ [ w { key = Nothing } | isJust w.key ]
         ++ [ w { linkOf = Nothing } | isJust w.linkOf ]
+        ++ [ w { modal = Nothing } | isJust w.modal ]
         ++ [ w { autoRename = False } | w.autoRename ]
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
@@ -203,6 +211,21 @@ spec = do
                 execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/w/p', '{}')"
                 loadSnapshot conn
             got `shouldBe` oneSession "nu" "/w" "win" "lay" "/w/p"
+
+        -- A window row of the floating-pane vintage: the layout lists the
+        -- floating cells in <>, and the extra names the modal pane.
+        it "reads a window's modal pane from its extra" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', \
+                    \'5746,80x24,0,0[80x24,0,0,0,18x4,9,4,1]<18x4,9,4,1>', 1, \
+                    \'{\"modal\":{\"pane\":1,\"return_to\":0,\"rezoom\":true}}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/h', '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 1, '/h', '{}')"
+                loadSnapshot conn
+            [ w.modal | s <- got.sessions, w <- s.windows ]
+                `shouldBe` [Just ModalSnap { pane = 1, returnTo = Just 0, rezoom = True }]
 
         it "reads a legacy string command as a single-element argv" $ do
             got <- withRaw $ \conn -> do
@@ -440,11 +463,11 @@ spec = do
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
                                 , active = 1, paneHist = [0]
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing
+                                , key = Nothing, linkOf = Nothing, modal = Nothing
                                 , panes =
                                     [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                                     , PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing } ] }
@@ -459,7 +482,7 @@ spec = do
     it "round-trips each window's automatic-rename status" $ do
         let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
                 , active = 0, paneHist = [], autoRename = auto
-                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
@@ -485,7 +508,7 @@ spec = do
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [pane True, pane False] } ] } ] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [pane True, pane False] } ] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         paneShellSpawned got `shouldBe` [True, False]
@@ -504,7 +527,7 @@ oneSession nm cwd0 wnm lay pcwd = Snapshot
                 [ WindowSnap { ix = 0, name = wnm, layout = lay
                     , active = 0, paneHist = []
                     , autoRename = False
-                    , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                    , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                 ] } ] }
 
 -- Every pane's captured command, in load order.
