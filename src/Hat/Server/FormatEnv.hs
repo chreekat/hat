@@ -52,7 +52,7 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
-import Hat.Server.Resize (windowArea)
+import Hat.Server.Resize (unzoomedArrange, windowArea)
 import Hat.Server.Theme (Theme, clientColours, resolveTheme)
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
@@ -149,6 +149,7 @@ paneFormatEnv st sess wix win pix pane = do
         pure $ if zoomed == Just pane.id
             then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
             else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
+    unzoomed <- atomically (List.lookup pane.id <$> unzoomedArrange st area win)
     paneUser <- deltaFormats <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
@@ -185,7 +186,10 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        ] <> panePositionVars area geom) wenv
+        ]
+        <> concat [ [ ("pane_unzoomed_width", tshow (r.endCol - r.startCol))
+                    , ("pane_unzoomed_height", tshow (r.endRow - r.startRow)) ]
+                  | Just r <- [unzoomed] ] <> panePositionVars area geom) wenv
 
 -- | A pane's position in its window (tmux's @pane_left@ … @pane_at_bottom@),
 -- from its cell: @(xoff, yoff, width, height)@.

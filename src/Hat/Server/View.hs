@@ -13,7 +13,7 @@ module Hat.Server.View
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
-import Control.Monad (foldM, forM, when)
+import Control.Monad (foldM, forM, join, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -36,7 +36,7 @@ import Hat.Server.Flash (startLingerClock)
 import Hat.Server.Format (formatReadsLoops)
 import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
-import Hat.Server.FormatDraw (formatDraw, styleCell)
+import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, clientTheme, expandFormat, formatCtxFor,
      paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
@@ -50,7 +50,6 @@ import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
 import Hat.Server.Status (statusFormats, statusRows)
-import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -254,21 +253,30 @@ renderOnce st client = do
     -- The display-panes overlay stamps each pane's number over its rect.
     mdpanes <- readTVarIO client.displayPanes
     (frame'', origins'') <- case (mdpanes, view) of
-        (Just _, Just (_, _, rects, _, _, active)) -> do
+        (Just _, Just (sess, win, rects, _, ps, active)) -> do
+            th <- clientTheme st
+            wopts <- atomically (resolveForWindow st sess win)
+            wix <- atomically (readTVar sess.currentIx)
             let shiftR r = r { startRow = r.startRow + rowOff
                              , endRow = r.endRow + rowOff }
-                colourFor pid = parseColor $ if pid == active
-                    then opts.displayPanesActiveColour
-                    else opts.displayPanesColour
-                stamps = concat
-                    [ [ ( Pos (p.row + r.startRow) (p.col + r.startCol)
-                        , cell )
-                      | (p, cell) <- DisplayPanes.panesStamp (colourFor pid)
-                            (opts.paneBaseIndex + i)
-                            (r.endCol - r.startCol) (r.endRow - r.startRow) ]
-                    | (pid, rect0) <- rects
-                    , Just i <- [List.elemIndex pid (map fst rects)]
-                    , let r = shiftR rect0 ]
+                colourFor pid = fromMaybe Cell.DefaultColor $ join $ colourValue th $
+                    optionText (if pid == active then "display-panes-active-colour"
+                                else "display-panes-colour") wopts
+                fmt = optionText "display-panes-format" wopts
+            stamps <- fmap concat $ forM rects $ \(pid, rect0) -> case Map.lookup pid ps of
+                Nothing -> pure []
+                Just pane -> do
+                    n <- paneIndexOf st win pane
+                    let r = shiftR rect0
+                        sx = r.endCol - r.startCol
+                        fgc = Cell.defaultStyle { Cell.fg = colourFor pid }
+                    mformat <- if T.null fmt then pure Nothing else do
+                        env <- paneFormatEnv st sess wix win n pane
+                        expanded <- expandFormat st env fmt
+                        pure (Just (drawnCells (formatDraw th fgc expanded) sx))
+                    pure [ (Pos (p.row + r.startRow) (p.col + r.startCol), cell)
+                         | (p, cell) <- DisplayPanes.panesStamp (colourFor pid) n
+                             mformat sx (r.endRow - r.startRow) ]
             pure ( DisplayPanes.stampCells stamps frame'
                  , List.foldl' (\o (_, rect0) -> volatileRows (shiftR rect0) o)
                      origins' rects )
@@ -308,6 +316,15 @@ renderOnce st client = do
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
+
+-- | The cells a drawing writes into an @n@-cell row, by column: what it
+-- leaves untouched is no cell at all.
+drawnCells :: (V.Vector Cell.Cell -> V.Vector Cell.Cell) -> Int -> [(Int, Cell.Cell)]
+drawnCells draw n =
+    [ (c, cell) | (c, cell) <- zip [0 ..] (V.toList (draw untouched)), cell /= hole ]
+  where
+    hole = Cell.glyphCell '\0' Cell.defaultStyle
+    untouched = V.replicate n hole
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them
 -- owns them now.

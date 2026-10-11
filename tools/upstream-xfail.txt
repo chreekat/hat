@@ -50,9 +50,9 @@ choose-buffer.sh                # choose-buffer + mode-screen rendering unimplem
 choose-client.sh                # choose-client + list-clients unimplemented
 choose-tree.sh                  # needs list-clients + interactive mode-screen
 customize-mode.sh               # customize-mode unimplemented
-display-panes.sh                # display-panes mode + display-panes-format unimplemented
+display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
 modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
-mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes + display-panes-format
+mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
 # copy-mode advanced motions/options

@@ -76,6 +76,8 @@ spot-read of each suspect consumer.
 | `pane-scrollbars` | `paneScrollbars` → `scrollbarReserve` in `windowArrange` (Resize.hs), `buildScene`/`sceneChrome` (Scene.hs): `off` and `on` (hidden on the alternate screen); `modal` and `auto-hide` refused | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) + regress `screen-redraw-scrollbars` scenes |
 | `pane-scrollbars-position` | `scrollbarReserve` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (OptionEffectSpec) |
 | `pane-scrollbars-style` | `scrollbarStyle` (Scene.hs): colours, `width=`, `pad=`; each pane's own value | implemented ✅ tested | pure (SceneSpec) |
+| `display-panes-format` | `panesStamp` (DisplayPanes.hs) via the overlay in `renderOnce` (View.hs): drawn on each pane's top row | implemented ✅ tested | pure (DisplayPanesSpec) |
+| `display-panes-colour` / `display-panes-active-colour` | `panesStamp` via `renderOnce` (View.hs): the window's values, theme colours resolved | implemented ✅ tested | pure (DisplayPanesSpec) |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |

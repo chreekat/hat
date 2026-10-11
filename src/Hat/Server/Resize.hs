@@ -19,6 +19,7 @@ module Hat.Server.Resize
     , pickArea
     , rectSize
     , windowArrange
+    , unzoomedArrange
     , windowPaneStatus
     , paneScrollbars
     , scrollbarReserve
@@ -343,15 +344,31 @@ windowArrange st eff win = do
             , borders )
     case mz of
         Just zpid | Map.member zpid ps -> pure (adjust ([(zpid, sizeRect eff)], []))
+        _ -> adjust <$> cachedArrange eff win lay
+
+-- | Pane rects as 'windowArrange' would give them were the window not
+-- zoomed.
+unzoomedArrange :: ServerState -> Size -> Window -> STM [(PaneId, Rect)]
+unzoomedArrange st eff win = do
+    lay <- readTVar win.layout
+    status <- windowPaneStatus st win
+    (side, bars) <- paneScrollbars st win
+    (rects, _) <- cachedArrange eff win lay
+    pure [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
+                    (statusAdjust status (fromIntegral eff.rows) r))
+         | (p, r) <- rects ]
+
+-- | 'arrange' through the window's cache of its last result.
+cachedArrange :: Size -> Window -> Layout -> STM ([(PaneId, Rect)], [(Pos, Char)])
+cachedArrange eff win lay = do
+    let rect = sizeRect eff
+    hit <- readTVar win.arrangeCache
+    case hit of
+        Just (k, res) | k == (rect, lay) -> pure res
         _ -> do
-            let rect = sizeRect eff
-            hit <- readTVar win.arrangeCache
-            case hit of
-                Just (k, res) | k == (rect, lay) -> pure (adjust res)
-                _ -> do
-                    let res = arrange rect lay
-                    writeTVar win.arrangeCache (Just ((rect, lay), res))
-                    pure (adjust res)
+            let res = arrange rect lay
+            writeTVar win.arrangeCache (Just ((rect, lay), res))
+            pure res
 
 -- | A window's @pane-border-status@.
 windowPaneStatus :: ServerState -> Window -> STM PaneStatus

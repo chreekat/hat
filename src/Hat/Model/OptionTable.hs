@@ -582,11 +582,11 @@ optionTable =
     , notYet $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
     , notYet $ scalar "clock-mode-style" WindowScope
         (KChoice ["12", "24", "12-with-seconds", "24-with-seconds"]) "24"
-    , live $ scalar "display-panes-active-colour" WindowScope KColourString "red"
+    , live $ scalar "display-panes-active-colour" WindowScope KColourString "themered"
     , notYet $ scalar "display-panes-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
-    , live $ scalar "display-panes-colour" WindowScope KColourString "blue"
-    , notYet $ scalar "display-panes-format" WindowScope KString
+    , live $ scalar "display-panes-colour" WindowScope KColourString "themeblue"
+    , live $ scalar "display-panes-format" WindowScope KString
         "#[align=right]#{pane_unzoomed_width}x#{pane_unzoomed_height}"
     , live $ scalar "display-panes-time" WindowScope (KNumber 1 intMax) "1000"
     , notYet $ scalar "copy-mode-match-style" WindowScope KStyle
