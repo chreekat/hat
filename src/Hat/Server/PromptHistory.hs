@@ -7,6 +7,7 @@ module Hat.Server.PromptHistory
     ( PromptHistory (..)
     , parseHistory
     , renderHistory
+    , restoreHistory
     , historyFilePath
     , loadHistory
     , saveHistory
@@ -26,7 +27,8 @@ import System.Posix.User (getRealUserID, getUserEntryForID, homeDirectory)
 
 import Hat.Log
 import Hat.Model
-import Hat.Model.Options (optionText)
+import Hat.Model.Options (optionNumber, optionText)
+import Hat.Server.Prompt (addHistory)
 
 -- | Each prompt type's history, most recent first.
 data PromptHistory = PromptHistory
@@ -55,6 +57,15 @@ parseHistory = List.foldl' add (PromptHistory [] []) . fileLines
     push entry = \case
         newest : older | newest == entry -> newest : older
         hist -> entry : hist
+
+-- | A history read from the file added to the server's, oldest entry first,
+-- as tmux's @prompt_load_history@ does, under @prompt-history-limit@.
+restoreHistory :: Int -> PromptHistory -> PromptHistory -> PromptHistory
+restoreHistory limit loaded existing = PromptHistory
+    { commands = restore loaded.commands existing.commands
+    , searches = restore loaded.searches existing.searches }
+  where
+    restore new old = List.foldl' (flip (addHistory limit)) old (reverse new)
 
 -- | tmux's @prompt_save_history@: every command entry, then every search
 -- entry, oldest first, one @type:entry@ line each.
@@ -90,8 +101,11 @@ loadHistory st = withHistoryFile st $ \path -> do
         Right bytes -> do
             let loaded = parseHistory (TE.decodeUtf8With lenientDecode bytes)
             atomically $ do
-                modifyTVar' st.cmdHistory (loaded.commands <>)
-                modifyTVar' st.searchHistory (loaded.searches <>)
+                limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
+                had <- PromptHistory <$> readTVar st.cmdHistory <*> readTVar st.searchHistory
+                let now = restoreHistory limit loaded had
+                writeTVar st.cmdHistory now.commands
+                writeTVar st.searchHistory now.searches
   where
     fault path e = logEvent st.logger HistoryFileFault
         { file = path, err = T.pack (show e) }

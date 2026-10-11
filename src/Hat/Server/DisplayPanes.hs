@@ -27,6 +27,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hat.Geometry (Pos (..))
 import Hat.Model
 import Hat.Model.Options (Options (..))
+import Hat.Server.Clock (digitGlyph)
 import Hat.Server.Locate (clientOptions)
 import Hat.Term.Cell qualified as Cell
 
@@ -149,59 +150,3 @@ stampCells stamps frame = frame V.//
         , p.row >= 0, p.row < V.length frame
         , p.col >= 0, p.col < maybe 0 V.length (frame V.!? p.row) ]
 
--- | tmux's @window_clock_table@ digit glyphs: 5 rows of 5 bits.
-digitGlyph :: Char -> [[Bool]]
-digitGlyph ch = maybe [] (map (map (== '#'))) (lookup ch table)
-  where
-    table =
-        [ ('0', [ "#####"
-                , "#...#"
-                , "#...#"
-                , "#...#"
-                , "#####" ])
-        , ('1', [ "....#"
-                , "....#"
-                , "....#"
-                , "....#"
-                , "....#" ])
-        , ('2', [ "#####"
-                , "....#"
-                , "#####"
-                , "#...."
-                , "#####" ])
-        , ('3', [ "#####"
-                , "....#"
-                , "#####"
-                , "....#"
-                , "#####" ])
-        , ('4', [ "#...#"
-                , "#...#"
-                , "#####"
-                , "....#"
-                , "....#" ])
-        , ('5', [ "#####"
-                , "#...."
-                , "#####"
-                , "....#"
-                , "#####" ])
-        , ('6', [ "#####"
-                , "#...."
-                , "#####"
-                , "#...#"
-                , "#####" ])
-        , ('7', [ "#####"
-                , "....#"
-                , "....#"
-                , "....#"
-                , "....#" ])
-        , ('8', [ "#####"
-                , "#...#"
-                , "#####"
-                , "#...#"
-                , "#####" ])
-        , ('9', [ "#####"
-                , "#...#"
-                , "#####"
-                , "....#"
-                , "#####" ])
-        ]

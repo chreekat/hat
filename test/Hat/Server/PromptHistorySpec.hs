@@ -45,6 +45,18 @@ spec = do
                 { commands = ["kill-pane", "new-window"], searches = ["foo"] }
                 `shouldBe` "command:new-window\ncommand:kill-pane\nsearch:foo\n"
 
+    describe "restoring a loaded history (prompt-history-limit)" $ do
+        let loaded = PromptHistory { commands = ["c", "b", "a"], searches = ["s"] }
+            none = PromptHistory [] []
+        it "keeps the newest entries up to the limit" $
+            restoreHistory 2 loaded none
+                `shouldBe` PromptHistory { commands = ["c", "b"], searches = ["s"] }
+        it "loads over what the server already has, as newer entries" $
+            restoreHistory 100 loaded PromptHistory { commands = ["z"], searches = [] }
+                `shouldBe` PromptHistory { commands = ["c", "b", "a", "z"], searches = ["s"] }
+        it "keeps nothing under a limit of 0" $
+            restoreHistory 0 loaded none `shouldBe` none
+
     describe "historyFilePath" $
         it "takes an absolute path, and nothing relative or empty" $ do
             historyFilePath "/var/h" `shouldReturn` Just "/var/h"

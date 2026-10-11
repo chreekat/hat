@@ -14,7 +14,11 @@ import Data.Map.Strict qualified as Map
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Model (Markup (..), PaneStart (..), ServerState (..), Toast (..), newServerState)
+import Hat.Model
+    ( CursorShape (..), Markup (..), PaneStart (..), PromptCursor (..), PromptKeys (..)
+    , PromptMode (..), PromptState (..), ServerState (..), Toast (..), newServerState )
+import Hat.Server.Command.Interact (promptCursor)
+import Hat.Server.Prompt (emptyPrompt)
 import Hat.Model.Options
     ( BorderLines (..), OptionValue (..), Options (..)
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
@@ -34,7 +38,7 @@ import Hat.Server.Resize (scrollbarReserve)
 import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Server.Scene
 import Hat.Server.Theme (terminalTheme)
-import Hat.Server.View (cursorColourOf, messageLine, statusLayout)
+import Hat.Server.View (cursorColourOf, decscusr, messageLine, promptCursorOf, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -157,6 +161,28 @@ spec = do
                     `shouldBe` [Nothing, Nothing]
             it "a theme colour takes the theme's" $
                 cursorColourOf terminalTheme Nothing "themered" `shouldBe` Just (128, 0, 0)
+
+        -- prompt-cursor-* / prompt-command-cursor-*: while a prompt is open the
+        -- terminal's cursor takes the prompt's shape and colour, the
+        -- command-mode ones in vi command mode.
+        describe "prompt cursor options shape the prompting cursor" $ do
+            let opts = foldr (\(n, v) o -> applyEntry n (OVScalar v) o) defaultOptions
+                    [ ("prompt-cursor-style", "bar")
+                    , ("prompt-command-cursor-style", "blinking-underline")
+                    , ("prompt-command-cursor-colour", "colour9") ]
+                prompt mode = emptyPrompt
+                    { promptMode = mode
+                    , promptKeys = emptyPrompt.promptKeys
+                        { insertCursor = promptCursor "prompt-cursor" opts
+                        , commandCursor = promptCursor "prompt-command-cursor" opts } }
+            it "inserting, the prompt-cursor style" $ do
+                (promptCursorOf (prompt PromptInsert)).shape `shouldBe` CursorBar
+                decscusr CursorBar `shouldBe` "\ESC[6 q"
+            it "in vi command mode, the command-mode style and colour" $
+                promptCursorOf (prompt PromptCommand)
+                    `shouldBe` PromptCursor "colour9" CursorBlinkingUnderline
+            it "default resets the terminal's own" $
+                decscusr CursorDefault `shouldBe` "\ESC[0 q"
 
         -- A pane answers its program's colour queries in tmux's spelling.
         describe "OSC colour replies" $

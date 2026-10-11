@@ -30,7 +30,8 @@ import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
     (ArrayKey (..), Options (..), OptionValue (..)
-    , defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
+    , applyDelta, defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
+import Hat.Server.Alerts (AlertKind (..), deliverAlert)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
     , IdleVerdict (..), serverIdle
@@ -50,7 +51,7 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
-import Hat.Server.Pane (deadNoticeBytes, syncTargets)
+import Hat.Server.Pane (clockModeKey, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
@@ -63,6 +64,7 @@ import Hat.Term.Pty qualified as Pty
 import Hat.Server.Keys
     ( EscPending (NoEscPending), ExtendedFormat (..), ExtendedKeys (..), Key (..)
     , KeyEncoding (..), initialKeyState )
+import Hat.Server.Keymap (defaultKeymap)
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
@@ -163,6 +165,7 @@ addClient st sid sz stamp = do
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
+        <*> newIORef CursorDefault
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
@@ -205,6 +208,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
+        <*> newIORef CursorDefault
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
@@ -237,6 +241,7 @@ stubPane n = do
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False
     syncV <- newTVarIO noOutputSync
+    clockV <- newTVarIO NoClock
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -256,6 +261,7 @@ stubPane n = do
         , inputOff = inputOffV
         , onAlternate = alternateV
         , outputSync = syncV
+        , clock = clockV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -274,22 +280,11 @@ adoptedPane n = do
 
 -- An open copy mode over a blank frozen 24x80 grid with @hsize@ scrollback
 -- lines, viewing the bottom.
-copyModeAt :: Int -> PaneMode
-copyModeAt hsize = PaneMode
+blankCopyMode :: Int -> PaneMode
+blankCopyMode hsize = PaneMode
     { frozen = FrozenGrid
         { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
-    , copyState = CopyModeState
-        { cursorRow = hsize
-        , cursorCol = 0
-        , selection = Nothing
-        , keyTable = "copy-mode"
-        , viewportOffY = 0
-        , numPrefix = Nothing
-        , pendingSearch = Nothing
-        , lastSearch = Nothing
-        , lastQuery = Nothing
-        , scrollExit = False, hidePosition = False
-        }
+    , copyState = copyModeAt "copy-mode" hsize 0
     }
 
 spec :: Spec
@@ -344,33 +339,57 @@ spec = do
 
     describe "pane_in_mode" $
         it "is 1 while copy mode is open, 0 otherwise" $ do
+            (st, _) <- seedSession "/"
             p <- stubPane 0
-            env0 <- paneModeEnv p
+            env0 <- paneModeEnv st p
             lookup "pane_in_mode" env0 `shouldBe` Just "0"
             lookup "pane_mode" env0 `shouldBe` Just ""
-            atomically $ writeTVar p.mode (Just (copyModeAt 3))
-            env1 <- paneModeEnv p
+            atomically $ writeTVar p.mode (Just (blankCopyMode 3))
+            env1 <- paneModeEnv st p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
+
+    describe "clock mode" $ do
+        it "is the pane's mode until a key ends it" $ do
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            enterClockMode st p
+            (lookup "pane_mode" <$> paneModeEnv st p) `shouldReturn` Just "clock-mode"
+            clockModeKey st p `shouldReturn` True
+            (lookup "pane_in_mode" <$> paneModeEnv st p) `shouldReturn` Just "0"
+            clockModeKey st p `shouldReturn` False
+        it "under copy mode, shows again once copy mode ends" $ do
+            clockOnTop ClockUnderCopy (Just (blankCopyMode 0)) `shouldBe` False
+            clockOnTop ClockUnderCopy Nothing `shouldBe` True
+            clockOnTop ClockOnTop (Just (blankCopyMode 0)) `shouldBe` True
 
     describe "copy-mode position indicator" $
         it "stamps [scroll/history] on the pane's top-right row" $ do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0
             emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 100
-            p0 <- stubPane 0
+            -- the position format expands in the pane's context, which reads its pty
+            (p0, release) <- adoptedPane 0
             let p = p0 { emulator = emu }
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
-                writeTVar p.mode (Just (copyModeAt 3))
+                writeTVar p.mode (Just (blankCopyMode 3))
                 -- status off: statusCells would touch the stub pane
                 writeTVar st.globalSessionOptions
                     (singletonDelta "status" (OVScalar "off"))
             (client, _peer) <- wiredClient st Attached
-            renderOnce st client
+            renderOnce st client `finally` release
             frame <- readIORef client.lastFrame
             let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
             row0 `shouldSatisfy` T.isInfixOf "[0/3]"
+
+    describe "alert delivery (visual-bell)" $
+        it "shows a message instead of the bell under visual-bell on" $ do
+            (st, sess) <- seedSession "/"
+            (client, _peer) <- wiredClient st Attached
+            let opts = applyDelta (singletonDelta "visual-bell" (OVScalar "on")) defaultOptions
+            deliverAlert st sess opts BellAlert 1
+            fmap (.text) <$> readTVarIO client.toast `shouldReturn` Just "Bell in window 1"
 
     describe "pane colours" $
         it "window-style and pane-colours paint what a client sees of a pane" $ do
@@ -1062,7 +1081,7 @@ spec = do
         it "a pane in a mode or hidden by a zoom is skipped" $ do
             (st, win, pa, pb, pc) <- syncWindow
             mapM_ syncOn [pa, pb, pc]
-            atomically $ writeTVar pb.mode (Just (copyModeAt 0))
+            atomically $ writeTVar pb.mode (Just (blankCopyMode 0))
             targetIds st pa `shouldReturn` [pc.id]
             atomically $ writeTVar win.zoomed (Just pa.id)
             targetIds st pa `shouldReturn` []
@@ -1679,3 +1698,22 @@ spec = do
             handleInput dispatch st client "q"
             readTVarIO win.activeId `shouldReturn` PaneId 0
             readTVarIO client.displayPanes `shouldReturn` Nothing
+
+    describe "input routing within a chunk" $ do
+        let keyed = do
+                (st, sess) <- seedSession "/"
+                atomically $ writeTVar st.keymap defaultKeymap
+                _ <- addWindow sess 0
+                client <- addClient st sess.id (Size 24 80) 1
+                pure (st, client)
+        it "keys after the key that opens the prompt are typed into it" $ do
+            (st, client) <- keyed
+            handleInput dispatch st client "\x02:abc"
+            fmap (.input) <$> readTVarIO client.prompt `shouldReturn` Just "abc"
+        it "keys after the prompt's Enter reach normal key handling" $ do
+            (st, client) <- keyed
+            handleInput dispatch st client "\x02:"
+            handleInput dispatch st client "set -g @x 1\r\x02:"
+            Map.lookup "@x" . (.user) <$> readTVarIO st.options
+                `shouldReturn` Just "1"
+            fmap (.input) <$> readTVarIO client.prompt `shouldReturn` Just ""

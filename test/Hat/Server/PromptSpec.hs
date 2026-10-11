@@ -136,13 +136,17 @@ spec = do
 
     describe "pushHistory" $ do
         it "prepends the newest line" $
-            pushHistory "c" ["b", "a"] `shouldBe` ["c", "b", "a"]
+            pushHistory 100 "c" ["b", "a"] `shouldBe` ["c", "b", "a"]
 
         it "drops a line identical to the most recent" $
-            pushHistory "b" ["b", "a"] `shouldBe` ["b", "a"]
+            pushHistory 100 "b" ["b", "a"] `shouldBe` ["b", "a"]
 
         it "ignores empty lines" $
-            pushHistory "   " ["a"] `shouldBe` ["a"]
+            pushHistory 100 "   " ["a"] `shouldBe` ["a"]
+
+        it "keeps at most prompt-history-limit lines, dropping the oldest" $ do
+            pushHistory 2 "c" ["b", "a"] `shouldBe` ["c", "b"]
+            pushHistory 0 "c" [] `shouldBe` []
 
     describe "submit" $
         it "Enter submits the current line" $
@@ -185,7 +189,7 @@ spec = do
 
     describe "status-keys vi" $ do
         let viPrompt = emptyPrompt
-                { promptKeys = PromptKeys
+                { promptKeys = emptyPrompt.promptKeys
                     { statusKeys = KeysVi, wordSeparators = "-" } }
             -- Each chunk is its own keystroke batch, so a lone ESC is Escape.
             typeVi chunks = foldl step (Editing viPrompt) chunks

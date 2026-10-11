@@ -44,6 +44,8 @@ module Hat.Server.Pane
     , pumpPipeOutput
     , stopPipe
     , isCurrentWindow
+    , enterClockMode
+    , clockModeKey
     , attentionSeen
     , windowSeen
     , markActivity
@@ -86,7 +88,7 @@ module Hat.Server.Pane
     ) where
 
 import Control.Concurrent
-    (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
+    (forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Applicative ((<|>))
@@ -123,6 +125,7 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.Alerts (AlertKind (..), AlertWhere (..), alertApplies, deliverAlert)
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.Clipboard (appClipboard, paneViewers)
 import Hat.Server.ClientSession (sendClientsAway)
@@ -397,6 +400,7 @@ newPane pid pty emu sz dir pending start kind = do
     host <- Posix.nodeName <$> Posix.getSystemID
     _ <- Emu.setTitle emu (T.pack host)
     alternateVar <- newTVarIO False
+    clockVar <- newTVarIO NoClock
     pure Pane
         { id = pid
         , pty = pty
@@ -416,6 +420,7 @@ newPane pid pty emu sz dir pending start kind = do
         , inputOff = inputOffVar
         , onAlternate = alternateVar
         , outputSync = syncVar
+        , clock = clockVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -618,18 +623,13 @@ runPaneReader st pane = do
                     forM_ (cleanName raw) (renameFromApp st pane)
                 Emu.ClipboardRequest param term -> forM_ mopts $ \o ->
                     appClipboard st o pane param term
-                Emu.Bell -> forM_ mhome $ \(sid, win) -> do
+                Emu.Bell -> forM_ mhome $ \(_, win) -> do
                     fires <- atomically $ do
                         r <- bellAlerts st win
                         bumpDirty st
                         pure r
-                    broadcast st sid RingBell
                     notifyPane st "pane-bell" pane []
-                    forM_ fires $ \(osid, sname, wname) ->
-                        notify st "alert-bell"
-                            (NotifyTarget (Just osid) (Just win.id) Nothing)
-                            [ ("session", PSessionRef osid sname)
-                            , ("window", PWindowRef win.id wname) ]
+                    forM_ fires (fireAlert st "alert-bell" BellAlert win)
                 -- An unhomed pane (spawn race) repaints unconditionally:
                 -- over-painting is safe, a missed repaint freezes the pane.
                 Emu.ScreenChanged -> case mhome of
@@ -657,17 +657,6 @@ runPaneReader st pane = do
                                 then paneHolders st pane
                                 else paneViewers st pane
                             forM_ cs $ \c -> send c (Notify raw)
-
--- | A pane's options as of now, from its current home; 'Nothing' for a pane
--- not yet homed.
-paneOptionsNow :: ServerState -> Pane -> IO (Maybe Options)
-paneOptionsNow st pane = atomically $ do
-    mhome <- readTVar pane.home  -- See Note [Pane home]
-    sessions <- readTVar st.sessions
-    case mhome of
-        Just (sid, win) | Just sess <- Map.lookup sid sessions ->
-            Just <$> resolveForPane st sess win pane
-        _ -> pure Nothing
 
 -- | The pane options that shape how its output is taken.
 hostPolicyOf :: Options -> Emu.HostPolicy
@@ -776,6 +765,41 @@ propKindLabel = \case
     Emu.PropStr  -> "str"
 
 -- | Whether @win@ is the session's current (foreground) window.
+-- | @clock-mode@: clock mode becomes the pane's top mode, redrawn each
+-- second while the pane keeps it.
+enterClockMode :: ServerState -> Pane -> IO ()
+enterClockMode st pane = do
+    was <- atomically $ do
+        c <- readTVar pane.clock
+        writeTVar pane.clock ClockOnTop
+        bumpDirty st
+        pure c
+    unless (was == ClockOnTop) $ notifyPane st "pane-mode-changed" pane []
+    when (was == NoClock) $ void $ forkIO tick
+  where
+    tick = do
+        now <- getPOSIXTime
+        let toNext = 1 - (realToFrac now - fromIntegral (floor now :: Integer)) :: Double
+        threadDelay (max 1000 (round (toNext * 1_000_000)))
+        on <- atomically $ do
+            c <- readTVar pane.clock
+            when (c /= NoClock) (bumpDirty st)
+            pure (c /= NoClock)
+        when on tick
+
+-- | A key reaching a pane whose top mode is clock mode ends it, as tmux's
+-- @window_clock_key@ does; 'True' when the key was spent so.
+clockModeKey :: ServerState -> Pane -> IO Bool
+clockModeKey st pane = do
+    ended <- atomically $ do
+        top <- paneClockOnTop pane
+        when top $ do
+            writeTVar pane.clock NoClock
+            bumpDirty st
+        pure top
+    when ended $ notifyPane st "pane-mode-changed" pane []
+    pure ended
+
 isCurrentWindow :: Session -> Window -> STM Bool
 isCurrentWindow sess win = do
     cur <- readTVar sess.currentIx
@@ -816,10 +840,10 @@ windowDisplayed st win = do
     or <$> mapM displays [c | c <- cs, c.role == Attached]
 
 -- | Register activity on a window: restart its silence timer, raise the
--- activity flag, and fire alert-activity when the flag newly rose on a
--- non-current window. Output and window creation both land here. A repaint
--- is scheduled only when a client could see the difference — the window is
--- displayed, or its status-line flag rose.
+-- activity flag, and alert as @activity-action@ says. Output and window
+-- creation both land here. A repaint is scheduled only when a client could
+-- see the difference — the window is displayed, or its status-line flag
+-- rose.
 windowActivity :: ServerState -> SessionId -> Window -> IO ()
 windowActivity st sid win = do
     now <- getPOSIXTime
@@ -831,20 +855,47 @@ windowActivity st sid win = do
         displayed <- windowDisplayed st win
         when (displayed || flagRose) (bumpDirty st)
         pure r
-    forM_ mfire $ \(sname, wname) ->
-        notify st "alert-activity"
-            (NotifyTarget (Just sid) (Just win.id) Nothing)
-            [ ("session", PSessionRef sid sname)
-            , ("window", PWindowRef win.id wname) ]
+    forM_ mfire (fireAlert st "alert-activity" ActivityAlert win)
+
+-- | A session's alert: its hook, then its clients told
+-- ('deliverAlert').
+fireAlert :: ServerState -> Text -> AlertKind -> Window -> SessionAlert -> IO ()
+fireAlert st hook kind win a = do
+    notify st hook
+        (NotifyTarget (Just a.session.id) (Just win.id) Nothing)
+        [ ("session", PSessionRef a.session.id a.sessionName)
+        , ("window", PWindowRef win.id a.windowName) ]
+    deliverAlert st a.session a.options kind a.index
+
+-- | An alert that applies in one session holding the window.
+data SessionAlert = SessionAlert
+    { session :: Session
+    , options :: Options  -- ^ the window's, in that session
+    , index :: Int        -- ^ the window's there
+    , sessionName :: Text
+    , windowName :: Text
+    }
+
+-- | The alert for a window in a session, when its action option admits it.
+sessionAlert :: AlertKind -> Session -> Options -> Window -> STM (Maybe SessionAlert)
+sessionAlert kind sess opts win = do
+    ws <- readTVar sess.windows
+    cur <- readTVar sess.currentIx
+    case [ ix | (ix, w) <- Map.toList ws, w.id == win.id ] of
+        ix : _ | alertApplies kind opts (if ix == cur then InCurrentWindow else InWindow ix) -> do
+            sname <- readTVar sess.name
+            wname <- readTVar win.name
+            pure (Just (SessionAlert sess opts ix sname wname))
+        _ -> pure Nothing
 
 -- | 'markBell' plus the alert decision, once per session holding the
 -- window: the sessions whose @alert-bell@ should fire (monitor-bell on and
 -- bell-action admits the window there). Bells are not deduplicated — every
 -- bell reports.
-bellAlerts :: ServerState -> Window -> STM [(SessionId, Text, Text)]
+bellAlerts :: ServerState -> Window -> STM [SessionAlert]
 bellAlerts st win = do
-    sessions <- Map.toAscList <$> readTVar st.sessions
-    fmap concat . forM sessions $ \(osid, sess) -> do
+    sessions <- Map.elems <$> readTVar st.sessions
+    fmap concat . forM sessions $ \sess -> do
         ws <- readTVar sess.windows
         if not (any (\w -> w.id == win.id) (Map.elems ws))
             then pure []
@@ -853,36 +904,23 @@ bellAlerts st win = do
                 if not wopts.monitorBell then pure [] else do
                     seen <- windowSeen st sess win
                     unless seen $ writeTVar win.bellFlag True
-                    isCur <- isCurrentWindow sess win
-                    if alertAllows wopts.bellAction isCur
-                        then do
-                            sname <- readTVar sess.name
-                            wname <- readTVar win.name
-                            pure [(osid, sname, wname)]
-                        else pure []
+                    maybe [] pure <$> sessionAlert BellAlert sess wopts win
 
--- | 'markActivity' plus the alert decision: names when @alert-activity@
--- should fire — only on the flag's off-to-on transition, and never for the
--- current window (tmux's default @activity-action other@).
-activityAlert :: ServerState -> SessionId -> Window -> STM (Maybe (Text, Text))
+-- | 'markActivity' plus the alert decision: once flagged, a window raises
+-- no more activity alerts until the flag clears; otherwise the alert fires
+-- as @activity-action@ admits it, on the current window too.
+activityAlert :: ServerState -> SessionId -> Window -> STM (Maybe SessionAlert)
 activityAlert st sid win = do
     msess <- Map.lookup sid <$> readTVar st.sessions
     case msess of
         Nothing -> pure Nothing
         Just sess -> do
             wopts <- resolveForWindow st sess win
-            if not wopts.monitorActivity then pure Nothing else do
-                was <- readTVar win.activity
+            was <- readTVar win.activity
+            if not wopts.monitorActivity || was then pure Nothing else do
                 seen <- windowSeen st sess win
                 unless seen $ writeTVar win.activity True
-                nowSet <- readTVar win.activity
-                isCur <- isCurrentWindow sess win
-                if not was && nowSet && not isCur
-                    then do
-                        sname <- readTVar sess.name
-                        wname <- readTVar win.name
-                        pure (Just (sname, wname))
-                    else pure Nothing
+                sessionAlert ActivityAlert sess wopts win
 
 -- | Flag a window as having activity, when @monitor-activity@ is on. A
 -- window being watched ('windowSeen') is exempt — no attention marker

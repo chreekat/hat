@@ -92,8 +92,10 @@ library
         Hat.Path
         Hat.PtrEq
         Hat.Server
+        Hat.Server.Alerts
         Hat.Server.ArgNumber
         Hat.Server.ClientIO
+        Hat.Server.Clock
         Hat.Server.Clipboard
         Hat.Server.ClientSession
         Hat.Server.ColorScheme
@@ -297,9 +299,11 @@ test-suite hat-test
         Hat.TestSupport
         Hat.Term.PtySpec
         Hat.Transport.SocketSpec
+        Hat.Server.AlertsSpec
         Hat.Server.BufferSpec
         Hat.Server.CaptureSpec
         Hat.Server.ClipboardSpec
+        Hat.Server.ClockSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
         Hat.Server.ControlSpec

@@ -5,7 +5,9 @@ module Hat.Server.Command.Interact
     ( cmdDetachClient
     , cmdSendPrefix
     , cmdCopyMode
+    , cmdClockMode
     , cmdCommandPrompt
+    , promptCursor
     , cmdChooseTree
     , cmdChooseWindow
     , cmdDisplayPanes
@@ -33,7 +35,7 @@ import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientOptions, clientView, findTarget)
-import Hat.Server.Pane (typeKeyIntoPane)
+import Hat.Server.Pane (enterClockMode, typeKeyIntoPane)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
 import Hat.Server.Target qualified as Target
@@ -114,7 +116,8 @@ cmdCopyMode st mclient args = do
         quit = "-q" `elem` flags
         mouse = "-M" `elem` flags
     -- -M: the pane under the mouse event being acted on, if there is one.
-    mev <- if mouse then clientMouseEvent mclient else pure Nothing
+    keyMouse <- clientMouseEvent mclient
+    let mev = if mouse then keyMouse else Nothing
     res <- case mev of
         Just ev -> maybe (Left "no mouse target") (\(s, w, p, _) -> Right (s, 0 :: Int, w, p))
             <$> mouseEventPane st ev
@@ -127,11 +130,17 @@ cmdCopyMode st mclient args = do
             | not quit -> do
                 was <- isJust <$> readTVarIO pane.mode
                 unless was (enterCopyMode pane)
-                -- The flags apply whether or not the mode was already open.
+                -- copy mode comes to the top over a clock
+                atomically $ modifyTVar' pane.clock $ \case
+                    ClockOnTop -> ClockUnderCopy
+                    c -> c
+                -- The flags apply whether or not the mode was already open;
+                -- a mouse key opens it without line numbers.
                 atomically $ modifyTVar' pane.mode $ fmap $ \pm -> pm
                     { copyState = pm.copyState
                         { scrollExit = pm.copyState.scrollExit || "-e" `elem` flags
-                        , hidePosition = pm.copyState.hidePosition || "-H" `elem` flags } }
+                        , hidePosition = pm.copyState.hidePosition || "-H" `elem` flags
+                        , lineNumbers = if isJust keyMouse then LinesHidden else LinesFromOption } }
                 when ("-u" `elem` flags) $
                     void (runCopyModeCommand st pane "page-up" [])
                 forM_ ((,) <$> mclient <*> mev) $ \(client, ev) ->
@@ -141,6 +150,7 @@ cmdCopyMode st mclient args = do
                 was <- atomically $ do
                     old <- readTVar pane.mode
                     writeTVar pane.mode Nothing
+                    writeTVar pane.clock NoClock
                     bumpDirty st
                     pure old
                 forM_ was $ \_ -> do
@@ -161,18 +171,7 @@ cmdCopyMode st mclient args = do
                         KeysEmacs -> "copy-mode"
                     startRow = frozen.fgHsize + scr.cursor.row
                     startCol = scr.cursor.col
-                    state = CopyModeState
-                        { cursorRow = startRow
-                        , cursorCol = startCol
-                        , selection = Nothing
-                        , keyTable = table
-                        , viewportOffY = 0
-                        , numPrefix = Nothing
-                        , pendingSearch = Nothing
-                        , lastSearch = Nothing
-                        , lastQuery = Nothing
-                        , scrollExit = False, hidePosition = False
-                        }
+                    state = copyModeAt table startRow startCol
                 atomically $ do
                     writeTVar pane.mode (Just PaneMode
                         { frozen = frozen, copyState = state })
@@ -182,6 +181,15 @@ cmdCopyMode st mclient args = do
                     [ ("mode_entered", PInt 1)
                     , ("current_mode", PText "copy-mode")
                     , ("previous_mode", PText "") ]
+
+-- | @clock-mode [-t pane]@.
+cmdClockMode :: CommandImpl
+cmdClockMode st mclient args = do
+    let (opts, _, _) = parseArgs "t" args
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (_, _, _, pane) -> [] <$ enterClockMode st pane
 
 -- | Open the interactive command prompt on the invoking client.
 -- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line
@@ -207,12 +215,27 @@ cmdCommandPrompt st mclient args = do
         let keys = PromptKeys
                 { statusKeys = if optionText "status-keys" copts == "vi"
                     then KeysVi else KeysEmacs
-                , wordSeparators = copts.wordSeparators }
+                , wordSeparators = copts.wordSeparators
+                , insertCursor = promptCursor "prompt-cursor" copts
+                , commandCursor = promptCursor "prompt-command-cursor" copts }
         atomically $ do
             writeTVar client.prompt $ Just
                 (Prompt.promptFor pfx initial tmpl) { promptKeys = keys }
             bumpDirty st
     pure []
+
+-- | A prompt's cursor from its @…-colour@ and @…-style@ options.
+promptCursor :: Text -> Options -> PromptCursor
+promptCursor prefix opts = PromptCursor
+    { colour = optionText (prefix <> "-colour") opts
+    , shape = case lookup (optionText (prefix <> "-style") opts) shapes of
+        Just s -> s
+        Nothing -> CursorDefault }
+  where
+    shapes = zip
+        [ "default", "blinking-block", "block", "blinking-underline"
+        , "underline", "blinking-bar", "bar" ]
+        [minBound ..]
 
 -- | The format environment of a client's current window, for expanding a
 -- @command-prompt -I@ initial string. Empty if the client has no window.

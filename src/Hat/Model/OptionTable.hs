@@ -420,7 +420,7 @@ optionTable =
     , live $ arrayOf "command-alias" ServerScope KString ","
         ["split-pane=split-window", "splitp=split-window"]
     , notYet $ arrayOf "codepoint-widths" ServerScope KString "," []
-    , notYet $ scalar "copy-command" ServerScope KString ""
+    , live $ scalar "copy-command" ServerScope KString ""
     , paneLocal $ live $
         scalar "cursor-colour" WindowPaneScope KColourString ""
     , notYet $ scalar "cursor-style" WindowPaneScope (KChoice cursorStyles) "default"
@@ -450,7 +450,7 @@ optionTable =
     , notYet $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
     , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
     , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
-    , notYet $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
+    , live $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
     , live $ scalar "set-clipboard" ServerScope
         (KChoice ["off", "external", "on"]) "external"
     , notYet $ arrayOf "terminal-overrides" ServerScope KString "," ["linux*:AX@"]
@@ -483,7 +483,7 @@ optionTable =
     , notYet $ scalar "variation-selector-always-wide" ServerScope KFlag "on"
 
     -- Session options.
-    , notYet $ scalar "activity-action" SessionScope (KChoice bellActions) "other"
+    , live $ scalar "activity-action" SessionScope (KChoice bellActions) "other"
     , live $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
     , live $ scalar "base-index" SessionScope (KNumber 0 intMax) "0"
     , live $ scalar "bell-action" SessionScope (KChoice bellActions) "any"
@@ -525,7 +525,7 @@ optionTable =
     , live $ scalar "set-titles" SessionScope KFlag "off"
     , notYet $ scalar "set-titles-string" SessionScope KString
         "#S:#I:#W - \"#T\" #{session_alerts}"
-    , notYet $ scalar "silence-action" SessionScope (KChoice bellActions) "other"
+    , live $ scalar "silence-action" SessionScope (KChoice bellActions) "other"
     , live $ scalar "status" SessionScope
         (KChoice ["off", "on", "2", "3", "4", "5"]) "on"
     , live $ scalar "status-bg" SessionScope KColour "default"
@@ -548,11 +548,11 @@ optionTable =
     , live $ scalar "status-style" SessionScope KStyle "bg=themegreen,fg=themeblack"
     , live $ scalar "pane-status-current-style" WindowScope KStyle "underscore"
     , live $ scalar "pane-status-style" WindowScope KStyle "default"
-    , notYet $ scalar "prompt-cursor-colour" SessionScope KColourString ""
-    , notYet $ scalar "prompt-command-cursor-colour" SessionScope KColourString ""
-    , notYet $ scalar "prompt-cursor-style" SessionScope
+    , live $ scalar "prompt-cursor-colour" SessionScope KColourString ""
+    , live $ scalar "prompt-command-cursor-colour" SessionScope KColourString ""
+    , live $ scalar "prompt-cursor-style" SessionScope
         (KChoice cursorStyles) "default"
-    , notYet $ scalar "prompt-command-cursor-style" SessionScope
+    , live $ scalar "prompt-command-cursor-style" SessionScope
         (KChoice cursorStyles) "default"
     , live $ scalar "session-status-current-style" WindowScope KStyle
         "underscore"
@@ -561,9 +561,9 @@ optionTable =
     , live $ arrayOf "update-environment" SessionScope KString " ,"
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
         , "SSH_AGENT_PID", "SSH_CONNECTION", "WINDOWID", "XAUTHORITY" ]
-    , notYet $ scalar "visual-activity" SessionScope (KChoice visualBell) "off"
-    , notYet $ scalar "visual-bell" SessionScope (KChoice visualBell) "off"
-    , notYet $ scalar "visual-silence" SessionScope (KChoice visualBell) "off"
+    , live $ scalar "visual-activity" SessionScope (KChoice visualBell) "off"
+    , live $ scalar "visual-bell" SessionScope (KChoice visualBell) "off"
+    , live $ scalar "visual-silence" SessionScope (KChoice visualBell) "off"
     , live $ scalar "word-separators" SessionScope KString
         "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
 
@@ -578,8 +578,8 @@ optionTable =
     -- tmux's default also marks panes in a mode or dead.
     , live $ scalar "automatic-rename-format" WindowScope KString
         "#{pane_current_command}"
-    , notYet $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
-    , notYet $ scalar "clock-mode-style" WindowScope
+    , live $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
+    , live $ scalar "clock-mode-style" WindowScope
         (KChoice ["12", "24", "12-with-seconds", "24-with-seconds"]) "24"
     , live $ scalar "display-panes-active-colour" WindowScope KColourString "themered"
     , notYet $ scalar "display-panes-border-style" WindowScope KStyle
@@ -588,29 +588,29 @@ optionTable =
     , live $ scalar "display-panes-format" WindowScope KString
         "#[align=right]#{pane_unzoomed_width}x#{pane_unzoomed_height}"
     , live $ scalar "display-panes-time" WindowScope (KNumber 1 intMax) "1000"
-    , notYet $ scalar "copy-mode-match-style" WindowScope KStyle
+    , live $ scalar "copy-mode-match-style" WindowScope KStyle
         "bg=themecyan,fg=themeblack"
-    , notYet $ scalar "copy-mode-current-match-style" WindowScope KStyle
+    , live $ scalar "copy-mode-current-match-style" WindowScope KStyle
         "bg=thememagenta,fg=themeblack"
-    , notYet $ scalar "copy-mode-mark-style" WindowScope KStyle
+    , live $ scalar "copy-mode-mark-style" WindowScope KStyle
         "bg=themeyellow,fg=themeblack"
-    , notYet $ scalar "copy-mode-position-format" WindowPaneScope KString
+    , paneLocal $ live $ scalar "copy-mode-position-format" WindowPaneScope KString
         "#[align=right]#{t/p:top_line_time}\
         \#{?#{e|>:#{top_line_time},0}, ,}\
         \[#{copy_position}/#{copy_position_limit}]\
         \#{?search_timed_out, (timed out),\
         \#{?search_count, (#{search_count}\
         \#{?search_count_partial,+,} results),}}"
-    , notYet $ scalar "copy-mode-position-style" WindowScope KStyle
+    , live $ scalar "copy-mode-position-style" WindowScope KStyle
         "#{E:mode-style}"
-    , notYet $ scalar "copy-mode-selection-style" WindowScope KStyle
+    , live $ scalar "copy-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
-    , notYet $ scalar "copy-mode-current-line-number-style" WindowScope KStyle
+    , live $ scalar "copy-mode-current-line-number-style" WindowScope KStyle
         "fg=themeyellow"
-    , notYet $ scalar "copy-mode-current-line-style" WindowScope KStyle "default"
-    , notYet $ scalar "copy-mode-line-number-style" WindowScope KStyle
+    , live $ scalar "copy-mode-current-line-style" WindowScope KStyle "default"
+    , live $ scalar "copy-mode-line-number-style" WindowScope KStyle
         "fg=themelightgrey,dim"
-    , notYet $ scalar "copy-mode-line-numbers" WindowScope
+    , live $ scalar "copy-mode-line-numbers" WindowScope
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
     , live $ scalar "fill-character" WindowScope KString
         "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"
@@ -701,7 +701,7 @@ optionTable =
     , live $ scalar "window-status-last-style" WindowScope KStyle "default"
     , live $ scalar "window-status-separator" WindowScope KString " "
     , live $ scalar "window-status-style" WindowScope KStyle "default"
-    , notYet $ scalar "wrap-search" WindowScope KFlag "on"
+    , live $ scalar "wrap-search" WindowScope KFlag "on"
     -- tmux keeps this only for compatibility: it has no effect there either.
     , live $ scalar "xterm-keys" WindowScope KFlag "on"
 
