@@ -141,7 +141,18 @@ targetWorld st mclient = do
     pbase <- (.paneBaseIndex) <$> readTVarIO st.options
     mmarked <- readTVarIO st.markedPane
     msid <- traverse (\c -> readTVarIO c.session) mclient
+    mambS <- ambientSession st mclient
+    (mambW, mambP) <- ambientWindowPane st mclient
     let entryById i = List.find (\se -> se.sessionId == i) entries
+        -- A clientless hook command's current state is its event's target.
+        ambientEntries = maybe entries
+            (\i -> filter ((== i) . (.sessionId)) entries <> entries) mambS
+        ambientCur = case (mambP, mambW) of
+            (Just p, _) -> Target.paneFound ambientEntries p
+            (Nothing, Just w) -> listToMaybe
+                [ Target.Found se.sessionId ix we.activePane
+                | se <- ambientEntries, (ix, we) <- se.windows, we.windowId == w ]
+            (Nothing, Nothing) -> Target.sessionCurrent =<< entryById =<< mambS
         clientCur = Target.sessionCurrent =<< entryById =<< msid
         tmuxPaneCur = do
             client <- mclient
@@ -154,7 +165,7 @@ targetWorld st mclient = do
         , paneBase = pbase
         , marked = Target.paneFound entries =<< mmarked
         , clientCurrent = clientCur
-        , current = clientCur <|> tmuxPaneCur <|> bestCur
+        , current = clientCur <|> tmuxPaneCur <|> ambientCur <|> bestCur
         }
   where
     parseDec t = case TR.decimal t of

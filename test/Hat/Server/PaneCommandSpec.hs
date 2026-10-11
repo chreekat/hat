@@ -4,7 +4,8 @@ module Hat.Server.PaneCommandSpec (spec) where
 
 import Control.Concurrent.STM
 import Control.Exception (bracket)
-import Control.Monad (filterM, forM_, void)
+import Control.Concurrent (threadDelay)
+import Control.Monad (filterM, forM_, unless, void)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import System.Timeout (timeout)
@@ -13,7 +14,7 @@ import Test.Hspec
 import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Server (Reply (..))
-import Hat.Server.Dispatch (runArgv)
+import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Term.Pty qualified as Pty
 
 -- | A fresh server for one test; on exit every pane still alive is killed
@@ -23,7 +24,9 @@ withServer = bracket open close
   where
     open = do
         lg <- newLogger "/dev/null"
-        newServerState Map.empty lg "/tmp/hat-panecommandspec.sock" Nothing
+        st <- newServerState Map.empty lg "/tmp/hat-panecommandspec.sock" Nothing
+        installHooks st
+        pure st
     close st = do
         panes <- allPanes st
         void (run st ["kill-server"])
@@ -37,6 +40,12 @@ allPanes st = atomically $ do
 
 run :: ServerState -> [Text] -> IO [Reply]
 run st = runArgv st Nothing
+
+-- | Poll until a condition holds; bound it with 'timeout'.
+untilM :: IO Bool -> IO ()
+untilM cond = do
+    ok <- cond
+    unless ok (threadDelay 20_000 >> untilM cond)
 
 -- | The window indices of the named session.
 windowIndices :: ServerState -> Text -> IO [Int]
@@ -68,6 +77,16 @@ spec = do
                 run st ["new-window", "-d", "-t", "S:9", "sleep 30"] `shouldReturn` []
                 run st ["kill-pane", "-t", "S:9.0"] `shouldReturn` []
                 windowIndices st "S" `shouldReturn` [0]
+        it "with no -t in a hook, kills the hook's own pane" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["set-option", "-g", "remain-on-exit", "on"] `shouldReturn` []
+                run st ["set-hook", "-g", "pane-died", "kill-pane"] `shouldReturn` []
+                [p0] <- paneIds st "S:0"
+                run st ["split-window", "-d", "-t", "S:0", "true"] `shouldReturn` []
+                gone <- timeout 5_000_000 $ untilM ((== 1) . length <$> paneIds st "S:0")
+                gone `shouldBe` Just ()
+                paneIds st "S:0" `shouldReturn` [p0]
         it "-a kills every other pane, narrowed by -f" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
