@@ -97,6 +97,7 @@ import System.IO (Handle, hFlush)
 import System.Posix.Process (getProcessID)
 import System.Exit (ExitCode (..))
 import System.Posix.Process qualified as Posix
+import System.Posix.Unistd qualified as Posix
 import System.Process
     (CreateProcess (..), StdStream (..), shell, withCreateProcess)
 import System.Timeout (timeout)
@@ -326,6 +327,9 @@ newPane pid pty emu sz dir pending start kind = do
     optionsVar <- newTVarIO emptyDelta
     exitedVar <- newTVarIO Nothing
     inputOffVar <- newTVarIO False
+    -- A new pane is titled with the host's name until its program sets one.
+    host <- Posix.nodeName <$> Posix.getSystemID
+    _ <- Emu.feed emu ("\ESC]2;" <> TE.encodeUtf8 (T.pack host) <> "\ESC\\")
     pure Pane
         { id = pid
         , pty = pty

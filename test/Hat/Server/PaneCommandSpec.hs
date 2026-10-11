@@ -9,6 +9,7 @@ import Control.Monad (filterM, forM_, unless, void)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import System.Posix.Unistd (getSystemID, nodeName)
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -116,74 +117,76 @@ spec = do
                 landed `shouldBe` Just ()
 
     describe "split-window" $ do
-            it "sizes the new pane from -l, in cells or a percentage of the pane" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "-x", "80", "-y", "24", "sleep 30"]
-                        `shouldReturn` []
-                    [p0] <- paneIds st "S:0"
-                    run st ["split-window", "-d", "-h", "-l", "20", "-t", p0, "sleep 30"]
-                        `shouldReturn` []
-                    run st ["split-window", "-d", "-v", "-l", "25%", "-t", p0, "sleep 30"]
-                        `shouldReturn` []
-                    geometry st "S:0" `shouldReturn` ["0,0 59x17", "0,18 59x6", "60,0 20x24"]
-                    run st ["split-window", "-d", "-v", "-l", "x", "-t", p0]
-                        `shouldReturn` [RErr "invalid tiled geometry invalid"]
-            it "-k keeps the pane once its program exits, -W waits for that" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                    [out] <- run st ["split-window", "-d", "-k", "-W", "-P", "-F",
-                        "#{pane_id}", "-t", "S:0", "true"]
-                    pid <- case out of
-                        ROutput t -> pure t
-                        other -> fail (show other)
-                    run st ["display-message", "-p", "-t", pid, "#{pane_dead}"]
-                        `shouldReturn` [ROutput "1"]
-            it "-E makes an empty pane, running nothing, and refuses a command" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                    [out] <- run st ["split-window", "-d", "-E", "-P", "-F",
-                        "#{pane_dead}:#{pane_pid}", "-t", "S:0"]
-                    out `shouldBe` ROutput "0:"
-                    run st ["split-window", "-d", "-E", "-t", "S:0", "true"]
-                        `shouldReturn` [RErr "command cannot be given for empty pane"]
+        it "sizes the new pane from -l, in cells or a percentage of the pane" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "-x", "80", "-y", "24", "sleep 30"]
+                    `shouldReturn` []
+                [p0] <- paneIds st "S:0"
+                run st ["split-window", "-d", "-h", "-l", "20", "-t", p0, "sleep 30"]
+                    `shouldReturn` []
+                run st ["split-window", "-d", "-v", "-l", "25%", "-t", p0, "sleep 30"]
+                    `shouldReturn` []
+                geometry st "S:0" `shouldReturn` ["0,0 59x17", "0,18 59x6", "60,0 20x24"]
+                run st ["split-window", "-d", "-v", "-l", "x", "-t", p0]
+                    `shouldReturn` [RErr "invalid tiled geometry invalid"]
+        it "-k keeps the pane once its program exits, -W waits for that" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                [out] <- run st ["split-window", "-d", "-k", "-W", "-P", "-F",
+                    "#{pane_id}", "-t", "S:0", "true"]
+                pid <- case out of
+                    ROutput t -> pure t
+                    other -> fail (show other)
+                run st ["display-message", "-p", "-t", pid, "#{pane_dead}"]
+                    `shouldReturn` [ROutput "1"]
+        it "-E makes an empty pane, running nothing, and refuses a command" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                [out] <- run st ["split-window", "-d", "-E", "-P", "-F",
+                    "#{pane_dead}:#{pane_pid}", "-t", "S:0"]
+                out `shouldBe` ROutput "0:"
+                run st ["split-window", "-d", "-E", "-t", "S:0", "true"]
+                    `shouldReturn` [RErr "command cannot be given for empty pane"]
 
     describe "swap-pane" $
-            it "takes the marked pane as its source when -s is not given" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                    run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
-                    run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
-                    [a, b, c] <- paneIds st "S:0"
-                    run st ["select-pane", "-m", "-t", c] `shouldReturn` []
-                    run st ["swap-pane", "-d", "-t", a] `shouldReturn` []
-                    paneIds st "S:0" `shouldReturn` [c, b, a]
+        it "takes the marked pane as its source when -s is not given" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [a, b, c] <- paneIds st "S:0"
+                run st ["select-pane", "-m", "-t", c] `shouldReturn` []
+                run st ["swap-pane", "-d", "-t", a] `shouldReturn` []
+                paneIds st "S:0" `shouldReturn` [c, b, a]
 
     describe "select-pane" $
-            it "-d and -e turn a pane's input off and on, -T sets its title" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                    let fmt f = run st ["display-message", "-p", "-t", "S:0.0", f]
-                    run st ["select-pane", "-d", "-t", "S:0.0"] `shouldReturn` []
-                    fmt "#{pane_input_off}" `shouldReturn` [ROutput "1"]
-                    run st ["select-pane", "-e", "-t", "S:0.0"] `shouldReturn` []
-                    fmt "#{pane_input_off}" `shouldReturn` [ROutput "0"]
-                    run st ["select-pane", "-T", "named", "-t", "S:0.0"] `shouldReturn` []
-                    fmt "#{pane_title}" `shouldReturn` [ROutput "named"]
+        it "-d and -e turn a pane's input off and on, -T replaces the host-name title" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                let fmt f = run st ["display-message", "-p", "-t", "S:0.0", f]
+                host <- T.pack . nodeName <$> getSystemID
+                fmt "#{pane_title}" `shouldReturn` [ROutput host]
+                run st ["select-pane", "-d", "-t", "S:0.0"] `shouldReturn` []
+                fmt "#{pane_input_off}" `shouldReturn` [ROutput "1"]
+                run st ["select-pane", "-e", "-t", "S:0.0"] `shouldReturn` []
+                fmt "#{pane_input_off}" `shouldReturn` [ROutput "0"]
+                run st ["select-pane", "-T", "named", "-t", "S:0.0"] `shouldReturn` []
+                fmt "#{pane_title}" `shouldReturn` [ROutput "named"]
 
     describe "join-pane" $
-            it "refuses to join a pane to itself" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                    run st ["join-pane", "-s", "S:0.0", "-t", "S:0.0"]
-                        `shouldReturn` [RErr "source and target panes must be different"]
+        it "refuses to join a pane to itself" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["join-pane", "-s", "S:0.0", "-t", "S:0.0"]
+                    `shouldReturn` [RErr "source and target panes must be different"]
 
     describe "break-pane" $
-            it "moves the pane to a new window, printing where it went" $
-                withServer $ \st -> do
-                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                    run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
-                    [_, b] <- paneIds st "S:0"
-                    run st ["break-pane", "-d", "-P", "-F", "#{window_index}:#{pane_id}",
-                            "-n", "out", "-s", b, "-t", "S:"]
-                        `shouldReturn` [ROutput ("1:" <> b)]
-                    windowIndices st "S" `shouldReturn` [0, 1]
+        it "moves the pane to a new window, printing where it went" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [_, b] <- paneIds st "S:0"
+                run st ["break-pane", "-d", "-P", "-F", "#{window_index}:#{pane_id}",
+                        "-n", "out", "-s", b, "-t", "S:"]
+                    `shouldReturn` [ROutput ("1:" <> b)]
+                windowIndices st "S" `shouldReturn` [0, 1]
