@@ -316,37 +316,42 @@ cmdListWindows st mclient args = do
 
 cmdListPanes :: CommandImpl
 cmdListPanes st mclient args = do
-    let (opts, flags, _) = parseArgs "Ft" args
-        mfmt = lookup "-F" opts
-        allSessions = "-a" `elem` flags
     -- Which (session, window-index, window) triples to list panes from:
-    -- -a covers every window of every session; otherwise the target
-    -- session's current window.
-    targets <- if allSessions
+    -- -a covers every window of every session, -s every window of the
+    -- target session; otherwise the target window.
+    etargets <- if allSessions
         then do
             sessions <- Map.elems <$> readTVarIO st.sessions
-            fmap concat . forM sessions $ \sess -> do
-                ws <- Map.toAscList <$> readTVarIO sess.windows
-                pure [ (sess, ix, win) | (ix, win) <- ws ]
-        else do
-            msess <- targetSession st mclient (lookup "-t" opts)
-            case msess of
-                Nothing -> pure []
-                Just sess -> do
-                    cur <- readTVarIO sess.currentIx
-                    mwin <- atomically (currentWindow sess)
-                    pure [ (sess, cur, win) | win <- maybe [] pure mwin ]
-    pbase <- (.paneBaseIndex) <$> readTVarIO st.options
-    fmap (map ROutput . concat) . forM targets $ \(sess, wix, win) -> do
-        ps <- Map.elems <$> readTVarIO win.panes
-        forM (zip [pbase ..] ps) $ \(pix, pane) -> case mfmt of
-            Just fmt -> do
-                env <- paneFormatEnv st sess wix win pix pane
-                expandFormat st env fmt
-            Nothing -> do
-                sz <- readTVarIO pane.size
-                pure $ "%" <> tshow (rawPane pane.id) <> ": ["
-                    <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
+            Right . concat <$> mapM sessionWindows sessions
+        else if "-s" `elem` flags
+            then do
+                res <- findTarget st mclient Target.FindSession (lookup "-t" opts)
+                either (pure . Left) (\(sess, _, _, _) -> Right <$> sessionWindows sess) res
+            else do
+                res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+                pure (fmap (\(sess, ix, win, _) -> [(sess, ix, win)]) res)
+    case etargets of
+      Left e -> pure [RErr e]
+      Right targets -> listPanesOf targets
+  where
+    sessionWindows sess = do
+        ws <- Map.toAscList <$> readTVarIO sess.windows
+        pure [ (sess, ix, win) | (ix, win) <- ws ]
+    (opts, flags, _) = parseArgs "Ft" args
+    mfmt = lookup "-F" opts
+    allSessions = "-a" `elem` flags
+    listPanesOf targets = do
+        pbase <- (.paneBaseIndex) <$> readTVarIO st.options
+        fmap (map ROutput . concat) . forM targets $ \(sess, wix, win) -> do
+            ps <- atomically (windowPanes win)
+            forM (zip [pbase ..] ps) $ \(pix, pane) -> case mfmt of
+                Just fmt -> do
+                    env <- paneFormatEnv st sess wix win pix pane
+                    expandFormat st env fmt
+                Nothing -> do
+                    sz <- readTVarIO pane.size
+                    pure $ "%" <> tshow (rawPane pane.id) <> ": ["
+                        <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
 
 cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient args = do

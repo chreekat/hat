@@ -71,6 +71,7 @@ import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM)
 import Data.IORef (IORef)
 import Data.List qualified as List
+import Data.Maybe (mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -96,7 +97,7 @@ import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
-import Hat.Server.Layout (Layout, LayoutName)
+import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Transport.Wire (Autostart)
@@ -694,8 +695,12 @@ activePane win = do
     ps <- readTVar win.panes
     pure (Map.lookup pid ps)
 
+-- | A window's panes in pane-index order ('paneOrder').
 windowPanes :: Window -> STM [Pane]
-windowPanes win = Map.elems <$> readTVar win.panes
+windowPanes win = do
+    ps <- readTVar win.panes
+    lay <- readTVar win.layout
+    pure (mapMaybe (`Map.lookup` ps) (paneOrder lay ps))
 
 -- | Where is a pane's child process now? /proc, with a fallback.
 paneCurrentPath :: Pane -> IO FilePath

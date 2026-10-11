@@ -129,7 +129,7 @@ targetWorld st mclient = do
                      , name = wname
                      , panes =
                          [ (pid, fromMaybe (sizeRect warea) (List.lookup pid rects))
-                         | pid <- Map.keys ps ]
+                         | pid <- paneOrder lay ps ]
                      , activePane = act
                      , lastPane = lastP
                      , area = warea
@@ -206,8 +206,8 @@ findWindowIndexTarget st mclient mtarget = do
 paneIndexOf :: ServerState -> Window -> Pane -> IO Int
 paneIndexOf st win pane = do
     pbase <- (.paneBaseIndex) <$> readTVarIO st.options
-    ps <- readTVarIO win.panes
-    pure (maybe pbase (pbase +) (Map.lookupIndex pane.id ps))
+    order <- atomically (map (.id) <$> windowPanes win)
+    pure (maybe pbase (pbase +) (List.elemIndex pane.id order))
 
 -- | Resolve a @-t@ pane token: @!@ the last pane, @{marked}@ the
 -- marked pane, @%N@ a pane by id anywhere; otherwise the current pane
