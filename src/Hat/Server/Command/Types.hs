@@ -17,6 +17,7 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
 import Hat.Model (Client, ServerState)
+import Hat.Server.ArgNumber (strtonum)
 
 -- | A single line of command output: normal text or an error; or raw
 -- bytes for the issuing command client's standard output.
@@ -82,13 +83,3 @@ unknownFlag name allowed flags =
     flagLetter f = case T.unpack f of
         ['-', c] -> Just c
         _ -> Nothing
-
--- | A bounded decimal argument, failing with OpenBSD @strtonum@'s words
--- (\"invalid\", \"too small\", \"too large\") that tmux's errors embed.
-strtonum :: Int -> Int -> Text -> Either Text Int
-strtonum lo hi t = case TR.signed TR.decimal t of
-    Right (n, rest) | T.null rest ->
-        if n < toInteger lo then Left "too small"
-        else if n > toInteger hi then Left "too large"
-        else Right (fromInteger n)
-    _ -> Left "invalid"

@@ -19,6 +19,8 @@ module Hat.Server.Pane
     , shellLine
     , shellStart
     , spawnPane
+    , emptyPane
+    , launchOf
     , respawnPane
     , dismissDeadPane
     , deadNoticeBytes
@@ -44,6 +46,7 @@ module Hat.Server.Pane
     , noteOuterFocus
     , paneExitWaitMicros
     , hangupPane
+    , typeIntoPane
     , detachPaneCurrent
     , closePane
     , detachPane
@@ -69,6 +72,7 @@ import Control.Concurrent
     (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Exception (Exception, IOException, catch, finally, mask_)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
@@ -165,16 +169,19 @@ resumeArgv "claude" (prog : _) = [prog, "--continue"]
 resumeArgv _        argv       = argv
 
 newWindowWithPane
-    :: ServerState -> SessionId -> FilePath -> Maybe Text -> FilePath
+    :: ServerState -> SessionId -> FilePath -> PaneStart -> PaneKind -> FilePath
     -> [(Text, Text)] -> Size -> IO (Window, Pane)
-newWindowWithPane st sid shellCmd mrun dir environ sz = do
+newWindowWithPane st sid shellCmd how kind dir environ sz = do
     (wid, pid) <- atomically $
         (,) <$> freshId st.nextWindow <*> freshId st.nextPane
-    pane <- spawnPane st (PaneId pid) sid shellCmd (shellStart mrun) dir environ sz
-    nameVar <- newTVarIO $ case mrun of
-        Just cmd -> T.takeWhile (/= ' ') cmd
-        Nothing -> T.pack (baseName shellCmd)
-    layoutVar <- newTVarIO (Leaf pane.id)
+    pane <- case kind of
+        ProgramPane -> spawnPane st (PaneId pid) sid shellCmd how dir environ sz
+        EmptyPane -> emptyPane st (PaneId pid) how dir sz
+    nameVar <- newTVarIO $ case how of
+        ShellCommand cmd -> T.takeWhile (/= ' ') cmd
+        ExecArgv (p : _) -> T.pack (baseName (T.unpack p))
+        _ -> T.pack (baseName shellCmd)
+    layoutVar <- newTVarIO (singlePane pane.id)
     panesVar <- newTVarIO (Map.singleton pane.id pane)
     activeVar <- newTVarIO pane.id
     paneHistVar <- newTVarIO []
@@ -270,6 +277,42 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , size = sz
         }
     emu <- Emu.newEmulator sz opts.historyLimit
+    logEvent st.logger PaneSpawned
+        { pane = rawPane pid, cmd = T.pack cmd }
+    newPane pid pty emu sz dir pending mrun ProgramPane
+
+-- | What a spawning command's arguments ask for (tmux's @SPAWN_EMPTY@ and
+-- argv): @-E@, or a lone empty argument, makes an empty pane; one argument
+-- is a shell command line and several an argv run directly. An empty pane
+-- refuses a command.
+launchOf :: Bool -> [Text] -> Either Text (PaneStart, PaneKind)
+launchOf emptyFlag pos
+    | emptyFlag || pos == [""] = case pos of
+        [] -> Right (FreshShell, EmptyPane)
+        [""] -> Right (FreshShell, EmptyPane)
+        _ -> Left "command cannot be given for empty pane"
+    | otherwise = Right $ case pos of
+        [] -> (FreshShell, ProgramPane)
+        [c] -> (ShellCommand c, ProgramPane)
+        argv -> (ExecArgv argv, ProgramPane)
+
+-- | A pane running no program (tmux's empty pane): it shows only what is
+-- written to its screen — with the cursor off and a line feed returning the
+-- carriage, as tmux sets it up — and keeps @start@ and @dir@ for a later
+-- @respawn-pane@ to run.
+emptyPane :: ServerState -> PaneId -> PaneStart -> FilePath -> Size -> IO Pane
+emptyPane st pid start dir sz = do
+    opts <- readTVarIO st.options
+    emu <- Emu.newEmulator sz opts.historyLimit
+    _ <- Emu.feed emu "\ESC[?25l\ESC[20h"
+    pty <- Hat.Term.Pty.unattachedPty
+    newPane pid pty emu sz dir Nothing start EmptyPane
+
+-- | A fresh pane record around its pty and emulator.
+newPane
+    :: PaneId -> Hat.Term.Pty.PtyHandle -> Emu.Emulator -> Size -> FilePath
+    -> Maybe Text -> PaneStart -> PaneKind -> IO Pane
+newPane pid pty emu sz dir pending start kind = do
     sizeVar <- newTVarIO sz
     deadVar <- newTVarIO False
     modeVar <- newTVarIO Nothing
@@ -278,8 +321,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     homeVar <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
     exitedVar <- newTVarIO Nothing
-    logEvent st.logger PaneSpawned
-        { pane = rawPane pid, cmd = T.pack cmd }
+    inputOffVar <- newTVarIO False
     pure Pane
         { id = pid
         , pty = pty
@@ -293,8 +335,10 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , readerTid = readerVar
         , home = homeVar
         , pendingInput = pending
-        , start = mrun
+        , start = start
         , exited = exitedVar
+        , kind = kind
+        , inputOff = inputOffVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -306,15 +350,18 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
 -- kill or its own exit won the race); the new process is then hung up.
 respawnPane
     :: ServerState -> SessionId -> Window -> Pane -> FilePath -> PaneStart
-    -> FilePath -> [(Text, Text)] -> IO (Maybe Pane)
-respawnPane st sid win old shellCmd how dir environ = do
+    -> PaneKind -> FilePath -> [(Text, Text)] -> IO (Maybe Pane)
+respawnPane st sid win old shellCmd how kind dir environ = do
     sz <- readTVarIO old.size
-    new <- spawnPane st old.id sid shellCmd how dir environ sz
+    new <- case kind of
+        ProgramPane -> spawnPane st old.id sid shellCmd how dir environ sz
+        EmptyPane -> emptyPane st old.id how dir sz
     swapped <- atomically $ do
         gone <- readTVar old.dead
         if gone then pure Nothing else do
             writeTVar old.dead True
             writeTVar new.options =<< readTVar old.options
+            writeTVar new.inputOff =<< readTVar old.inputOff
             modifyTVar' win.panes (Map.insert new.id new)
             bumpDirty st
             Just . isNothing <$> readTVar old.exited
@@ -350,9 +397,10 @@ instance Exception ChildExited
 startPaneReader :: ServerState -> SessionId -> Window -> Pane -> IO ()
 startPaneReader st spawnSid spawnWin pane = do
     atomically $ writeTVar pane.home (Just (spawnSid, spawnWin))
-    -- A dead pane adopted across a reload has no process left to read.
+    -- A dead pane adopted across a reload, or an empty one, has no process
+    -- to read.
     dead <- readTVarIO pane.exited
-    unless (isJust dead) (runPaneReader st pane)
+    unless (isJust dead || pane.kind == EmptyPane) (runPaneReader st pane)
 
 runPaneReader :: ServerState -> Pane -> IO ()
 runPaneReader st pane = do
@@ -655,6 +703,13 @@ noteOuterFocus st client k
 paneExitWaitMicros :: Int
 paneExitWaitMicros = 400_000
 
+-- | Write keyboard input — typed, sent or pasted — to a pane's program,
+-- unless @select-pane -d@ turned its input off.
+typeIntoPane :: Pane -> B.ByteString -> IO ()
+typeIntoPane pane bytes = do
+    off <- readTVarIO pane.inputOff
+    unless off (Hat.Term.Pty.writePty pane.pty bytes)
+
 -- | Tear a pane down from an external command (kill-pane/window/session,
 -- kill-server) without deadlocking. 'closePty' would block closing the
 -- master Handle while the reader still holds it in a read that a
@@ -849,7 +904,7 @@ detachPane st win pane = do
         lay <- readTVar win.layout
         mz <- readTVar win.zoomed
         when (mz == Just pane.id) $ writeTVar win.zoomed Nothing
-        case removeLeaf pane.id lay of
+        case removePane pane.id lay of
             Just lay' -> do
                 writeTVar win.layout lay'
                 let survivors = layoutPanes lay'
@@ -1019,30 +1074,44 @@ pickActivityTarget ixs cur flagged mlast =
     (before, after) = splitAt (curPos + 1) ixs
     scan = after <> before
 
--- | Detach a pane from whichever window holds it, collapsing the layout
--- and dropping the window if it becomes empty. The pane's pty keeps
--- running — this only re-parents it, backing @break-pane@/@join-pane@.
-removePaneFromTree :: ServerState -> PaneId -> STM ()
+-- | Detach a pane from whichever window holds it (tmux's
+-- @window_lost_pane@ + @layout_close_pane@): its mark is cleared, a lost
+-- active pane gives way to the last pane, else its previous sibling, else
+-- its next, and an emptied window is unlinked everywhere. The pane's pty
+-- keeps running — this only re-parents it, backing @break-pane@\/
+-- @join-pane@. Yields the sessions the unlink emptied, already removed.
+removePaneFromTree :: ServerState -> PaneId -> STM [Session]
 removePaneFromTree st pid = do
     sessions <- readTVar st.sessions
-    forM_ (Map.elems sessions) $ \sess -> do
-        ws <- readTVar sess.windows
-        forM_ (Map.toList ws) $ \(_, win) -> do
+    wins <- concat <$> forM (Map.elems sessions) (fmap Map.elems . readTVar . (.windows))
+    holders <- filterM (fmap (Map.member pid) . readTVar . (.panes)) wins
+    case holders of
+        [] -> pure []
+        win : _ -> do
+            marked <- readTVar st.markedPane
+            when (marked == Just pid) $ writeTVar st.markedPane Nothing
             ps <- readTVar win.panes
-            when (Map.member pid ps) $ do
-                writeTVar win.panes (Map.delete pid ps)
-                mz <- readTVar win.zoomed
-                when (mz == Just pid) $ writeTVar win.zoomed Nothing
-                lay <- readTVar win.layout
-                case removeLeaf pid lay of
-                    Just lay' -> do
-                        writeTVar win.layout lay'
-                        active <- readTVar win.activeId
-                        when (active == pid) $ case layoutPanes lay' of
-                            (n : _) -> writeTVar win.activeId n
-                            [] -> pure ()
-                    Nothing -> void (unlinkEverywhere st win)
-                bumpDirty st
+            lay <- readTVar win.layout
+            let order = paneOrder lay ps
+                (before, after) = break (== pid) order
+                neighbour = listToMaybe (reverse before) <|> listToMaybe (drop 1 after)
+            writeTVar win.panes (Map.delete pid ps)
+            mz <- readTVar win.zoomed
+            when (mz == Just pid) $ writeTVar win.zoomed Nothing
+            bumpDirty st
+            case removePane pid lay of
+                Just lay' -> do
+                    writeTVar win.layout lay'
+                    active <- readTVar win.activeId
+                    hist <- filter (/= pid) <$> readTVar win.paneHist
+                    if active /= pid
+                        then writeTVar win.paneHist hist
+                        else forM_ (popOnClose (`elem` layoutPanes lay') neighbour hist) $
+                            \(next, hist') -> do
+                                writeTVar win.activeId next
+                                writeTVar win.paneHist hist'
+                    pure []
+                Nothing -> unlinkEverywhere st win
 
 -- | Point every pane of @win@ at @(sid, win)@, after the window changed
 -- session. See Note [Pane home].
@@ -1064,7 +1133,7 @@ wrapPaneInWindow st pane = do
     wid <- atomically (freshId st.nextWindow)
     name <- paneCommandName pane
     nameVar <- newTVarIO name
-    layoutVar <- newTVarIO (Leaf pane.id)
+    layoutVar <- newTVarIO (singlePane pane.id)
     panesVar <- newTVarIO (Map.singleton pane.id pane)
     activeVar <- newTVarIO pane.id
     paneHistVar <- newTVarIO []
@@ -1222,8 +1291,8 @@ createSession st mname mrun environ dir sz = do
     opts <- readTVarIO st.options
     spawnEnv <- globalSpawnEnv st environ
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
-    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
-        dir spawnEnv (sz)
+    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd (shellStart mrun)
+        ProgramPane dir spawnEnv sz
     now <- getPOSIXTime
     nameVar <- newTVarIO sname0
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)

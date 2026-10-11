@@ -1,11 +1,22 @@
--- | Pane geometry: the split tree and its projection onto a window's
--- rectangle. One border row/column separates siblings, tmux-style.
+-- | Pane geometry: tmux's layout tree (@layout.c@, @layout-set.c@). Every
+-- cell carries its own absolute size and offset, a node holds any number of
+-- children laid along one axis, and one border row\/column separates
+-- siblings. Sizes are cells, never ratios, so every operation reproduces
+-- tmux's arithmetic exactly.
 module Hat.Server.Layout
     ( Layout (..)
+    , Cell (..)
     , Orientation (..)
     , Placement (..)
+    , SplitSpan (..)
+    , SplitSpec (..)
     , Direction (..)
     , LayoutName (..)
+    , layoutNames
+    , layoutNameText
+    , lookupLayoutName
+    , NamedSizes (..)
+    , defaultNamedSizes
     , PaneCycle (..)
     , PaneIndex (..)
     , parsePaneIndex
@@ -15,29 +26,35 @@ module Hat.Server.Layout
     , nextLayoutName
     , previousLayoutName
     , cyclePane
+    , singlePane
+    , layoutArea
+    , fitLayout
+    , fixOffsets
     , arrange
     , sizeRect
     , layoutPanes
     , paneOrder
-    , splitLeaf
-    , splitFull
+    , paneCell
+    , splitPane
+    , removePane
+    , destroyBottomRight
     , swapLeaves
     , Rotation (..)
     , rotateLeaves
-    , removeLeaf
+    , resizePane
+    , resizePaneTo
+    , spreadOut
+    , namedLayout
     , neighbor
     , directionalTarget
-    , resizeSplit
-    , namedLayout
-    , childRects
     ) where
 
 import Control.Applicative ((<|>))
+import Control.Monad (guard)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
-import Data.Ord (clamp, comparing)
-import Data.Ratio ((%))
+import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Ord (comparing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -45,6 +62,7 @@ import Data.Text.Read qualified as TR
 import Hat.Geometry
 import Hat.Model.Ids (PaneId)
 import Hat.Model.Options (WindowSizeMode (..))
+import Hat.Server.ArgNumber (stringPercentage)
 
 data Orientation = LeftRight | TopBottom
     deriving (Eq, Show)
@@ -92,40 +110,259 @@ data Placement
     | After   -- ^ the new pane takes the right\/bottom slot
     deriving (Eq, Show)
 
--- | The ratio is the first (left/top) child's share of the available
--- space, border excluded.
-data Layout
-    = Leaf PaneId
-    | Split Orientation Rational Layout Layout
+-- | A cell of the layout tree: its size and its offset in the window.
+data Layout = Layout
+    { sx   :: !Int
+    , sy   :: !Int
+    , xoff :: !Int
+    , yoff :: !Int
+    , cell :: !Cell
+    }
     deriving (Eq, Show)
 
--- | Project the tree onto a rectangle: every pane's rect plus the
--- border cells between them.
+-- | What a cell holds: one pane, or two or more children laid along an axis.
+data Cell
+    = LeafCell PaneId
+    | NodeCell Orientation [Layout]
+    deriving (Eq, Show)
+
+-- | tmux's @PANE_MINIMUM@: the smallest a pane may be along either axis.
+paneMinimum :: Int
+paneMinimum = 1
+
+-- | A window holding one pane, at a nominal size 'fitLayout' replaces.
+singlePane :: PaneId -> Layout
+singlePane pid = Layout 1 1 0 0 (LeafCell pid)
+
+-- | The size of the area a layout covers.
+layoutArea :: Layout -> Size
+layoutArea l = Size { rows = fromIntegral l.sy, cols = fromIntegral l.sx }
+
+sizeRect :: Size -> Rect
+sizeRect sz = Rect
+    { startRow = 0
+    , endRow = fromIntegral sz.rows
+    , startCol = 0
+    , endCol = fromIntegral sz.cols
+    }
+
+extent :: Orientation -> Layout -> Int
+extent LeftRight l = l.sx
+extent TopBottom l = l.sy
+
+setExtent :: Orientation -> Int -> Layout -> Layout
+setExtent LeftRight n l = l { sx = n }
+setExtent TopBottom n l = l { sy = n }
+
+isLeaf :: Layout -> Bool
+isLeaf l = case l.cell of
+    LeafCell _ -> True
+    NodeCell _ _ -> False
+
+-- Paths ---------------------------------------------------------------------
+
+-- | Child indices from the root down to a cell.
+type Path = [Int]
+
+pathTo :: PaneId -> Layout -> Maybe Path
+pathTo pid l = case l.cell of
+    LeafCell p -> if p == pid then Just [] else Nothing
+    NodeCell _ cs -> listToMaybe
+        [ i : p | (i, c) <- zip [0 ..] cs, Just p <- [pathTo pid c] ]
+
+at :: Path -> Layout -> Layout
+at [] l = l
+at (i : p) l = case l.cell of
+    NodeCell _ cs | (c : _) <- drop i cs -> at p c
+    _ -> l
+
+modifyAt :: Path -> (Layout -> Layout) -> Layout -> Layout
+modifyAt [] f l = f l
+modifyAt (i : p) f l = case l.cell of
+    NodeCell t cs -> l { cell = NodeCell t
+        [ if j == i then modifyAt p f c else c | (j, c) <- zip [0 ..] cs ] }
+    LeafCell _ -> l
+
+modifyChild :: Int -> (Layout -> Layout) -> [Layout] -> [Layout]
+modifyChild i f cs = [ if j == i then f c else c | (j, c) <- zip [0 ..] cs ]
+
+-- Sizing --------------------------------------------------------------------
+
+-- | How much a cell can give up along an axis (@layout_resize_check@).
+spare :: Orientation -> Layout -> Int
+spare o l = case l.cell of
+    LeafCell _ -> max 0 (extent o l - paneMinimum)
+    NodeCell t cs
+        | t == o -> sum (map (spare o) cs)
+        | otherwise -> minimum (map (spare o) cs)
+
+-- | Grow or shrink a cell along an axis, spreading the change over its
+-- children one cell at a time (@layout_resize_adjust@). The change must
+-- already be bounded by what the cell can give.
+adjust :: Orientation -> Int -> Layout -> Layout
+adjust o change l0 = case l.cell of
+    LeafCell _ -> l
+    NodeCell t cs
+        | t /= o -> l { cell = NodeCell t (map (adjust o change) cs) }
+        | otherwise -> l { cell = NodeCell t (spread change cs) }
+  where
+    l = setExtent o (extent o l0 + change) l0
+    spread 0 cs = cs
+    spread ch cs = case List.foldl' step (ch, False, []) cs of
+        (ch', True, acc) | ch' /= 0 -> spread ch' (reverse acc)
+        (_, _, acc) -> reverse acc
+    step (ch, changed, acc) c
+        | ch == 0 = (ch, changed, c : acc)
+        | ch > 0 = (ch - 1, True, adjust o 1 c : acc)
+        | spare o c > 0 = (ch + 1, True, adjust o (-1) c : acc)
+        | otherwise = (ch, changed, c : acc)
+
+-- | Lay every cell's offset out from its siblings' sizes, the root at the
+-- origin (@layout_fix_offsets@).
+fixOffsets :: Layout -> Layout
+fixOffsets = place 0 0
+  where
+    place x y l = case l.cell of
+        LeafCell _ -> l'
+        NodeCell LeftRight cs -> l' { cell = NodeCell LeftRight (alongX x cs) }
+        NodeCell TopBottom cs -> l' { cell = NodeCell TopBottom (alongY y cs) }
+      where
+        l' = l { xoff = x, yoff = y }
+        alongX _ [] = []
+        alongX cx (c : rest) = place cx y c : alongX (cx + c.sx + 1) rest
+        alongY _ [] = []
+        alongY cy (c : rest) = place x cy c : alongY (cy + c.sy + 1) rest
+
+-- | Resize the whole layout to a window size (@layout_resize@): never below
+-- what its panes can give up, so a window too small for its panes leaves the
+-- layout overhanging it.
+fitLayout :: Size -> Layout -> Layout
+fitLayout sz =
+    fixOffsets
+        . fitAxis TopBottom (fromIntegral sz.rows)
+        . fitAxis LeftRight (fromIntegral sz.cols)
+  where
+    fitAxis o target l
+        | change /= 0 = adjust o change l
+        | otherwise = l
+      where
+        cur = extent o l
+        limit = spare o l
+        change
+            | limit == 0 = if target <= cur then 0 else target - cur
+            | target - cur < negate limit = negate limit
+            | otherwise = target - cur
+
+-- | A child's share of a parent resized from @prev@ to @size@ cells, with
+-- @countLeft@ children (this one included) left to fit in @sizeLeft@
+-- (@layout_new_pane_size@).
+newPaneSize :: Int -> Layout -> Orientation -> Int -> Int -> Int -> Int
+newPaneSize prev c o size countLeft sizeLeft
+    | countLeft == 1 = sizeLeft
+    | otherwise =
+        let ext = extent o c
+            mn = max ((paneMinimum + 1) * (countLeft - 1)) (ext - spare o c)
+            ns = (ext * size) `div` prev
+            mx = sizeLeft - mn
+            -- A negative bound is tmux's unsigned wrap: no limit at all.
+            ns' = if mx >= 0 && ns > mx then mx else ns
+        in max paneMinimum ns'
+
+-- | Whether a cell and all its children fit a new size along an axis
+-- (@layout_set_size_check@).
+sizeFits :: Orientation -> Int -> Layout -> Bool
+sizeFits o size l = case l.cell of
+    LeafCell _ -> size >= paneMinimum
+    NodeCell t cs
+        | t == o ->
+            let count = length cs
+                prev = extent o l
+                go _ _ [] = True
+                go idx avail (c : rest) =
+                    let ns = newPaneSize prev c o size (count - idx) avail
+                        need = if null rest then ns else ns + 1
+                    in need <= avail && sizeFits o ns c
+                        && go (idx + 1) (avail - need) rest
+            in size >= count * 2 - 1 && go (0 :: Int) size cs
+        | otherwise -> and [ sizeFits o size c | c <- cs, not (isLeaf c) ]
+
+-- | Refit a node's children proportionally into its (changed) size
+-- (@layout_resize_child_cells@).
+resizeChildCells :: Layout -> Layout
+resizeChildCells l = case l.cell of
+    LeafCell _ -> l
+    NodeCell t cs ->
+        let count = length cs
+            prev = sum (map (extent t) cs) + count - 1
+            go _ _ [] = []
+            go idx avail (c : rest) =
+                let left = count - idx
+                    (c1, avail1) = case t of
+                        TopBottom -> (c { sx = l.sx, xoff = l.xoff }, avail)
+                        LeftRight ->
+                            let w = newPaneSize prev c LeftRight l.sx left avail
+                            in (c { sx = w }, avail - (w + 1))
+                    (c2, avail2) = case t of
+                        LeftRight -> (c1 { sy = l.sy, yoff = l.yoff }, avail1)
+                        TopBottom ->
+                            let h = newPaneSize prev c1 TopBottom l.sy left avail1
+                            in (c1 { sy = h }, avail1 - (h + 1))
+                in resizeChildCells c2 : go (idx + 1) avail2 rest
+        in l { cell = NodeCell t (go (0 :: Int) (extent t l) cs) }
+
+-- Queries -------------------------------------------------------------------
+
+-- | The panes in layout order.
+layoutPanes :: Layout -> [PaneId]
+layoutPanes l = case l.cell of
+    LeafCell p -> [p]
+    NodeCell _ cs -> concatMap layoutPanes cs
+
+-- | A window's panes in tmux's pane order (what @pane_index@ counts): the
+-- layout's leaf order, then any pane the layout does not hold.
+paneOrder :: Layout -> Map.Map PaneId a -> [PaneId]
+paneOrder lay ps = inLayout <> filter (`notElem` inLayout) (Map.keys ps)
+  where
+    inLayout = filter (`Map.member` ps) (layoutPanes lay)
+
+-- | A pane's cell.
+paneCell :: PaneId -> Layout -> Maybe Layout
+paneCell pid l = (`at` l) <$> pathTo pid l
+
+-- | Project the layout, fitted to @rect@'s size, onto it: every pane's rect
+-- plus the border cells between them, all clipped to the rect.
 arrange :: Rect -> Layout -> ([(PaneId, Rect)], [(Pos, Char)])
 arrange rect lay =
-    let (rects, borders) = arrangeRaw rect lay
-    in (rects, resolveJunctions borders)
+    let w = max 0 (rect.endCol - rect.startCol)
+        h = max 0 (rect.endRow - rect.startRow)
+        fitted = fitLayout Size { rows = fromIntegral h, cols = fromIntegral w } lay
+        (rects, borders) = project fitted
+        shift r = Rect
+            { startRow = clampR (r.startRow + rect.startRow)
+            , endRow = clampR (r.endRow + rect.startRow)
+            , startCol = clampC (r.startCol + rect.startCol)
+            , endCol = clampC (r.endCol + rect.startCol) }
+        clampR = max rect.startRow . min rect.endRow
+        clampC = max rect.startCol . min rect.endCol
+        inside p = p.row >= rect.startRow && p.row < rect.endRow
+            && p.col >= rect.startCol && p.col < rect.endCol
+        moved = [ (p', ch)
+                | (p, ch) <- borders
+                , let p' = Pos { row = p.row + rect.startRow, col = p.col + rect.startCol }
+                , inside p' ]
+    in ([ (pid, shift r) | (pid, r) <- rects ], resolveJunctions moved)
 
--- | The raw projection: dividers as plain @│@\/@─@ runs. Sibling dividers
--- only abut here; 'resolveJunctions' fuses them into box-drawing junctions
--- once the whole tree's borders are known.
-arrangeRaw :: Rect -> Layout -> ([(PaneId, Rect)], [(Pos, Char)])
-arrangeRaw rect = \case
-    Leaf pid -> ([(pid, rect)], [])
-    Split o ratio a b ->
-        let (ra, rb) = childRects rect o ratio
-            border = case o of
-                LeftRight ->
-                    [ (Pos { row = r, col = ra.endCol }, '│')
-                    | ra.endCol < rect.endCol
-                    , r <- [rect.startRow .. rect.endRow - 1]
-                    ]
-                TopBottom ->
-                    [ (Pos { row = ra.endRow, col = c }, '─')
-                    | ra.endRow < rect.endRow
-                    , c <- [rect.startCol .. rect.endCol - 1]
-                    ]
-        in arrangeRaw ra a <> arrangeRaw rb b <> (mempty, border)
+-- | Cells as rects and the dividers between siblings as plain @│@\/@─@
+-- runs spanning their parent.
+project :: Layout -> ([(PaneId, Rect)], [(Pos, Char)])
+project l = case l.cell of
+    LeafCell p -> ([(p, Rect l.yoff (l.yoff + l.sy) l.xoff (l.xoff + l.sx))], [])
+    NodeCell t cs -> mconcat (map project cs) <> ([], concatMap (divider t) (init cs))
+  where
+    divider LeftRight c =
+        [ (Pos { row = r, col = c.xoff + c.sx }, '│') | r <- [l.yoff .. l.yoff + l.sy - 1] ]
+    divider TopBottom c =
+        [ (Pos { row = c.yoff + c.sy, col = x }, '─') | x <- [l.xoff .. l.xoff + l.sx - 1] ]
 
 -- | Fuse abutting divider runs into box-drawing junctions. Each cell keeps
 -- the two arms of its own line (@│@ has up+down, @─@ has left+right) and
@@ -166,58 +403,130 @@ junction u d l r = case (u, d, l, r) of
     (True,  False, True,  False) -> '┘'
     _                            -> if u || d then '│' else '─'
 
-sizeRect :: Size -> Rect
-sizeRect sz = Rect
-    { startRow = 0
-    , endRow = fromIntegral sz.rows
-    , startCol = 0
-    , endCol = fromIntegral sz.cols
+-- Splitting and closing -----------------------------------------------------
+
+-- | @-f@: whether a split divides the target pane or the whole window.
+data SplitSpan = SpanPane | SpanWindow
+    deriving (Eq, Show)
+
+-- | How to split: the axis, the new pane's size (cells; 'Nothing' halves),
+-- which side it lands on, and what it divides.
+data SplitSpec = SplitSpec
+    { orient    :: Orientation
+    , size      :: Maybe Int
+    , placement :: Placement
+    , span      :: SplitSpan
     }
+    deriving (Eq, Show)
 
--- | A window's panes in tmux's pane order (what @pane_index@ counts): the
--- layout's leaf order, then any pane the layout does not hold.
-paneOrder :: Layout -> Map.Map PaneId a -> [PaneId]
-paneOrder lay ps = inLayout <> filter (`notElem` inLayout) (Map.keys ps)
+-- | Add @new@ beside @target@ (or beside the whole window under
+-- 'SpanWindow'), taking the requested size from it (@layout_split_pane@).
+-- 'Nothing' when there is no room for both panes.
+splitPane :: SplitSpec -> PaneId -> PaneId -> Layout -> Maybe Layout
+splitPane spec target new root = do
+    lcPath <- case spec.span of
+        SpanWindow -> Just []
+        SpanPane -> pathTo target root
+    let o = spec.orient
+        lc = at lcPath root
+        ss = extent o lc
+        before = spec.placement == Before
+        full = spec.span == SpanWindow
+        s2raw = case spec.size of
+            Nothing -> ((ss + 1) `div` 2) - 1
+            Just n | before -> ss - n - 1
+                   | otherwise -> n
+        s2  -- a negative @s2raw@ is tmux's unsigned wrap: as large as allowed
+            | s2raw < 0 = ss - 2
+            | s2raw < paneMinimum = paneMinimum
+            | s2raw > ss - 2 = ss - 2
+            | otherwise = s2raw
+        s1 = ss - 1 - s2
+        newSize = if before then s2 else s1
+        fresh = Layout 0 0 0 0 (LeafCell new)
+        (first, second) = if before then (fresh, lc) else (lc, fresh)
+        (first', second') = case o of
+            LeftRight ->
+                ( first { sx = s1, sy = lc.sy, xoff = lc.xoff, yoff = lc.yoff }
+                , second { sx = s2, sy = lc.sy, xoff = lc.xoff + s1 + 1, yoff = lc.yoff } )
+            TopBottom ->
+                ( first { sx = lc.sx, sy = s1, xoff = lc.xoff, yoff = lc.yoff }
+                , second { sx = lc.sx, sy = s2, xoff = lc.xoff, yoff = lc.yoff + s1 + 1 } )
+        pair = map resizeChildCells [first', second']
+        sameAxisParent = case lcPath of
+            [] -> False
+            _ -> case (at (init lcPath) root).cell of
+                NodeCell t _ -> t == o
+                LeafCell _ -> False
+    guard (ss >= paneMinimum * 2 + 1)
+    guard (not full || sizeFits o newSize lc)
+    pure $ fixOffsets $ case lc.cell of
+        _ | not full && sameAxisParent ->
+            let i = last lcPath
+            in modifyAt (init lcPath) (\p -> case p.cell of
+                    NodeCell t cs -> p { cell = NodeCell t (take i cs <> pair <> drop (i + 1) cs) }
+                    LeafCell _ -> p) root
+        NodeCell t cs | full, t == o ->
+            let resized = setExtent o ss (resizeChildCells (setExtent o newSize lc))
+                kids = case resized.cell of
+                    NodeCell _ ks -> ks
+                    LeafCell _ -> cs
+                added = setExtent o (ss - 1 - newSize) $ case o of
+                    LeftRight -> fresh { sy = lc.sy }
+                    TopBottom -> fresh { sx = lc.sx }
+            in resized { cell = NodeCell t (if before then added : kids else kids <> [added]) }
+        _ -> modifyAt lcPath (const lc { cell = NodeCell o pair }) root
+
+-- | Close a pane's cell, giving its space to a neighbour (@layout_close_pane@).
+-- 'Nothing' when it was the last pane.
+removePane :: PaneId -> Layout -> Maybe Layout
+removePane pid root = do
+    p <- pathTo pid root
+    guard (not (null p))
+    pure (fixOffsets (destroyAt p root))
+
+-- | Close the bottom-right cell, as a layout string with more cells than the
+-- window has panes does (@layout_parse@). 'Nothing' for a lone cell.
+destroyBottomRight :: Layout -> Maybe Layout
+destroyBottomRight root = do
+    let p = bottomRight root
+    guard (not (null p))
+    pure (fixOffsets (destroyAt p root))
   where
-    inLayout = filter (`Map.member` ps) (layoutPanes lay)
+    bottomRight l = case l.cell of
+        LeafCell _ -> []
+        NodeCell _ cs -> (length cs - 1) : bottomRight (last cs)
 
-layoutPanes :: Layout -> [PaneId]
-layoutPanes = \case
-    Leaf pid -> [pid]
-    Split _ _ a b -> layoutPanes a <> layoutPanes b
-
--- | Split the target leaf in two; the new pane takes half. 'Before'
--- puts the new pane on the left/top.
-splitLeaf :: PaneId -> Orientation -> Placement -> PaneId -> Layout -> Layout
-splitLeaf target orient placement newPid = go
+-- | Remove the cell at a (non-root) path: the next sibling — the previous
+-- one for a last child — absorbs its space and border, and a parent left
+-- with one child is replaced by it (@layout_destroy_cell@).
+destroyAt :: Path -> Layout -> Layout
+destroyAt p = modifyAt (init p) collapse
   where
-    go = \case
-        Leaf p
-            | p == target -> case placement of
-                Before -> Split orient (1 % 2) (Leaf newPid) (Leaf p)
-                After  -> Split orient (1 % 2) (Leaf p) (Leaf newPid)
-            | otherwise -> Leaf p
-        Split o r a b -> Split o r (go a) (go b)
+    i = last p
+    collapse parent = case parent.cell of
+        NodeCell t cs ->
+            let gone = cs !! i
+                j = if i == length cs - 1 then i - 1 else i + 1
+                grown = modifyChild j (adjust t (extent t gone + 1)) cs
+                kept = [ c | (k, c) <- zip [0 ..] grown, k /= i ]
+            in case kept of
+                [only] -> only
+                _ -> parent { cell = NodeCell t kept }
+        LeafCell _ -> parent
 
--- | A full-window split: the new pane becomes a sibling of the /entire/
--- existing layout, spanning the full window height (@LeftRight@) or width
--- (@TopBottom@). 'Before' puts it on the left/top. Backs @split-window -f@.
-splitFull :: Orientation -> Placement -> PaneId -> Layout -> Layout
-splitFull orient placement newPid old = case placement of
-    Before -> Split orient (1 % 2) (Leaf newPid) old
-    After  -> Split orient (1 % 2) old (Leaf newPid)
+-- Rearranging ---------------------------------------------------------------
 
--- | Exchange two panes' positions in the tree, moving their content
--- between screen locations. Backs @swap-pane@.
+mapLeaves :: (PaneId -> PaneId) -> Layout -> Layout
+mapLeaves f l = case l.cell of
+    LeafCell p -> l { cell = LeafCell (f p) }
+    NodeCell t cs -> l { cell = NodeCell t (map (mapLeaves f) cs) }
+
+-- | Exchange two panes' positions in the tree; a pane absent from the tree
+-- simply takes the other's place. Backs @swap-pane@.
 swapLeaves :: PaneId -> PaneId -> Layout -> Layout
-swapLeaves a b = go
-  where
-    go = \case
-        Leaf p
-            | p == a -> Leaf b
-            | p == b -> Leaf a
-            | otherwise -> Leaf p
-        Split o r x y -> Split o r (go x) (go y)
+swapLeaves a b = mapLeaves $ \p ->
+    if p == a then b else if p == b then a else p
 
 -- | Which way @rotate-window@ turns the panes: @-U@ moves each pane to
 -- the previous position (the first wraps to the last), @-D@ to the next.
@@ -227,62 +536,285 @@ data Rotation = RotateUp | RotateDown
 -- | Rotate the panes through the layout's positions, keeping its shape.
 -- Backs @rotate-window@.
 rotateLeaves :: Rotation -> Layout -> Layout
-rotateLeaves dir lay = fst (relabel lay (turn (layoutPanes lay)))
+rotateLeaves dir lay = mapLeaves (\p -> fromMaybe p (lookup p moves)) lay
   where
-    turn ps = case (dir, ps) of
+    ps = layoutPanes lay
+    turned = case (dir, ps) of
         (_, []) -> []
         (RotateUp, p : rest) -> rest <> [p]
         (RotateDown, _) -> last ps : init ps
-    relabel l fresh = case (l, fresh) of
-        (Leaf _, p : rest) -> (Leaf p, rest)
-        (Leaf p, []) -> (Leaf p, [])
-        (Split o r a b, _) ->
-            let (a', rest) = relabel a fresh
-                (b', rest') = relabel b rest
-            in (Split o r a' b', rest')
+    moves = zip ps turned
 
--- | Nothing when the last pane goes; the sibling absorbs the space.
-removeLeaf :: PaneId -> Layout -> Maybe Layout
-removeLeaf target = \case
-    Leaf p
-        | p == target -> Nothing
-        | otherwise -> Just (Leaf p)
-    Split o r a b -> case (removeLeaf target a, removeLeaf target b) of
-        (Nothing, _) -> Just b
-        (_, Nothing) -> Just a
-        (Just a', Just b') -> Just (Split o r a' b')
+-- Resizing ------------------------------------------------------------------
 
--- | The tmux named layouts.
+-- | The cell a resize along @o@ moves for the pane at @p@: the pane's
+-- nearest ancestor-or-self whose parent runs along @o@.
+resizeAnchor :: Orientation -> Path -> Layout -> Maybe Path
+resizeAnchor o p root = go p
+  where
+    go [] = Nothing
+    go q = case (at (init q) root).cell of
+        NodeCell t _ | t == o -> Just q
+        _ -> go (init q)
+
+-- | Move a pane's right\/bottom border by @change@ cells — its left\/top
+-- one for a last child — taking the space from the nearest sibling that has
+-- some, on either side (@layout_resize_pane@ with @opposite@).
+resizePane :: PaneId -> Orientation -> Int -> Layout -> Layout
+resizePane pid o change root = fromMaybe root $ do
+    p <- pathTo pid root
+    q <- resizeAnchor o p root
+    let parentPath = init q
+        n = case (at parentPath root).cell of
+            NodeCell _ cs -> length cs
+            LeafCell _ -> 1
+        i0 = last q
+        i = if i0 == n - 1 then i0 - 1 else i0
+    pure (fixOffsets (modifyAt parentPath (resizeAmong o i change) root))
+
+-- | @layout_resize_layout@ on the @i@th child of a node.
+resizeAmong :: Orientation -> Int -> Int -> Layout -> Layout
+resizeAmong o i change parent = case parent.cell of
+    NodeCell t cs -> parent { cell = NodeCell t (loop change cs) }
+    LeafCell _ -> parent
+  where
+    loop needed cs
+        | needed == 0 = cs
+        | change > 0 = case grow needed cs of
+            Nothing -> cs
+            Just (s, cs') -> loop (needed - s) cs'
+        | otherwise = case shrink needed cs of
+            Nothing -> cs
+            Just (s, cs') -> loop (needed + s) cs'
+    giving cs = List.find (\j -> spare o (cs !! j) > 0)
+    grow needed cs = do
+        j <- giving cs [i + 1 .. length cs - 1] <|> giving cs [i - 1, i - 2 .. 0]
+        let s = min (spare o (cs !! j)) needed
+        pure (s, modifyChild i (adjust o s) (modifyChild j (adjust o (negate s)) cs))
+    shrink needed cs = do
+        j <- giving cs [i, i - 1 .. 0]
+        guard (i + 1 < length cs)
+        let s = min (spare o (cs !! j)) (negate needed)
+        pure (s, modifyChild (i + 1) (adjust o s) (modifyChild j (adjust o (negate s)) cs))
+
+-- | Resize a pane to @newSize@ cells along an axis (@layout_resize_pane_to@).
+resizePaneTo :: PaneId -> Orientation -> Int -> Layout -> Layout
+resizePaneTo pid o newSize root = fromMaybe root $ do
+    p <- pathTo pid root
+    q <- resizeAnchor o p root
+    let lc = at q root
+        isLast = case (at (init q) root).cell of
+            NodeCell _ cs -> last q == length cs - 1
+            LeafCell _ -> False
+        cur = extent o lc
+        change = if isLast then cur - newSize else newSize - cur
+    pure (resizePane pid o change root)
+
+-- | Even out the pane's siblings — or, if they already are, the nearest
+-- ancestor's that are not (@layout_spread_out@, @select-layout -E@).
+spreadOut :: PaneId -> Layout -> Layout
+spreadOut pid root = fromMaybe root $ do
+    p <- pathTo pid root
+    guard (not (null p))
+    go (init p)
+  where
+    go q = case spreadCell (at q root) of
+        Just c' -> Just (fixOffsets (modifyAt q (const c') root))
+        Nothing | null q -> Nothing
+                | otherwise -> go (init q)
+
+-- | Share a node's space evenly among its children, any remainder going to
+-- the first ones (@layout_spread_cell@). 'Nothing' when nothing changes.
+spreadCell :: Layout -> Maybe Layout
+spreadCell parent = case parent.cell of
+    NodeCell t cs -> do
+        let number = length cs
+            total = extent t parent
+            each = (total - (number - 1)) `div` number
+            remainder = total - number * (each + 1) + 1
+            go _ [] = []
+            go r (c : rest) =
+                let this = each + (if r > 0 then 1 else 0)
+                in adjust t (this - extent t c) c : go (r - 1) rest
+            cs' = go remainder cs
+        guard (number > 1 && total >= number - 1 && each > 0)
+        guard (cs' /= cs)
+        pure parent { cell = NodeCell t cs' }
+    LeafCell _ -> Nothing
+
+-- Named layouts -------------------------------------------------------------
+
+-- | The tmux named layouts, in @layout_sets@ order.
 data LayoutName
-    = EvenHorizontal | EvenVertical | MainVertical | MainHorizontal | Tiled
-    deriving (Eq, Show)
+    = EvenHorizontal
+    | EvenVertical
+    | MainHorizontal
+    | MainHorizontalMirrored
+    | MainVertical
+    | MainVerticalMirrored
+    | Tiled
+    deriving (Eq, Show, Enum, Bounded)
 
--- | @select-pane@'s cyclic direction: the pane after or before the
--- active one in window order. See 'cyclePane'.
-data PaneCycle = PaneNext | PanePrev
-    deriving (Eq, Show)
+layoutNames :: [LayoutName]
+layoutNames = [minBound .. maxBound]
 
--- tmux's fixed layout cycle order, walked by @next-layout@.
-layoutOrder :: [LayoutName]
-layoutOrder = [EvenHorizontal, EvenVertical, MainHorizontal, MainVertical, Tiled]
+layoutNameText :: LayoutName -> Text
+layoutNameText = \case
+    EvenHorizontal -> "even-horizontal"
+    EvenVertical -> "even-vertical"
+    MainHorizontal -> "main-horizontal"
+    MainHorizontalMirrored -> "main-horizontal-mirrored"
+    MainVertical -> "main-vertical"
+    MainVerticalMirrored -> "main-vertical-mirrored"
+    Tiled -> "tiled"
+
+-- | A layout by its full name, else by a unique prefix (@layout_set_lookup@).
+lookupLayoutName :: Text -> Maybe LayoutName
+lookupLayoutName t =
+    case [ n | n <- layoutNames, layoutNameText n == t ] of
+        n : _ -> Just n
+        [] -> case [ n | n <- layoutNames, t `T.isPrefixOf` layoutNameText n ] of
+            [n] -> Just n
+            _ -> Nothing
 
 -- | The next layout in tmux's cycle for @next-layout@; @Nothing@ (no
 -- named layout applied yet) starts at the head, and the tail wraps back
 -- to the head.
 nextLayoutName :: Maybe LayoutName -> LayoutName
-nextLayoutName = stepLayout layoutOrder
+nextLayoutName = \case
+    Nothing -> minBound
+    Just n | n == maxBound -> minBound
+           | otherwise -> succ n
 
 -- | The previous layout for @previous-layout@; @Nothing@ starts at the
 -- tail, and the head wraps back to the tail.
 previousLayoutName :: Maybe LayoutName -> LayoutName
-previousLayoutName = stepLayout (reverse layoutOrder)
+previousLayoutName = \case
+    Nothing -> maxBound
+    Just n | n == minBound -> maxBound
+           | otherwise -> pred n
 
-stepLayout :: [LayoutName] -> Maybe LayoutName -> LayoutName
-stepLayout order mcur = case mcur >>= (`List.elemIndex` order) of
-    Just i  -> order !! ((i + 1) `mod` length order)
-    Nothing -> case order of
-        (first : _) -> first
-        []          -> error "stepLayout: empty layout order"
+-- | The option values the named layouts size from: @main-pane-width@\/
+-- @-height@ and @other-pane-width@\/@-height@ (cells or @N%@), and
+-- @tiled-layout-max-columns@.
+data NamedSizes = NamedSizes
+    { mainWidth   :: Text
+    , mainHeight  :: Text
+    , otherWidth  :: Text
+    , otherHeight :: Text
+    , maxColumns  :: Int
+    }
+    deriving (Eq, Show)
+
+-- | tmux's option defaults.
+defaultNamedSizes :: NamedSizes
+defaultNamedSizes = NamedSizes "80" "24" "0" "0" 0
+
+-- | Arrange @pids@ (in window order) into a named layout for a window of
+-- @area@. 'Nothing' for fewer than two panes, which tmux leaves alone.
+namedLayout :: NamedSizes -> Size -> LayoutName -> [PaneId] -> Maybe Layout
+namedLayout sizes area name pids = do
+    guard (n > 1)
+    pure $ fixOffsets $ case name of
+        EvenHorizontal -> evenLayout LeftRight
+        EvenVertical -> evenLayout TopBottom
+        MainHorizontal -> mainLayout TopBottom False
+        MainHorizontalMirrored -> mainLayout TopBottom True
+        MainVertical -> mainLayout LeftRight False
+        MainVerticalMirrored -> mainLayout LeftRight True
+        Tiled -> tiledLayout
+  where
+    n = length pids
+    wsx = fromIntegral area.cols
+    wsy = fromIntegral area.rows
+    leaf w h p = Layout w h 0 0 (LeafCell p)
+    node t w h cs = Layout w h 0 0 (NodeCell t cs)
+    spreadOrKeep c = fromMaybe c (spreadCell c)
+    evenLayout t =
+        let needed = n * (paneMinimum + 1) - 1
+            (w, h) = case t of
+                LeftRight -> (max needed wsx, wsy)
+                TopBottom -> (wsx, max needed wsy)
+        in spreadOrKeep (node t w h [ leaf wsx wsy p | p <- pids ])
+    -- The main pane along @t@ (its first child), the rest stacked across.
+    mainLayout t mirrored =
+        let others = n - 1
+            (whole, mainOpt, otherOpt, fallback) = case t of
+                TopBottom -> (wsy, sizes.mainHeight, sizes.otherHeight, 24)
+                LeftRight -> (wsx, sizes.mainWidth, sizes.otherWidth, 80)
+            avail = whole - 1
+            mainReq = either (const fallback) id (stringPercentage 0 avail avail mainOpt)
+            (mainS, otherS)
+                | mainReq + paneMinimum >= avail =
+                    ( if avail <= paneMinimum + paneMinimum then paneMinimum
+                      else avail - paneMinimum
+                    , paneMinimum )
+                | otherwise = case stringPercentage 0 avail avail otherOpt of
+                    Right o | o /= 0 ->
+                        if o > avail || avail - o < mainReq
+                            then (mainReq, avail - mainReq)
+                            else (avail - o, o)
+                    _ -> (mainReq, avail - mainReq)
+            across = case t of
+                TopBottom -> wsx
+                LeftRight -> wsy
+            acrossS = max (others * (paneMinimum + 1) - 1) across
+            sized a b = case t of
+                TopBottom -> (a, b)
+                LeftRight -> (b, a)
+            mk s p = let (w, h) = sized acrossS s in leaf w h p
+            (rootW, rootH) = sized acrossS (mainS + otherS + 1)
+        in case pids of
+            m : rest ->
+                let mainCell = mk mainS m
+                    otherCell = case rest of
+                        [o] -> mk otherS o
+                        _ ->
+                            let (w, h) = sized acrossS otherS
+                                cross = if t == TopBottom then LeftRight else TopBottom
+                                small p = let (lw, lh) = sized paneMinimum otherS
+                                          in leaf lw lh p
+                            in spreadOrKeep (node cross w h (map small rest))
+                in node t rootW rootH
+                    (if mirrored then [otherCell, mainCell] else [mainCell, otherCell])
+            [] -> node t rootW rootH []
+    tiledLayout =
+        let maxc = sizes.maxColumns
+            grid r c
+                | r * c >= n = (r, c)
+                | otherwise =
+                    let r' = r + 1
+                        c' = if r' * c < n && (maxc == 0 || c < maxc) then c + 1 else c
+                    in grid r' c'
+            (rowsN, colsN) = grid 1 1
+            width = max paneMinimum ((wsx - (colsN - 1)) `div` colsN)
+            height = max paneMinimum ((wsy - (rowsN - 1)) `div` rowsN)
+            rootW = max ((width + 1) * colsN - 1) wsx
+            rootH = max ((height + 1) * rowsN - 1) wsy
+            chunks [] = []
+            chunks xs = let (a, b) = splitAt colsN xs in a : chunks b
+            rowOf [p] = leaf wsx height p
+            rowOf ps =
+                let used = length ps * (width + 1) - 1
+                    kids = [ leaf width height p | p <- ps ]
+                    kids' | wsx > used = init kids <> [adjust LeftRight (wsx - used) (last kids)]
+                          | otherwise = kids
+                in node LeftRight wsx height kids'
+            rowCells = map rowOf (chunks pids)
+            usedH = rowsN * height + rowsN - 1
+            rowCells'
+                | wsy > usedH = init rowCells <> [adjust TopBottom (wsy - usedH) (last rowCells)]
+                | otherwise = rowCells
+        in case rowCells' of
+            [only] -> only
+            _ -> node TopBottom rootW rootH rowCells'
+
+-- Pane navigation -----------------------------------------------------------
+
+-- | @select-pane@'s cyclic direction: the pane after or before the
+-- active one in window order. See 'cyclePane'.
+data PaneCycle = PaneNext | PanePrev
+    deriving (Eq, Show)
 
 -- | The pane @select-pane -t :.+@ / @:.-@ lands on: the one after
 -- ('PaneNext') or before ('PanePrev') the active pane in @pids@ order,
@@ -319,7 +851,7 @@ parsePaneIndex t = parseIndex paneIndexPart
         | T.null rest = Just 1
         | otherwise   = wholeNum rest
     wholeNum s = case TR.decimal s of
-        Right (n, rest) | T.null rest -> Just n
+        Right (k, rest) | T.null rest -> Just k
         _                             -> Nothing
 
 -- | The pane @select-pane -t@ lands on for a 'PaneIndex', against a
@@ -329,46 +861,13 @@ parsePaneIndex t = parseIndex paneIndexPart
 -- or the active pane is absent.
 resolvePaneIndex :: PaneIndex -> [PaneId] -> PaneId -> Maybe PaneId
 resolvePaneIndex idx pids active = case idx of
-    IndexAbsolute n -> case drop n pids of
+    IndexAbsolute k -> case drop k pids of
         (p : _) -> Just p
         []      -> Nothing
-    IndexRelative dir n -> do
+    IndexRelative dir k -> do
         i <- List.elemIndex active pids
-        let step = case dir of PaneNext -> n; PanePrev -> negate n
+        let step = case dir of PaneNext -> k; PanePrev -> negate k
         pure (pids !! ((i + step) `mod` length pids))
-
--- | Arrange @pids@ into a named layout. @mainRatio@ is the main pane's
--- share of the window (from @main-pane-width@/@-height@), used only by the
--- @main-*@ layouts. Assumes a non-empty pane list.
-namedLayout :: LayoutName -> Rational -> [PaneId] -> Layout
-namedLayout name mainRatio pids = case pids of
-    []      -> error "namedLayout: no panes"
-    [p]     -> Leaf p
-    (m : rest) -> case name of
-        EvenHorizontal -> evenChain LeftRight (map Leaf pids)
-        EvenVertical   -> evenChain TopBottom (map Leaf pids)
-        MainVertical   ->
-            Split LeftRight mainRatio (Leaf m) (evenChain TopBottom (map Leaf rest))
-        MainHorizontal ->
-            Split TopBottom mainRatio (Leaf m) (evenChain LeftRight (map Leaf rest))
-        Tiled          -> tiled pids
-
--- | A balanced chain of equal-ratio splits along one axis.
-evenChain :: Orientation -> [Layout] -> Layout
-evenChain _ []       = error "evenChain: empty"
-evenChain _ [l]      = l
-evenChain o (l : ls) = Split o (1 % toInteger (length (l : ls))) l (evenChain o ls)
-
--- | A grid: ceil(sqrt n) columns of rows, each row an even horizontal row.
-tiled :: [PaneId] -> Layout
-tiled pids =
-    evenChain TopBottom [ evenChain LeftRight (map Leaf row) | row <- rows ]
-  where
-    n = length pids
-    cols = ceiling (sqrt (fromIntegral n :: Double))
-    rows = chunksOf (max 1 cols) pids
-    chunksOf _ [] = []
-    chunksOf k xs = let (a, b) = splitAt k xs in a : chunksOf k b
 
 -- | The pane a directional @select-pane@ moves to, resolved against the full
 -- split layout rather than a zoom-collapsed arrangement, so navigation still
@@ -433,130 +932,3 @@ neighbor rects from dir = do
         DirDown -> colOverlap a b
     rowOverlap a b = min a.endRow b.endRow - max a.startRow b.startRow
     colOverlap a b = min a.endCol b.endCol - max a.startCol b.startCol
-
--- | Which child of a split a descent takes.
-data Side = FirstChild | SecondChild
-    deriving (Eq)
-
--- | One split on the root-to-target descent.
-data Step = Step Orientation Side
-
--- | Move one divider by @delta@ cells: @DirRight@\/@DirDown@ move it right\/
--- down and @DirLeft@\/@DirUp@ left\/up, whichever side of it the target sits
--- on. The divider moved is the target's own right\/bottom border — the
--- deepest ancestor split of the direction's orientation holding the target in
--- its first child — falling back to the target's left\/top border when it
--- hugs that edge of the window. Every pane keeps at least one cell.
-resizeSplit :: PaneId -> Direction -> Int -> Rect -> Layout -> Layout
-resizeSplit target dir delta rect layout = case pathTo layout of
-    Nothing -> layout
-    Just steps -> case divider steps of
-        Nothing -> layout
-        Just n -> rewrite rect n steps layout
-  where
-    wantOrient = case dir of
-        DirLeft -> LeftRight
-        DirRight -> LeftRight
-        DirUp -> TopBottom
-        DirDown -> TopBottom
-    pathTo :: Layout -> Maybe [Step]
-    pathTo = \case
-        Leaf p
-            | p == target -> Just []
-            | otherwise -> Nothing
-        Split o _ a b -> case pathTo a of
-            Just steps -> Just (Step o FirstChild : steps)
-            Nothing -> (Step o SecondChild :) <$> pathTo b
-    -- How many steps to descend before reaching the split to adjust.
-    divider steps = deepest FirstChild <|> deepest SecondChild
-      where
-        deepest side = listToMaybe
-            [ n
-            | (n, Step o s) <- reverse (zip [0 :: Int ..] steps)
-            , o == wantOrient
-            , s == side
-            ]
-    rewrite :: Rect -> Int -> [Step] -> Layout -> Layout
-    rewrite r n steps lay = case (lay, steps) of
-        (Split o ratio a b, Step _ side : rest)
-            | n <= 0 ->
-                let ratio' = newRatio r o ratio
-                    (oldA, oldB) = childRects r o ratio
-                    (newA, newB) = childRects r o ratio'
-                in Split o ratio'
-                    (pinDividers o HighEdge oldA newA a)
-                    (pinDividers o LowEdge oldB newB b)
-            | otherwise ->
-                let (ra, rb) = childRects r o ratio
-                in case side of
-                    FirstChild -> Split o ratio (rewrite ra (n - 1) rest a) b
-                    SecondChild -> Split o ratio a (rewrite rb (n - 1) rest b)
-        _ -> lay
-    newRatio r o ratio =
-        let avail = fromIntegral $ case o of
-                LeftRight -> (r.endCol - r.startCol) - 1
-                TopBottom -> (r.endRow - r.startRow) - 1
-            step = fromIntegral delta / max 1 avail
-            r' = case dir of
-                DirRight -> ratio + step
-                DirDown -> ratio + step
-                DirLeft -> ratio - step
-                DirUp -> ratio - step
-            minR = 1 / max 2 avail
-        in clamp (minR, 1 - minR) r'
-
--- | Which border of a rect a resize moved: the low (left\/top) or the high
--- (right\/bottom) one. The opposite border stays where it is.
-data MovedEdge = LowEdge | HighEdge
-    deriving (Eq)
-
--- | Restate a subtree's ratios so its dividers hold the absolute positions
--- they had while its rect changed along @axis@: the pane against the moved
--- edge absorbs the whole change, every other pane keeps its size. Ratios are
--- relative, so without this a resize of an outer split drags every divider
--- nested inside it. See 'resizeSplit'.
-pinDividers :: Orientation -> MovedEdge -> Rect -> Rect -> Layout -> Layout
-pinDividers axis edge old new lay
-    | old == new = lay
-    | otherwise = case lay of
-        Leaf p -> Leaf p
-        Split o ratio a b ->
-            let ratio' = if o == axis then anchored ratio o old new else ratio
-                (oldA, oldB) = childRects old o ratio
-                (newA, newB) = childRects new o ratio'
-            in Split o ratio'
-                (pinDividers axis edge oldA newA a)
-                (pinDividers axis edge oldB newB b)
-  where
-    -- The share that leaves the fixed-side child exactly the cells it had.
-    anchored ratio o oldR newR =
-        let (oldA, oldB) = childRects oldR o ratio
-            avail = fromIntegral (extent newR - 1)
-            minR = 1 / max 2 avail
-            keep n = fromIntegral n / avail
-        in clamp (minR, 1 - minR) $ case edge of
-            HighEdge -> keep (extent oldA)
-            LowEdge -> 1 - keep (extent oldB)
-    extent r = case axis of
-        LeftRight -> r.endCol - r.startCol
-        TopBottom -> r.endRow - r.startRow
-
--- | The sub-rects a split assigns its children. Both stay inside the
--- parent: a rect too small for the split yields empty children, never
--- cells beyond its edges.
-childRects :: Rect -> Orientation -> Rational -> (Rect, Rect)
-childRects rect o ratio = case o of
-    LeftRight ->
-        let avail = (rect.endCol - rect.startCol) - 1
-            aw = clamp (1, max 1 (avail - 1)) (round (ratio * fromIntegral avail))
-            borderCol = rect.startCol + aw
-        in ( rect { endCol = min rect.endCol borderCol }
-           , rect { startCol = min rect.endCol (borderCol + 1) }
-           )
-    TopBottom ->
-        let avail = (rect.endRow - rect.startRow) - 1
-            ah = clamp (1, max 1 (avail - 1)) (round (ratio * fromIntegral avail))
-            borderRow = rect.startRow + ah
-        in ( rect { endRow = min rect.endRow borderRow }
-           , rect { startRow = min rect.endRow (borderRow + 1) }
-           )

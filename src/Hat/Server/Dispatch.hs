@@ -56,7 +56,6 @@ import Hat.Model
 import Hat.Model.Options (lookupCommandAlias, quoteIfNeeded)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
-import Hat.Term.Pty qualified
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
@@ -183,7 +182,12 @@ hookArgSpec = \case
     "new-session" -> "sctnxy"
     "attach-session" -> "tc"
     "new-window" -> "nct"
-    "split-window" -> "ctlpeF"
+    "split-window" -> "BceFlmpRsStT"
+    "join-pane" -> "lpst"
+    "move-pane" -> "lPstXYz"
+    "break-pane" -> "FnstxXyY"
+    "kill-pane" -> "ft"
+    "resize-pane" -> "txy"
     "respawn-pane" -> "cet"
     "respawn-window" -> "cet"
     "capture-pane" -> "bESt"
@@ -306,6 +310,7 @@ commandSpecs =
     , (["clear-history", "clearhist"], cmdClearHistory)
     , (["break-pane", "breakp"], cmdBreakPane)
     , (["join-pane", "joinp"], cmdJoinPane)
+    , (["move-pane", "movep"], cmdMovePane)
     , (["select-layout", "selectl"], cmdSelectLayout)
     , (["next-layout", "nextl"], cmdNextLayout)
     , (["previous-layout", "prevl"], cmdPreviousLayout)
@@ -728,9 +733,9 @@ cmdSendKeys st mclient args = do
                     -- -H: each argument is one hex byte.
                     | hexBytes -> case mapM hexByte pos of
                         Just bytes ->
-                            [] <$ Hat.Term.Pty.writePty pane.pty (B.pack bytes)
+                            [] <$ typeIntoPane pane (B.pack bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise -> [] <$ Hat.Term.Pty.writePty pane.pty
+                    | otherwise -> [] <$ typeIntoPane pane
                         (B.concat (map (argBytes literal) pos))
   where
     argBytes True a = TE.encodeUtf8 a

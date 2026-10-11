@@ -10,6 +10,7 @@ module Hat.Model
     , Window (..)
     , Pane (..)
     , PaneStart (..)
+    , PaneKind (..)
     , PaneExit (..)
     , PipeHandle (..)
     , Client (..)
@@ -259,7 +260,16 @@ data Pane = Pane
     , exited   :: TVar (Maybe PaneExit)
         -- ^ 'Just' for a dead pane: its program ended and @remain-on-exit@
         -- kept it; see 'Hat.Server.Pane.paneEof'.
+    , kind     :: PaneKind
+    , inputOff :: TVar Bool
+        -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
     }
+
+-- | Whether a pane runs a program, or is one of tmux's empty panes
+-- (@split-window -E@ and friends): no process, only what is written to its
+-- screen.
+data PaneKind = ProgramPane | EmptyPane
+    deriving (Eq, Show)
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart

@@ -32,12 +32,12 @@ import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientActivePane, clientView, findTarget)
+import Hat.Server.Pane (typeIntoPane)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.FormatEnv (expandFormat)
 import Hat.Term.Emulator qualified as Emu
-import Hat.Term.Pty qualified
 import Hat.Transport.Wire
 
 cmdDetachClient :: CommandImpl
@@ -51,7 +51,7 @@ cmdSendPrefix st mclient _ = do
         opts <- readTVarIO st.options
         forM_ (parseKeyName opts.prefix) $ \key -> do
             mpane <- clientActivePane st client
-            forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty key.raw
+            forM_ mpane $ \pane -> typeIntoPane pane key.raw
     pure []
 
 -- | @display-panes [-bN] [-d delay-ms] [template]@: overlay each pane's

@@ -90,6 +90,7 @@ library
         Hat.Path
         Hat.PtrEq
         Hat.Server
+        Hat.Server.ArgNumber
         Hat.Server.ClientIO
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind

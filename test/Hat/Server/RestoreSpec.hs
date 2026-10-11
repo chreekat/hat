@@ -12,7 +12,7 @@ import System.Posix.IO (closeFd)
 import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
 
-import Hat.Geometry (Rect (..), Size (..))
+import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
     (PaneId (..), ServerState (..), Session (..), StartupPhase (..), Window (..),
@@ -32,7 +32,7 @@ import Hat.Server
      IdleArming (..), idleArming,
      renameRestored, uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
-import Hat.Server.Layout (Layout (..))
+import Hat.Server.Layout (fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
@@ -259,9 +259,7 @@ spec = do
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
                 \(m, _) -> do
             st <- testState
-            let lay = emitLayout
-                    Rect { startRow = 0, endRow = 30, startCol = 0, endCol = 100 }
-                    (Leaf (PaneId 0))
+            let lay = emitLayout (fitLayout Size { rows = 30, cols = 100 } (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = 999999
                     , modes = ReloadModes False False 0 False 0
@@ -289,9 +287,7 @@ spec = do
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
                 \(m, _) -> do
             st <- testState
-            let lay = emitLayout
-                    Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
-                    (Leaf (PaneId 0))
+            let lay = emitLayout (fitLayout Size { rows = 24, cols = 80 } (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = 999999
                     , modes = ReloadModes False False 0 False 0

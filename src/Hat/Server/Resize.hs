@@ -17,6 +17,7 @@ module Hat.Server.Resize
     , pickArea
     , rectSize
     , windowArrange
+    , windowLayoutAt
     ) where
 
 import Control.Concurrent.STM
@@ -186,6 +187,7 @@ paneSizeTargets :: ServerState -> STM [(Pane, Size)]
 paneSizeTargets st = do
     areas <- windowAreas st
     fmap concat $ forM areas $ \(win, eff) -> do
+        _ <- windowLayoutAt eff win
         (rects, _) <- windowArrange eff win
         ps <- readTVar win.panes
         pure [ (p, rectSize rect)
@@ -238,6 +240,15 @@ rectSize r = Size
     { rows = fromIntegral (max 1 (r.endRow - r.startRow))
     , cols = fromIntegral (max 1 (r.endCol - r.startCol))
     }
+
+-- | A window's layout resized to the area it is laid out at, kept as its
+-- layout from now on: tmux resizes a window's layout in place, so a later
+-- split or resize builds on the cells the panes really have.
+windowLayoutAt :: Size -> Window -> STM Layout
+windowLayoutAt eff win = do
+    lay <- readTVar win.layout
+    let lay' = fitLayout eff lay
+    if lay' == lay then pure lay else lay' <$ writeTVar win.layout lay'
 
 -- | Pane rects and borders for a window, honoring zoom. Arranging is
 -- pure in the window rect and the layout tree, so the last result is

@@ -1,59 +1,61 @@
 module Hat.Server.LayoutStringSpec (spec) where
 
-import Data.Ratio ((%))
+import Data.Text (Text)
 import Data.Text qualified as T
+import Numeric (showHex)
 import Test.Hspec
 
-import Hat.Geometry (Rect (..))
+import Hat.Geometry (Size (..))
 import Hat.Model.Ids (PaneId (..))
-import Hat.Server.Layout (Layout (..), Orientation (..), layoutPanes)
+import Hat.Server.Layout
+    ( Layout (..), Orientation (..), Placement (..), SplitSpan (..), SplitSpec (..)
+    , fitLayout, layoutPanes, singlePane, splitPane )
 import Hat.Server.LayoutString
 
-win :: Rect
-win = Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
+area :: Size
+area = Size { rows = 24, cols = 80 }
+
+-- | A body with its checksum prefix, as tmux prints it.
+prefixed :: Text -> Text
+prefixed body = T.justifyRight 4 '0' (T.pack (showHex (layoutChecksum body) "")) <> "," <> body
+
+halves :: Orientation -> Maybe Layout
+halves o = splitPane (SplitSpec o Nothing After SpanPane) (PaneId 0) (PaneId 1)
+    (fitLayout area (singlePane (PaneId 0)))
 
 spec :: Spec
 spec = do
     describe "emitLayout" $ do
-        it "emits a leaf as WxH,x,y,id with a checksum prefix" $
-            emitLayout win (Leaf (PaneId 3))
+        it "emits a pane as WxH,x,y,id with a checksum prefix" $
+            emitLayout (fitLayout area (singlePane (PaneId 3)))
                 `shouldBe` prefixed "80x24,0,0,3"
-        it "uses {} for a left-right split and [] for top-bottom" $ do
-            let lr = Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1))
-            emitLayout win lr `shouldSatisfy` T.isInfixOf "{"
-            let tb = Split TopBottom (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1))
-            emitLayout win tb `shouldSatisfy` T.isInfixOf "["
+        it "uses {} for a left-right node and [] for a top-bottom one" $ do
+            fmap emitLayout (halves LeftRight)
+                `shouldBe` Just (prefixed "80x24,0,0{40x24,0,0,0,39x24,41,0,1}")
+            fmap emitLayout (halves TopBottom)
+                `shouldBe` Just (prefixed "80x24,0,0[80x12,0,0,0,80x11,0,13,1]")
 
     describe "layoutFromString" $ do
-        it "round-trips a split layout back to the same pane structure" $ do
-            let lay = Split LeftRight (1 % 2)
-                    (Leaf (PaneId 0))
-                    (Split TopBottom (1 % 2) (Leaf (PaneId 1)) (Leaf (PaneId 2)))
-                str = emitLayout win lay
-            case layoutFromString str [PaneId 10, PaneId 11, PaneId 12] of
-                Just lay' -> layoutPanes lay'
-                    `shouldBe` [PaneId 10, PaneId 11, PaneId 12]
-                Nothing -> expectationFailure "failed to parse emitted layout"
-        it "preserves the split shape (orientations) on round-trip" $ do
-            let lay = Split TopBottom (1 % 3) (Leaf (PaneId 0)) (Leaf (PaneId 1))
-                str = emitLayout win lay
-            case layoutFromString str [PaneId 0, PaneId 1] of
-                Just (Split TopBottom _ (Leaf _) (Leaf _)) -> pure ()
-                other -> expectationFailure ("wrong shape: " <> show other)
-        it "rejects a layout string with too few panes" $
-            layoutFromString (emitLayout win (Leaf (PaneId 0))) []
-                `shouldBe` Nothing
-  where
-    prefixed body = hex4 body <> "," <> T.pack body
-    -- Recompute the checksum the same way the codec does, for the leaf test.
-    hex4 body =
-        let s = layoutChecksum (T.pack body)
-            h = showHex' s
-        in T.pack (replicate (4 - length h) '0') <> T.pack h
-    showHex' n = go n ""
-      where
-        go 0 acc | null acc = "0"
-                 | otherwise = acc
-        go k acc = go (k `div` 16) (hexDigit (k `mod` 16) : acc)
-        hexDigit d | d < 10 = toEnum (fromEnum '0' + d)
-                   | otherwise = toEnum (fromEnum 'a' + d - 10)
+        it "maps the cells onto the panes in order" $
+            fmap layoutPanes (layoutFromString
+                (prefixed "80x24,0,0{40x24,0,0,0,39x24,41,0[39x12,41,0,1,39x11,41,13,2]}")
+                [PaneId 10, PaneId 11, PaneId 12])
+                `shouldBe` Right [PaneId 10, PaneId 11, PaneId 12]
+        it "round-trips its own output" $ case halves TopBottom of
+            Nothing -> expectationFailure "no room to split"
+            Just lay -> fmap emitLayout (layoutFromString (emitLayout lay) [PaneId 0, PaneId 1])
+                `shouldBe` Right (emitLayout lay)
+        it "rejects a checksum that does not match the body" $
+            layoutFromString "0000,80x24,0,0,1" [PaneId 0]
+                `shouldBe` Left "invalid layout"
+        it "rejects more panes than cells" $
+            layoutFromString (prefixed "80x24,0,0,1") [PaneId 0, PaneId 1]
+                `shouldBe` Left "have 2 panes but need 1"
+        it "closes surplus cells bottom-right first" $
+            fmap emitLayout (layoutFromString
+                (prefixed "80x24,0,0{40x24,0,0,0,39x24,41,0,1}") [PaneId 7])
+                `shouldBe` Right (prefixed "80x24,0,0,7")
+        it "rejects children that do not fill their node" $
+            layoutFromString (prefixed "80x24,0,0{40x24,0,0,0,39x20,41,0,1}")
+                [PaneId 0, PaneId 1]
+                `shouldBe` Left "size mismatch after applying layout"

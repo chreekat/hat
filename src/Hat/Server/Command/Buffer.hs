@@ -38,10 +38,9 @@ import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
 import Hat.Server.Locate (findTarget, paneIndexOf, targetPane)
-import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe)
+import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe, typeIntoPane)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Emulator qualified as Emu
-import Hat.Term.Pty qualified
 
 -- | @set-buffer [-aw] [-b name] [-n new-name] [-t client] [data]@ and
 -- @delete-buffer [-b name]@ (tmux's @cmd-set-buffer.c@): without @-b@,
@@ -267,7 +266,7 @@ cmdPasteBuffer st mclient args = withFlags "paste-buffer" "dprS" flags $ do
                     let wrap b
                             | bracket = "\ESC[200~" <> b <> "\ESC[201~"
                             | otherwise = b
-                    Hat.Term.Pty.writePty pane.pty (wrap (pasteBytes pb.body))
+                    typeIntoPane pane (wrap (pasteBytes pb.body))
                     when (has "-d") $ modifyStore_ st (pasteFree pb.name)
                     pure []
   where

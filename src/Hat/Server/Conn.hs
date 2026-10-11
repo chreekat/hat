@@ -38,7 +38,6 @@ import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
 import Hat.Model.Options
-import Hat.Term.Pty qualified
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
@@ -505,8 +504,7 @@ runKeys d st client keys = do
                             dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
                                 then pure False
                                 else dismissDeadPane st pane
-                            unless dismissed $
-                                Hat.Term.Pty.writePty pane.pty raw
+                            unless dismissed $ typeIntoPane pane raw
                         RunCommands cmds -> withCommandBatch st $
                             forM_ cmds $ \argv ->
                                 toastReplies st client

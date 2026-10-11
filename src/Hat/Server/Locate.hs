@@ -11,6 +11,7 @@ module Hat.Server.Locate
     , findWindowIndexTarget
     , paneIndexOf
     , targetPane
+    , markedTarget
     , currentWindowOf
     , targetCurrentWindow
     , targetPaneScoped
@@ -208,6 +209,15 @@ paneIndexOf st win pane = do
     pbase <- (.paneBaseIndex) <$> readTVarIO st.options
     order <- atomically (map (.id) <$> windowPanes win)
     pure (maybe pbase (pbase +) (List.elemIndex pane.id order))
+
+-- | The marked pane as a source target, while it still exists (tmux's
+-- @CMD_FIND_DEFAULT_MARKED@).
+markedTarget :: ServerState -> IO (Maybe Text)
+markedTarget st = atomically $ do
+    mpid <- readTVar st.markedPane
+    case mpid of
+        Nothing -> pure Nothing
+        Just pid -> fmap (const ("%" <> tshow (rawPane pid))) <$> locatePane st pid
 
 -- | Resolve a @-t@ pane token: @!@ the last pane, @{marked}@ the
 -- marked pane, @%N@ a pane by id anywhere; otherwise the current pane
