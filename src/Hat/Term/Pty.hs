@@ -24,6 +24,8 @@ module Hat.Term.Pty
     , masterFd
     , signalHangup
     , signalKill
+    , signalTerm
+    , closeOnExec
     , closePty
     , pid
     , foregroundCommand
@@ -56,9 +58,9 @@ import Foreign.C.Types
 import GHC.IO.Device qualified as Device
 import GHC.IO.FD qualified as FD
 import System.IO
-import System.Posix.IO (closeFd, fdToHandle)
+import System.Posix.IO (FdOption (CloseOnExec), closeFd, fdToHandle, setFdOption)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
-import System.Posix.Signals (signalProcess, sigHUP, sigKILL)
+import System.Posix.Signals (signalProcess, sigHUP, sigKILL, sigTERM)
 import System.Posix.Terminal
     ( TerminalState (Immediately)
     , getTerminalAttributes
@@ -401,6 +403,17 @@ signalHangup pty = do
     reaped <- isReaped pty
     unless reaped $
         signalProcess sigHUP pty.child `catch` \(_ :: IOException) -> pure ()
+
+-- | Send SIGTERM to the child, swallowing "process gone" errors.
+signalTerm :: PtyHandle -> IO ()
+signalTerm pty = do
+    reaped <- isReaped pty
+    unless reaped $
+        signalProcess sigTERM pty.child `catch` \(_ :: IOException) -> pure ()
+
+-- | Keep the master from surviving an exec of this process.
+closeOnExec :: PtyHandle -> IO ()
+closeOnExec pty = whenOpen pty () (setFdOption pty.master CloseOnExec True)
 
 -- | Send SIGKILL to the pane's child, swallowing "process gone" errors.
 -- The escalation for a child that outlives SIGHUP.

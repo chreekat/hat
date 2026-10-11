@@ -50,6 +50,7 @@ import Hat.Server.Control
 import Hat.Server.ControlQueue (requestExit)
 import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Overlay
+import Hat.Server.PopupIO (closePopup, popupKeyInput, refitClientPopup)
 import Hat.Server.Startup
 import Hat.Server.DisplayPanes
 import Hat.Server.Flash
@@ -257,6 +258,7 @@ newClient st conn h = do
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     pickerVar <- newTVarIO Nothing
+    popupVar <- newTVarIO Nothing
     displayPanesVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
@@ -294,6 +296,7 @@ newClient st conn h = do
         , flash = flashVar
         , prompt = promptVar
         , picker = pickerVar
+        , popup = popupVar
         , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
@@ -316,6 +319,8 @@ removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do
     sid <- readTVarIO client.session
     atomically $ modifyTVar' st.clients (Map.delete client.id)
+    -- tmux's server_client_lost clears the overlay: the popup's command ends.
+    mapM_ (closePopup st client) =<< readTVarIO client.popup
     attached <- atomically (findSessionById st sid)
     forM_ attached $ \sess -> do
         sname <- readTVarIO sess.name
@@ -406,6 +411,7 @@ inputLoop d st re client = loop
                     loop
                 Resize sz -> do
                     atomically (writeTVar client.size sz)
+                    refitClientPopup st client
                     sid <- readTVarIO client.session
                     applySessionSize st sid
                     loop
@@ -490,7 +496,8 @@ handleInput d st client bs = do
 
 -- | What a client's keystrokes go to: an open overlay, else its key tables.
 data KeyOwner
-    = MenuOverlay Window
+    = PopupOverlay Popup
+    | MenuOverlay Window
     | PanesOverlay DisplayPanesState
     | PickerOverlay PickerState
     | PromptOverlay PromptState
@@ -504,7 +511,9 @@ keyOwner st client = do
     mpanes <- readTVarIO client.displayPanes
     mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
+    mpopup <- readTVarIO client.popup
     pure $ case (menuWin, mpanes, mpicker, mprompt) of
+        _ | Just p <- mpopup -> PopupOverlay p
         (Just win, _, _, _) -> MenuOverlay win
         (_, Just dp, _, _) -> PanesOverlay dp
         (_, _, Just pk, _) -> PickerOverlay pk
@@ -516,6 +525,9 @@ keyOwner st client = do
 deliverKeys :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
 deliverKeys _ _ _ [] = pure ()
 deliverKeys d st client keys@(k : ks) = keyOwner st client >>= \case
+    PopupOverlay p -> do
+        popupKeyInput st client p k
+        deliverKeys d st client ks
     MenuOverlay win -> do
         handleMenuInput d st client win k
         deliverKeys d st client ks

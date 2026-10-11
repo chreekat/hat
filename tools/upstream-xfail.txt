@@ -26,7 +26,6 @@ screen-redraw-bidi.sh
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # hat's triangle indicators (see border-arrows.sh); capture-pane -e emits an SGR reset on an empty line after a coloured one
 screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
-screen-redraw-popups.sh
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh

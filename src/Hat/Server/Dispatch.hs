@@ -66,6 +66,8 @@ import Hat.Server.Hooks
     (PayloadItem (..), inHook, installEventSink, installHookEngine, notify)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Menu (cmdDisplayMenu)
+import Hat.Server.Command.Popup (cmdDisplayPopup)
+import Hat.Server.PopupIO (closeAllPopups)
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
 import Hat.Server.Command.Option
@@ -376,6 +378,7 @@ commandSpecs =
     , (["choose-window", "choosew"], cmdChooseWindow)
     , (["display-panes", "displayp"], cmdDisplayPanes)
     , (["display-menu", "menu"], cmdDisplayMenu)
+    , (["display-popup", "popup"], cmdDisplayPopup)
     , (["show-buffer", "showb"], cmdShowBuffer)
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)
@@ -557,6 +560,9 @@ cmdReload' scope st mclient args =
                     -- orphans accrued on the dev box across upgrades). Reap it here,
                     -- while we can still signal it.
                     reapMonitor st.monitorRegistry
+                    -- A popup's command is no pane: nothing carries it across
+                    -- the exec, so it ends here, hung up and reaped.
+                    closeAllPopups st
                     saveHistory st  -- the next image loads it after its config
                     logEvent st.logger ReloadExec { panes = length cleanup.live }
                     -- The self-exec replaces this image, so 'withLogger's

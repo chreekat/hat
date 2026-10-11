@@ -801,6 +801,29 @@ spec = parallel $ do
             (_, out, _) <- hatCtl h ["show", "-gv", "@cur"]
             pure (out == "%1\n")
 
+    it "shows a key's display-popup over the client, its command taking keys, until it exits" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["bind", "P", "display-popup", "-E", "printf POP-$((6*7)); read x"]
+        typeInto c "\x02P"
+        awaitScreen c "POP-42"
+        typeInto c "\r"
+        awaitWith "the popup to close" (fmap (not . T.isInfixOf "POP-42") . screenText) c
+
+    it "ends a popup's command across restart-server, leaving nothing behind" $
+        withHat hatBin $ \h -> do
+        let pidFile = h.home <> "/popup.pid"
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["bind", "P", "display-popup", "echo $$ > " <> pidFile <> "; exec sleep 1000"]
+        typeInto c "\x02P"
+        pid <- read <$> awaitFile pidFile (not . null . words)
+        _ <- hatCtl h ["restart-server", h.bin]
+        awaitTrue "the handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitTrue "the popup's command to be reaped" (not <$> pidAlive pid)
+
     it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
         withHat hatBin $ \h -> do
         let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]

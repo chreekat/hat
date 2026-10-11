@@ -33,6 +33,7 @@ module Hat.Server.Mouse
       -- * Panes
     , mouseAt
     , mouseBytes
+    , mouseInputBytes
     , PaneMouseMode (..)
     , isMouseKey
     , isMoveKey
@@ -532,24 +533,29 @@ data PaneMouseMode = PaneMouseMode
 -- event at a pane-relative position, or 'Nothing' when it asked for none of
 -- this kind.
 mouseBytes :: PaneMouseMode -> MouseEvent -> (Int, Int) -> Maybe ByteString
-mouseBytes mode ev (px, py)
+mouseBytes mode ev = mouseInputBytes mode ev.input ev.lastB
+
+-- | 'mouseBytes' for a bare report, with the button of the report before
+-- it.
+mouseInputBytes :: PaneMouseMode -> MouseInput -> Int -> (Int, Int) -> Maybe ByteString
+mouseInputBytes mode m lastB (px, py)
     | mode.tracking == 0 = Nothing
-    | isDrag ev.input.b && mode.tracking < 2 = Nothing
-    | ev.input.sgrType /= ' ', isDrag ev.input.sgrB, isRelease ev.input.sgrB
+    | isDrag m.b && mode.tracking < 2 = Nothing
+    | m.sgrType /= ' ', isDrag m.sgrB, isRelease m.sgrB
     , mode.tracking < 3 = Nothing
-    | ev.input.sgrType == ' ', isDrag ev.input.b, isRelease ev.input.b
-    , isRelease ev.lastB, mode.tracking < 3 = Nothing
-    | ev.input.sgrType /= ' ' && mode.sgr = Just $ B8.pack $
-        "\ESC[<" <> show ev.input.sgrB <> ";" <> show (px + 1) <> ";"
-            <> show (py + 1) <> [ev.input.sgrType]
+    | m.sgrType == ' ', isDrag m.b, isRelease m.b
+    , isRelease lastB, mode.tracking < 3 = Nothing
+    | m.sgrType /= ' ' && mode.sgr = Just $ B8.pack $
+        "\ESC[<" <> show m.sgrB <> ";" <> show (px + 1) <> ";"
+            <> show (py + 1) <> [m.sgrType]
     | mode.utf8 =
-        if ev.input.b > 0x7ff - 0x20 || px > 0x7ff - 0x21 || py > 0x7ff - 0x21
+        if m.b > 0x7ff - 0x20 || px > 0x7ff - 0x21 || py > 0x7ff - 0x21
             then Nothing
-            else Just ("\ESC[M" <> split2 (ev.input.b + 0x20) <> split2 (px + 0x21)
+            else Just ("\ESC[M" <> split2 (m.b + 0x20) <> split2 (px + 0x21)
                         <> split2 (py + 0x21))
-    | ev.input.b + 0x20 > 0xff = Nothing
+    | m.b + 0x20 > 0xff = Nothing
     | otherwise = Just ("\ESC[M" <> B.pack (map fromIntegral
-        [ev.input.b + 0x20, min 0xff (px + 0x21), min 0xff (py + 0x21)]))
+        [m.b + 0x20, min 0xff (px + 0x21), min 0xff (py + 0x21)]))
   where
     -- tmux's @input_key_split2@: a value above 0x7f as two UTF-8 bytes.
     split2 c

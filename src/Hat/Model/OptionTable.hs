@@ -652,11 +652,11 @@ optionTable =
         "bg=themedarkgrey,fg=themelightgrey,width=1,pad=0"
     , live $ scalar "pane-scrollbars-position" WindowScope
         (KChoice ["right", "left"]) "right"
-    , notYet $ scalar "popup-style" WindowScope KStyle
+    , live $ scalar "popup-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themewhite"
-    , notYet $ scalar "popup-border-style" WindowScope KStyle
+    , live $ scalar "popup-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
-    , notYet $ scalar "popup-border-lines" WindowScope (KChoice popupLines) "single"
+    , live $ scalar "popup-border-lines" WindowScope (KChoice popupLines) "single"
     , paneLocal $ live $
         scalar "remain-on-exit" WindowPaneScope
             (KChoice ["off", "on", "failed", "key"]) "off"

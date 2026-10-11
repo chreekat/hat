@@ -109,6 +109,7 @@ library
         Hat.Server.Command.Layout
         Hat.Server.Command.Menu
         Hat.Server.Command.Option
+        Hat.Server.Command.Popup
         Hat.Server.Command.Pane
         Hat.Server.Command.Session
         Hat.Server.Command.Types
@@ -152,6 +153,8 @@ library
         Hat.Server.PaneColours
         Hat.Server.Persist
         Hat.Server.Picker
+        Hat.Server.Popup
+        Hat.Server.PopupIO
         Hat.Server.Prompt
         Hat.Server.PromptHistory
         Hat.Server.Rebuild
@@ -335,6 +338,7 @@ test-suite hat-test
         Hat.Server.PaneCommandSpec
         Hat.Server.PaneReaderSpec
         Hat.Server.PickerSpec
+        Hat.Server.PopupSpec
         Hat.Server.PromptSpec
         Hat.Server.PromptHistorySpec
         Hat.Server.ReloadSpec

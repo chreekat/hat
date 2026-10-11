@@ -55,6 +55,7 @@ module Hat.Model
     , PromptKeys (..)
     , PromptMode (..)
     , PickerState (..)
+    , Popup (..)
     , PickerNode (..)
     , Expansion (..)
     , PickerMode (..)
@@ -129,6 +130,7 @@ import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.Server.Floating (FloatState)
 import Hat.Server.Menu (WindowMenu)
+import Hat.Server.Popup (JobState, PopupState)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeLook, Scene, SceneInput)
@@ -779,6 +781,7 @@ data Client = Client
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
     , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
+    , popup     :: TVar (Maybe Popup)  -- ^ display-popup overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see
         -- 'noteOuterFocus' and 'attentionSeen'.
@@ -789,6 +792,20 @@ data Client = Client
     , control   :: Maybe ControlState
         -- ^ a tmux control-mode client's protocol state; 'Nothing' for
         --   every other client. See "Hat.Server.Control".
+    }
+
+-- | A client's popup: its box, and the command running on a pty of its
+-- own. See "Hat.Server.PopupIO".
+data Popup = Popup
+    { state :: TVar PopupState
+    , jobPty :: Hat.Term.Pty.PtyHandle  -- ^ the command's pty
+    , screen :: Emu.Emulator  -- ^ what the command has drawn
+    , job :: TVar JobState
+    , status :: TVar Int
+        -- ^ what the popup reports when it closes: the command's exit
+        --   status or signal, 128 + SIGHUP while it still runs
+    , reader :: TVar (Maybe ThreadId)
+    , closed :: TVar Bool
     }
 
 -- | Where a command's @-@ path reads from: the issuing command client's

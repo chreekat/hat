@@ -141,6 +141,8 @@ spot-read of each suspect consumer.
 | `xterm-keys` | none — tmux keeps it only for compatibility, with no effect | implemented (by design) | — |
 | `menu-style` / `menu-selected-style` / `menu-border-style` | `withMenu` (View.hs) → `menuGrid` (Menu.hs): re-read and format-expanded on every frame, the `display-menu` `-s`/`-H`/`-S` colours over them (`overrideColours`) | implemented ✅ tested | pure (MenuSpec) |
 | `menu-border-lines` | `cmdDisplayMenu` (Command/Menu.hs) when `-b` is not given → `drawBox`/`drawHLine` (Box.hs) | implemented ✅ tested | pure (MenuSpec) |
+| `popup-style` / `popup-border-style` | `popupView` (View.hs) → `popupGrid` (Popup.hs): re-read and format-expanded on every frame, the `display-popup` `-s`/`-S` colours over them | implemented ✅ tested | pure (PopupSpec) |
+| `popup-border-lines` | `cmdDisplayPopup` (Command/Popup.hs) when neither `-b` nor `-B` is given → `popupGrid`/`innerSize` (Popup.hs) | implemented ✅ tested | pure (PopupSpec) |
 
 ## Defects (the backlog)
 

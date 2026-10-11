@@ -49,6 +49,7 @@ import Hat.Server.OptionsSpec qualified
 import Hat.Server.PaneCommandSpec qualified
 import Hat.Server.PaneReaderSpec qualified
 import Hat.Server.PickerSpec qualified
+import Hat.Server.PopupSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.PromptHistorySpec qualified
 import Hat.Server.ReloadSpec qualified
@@ -127,6 +128,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Clock" Hat.Server.ClockSpec.spec
     describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
+    describe "Hat.Server.Popup" Hat.Server.PopupSpec.spec
     describe "Hat.Server.Status" Hat.Server.StatusSpec.spec
     describe "Hat.Server.Menu" Hat.Server.MenuSpec.spec
     describe "Hat.Server.Message" Hat.Server.MessageSpec.spec

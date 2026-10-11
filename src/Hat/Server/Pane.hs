@@ -23,6 +23,7 @@ module Hat.Server.Pane
     , paneShell
     , paneProgram
     , spawnPane
+    , programEnv
     , emptyPane
     , launchOf
     , respawnPane
@@ -57,6 +58,7 @@ module Hat.Server.Pane
     , typeIntoPane
     , syncTargets
     , typeKeyIntoPane
+    , keyBytesFor
     , typeIntoPaneSynced
     , hostPolicyOf
     , reencodeKey
@@ -321,25 +323,9 @@ spawnPane
     :: ServerState -> PaneId -> SessionId -> FilePath -> PaneStart
     -> FilePath -> [(Text, Text)] -> Size -> IO Pane
 spawnPane st pid sid shellCmd mrun dir environ sz = do
-    serverPid <- getProcessID
     opts <- readTVarIO st.options
-    let cleanEnv =
-            [ (T.unpack k, T.unpack v)
-            | (k, v) <- environ
-            , k `notElem` ["TERM", "TMUX", "TMUX_PANE", "HAT", "HAT_PANE", "SHELL"]
-            ]
-        hatVar = st.sockPath <> "," <> show serverPid <> ","
-            <> show (rawSession sid)
-        term = T.unpack opts.defaultTerminal
-        paneEnv = cleanEnv <>
-            [ ("TERM", term)
-            , ("TMUX", hatVar)
-            , ("HAT", hatVar)
-            , ("TMUX_PANE", "%" <> show (rawPane pid))
-            , ("HAT_PANE", "%" <> show (rawPane pid))
-            , ("SHELL", shellCmd)
-            ]
-        -- A 'ShellInject' pane is a fresh shell like any other; its argv
+    paneEnv <- programEnv st sid (Just pid) shellCmd environ
+    let -- A 'ShellInject' pane is a fresh shell like any other; its argv
         -- rides as pending input the reader types once the shell prints (see
         -- startPaneReader).
         (cmd, args) = paneProgram shellCmd mrun
@@ -357,6 +343,30 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     logEvent st.logger PaneSpawned
         { pane = rawPane pid, cmd = T.pack cmd }
     newPane pid pty emu sz dir pending mrun ProgramPane
+
+-- | The environment a program hat spawns runs in: @environ@ less what hat
+-- sets itself — the terminal, the server and session (@TMUX@), the pane
+-- (@TMUX_PANE@) when there is one, and the shell.
+programEnv
+    :: ServerState -> SessionId -> Maybe PaneId -> FilePath -> [(Text, Text)]
+    -> IO [(String, String)]
+programEnv st sid mpid shellCmd environ = do
+    serverPid <- getProcessID
+    opts <- readTVarIO st.options
+    let cleanEnv =
+            [ (T.unpack k, T.unpack v)
+            | (k, v) <- environ
+            , k `notElem` ["TERM", "TMUX", "TMUX_PANE", "HAT", "HAT_PANE", "SHELL"]
+            ]
+        hatVar = st.sockPath <> "," <> show serverPid <> ","
+            <> show (rawSession sid)
+    pure $ cleanEnv <>
+        [ ("TERM", T.unpack opts.defaultTerminal)
+        , ("TMUX", hatVar)
+        , ("HAT", hatVar) ]
+        <> concat [ [ ("TMUX_PANE", "%" <> show (rawPane pid))
+                    , ("HAT_PANE", "%" <> show (rawPane pid)) ] | Just pid <- [mpid] ]
+        <> [ ("SHELL", shellCmd) ]
 
 -- | What a spawning command's arguments ask for (tmux's @SPAWN_EMPTY@ and
 -- argv): @-E@, or a lone empty argument, makes an empty pane; one argument
@@ -1036,11 +1046,15 @@ typeKeyIntoPane st pane key = do
 -- what the @backspace@ option names, a @User@/N/ key sends nothing, and
 -- every other key is encoded for the pane's terminal ('reencodeKey').
 paneKeyBytes :: KeyEncoding -> Text -> Pane -> Key -> IO (Maybe B.ByteString)
-paneKeyBytes kenc bspace p key = case key.name of
+paneKeyBytes kenc bspace p = keyBytesFor kenc bspace p.emulator
+
+-- | 'paneKeyBytes' for any emulator's program.
+keyBytesFor :: KeyEncoding -> Text -> Emu.Emulator -> Key -> IO (Maybe B.ByteString)
+keyBytesFor kenc bspace emu key = case key.name of
     "BSpace" -> pure (backspaceBytes bspace)
     "M-BSpace" -> pure (("\ESC" <>) <$> backspaceBytes bspace)
     n | isUserKey n -> pure Nothing
-    _ -> Just . (.raw) <$> reencodeKey kenc (Just p.emulator) key
+    _ -> Just . (.raw) <$> reencodeKey kenc (Just emu) key
 
 -- | How keys are encoded for panes under these (server) options.
 keyEncoding :: Options -> KeyEncoding

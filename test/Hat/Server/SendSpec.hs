@@ -50,6 +50,7 @@ mkClient = do
     flashV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
     pickV   <- newTVarIO Nothing
+    popupV  <- newTVarIO Nothing
     dpanesV <- newTVarIO Nothing
     focusV  <- newTVarIO True
     envImpV <- newTVarIO ImportEnv
@@ -65,7 +66,7 @@ mkClient = do
             , lastMouseMode = mouseModeVar
             , lastCursorColour = colourV, lastCursorShape = shapeVar
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
-            , picker = pickV, displayPanes = dpanesV
+            , picker = pickV, popup = popupV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "", stdinSource = NoStdin, control = Nothing }
     re <- newReadEnd b

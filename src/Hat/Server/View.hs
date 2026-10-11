@@ -63,6 +63,7 @@ import Hat.Server.Menu
     (MenuLook (..), MenuMouse (..), WindowMenu (..), menuGrid, menuHeight, menuWidth
     , overrideColours)
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
+import Hat.Server.Popup (PopupState (..), popupCursor, popupGrid)
 import Hat.Server.Mouse qualified as Mouse
 import Hat.Server.FormatDraw (DrawRange)
 import Hat.Server.Status (statusFormats, statusRanges, statusRows)
@@ -306,21 +307,28 @@ renderOnce st client = do
     menuShown <- case view of
         Just (_, win, _, _, _, _) -> isJust <$> readTVarIO win.menu
         Nothing -> pure False
-    let cursor'' = if menuShown then (fst cursor', False) else cursor'
+    -- The popup draws over everything, and its command's cursor is the
+    -- client's.
+    mpopup <- readTVarIO client.popup
+    (frame3, origins3, cursor'') <- case (mpopup, view) of
+        (Just p, Just (sess, win, _, _, _, _)) -> do
+            (grid, rect, cur) <- popupView st sess win p
+            pure (overlayGrid frame'' rect grid, volatileRows rect origins'', cur)
+        _ -> pure (frame'', origins'', if menuShown then (fst cursor', False) else cursor')
     old <- readIORef client.lastFrame
     oldOrigins <- readIORef client.lastOrigins
     oldCursor <- readIORef client.lastCursor
     -- A diff is only valid between same-sized frames; force full on any
     -- dimension change.
-    let full = fullFlag || frameDims old /= frameDims frame''
-        known r = case (oldOrigins V.!? r, origins'' V.!? r) of
+    let full = fullFlag || frameDims old /= frameDims frame3
+        known r = case (oldOrigins V.!? r, origins3 V.!? r) of
             (Just a, Just b) -> sameOrigin a b
             _ -> False
-        ops = if full then fullRedraw frame'' else diffFrameKnown known old frame''
+        ops = if full then fullRedraw frame3 else diffFrameKnown known old frame3
         cursorOp = CursorAt (fst cursor'') (snd cursor'')
         needSend = not (null ops) || cursor'' /= oldCursor || full
-    writeIORef client.lastFrame frame''
-    writeIORef client.lastOrigins origins''
+    writeIORef client.lastFrame frame3
+    writeIORef client.lastOrigins origins3
     writeIORef client.lastCursor cursor''
     when needSend $ send client (Draw (ops <> [cursorOp]))
     -- The moved-to pane is now on screen, so a pending move-linger starts its
@@ -358,6 +366,33 @@ renderOnce st client = do
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
 
 
+-- | A client's popup drawn (tmux's @popup_draw_cb@): its box and its
+-- command's screen in @popup-style@ and @popup-border-style@, re-read on
+-- every frame in the client's current window's context, under the colours
+-- its flags give; where it goes; and its command's cursor.
+popupView
+    :: ServerState -> Session -> Window -> Popup
+    -> IO (V.Vector (V.Vector Cell.Cell), Rect, (Pos, Bool))
+popupView st sess win p = do
+    th <- clientTheme st
+    ps <- readTVarIO p.state
+    scr <- Emu.snapshot p.screen
+    (wix, wopts) <- atomically $ (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
+    env <- windowFormatEnv st sess wix win
+    let styleOf name = do
+            let raw = optionText name wopts
+            expanded <- if "#{" `T.isInfixOf` raw then expandFormat st env raw else pure raw
+            pure (styleCell th expanded)
+    dflt <- (\c -> overrideColours th c ps.style) <$> styleOf "popup-style"
+    bdr <- (\c -> overrideColours th c ps.borderStyle) <$> styleOf "popup-border-style"
+    let colours c = Cell.defaultStyle { Cell.fg = c.fg, Cell.bg = c.bg }
+        grid = paintDefaults (dflt.fg, dflt.bg)
+            (popupGrid th (colours bdr) ps scr.cells)
+        rect = Rect { startRow = ps.py, endRow = ps.py + ps.sy
+                    , startCol = ps.px, endCol = ps.px + ps.sx }
+        (cx, cy) = popupCursor ps (scr.cursor.col, scr.cursor.row)
+    pure (grid, rect, (Pos { row = cy, col = cx }, scr.cursorVisible))
+
 -- | The cells a drawing writes into an @n@-cell row, by column: what it
 -- leaves untouched is no cell at all.
 drawnCells :: (V.Vector Cell.Cell -> V.Vector Cell.Cell) -> Int -> [(Int, Cell.Cell)]
@@ -393,8 +428,18 @@ hex2 w = T.pack [digit (w `div` 16), digit (w `mod` 16)]
 syncMouseMode :: ServerState -> Client -> Maybe (Session, Window, Map.Map PaneId Pane, PaneId) -> IO ()
 syncMouseMode st client view = do
     mmenu <- maybe (pure Nothing) (\(_, win, _, _) -> readTVarIO win.menu) view
+    mpopup <- readTVarIO client.popup
     want <- case view of
         Nothing -> pure 0
+        Just (sess, _, _, _) | Just p <- mpopup -> do
+            o <- atomically (resolveForSession st sess)
+            ms <- Emu.modes p.screen
+            let own = case ms.mouse of
+                    Emu.MouseOff -> 0
+                    Emu.MouseClick -> 1
+                    Emu.MouseDrag -> 2
+                    Emu.MouseMove -> 3
+            pure $ Mouse.overlayMouseMode (optionFlag "mouse" o) (optionFlag "focus-follows-mouse" o) own
         Just (sess, _, _, _) | Just wm <- mmenu -> do
             o <- atomically (resolveForSession st sess)
             pure $ Mouse.overlayMouseMode (optionFlag "mouse" o) (optionFlag "focus-follows-mouse" o)

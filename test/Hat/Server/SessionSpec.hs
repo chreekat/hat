@@ -175,6 +175,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing  -- displayPanes
+        <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True     -- outerFocused
         <*> newTVarIO ImportEnv
         <*> pure []
@@ -218,6 +219,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing  -- displayPanes
+        <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True
         <*> newTVarIO ImportEnv
         <*> pure clientEnv

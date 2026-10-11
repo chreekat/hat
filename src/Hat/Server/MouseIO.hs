@@ -12,6 +12,7 @@ module Hat.Server.MouseIO
     , startNewPaneDrag
     , resizeBorderTo
     , mouseFormatVars
+    , emulatorMouseMode
     , startSelectionDrag
     , moveCopyCursor
     ) where
@@ -278,16 +279,21 @@ sendMouse st ev = unless ev.ignore $ do
     mp <- mouseEventPane st ev
     forM_ mp $ \(_, _, pane, mbox) -> forM_ mbox $ \box ->
         forM_ (mouseAt False ev box) $ \pos -> do
-            ms <- Emu.modes pane.emulator
-            (sgr', utf8') <- Emu.mouseEncoding pane.emulator
-            let mode = PaneMouseMode
-                    { tracking = case ms.mouse of
-                        Emu.MouseOff -> 0
-                        Emu.MouseClick -> 1
-                        Emu.MouseDrag -> 2
-                        Emu.MouseMove -> 3
-                    , sgr = sgr', utf8 = utf8' }
+            mode <- emulatorMouseMode pane.emulator
             forM_ (mouseBytes mode ev pos) (typeIntoPane pane)
+
+-- | The mouse tracking an emulator's program turned on.
+emulatorMouseMode :: Emu.Emulator -> IO PaneMouseMode
+emulatorMouseMode emu = do
+    ms <- Emu.modes emu
+    (sgr', utf8') <- Emu.mouseEncoding emu
+    pure PaneMouseMode
+        { tracking = case ms.mouse of
+            Emu.MouseOff -> 0
+            Emu.MouseClick -> 1
+            Emu.MouseDrag -> 2
+            Emu.MouseMove -> 3
+        , sgr = sgr', utf8 = utf8' }
 
 -- | The @mouse_*@ format variables for the event a binding acts on (tmux's
 -- @format_cb_mouse_*@): where it is in the pane under it, or on the status
