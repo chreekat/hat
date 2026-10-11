@@ -61,6 +61,7 @@ import Hat.Server.Environ
 import Hat.Server.Snapshot (cmdListSnapshots, cmdRestoreSnapshot)
 import Hat.Term.Pty qualified as Pty
 import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
+import Hat.Server.Keymap (defaultKeymap)
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
@@ -1616,3 +1617,22 @@ spec = do
             handleInput dispatch st client "q"
             readTVarIO win.activeId `shouldReturn` PaneId 0
             readTVarIO client.displayPanes `shouldReturn` Nothing
+
+    describe "input routing within a chunk" $ do
+        let keyed = do
+                (st, sess) <- seedSession "/"
+                atomically $ writeTVar st.keymap defaultKeymap
+                _ <- addWindow sess 0
+                client <- addClient st sess.id (Size 24 80) 1
+                pure (st, client)
+        it "keys after the key that opens the prompt are typed into it" $ do
+            (st, client) <- keyed
+            handleInput dispatch st client "\x02:abc"
+            fmap (.input) <$> readTVarIO client.prompt `shouldReturn` Just "abc"
+        it "keys after the prompt's Enter reach normal key handling" $ do
+            (st, client) <- keyed
+            handleInput dispatch st client "\x02:"
+            handleInput dispatch st client "set -g @x 1\r\x02:"
+            Map.lookup "@x" . (.user) <$> readTVarIO st.options
+                `shouldReturn` Just "1"
+            fmap (.input) <$> readTVarIO client.prompt `shouldReturn` Just ""

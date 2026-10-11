@@ -9,28 +9,29 @@ module Hat.Server.Overlay
 
 import Control.Concurrent.STM
 import Control.Monad (unless)
-import Data.ByteString qualified as B
-import Data.List qualified as List
 import Data.Text qualified as T
 
 import Hat.Model
 import Hat.Server.Command.Types (Dispatch (..))
-import Hat.Server.Keys (Key, tokenizeKeys)
+import Hat.Server.Keys (Key)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.Toast (toastReplies)
 
 -- | While a chooser is open it owns every keystroke: navigate/search
--- until Enter (run the item's command and close) or Escape (close).
+-- until Enter (run the item's command and close) or Escape (close). The
+-- keys after the one that closed it are returned unread.
 handlePickerInput
-    :: Dispatch -> ServerState -> Client -> PickerState -> [Key] -> IO ()
-handlePickerInput _ _ _ _ [] = pure ()
+    :: Dispatch -> ServerState -> Client -> PickerState -> [Key] -> IO [Key]
+handlePickerInput _ _ _ _ [] = pure []
 handlePickerInput d st client pk0 keys = do
-    let step acc k = case acc of
-            Picker.PickerStay pk -> Picker.editPicker pk k
-            done -> done
-        result = List.foldl' step (Picker.PickerStay pk0) keys
-    case result of
+    let go pk = \case
+            [] -> (Picker.PickerStay pk, [])
+            k : ks -> case Picker.editPicker pk k of
+                Picker.PickerStay pk' -> go pk' ks
+                done -> (done, ks)
+        (result, rest) = go pk0 keys
+    rest <$ case result of
         Picker.PickerStay pk -> atomically $ do
             writeTVar client.picker (Just pk)
             bumpDirty st
@@ -45,16 +46,19 @@ closePicker st client = atomically $ do
     bumpDirty st
 
 -- | While the command prompt is open it owns every keystroke: the line
--- editor consumes them until Enter (run and close) or Escape (close).
+-- editor consumes them until Enter (run and close) or Escape (close). The
+-- keys after the one that closed it are returned unread.
 handlePromptInput
-    :: Dispatch -> ServerState -> Client -> PromptState -> B.ByteString -> IO ()
-handlePromptInput d st client pr0 bs = do
+    :: Dispatch -> ServerState -> Client -> PromptState -> [Key] -> IO [Key]
+handlePromptInput d st client pr0 keys = do
     history <- readTVarIO st.cmdHistory
-    let step acc k = case acc of
-            Prompt.Editing pr -> Prompt.editPrompt history pr k
-            done -> done
-        result = List.foldl' step (Prompt.Editing pr0) (tokenizeKeys bs)
-    case result of
+    let go pr = \case
+            [] -> (Prompt.Editing pr, [])
+            k : ks -> case Prompt.editPrompt history pr k of
+                Prompt.Editing pr' -> go pr' ks
+                done -> (done, ks)
+        (result, rest) = go pr0 keys
+    rest <$ case result of
         Prompt.Editing pr -> atomically $ do
             writeTVar client.prompt (Just pr)
             bumpDirty st
