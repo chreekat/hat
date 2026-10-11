@@ -426,8 +426,8 @@ selectPaneNumber d st client template num = do
     opts <- clientOptions st client
     mwin <- currentWindowOf st (Just client)
     forM_ mwin $ \win -> do
-        ps <- readTVarIO win.panes
-        let numbered = zip [opts.paneBaseIndex ..] (Map.keys ps)
+        order <- atomically (map (.id) <$> windowPanes win)
+        let numbered = zip [opts.paneBaseIndex ..] order
         forM_ (lookup num numbered) $ \pid -> do
             let target = "%" <> tshow (rawPane pid)
             toastReplies st client

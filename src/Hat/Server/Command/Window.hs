@@ -18,19 +18,20 @@ module Hat.Server.Command.Window
     , cmdPrevWindow
     , cmdLastWindow
     , cmdActivityWindow
-    , jumpToActivity
-    , cycleWindow
     , cmdResizeWindow
     , cmdKillWindow
     , cmdRenameWindow
     , cmdMoveWindow
     , cmdLinkWindow
     , cmdUnlinkWindow
+    , cmdSwapWindow
+    , cmdRotateWindow
+    , closeSessions
     , switchTo
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM, forM_, unless, void, when)
+import Control.Monad (filterM, foldM, forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
@@ -42,18 +43,28 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum)
+import Hat.Server.Command.Types
+    (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Server.ClientIO (broadcast)
+import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), notify, notifyWindow
-    , sessionTarget )
-import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupDrops
+    , notifyWindow, sessionTarget )
+import Hat.Server.Layout (Rotation (..), layoutPanes, rotateLeaves)
+import Hat.Server.Winlink
+    ( Step (..), stepWindow, attachWindow, detachWindow, dropSessionGroup, groupMembers, shuffleUp
+    , windowLinks )
+import Hat.Transport.Wire (ServerToClient (Exited))
+import Hat.Server.Locate
+    (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
     , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
-    , windowActivity, windowHolders )
+    , windowActivity )
 import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
-import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv
+    (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
 import Hat.Server.Target qualified as Target
 
 -- | The first index at or above @start@ not already taken by a window, so a
@@ -89,8 +100,8 @@ placeWindow
     :: Maybe Int -> Insert -> Replace -> Int -> Int -> Map.Map Int a
     -> Either Text WindowPlacement
 placeWindow requested insert replace cur base ws = case insert of
-    InsertAfter  -> Right (shuffleUp 1)
-    InsertBefore -> Right (shuffleUp 0)
+    InsertAfter  -> Right (shuffled 1)
+    InsertBefore -> Right (shuffled 0)
     InsertAt -> case requested of
         Just n
             | Map.member n ws -> case replace of
@@ -104,13 +115,12 @@ placeWindow requested insert replace cur base ws = case insert of
     plain n = WindowPlacement { shifts = [], replaced = Nothing, index = n }
     -- Renumber the occupied run at the insertion point up by one; a @-t@
     -- index with no live window is taken directly, as tmux does.
-    shuffleUp off = case requested of
+    shuffled off = case requested of
         Just n | not (Map.member n ws) -> plain n
         mreq ->
             let ix = fromMaybe cur mreq + off
-                free = nextFreeWindowIndex ix ws
             in WindowPlacement
-                { shifts = [(i, i + 1) | i <- [free - 1, free - 2 .. ix]]
+                { shifts = shuffleUp ix ws
                 , replaced = Nothing
                 , index = ix
                 }
@@ -158,25 +168,28 @@ selectNamed nm named = case [ix | (ix, n) <- named, n == nm] of
     _    -> Left ("multiple windows named " <> nm)
 
 cmdNewWindow :: CommandImpl
-cmdNewWindow st mclient args = do
-    let (opts, flags, pos) = parseArgs "nct" args
-    res <- findWindowIndexTarget st mclient (lookup "-t" opts)
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, requested) -> do
-            reuse <- case (lookup "-n" opts, requested) of
-                (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
-                    ws <- readTVar sess.windows
-                    named <- mapM (\(ix, w) -> (,) ix <$> readTVar w.name)
-                        (Map.toList ws)
-                    pure (selectNamed nm named)
-                _ -> pure (Right Nothing)
-            case reuse of
-                Left e -> pure [RErr e]
-                Right (Just ix) -> do
-                    unless ("-d" `elem` flags) $ switchToWindow st sess ix
-                    pure []
-                Right Nothing -> createWindow st sess opts flags pos requested
+cmdNewWindow st mclient args
+    | Just e <- unknownFlag "new-window" "abdkPS" flags = pure [RErr e]
+    | otherwise = do
+        res <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, requested) -> do
+                reuse <- case (lookup "-n" opts, requested) of
+                    (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
+                        ws <- readTVar sess.windows
+                        named <- mapM (\(ix, w) -> (,) ix <$> readTVar w.name)
+                            (Map.toList ws)
+                        pure (selectNamed nm named)
+                    _ -> pure (Right Nothing)
+                case reuse of
+                    Left e -> pure [RErr e]
+                    Right (Just ix) -> do
+                        unless ("-d" `elem` flags) $ switchToWindow st sess ix
+                        pure []
+                    Right Nothing -> createWindow st sess opts flags pos requested
+  where
+    (opts, flags, pos) = parseArgs "nctF" args
 
 -- | The creating body of @new-window@: reject an unusable @-t@ before
 -- spawning, spawn the pane, then place it in one transaction — only after
@@ -216,7 +229,7 @@ createWindow st sess opts flags pos requested = do
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False
-            moccupant <- atomically $ do
+            (wix, moccupant) <- atomically $ do
                 ws <- readTVar sess.windows
                 cur <- readTVar sess.currentIx
                 hist <- readTVar sess.windowHist
@@ -242,10 +255,17 @@ createWindow st sess opts flags pos requested = do
                                            else recordVisit (remap cur) p.index scrubbed)
                         writeTVar sess.currentIx p.index
                 bumpDirty st
-                pure ((`Map.lookup` ws) =<< p.replaced)
+                let occupant = (`Map.lookup` ws) =<< p.replaced
+                -- A displaced window linked elsewhere survives there.
+                orphan <- case occupant of
+                    Just old -> windowLinks st old >>= \case
+                        [] -> pure (Just old)
+                        (holder, _) : _ -> Nothing <$ rehomePanes holder.id old
+                    Nothing -> pure Nothing
+                pure (p.index, orphan)
             forM_ moccupant $ \old -> do
-                ps <- readTVarIO old.panes
-                killPaneLocs st [(sess.id, old, p) | p <- Map.elems ps]
+                ps <- atomically (windowPanes old)
+                killPaneLocs st [(sess.id, old, p) | p <- ps]
             startPaneReader st sess.id win pane
             applySessionSize st sess.id
             -- Creation counts as activity for a monitored window.
@@ -254,7 +274,15 @@ createWindow st sess opts flags pos requested = do
             notifyWindow st "window-created" (Just sess.id) win []
             notifyWindow st "window-linked" (Just sess.id) win
                 [ ("session", PSessionRef sess.id sname) ]
-            pure []
+            if "-P" `elem` flags
+                then do
+                    pix <- paneIndexOf st win pane
+                    env <- paneFormatEnv st sess wix win pix pane
+                    out <- expandFormat st env $ fromMaybe
+                        "#{session_name}:#{window_index}.#{pane_index}"
+                        (lookup "-F" opts)
+                    pure [ROutput out]
+                else pure []
   where
     freeSlot ws = do
         sopts <- resolveForSession st sess
@@ -262,19 +290,56 @@ createWindow st sess opts flags pos requested = do
             { shifts = [], replaced = Nothing
             , index = nextFreeWindowIndex sopts.baseIndex ws }
 
+-- | @select-window@: select the target window; @-n@\/@-p@\/@-l@ step
+-- instead ('stepWindow'), and @-T@ on the current window toggles to the
+-- last one.
 cmdSelectWindow :: CommandImpl
-cmdSelectWindow st mclient args = do
-    let (opts, _, pos) = parseArgs "t" args
-        target = case (lookup "-t" opts, pos) of
-            (Just t, _) -> Just t
-            (Nothing, [t]) -> Just t
-            _ -> Nothing
-    res <- findTarget st mclient Target.FindWindow target
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, ix, _, _) -> do
-            switchToWindow st sess ix
-            pure []
+cmdSelectWindow st mclient args
+    | Just e <- unknownFlag "select-window" "lnpT" flags = pure [RErr e]
+    | "-n" `elem` flags = stepCommand StepNext
+    | "-p" `elem` flags = stepCommand StepPrevious
+    | "-l" `elem` flags = stepCommand StepLast
+    | otherwise = do
+        res <- findTarget st mclient Target.FindWindow target
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, ix, _, _) -> do
+                cur <- readTVarIO sess.currentIx
+                if "-T" `elem` flags && ix == cur
+                    then stepSession st sess False StepLast
+                    else [] <$ switchToWindow st sess ix
+  where
+    (opts, flags, pos) = parseArgs "t" args
+    target = case (lookup "-t" opts, pos) of
+        (Just t, _) -> Just t
+        (Nothing, [t]) -> Just t
+        _ -> Nothing
+    stepCommand step = do
+        res <- findTarget st mclient Target.FindWindow target
+        either (pure . pure . RErr)
+            (\(sess, _, _, _) -> stepSession st sess False step) res
+
+-- | Move the session's current window one 'Step', alerted windows only
+-- when @alerts@, failing with tmux's words when there is nowhere to go.
+stepSession :: ServerState -> Session -> Bool -> Step -> IO [Reply]
+stepSession st sess alerts step = do
+    mix <- atomically $ do
+        ws <- readTVar sess.windows
+        cur <- readTVar sess.currentIx
+        hist <- readTVar sess.windowHist
+        flagged <- if alerts
+            then Just . Set.fromList . map fst <$> filterM (alerted . snd)
+                (Map.toList ws)
+            else pure Nothing
+        pure (stepWindow step flagged (Map.keys ws) cur hist)
+    case mix of
+        Just ix -> [] <$ switchToWindow st sess ix
+        Nothing -> pure [RErr $ case step of
+            StepNext -> "no next window"
+            StepPrevious -> "no previous window"
+            StepLast -> "no last window"]
+  where
+    alerted win = or <$> mapM readTVar [win.bellFlag, win.activity, win.silenceFlag]
 
 switchTo :: ServerState -> Session -> Int -> STM ()
 switchTo st sess ix = void (switchToInfo st sess ix)
@@ -304,84 +369,63 @@ switchToInfo st sess ix = do
 
 -- | 'switchTo' plus its session-window-changed notification.
 switchToWindow :: ServerState -> Session -> Int -> IO ()
-switchToWindow st sess ix = do
-    minfo <- atomically (switchToInfo st sess ix)
-    forM_ minfo $ \(oldIx, mold, newIx, win) -> do
-        sname <- readTVarIO sess.name
-        wname <- readTVarIO win.name
-        oldRef <- case mold of
-            Nothing -> pure []
-            Just old -> do
-                oname <- readTVarIO old.name
-                pure [ ("old_window", PWindowRef old.id oname)
-                     , ("old_window_index", PInt oldIx) ]
-        notify st "session-window-changed"
-            (NotifyTarget (Just sess.id) (Just win.id) Nothing)
-            ([ ("session", PSessionRef sess.id sname)
-             , ("window", PWindowRef win.id wname)
-             , ("new_window", PWindowRef win.id wname)
-             , ("new_window_index", PInt newIx)
-             ] <> oldRef)
+switchToWindow st sess ix =
+    atomically (switchToInfo st sess ix) >>= mapM_ (announceSwitch st sess)
+
+-- | Fire session-window-changed for a switch 'switchToInfo' reported.
+announceSwitch
+    :: ServerState -> Session -> (Int, Maybe Window, Int, Window) -> IO ()
+announceSwitch st sess (oldIx, mold, newIx, win) = do
+    sname <- readTVarIO sess.name
+    wname <- readTVarIO win.name
+    oldRef <- case mold of
+        Nothing -> pure []
+        Just old -> do
+            oname <- readTVarIO old.name
+            pure [ ("old_window", PWindowRef old.id oname)
+                 , ("old_window_index", PInt oldIx) ]
+    notify st "session-window-changed"
+        (NotifyTarget (Just sess.id) (Just win.id) Nothing)
+        ([ ("session", PSessionRef sess.id sname)
+         , ("window", PWindowRef win.id wname)
+         , ("new_window", PWindowRef win.id wname)
+         , ("new_window_index", PInt newIx)
+         ] <> oldRef)
 
 cmdNextWindow, cmdPrevWindow, cmdLastWindow :: CommandImpl
-cmdNextWindow st mclient args
-    | "-a" `elem` flags = nextActivityWindow st mclient
-    | otherwise = cycleWindow st mclient 1
-  where (_, flags, _) = parseArgs "t" args
-cmdPrevWindow st mclient _ = cycleWindow st mclient (-1)
-cmdLastWindow st mclient _ =
-    withTargetSession st mclient Nothing $ \sess -> do
-        mix <- atomically (listToMaybe <$> readTVar sess.windowHist)
-        forM_ mix (switchToWindow st sess)
-        pure []
+cmdNextWindow = sessionStep "next-window" StepNext
+cmdPrevWindow = sessionStep "previous-window" StepPrevious
+cmdLastWindow = sessionStep "last-window" StepLast
 
--- | @next-window -a@: switch to the next window (cyclically) that has an
--- activity flag set.
-nextActivityWindow :: ServerState -> Maybe Client -> IO [Reply]
-nextActivityWindow st mclient = jumpToActivity st mclient WithoutLastFallback
+-- | The session-targeted step commands: @next-window@ and
+-- @previous-window@ (@-a@: alerted windows only) and @last-window@.
+sessionStep :: Text -> Step -> CommandImpl
+sessionStep name step st mclient args
+    | Just e <- unknownFlag name (if step == StepLast then "" else "a") flags =
+        pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindSession (lookup "-t" opts)
+        either (pure . pure . RErr)
+            (\(sess, _, _, _) -> stepSession st sess ("-a" `elem` flags) step)
+            res
+  where
+    (opts, flags, _) = parseArgs "t" args
 
--- | The @<leader> a@ jump: prioritize a window carrying an activity flag,
--- degrading to @last-window@ when none does.
+-- | The @<leader> a@ jump: prioritize a window carrying an activity flag
+-- ('pickActivityTarget'), degrading to @last-window@ when none does.
 cmdActivityWindow :: CommandImpl
-cmdActivityWindow st mclient _ = jumpToActivity st mclient WithLastFallback
-
--- | Whether an activity jump degrades to @last-window@ when nothing is
--- flagged (@<leader> a@) or simply stays put (@next-window -a@).
-data ActivityFallback = WithLastFallback | WithoutLastFallback
-
--- | Shared body of the activity jumps: pick 'pickActivityTarget' over the
--- session's live activity flags and switch there.
-jumpToActivity :: ServerState -> Maybe Client -> ActivityFallback -> IO [Reply]
-jumpToActivity st mclient fallback =
+cmdActivityWindow st mclient _ =
     withTargetSession st mclient Nothing $ \sess -> do
         atomically $ do
             ws <- readTVar sess.windows
             cur <- readTVar sess.currentIx
-            mfallback <- case fallback of
-                WithLastFallback -> listToMaybe <$> readTVar sess.windowHist
-                WithoutLastFallback -> pure Nothing
+            mfallback <- listToMaybe <$> readTVar sess.windowHist
             flagged <- foldM (\acc (ix, win) -> do
                 a <- readTVar win.activity
                 pure (if a then Set.insert ix acc else acc))
                 Set.empty (Map.toList ws)
             forM_ (pickActivityTarget (Map.keys ws) cur flagged mfallback)
                 (switchTo st sess)
-        pure []
-
-cycleWindow :: ServerState -> Maybe Client -> Int -> IO [Reply]
-cycleWindow st mclient step =
-    withTargetSession st mclient Nothing $ \sess -> do
-        atomically $ do
-            ws <- readTVar sess.windows
-            cur <- readTVar sess.currentIx
-            let ixs = Map.keys ws
-            case ixs of
-                [] -> pure ()
-                _ -> do
-                    let n = length ixs
-                        curPos = fromMaybe 0 (List.elemIndex cur ixs)
-                        ix = ixs !! ((curPos + step + n) `mod` n)
-                    switchTo st sess ix
         pure []
 
 -- | @resize-window@: size a window by hand. Like tmux, any resize leaves the
@@ -443,16 +487,44 @@ cmdResizeWindow st mclient args
             (lookup "-y" opts)
         pure (mx, my, adjust :: Int)
 
+-- | @kill-window@: destroy the window, unlinking it from every session
+-- (see 'unlinkEverywhere'). Under @-a@ it instead destroys every other
+-- window of the session that passes the @-f@ filter, and the target too
+-- when it is linked into the session more than once.
 cmdKillWindow :: CommandImpl
-cmdKillWindow st mclient args = do
-    let (opts, _, _) = parseArgs "t" args
-    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, _, win, _) -> do
-            ps <- readTVarIO win.panes
-            killPaneLocs st [(sess.id, win, p) | p <- Map.elems ps]
-            pure []
+cmdKillWindow st mclient args
+    | Just e <- unknownFlag "kill-window" "a" flags = pure [RErr e]
+    | Just _ <- lookup "-f" opts, "-a" `notElem` flags =
+        pure [RErr "-f only valid with -a"]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, _, win, _)
+                | "-a" `elem` flags -> killOthers sess win
+                | otherwise -> [] <$ killWindow win
+  where
+    (opts, flags, _) = parseArgs "ft" args
+    killWindow win = do
+        ps <- atomically (windowPanes win)
+        loc <- atomically (listToMaybe . map ((.id) . fst) <$> windowLinks st win)
+        forM_ loc $ \sid -> killPaneLocs st [(sid, win, p) | p <- ps]
+    passes sess ix win = case lookup "-f" opts of
+        Nothing -> pure True
+        Just f -> do
+            env <- windowFormatEnv st sess ix win
+            truthy <$> expandFormat st env f
+    killOthers sess win = do
+        ws <- Map.toAscList <$> readTVarIO sess.windows
+        unless (length ws <= 1) $ do
+            doomed <- filterM (\(ix, w) -> passes sess ix w)
+                [(ix, w) | (ix, w) <- ws, w.id /= win.id]
+            forM_ (List.nubBy (\a b -> a.id == b.id) (map snd doomed)) killWindow
+            ws' <- Map.toAscList <$> readTVarIO sess.windows
+            let selves = [(ix, w) | (ix, w) <- ws', w.id == win.id]
+            matched <- or <$> mapM (uncurry (passes sess)) selves
+            when (matched && length selves > 1) (killWindow win)
+        pure []
 
 cmdRenameWindow :: CommandImpl
 cmdRenameWindow st mclient args = do
@@ -479,146 +551,261 @@ cmdRenameWindow st mclient args = do
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
 
--- | @move-window -s src -t dst@: renumber (or relocate) a window to the
--- destination index, possibly in another session. Restore replays this
--- to place windows at their saved indices. Under @-r@ it instead repacks
--- the whole session named by @-t@, which is then a session and not a
--- window.
+-- | @move-window@: link the source window at the destination, then drop
+-- its source link. Restore replays this to place windows at their saved
+-- indices. Under @-r@ it instead repacks the whole session named by @-t@.
 cmdMoveWindow :: CommandImpl
 cmdMoveWindow st mclient args
+    | Just e <- unknownFlag "move-window" "abdkr" flags = pure [RErr e]
     | "-r" `elem` flags =
         withTargetSession st mclient (lookup "-t" opts) (([] <$) . renumber)
-    | otherwise = do
-        esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
-        edst <- findWindowIndexTarget st mclient (lookup "-t" opts)
-        case (esrc, edst) of
-            (Right (srcSess, srcIx, _, _), Right (dstSess, mdstIx)) -> do
-                res <- atomically $ do
-                    sws <- readTVar srcSess.windows
-                    dws <- readTVar dstSess.windows
-                    sopts <- resolveForSession st dstSess
-                    let dstIx = fromMaybe
-                            (until (`Map.notMember` dws) (+ 1) sopts.baseIndex)
-                            mdstIx
-                    case Map.lookup srcIx sws of
-                        Nothing -> pure (Right ())  -- nothing to move
-                        Just win
-                            | srcSess.id == dstSess.id, srcIx == dstIx ->
-                                pure (Right ())  -- already there
-                            | otherwise ->
-                                if Map.member dstIx dws
-                                    then pure (Left ("can't move window: "
-                                        <> tshow dstIx <> " in use"))
-                                    else do
-                                        modifyTVar' srcSess.windows (Map.delete srcIx)
-                                        modifyTVar' dstSess.windows (Map.insert dstIx win)
-                                        when (srcSess.id /= dstSess.id) $
-                                            rehomePanes dstSess.id win
-                                                -- See Note [Pane home]
-                                        followFocus srcSess dstSess srcIx dstIx
-                                        bumpDirty st
-                                        pure (Right ())
-                pure [RErr e | Left e <- [res]]
-            (Left e, _) -> pure [RErr e]
-            (_, Left e) -> pure [RErr e]
+    | otherwise = linkWindow DropSource st mclient opts flags
   where
     (opts, flags, _) = parseArgs "st" args
     renumber sess = atomically $ do
-        ws <- readTVar sess.windows
-        cur <- readTVar sess.currentIx
-        hist <- readTVar sess.windowHist
         sopts <- resolveForSession st sess
-        let r = renumberSession cur hist sopts.baseIndex ws
-        writeTVar sess.windows r.windows
-        writeTVar sess.currentIx r.current
-        writeTVar sess.windowHist r.history
+        members <- groupMembers st sess
+        forM_ members $ \s -> do
+            ws <- readTVar s.windows
+            cur <- readTVar s.currentIx
+            hist <- readTVar s.windowHist
+            let r = renumberSession cur hist sopts.baseIndex ws
+            writeTVar s.windows r.windows
+            writeTVar s.currentIx r.current
+            writeTVar s.windowHist r.history
         bumpDirty st
-    -- The moved window keeps the focus: within a session the current
-    -- index follows it to the destination; across sessions the source
-    -- session falls back to its lowest remaining window.
-    followFocus srcSess dstSess srcIx dstIx = do
-        cur <- readTVar srcSess.currentIx
-        when (cur == srcIx) $
-            if srcSess.id == dstSess.id
-                then writeTVar srcSess.currentIx dstIx
-                else do
-                    ws' <- readTVar srcSess.windows
-                    forM_ (Map.lookupMin ws') $ \(i, _) ->
-                        writeTVar srcSess.currentIx i
 
--- | @link-window -s src -t dst@: link the source window into the
--- destination session at the given index (the same window, shared) and,
--- without @-d@, make it current there.
+-- | @link-window@: link the source window at the destination too, the
+-- same window shared by both sessions.
 cmdLinkWindow :: CommandImpl
-cmdLinkWindow st mclient args = do
-    let (opts, flags, _) = parseArgs "st" args
+cmdLinkWindow st mclient args
+    | Just e <- unknownFlag "link-window" "abdk" flags = pure [RErr e]
+    | otherwise = linkWindow KeepSource st mclient opts flags
+  where
+    (opts, flags, _) = parseArgs "st" args
+
+-- | Whether 'linkWindow' drops the source link afterwards (@move-window@)
+-- or keeps it (@link-window@).
+data SourceLink = DropSource | KeepSource
+    deriving (Eq, Show)
+
+-- | What a 'linkWindow' transaction changed, for its announcements: the
+-- destination's window switch, the sessions emptied by dropping the
+-- source link, and a displaced occupant left with no link at all.
+data Relinked = Relinked
+    { switched :: Maybe (Int, Maybe Window, Int, Window)
+    , dropped  :: [Session]
+    , orphan   :: Maybe Window
+    }
+
+-- | The body shared by @move-window@ and @link-window@ (tmux's
+-- @server_link_window@): @-a@\/@-b@ shuffle the destination's windows up
+-- to make room after\/before the target window (else the current one),
+-- @-k@ displaces an occupant, and the linked window becomes current
+-- unless @-d@ (or unless it displaced the current window).
+linkWindow
+    :: SourceLink -> ServerState -> Maybe Client -> [(Text, Text)] -> [Text]
+    -> IO [Reply]
+linkWindow source st mclient opts flags = do
     esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
     edst <- findWindowIndexTarget st mclient (lookup "-t" opts)
     case (esrc, edst) of
-        (Right (_, _, win, _), Right (dstSess, mdstIx)) -> do
-            res <- atomically $ do
-                dws <- readTVar dstSess.windows
-                sopts <- resolveForSession st dstSess
-                let dstIx = fromMaybe
-                        (until (`Map.notMember` dws) (+ 1) sopts.baseIndex)
-                        mdstIx
-                if Map.member dstIx dws
-                    then pure (Left ("index in use: " <> tshow dstIx))
-                    else do
-                        modifyTVar' dstSess.windows (Map.insert dstIx win)
-                        unless ("-d" `elem` flags) $ do
-                            cur <- readTVar dstSess.currentIx
-                            modifyTVar' dstSess.windowHist (recordVisit cur dstIx)
-                            writeTVar dstSess.currentIx dstIx
-                        bumpDirty st
-                        sname <- readTVar dstSess.name
-                        pure (Right sname)
-            case res of
-                Left e -> pure [RErr e]
-                Right sname -> do
-                    applySessionSize st dstSess.id
-                    notifyWindow st "window-linked" (Just dstSess.id) win
-                        [ ("session", PSessionRef dstSess.id sname) ]
-                    pure []
         (Left e, _) -> pure [RErr e]
         (_, Left e) -> pure [RErr e]
+        (Right (src, srcIx, win, _), Right (dst, mdstIx)) -> do
+            res <- atomically $ do
+                dws0 <- readTVar dst.windows
+                dcur <- readTVar dst.currentIx
+                sopts <- resolveForSession st dst
+                let anchor = case mdstIx of
+                        Just i | Map.member i dws0 -> i
+                        _ -> dcur
+                    shuffleAt
+                        | "-b" `elem` flags = Just anchor
+                        | "-a" `elem` flags = Just (anchor + 1)
+                        | otherwise = Nothing
+                    shifts = maybe [] (`shuffleUp` dws0) shuffleAt
+                    dws = applyShifts shifts dws0
+                    dstIx = fromMaybe (nextFreeWindowIndex sopts.baseIndex dws)
+                        (maybe mdstIx Just shuffleAt)
+                    occupant = Map.lookup dstIx dws
+                case occupant of
+                    _ | src.id /= dst.id && src.windows == dst.windows ->
+                        pure (Left "sessions are grouped")
+                    Just o | o.id == win.id ->
+                        pure (Left ("same index: " <> tshow dstIx))
+                    Just _ | "-k" `notElem` flags ->
+                        pure (Left ("index in use: " <> tshow dstIx))
+                    _ -> Right <$> relink src srcIx win dst dstIx shifts occupant
+            case res of
+                Left e -> pure [RErr e]
+                Right r -> [] <$ announce src dst win r
+  where
+    relink src srcIx0 win dst dstIx shifts occupant = do
+        let remap i = fromMaybe i (List.lookup i shifts)
+            srcIx = if src.windows == dst.windows then remap srcIx0 else srcIx0
+        modifyTVar' dst.windows (applyShifts shifts)
+        modifyTVar' dst.currentIx remap
+        modifyTVar' dst.windowHist (map remap)
+        forced <- case occupant of
+            Nothing -> pure False
+            Just _ -> do
+                modifyTVar' dst.windows (Map.delete dstIx)
+                modifyTVar' dst.windowHist (filter (/= dstIx))
+                (== dstIx) <$> readTVar dst.currentIx
+        _ <- attachWindow st dst dstIx win
+        sw <- if "-d" `notElem` flags || forced
+            then switchToInfo st dst dstIx
+            else pure Nothing
+        gone <- case source of
+            KeepSource -> pure []
+            DropSource -> do
+                emptied <- detachWindow st src srcIx
+                if emptied then dropSessionGroup st src else pure []
+        rehomePanes dst.id win  -- See Note [Pane home]
+        orph <- case occupant of
+            Nothing -> pure Nothing
+            Just o -> windowLinks st o >>= \case
+                [] -> pure (Just o)
+                (holder, _) : _ -> Nothing <$ rehomePanes holder.id o
+        bumpDirty st
+        pure Relinked { switched = sw, dropped = gone, orphan = orph }
+    announce src dst win r = do
+        forM_ r.orphan $ \o -> do
+            ps <- atomically (windowPanes o)
+            killPaneLocsWith QuietLifecycle st [(dst.id, o, p) | p <- ps]
+        forM_ r.switched (announceSwitch st dst)
+        dname <- readTVarIO dst.name
+        notifyWindow st "window-linked" (Just dst.id) win
+            [ ("session", PSessionRef dst.id dname) ]
+        when (source == DropSource) $ do
+            sname <- readTVarIO src.name
+            wname <- readTVarIO win.name
+            notify st "window-unlinked" (sessionTarget src.id)
+                [ ("session", PSessionRef src.id sname)
+                , ("window", PWindowRef win.id wname) ]
+        closeSessions st r.dropped
+        applySessionSize st src.id
+        applySessionSize st dst.id
 
--- | @unlink-window [-k] -t target@: remove the window from its session
--- without killing it, provided it stays linked somewhere (or @-k@ kills).
+-- | Announce sessions a command destroyed by emptying them, and send
+-- their clients away.
+closeSessions :: ServerState -> [Session] -> IO ()
+closeSessions st gone = do
+    info <- forM gone $ \s -> do
+        sname <- readTVarIO s.name
+        notify st "session-closed" noTarget [ ("session", PSessionRef s.id sname) ]
+        broadcast st s.id Exited
+        (,,) s.id sname <$> readTVarIO s.group
+    notifyGroupDrops st info
+
+-- | @unlink-window [-k]@: drop one link of the window. Its last link
+-- outside the session group goes only under @-k@, destroying the window.
 cmdUnlinkWindow :: CommandImpl
-cmdUnlinkWindow st mclient args = do
-    let (opts, flags, _) = parseArgs "t" args
-    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, wix, win, _) -> do
-            elsewhere <- atomically $
-                any (\other -> other.id /= sess.id) <$> windowHolders st win
-            if not elsewhere && "-k" `notElem` flags
-                then pure [RErr "window only linked to one session"]
-                else do
-                    (sname, wname) <- atomically $ do
-                        sname <- readTVar sess.name
-                        wname <- readTVar win.name
-                        ws <- readTVar sess.windows
-                        let ws' = Map.delete wix ws
-                        writeTVar sess.windows ws'
-                        cur <- readTVar sess.currentIx
-                        when (cur == wix) $
-                            forM_ (Map.lookupMin ws') $ \(ix, _) ->
-                                writeTVar sess.currentIx ix
-                        modifyTVar' sess.windowHist (filter (/= wix))
-                        holders <- windowHolders st win
-                        forM_ (listToMaybe holders) $ \other ->
-                            rehomePanes other.id win  -- See Note [Pane home]
+cmdUnlinkWindow st mclient args
+    | Just e <- unknownFlag "unlink-window" "k" flags = pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, wix, win, _) -> do
+                out <- atomically $ do
+                    links <- windowLinks st win
+                    members <- groupMembers st sess
+                    if length links == length members && "-k" `notElem` flags
+                        then pure (Left "window only linked to one session")
+                        else do
+                            emptied <- detachWindow st sess wix
+                            gone <- if emptied
+                                then dropSessionGroup st sess else pure []
+                            left <- windowLinks st win
+                            forM_ (take 1 left) $ \(holder, _) ->
+                                rehomePanes holder.id win  -- See Note [Pane home]
+                            pure (Right (gone, null left))
+                case out of
+                    Left e -> pure [RErr e]
+                    Right (gone, orphaned) -> do
+                        sname <- readTVarIO sess.name
+                        wname <- readTVarIO win.name
+                        notify st "window-unlinked" (sessionTarget sess.id)
+                            [ ("session", PSessionRef sess.id sname)
+                            , ("window", PWindowRef win.id wname) ]
+                        when orphaned $ do
+                            ps <- atomically (windowPanes win)
+                            killPaneLocsWith QuietLifecycle st
+                                [(sess.id, win, p) | p <- ps]
+                        closeSessions st gone
+                        applySessionSize st sess.id
+                        pure []
+  where
+    (opts, flags, _) = parseArgs "t" args
+
+-- | @swap-window@: exchange two links' windows. Under @-d@ the
+-- destination (and a distinct source session) select the swapped index.
+cmdSwapWindow :: CommandImpl
+cmdSwapWindow st mclient args
+    | Just e <- unknownFlag "swap-window" "d" flags = pure [RErr e]
+    | otherwise = do
+        esrc <- findTarget st mclient Target.FindWindow (lookup "-s" opts)
+        edst <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+        case (esrc, edst) of
+            (Left e, _) -> pure [RErr e]
+            (_, Left e) -> pure [RErr e]
+            (Right (src, srcIx, wsrc, _), Right (dst, dstIx, wdst, _))
+                | src.id /= dst.id && src.windows == dst.windows ->
+                    pure [RErr "can't move window, sessions are grouped"]
+                | wsrc.id == wdst.id -> pure []
+                | otherwise -> do
+                    sws <- atomically $ do
+                        modifyTVar' src.windows (Map.insert srcIx wdst)
+                        modifyTVar' dst.windows (Map.insert dstIx wsrc)
+                        rehomePanes dst.id wsrc  -- See Note [Pane home]
+                        rehomePanes src.id wdst
                         bumpDirty st
-                        pure (sname, wname)
-                    notify st "window-unlinked" (sessionTarget sess.id)
-                        [ ("session", PSessionRef sess.id sname)
-                        , ("window", PWindowRef win.id wname) ]
-                    when (not elsewhere) $ do
-                        ps <- readTVarIO win.panes
-                        killPaneLocsWith QuietLifecycle st
-                            [ (sess.id, win, p) | p <- Map.elems ps ]
-                    applySessionSize st sess.id
+                        if "-d" `elem` flags
+                            then do
+                                d <- switchToInfo st dst dstIx
+                                s <- if src.id /= dst.id
+                                    then switchToInfo st src srcIx
+                                    else pure Nothing
+                                pure [(dst, d), (src, s)]
+                            else pure []
+                    forM_ sws $ \(s, msw) -> forM_ msw (announceSwitch st s)
+                    applySessionSize st src.id
+                    applySessionSize st dst.id
                     pure []
+  where
+    (opts, flags, _) = parseArgs "st" args
+
+-- | @rotate-window -U|-D@: turn the panes through the layout's positions
+-- ('rotateLeaves'); the pane arriving at the active position becomes
+-- active. A zoomed window unzooms, unless @-Z@ keeps the new active pane
+-- zoomed.
+cmdRotateWindow :: CommandImpl
+cmdRotateWindow st mclient args
+    | Just e <- unknownFlag "rotate-window" "DUZ" flags = pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, _, win, _) -> do
+                atomically $ do
+                    lay <- readTVar win.layout
+                    active <- readTVar win.activeId
+                    zoomed <- readTVar win.zoomed
+                    let dir = if "-D" `elem` flags then RotateDown else RotateUp
+                        lay' = rotateLeaves dir lay
+                        slot = List.elemIndex active (layoutPanes lay)
+                        active' = maybe active (layoutPanes lay' !!) slot
+                    writeTVar win.layout lay'
+                    when (active' /= active) $ do
+                        modifyTVar' win.paneHist (recordVisit active active')
+                        writeTVar win.activeId active'
+                    writeTVar win.zoomed $ case zoomed of
+                        Just _ | "-Z" `elem` flags -> Just active'
+                        _ -> Nothing
+                    bumpDirty st
+                applySessionSize st sess.id
+                pure []
+  where
+    (opts, flags, _) = parseArgs "t" args

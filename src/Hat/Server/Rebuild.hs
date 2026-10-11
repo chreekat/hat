@@ -6,11 +6,14 @@
 module Hat.Server.Rebuild
     ( CapturedSession
     , CapturedWindow
+    , Rebuilt
+    , newRebuilt
     , rebuildSession
     ) where
 
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_, unless)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -37,6 +40,7 @@ type CapturedSession s w p =
     , HasField "windowHist" s [Int]
     , HasField "createdAt" s (Maybe POSIXTime)
     , HasField "restores" s Int
+    , HasField "group" s (Maybe Text)
     , HasField "windows" s [w]
     )
 
@@ -48,30 +52,64 @@ type CapturedWindow w p =
     , HasField "active" w Int
     , HasField "paneHist" w [Int]
     , HasField "autoRename" w Bool
+    , HasField "key" w (Maybe Int)
+    , HasField "linkOf" w (Maybe Int)
     , HasField "panes" w [p]
     )
+
+-- | What one rebuild of a captured tree has built so far, for the links and
+-- group members later in the capture to share: windows by their capture
+-- 'key', and group window maps by group name. See Note [Captured links].
+data Rebuilt = Rebuilt
+    { windows :: IORef (Map.Map Int Window)
+    , groups  :: IORef (Map.Map Text (TVar (Map.Map Int Window), Size))
+    }
+
+newRebuilt :: IO Rebuilt
+newRebuilt = Rebuilt <$> newIORef Map.empty <*> newIORef Map.empty
 
 -- | Rebuild one captured session in the live tree, bringing each pane back
 -- with @mkPane@. The session comes up at its captured window area
 -- ('capturedArea'), so the pre-attach reconcile finds every pane already at
 -- its layout size. A rebuild counts as one restore; a capture without a
--- creation stamp adopts now as the session's creation time.
+-- creation stamp adopts now as the session's creation time. A link entry
+-- shares the window it names, and a later member of a group the group's
+-- window map, both from @done@; a session left with no window is dropped.
 rebuildSession
     :: CapturedSession s w p
     => ServerState
+    -> Rebuilt                              -- ^ the capture's walk so far
     -> [(Text, Text)]                       -- ^ environment seed for the session
     -> (SessionId -> Size -> p -> IO Pane)  -- ^ bring one pane back
     -> s -> IO ()
-rebuildSession st env mkPane csess = do
-    let wins = filter (not . null . (.panes)) csess.windows
-    unless (null wins) $ do
-        sid <- SessionId <$> atomically (freshId st.nextSession)
-        let sz = capturedArea (map (.layout) wins)
-        built <- forM wins $ \cwin -> do
-            (win, panes) <- rebuildWindow st (mkPane sid) sz cwin
-            pure (cwin.ix, win, panes)
-        let winMap = Map.fromList [(wix, win) | (wix, win, _) <- built]
-            curIx | Map.member csess.currentIx winMap = csess.currentIx
+rebuildSession st done env mkPane csess = do
+    sid <- SessionId <$> atomically (freshId st.nextSession)
+    shared <- case csess.group of
+        Nothing -> pure Nothing
+        Just g -> Map.lookup g <$> readIORef done.groups
+    (windowsVar, sz, built) <- case shared of
+        Just (var, sz) -> pure (var, sz, [])
+        Nothing -> do
+            let owned = filter (not . null . (.panes)) csess.windows
+                sz = capturedArea (map (.layout) owned)
+            built <- forM owned $ \cwin -> do
+                (win, panes) <- rebuildWindow st (mkPane sid) sz cwin
+                forM_ cwin.key $ \k ->
+                    modifyIORef' done.windows (Map.insert k win)
+                pure (cwin.ix, win, panes)
+            known <- readIORef done.windows
+            let linked =
+                    [ (cwin.ix, win)
+                    | cwin <- csess.windows, null cwin.panes
+                    , Just k <- [cwin.linkOf], Just win <- [Map.lookup k known] ]
+            var <- newTVarIO (Map.fromList
+                ([(wix, win) | (wix, win, _) <- built] <> linked))
+            forM_ csess.group $ \g ->
+                modifyIORef' done.groups (Map.insert g (var, sz))
+            pure (var, sz, built)
+    winMap <- readTVarIO windowsVar
+    unless (Map.null winMap) $ do
+        let curIx | Map.member csess.currentIx winMap = csess.currentIx
                   | otherwise = maybe csess.currentIx fst (Map.lookupMin winMap)
             -- Keep the MRU history to surviving windows other than the current
             -- one; nothing else is a meaningful "last" to return to.
@@ -79,7 +117,6 @@ rebuildSession st env mkPane csess = do
                 [l | l <- csess.windowHist, l /= curIx, Map.member l winMap]
         now <- getPOSIXTime
         nameVar    <- newTVarIO csess.name
-        windowsVar <- newTVarIO winMap
         currentVar <- newTVarIO curIx
         windowHistVar <- newTVarIO winHist
         sizeVar    <- newTVarIO sz
@@ -87,6 +124,7 @@ rebuildSession st env mkPane csess = do
         cwdVar     <- newTVarIO (T.unpack csess.startCwd)
         optionsVar <- newTVarIO emptyDelta
         resolvedVar <- newTVarIO Nothing
+        groupVar   <- newTVarIO csess.group
         let sess = Session
                 { id = sid
                 , createdAt = fromMaybe now csess.createdAt
@@ -95,7 +133,7 @@ rebuildSession st env mkPane csess = do
                 , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
                 , startCwd = cwdVar, options = optionsVar
-                , resolvedOptions = resolvedVar }
+                , resolvedOptions = resolvedVar, group = groupVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
             forM_ panes (startPaneReader st sid win)

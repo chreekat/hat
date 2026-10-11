@@ -192,6 +192,8 @@ hookArgSpec = \case
     "swap-pane" -> "st"
     "move-window" -> "st"
     "link-window" -> "st"
+    "swap-window" -> "st"
+    "kill-window" -> "ft"
     "resize-window" -> "txy"
     "send-keys" -> "tN"
     "set-buffer" -> "btn"
@@ -293,6 +295,8 @@ commandSpecs =
     , (["move-window", "movew"], cmdMoveWindow)
     , (["link-window", "linkw"], cmdLinkWindow)
     , (["unlink-window", "unlinkw"], cmdUnlinkWindow)
+    , (["swap-window", "swapw"], cmdSwapWindow)
+    , (["rotate-window", "rotatew"], cmdRotateWindow)
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)

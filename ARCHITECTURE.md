@@ -788,7 +788,9 @@ evolving fields ride a per-row `extra` JSON column; DDL is additive only
 (`bootstrap` adds missing columns to a store written by an older binary);
 reads default anything absent. A new binary reads an old store and vice
 versa. History rows carry whole trees as JSON evolved under the same
-tolerant rule.
+tolerant rule. A window linked into several sessions, and a session
+group's shared windows, are captured once and referenced after that
+(`Note [Captured links]` in `Hat.Server.Persist`).
 
 **Running commands** come back too, when worthwhile: each pane's
 foreground command line is captured, and on restore it is re-run, with its

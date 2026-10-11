@@ -61,6 +61,7 @@ module Hat.Server.Pane
     , paneCommandName
     , globalSpawnEnv
     , createSession
+    , createGroupedSession
     , sessionSpawnEnv
     ) where
 
@@ -103,11 +104,12 @@ import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyPane
-    , sessionTarget )
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
+    , notifyGroupDrops, notifyPane, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Style (applyStyle)
+import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator.Types (paintLineBytes)
 import Hat.Server.Mru (popOnClose, scrub)
@@ -780,7 +782,7 @@ detachPaneCurrent :: ServerState -> Pane -> STM (Maybe SessionId, DetachResult)
 detachPaneCurrent st pane = do
     mloc <- locatePane st pane.id
     case mloc of
-        Just (sid, win) -> (,) (Just sid) <$> detachPane st sid win pane
+        Just (sid, win) -> (,) (Just sid) <$> detachPane st win pane
         Nothing         -> pure (Nothing, AlreadyDetached)
 
 -- | Tear a pane down from the reader thread's @finally@: the model detach
@@ -796,15 +798,15 @@ closePane st pane = teardownPane st pane (void (reapPane st pane))
 -- caller already reaped.
 teardownPane :: ServerState -> Pane -> IO () -> IO ()
 teardownPane st pane reap = do
-    mctx <- atomically $ do
+    (mctx, names) <- atomically $ do
         mloc <- locatePane st pane.id
-        traverse
+        names <- sessionNames st
+        ctx <- traverse
             (\(sid, win) -> do
                 wname <- readTVar win.name
-                msess <- Map.lookup sid <$> readTVar st.sessions
-                sname <- maybe (pure "") (\sess -> readTVar sess.name) msess
-                pure (sid, sname, win, wname))
+                pure (sid, maybe "" fst (Map.lookup sid names), win, wname))
             mloc
+        pure (ctx, names)
     (msid, r) <- atomically (detachPaneCurrent st pane)
     forM_ msid $ \sid -> when (r /= AlreadyDetached) $ applySessionSize st sid
     -- End-of-life hooks fire only when the reader's own teardown detached
@@ -823,17 +825,15 @@ teardownPane st pane reap = do
                     , ("window", PWindowRef win.id wname) ]
                 notify st "window-closed" (sessionTarget sid)
                     [ ("window", PWindowRef win.id wname) ]
-            when (sf == SessionEmptied) $ notify st "session-closed"
-                noTarget
-                [ ("session", PSessionRef sid sname) ]
+            announceEmptied st names (emptiedBy sf)
         (Detached _ _, Nothing) -> notify st "pane-exited"
             (NotifyTarget Nothing Nothing (Just pane.id))
             [ ("pane", PPaneRef pane.id) ]
         (AlreadyDetached, _) -> pure ()
     reap
-    forM_ msid $ \sid ->
-        when (r == Detached WindowRemoved SessionEmptied) $
-            broadcast st sid Exited
+    case r of
+        Detached _ sf -> forM_ (emptiedBy sf) $ \gone -> broadcast st gone Exited
+        AlreadyDetached -> pure ()
 
 -- | The model half of a pane's teardown, in one atomic transaction: drop
 -- the pane from its window's map and layout, reactivate a surviving pane,
@@ -846,8 +846,8 @@ teardownPane st pane reap = do
 -- the window). Deliberately free of any OS-side effect: the child's
 -- lifetime is 'reapPane''s business, so the screen never waits on a
 -- process.
-detachPane :: ServerState -> SessionId -> Window -> Pane -> STM DetachResult
-detachPane st sid win pane = do
+detachPane :: ServerState -> Window -> Pane -> STM DetachResult
+detachPane st win pane = do
     isDead <- readTVar pane.dead
     if isDead then pure AlreadyDetached else do
         writeTVar pane.dead True
@@ -870,31 +870,11 @@ detachPane st sid win pane = do
                 bumpDirty st
                 pure (Detached WindowSurvives SessionSurvives)
             Nothing -> do
-                msess <- Map.lookup sid <$> readTVar st.sessions
-                case msess of
-                    Nothing -> pure (Detached WindowRemoved SessionSurvives)
-                    Just sess -> do
-                        ws <- readTVar sess.windows
-                        let ws' = Map.filter (\w -> w.id /= win.id) ws
-                        writeTVar sess.windows ws'
-                        if Map.null ws'
-                            then do
-                                modifyTVar' st.sessions (Map.delete sid)
-                                pure (Detached WindowRemoved SessionEmptied)
-                            else do
-                                cur <- readTVar sess.currentIx
-                                hist <- readTVar sess.windowHist
-                                let survivors = Map.keysSet ws'
-                                if Set.member cur survivors
-                                    then writeTVar sess.windowHist
-                                            (scrub (`Set.member` survivors) hist)
-                                    else forM_ (popOnClose (`Set.member` survivors)
-                                                    (Set.lookupMin survivors) hist) $
-                                            \(ix, hist') -> do
-                                                writeTVar sess.currentIx ix
-                                                writeTVar sess.windowHist hist'
-                                bumpDirty st
-                                pure (Detached WindowRemoved SessionSurvives)
+                emptied <- unlinkEverywhere st win
+                bumpDirty st
+                pure $ Detached WindowRemoved $ case emptied of
+                    [] -> SessionSurvives
+                    _ -> SessionsEmptied (map (.id) emptied)
 
 -- | What 'detachPane' did. See 'detachPane'.
 data DetachResult = AlreadyDetached | Detached WindowFate SessionFate
@@ -904,9 +884,30 @@ data DetachResult = AlreadyDetached | Detached WindowFate SessionFate
 data WindowFate = WindowSurvives | WindowRemoved
     deriving (Eq, Show)
 
--- | Whether a detach emptied the pane's whole session. See 'detachPane'.
-data SessionFate = SessionSurvives | SessionEmptied
+-- | The sessions a detach destroyed by emptying them: the window's last
+-- link went with its last pane. See 'detachPane'.
+data SessionFate = SessionSurvives | SessionsEmptied [SessionId]
     deriving (Eq, Show)
+
+emptiedBy :: SessionFate -> [SessionId]
+emptiedBy = \case
+    SessionSurvives -> []
+    SessionsEmptied sids -> sids
+
+-- | Every live session's name and group, for announcing sessions about to
+-- vanish.
+sessionNames :: ServerState -> STM (Map.Map SessionId (Text, Maybe Text))
+sessionNames st = traverse (\s -> (,) <$> readTVar s.name <*> readTVar s.group)
+    =<< readTVar st.sessions
+
+-- | Announce sessions emptied by a detach: session-closed, then their
+-- departure from their groups.
+announceEmptied :: ServerState -> Map.Map SessionId (Text, Maybe Text) -> [SessionId] -> IO ()
+announceEmptied st names gone = do
+    let info sid = Map.findWithDefault ("", Nothing) sid names
+    forM_ gone $ \sid -> notify st "session-closed" noTarget
+        [ ("session", PSessionRef sid (fst (info sid))) ]
+    notifyGroupDrops st [ (sid, nm, g) | sid <- gone, let (nm, g) = info sid ]
 
 -- | The OS half of a pane's teardown: stop any pipe-pane, wait for the
 -- child — bounded, since a child that ignores SIGHUP would never exit on
@@ -938,7 +939,7 @@ detachPanes
 detachPanes st = mapM detach
   where
     detach (sid, win, pane) =
-        (,) (sid, win) <$> detachPane st sid win pane
+        (,) (sid, win) <$> detachPane st win pane
 
 -- | Kill a set of located panes: detach them from the model in one
 -- transaction (the reflow is synchronous with the command and never waits
@@ -958,22 +959,21 @@ data LifecycleNotify = NotifyLifecycle | QuietLifecycle
 killPaneLocsWith
     :: LifecycleNotify -> ServerState -> [(SessionId, Window, Pane)] -> IO ()
 killPaneLocsWith mode st locs = do
-    (results, names, preActive) <- atomically $ do
+    (results, names, snames, preActive) <- atomically $ do
+        snames <- sessionNames st
         names <- forM locs $ \(sid, win, _) -> do
-            msess <- Map.lookup sid <$> readTVar st.sessions
-            sname <- maybe (pure "") (\sess -> readTVar sess.name) msess
             wname <- readTVar win.name
-            pure ((sid, win.id), (sname, wname))
+            pure ((sid, win.id), (maybe "" fst (Map.lookup sid snames), wname))
         pre <- forM locs $ \(_, win, _) ->
             (,) win.id <$> readTVar win.activeId
         rs <- detachPanes st locs
-        pure (rs, Map.fromList names, Map.fromList pre)
+        pure (rs, Map.fromList names, snames, Map.fromList pre)
     forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
     let removedWindows = List.nubBy (\(s1, w1) (s2, w2) ->
                 s1 == s2 && w1.id == w2.id)
             [ (sid, win) | ((sid, win), Detached WindowRemoved _) <- results ]
         emptied = List.nub
-            [ sid | ((sid, _), Detached _ SessionEmptied) <- results ]
+            [ sid | (_, Detached _ sf) <- results, sid <- emptiedBy sf ]
     when (mode == NotifyLifecycle) $ do
         forM_ removedWindows $ \(sid, win) -> do
             let (sname, wname) =
@@ -983,11 +983,7 @@ killPaneLocsWith mode st locs = do
                 , ("window", PWindowRef win.id wname) ]
             notify st "window-closed" (sessionTarget sid)
                 [ ("window", PWindowRef win.id wname) ]
-        forM_ emptied $ \sid -> do
-            let sname = maybe "" fst (List.lookup sid
-                    [ (s, nm) | ((s, _), nm) <- Map.toList names ])
-            notify st "session-closed" noTarget
-                [ ("session", PSessionRef sid sname) ]
+        announceEmptied st snames emptied
     -- A surviving window whose active pane was killed reports the switch.
     when (mode == NotifyLifecycle) $ do
         let survivors = List.nubBy (\(_, w1) (_, w2) -> w1.id == w2.id)
@@ -1037,7 +1033,7 @@ removePaneFromTree st pid = do
     sessions <- readTVar st.sessions
     forM_ (Map.elems sessions) $ \sess -> do
         ws <- readTVar sess.windows
-        forM_ (Map.toList ws) $ \(ix, win) -> do
+        forM_ (Map.toList ws) $ \(_, win) -> do
             ps <- readTVar win.panes
             when (Map.member pid ps) $ do
                 writeTVar win.panes (Map.delete pid ps)
@@ -1051,13 +1047,7 @@ removePaneFromTree st pid = do
                         when (active == pid) $ case layoutPanes lay' of
                             (n : _) -> writeTVar win.activeId n
                             [] -> pure ()
-                    Nothing -> do
-                        modifyTVar' sess.windows (Map.delete ix)
-                        cur <- readTVar sess.currentIx
-                        when (cur == ix) $ do
-                            ws' <- readTVar sess.windows
-                            forM_ (Map.lookupMin ws') $ \(i, _) ->
-                                writeTVar sess.currentIx i
+                    Nothing -> void (unlinkEverywhere st win)
                 bumpDirty st
 
 -- | Point every pane of @win@ at @(sid, win)@, after the window changed
@@ -1217,18 +1207,31 @@ globalSpawnEnv st pairs = do
     g <- readTVarIO st.globalEnviron
     pure (environPairs (environMerge g (environFromPairs pairs)))
 
+-- | A fresh session id, and the name a session created without @-s@ takes
+-- from it — the id itself, after @prefix-@ for a session group's member —
+-- skipping ids whose name is taken (tmux's @session_create@).
+freshSessionName :: ServerState -> Maybe Text -> Maybe Text -> STM (Int, Text)
+freshSessionName st prefix mname = do
+    sid <- freshId st.nextSession
+    case mname of
+        Just nm -> pure (sid, nm)
+        Nothing -> do
+            let nm = maybe "" (<> "-") prefix <> tshow sid
+            taken <- mapM (\s -> readTVar s.name) . Map.elems =<< readTVar st.sessions
+            if nm `elem` taken then freshSessionName st prefix mname else pure (sid, nm)
+
 createSession
     :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
     -> FilePath -> Size -> IO Session
 createSession st mname mrun environ dir sz = do
-    sid <- atomically (freshId st.nextSession)
+    (sid, sname0) <- atomically (freshSessionName st Nothing mname)
     opts <- readTVarIO st.options
     spawnEnv <- globalSpawnEnv st environ
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
         dir spawnEnv (sz)
     now <- getPOSIXTime
-    nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
+    nameVar <- newTVarIO sname0
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
     windowHistVar <- newTVarIO []
@@ -1237,6 +1240,7 @@ createSession st mname mrun environ dir sz = do
     cwdVar <- newTVarIO dir
     optionsVar <- newTVarIO emptyDelta
     resolvedVar <- newTVarIO Nothing
+    groupVar <- newTVarIO Nothing
     let sess = Session
             { id = SessionId sid
             , createdAt = now
@@ -1250,12 +1254,73 @@ createSession st mname mrun environ dir sz = do
             , startCwd = cwdVar
             , options = optionsVar
             , resolvedOptions = resolvedVar
+            , group = groupVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
     sname <- readTVarIO nameVar
     notify st "session-created"
         (NotifyTarget (Just sess.id) (Just win.id) (Just pane.id))
+        [("session", PSessionRef sess.id sname)]
+    pure sess
+
+-- | Create a session in @leader@'s session group, sharing its window map
+-- (tmux's @new-session -t@): no window is spawned, and the new session
+-- starts on the lowest-numbered window. The group takes @leader@'s name
+-- when @leader@ is not grouped yet.
+createGroupedSession
+    :: ServerState -> Session -> Maybe Text -> [(Text, Text)] -> FilePath
+    -> IO Session
+createGroupedSession st leader mname environ dir = do
+    now <- getPOSIXTime
+    (sess, founded, gname) <- atomically $ do
+        lname <- readTVar leader.name
+        lgroup <- readTVar leader.group
+        let gname = fromMaybe lname lgroup
+        writeTVar leader.group (Just gname)
+        (sid, sname) <- freshSessionName st (Just gname) mname
+        ws <- readTVar leader.windows
+        sz <- readTVar leader.lastSize
+        nameVar <- newTVar sname
+        currentVar <- newTVar (maybe 0 fst (Map.lookupMin ws))
+        windowHistVar <- newTVar []
+        sizeVar <- newTVar sz
+        environVar <- newTVar (environFromPairs environ)
+        cwdVar <- newTVar dir
+        optionsVar <- newTVar emptyDelta
+        resolvedVar <- newTVar Nothing
+        groupVar <- newTVar (Just gname)
+        let sess = Session
+                { id = SessionId sid
+                , createdAt = now
+                , restores = 0
+                , name = nameVar
+                , windows = leader.windows
+                , currentIx = currentVar
+                , windowHist = windowHistVar
+                , lastSize = sizeVar
+                , environ = environVar
+                , startCwd = cwdVar
+                , options = optionsVar
+                , resolvedOptions = resolvedVar
+                , group = groupVar
+                }
+        modifyTVar' st.sessions (Map.insert sess.id sess)
+        bumpDirty st
+        pure (sess, lgroup == Nothing, gname)
+    size <- atomically $ do
+        ss <- Map.elems <$> readTVar st.sessions
+        length <$> filterM (fmap (== Just gname) . readTVar . (.group)) ss
+    when founded $ do
+        lname <- readTVarIO leader.name
+        notifyGroupChange st "session-added-to-group" (sessionTarget leader.id)
+            leader.id lname gname 1
+    sname <- readTVarIO sess.name
+    notifyGroupChange st "session-added-to-group" (sessionTarget sess.id)
+        sess.id sname gname size
+    mwin <- atomically (currentWindow sess)
+    notify st "session-created"
+        (NotifyTarget (Just sess.id) ((.id) <$> mwin) Nothing)
         [("session", PSessionRef sess.id sname)]
     pure sess
 

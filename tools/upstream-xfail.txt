@@ -37,7 +37,7 @@ screen-redraw-scrollbars.sh
 screen-redraw-status.sh
 screen-redraw-tiled.sh
 screen-redraw-window-style.sh
-session-group-resize.sh         # control mode
+session-group-resize.sh         # control mode (-C new, refresh-client -C) + per-window sizes (hat sizes a group's shared windows per session)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
@@ -54,7 +54,7 @@ control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-ch
 control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # needs session groups + control mode + respawn-pane + title stack
+hooks-notify.sh                 # needs pane-mode-changed + title stack + respawn-pane + pane-moved + resize-pane -x/-y + client-* hooks + control mode
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
 choose-buffer.sh                # choose-buffer + mode-screen rendering unimplemented
@@ -111,9 +111,9 @@ buffers.sh                      # buffer-limit option unimplemented (all else pa
 pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, resize-pane -T, respawn -E (empty panes)
 
 # windows / sessions / pipe / lifecycle
-window-ops.sh                   # unlink/swap/rotate-window and move-window -k/-a/-r absent
-session-ops.sh                  # grouped sessions, new-session -A/-t, detach-on-destroy, kill-session -a/-C/-f
-lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications
+window-ops.sh                   # renumber-windows option + invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
+session-ops.sh                  # detach-on-destroy option + invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
+lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications + refresh-client -B
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + floating panes

@@ -15,7 +15,7 @@ import Test.Hspec
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-    (PaneId (..), ServerState (..), Session (..), StartupPhase (..),
+    (PaneId (..), ServerState (..), Session (..), StartupPhase (..), Window (..),
      newServerState)
 import Hat.Model.Options (OptionName (..), OptionValue (..), applyEntry)
 import Hat.Transport.Wire (Autostart (..))
@@ -30,7 +30,7 @@ import Hat.Server
      phaseAfterConfig, rebuildReload, reloadSchemePush, replayPane,
      restoreRun, runCommands, shellLine, snapshotHistoryLimit, startupGate,
      IdleArming (..), idleArming,
-     uniquifySessionNames)
+     renameRestored, uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
 import Hat.Server.LayoutString (emitLayout)
@@ -46,11 +46,12 @@ import Hat.Term.Emulator qualified as Emu
 -- equality against the previous snapshot.
 sampleSnapshot :: Text -> Snapshot
 sampleSnapshot nm = Snapshot
-    { sessions =
-        [ SessionSnap
-            { name = nm, startCwd = "/tmp", currentIx = 0, windowHist = []
-            , createdAt = Nothing, restores = 0, windows = [] } ]
-    , lastActiveSession = Nothing }
+    { sessions = [sampleSession nm Nothing], lastActiveSession = Nothing }
+
+sampleSession :: Text -> Maybe Text -> SessionSnap
+sampleSession nm g = SessionSnap
+    { name = nm, startCwd = "/tmp", currentIx = 0, windowHist = []
+    , createdAt = Nothing, restores = 0, group = g, windows = [] }
 
 emptySnapshot :: Snapshot
 emptySnapshot = Snapshot { sessions = [], lastActiveSession = Nothing }
@@ -270,17 +271,54 @@ spec = do
                     { cwd = "/tmp", command = Nothing, shellSpawned = False }
                 rw = HotWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
-                    , paneHist = [], autoRename = True, panes = [(psnap, rp)] }
+                    , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, panes = [(psnap, rp)] }
                 rsess = HotSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
                     , windowHist = [], createdAt = Nothing, restores = 0
-                    , windows = [rw] }
+                    , group = Nothing, windows = [rw] }
             rebuildReload st ReloadTree
                 { sessions = [rsess]
                 , currentSession = Nothing, lastSession = Nothing }
             sessMap <- readTVarIO st.sessions
             szs <- mapM (readTVarIO . (.lastSize)) (Map.elems sessMap)
             szs `shouldBe` [Size { rows = 30, cols = 100 }]
+
+    -- See Note [Captured links].
+    describe "reload links and groups" $
+        it "shares a linked window and a group's window map, adopting each pane once" $
+            bracket openPseudoTerminal (\(_, s) -> closeFd s) $
+                \(m, _) -> do
+            st <- testState
+            let lay = emitLayout
+                    Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
+                    (Leaf (PaneId 0))
+                rp = HotPane
+                    { masterFd = fromIntegral m, childPid = 999999
+                    , modes = ReloadModes False False 0 False 0
+                    , screen = emptyReloadScreen
+                    , start = StartShell, death = Nothing }
+                psnap = PaneSnap
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                win wix k l ps = HotWindow
+                    { ix = wix, name = "sh", layout = lay, active = 0
+                    , paneHist = [], autoRename = True, key = k, linkOf = l
+                    , panes = ps }
+                sess nm g ws = HotSession
+                    { name = nm, startCwd = "/tmp", currentIx = 0
+                    , windowHist = [], createdAt = Nothing, restores = 0
+                    , group = g, windows = ws }
+            rebuildReload st ReloadTree
+                { sessions =
+                    [ sess "a" (Just "a") [win 0 (Just 7) Nothing [(psnap, rp)]]
+                    , sess "b" (Just "a") []
+                    , sess "c" Nothing [win 3 Nothing (Just 7) []] ]
+                , currentSession = Nothing, lastSession = Nothing }
+            [a, b, c] <- Map.elems <$> readTVarIO st.sessions
+            (a.windows == b.windows) `shouldBe` True
+            wa <- readTVarIO a.windows
+            wc <- readTVarIO c.windows
+            fmap (.id) (Map.lookup 3 wc) `shouldBe` fmap (.id) (Map.lookup 0 wa)
+            readTVarIO b.group `shouldReturn` Just "a"
 
     -- Bug f3: a reload re-arms the ?2031 subscription (replayPane) but the
     -- surviving app never re-emits it, so without a re-push it renders the old
@@ -475,6 +513,14 @@ spec = do
         it "dodges live and just-restored names with -2, -3, … suffixes" $
             uniquifySessionNames ["main", "log"] ["main", "fresh", "main"]
                 `shouldBe` ["main-2", "fresh", "main-3"]
+
+    describe "renameRestored" $
+        it "keeps a restored session group apart from a live group of its name" $ do
+            let sess = sampleSession
+                got = renameRestored ["main"] ["g"]
+                    [sess "main" (Just "g"), sess "two" (Just "g"), sess "lone" Nothing]
+            map (\s -> (s.name, s.group)) got `shouldBe`
+                [("main-2", Just "g-2"), ("two", Just "g-2"), ("lone", Nothing)]
 
     -- bb: @snapshot-limit drives the history depth; an unset or garbage
     -- value means the default, never a silently different behavior.

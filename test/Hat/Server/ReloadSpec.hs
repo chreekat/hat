@@ -61,16 +61,16 @@ instance Arbitrary HotSession where
     arbitrary = hotSessionOf =<< arbitrary
     shrink s =
         [ HotSession s.name s.startCwd s.currentIx s.windowHist
-            s.createdAt s.restores ws
+            s.createdAt s.restores s.group ws
         | ws <- shrinkList shrink s.windows, not (null ws) ]
         ++ [ HotSession s.name s.startCwd s.currentIx h
-                s.createdAt s.restores s.windows
+                s.createdAt s.restores s.group s.windows
            | h <- shrinkList (const []) s.windowHist ]
         ++ [ HotSession s.name s.startCwd s.currentIx s.windowHist
-                Nothing s.restores s.windows
+                Nothing s.restores s.group s.windows
            | isJust s.createdAt ]
         ++ [ HotSession s.name s.startCwd s.currentIx s.windowHist
-                s.createdAt 0 s.windows
+                s.createdAt 0 s.group s.windows
            | s.restores /= 0 ]
 
 hotSessionOf :: SessionSnap -> Gen HotSession
@@ -79,15 +79,16 @@ hotSessionOf s = do
     pure HotSession
         { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
         , windowHist = s.windowHist, createdAt = s.createdAt
-        , restores = s.restores, windows = ws }
+        , restores = s.restores, group = s.group, windows = ws }
 
 instance Arbitrary HotWindow where
     arbitrary = hotWindowOf =<< arbitrary
     shrink w =
-        [ hw w.paneHist w.autoRename ps
+        [ hw w.paneHist w.autoRename w.key w.linkOf ps
         | ps <- shrinkList shrinkHot w.panes, not (null ps) ]
-        ++ [ hw h w.autoRename w.panes | h <- shrinkList (const []) w.paneHist ]
-        ++ [ hw w.paneHist False w.panes | w.autoRename ]
+        ++ [ hw h w.autoRename w.key w.linkOf w.panes
+           | h <- shrinkList (const []) w.paneHist ]
+        ++ [ hw w.paneHist False w.key w.linkOf w.panes | w.autoRename ]
       where
         hw = HotWindow w.ix w.name w.layout w.active
         shrinkHot (p, hp) =
@@ -98,7 +99,8 @@ hotWindowOf w = do
     ps <- mapM (\p -> (,) p <$> arbitrary) w.panes
     pure HotWindow
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
-        , paneHist = w.paneHist, autoRename = w.autoRename, panes = ps }
+        , paneHist = w.paneHist, autoRename = w.autoRename
+        , key = w.key, linkOf = w.linkOf, panes = ps }
 
 instance Arbitrary HotPane where
     arbitrary = HotPane <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
@@ -187,11 +189,12 @@ hotOf t = ReloadHot
     sessionOf s = SessionSnap
         { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
         , windowHist = s.windowHist, createdAt = s.createdAt
-        , restores = s.restores, windows = map windowOf s.windows }
+        , restores = s.restores, group = s.group
+        , windows = map windowOf s.windows }
     windowOf w = WindowSnap
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename
-        , panes = map fst w.panes }
+        , key = w.key, linkOf = w.linkOf, panes = map fst w.panes }
 
 -- Re-encode a handover at an arbitrary era, to exercise the era gate. Mirrors
 -- 'encodeHandover' exactly except for the era field; the golden-byte test
@@ -231,10 +234,12 @@ treeWith mlast ms sc = ReloadTree
         [ HotSession
             { name = "work", startCwd = "/home", currentIx = 0, windowHist = []
             , createdAt = Nothing, restores = 0
+            , group = Nothing
             , windows =
                 [ HotWindow
                     { ix = 0, name = "w", layout = "L", active = 0
                     , paneHist = [], autoRename = True
+                    , key = Nothing, linkOf = Nothing
                     , panes =
                         [ ( PaneSnap
                               { cwd = "/tmp", command = Nothing
@@ -253,11 +258,12 @@ currentTree = ReloadTree
     { sessions =
         [ HotSession
             { name = "work", startCwd = "/home", currentIx = 0, windowHist = []
-            , createdAt = Nothing, restores = 0
+            , createdAt = Nothing, restores = 0, group = Nothing
             , windows =
                 [ HotWindow
                     { ix = 0, name = "w", layout = "L", active = 0
                     , paneHist = [], autoRename = True
+                    , key = Nothing, linkOf = Nothing
                     , panes =
                         [ ( snap
                           , HotPane
