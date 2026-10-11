@@ -26,6 +26,7 @@ import Hat.Server.BufferSpec qualified
 import Hat.Server.CaptureSpec qualified
 import Hat.Server.ColorSchemeSpec qualified
 import Hat.Server.ConfigSpec qualified
+import Hat.Server.ControlSpec qualified
 import Hat.Server.CopyModeSpec qualified
 import Hat.Server.DisplayPanesSpec qualified
 import Hat.Server.EnvironSpec qualified
@@ -119,5 +120,6 @@ main = hspec $ parallel $ do
     describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "Hat.Server.Hooks" Hat.Server.HooksSpec.spec
+    describe "Hat.Server.Control" Hat.Server.ControlSpec.spec
     describe "Hat.Server.Flags" Hat.Server.FlagsSpec.spec
     describe "Hat.Server.Flash" Hat.Server.FlashSpec.spec

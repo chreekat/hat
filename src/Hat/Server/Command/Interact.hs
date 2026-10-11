@@ -15,6 +15,7 @@ module Hat.Server.Command.Interact
 
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_)
+import Data.Maybe (listToMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -24,7 +25,7 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (send)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, unknownFlag)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
@@ -40,10 +41,33 @@ import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 import Hat.Transport.Wire
 
+-- | @detach-client@: detach the issuing client, or with @-s@ every client
+-- attached to a session, or with @-a@ every attached client but the
+-- issuing one.
 cmdDetachClient :: CommandImpl
-cmdDetachClient _ mclient _ = do
-    forM_ mclient $ \client -> send client DetachOk
-    pure []
+cmdDetachClient st mclient args
+    | Just e <- unknownFlag "detach-client" "a" flags = pure [RErr e]
+    | Just f <- listToMaybe [ f | (f, _) <- opts, f `elem` ["-E", "-t"] ] =
+        pure [RErr ("detach-client " <> f <> ": not supported")]
+    | Just t <- lookup "-s" opts = do
+        res <- findTarget st mclient Target.FindSession (Just t)
+        case res of
+            -- tmux's source session can fail to resolve: nothing to detach.
+            Left _ -> pure []
+            Right (sess, _, _, _) -> do
+                cs <- atomically (sessionClients st sess.id)
+                [] <$ mapM_ (`send` DetachOk) cs
+    | "-a" `elem` flags = do
+        cs <- Map.elems <$> readTVarIO st.clients
+        others <- atomically $ filterM' cs $ \c -> do
+            sid <- readTVar c.session
+            live <- Map.member sid <$> readTVar st.sessions
+            pure (live && Just c.id /= fmap (.id) mclient)
+        [] <$ mapM_ (`send` DetachOk) others
+    | otherwise = [] <$ forM_ mclient (`send` DetachOk)
+  where
+    (opts, flags, _) = parseArgs "Est" args
+    filterM' xs p = map fst . filter snd . zip xs <$> mapM p xs
 
 cmdSendPrefix :: CommandImpl
 cmdSendPrefix st mclient _ = do

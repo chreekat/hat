@@ -106,6 +106,9 @@ library
         Hat.Server.Command.Wait
         Hat.Server.Command.Window
         Hat.Server.Conn
+        Hat.Server.Control
+        Hat.Server.ControlQueue
+        Hat.Server.ControlTypes
         Hat.Server.CopyMode
         Hat.Server.Dispatch
         Hat.Server.DisplayPanes
@@ -281,6 +284,7 @@ test-suite hat-test
         Hat.Server.CaptureSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
+        Hat.Server.ControlSpec
         Hat.Server.CopyModeSpec
         Hat.Server.DisplayPanesSpec
         Hat.Server.EnvironSpec

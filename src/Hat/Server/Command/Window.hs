@@ -28,6 +28,7 @@ module Hat.Server.Command.Window
     , cmdRotateWindow
     , closeSessions
     , switchTo
+    , switchToWindow
     ) where
 
 import Control.Concurrent.STM
