@@ -827,7 +827,10 @@ payload carries painted bytes, never per-cell structure, so its size
 and codec cost scale with the text on screen rather than the cell
 count. `hat restart` re-execs the server and every attached client;
 `restart-server` and `restart-client` are its two halves. `-C` drops
-scrollback from the handover as a memory-relief valve.
+scrollback from the handover as a memory-relief valve. A popup's command
+(`display-popup`) is not carried: tmux has no reload to model, so the
+floor applies — before the exec it is hung up and reaped
+(`closeAllPopups`), and its pty is close-on-exec besides.
 
 Compatibility uses both mechanisms, split by what evolves. The frozen
 envelope (magic, `reloadEra`, and a version-independent cleanup core of
