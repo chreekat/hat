@@ -199,11 +199,11 @@ renderOnce st client = do
             msgRow <- case (mprompt, mtoast) of
                 _ | not fits -> pure []
                 (Just pr, _) -> do
-                    ctx <- messageCtx st sess sopts
+                    ctx <- messageCtx st sess
                     let (row, cx) = drawPrompt ctx sopts (promptView pr) under
                     pure [(msgIx, row, Just cx)]
                 (Nothing, Just t) -> do
-                    ctx <- messageCtx st sess sopts
+                    ctx <- messageCtx st sess
                     pure [(msgIx, drawMessage ctx sopts t.markup t.text under, Nothing)]
                 (Nothing, Nothing) -> pure []
             let overRows = [ r | r@(ix, _) <- barRows <> [ (ix, row) | (ix, row, _) <- msgRow ]
@@ -614,12 +614,10 @@ lineCells style width line = V.fromList (take width (cells <> repeat blank))
 
 -- | The context a message or the prompt expands its formats in: the
 -- session's, as tmux's @format_create_defaults@ for the client.
-messageCtx :: ServerState -> Session -> Options -> IO F.FormatCtx
-messageCtx st sess sopts = do
+messageCtx :: ServerState -> Session -> IO F.FormatCtx
+messageCtx st sess = do
     env <- sessionFormatEnv st sess
     formatCtxFor st env
-        [ optionText "message-format" sopts, optionText "message-style" sopts
-        , optionText "message-command-style" sopts ]
 
 -- | What the prompt draws: see 'drawPrompt'.
 promptView :: PromptState -> PromptView
@@ -708,7 +706,7 @@ renderStatus
     :: ServerState -> Options -> Map.Map Text Text -> [Map.Map Text Text]
     -> Int -> IO [V.Vector Cell.Cell]
 renderStatus st sopts env wins width = do
-    ctx <- formatCtxFor st env (statusFormats sopts)
+    ctx <- formatCtxFor st env
     let rows = statusRows ctx { F.windows = wins, F.animate = F.Animate }
             sopts width
     pure $! foldr seq rows rows

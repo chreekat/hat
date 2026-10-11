@@ -23,7 +23,6 @@ import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (filterM, forM, forM_, void, when)
-import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
@@ -35,7 +34,7 @@ import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
-import System.IO.Unsafe (unsafeInterleaveIO)
+import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.Process
     (CreateProcess (..), readCreateProcessWithExitCode, shell)
 import Data.Vector qualified as V
@@ -371,57 +370,36 @@ resolveShell st cmdText = do
 -- overlay the caller's environment.
 expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
 expandFormat st env fmt = do
-    ctx <- formatCtxFor st env [fmt]
+    ctx <- formatCtxFor st env
     pure $! renderFormatCtx ctx fmt
 
--- | The evaluation context for expanding @fmts@ against @env0@: the hook
--- overlay, every @#(…)@ the formats (or the option values they can reach
--- through @E:@\/@T:@) name, resolved through the cache, and the loop and
--- search data, gathered only if an expansion demands it.
-formatCtxFor :: ServerState -> FormatEnv -> [Text] -> IO FormatCtx
-formatCtxFor st env0 fmts = do
+-- | The evaluation context for expanding formats against @env0@: the hook
+-- overlay, @#(…)@ commands resolved through the cache, and the loop and
+-- search data. Each is read only if an expansion reaches it, so a job in
+-- an untaken branch never runs (as in tmux).
+formatCtxFor :: ServerState -> FormatEnv -> IO FormatCtx
+formatCtxFor st env0 = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
     let env = maybe env0 (\amb -> Map.union amb.formats env0) mamb
     now <- getZonedTime
-    -- Pre-resolve shell segments so the evaluator stays pure. A command is
-    -- itself a format, expanded (as tmux's format_job_get does) without
-    -- jobs, animation or strftime.
+    -- A command is itself a format, expanded (as tmux's format_job_get
+    -- does) without jobs, animation or strftime. The caller's strict use
+    -- of the expansion keeps the deferred reads inside its own call.
     let jobCtx = formatCtx env (const "") now
-    resolved <- newIORef Map.empty
-    let collect t = case T.breakOn "#(" t of
-            (_, rest) | T.null rest -> pure ()
-            (_, rest) -> do
-                let inner = fst (breakBalanced (T.drop 2 rest))
-                val <- resolveShell st (evaluateCtx jobCtx inner)
-                modifyIORef' resolved (Map.insert inner val)
-                collect (T.drop (2 + T.length inner + 1) rest)
-    mapM_ collect (reachableValues ("#(" `T.isInfixOf`) env fmts)
-    vals <- readIORef resolved
-    -- Deferred reads: the caller's strict use of the expansion keeps them
-    -- inside its own call.
+        job inner = unsafePerformIO (resolveShell st (evaluateCtx jobCtx inner))
     sessionItems <- unsafeInterleaveIO (loopSessionEnvs st)
     windowItems <- unsafeInterleaveIO (loopWindowEnvs st env)
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
-    pure (formatCtx env (\c -> Map.findWithDefault "" c vals) now)
+    pure (formatCtx env job now)
         { sessions = sessionItems
         , windows = windowItems
         , panes = paneItems
         , clients = clientItems
         , paneLines = visibleLines
         }
-  where
-    breakBalanced = go (0 :: Int) ""
-      where
-        go depth acc t = case T.uncons t of
-            Nothing -> (acc, "")
-            Just (')', rest) | depth == 0 -> (acc, rest)
-            Just (c, rest)
-                | c == '(' -> go (depth + 1) (acc <> T.singleton c) rest
-                | c == ')' -> go (depth - 1) (acc <> T.singleton c) rest
-                | otherwise -> go depth (acc <> T.singleton c) rest
 
 -- | The formats plus every variable value satisfying @p@ that they name
 -- (as @{name}@ or @:name}@), transitively: what their @E:@ or @T:@
