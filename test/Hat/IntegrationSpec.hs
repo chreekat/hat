@@ -617,14 +617,28 @@ spec = parallel $ do
         awaitScreen c1 "$"
         typeInto c1 "trap '' HUP; sleep 300\r"
         awaitForeground h "sleep"
+        pid <- serverPid h
 
         killed <- timeout 5_000_000 (hatCtl h ["kill-server"])
         case killed of
             Nothing -> expectationFailure "kill-server did not return within 5s"
             Just _ -> do
-                gone <- pollServerGone h.sock 50
+                gone <- pollPidGone pid 50
                 unless gone $
                     expectationFailure "server did not exit after kill-server"
+
+    -- A command issued once kill-server returns must reach a fresh server,
+    -- even while the killed one is still draining a SIGHUP-ignoring pane.
+    it "a command after kill-server starts a fresh server, not the draining one" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "-s", "old", "trap '' HUP; exec sleep 300"]
+        _ <- hatCtl h ["set-option", "-g", "@marker", "old"]
+        _ <- hatCtl h ["kill-server"]
+        (code, _, err) <- hatCtl h ["new-session", "-d", "-s", "fresh"]
+        (code, err) `shouldBe` (ExitSuccess, "")
+        sessions <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        marker <- ctlOut h ["display-message", "-p", "#{@marker}"]
+        (sessions, marker) `shouldBe` ("fresh\n", "\n")
 
     -- e7: a pane whose shell exits behind a child still holding the pty open
     -- must be torn down -- pane death tracks the shell, not pty EOF.
@@ -1860,6 +1874,22 @@ pollServerGone path n = do
     up <- serverUp path
     if up
         then threadDelay 100_000 *> pollServerGone path (n - 1)
+        else pure True
+
+-- | Poll (every 100ms, @n@ times) until process @pid@ has exited (a zombie
+-- counts as exited). Unlike 'pollServerGone', a server that stopped
+-- listening but is still draining counts as alive.
+pollPidGone :: Int -> Int -> IO Bool
+pollPidGone _ 0 = pure False
+pollPidGone pid n = do
+    stat <- (Just . B8.unpack <$> B.readFile ("/proc/" <> show pid <> "/stat"))
+        `catch` \(_ :: IOException) -> pure Nothing
+    -- The state field follows the parenthesised command name.
+    let alive = case drop 2 . dropWhile (/= ')') <$> stat of
+            Just (st : _) -> st /= 'Z'
+            _ -> False
+    if alive
+        then threadDelay 100_000 *> pollPidGone pid (n - 1)
         else pure True
 
 -- | Whether a server answers at the path. The probe is closed before

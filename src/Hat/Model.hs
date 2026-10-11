@@ -509,7 +509,11 @@ data StartupPhase = LoadingConfig | Restoring | Ready
 -- | Whether the accept loop takes new connections. A reload closes the gate
 -- ('AcceptClosing'), the loop confirms ('AcceptParked'), and arrivals wait in
 -- the listen backlog; 'AcceptOpen' resumes. See 'Hat.Server.Conn.acceptLoop'.
-data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
+data AcceptGate
+    = AcceptOpen
+    | AcceptClosing
+    | AcceptParked
+    | AcceptRetiring  -- ^ the server no longer owns the socket path
     deriving (Eq, Show)
 
 -- | Whether pane readers may pump pty bytes into their emulators;
