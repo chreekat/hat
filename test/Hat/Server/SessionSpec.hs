@@ -161,6 +161,7 @@ addClient st sid sz stamp = do
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef ""
+        <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
@@ -202,6 +203,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef ""
+        <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
@@ -280,6 +282,7 @@ copyModeAt hsize = PaneMode
         , pendingSearch = Nothing
         , lastSearch = Nothing
         , lastQuery = Nothing
+        , scrollExit = False, hidePosition = False
         }
     }
 

@@ -27,6 +27,15 @@ blue = Cell.Indexed 4
 
 spec :: Spec
 spec = do
+    describe "formatRanges" $ do
+        it "tags each column with the range its text was drawn under" $
+            V.toList (formatRanges base "#[range=left]L#[norange] #[range=window|3]w3#[norange]#[align=right range=right]R" 6)
+                `shouldBe` [ RangeLeft, RangeNone, RangeWindow 3, RangeWindow 3
+                           , RangeNone, RangeRight ]
+        it "an unknown range kind leaves the range as it was" $
+            V.toList (formatRanges base "#[range=pane|%2]a#[range=bogus]b" 2)
+                `shouldBe` [RangePane 2, RangePane 2]
+
     describe "formatDraw" $ do
         it "draws plain text from the left, leaving the rest of the row" $ do
             let row = draw 6 "abc"

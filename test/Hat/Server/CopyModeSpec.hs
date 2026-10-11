@@ -66,6 +66,7 @@ start = Sim
         , pendingSearch = Nothing
         , lastSearch = Nothing
         , lastQuery = Nothing
+        , scrollExit = False, hidePosition = False
         }
     , sBufs = []
     }
@@ -116,6 +117,20 @@ emacs = run KeysEmacs ""
 
 spec :: Spec
 spec = do
+    describe "the word and line under a position (mouse_word, mouse_line)" $ do
+        let g = listGrid 20 ["alpha beta gamma", "  x-y "]
+            word r c = runIdentity (gridWord "-" g r c)
+        it "finds the word around a column" $ do
+            word 0 2 `shouldBe` "alpha"
+            word 0 7 `shouldBe` "beta"
+            word 0 0 `shouldBe` "alpha"
+        it "on a separator, takes the word after it" $
+            word 0 5 `shouldBe` "beta"
+        it "splits on the word separators" $ do
+            word 1 2 `shouldBe` "x"
+            word 1 4 `shouldBe` "y"
+        it "reads a line up to its trimmed length" $
+            runIdentity (gridLine g 1) `shouldBe` "  x-y"
     describe "default copy-mode key bindings" $ do
         let bound table key =
                 (.commands) <$> (Map.lookup key =<< Map.lookup table defaultKeymap)
@@ -471,7 +486,8 @@ spec = do
                 , selection = Just (anchor, SelChar)
                 , keyTable = keys, viewportOffY = 0, numPrefix = Nothing
                 , pendingSearch = Nothing, lastSearch = Nothing
-                , lastQuery = Nothing }
+                , lastQuery = Nothing
+                , scrollExit = False, hidePosition = False }
             board = gridOf ["abcde", "fghij", "klmno"]
 
         it "reverse-videos a one-line span through the cursor cell (vi)" $ do
@@ -530,7 +546,8 @@ spec = do
                 { cursorRow = row, cursorCol = 2, selection = Nothing
                 , keyTable = "copy-mode-vi", viewportOffY = 0, numPrefix = Nothing
                 , pendingSearch = Nothing, lastSearch = Nothing
-                , lastQuery = Nothing }
+                , lastQuery = Nothing
+                , scrollExit = False, hidePosition = False }
         it "maps an absolute cursor row into the viewport" $
             copyCursorPos 5 10 (st 7) `shouldBe` Just Pos { row = 2, col = 2 }
         it "is Nothing above the viewport" $
@@ -543,7 +560,8 @@ spec = do
                 { cursorRow = row, cursorCol = 0, selection = Nothing
                 , keyTable = "copy-mode-vi", viewportOffY = voY, numPrefix = Nothing
                 , pendingSearch = Nothing, lastSearch = Nothing
-                , lastQuery = Nothing }
+                , lastQuery = Nothing
+                , scrollExit = False, hidePosition = False }
         it "keeps a visible cursor's viewport unchanged" $
             (scrollToCursor 5 10 (st 7 0)).viewportOffY `shouldBe` 0
         it "scrolls up to reveal a cursor in scrollback" $

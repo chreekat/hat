@@ -269,6 +269,8 @@ keys→commands cycle.
   |  Hat.Server.Layout / .LayoutString      | -- pane geometry + layout-string codec
   |  Hat.Server.Keys / .Keymap /            | -- key names; default binds;
   |    .Target / .Locate                    |    target lookup over the live tree
+  |  Hat.Server.Mouse / .MouseIO           | -- mouse reports -> mouse keys (pure);
+  |                                         |    placing, sending, dragging
   |  Hat.Server.Style / .ColorScheme /      | -- style strings; light/dark palette;
   |    .Title                               |    title formatting
   |  Hat.Server.Snapshot / .Persist /       | -- persistence: capture+mirror+rebuild,

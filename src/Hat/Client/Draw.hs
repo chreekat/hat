@@ -98,6 +98,7 @@ enterAltScreen :: ByteString
 enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[?2004h\ESC[2J\ESC[H"
 
 -- Also resets the cursor colour (OSC 112) in case a pane's
--- @cursor-colour@ was mirrored onto the outer terminal.
+-- @cursor-colour@ was mirrored onto the outer terminal, and any mouse
+-- tracking the server asked for.
 leaveAltScreen :: ByteString
-leaveAltScreen = "\ESC[?2004l\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a"
+leaveAltScreen = "\ESC[?1006l\ESC[?1000l\ESC[?1002l\ESC[?1003l\ESC[?2004l\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a"

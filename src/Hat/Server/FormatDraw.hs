@@ -16,6 +16,8 @@ module Hat.Server.FormatDraw
     , colourValue
       -- * Drawing
     , formatDraw
+    , DrawRange (..)
+    , formatRanges
       -- * Style-aware measuring
     , formatWidth
     , formatTrimLeft
@@ -55,8 +57,7 @@ data Width = WidthCells Int | WidthPercent Int
     deriving (Eq, Show)
 
 -- | tmux's @struct style@, less the parts hat's cells cannot carry
--- (hyperlinks, underline colour, @dim=@ and ranges, which only mouse
--- clicks on the status line read).
+-- (hyperlinks, underline colour, @dim=@).
 data DrawStyle = DrawStyle
     { cell :: Cell.Style
     , fill :: Maybe Cell.Color
@@ -65,14 +66,29 @@ data DrawStyle = DrawStyle
     , defaultType :: DefaultType
     , ignore :: Bool
     , width :: Maybe Width
+    , range :: DrawRange
     }
+    deriving (Eq, Show)
+
+-- | tmux's style range (@range=@): what a mouse click on the text drawn
+-- under it means. Arguments are as written: a pane or session id's number,
+-- a window index, a user string, a control number.
+data DrawRange
+    = RangeNone
+    | RangeLeft
+    | RangeRight
+    | RangePane Int
+    | RangeWindow Int
+    | RangeSession Int
+    | RangeUser Text
+    | RangeControl Int
     deriving (Eq, Show)
 
 defaultDrawStyle :: DrawStyle
 defaultDrawStyle = DrawStyle
     { cell = Cell.defaultStyle, fill = Nothing, align = AlignDefault
     , list = ListOff, defaultType = DefaultBase, ignore = False
-    , width = Nothing }
+    , width = Nothing, range = RangeNone }
 
 -- | A style option's cell attributes (tmux's @style_apply@ over the default
 -- cell); an unparseable style is the default.
@@ -97,7 +113,7 @@ styleParse base sy0 =
             "pop-default" -> Just sy { defaultType = DefaultPop }
             "set-default" -> Just sy { defaultType = DefaultSet }
             "nolist" -> Just sy { list = ListOff }
-            "norange" -> Just sy
+            "norange" -> Just sy { range = RangeNone }
             "noalign" -> Just sy { align = AlignDefault }
             "none" -> Just sy { cell = clearAttrs sy.cell }
             tok
@@ -107,7 +123,7 @@ styleParse base sy0 =
                     "left-marker" -> Just sy { list = ListLeftMarker }
                     "right-marker" -> Just sy { list = ListRightMarker }
                     _ -> Nothing
-                | Just v <- nonEmpty "range=" tok -> sy <$ rangeOk v
+                | Just v <- nonEmpty "range=" tok -> rangeOf v sy
                 | Just v <- nonEmpty "align=" tok -> case v of
                     "left" -> Just sy { align = AlignLeft }
                     "centre" -> Just sy { align = AlignCentre }
@@ -141,22 +157,28 @@ styleParse base sy0 =
     nonEmpty pre tok = case T.stripPrefix pre tok of
         Just v | not (T.null v) -> Just v
         _ -> Nothing
-    rangeOk v = case T.breakOn "|" v of
+    -- An unknown range kind leaves the range as it was, as in tmux.
+    rangeOf v sy = case T.breakOn "|" v of
         (kind, rest)
-            | T.null rest -> if kind `elem` ["control", "pane", "window", "session", "user"]
-                then Nothing else Just ()
+            | T.null rest -> case kind of
+                "left" -> Just sy { range = RangeLeft }
+                "right" -> Just sy { range = RangeRight }
+                _ | kind `elem` ["control", "pane", "window", "session", "user"] -> Nothing
+                  | otherwise -> Just sy
             | otherwise -> do
                 let arg = T.drop 1 rest
+                    set r = sy { range = r }
                 if T.null arg then Nothing else case kind of
                     "left" -> Nothing
                     "right" -> Nothing
-                    "control" -> () <$ number 0 9 arg
-                    "pane" -> prefixed '%' arg
-                    "window" -> () <$ number 0 4294967295 arg
-                    "session" -> prefixed '$' arg
-                    _ -> Just ()
+                    "control" -> set . RangeControl . fromInteger <$> number 0 9 arg
+                    "pane" -> set . RangePane <$> prefixed '%' arg
+                    "window" -> set . RangeWindow . fromInteger <$> number 0 4294967295 arg
+                    "session" -> set . RangeSession <$> prefixed '$' arg
+                    "user" -> Just (set (RangeUser arg))
+                    _ -> Just sy
     prefixed c arg = case T.uncons arg of
-        Just (c', n) | c' == c, not (T.null n) -> () <$ number 0 4294967295 n
+        Just (c', n) | c' == c, not (T.null n) -> fromInteger <$> number 0 4294967295 n
         _ -> Nothing
 
 -- | @strtonum@ over a plain decimal.
@@ -232,7 +254,7 @@ data Section
 
 -- | The walk's state (the locals of tmux's @format_draw@).
 data Walk = Walk
-    { sections :: Map Section (Seq Cell.Cell)
+    { sections :: Map Section (Seq Tagged)
     , current :: Section
     , sy :: DrawStyle
     , currentDefault :: Cell.Style
@@ -248,10 +270,25 @@ data Walk = Walk
 data ListState = NoList | InList | AfterList
     deriving (Eq)
 
+-- | A drawn cell and the range it was drawn under.
+type Tagged = (Cell.Cell, DrawRange)
+
 -- | tmux's @format_draw@: draw an expanded format over a row (the area,
 -- already holding whatever lies beneath), in @base@ style.
 formatDraw :: Cell.Style -> Text -> V.Vector Cell.Cell -> V.Vector Cell.Cell
-formatDraw base expanded area = case walk start (T.unpack expanded) of
+formatDraw base expanded area =
+    V.map fst (drawTagged base expanded (V.map (, RangeNone) area))
+
+-- | The ranges @format_draw@ leaves across a row @width@ cells wide: the
+-- range each column's text was drawn under, as a mouse click there finds
+-- it.
+formatRanges :: Cell.Style -> Text -> Int -> V.Vector DrawRange
+formatRanges base expanded width =
+    V.map snd (drawTagged base expanded
+        (V.replicate width (Cell.glyphCell ' ' base, RangeNone)))
+
+drawTagged :: Cell.Style -> Text -> V.Vector Tagged -> V.Vector Tagged
+drawTagged base expanded area = case walk start (T.unpack expanded) of
     Nothing -> area  -- an unterminated #[ draws nothing
     Just w -> arrange w (filled w)
   where
@@ -268,7 +305,7 @@ formatDraw base expanded area = case walk start (T.unpack expanded) of
             , (AlignRight, SRight), (AlignAbsCentre, SAbsCentre) ] }
     filled w = case w.fillColour of
         Just c -> V.replicate available
-            (Cell.glyphCell ' ' Cell.defaultStyle { Cell.bg = c })
+            (Cell.glyphCell ' ' Cell.defaultStyle { Cell.bg = c }, RangeNone)
         Nothing -> area
     arrange w row0 =
         let sec s = Map.findWithDefault Seq.empty s w.sections
@@ -319,16 +356,17 @@ putChars cs w = w { sections = Map.alter (Just . add . fromMaybe Seq.empty)
                                     w.current w.sections }
   where
     sty = w.sy.cell
+    r = w.sy.range
     add sq = List.foldl' put sq cs
     put sq c = case charWidth c of
         0 | c < ' ' || c == '\DEL' -> sq
           | otherwise -> attach c sq
-        2 -> sq |> Cell.Cell (Cell.Glyph c [] Cell.Wide) sty
-                |> Cell.Cell Cell.Continuation sty
-        _ -> sq |> Cell.glyphCell c sty
-    isGlyph cl = Cell.cellWidth cl > 0
+        2 -> sq |> (Cell.Cell (Cell.Glyph c [] Cell.Wide) sty, r)
+                |> (Cell.Cell Cell.Continuation sty, r)
+        _ -> sq |> (Cell.glyphCell c sty, r)
+    isGlyph (cl, _) = Cell.cellWidth cl > 0
     attach c sq = case lastGlyph sq of
-        Just i -> Seq.adjust' (addMark c) i sq
+        Just i -> Seq.adjust' (\(cl, cr) -> (addMark c cl, cr)) i sq
         Nothing -> sq
     lastGlyph sq = Seq.findIndexR isGlyph sq
     addMark c cl = case cl.content of
@@ -390,10 +428,10 @@ listStep parsed w = case parsed.list of
 -- | Place the sections (tmux's @format_draw_none@ \/ @_left@ \/ @_centre@ \/
 -- @_right@ \/ @_absolute_centre@, picked by where the list sits).
 layout
-    :: Int -> Seq Cell.Cell -> Seq Cell.Cell -> Seq Cell.Cell -> Seq Cell.Cell
-    -> Seq Cell.Cell -> Seq Cell.Cell -> Seq Cell.Cell -> Seq Cell.Cell
-    -> Align -> Maybe Int -> Maybe Int -> V.Vector Cell.Cell
-    -> V.Vector Cell.Cell
+    :: Int -> Seq Tagged -> Seq Tagged -> Seq Tagged -> Seq Tagged
+    -> Seq Tagged -> Seq Tagged -> Seq Tagged -> Seq Tagged
+    -> Align -> Maybe Int -> Maybe Int -> V.Vector Tagged
+    -> V.Vector Tagged
 layout available left centre right absC list lMark rMark after listAlign fs fe =
     case listAlign of
         AlignDefault -> drawNone left centre right
@@ -534,10 +572,10 @@ layout available left centre right absC list lMark rMark after listAlign fs fe =
                 updates = [ (offset + i, c) | (i, c) <- zip [0 ..] fixed
                           , offset + i >= 0, offset + i < V.length row ]
             in row V.// updates
-    fixWide n i c = case c.content of
-        Cell.Continuation | i == 0 -> Cell.glyphCell ' ' c.style
-        Cell.Glyph _ _ Cell.Wide | i == n - 1 -> Cell.glyphCell ' ' c.style
-        _ -> c
+    fixWide n i (c, r) = case c.content of
+        Cell.Continuation | i == 0 -> (Cell.glyphCell ' ' c.style, r)
+        Cell.Glyph _ _ Cell.Wide | i == n - 1 -> (Cell.glyphCell ' ' c.style, r)
+        _ -> (c, r)
 
 -- Style-aware measuring ---------------------------------------------------
 

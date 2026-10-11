@@ -14,6 +14,8 @@ module Hat.Server.CopyMode
     , Grid (..)
     , Motion
     , listGrid
+    , gridWord
+    , gridLine
     , freezeGrid
     , frozenGrid
     , runMotion
@@ -47,6 +49,9 @@ module Hat.Server.CopyMode
     , yankSelection
     , overlaySelection
     , copyCursorPos
+    , startDragSelection
+    , dragSelectionTo
+    , cursorToScreen
     , scrollToCursor
     , withDevNullSink
     ) where
@@ -60,7 +65,7 @@ import Data.Char (isSpace, toLower)
 import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import Data.Text.Encoding qualified as TE
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -959,8 +964,34 @@ handlers = Map.fromList
         \sst p s _ -> yankSelection sst p s >> pure (Right Nothing))
     , ("copy-pipe",            pipeH False)
     , ("copy-pipe-and-cancel", pipeH True)
+    , ("scroll-up",            gridH scrollUpCmd)
+    , ("scroll-down",          scrollDownH)
+    , ("select-word",          selectWordH)
     ]
   where
+    -- tmux's scroll-down: at the bottom, copy-mode -e exits (unless
+    -- selecting); with a selection only the view moves; otherwise the
+    -- cursor goes down a line, exiting at the bottom under -e.
+    scrollDownH _ pane st _ = do
+        g <- paneGrid pane
+        let exitHere s = s.scrollExit && s.viewportOffY == 0 && isNothing s.selection
+        if st.viewportOffY == 0
+            then pure (Right (if exitHere st then Nothing else Just st))
+            else case st.selection of
+                Just _ -> Right . Just <$> scrollDown 1 g st
+                Nothing -> do
+                    st' <- cursorVertical 1 g st
+                    let st'' = scrollToCursor g.gHsize g.gSy st'
+                    pure (Right (if exitHere st'' then Nothing else Just st''))
+    -- tmux's select-word: the word under the cursor, selected.
+    selectWordH sst pane st _ = do
+        opts <- readTVarIO sst.options
+        g <- paneGrid pane
+        let seps = opts.wordSeparators
+            motion m = runMotion g opts.modeKeys seps (m seps)
+        atEnd <- motion mNextWordEnd =<< motion mPreviousWord st
+        start <- motion mPreviousWord st
+        pure (Right (Just atEnd { selection = Just ((start.cursorRow, start.cursorCol), SelChar) }))
     pureH f _ _ s _ = pure (Right (Just (f s)))
     motionH mk sst pane st _ = do
         opts <- readTVarIO sst.options
@@ -1053,6 +1084,38 @@ runPipeCommand cmd body = act `catch` \(_ :: SomeException) -> pure ()
 withDevNullSink :: (Handle -> IO a) -> IO a
 withDevNullSink = bracket (openFile "/dev/null" WriteMode) hClose
 
+-- | tmux's scroll-up: nothing at the top; with a selection only the view
+-- moves; otherwise the cursor goes up a line.
+scrollUpCmd :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+scrollUpCmd g st
+    | st.viewportOffY >= g.gHsize = pure st
+    | Just _ <- st.selection = scrollUp 1 g st
+    | otherwise = cursorVertical (-1) g st
+
+-- | tmux's @window_copy_start_drag@: the cursor to a pane position, with a
+-- character selection starting there.
+startDragSelection :: Int -> Int -> PaneMode -> PaneMode
+startDragSelection px py pm =
+    let pm' = cursorToScreen px py pm
+    in pm' { copyState = beginSelection pm'.copyState }
+
+-- | tmux's @window_copy_drag_update@: the cursor follows the mouse, the
+-- view scrolling a line when it reaches the top or bottom row.
+dragSelectionTo :: Int -> Int -> PaneMode -> PaneMode
+dragSelectionTo px py pm = cursorToScreen px py pm { copyState = s { viewportOffY = off } }
+  where
+    s = pm.copyState
+    off | py <= 0 = min pm.frozen.fgHsize (s.viewportOffY + 1)
+        | py >= pm.frozen.fgSy - 1 = max 0 (s.viewportOffY - 1)
+        | otherwise = s.viewportOffY
+
+-- | The copy-mode cursor at a position on the pane's screen.
+cursorToScreen :: Int -> Int -> PaneMode -> PaneMode
+cursorToScreen px py pm = pm { copyState = s
+    { cursorRow = pm.frozen.fgHsize - s.viewportOffY + py, cursorCol = px } }
+  where
+    s = pm.copyState
+
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s
     { selection = Just ((s.cursorRow, s.cursorCol), SelChar) }
@@ -1098,3 +1161,49 @@ yankSelection st pane s = do
 -- | Push a fresh, auto-named buffer onto the buffer store.
 pushBuffer :: ServerState -> Text -> IO ()
 pushBuffer st = pushBufferBytes st . TE.encodeUtf8
+
+-- | tmux's @format_grid_word@: the word around (row, col), words split by
+-- the separators, spaces and tabs, following wrapped lines.
+gridWord :: Monad m => Text -> Grid m -> Int -> Int -> m Text
+gridWord seps g row0 col0 = do
+    (found, row1, col1) <- back row0 col0
+    T.pack . reverse <$> forward found row1 col1 []
+  where
+    isSep c = inSet seps c || whitespace c
+    sepAt r c = do
+        pad <- g.gPadding r c
+        ch <- g.gChar r c
+        pure (not pad && isSep ch)
+    back r c = do
+        s <- sepAt r c
+        if s then pure (True, r, c) else if c == 0
+            then if r == 0 then pure (False, r, c) else do
+                wrapped <- g.gWrapped (r - 1)
+                len <- g.gLineLen (r - 1)
+                if not wrapped || len == 0 then pure (False, r, c)
+                    else back (r - 1) (len - 1)
+            else back r (c - 1)
+    forward found r c acc = do
+        next <- if not found then pure (Just (r, c)) else do
+            end <- g.gLineLen r
+            if end == 0 || c == end - 1
+                then if r == gBottom g then pure Nothing else do
+                    wrapped <- g.gWrapped r
+                    pure (if wrapped then Just (r + 1, 0) else Nothing)
+                else pure (Just (r, c + 1))
+        case next of
+            Nothing -> pure acc
+            Just (r', c') -> do
+                pad <- g.gPadding r' c'
+                ch <- g.gChar r' c'
+                if pad then forward True r' c' acc
+                    else if isSep ch then pure acc
+                    else forward True r' c' (ch : acc)
+
+-- | tmux's @format_grid_line@: a row's text up to its trimmed length.
+gridLine :: Monad m => Grid m -> Int -> m Text
+gridLine g row = do
+    len <- g.gLineLen row
+    fmap (T.pack . catMaybes) . forM [0 .. len - 1] $ \c -> do
+        pad <- g.gPadding row c
+        if pad then pure Nothing else Just <$> g.gChar row c

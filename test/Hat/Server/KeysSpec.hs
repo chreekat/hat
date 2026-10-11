@@ -408,6 +408,11 @@ spec = do
                 (Nothing, [RunCommands [["resize-pane", "-U"]]])
 
     describe "parseKeyName" $ do
+        it "parses mouse keys, canonicalising modifiers and case" $ do
+            (.name) <$> parseKeyName "MouseDown1Pane" `shouldBe` Just "MouseDown1Pane"
+            (.name) <$> parseKeyName "s-c-wheelupstatus" `shouldBe` Just "C-S-WheelUpStatus"
+            (.name) <$> parseKeyName "MouseDown1Control9" `shouldBe` Just "MouseDown1Control9"
+            parseKeyName "MouseDown0Pane" `shouldBe` Nothing
         it "parses plain characters" $ do
             (.name) <$> parseKeyName "x" `shouldBe` Just "x"
             (.name) <$> parseKeyName "%" `shouldBe` Just "%"
@@ -502,7 +507,8 @@ isExtended bs =
 ctx0 :: KeyContext
 ctx0 = KeyContext
     { prefixKeys = ["C-Space"], defaultTable = "root", modeTable = Nothing
-    , prefixTimeout = 0, repeatTime = 500, initialRepeatTime = 0, now = 0 }
+    , prefixTimeout = 0, repeatTime = 500, initialRepeatTime = 0, mouseOn = True
+    , now = 0 }
 
 bindOnce, bindRepeat :: [[Text]] -> Binding
 bindOnce cmds = Binding { commands = cmds, repeats = Once }

@@ -24,6 +24,9 @@ module Hat.Term.Emulator
     , KeyModes (..)
 
     , keyModeReplayBytes
+    , carriedDecModes
+    , decModeReplayBytes
+    , decModes
     , newEmulator
     , feed
     , HostPolicy (..)
@@ -42,6 +45,8 @@ module Hat.Term.Emulator
     , modes
     , bracketedPaste
     , keypadMode
+    , mouseEncoding
+    , screenLink
     , modeReplayBytes
     , restoreBytes
     , restorePainted
@@ -65,7 +70,7 @@ module Hat.Term.Emulator
 
 import Control.Concurrent.MVar
 import Control.Exception (finally)
-import Control.Monad (unless, when)
+import Control.Monad (filterM, unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
@@ -520,6 +525,18 @@ modes e = withMVar e.lock $ \_ -> do
             , colorReport = cr
             }
 
+-- | The mouse encodings the app turned on: SGR (?1006) and UTF-8 (?1005).
+mouseEncoding :: Emulator -> IO (Bool, Bool)
+mouseEncoding e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    s <- c_mode t 1006 0
+    u <- c_mode t 1005 0
+    pure (s /= 0, u /= 0)
+
+-- | Which of 'carriedDecModes' the app has set.
+decModes :: Emulator -> IO [Int]
+decModes e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    filterM (\m -> (/= 0) <$> c_mode t (fromIntegral m) 0) carriedDecModes
+
 -- | Whether the app put the keypad in application mode (DECKPAM, @ESC =@).
 keypadMode :: Emulator -> IO Bool
 keypadMode e = withMVar e.lock $ \_ ->
@@ -720,6 +737,11 @@ rawCell t tag x y p = do
         | tg == 2   = Raw.RawRgb (chan 16) (chan 8) (chan 0)
         | otherwise = Raw.RawDefault
       where chan s = fromIntegral ((v `shiftR` s) .&. 0xff)
+
+-- | The OSC 8 hyperlink on a screen cell, if any.
+screenLink :: Emulator -> Int -> Int -> IO (Maybe Text)
+screenLink e x y = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    cellLink t tagActive x y
 
 cellLink :: Ptr CTerm -> CInt -> Int -> Int -> IO (Maybe Text)
 cellLink t tag x y = go 256

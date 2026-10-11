@@ -13,11 +13,48 @@ import Hat.Server.Keys (Binding (..), Keymap, Repeat (..))
 defaultKeymap :: Keymap
 defaultKeymap = Map.fromList
     [ ("prefix", Map.fromList (map bindArgv prefixBindings <> map repeatArgv repeatBindings))
-    , ("root", Map.empty)
-    , ("copy-mode", Map.fromList (map copyBind copyModeBindings))
-    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings <> map once (digitBinds <> searchBinds)))
+    , ("root", Map.fromList (map once rootMouseBindings))
+    , ("copy-mode", Map.fromList (map copyBind copyModeBindings <> map once copyMouseBindings))
+    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings
+        <> map once (digitBinds <> searchBinds <> copyMouseBindings)))
     ]
   where
+    -- tmux's default mouse bindings, less those whose commands Hat lacks
+    -- (display-menu, new-pane, move-pane -M, the scrollbars).
+    inModeOrTracking = "#{||:#{pane_in_mode},#{mouse_any_flag}}"
+    clickCopy sel =
+        "copy-mode -H; send-keys -X " <> sel
+            <> "; run-shell -d 0.3; send-keys -X copy-pipe-and-cancel"
+    rootMouseBindings =
+        [ ("MouseDown1Pane", [["select-pane", "-t", "="], ["send-keys", "-M"]])
+        , ("MouseDrag1Pane", [["if-shell", "-F", inModeOrTracking, "send-keys -M", "copy-mode -M"]])
+        , ("WheelUpPane", [["if-shell", "-F"
+            , "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}"
+            , "send-keys -M", "copy-mode -e"]])
+        , ("MouseDown2Pane", [["select-pane", "-t", "="]
+            , ["if-shell", "-F", inModeOrTracking, "send-keys -M", "paste-buffer -p"]])
+        , ("DoubleClick1Pane", [["select-pane", "-t", "="]
+            , ["if-shell", "-F", inModeOrTracking, "send-keys -M", clickCopy "select-word"]])
+        , ("TripleClick1Pane", [["select-pane", "-t", "="]
+            , ["if-shell", "-F", inModeOrTracking, "send-keys -M", clickCopy "select-line"]])
+        , ("MouseDown1Border", [["select-pane", "-M"]])
+        , ("MouseDrag1Border", [["resize-pane", "-M"]])
+        , ("MouseDown1Status", [["switch-client", "-t", "="]])
+        , ("MouseDown1Control8", [["resize-pane", "-Z"]])
+        , ("WheelDownStatus", [["next-window"]])
+        , ("WheelUpStatus", [["previous-window"]])
+        ]
+    copyMouseBindings =
+        [ ("MouseDown1Pane", [["select-pane"]])
+        , ("MouseDrag1Pane", [["select-pane"], ["send-keys", "-X", "begin-selection"]])
+        , ("MouseDragEnd1Pane", [["send-keys", "-X", "copy-pipe-and-cancel"]])
+        , ("WheelUpPane", [["select-pane"], ["send-keys", "-N", "5", "-X", "scroll-up"]])
+        , ("WheelDownPane", [["select-pane"], ["send-keys", "-N", "5", "-X", "scroll-down"]])
+        , ("DoubleClick1Pane", [["select-pane"], ["send-keys", "-X", "select-word"]
+            , ["run-shell", "-d", "0.3"], ["send-keys", "-X", "copy-pipe-and-cancel"]])
+        , ("TripleClick1Pane", [["select-pane"], ["send-keys", "-X", "select-line"]
+            , ["run-shell", "-d", "0.3"], ["send-keys", "-X", "copy-pipe-and-cancel"]])
+        ]
     bindArgv (k, cmd) = (k, Binding { commands = [cmd], repeats = Once })
     -- @bind -r@: these keep the prefix table open for @repeat-time@.
     repeatArgv (k, cmd) = (k, Binding { commands = [cmd], repeats = Repeats })

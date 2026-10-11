@@ -14,8 +14,8 @@ module Hat.Server.Command.Interact
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_)
-import Data.Maybe (listToMaybe)
+import Control.Monad (forM, forM_, unless, void, when)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -34,6 +34,8 @@ import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientOptions, clientView, findTarget)
 import Hat.Server.Pane (typeKeyIntoPane)
+import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
@@ -110,10 +112,31 @@ cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
     let (opts, flags, _) = parseArgs "st" args
         quit = "-q" `elem` flags
-    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        mouse = "-M" `elem` flags
+    -- -M: the pane under the mouse event being acted on, if there is one.
+    mev <- if mouse then clientMouseEvent mclient else pure Nothing
+    res <- case mev of
+        Just ev -> maybe (Left "no mouse target") (\(s, w, p, _) -> Right (s, 0 :: Int, w, p))
+            <$> mouseEventPane st ev
+        Nothing
+            | mouse -> pure (Left "no mouse target")
+            | otherwise -> findTarget st mclient Target.FindPane (lookup "-t" opts)
     case res of
         Left _ -> pure []
         Right (_, _, _, pane)
+            | not quit -> do
+                was <- isJust <$> readTVarIO pane.mode
+                unless was (enterCopyMode pane)
+                -- The flags apply whether or not the mode was already open.
+                atomically $ modifyTVar' pane.mode $ fmap $ \pm -> pm
+                    { copyState = pm.copyState
+                        { scrollExit = pm.copyState.scrollExit || "-e" `elem` flags
+                        , hidePosition = pm.copyState.hidePosition || "-H" `elem` flags } }
+                when ("-u" `elem` flags) $
+                    void (runCopyModeCommand st pane "page-up" [])
+                forM_ ((,) <$> mclient <*> mev) $ \(client, ev) ->
+                    startSelectionDrag st client ev
+                pure []
             | quit -> do
                 was <- atomically $ do
                     old <- readTVar pane.mode
@@ -127,7 +150,9 @@ cmdCopyMode st mclient args = do
                         , ("current_mode", PText "")
                         , ("previous_mode", PText "copy-mode") ]
                 pure []
-            | otherwise -> do
+            | otherwise -> pure []
+  where
+    enterCopyMode pane = do
                 scr <- Emu.snapshot pane.emulator
                 frozen <- CopyMode.freezeGrid pane.emulator
                 srvOpts <- readTVarIO st.options
@@ -146,6 +171,7 @@ cmdCopyMode st mclient args = do
                         , pendingSearch = Nothing
                         , lastSearch = Nothing
                         , lastQuery = Nothing
+                        , scrollExit = False, hidePosition = False
                         }
                 atomically $ do
                     writeTVar pane.mode (Just PaneMode
@@ -156,7 +182,6 @@ cmdCopyMode st mclient args = do
                     [ ("mode_entered", PInt 1)
                     , ("current_mode", PText "copy-mode")
                     , ("previous_mode", PText "") ]
-                pure []
 
 -- | Open the interactive command prompt on the invoking client.
 -- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line

@@ -60,6 +60,9 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Read qualified as TR
 
 import Hat.Model.OptionTable (ArrayKey (..))
+import Hat.Server.Mouse
+    (Drag, MouseEvent, MouseState, initialMouseState, isMouseKey, isMoveKey
+    , mouseKeyByName)
 
 data Key = Key
     { name :: Text        -- ^ canonical name, as written in configs
@@ -285,6 +288,9 @@ tokenize timing users = go
                     (k : ks, p) | k.name /= "Escape" ->
                         (mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks, p)
                     (ks, p) -> (mkKey "Escape" "\ESC" : ks, p)
+            -- A legacy mouse report: ESC [ M and three raw bytes.
+            | "[M" `B.isPrefixOf` rest, B.length rest >= 5 ->
+                cons (mkKey "Mouse" ("\ESC" <> B.take 5 rest)) (go (B.drop 5 rest))
             | b2 == 0x5b || b2 == 0x4f ->  -- '[' or 'O'
                 case matchCsi rest of
                     Just (nm, len) ->
@@ -334,9 +340,12 @@ tokenize timing users = go
 -- An 'Unknown' key is never delivered (see 'Hat.Server.Conn.deliversKey'), so
 -- its bytes stay in the sequence only for the log.
 extendedOrUnknown :: ByteString -> Key
-extendedOrUnknown sq = case extendedParams sq >>= uncurry extendedKeyOf of
-    Just k  -> k
-    Nothing -> mkKey "Unknown" ("\ESC" <> sq)
+extendedOrUnknown sq
+    | "[<" `B.isPrefixOf` sq, Just (_, f) <- B.unsnoc sq, f == 0x4d || f == 0x6d =
+        mkKey "Mouse" ("\ESC" <> sq)  -- an SGR mouse report
+    | otherwise = case extendedParams sq >>= uncurry extendedKeyOf of
+        Just k  -> k
+        Nothing -> mkKey "Unknown" ("\ESC" <> sq)
 
 -- The (codepoint, xterm modifier param) an extended-key CSI carries: xterm's
 -- modifyOtherKeys @CSI 27;mod;code~@ and the CSI-u @CSI code;mod u@ that
@@ -524,6 +533,12 @@ data KeyState = KeyState
     , repeating :: Maybe Repeating
     , bracketPasting :: Bool
         -- ^ inside the outer terminal's bracketed paste
+    , mouse :: MouseState
+    , mouseEvent :: Maybe MouseEvent
+        -- ^ the mouse key being acted on, for the commands it runs
+    , drag :: Maybe Drag
+        -- ^ what a mouse drag in progress moves (tmux's
+        --   @mouse_drag_update@)
     }
     deriving (Eq, Show)
 
@@ -538,7 +553,8 @@ data Repeating = Repeating
 initialKeyState :: KeyState
 initialKeyState = KeyState
     { table = Nothing, tableSince = 0, repeating = Nothing
-    , bracketPasting = False }
+    , bracketPasting = False, mouse = initialMouseState, mouseEvent = Nothing
+    , drag = Nothing }
 
 -- | Whether the client is in the prefix table.
 prefixArmed :: KeyState -> Bool
@@ -561,6 +577,7 @@ data KeyContext = KeyContext
     , prefixTimeout :: Int            -- ^ ms; 0 never times out
     , repeatTime :: Int               -- ^ ms
     , initialRepeatTime :: Int        -- ^ ms; 0 uses @repeat-time@
+    , mouseOn :: Bool                 -- ^ @mouse@
     , now :: Int
     }
 
@@ -586,6 +603,7 @@ routeKey ctx km st0 k
     | k.name == "PasteStart" = (st1 { bracketPasting = True }, [Paste])
     | k.name == "PasteEnd" = (st1 { bracketPasting = False }, [Paste])
     | st1.bracketPasting = (st1, [Paste])
+    | isMouseKey k.name && not ctx.mouseOn = (st1, [Passthrough k.raw])
     | otherwise = tableChanged first0 first0 st1
   where
     st1 = expireRepeat ctx.now st0
@@ -604,6 +622,9 @@ routeKey ctx km st0 k
         | Just b <- bd = case st.repeating of
             Just _ | b.repeats == Once -> retry (reset st)
             _ -> (fire b st, [RunCommands b.commands])
+        -- Motion is only reported when an app asks, so binding it is
+        -- useless: it never leaves the prefix table.
+        | isMoveKey k.name = (st, [Passthrough k.raw])
         | not (isDefault tbl) || isJust st.repeating =
             let st' = reset st
                 first' = if isJust st.repeating then current st' else first
@@ -645,6 +666,7 @@ routeKeys ctx km = go
 parseKeyName :: Text -> Maybe Key
 parseKeyName t
     | Just n <- userKeyNumber t = Just (mkKey ("User" <> T.pack (show n)) "")
+    | Just n <- mouseKeyByName t = Just (mkKey n "")
     | Just (n, r) <- lookupNamed t = Just (mkKey n r)
     | Just (n, r) <- lookupModified t = Just (mkKey n r)
     | Just k <- extendedByName t = Just k

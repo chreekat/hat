@@ -31,12 +31,12 @@ module Hat.Server.Dispatch
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (filterM, forM, forM_, unless, void, when)
+import Control.Monad (filterM, forM, forM_, replicateM, unless, void, when)
 import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -75,12 +75,16 @@ import Hat.Server.Command.Types
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
 import Hat.Server.Control (cmdRefreshClient, controlSink)
-import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
+import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Overlay (handlePickerInput)
 import Hat.Server.Locate
+import Hat.Server.Format (FormatEnv)
+import Hat.Server.MouseIO
+    (clientMouseEvent, mouseEventPane, mouseFormatVars, moveCopyCursor, sendMouse
+    , startSelectionDrag)
 import Hat.Server.Pane
 import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
@@ -667,13 +671,8 @@ cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do
     let (opts, flags, pos) = parseArgs "t" args
         raw = T.unwords pos
-    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
-    text <- case res of
-        Left _ -> pure raw
-        Right (sess, wix, win, pane) -> do
-            pix <- paneIndexOf st win pane
-            env <- paneFormatEnv st sess wix win pix pane
-            expandFormat st env raw
+    menv <- commandFormatEnv st mclient (lookup "-t" opts)
+    text <- maybe (pure raw) (\env -> expandFormat st env raw) menv
     case mclient of
         _ | "-p" `elem` flags -> pure [ROutput text]
         Just client | Just _ <- client.control -> pure [ROutput ("%message " <> text)]
@@ -681,11 +680,43 @@ cmdDisplayMessage st mclient args = do
             forM_ mclient $ \client -> showStyledToast st client text
             pure []
 
+-- | The format environment a command's arguments expand in: its target
+-- pane's (tmux's @CMD_FIND_PANE@ with @CANFAIL@), with the @mouse_*@
+-- variables of the mouse event a binding is acting on.
+commandFormatEnv :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe FormatEnv)
+commandFormatEnv st mclient mtarget = do
+    res <- findTarget st mclient Target.FindPane mtarget
+    mev <- clientMouseEvent mclient
+    mouseVars <- case (,) <$> mclient <*> mev of
+        Just (client, ev) -> mouseFormatVars st client ev
+        Nothing -> pure []
+    case res of
+        Left _ -> pure Nothing
+        Right (sess, wix, win, pane) -> do
+            pix <- paneIndexOf st win pane
+            env <- paneFormatEnv st sess wix win pix pane
+            pure (Just (Map.union (Map.fromList mouseVars) env))
+
 cmdRunShell :: CommandImpl
 cmdRunShell st mclient args = do
-    let (_, _, pos) = parseArgs "t" args
-        cmdText = T.unwords pos
+    let (opts, _, pos) = parseArgs "tdc" args
+    menv <- commandFormatEnv st mclient (lookup "-t" opts)
+    cmdText <- maybe pure (expandFormat st) menv (T.unwords pos)
+    -- -d: tmux waits this many seconds before running the command.
+    let delay = maybe 0 (max 0) (readDouble =<< lookup "-d" opts)
+        readDouble t = case TR.double t of
+            Right (v, rest) | T.null rest -> Just v
+            _ -> Nothing
+    -- With no command, -d is a pause in the commands around it (tmux
+    -- blocks the queue), as the default double-click bindings rely on.
+    if T.null (T.strip cmdText)
+        then [] <$ threadDelay (round (delay * 1000000))
+        else runShellAsync st mclient cmdText delay
+
+runShellAsync :: ServerState -> Maybe Client -> Text -> Double -> IO [Reply]
+runShellAsync st mclient cmdText delay = do
     void . forkIO $ do
+        when (delay > 0) $ threadDelay (round (delay * 1000000))
         (code, out, errOut) <- readCreateProcessWithExitCode
             (shell (T.unpack cmdText)) { close_fds = True } ""
         let firstLine = T.strip . T.takeWhile (/= '\n') . T.pack
@@ -702,22 +733,24 @@ cmdRunShell st mclient args = do
 
 cmdIfShell :: CommandImpl
 cmdIfShell st mclient args = do
-    let (_, _, pos) = parseArgs "t" args
+    let (opts, flags, pos) = parseArgs "t" args
     case pos of
         (cond0 : thenCmd : rest) -> do
             -- tmux expands #{...} in the condition before running it, so
             -- @if-shell '[ "#{@pane-theme}" = dark ]' …@ works.
-            msess <- targetSession st mclient Nothing
-            cond <- case msess of
-                Just sess -> do
-                    env <- sessionFormatEnv st sess
-                    expandFormat st env cond0
-                Nothing -> pure cond0
-            (code, _, _) <- readCreateProcessWithExitCode
-                (shell (T.unpack cond)) { close_fds = True } ""
-            let chosen = case (code, rest) of
-                    (ExitSuccess, _) -> Just thenCmd
-                    (ExitFailure _, [elseCmd]) -> Just elseCmd
+            menv <- commandFormatEnv st mclient (lookup "-t" opts)
+            cond <- maybe pure (expandFormat st) menv cond0
+            -- -F: the expanded condition is the answer, true unless empty
+            -- or 0, with no shell run.
+            ok <- if "-F" `elem` flags
+                then pure (not (T.null cond) && cond /= "0")
+                else do
+                    (code, _, _) <- readCreateProcessWithExitCode
+                        (shell (T.unpack cond)) { close_fds = True } ""
+                    pure (code == ExitSuccess)
+            let chosen = case (ok, rest) of
+                    (True, _) -> Just thenCmd
+                    (False, [elseCmd]) -> Just elseCmd
                     _ -> Nothing
             case chosen of
                 Nothing -> pure []
@@ -763,6 +796,19 @@ cmdSendKeys st mclient args = do
             handlePickerInput dispatch st client pk
                 (concatMap (tokenizeKeys . argBytes literal) pos)
             pure []
+        -- -M passes the mouse event being acted on to the pane under it,
+        -- unless a mode holds that pane.
+        _ | "-M" `elem` flags -> do
+            mev <- clientMouseEvent mclient
+            case mev of
+                Nothing -> pure [RErr "no mouse target"]
+                Just ev -> do
+                    mp <- mouseEventPane st ev
+                    case mp of
+                        Nothing -> pure [RErr "no mouse target"]
+                        Just (_, _, pane, _) -> do
+                            inMode <- isJust <$> readTVarIO pane.mode
+                            [] <$ unless inMode (sendMouse st ev)
         _ -> do
             -- A full pane target (sess:win.N) resolves through cmd-find;
             -- the special pane tokens (%N, !, {marked}) keep the old path.
@@ -781,11 +827,25 @@ cmdSendKeys st mclient args = do
                     when ("-R" `elem` flags) $ do
                         _ <- Emu.feed pane.emulator "\ESCc"
                         atomically (bumpDirty st)
-                    keysInto pane
+                    case repeatCount of
+                        Left e -> pure [RErr e]
+                        Right n -> concat <$> replicateM n (keysInto pane)
   where
+    -- -N: send the keys, or run the mode command, that many times.
+    repeatCount = case lookup "-N" opts of
+        Nothing -> Right 1
+        Just v -> either (Left . ("repeat count " <>)) Right (strtonum 1 4294967295 v)
     keysInto pane
                     | modeCmd = case pos of
-                        (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
+                        (name : cmdArgs) -> do
+                            mev <- clientMouseEvent mclient
+                            forM_ mev (moveCopyCursor st)
+                            case ((,) <$> mclient <*> mev, name) of
+                                -- With a mouse event, begin-selection starts
+                                -- a drag (tmux's window_copy_start_drag).
+                                (Just (client, ev), "begin-selection") ->
+                                    [] <$ startSelectionDrag st client ev
+                                _ -> runCopyModeCommand st pane name cmdArgs
                         [] -> pure []
                     -- -H: each argument is one hex byte.
                     | hexBytes = case mapM hexByte pos of

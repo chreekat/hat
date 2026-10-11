@@ -11,6 +11,7 @@ module Hat.Server.View
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
     , messageLine  -- ^ exported for the message-line effect test
+    , statusRangesFor
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
@@ -45,7 +46,9 @@ import Hat.Server.Resize (windowArrange)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
-import Hat.Server.Status (statusFormats, statusRows)
+import Hat.Server.Mouse qualified as Mouse
+import Hat.Server.FormatDraw (DrawRange)
+import Hat.Server.Status (statusFormats, statusRanges, statusRows)
 import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -294,8 +297,36 @@ renderOnce st client = do
         send client $ Notify $ if T.null colour
             then "\ESC]112\a"
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
+    syncMouseMode st client (fmap (\(sess, win, _, _, ps, active) -> (sess, win, ps, active)) view)
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
+
+-- | Keep the outer terminal's mouse tracking where the client's view needs
+-- it. A pane in a mode tracks nothing, as its mode's screen does in tmux.
+syncMouseMode :: ServerState -> Client -> Maybe (Session, Window, Map.Map PaneId Pane, PaneId) -> IO ()
+syncMouseMode st client view = do
+    want <- case view of
+        Nothing -> pure 0
+        Just (sess, win, ps, active) -> do
+            tracking <- forM (Map.toList ps) $ \(pid, pane) -> do
+                inMode <- isJust <$> readTVarIO pane.mode
+                level <- if inMode then pure 0 else do
+                    ms <- Emu.modes pane.emulator
+                    pure $ case ms.mouse of
+                        Emu.MouseOff -> 0
+                        Emu.MouseClick -> 1
+                        Emu.MouseDrag -> 2
+                        Emu.MouseMove -> 3
+                pure (pid, level)
+            o <- maybe (atomically (resolveForSession st sess))
+                (\pane -> atomically (resolveForPane st sess win pane)) (Map.lookup active ps)
+            pure $ Mouse.outerMouseMode (optionFlag "mouse" o)
+                (optionFlag "focus-follows-mouse" o)
+                (fromMaybe 0 (List.lookup active tracking)) (map snd tracking)
+    old <- readIORef client.lastMouseMode
+    when (want /= old) $ do
+        writeIORef client.lastMouseMode want
+        send client (Notify (Mouse.mouseModeBytes want))
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them
 -- owns them now.
@@ -556,7 +587,8 @@ paneView st pane = do
                     Just p -> (Just p, True)
                     Nothing -> (Nothing, False)
             pure PaneView
-                { cells = stampTopRight label copyIndicatorStyle overlaid
+                { cells = if s.hidePosition then overlaid
+                    else stampTopRight label copyIndicatorStyle overlaid
                 , rowGens = Nothing
                 , cursor = cur
                 , cursorVisible = vis
@@ -710,6 +742,15 @@ renderStatus st sopts env wins width = do
     let rows = statusRows ctx { F.windows = wins, F.animate = F.Animate }
             sopts width
     pure $! foldr seq rows rows
+
+-- | The ranges across status line @i@ as the client sees it, for a mouse
+-- click there.
+statusRangesFor :: ServerState -> Session -> Options -> Int -> Int -> IO (V.Vector DrawRange)
+statusRangesFor st sess sopts width i = do
+    (env, wins) <- gatherStatus st sess
+    winEnvs <- mapM snd wins
+    ctx <- formatCtxFor st env
+    pure (statusRanges ctx { F.windows = winEnvs } sopts width i)
 
 -- | The status line (0-based) the prompt and messages take: @message-line@,
 -- or the last line when there are fewer.

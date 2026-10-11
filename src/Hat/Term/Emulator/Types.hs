@@ -18,6 +18,8 @@ module Hat.Term.Emulator.Types
     , KeyModes (..)
 
     , keyModeReplayBytes
+    , carriedDecModes
+    , decModeReplayBytes
     , modeReplayBytes
     , restoreBytes
     , restorePainted
@@ -128,6 +130,14 @@ keyModeReplayBytes :: KeyModes -> B.ByteString
 keyModeReplayBytes km = B.concat $
        [ "\ESC[>4;" <> B8.pack (show km.extendedKeys) <> "m" | km.extendedKeys /= 0 ]
     ++ [ "\ESC[>" <> B8.pack (show km.kittyFlags) <> "u" | km.kittyFlags /= 0 ]
+
+-- | The private modes outside 'Modes' and 'KeyModes' a reload carries: the
+-- mouse encodings (UTF-8, SGR), bracketed paste, and the application keypad.
+carriedDecModes :: [Int]
+carriedDecModes = [66, 1005, 1006, 2004]
+
+decModeReplayBytes :: [Int] -> B.ByteString
+decModeReplayBytes ms = B.concat [ "\ESC[?" <> B8.pack (show m) <> "h" | m <- ms ]
 
 -- | The DECSET bytes that re-establish an app's mode subscriptions in a fresh
 -- emulator — feed them into the one an in-place reload adopts a program into,

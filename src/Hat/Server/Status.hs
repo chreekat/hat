@@ -6,6 +6,7 @@
 module Hat.Server.Status
     ( statusBaseStyle
     , statusRows
+    , statusRanges
     , statusFormats
     , styleOption
     ) where
@@ -17,7 +18,8 @@ import Data.Vector qualified as V
 
 import Hat.Model.Options
 import Hat.Server.Format (FormatCtx, evaluateCtx, renderFormatCtx)
-import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
+import Hat.Server.FormatDraw
+    (DrawRange (..), colourValue, formatDraw, formatRanges, styleCell)
 import Hat.Term.Cell qualified as Cell
 
 -- | A style option's cell style, its formats expanded first as tmux's
@@ -61,3 +63,11 @@ statusRows ctx opts width = map row [0 .. opts.statusLines - 1]
     row i = case Map.lookup (KeyIndex (fromIntegral i)) formats of
         Nothing -> blank
         Just f -> formatDraw gc (renderFormatCtx ctx f) blank
+
+-- | The ranges across status line @i@ (tmux's @status_get_range@ reads
+-- them): where a click on each column lands.
+statusRanges :: FormatCtx -> Options -> Int -> Int -> V.Vector DrawRange
+statusRanges ctx opts width i = case optionValue "status-format" opts of
+    OVArray m | Just f <- Map.lookup (KeyIndex (fromIntegral i)) m ->
+        formatRanges (statusBaseStyle ctx opts) (renderFormatCtx ctx f) width
+    _ -> V.replicate width RangeNone

@@ -349,6 +349,10 @@ data CopyModeState = CopyModeState
     , lastQuery     :: !(Maybe (Text, SearchDirection, SearchKind))
         -- ^ the most recent string search (@/@ @?@): query + direction +
         -- kind, for @n@ (repeat) and @N@ (reverse).
+    , scrollExit    :: !Bool
+        -- ^ @copy-mode -e@: scrolling down to the bottom leaves the mode
+    , hidePosition  :: !Bool
+        -- ^ @copy-mode -H@: no position indicator
     }
     deriving (Eq, Show)
 
@@ -627,6 +631,9 @@ data Client = Client
     , lastStatus :: IORef (Maybe StatusCache)  -- render thread only
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
+    , lastMouseMode :: IORef Int
+        -- ^ the outer terminal's mouse tracking: 0 off, 1 clicks, 2 drags,
+        --   3 all motion; render thread only
     , needsFull :: TVar Bool
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane

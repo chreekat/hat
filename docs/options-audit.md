@@ -48,6 +48,8 @@ spot-read of each suspect consumer.
 | `allow-passthrough` | pane reader `UnhandledPassthrough` → `Notify` to `paneViewers` (`on`) or `paneHolders` (`all`) | implemented | integration |
 | `extended-keys` / `extended-keys-format` | `keyEncoding` → `reencodeKey` → `paneKeyMode`/`extendedKeyBytes` (Pane.hs, Keys.hs); the app's `CSI > 4` request is tracked by `scrubHost` | implemented ✅ tested | pure (SessionSpec, input-keys) |
 | `user-keys` | `userKeys` → `feedKeys` (Keys.hs): each sequence is key `User`/N/, bindable, never typed into a pane | implemented ✅ tested | pure (KeysSpec) |
+| `mouse` | `keyContext` → `routeKey` (mouse keys bind only when on; off passes them to the pane); `placeMouse`/`checkMouse` (Conn.hs, Mouse.hs) make `MouseDown1Pane`… keys with `mouse_*` formats (`mouseFormatVars`); `syncMouseMode` sets the outer terminal's tracking (View.hs); default root/copy-mode mouse bindings (Keymap.hs) | implemented ✅ tested | pure (MouseSpec, KeysSpec), integration (format-mouse) |
+| `focus-follows-mouse` | `runInputs` selects the pane a `MouseMovePane` is over; `outerMouseMode` asks for all-motion tracking | implemented | pure (MouseSpec) |
 | `backspace` | `paneKeyBytes` → `backspaceBytes` (Pane.hs, Keys.hs): what BSpace sends to a pane | implemented ✅ tested | pure (KeysSpec) |
 | `prefix-timeout` | `routeKey`: a prefix-table key past the timeout falls back to the default table | implemented ✅ tested | pure (KeysSpec) |
 | `synchronize-panes` | `syncTargets` → `typeKeyIntoPane`/`typeIntoPaneSynced` (Pane.hs): typed keys, pastes, `send-keys`; `#{pane_synchronized}` | implemented ✅ tested | model (SessionSpec) |

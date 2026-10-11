@@ -163,7 +163,18 @@ paneFormatEnv st sess wix win pix pane = do
                 <> [ ("pane_dead_signal", tshow n) | Just n <- [e.signal] ]
     pid <- panePid pane
     let pidVars = [ ("pane_pid", pid) ]
-    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <> pidVars <>
+    ms <- Emu.modes pane.emulator
+    (sgr, utf8) <- Emu.mouseEncoding pane.emulator
+    let flag b = if b then "1" else "0" :: Text
+        mouseVars =
+            [ ("mouse_any_flag", flag (ms.mouse /= Emu.MouseOff))
+            , ("mouse_standard_flag", flag (ms.mouse == Emu.MouseClick))
+            , ("mouse_button_flag", flag (ms.mouse == Emu.MouseDrag))
+            , ("mouse_all_flag", flag (ms.mouse == Emu.MouseMove))
+            , ("mouse_sgr_flag", flag sgr)
+            , ("mouse_utf8_flag", flag utf8)
+            , ("alternate_on", flag ms.altScreen) ]
+    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <> pidVars <> mouseVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
         , ("pane_current_path", T.pack dir)

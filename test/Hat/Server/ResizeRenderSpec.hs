@@ -41,6 +41,7 @@ mkClient sz lastFrame = do
     originsV <- newIORef V.empty
     chromeV <- newIORef Nothing
     statusV <- newIORef Nothing
+    mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef ""
     fullV   <- newTVarIO False
@@ -59,6 +60,7 @@ mkClient sz lastFrame = do
             , lastFrame = frameV, lastOrigins = originsV
             , lastChrome = chromeV
             , lastStatus = statusV
+            , lastMouseMode = mouseModeVar
             , lastCursor = curV, lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, displayPanes = dpanesV

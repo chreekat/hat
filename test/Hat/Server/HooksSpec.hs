@@ -288,6 +288,7 @@ fakeClient _ = do
     originsVar <- newIORef V.empty
     chromeVar <- newIORef Nothing
     statusVar <- newIORef Nothing
+    mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     colourVar <- newIORef ""
     fullVar <- newTVarIO True
@@ -316,6 +317,7 @@ fakeClient _ = do
         , lastOrigins = originsVar
         , lastChrome = chromeVar
         , lastStatus = statusVar
+        , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
         , lastCursorColour = colourVar
         , needsFull = fullVar

@@ -51,6 +51,8 @@ import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
 import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf)
+import Hat.Server.Mouse (Drag (..))
+import Hat.Server.MouseIO (clientMouseEvent, resizeBorderTo, startDrag)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     ( LifecycleNotify (..), hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
@@ -909,8 +911,14 @@ cmdClearHistory st mclient args = do
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args
     | Just e <- unknownFlag "resize-pane" "DLMRTUZ" flags = pure [RErr e]
-    -- Without a mouse event to follow, tmux's -M does nothing.
-    | "-M" `elem` flags = pure []
+    -- -M follows the mouse: the border under the drag moves with it.
+    -- Without a mouse event to follow, it does nothing.
+    | "-M" `elem` flags = do
+        mev <- clientMouseEvent mclient
+        forM_ ((,) <$> mclient <*> mev) $ \(client, ev) -> do
+            startDrag client DragBorder
+            resizeBorderTo st ev
+        pure []
     -- -T trims the pane's history below the cursor, unless a mode is open.
     | "-T" `elem` flags = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)

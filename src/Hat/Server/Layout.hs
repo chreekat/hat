@@ -43,6 +43,9 @@ module Hat.Server.Layout
     , rotateLeaves
     , resizePane
     , resizePaneTo
+    , searchByBorder
+    , parentOrientation
+    , resizeCellAt
     , spreadOut
     , namedLayout
     , neighbor
@@ -595,6 +598,36 @@ resizeAmong o i change parent = case parent.cell of
         guard (i + 1 < length cs)
         let s = min (spare o (cs !! j)) (negate needed)
         pure (s, modifyChild (i + 1) (adjust o s) (modifyChild j (adjust o (negate s)) cs))
+
+-- | tmux's @layout_search_by_border@: the cell whose right or bottom border
+-- runs through a point.
+searchByBorder :: Int -> Int -> Layout -> Maybe Path
+searchByBorder x y l = case l.cell of
+    LeafCell _ -> Nothing
+    NodeCell t cs -> go t Nothing (zip [0 ..] cs)
+  where
+    inside c = x >= c.xoff && x < c.xoff + c.sx && y >= c.yoff && y < c.yoff + c.sy
+    go _ _ [] = Nothing
+    go t mlast ((i, c) : rest)
+        | inside c = (i :) <$> searchByBorder x y c
+        | Just (j, lst) <- mlast, between t lst c = Just [j]
+        | otherwise = go t (Just (i, c)) rest
+    between LeftRight lst c = x < c.xoff && x >= lst.xoff + lst.sx
+    between TopBottom lst c = y < c.yoff && y >= lst.yoff + lst.sy
+
+-- | The axis a cell's parent lays it along, for a cell below the root.
+parentOrientation :: Path -> Layout -> Maybe Orientation
+parentOrientation [] _ = Nothing
+parentOrientation p root = case (at (init p) root).cell of
+    NodeCell t _ -> Just t
+    LeafCell _ -> Nothing
+
+-- | tmux's @layout_resize_layout@ on the cell at a path: move its right or
+-- bottom border by @change@ cells along its parent's axis.
+resizeCellAt :: Path -> Int -> Layout -> Layout
+resizeCellAt p change root = case parentOrientation p root of
+    Nothing -> root
+    Just o -> fixOffsets (modifyAt (init p) (resizeAmong o (last p) change) root)
 
 -- | Resize a pane to @newSize@ cells along an axis (@layout_resize_pane_to@).
 resizePaneTo :: PaneId -> Orientation -> Int -> Layout -> Layout

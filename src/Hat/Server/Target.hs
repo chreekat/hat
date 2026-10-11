@@ -108,6 +108,8 @@ data World = World
     , marked        :: Maybe Found
     , clientCurrent :: Maybe Found
     , current       :: Maybe Found
+    , mouse         :: Maybe Found
+        -- ^ where the mouse event being acted on is (@=@, @{mouse}@)
     }
     deriving (Eq, Show)
 
@@ -151,7 +153,11 @@ resolve ftype wantIndex world mtarget = do
                     Just f -> Right $ if wantIndex
                         then OutIndex f.session Nothing
                         else OutFound f
-            | t `elem` ["=", "{mouse}"] -> Left "no mouse target"
+            | t `elem` ["=", "{mouse}"] -> case world.mouse of
+                Nothing -> Left "no mouse target"
+                Just f -> Right $ if wantIndex
+                    then OutIndex f.session (Just f.windowIx)
+                    else OutFound f
             | t `elem` ["~", "{marked}"] ->
                 case world.marked of
                     Nothing -> Left "no marked target"

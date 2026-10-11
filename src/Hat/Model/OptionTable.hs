@@ -496,7 +496,7 @@ optionTable =
         (KChoice ["off", "on", "no-detached", "previous", "next"]) "on"
     -- tmux defaults to 750.
     , live $ scalar "display-time" SessionScope (KNumber 0 intMax) "3000"
-    , notYet $ scalar "focus-follows-mouse" SessionScope KFlag "off"
+    , live $ scalar "focus-follows-mouse" SessionScope KFlag "off"
     -- tmux defaults to 2000.
     , live $ scalar "history-limit" SessionScope (KNumber 0 intMax) "50000"
     , live $ scalar "initial-repeat-time" SessionScope (KNumber 0 2000000) "0"
@@ -516,7 +516,7 @@ optionTable =
         "bg=themeyellow,fg=themeblack,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeyellow}"
-    , notYet $ scalar "mouse" SessionScope KFlag "off"
+    , live $ scalar "mouse" SessionScope KFlag "off"
     , live $ scalar "prefix" SessionScope KKey "C-b"
     , live $ scalar "prefix2" SessionScope KKey "None"
     , live $ scalar "renumber-windows" SessionScope KFlag "off"

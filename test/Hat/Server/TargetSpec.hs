@@ -253,6 +253,7 @@ targetsWorld = World
     , marked = Nothing
     , clientCurrent = Nothing
     , current = Just (Found (SessionId 0) 0 (PaneId 0))
+    , mouse = Nothing
     }
 
 -- The targets-panes.sh fixture: session p, window 0 a 2x2 split
@@ -290,6 +291,7 @@ panesWorldFrom active = World
     , marked = Nothing
     , clientCurrent = Nothing
     , current = Just (Found (SessionId 0) 0 active)
+    , mouse = Nothing
     }
 
 panesWorld :: World

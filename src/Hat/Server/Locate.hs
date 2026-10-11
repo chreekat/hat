@@ -34,12 +34,15 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
+import Data.IORef (readIORef)
 
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Command.Types (Reply (..))
+import Hat.Server.Keys (KeyState (..))
 import Hat.Server.Layout
+import Hat.Server.Mouse (MouseEvent (..))
 import Hat.Server.Target (PaneTarget (..), parsePaneTarget)
 import Hat.Server.Target qualified as Target
 
@@ -160,12 +163,31 @@ targetWorld st mclient = do
             n <- T.stripPrefix "%" v >>= parseDec
             Target.sessionCurrentFound entries (PaneId n)
         bestCur = Target.sessionCurrent =<< listToMaybe (reverse entries)
+    mev <- case mclient of
+        Nothing -> pure Nothing
+        Just c -> (.mouseEvent) <$> readIORef c.keyState
+    -- tmux's cmd_mouse_pane: the event's window (or its session's current
+    -- one) and pane (or that window's active one).
+    let mouseFound = do
+            ev <- mev
+            se <- entryById ev.onSession
+            (ix, we) <- case ev.onWindow of
+                Just wid -> List.find ((== wid) . (.windowId) . snd) se.windows
+                Nothing -> List.find ((== se.currentIx) . fst) se.windows
+            pid <- case ev.onPane of
+                Nothing -> Just we.activePane
+                Just p | p `elem` map fst we.panes -> Just p
+                       | otherwise -> Nothing
+            pure (Target.Found se.sessionId ix pid)
     pure Target.World
         { sessions = entries
         , paneBase = pbase
         , marked = Target.paneFound entries =<< mmarked
         , clientCurrent = clientCur
-        , current = clientCur <|> tmuxPaneCur <|> ambientCur <|> bestCur
+        -- A mouse binding's commands start from the pane under the mouse,
+        -- as tmux's key callback sets their state.
+        , current = mouseFound <|> clientCur <|> tmuxPaneCur <|> ambientCur <|> bestCur
+        , mouse = mouseFound
         }
   where
     parseDec t = case TR.decimal t of

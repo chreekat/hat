@@ -22,7 +22,7 @@ import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (forM_, forever, unless, void, when)
+import Control.Monad (foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.IORef
@@ -57,6 +57,10 @@ import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
+import Hat.Server.Mouse
+    (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), checkMouse, clickExpired
+    , parseMouseInput, stripMods)
+import Hat.Server.MouseIO (mouseDragUpdate, mouseEventPane, mouseViewFor, sendMouse)
 import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
@@ -221,6 +225,7 @@ newClient st conn h = do
     originsVar <- newIORef V.empty
     chromeVar <- newIORef Nothing
     statusVar <- newIORef Nothing
+    mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef ""
     fullVar <- newTVarIO True
@@ -256,6 +261,7 @@ newClient st conn h = do
         , lastOrigins = originsVar
         , lastChrome = chromeVar
         , lastStatus = statusVar
+        , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
         , lastCursorColour = cursorColourVar
         , needsFull = fullVar
@@ -351,7 +357,13 @@ inputLoop d st re client = loop
             repeatWake = case ks.repeating of
                 Just r -> [(max 0 (r.expires - now), expireKeyRepeat st client)]
                 Nothing -> []
-        m <- case sortOn fst (escWake <> repeatWake) of
+            -- A click waiting for the next one lapses: a second click
+            -- becomes a double click.
+            clickWake = case ks.mouse.click of
+                AwaitSecond c -> [(max 0 (c.expires - now), expireClick d st client)]
+                AwaitThird c -> [(max 0 (c.expires - now), expireClick d st client)]
+                NoClick -> []
+        m <- case sortOn fst (escWake <> repeatWake <> clickWake) of
             [] -> Right <$> recvMessage re
             (ms, fire) : _ -> do
                 timer <- registerDelay (ms * 1000)
@@ -384,6 +396,15 @@ inputLoop d st re client = loop
                 -- Never requested of an attached client.
                 StdinData _ -> loop
                 StdinEnd -> loop
+
+-- | The click timer lapsed (see 'clickExpired').
+expireClick :: Dispatch -> ServerState -> Client -> IO ()
+expireClick d st client = do
+    now <- monotonicMs
+    ks <- readIORef client.keyState
+    let (ms, mk) = clickExpired now ks.mouse
+    writeIORef client.keyState ks { mouse = ms }
+    forM_ mk $ \k -> runInputs d st client [Right k]
 
 -- | The repeat window closed before another key: the client drops back to
 -- its default key table.
@@ -509,6 +530,7 @@ keyContext opts modeTable now = KeyContext
     , prefixTimeout = optionNumber "prefix-timeout" opts
     , repeatTime = optionNumber "repeat-time" opts
     , initialRepeatTime = optionNumber "initial-repeat-time" opts
+    , mouseOn = optionFlag "mouse" opts
     , now = now
     }
 
@@ -543,64 +565,117 @@ flushHeldEscape d st client = do
 -- routed, so @prefix [@ followed immediately by motions never leaks the
 -- motions to the shell (and vice versa on exit).
 runKeys :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
-runKeys d st client keys = do
+runKeys d st client keys = runInputs d st client (map Left keys)
+
+-- | Route keys, and mouse keys already placed (a click timer's double
+-- click), in order.
+runInputs :: Dispatch -> ServerState -> Client -> [Either Key MouseKey] -> IO ()
+runInputs d st client keys = do
     opts <- clientOptions st client
     km <- readTVarIO st.keymap
     let loop kst [] = writeIORef client.keyState kst
-        loop kst (k0 : rest) = do
-            dismissToast st client
-            mpane <- clientActivePane st client
-            -- A pending vi char search (f/F/t/T) captures this key as its
-            -- target, ahead of any keymap lookup.
-            searchFed <- maybe (pure False) (feedPendingSearch k0) mpane
-            if searchFed then loop kst rest else do
-              modeTable <- case mpane of
+        loop kst (Right mk : rest) = mouseKey kst mk rest
+        loop kst (Left k0 : rest)
+            | k0.name == "Mouse" = do
+                (kst1, mkey) <- placeMouse kst k0
+                case mkey of
+                    Nothing -> loop kst1 rest
+                    Just mk -> mouseKey kst1 mk rest
+            | otherwise = do
+                dismissToast st client
+                mpane <- clientActivePane st client
+                -- A pending vi char search (f/F/t/T) captures this key as its
+                -- target, ahead of any keymap lookup.
+                searchFed <- maybe (pure False) (feedPendingSearch k0) mpane
+                if searchFed then loop kst rest else routed kst mpane k0 Nothing rest
+        mouseKey kst1 mk rest
+            -- A drag in progress moves what it drags, bypassing the key
+            -- tables (tmux's @KEYC_DRAGGING@).
+            | mk.dragging, Just dr <- kst1.drag = do
+                mouseDragUpdate st dr mk.event
+                loop kst1 rest
+            | otherwise = do
+                let kst2 | "MouseDragEnd" `T.isInfixOf` mk.name = kst1 { drag = Nothing }
+                         | otherwise = kst1
+                mp <- mouseEventPane st mk.event
+                let mpane = fmap (\(_, _, p, _) -> p) mp
+                -- focus-follows-mouse: moving over a pane makes it active.
+                when (stripMods mk.name == "MouseMovePane") $
+                    forM_ mp $ \(sess, win, pane, _) -> do
+                        o <- atomically (resolveForPane st sess win pane)
+                        active <- readTVarIO win.activeId
+                        when (optionFlag "focus-follows-mouse" o && pane.id /= active) $
+                            void $ d.runArgv st (Just client)
+                                ["select-pane", "-t", "%" <> tshow (rawPane pane.id)]
+                routed kst2 mpane (Key { name = mk.name, raw = "" }) (Just mk.event) rest
+        -- Route one key with the pane it is for: the active pane, or the one
+        -- under a mouse event.
+        routed kst mpane k0 mev rest = do
+            modeTable <- case mpane of
                 Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
-              k <- reencodeKey (keyEncoding opts) (fmap (.emulator) mpane) k0
-              -- The outer terminal's ?1004 focus reports track whether the
-              -- user is watching this client, independent of whether the
-              -- pane's app asked for them (the 'keepKey' gate below).
-              noteOuterFocus st client k
-              keep <- keepKey opts mpane k
-              if not keep
-                then do
-                    when (k.name == "Unknown") $
-                        logEvent st.logger UnknownKeySequence
-                            { client = rawClient client.id
-                            , input = T.pack (show k.raw) }
-                    loop kst rest
-                else do
-                    now <- monotonicMs
-                    let (kst', actions) =
-                            routeKey (keyContext opts modeTable now) km kst k
-                    forM_ actions $ \case
-                        Passthrough _ -> forM_ mpane $ \pane -> do
-                            dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
-                                then pure False
-                                else dismissDeadPane st pane
-                            unless dismissed $ typeKeyIntoPane st pane k0
-                        Paste -> forM_ mpane $ \pane -> do
-                            inMode <- isJust <$> readTVarIO pane.mode
-                            -- The brackets reach only an app that asked for
-                            -- them (?2004).
-                            bracketsOk <- if k0.name `elem` ["PasteStart", "PasteEnd"]
-                                then Emu.bracketedPaste pane.emulator
-                                else pure True
-                            unless (inMode || not bracketsOk) $
-                                typeIntoPaneSynced st pane k0.raw
-                        RunCommands cmds -> withCommandBatch st $
-                            forM_ cmds $ \argv ->
-                                toastReplies st client
-                                    =<< d.runArgv st (Just client) argv
-                    -- Arming lights the highlight; disarming clears it, unless
-                    -- the command just moved the active pane — then it lingers
-                    -- on the new pane to trace the motion.
-                    flashTransition mpane kst kst'
-                    loop kst' rest
+            k <- reencodeKey (keyEncoding opts) (fmap (.emulator) mpane) k0
+            -- The outer terminal's ?1004 focus reports track whether the
+            -- user is watching this client, independent of whether the
+            -- pane's app asked for them (the 'keepKey' gate below).
+            noteOuterFocus st client k
+            keep <- keepKey opts mpane k
+            if not keep
+              then do
+                when (k.name == "Unknown") $
+                    logEvent st.logger UnknownKeySequence
+                        { client = rawClient client.id
+                        , input = T.pack (show k.raw) }
+                loop kst rest
+              else do
+                now <- monotonicMs
+                let (kst', actions) =
+                        routeKey (keyContext opts modeTable now) km kst k
+                kst'' <- foldM (act mpane k0 mev) kst' actions
+                -- Arming lights the highlight; disarming clears it, unless
+                -- the command just moved the active pane — then it lingers
+                -- on the new pane to trace the motion.
+                flashTransition mpane kst kst''
+                loop kst'' rest
+        act mpane k0 mev kst = \case
+            Passthrough _
+                | Just ev <- mev -> kst <$ sendMouse st ev
+                | otherwise -> kst <$ forM_ mpane (\pane -> do
+                    dismissed <- if k0.name `elem` ["FocusIn", "FocusOut"]
+                        then pure False
+                        else dismissDeadPane st pane
+                    unless dismissed $ typeKeyIntoPane st pane k0)
+            Paste -> kst <$ forM_ mpane (\pane -> do
+                inMode <- isJust <$> readTVarIO pane.mode
+                -- The brackets reach only an app that asked for them
+                -- (?2004).
+                bracketsOk <- if k0.name `elem` ["PasteStart", "PasteEnd"]
+                    then Emu.bracketedPaste pane.emulator
+                    else pure True
+                unless (inMode || not bracketsOk) $
+                    typeIntoPaneSynced st pane k0.raw)
+            -- The commands see the key's mouse event, and may change the
+            -- key state (a drag they start).
+            RunCommands cmds -> do
+                writeIORef client.keyState kst { mouseEvent = mev }
+                withCommandBatch st $ forM_ cmds $ \argv ->
+                    toastReplies st client =<< d.runArgv st (Just client) argv
+                after <- readIORef client.keyState
+                pure after { mouseEvent = Nothing }
     st0 <- readIORef client.keyState
     loop st0 keys
   where
+    -- Place a mouse report (see 'checkMouse') against what the client shows.
+    placeMouse kst k0 = case parseMouseInput k0.raw of
+        Nothing -> pure (kst, Nothing)
+        Just inp -> do
+            mview <- mouseViewFor st client [inp.y, kst.mouse.prevY]
+            case mview of
+                Nothing -> pure (kst, Nothing)
+                Just view -> do
+                    now <- monotonicMs
+                    let (ms, mk) = checkMouse now view kst.mouse inp
+                    pure (kst { mouse = ms }, mk)
     flashTransition mpane before after = case (prefixArmed before, prefixArmed after) of
         (False, True) -> armFlash st client
         (True, False) -> do
