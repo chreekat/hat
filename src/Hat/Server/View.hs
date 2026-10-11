@@ -239,7 +239,8 @@ renderOnce st client = do
     -- The display-panes overlay stamps each pane's number over its rect.
     mdpanes <- readTVarIO client.displayPanes
     (frame'', origins'') <- case (mdpanes, view) of
-        (Just _, Just (_, _, rects, _, _, active, _, _)) -> do
+        (Just _, Just (_, win, rects, _, _, active, _, _)) -> do
+            order <- atomically (map (.id) <$> windowPanes win)
             let shiftR r = r { startRow = r.startRow + rowOff
                              , endRow = r.endRow + rowOff }
                 colourFor pid = parseColor $ if pid == active
@@ -252,7 +253,7 @@ renderOnce st client = do
                             (opts.paneBaseIndex + i)
                             (r.endCol - r.startCol) (r.endRow - r.startRow) ]
                     | (pid, rect0) <- rects
-                    , Just i <- [List.elemIndex pid (map fst rects)]
+                    , Just i <- [List.elemIndex pid order]
                     , let r = shiftR rect0 ]
             pure ( DisplayPanes.stampCells stamps frame'
                  , List.foldl' (\o (_, rect0) -> volatileRows (shiftR rect0) o)

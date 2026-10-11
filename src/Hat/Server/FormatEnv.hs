@@ -43,9 +43,9 @@ import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format (FormatCtx (..), FormatEnv, formatCtx, renderFormatCtx)
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
-import Hat.Server.Floating (FloatState (..), modalPane, paneZ)
+import Hat.Server.Floating (FloatState (..), modalPane, paneZ, stacking)
 import Hat.Server.Layout
-import Hat.Server.LayoutString (emitLayout)
+import Hat.Server.LayoutString (emitLayout, emitLayoutZ)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
 import Hat.Server.Resize (windowArea)
@@ -86,7 +86,7 @@ windowFormatEnv st sess ix win = do
         , ("window_name", wname)
         , ("window_width", tshow eff.cols)
         , ("window_height", tshow eff.rows)
-        , ("window_layout", emitLayout (fitLayout eff lay))
+        , ("window_layout", emitLayoutZ (stacking fs lay) (fitLayout eff lay))
         , ("window_visible_layout", emitLayout
             (fitLayout eff (maybe lay singlePane zoom)))
         , ("window_raw_flags", flags)

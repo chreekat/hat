@@ -155,6 +155,9 @@ spec = do
                 order `shouldReturn` [b <> a <> "%0"]
                 run st ["move-pane", "-t", a, "-P", "front"] `shouldReturn` []
                 order `shouldReturn` [a <> b <> "%0"]
+                -- window_layout lists the floating panes front to back.
+                fmap (map (("," <> T.drop 1 b <> ">") `T.isSuffixOf`))
+                    (fmt st "S:0" "#{window_layout}") `shouldReturn` [True]
                 run st ["move-pane", "-t", a, "-z", "5"] `shouldReturn` []
                 order `shouldReturn` [b <> a <> "%0"]
                 run st ["move-pane", "-t", "%0", "-P", "front"]
