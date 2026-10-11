@@ -672,16 +672,20 @@ cmdSwapPane st mclient args = do
                 | otherwise -> pure Nothing
         case (msrc, mdst) of
             (Just src, Just dst) | src.id /= dst.id -> do
-                atomically $ do
+                swapped <- atomically $ do
                     ps <- readTVar win.panes
-                    when (Map.member src.id ps && Map.member dst.id ps) $ do
+                    let both = Map.member src.id ps && Map.member dst.id ps
+                    when both $ do
                         modifyTVar' win.layout (swapLeaves src.id dst.id)
                         unless keepActive $ do
                             modifyTVar' win.paneHist (recordVisit src.id dst.id)
                             writeTVar win.activeId dst.id
                         writeTVar win.zoomed Nothing
                         bumpDirty st
+                    pure both
                 applySessionSize st sess.id
+                when swapped $
+                    notifyWindow st "window-layout-changed" (Just sess.id) win []
                 pure []
             _ -> pure []
 

@@ -24,6 +24,7 @@ import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Command.Window (nextFreeWindowIndex)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
+import Hat.Server.Hooks (notifyWindow)
 import Hat.Server.Locate (targetPane, withCurrentWindow)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane (removePaneFromTree, wrapPaneInWindow)
@@ -115,7 +116,10 @@ applyLayoutString st mclient str =
                     pure True
                 Nothing -> pure False
         if ok
-            then applySessionSize st sess.id >> pure []
+            then do
+                applySessionSize st sess.id
+                notifyWindow st "window-layout-changed" (Just sess.id) win []
+                pure []
             else pure [RErr ("invalid layout: " <> str)]
 
 parseLayoutName :: Text -> Maybe LayoutName
@@ -161,6 +165,7 @@ arrangeNamed st sess win lname = do
             writeTVar win.zoomed Nothing
             bumpDirty st
     applySessionSize st sess.id
+    notifyWindow st "window-layout-changed" (Just sess.id) win []
 
 -- | @next-layout@ (default @<prefix> Space@): rearrange the current
 -- window into the next of tmux's five named layouts, cycling from the

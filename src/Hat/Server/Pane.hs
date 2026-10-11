@@ -107,7 +107,7 @@ import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
-    , notifyGroupDrops, notifyPane, sessionTarget )
+    , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Style (applyStyle)
@@ -818,6 +818,8 @@ teardownPane st pane reap = do
                 (NotifyTarget (Just sid) (Just win.id) (Just pane.id))
                 [ ("pane", PPaneRef pane.id)
                 , ("window", PWindowRef win.id wname) ]
+            when (wf == WindowSurvives) $
+                notifyWindow st "window-layout-changed" (Just sid) win []
             when (wf == WindowRemoved) $ do
                 notify st "window-unlinked"
                     (sessionTarget sid)
@@ -990,6 +992,7 @@ killPaneLocsWith mode st locs = do
                 [ (sid, win)
                 | ((sid, win), Detached WindowSurvives _) <- results ]
         forM_ survivors $ \(sid, win) -> do
+            notifyWindow st "window-layout-changed" (Just sid) win []
             newActive <- readTVarIO win.activeId
             forM_ (Map.lookup win.id preActive) $ \old ->
                 when (old /= newActive) $ do
@@ -1318,6 +1321,10 @@ createGroupedSession st leader mname environ dir = do
     sname <- readTVarIO sess.name
     notifyGroupChange st "session-added-to-group" (sessionTarget sess.id)
         sess.id sname gname size
+    -- Joining a group links each of its windows into the new session.
+    shared <- Map.elems <$> readTVarIO sess.windows
+    forM_ shared $ \win -> notifyWindow st "window-linked" (Just sess.id) win
+        [ ("session", PSessionRef sess.id sname) ]
     mwin <- atomically (currentWindow sess)
     notify st "session-created"
         (NotifyTarget (Just sess.id) ((.id) <$> mwin) Nothing)
