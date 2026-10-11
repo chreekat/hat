@@ -112,7 +112,8 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientIO (broadcast, broadcastAs)
+import Hat.Server.Outbound (Delivery (..))
 import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
@@ -529,8 +530,9 @@ runPaneReader st pane = do
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
                 -- the session's attached terminals to raise with the OS.
+                -- See Note [Falling behind]
                 Emu.DesktopNotification raw ->
-                    forM_ mhome $ \(sid, _) -> broadcast st sid (Notify raw)
+                    forM_ mhome $ \(sid, _) -> broadcastAs Expendable st sid (Notify raw)
                 -- The pane's own OSC title only feeds #{pane_title} (the
                 -- emulator stores it); the client's desktop title is
                 -- composed in 'refreshTitles'.
@@ -542,7 +544,8 @@ runPaneReader st pane = do
                         r <- bellAlerts st win
                         bumpDirty st
                         pure r
-                    broadcast st sid RingBell
+                    -- See Note [Falling behind]
+                    broadcastAs Expendable st sid RingBell
                     notifyPane st "pane-bell" pane []
                     forM_ fires $ \(osid, sname, wname) ->
                         notify st "alert-bell"

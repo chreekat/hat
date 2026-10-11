@@ -5,7 +5,6 @@ module Hat.Server.HooksSpec (spec) where
 import Test.Hspec
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM
 import Control.Monad (void)
 import Data.IORef
@@ -19,6 +18,7 @@ import System.Timeout (timeout)
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
+import Hat.Server.Outbound (newOutbound)
 import Hat.Model.Options (AlertAction (..), Options (..), alertAllows, emptyDelta)
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Command.Wait (cmdWaitFor)
@@ -267,7 +267,7 @@ fakeSession = do
 fakeClient :: ServerState -> IO Client
 fakeClient _ = do
     (sock, _) <- N.socketPair N.AF_UNIX N.Stream N.defaultProtocol
-    sendLock <- newMVar ()
+    outboundQ <- newOutbound
     sizeVar <- newTVarIO (Size 80 24)
     activeVar <- newTVarIO 0
     sessVar <- newTVarIO (SessionId (-1))
@@ -295,7 +295,7 @@ fakeClient _ = do
         , autostart = Joined
         , sock = sock
         , wireLevel = 4
-        , sendLock = sendLock
+        , outbound = outboundQ
         , size = sizeVar
         , lastActive = activeVar
         , session = sessVar

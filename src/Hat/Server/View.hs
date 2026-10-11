@@ -37,7 +37,8 @@ import Hat.Model.Options
 import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
 import Hat.Server.CopyMode qualified as CopyMode
-import Hat.Server.ClientIO (send)
+import Hat.Server.ClientIO (hasRoom, send, sendAs)
+import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
 import Hat.Server.Floating (Border (..), borderOf, modalPane, stacking)
@@ -80,7 +81,7 @@ renderLoop period st client = loop (-1)
 -- keeps a layout change — a zoom, an unzoom, a split, a client resize — off
 -- the screen until the emulators behind it grow or shrink to match; painting
 -- earlier flashes one frame of the old grid composited into the new geometry.
--- Blocks until such a generation exists.
+-- Blocks until such a generation exists and the client has room for it.
 awaitRenderable :: ServerState -> Client -> Int -> STM Int
 awaitRenderable st client lastGen = do
     g <- readTVar st.dirty
@@ -88,6 +89,7 @@ awaitRenderable st client lastGen = do
     check (g /= lastGen || full)
     done <- readTVar st.reconciled
     check (done >= g)
+    check =<< hasRoom client  -- See Note [Falling behind]
     pure g
 
 -- | Where the status bar sits in a client of @rows@ rows: the vertical offset
@@ -289,7 +291,7 @@ renderOnce st client = do
     oldColour <- readIORef client.lastCursorColour
     when (colour /= oldColour) $ do
         writeIORef client.lastCursorColour colour
-        send client $ Notify $ if T.null colour
+        sendAs (Superseding CursorColourSlot) client $ Notify $ if T.null colour
             then "\ESC]112\a"
             else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
   where

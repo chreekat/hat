@@ -42,6 +42,7 @@ data LogEvent
     | ReloadAdopt     { pane :: Int, phase :: Text }  -- ^ a reload's per-pane adopt progress (start\/replaying\/seeded\/ready), to pinpoint a resume that stalls
     | ClientConnected { client :: Int, term :: Text }
     | ClientDetached  { client :: Int, reason :: Text }
+    | FarewellUnsent  { client :: Int }  -- ^ a client still not reading when the server went away, so its farewell never left
     | PaneSpawned     { pane :: Int, cmd :: Text }
     | PaneExited      { pane :: Int }
     | PaneResizeFailed { pane :: Int, err :: Text }

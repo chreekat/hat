@@ -1,7 +1,7 @@
 -- | Queueing onto a control-mode client's outbound stream: command-block
 -- lines, notifications, pane output, and the request to exit. Everything a
--- control client is sent passes through here; its writer thread (see
--- "Hat.Server.Control") is the only one that touches its socket.
+-- control client is sent passes through here, to be rendered for its
+-- socket by its writer thread (see "Hat.Server.Control").
 module Hat.Server.ControlQueue
     ( controlEmit
     , controlNotify

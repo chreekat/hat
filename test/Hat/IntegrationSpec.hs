@@ -54,6 +54,7 @@ import Hat.TestSupport (bashPath, nodeOf)
 import Hat.Server.Layout (Orientation (..), fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
+import Hat.Transport.Wire qualified as W
 import Hat.Term.Cell (Cell (..), Style (..))
 import Hat.Term.Emulator qualified as Emu
 
@@ -1914,6 +1915,76 @@ spec = parallel $ do
         -- the shell is still live: it runs our input as if nothing happened.
         typeInto c "echo survived-bad-reload\r"
         awaitScreen c "survived-bad-reload"
+
+    it "a client that stops reading stalls no pane for anyone else" $
+        withHat hatBin $ \h -> do
+        go <- alertStorm h
+        unread <- attachUnread h
+        writeFile go ""
+        awaitAlertStorm h
+        N.close unread.sock
+
+    it "restart-server completes while an attached client is not reading" $
+        withHat hatBin $ \h -> do
+        go <- alertStorm h
+        unread <- attachUnread h
+        writeFile go ""
+        awaitAlertStorm h
+        pidBefore <- ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        done <- timeout 20_000_000 (hatCtl h ["restart-server", h.bin])
+        isJust done `shouldBe` True
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        -- Let go, not orphaned: once it reads again its stream ends.
+        timeout 10_000_000 (readToEnd unread) `shouldReturn` Just ()
+        unsent <- filter (List.isInfixOf "FarewellUnsent") . lines
+            <$> readFile (h.home </> "server.log")
+        length unsent `shouldBe` 1
+        ctlOut h ["list-panes", "-F", "#{pane_pid}"] `shouldReturn` pidBefore
+        N.close unread.sock
+
+-- A detached session whose pane, once the returned file exists, raises
+-- 2000 alerts -- a bell and a 1 KiB desktop notification each, far more
+-- than a socket buffer holds -- and then prints STORM-DONE.
+alertStorm :: Hat -> IO FilePath
+alertStorm h = do
+    let go = h.home </> "go"
+        script = h.home </> "storm.sh"
+    writeFile script $ unlines
+        [ "while [ ! -e " <> go <> " ]; do sleep 0.05; done"
+        , "awk 'BEGIN { pad = sprintf(\"%1000s\", \"\"); gsub(/ /, \"x\", pad);"
+        , "  for (i = 1; i <= 2000; i++) printf \"%d\\a\\033]9;%s\\033\\\\\\n\", i, pad;"
+        , "  print \"STORM-\" \"DONE\" }'"
+        , "exec sleep 600" ]
+    _ <- hatCtl h ["new-session", "-d", "sh " <> script]
+    pure go
+
+awaitAlertStorm :: Hat -> IO ()
+awaitAlertStorm h = awaitTrue "the alert storm to finish" $
+    List.isInfixOf "STORM-DONE" <$> ctlOut h ["capture-pane", "-p"]
+
+-- Attach over the raw wire and never read again: a client whose terminal
+-- has stopped draining (XOFF, a stopped process, a stalled link).
+attachUnread :: Hat -> IO W.ReadEnd
+attachUnread h = do
+    sock <- maybe (fail "attachUnread: no server") pure =<< connectTo h.sock
+    W.sendMessage sock $ W.ClientHello W.Hello
+        { protoVersion = W.protocolVersion, term = "xterm", env = []
+        , size = Size { rows = 24, cols = 80 }, cwd = T.pack h.home
+        , intent = W.AttachIntent [], autostarted = False, sessionHist = [] }
+    re <- W.newReadEnd sock
+    W.recvMessage re >>= \case
+        Just (W.Known (W.Welcome _)) -> pure re
+        other -> fail ("attachUnread: " <> show other)
+
+-- Read a connection until the server ends it.
+readToEnd :: W.ReadEnd -> IO ()
+readToEnd re = loop `catch` \(_ :: IOException) -> pure ()
+  where
+    loop = W.recvMessage re >>= \case
+        Just (W.Known (_ :: W.ServerToClient)) -> loop
+        Just (W.UnknownTag _) -> loop
+        _ -> pure ()
 
 -- The @n@ of each @TICK-n-END@ word, in order.
 tickNumbers :: T.Text -> [Int]

@@ -4,9 +4,9 @@
 -- @%window-renamed@, and pane output as @%output@ — until @%exit@.
 --
 -- The connection's reader runs command lines ('feedControlInput'); a
--- writer thread ('controlWriter') alone sends the queued stream (see
--- "Hat.Server.ControlQueue") so a client that reads slowly holds up only
--- itself.
+-- writer thread ('controlWriter') alone renders the queued stream (see
+-- "Hat.Server.ControlQueue") onto the client's socket, so a client that
+-- reads slowly holds up only itself.
 module Hat.Server.Control
     ( BlockOrigin (..)
     , runControlCommands
@@ -49,7 +49,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hat.Command.Parser (parseCommandLine)
 import Hat.Geometry
 import Hat.Model
-import Hat.Server.ClientIO (sendDirect)
+import Hat.Server.ClientIO (hasRoom, sendDirect, sendFinal)
 import Hat.Server.Command.Types
 import Hat.Server.ControlQueue
 import Hat.Server.ControlTypes
@@ -197,14 +197,15 @@ controlWriter client cs = loop
             Left reason -> do
                 (status, fl) <- atomically $
                     (,) <$> readTVar cs.retval <*> readTVar cs.flags
-                sendDirect client (ControlExit reason fl.exitWait status)
+                sendFinal client (ControlExit reason fl.exitWait status)
             Right out -> do
                 unless (BL.null out) $
                     sendDirect client (WriteStdout (BL.toStrict out))
                 loop
-    -- Everything queued, rendered; or, with nothing left on an exiting
-    -- client, its exit reason.
+    -- Everything queued, rendered once the client's socket has room for
+    -- it; or, with nothing left on an exiting client, its exit reason.
     nextBatch now = do
+        check =<< hasRoom client  -- See Note [Falling behind]
         q <- swapTVar cs.queue Seq.empty
         writeTVar cs.outputBytes 0
         case q of
