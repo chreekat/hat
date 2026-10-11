@@ -19,7 +19,7 @@ import Control.Concurrent.Async (async, mapConcurrently, waitCatch)
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, bracket, catch, try)
-import Control.Monad (filterM, forM_)
+import Control.Monad (filterM, forM_, void, when)
 import Data.ByteString qualified as B
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
@@ -91,8 +91,9 @@ captureReload carry st = do
         mapConcurrently (captureHotPane carry) panes
     pure ( ReloadCleanup
              { listenFd = fromMaybe (-1) mfd
-             , live = [ (p.masterFd, p.childPid)
-                      | p <- hots, Nothing <- [p.death] ] }
+             , live = [ (h.masterFd, h.childPid)
+                      | (p, h) <- zip panes hots
+                      , p.kind == ProgramPane, Nothing <- [h.death] ] }
          , ReloadHot
              { tree = encodeSnapshotJson snap, hot = hots
              , lastSession = lsName } )
@@ -243,10 +244,11 @@ adoptPane st histLimit pid (psnap, rp) = do
     -- Trace each adopt phase so a resume that stalls names the pane and the
     -- step it stalled on (fd adopt vs. screen replay) instead of going silent.
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "start" }
-    pty <- case rp.death of
-        Nothing -> Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
+    pty <- case (psnap.kind, rp.death) of
+        (EmptyPane, _) -> Hat.Term.Pty.unattachedPty
+        (ProgramPane, Nothing) -> Hat.Term.Pty.adopt (Fd (fromIntegral rp.masterFd))
                                       (fromIntegral rp.childPid)
-        Just d  -> Hat.Term.Pty.exitedPty (fromIntegral rp.childPid)
+        (ProgramPane, Just d) -> Hat.Term.Pty.exitedPty (fromIntegral rp.childPid)
                                           (processStatusOf d)
     -- Adopt at the size the pane was CAPTURED at, not a default: replaying a
     -- capture into a smaller grid wraps and clamps it into a state whose
@@ -265,6 +267,9 @@ adoptPane st histLimit pid (psnap, rp) = do
     Emu.seedScrollback emu replaySb
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "seeded" }
     _ <- Emu.feed emu replayBytes
+    -- An empty pane's line feed returns the carriage (see 'emptyPane'), a
+    -- mode the capture does not carry.
+    when (psnap.kind == EmptyPane) $ void (Emu.feed emu "\ESC[20h")
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
     sizeVar   <- newTVarIO esz
     deadVar   <- newTVarIO False
@@ -274,6 +279,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     homeVar   <- newTVarIO Nothing
     optionsVar <- newTVarIO emptyDelta
     exitedVar <- newTVarIO (paneExitOf <$> rp.death)
+    inputOffVar <- newTVarIO False
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
@@ -283,12 +289,13 @@ adoptPane st histLimit pid (psnap, rp) = do
                 StartShell     -> FreshShell
                 StartCommand t -> ShellCommand t
                 StartArgv argv -> ExecArgv argv
-            , exited = exitedVar }
+            , exited = exitedVar, kind = psnap.kind, inputOff = inputOffVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the
     -- pre-reload scheme until the OS scheme next changes (bug f3).
     scheme <- readTVarIO st.colorScheme
     forM_ (reloadSchemePush rp.modes scheme) (Hat.Term.Pty.writePty pty)
+    restorePaneState pane psnap.inputOff psnap.title
     pure pane
   where
     paneExitOf d = PaneExit

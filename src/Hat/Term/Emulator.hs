@@ -51,6 +51,7 @@ module Hat.Term.Emulator
     , screenRowWrapped
     , setScrollbackLimit
     , clearScrollback
+    , trimHistoryBelowCursor
     , screenRowText
     , screenCell
     , rawGrid
@@ -550,7 +551,11 @@ title e = (.title) <$> readIORef e.state
 -- | The emulator's live pen: the style the next glyph would take. libghostty
 -- surfaces it only through the shim's formatter round-trip.
 currentPen :: Emulator -> IO Style
-currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+currentPen e = withMVar e.lock $ \_ -> withForeignPtr e.term (currentPenT e)
+
+-- | 'currentPen' with the lock already held.
+currentPenT :: Emulator -> Ptr CTerm -> IO Style
+currentPenT e t =
     allocaBytes shimCellSize $ \cellp -> do
         _ <- c_pen t cellp
         (.style) <$> peekShimCell (shareVals e.cellIntern) (pure []) cellp
@@ -583,7 +588,11 @@ scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
 -- first) with its size, under one lock hold — the capture path's grid read,
 -- which never marshals a 'Cell'. See 'Hat.Server.captureReloadScreen'.
 screenPainted :: Emulator -> IO (Size, [ByteString])
-screenPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+screenPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term screenPaintedT
+
+-- | 'screenPainted' with the lock already held.
+screenPaintedT :: Ptr CTerm -> IO (Size, [ByteString])
+screenPaintedT t = do
     rows <- fromIntegral <$> c_get t dataRows
     cols <- fromIntegral <$> c_get t dataCols
     let cap = max 1 cols * 68 + 64
@@ -594,7 +603,11 @@ screenPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
 
 -- | The cursor's position, and whether it is visible.
 cursorState :: Emulator -> IO (Pos, Bool)
-cursorState e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+cursorState e = withMVar e.lock $ \_ -> withForeignPtr e.term cursorStateT
+
+-- | 'cursorState' with the lock already held.
+cursorStateT :: Ptr CTerm -> IO (Pos, Bool)
+cursorStateT t = do
     cx  <- fromIntegral <$> c_get t dataCursorX
     cy  <- fromIntegral <$> c_get t dataCursorY
     vis <- c_get t dataCursorVisible
@@ -693,7 +706,11 @@ cellLink t tag x y = go 256
 -- cells carry only a background — are repainted by 'paintShimRow', which
 -- preserves that background. See 'Hat.Server.captureReloadScreen'.
 scrollbackPainted :: Emulator -> IO [ByteString]
-scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term (scrollbackPaintedT e)
+
+-- | 'scrollbackPainted' with the lock already held.
+scrollbackPaintedT :: Emulator -> Ptr CTerm -> IO [ByteString]
+scrollbackPaintedT e t = do
     lim <- readIORef e.sbLimit
     phys <- physicalScrollback t
     let exposed = min phys (max 0 lim)
@@ -779,6 +796,31 @@ setScrollbackLimit e limit = writeIORef e.sbLimit limit
 clearScrollback :: Emulator -> IO ()
 clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     feedBytes t "\ESC[3J"
+
+-- | tmux's @resize-pane -T@: drop the screen lines below the cursor and pull
+-- as many of the newest history lines back down on top, so the cursor ends on
+-- the bottom row (or as near as the history allows). The alternate screen,
+-- which has no history, is left alone. Done under one lock hold — read, clear
+-- and repaint — so no program output interleaves.
+trimHistoryBelowCursor :: Emulator -> IO ()
+trimHistoryBelowCursor e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    alt <- c_get t dataActiveScreen
+    unless (alt == screenAlternate) $ do
+        (sz, screen) <- screenPaintedT t
+        (cur, vis) <- cursorStateT t
+        hist <- scrollbackPaintedT e t
+        pen <- currentPenT e t
+        let rows = fromIntegral sz.rows
+            n = min (length hist) (rows - 1 - cur.row)
+            (kept, pulled) = splitAt (length hist - n) hist
+            screen' = pulled <> take (rows - n) screen
+            plain = Modes
+                { altScreen = False, mouse = MouseOff
+                , focusReport = False, colorReport = False }
+        unless (n <= 0) $ do
+            feedBytes t "\ESC[H\ESC[2J\ESC[3J"
+            unless (null kept) $ feedBytes t (seedBytes (min (length kept) rows) kept)
+            feedBytes t (restorePainted plain pen cur { row = cur.row + n } vis screen')
 
 -- | Seed a fresh emulator's history with captured painted lines (oldest
 -- first, 'paintLineBytes' each), trimmed to the current limit. libghostty

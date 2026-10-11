@@ -19,6 +19,7 @@ module Hat.Term.Pty
     , writePty
     , resize
     , waitExit
+    , unattachedPty
     , masterFd
     , signalHangup
     , signalKill
@@ -292,6 +293,11 @@ exitedPty childPid status = do
 
 -- | Wait for the child to exit. Idempotent. 'Nothing' when the reaper
 -- could not obtain a status (e.g. the child was already reaped).
+-- | The handle of a pane that runs no program (an empty pane): already
+-- closed, with no child to signal and nothing to reap.
+unattachedPty :: IO PtyHandle
+unattachedPty = exitedPty 0 Nothing
+
 waitExit :: PtyHandle -> IO (Maybe ProcessStatus)
 waitExit pty = readMVar pty.exited
 

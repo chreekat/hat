@@ -73,6 +73,19 @@ instance Arbitrary PaintedSoup where
 
 spec :: Spec
 spec = do
+    describe "trimHistoryBelowCursor" $
+        it "drops the lines below the cursor, pulling history down to fill them" $ do
+            e <- new80x24
+            _ <- feed e (B8.pack (concatMap (\n -> show n <> "\r\n") [1 .. 100 :: Int])
+                <> "\ESC[5;1H")
+            scrollbackLength e `shouldReturn` 77
+            trimHistoryBelowCursor e
+            scrollbackLength e `shouldReturn` 58
+            (cur, _) <- cursorState e
+            cur.row `shouldBe` 23
+            scr <- snapshot e
+            map (rowText scr) [0, 18, 23] `shouldBe` ["59", "77", "82"]
+
     it "interns equal cells to one shared heap object (peekShimCell)" $ do
         e <- new80x24
         _ <- feedStr e "hi"

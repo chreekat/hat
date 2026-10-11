@@ -86,10 +86,12 @@ library
         Hat.Model
         Hat.Model.Ids
         Hat.Model.Options
+        Hat.Model.PaneKind
         Hat.Model.PasteBuffers
         Hat.Path
         Hat.PtrEq
         Hat.Server
+        Hat.Server.ArgNumber
         Hat.Server.ClientIO
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
@@ -299,6 +301,7 @@ test-suite hat-test
         Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionsSpec
+        Hat.Server.PaneCommandSpec
         Hat.Server.PaneReaderSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec

@@ -13,6 +13,7 @@ module Hat.Server.Persist
     , SessionSnap (..)
     , WindowSnap (..)
     , PaneSnap (..)
+    , plainPane
     , schemaVersion
     , withStore
     , bootstrap
@@ -30,8 +31,9 @@ module Hat.Server.Persist
 import Control.Exception (bracket)
 import Control.Monad (unless)
 import Data.Aeson
-    ( FromJSON (..), ToJSON (..), Value (String), decode, encode, object
-    , withObject, (.:?), (.=) )
+    ( FromJSON (..), Key, Object, ToJSON (..), Value (String), decode, encode
+    , object, withObject, (.:?), (.=) )
+import Data.Aeson.Types (Parser, parseMaybe)
 import Data.ByteString.Lazy qualified as BL
 import Data.Maybe (fromMaybe, maybeToList)
 import Data.String (fromString)
@@ -41,6 +43,8 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.POSIX (POSIXTime)
 import Database.SQLite.Simple
+
+import Hat.Model.PaneKind (PaneKind (..))
 
 -- | A point-in-time capture of the whole tree, in restore order:
 -- sessions in creation order, each window by its index, each pane in its
@@ -132,6 +136,13 @@ data PaneSnap = PaneSnap
                                --   in the row's @extra@ JSON. A store written
                                --   before this field omits the key; it defaults
                                --   to 'False'. See 'Hat.Server.restoreRun'.
+    , kind     :: PaneKind      -- ^ an empty pane runs nothing; carried in
+                               --   the row's @extra@ JSON, absent meaning a
+                               --   program pane
+    , inputOff :: Bool          -- ^ @select-pane -d@ was in effect; @extra@
+                               --   JSON, absent meaning 'False'
+    , title    :: Maybe Text    -- ^ the pane title, when one was set; @extra@
+                               --   JSON
     }
     deriving (Eq, Show)
 
@@ -203,38 +214,51 @@ decodeWindowExtra :: Text -> WindowExtra
 decodeWindowExtra t = fromMaybe (WindowExtra [] False Nothing Nothing)
     (decode (BL.fromStrict (TE.encodeUtf8 t)))
 
--- | The pane row's @extra@ JSON payload: the captured command and whether it
--- was spawned from inside the pane's interactive shell. Evolving, optional
--- fields live here rather than in core columns, so old and new binaries
--- interoperate. A store written before @shell_spawned@ existed omits the key;
--- it defaults to 'False'.
-data PaneExtra = PaneExtra (Maybe [Text]) Bool
+-- | The pane row's @extra@ JSON payload: every 'PaneSnap' field but the
+-- @cwd@ core column, as the snapshot JSON writes them ('paneFields'). Evolving,
+-- optional fields live here rather than in core columns, so old and new
+-- binaries interoperate; a key a store predates defaults ('parsePaneFields').
+encodeExtra :: PaneSnap -> Text
+encodeExtra p = TE.decodeUtf8 (BL.toStrict (encode (object (paneFields p))))
 
-instance ToJSON PaneExtra where
-    toJSON (PaneExtra mc shellSp) =
-        object (maybe [] (\argv -> ["command" .= argv]) mc
-                ++ ["shell_spawned" .= shellSp | shellSp])
+decodeExtra :: Text -> Text -> PaneSnap
+decodeExtra c t = fromMaybe (plainPane c) $ do
+    v <- decode (BL.fromStrict (TE.encodeUtf8 t))
+    parseMaybe (withObject "pane extra" (parsePaneFields c)) v
 
-instance FromJSON PaneExtra where
-    parseJSON = withObject "pane extra" $ \o -> do
-        mv <- o .:? "command"
-        mc <- traverse parseArgv mv
-        shellSp <- fromMaybe False <$> o .:? "shell_spawned"
-        pure (PaneExtra mc shellSp)
-      where
-        -- Accept an argv array (current) or a bare string (a store written
-        -- by an older binary that persisted only the program name).
-        parseArgv (String s) = pure [s]
-        parseArgv v          = parseJSON v
+-- | A pane snapshot with every evolving field at its default.
+plainPane :: Text -> PaneSnap
+plainPane c = PaneSnap
+    { cwd = c, command = Nothing, shellSpawned = False, kind = ProgramPane
+    , inputOff = False, title = Nothing }
 
-encodeExtra :: Maybe [Text] -> Bool -> Text
-encodeExtra mc shellSp =
-    TE.decodeUtf8 (BL.toStrict (encode (PaneExtra mc shellSp)))
+-- | The evolving pane fields, as JSON keys; a default is left out.
+paneFields :: PaneSnap -> [(Key, Value)]
+paneFields p =
+    maybe [] (\argv -> ["command" .= argv]) p.command
+    <> ["shell_spawned" .= True | p.shellSpawned]
+    <> ["empty" .= True | p.kind == EmptyPane]
+    <> ["input_off" .= True | p.inputOff]
+    <> maybe [] (\t -> ["title" .= t]) p.title
 
-decodeExtra :: Text -> (Maybe [Text], Bool)
-decodeExtra t = case decode (BL.fromStrict (TE.encodeUtf8 t)) of
-    Just (PaneExtra mc shellSp) -> (mc, shellSp)
-    Nothing                     -> (Nothing, False)
+-- | Read 'paneFields' back, defaulting any key a writer predates. A command
+-- may be a bare string, as a store written by an older binary that persisted
+-- only the program name has it.
+parsePaneFields :: Text -> Object -> Parser PaneSnap
+parsePaneFields c o = do
+    mv <- o .:? "command"
+    mc <- traverse parseArgv mv
+    shellSp <- fromMaybe False <$> o .:? "shell_spawned"
+    emptyP <- fromMaybe False <$> o .:? "empty"
+    off <- fromMaybe False <$> o .:? "input_off"
+    t <- o .:? "title"
+    pure PaneSnap
+        { cwd = c, command = mc, shellSpawned = shellSp
+        , kind = if emptyP then EmptyPane else ProgramPane
+        , inputOff = off, title = t }
+  where
+    parseArgv (String s) = pure [s]
+    parseArgv v          = parseJSON v
 
 -- | Schema version stamped into the @meta@ table. A forward-looking breadcrumb,
 -- NOT a read-time gate: 'loadSnapshot' reads leniently (core columns, defaulting
@@ -345,7 +369,7 @@ saveSnapshot conn snap = withTransaction conn $ do
         execute conn
             "INSERT INTO pane (session_seq, window_ix, ordinal, cwd, extra) \
             \VALUES (?, ?, ?, ?, ?)"
-            (sseq, wix, ord, p.cwd, encodeExtra p.command p.shellSpawned)
+            (sseq, wix, ord, p.cwd, encodeExtra p)
 
 -- | Read the whole tree back. Returns an empty snapshot for a fresh store.
 loadSnapshot :: Connection -> IO Snapshot
@@ -383,8 +407,7 @@ loadSnapshot conn = do
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
             , paneHist = paneOrds, autoRename = auto, key = k, linkOf = l
-            , panes = [ PaneSnap { cwd = c, command = mc, shellSpawned = shellSp }
-                      | (c, ex) <- prows, let (mc, shellSp) = decodeExtra ex ] }
+            , panes = [ decodeExtra c ex | (c, ex) <- prows ] }
 
 -- Snapshot history --------------------------------------------------------
 
@@ -543,14 +566,9 @@ instance FromJSON WindowSnap where
             , key = k, linkOf = l, panes = ps }
 
 instance ToJSON PaneSnap where
-    toJSON p = object $
-        ["cwd" .= p.cwd]
-        <> maybe [] (\argv -> ["command" .= argv]) p.command
-        <> ["shell_spawned" .= True | p.shellSpawned]
+    toJSON p = object (("cwd" .= p.cwd) : paneFields p)
 
 instance FromJSON PaneSnap where
     parseJSON = withObject "pane" $ \o -> do
-        c       <- fromMaybe "" <$> o .:? "cwd"
-        mc      <- o .:? "command"
-        shellSp <- fromMaybe False <$> o .:? "shell_spawned"
-        pure PaneSnap { cwd = c, command = mc, shellSpawned = shellSp }
+        c <- fromMaybe "" <$> o .:? "cwd"
+        parsePaneFields c o

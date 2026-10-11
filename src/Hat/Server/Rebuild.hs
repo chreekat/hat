@@ -17,7 +17,6 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
@@ -148,8 +147,11 @@ rebuildWindow st mkPane sz cwin = do
         paneMap = Map.fromList [(p.id, p) | p <- panes]
         -- Our own emitted string round-trips; the named layout is only a
         -- fallback for a corrupt string, and still contains every pane.
-        lay = fromMaybe (namedLayout EvenHorizontal (1 % 2) pids)
-                        (layoutFromString cwin.layout pids)
+        lay = either (const fallback) id (layoutFromString cwin.layout pids)
+        fallback = case pids of
+            p : _ -> fromMaybe (singlePane p)
+                (namedLayout defaultNamedSizes sz EvenHorizontal pids)
+            [] -> error "rebuildWindow: a captured window with no panes"
         activePid = pids !! max 0 (min (length pids - 1) cwin.active)
         -- Map the MRU history's ordinals back to surviving pane ids, dropping
         -- the active pane and any out-of-range ordinal; keep order, drop dups.

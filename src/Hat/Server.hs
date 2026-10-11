@@ -71,7 +71,7 @@ module Hat.Server
     , noteOuterFocus  -- ^ exported for the focus-in-clears test
     , attentionSeen  -- ^ exported for the outer-focus gating test
     , deliversKey  -- ^ exported for the focus-event gating test
-    , mainPaneRatio  -- ^ exported for the main-pane-size test
+    , namedSizesOf  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     , escTiming  -- ^ exported for the escape-time effect test
     , toastDeadline  -- ^ exported for the display-time effect test

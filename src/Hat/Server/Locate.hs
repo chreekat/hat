@@ -11,6 +11,7 @@ module Hat.Server.Locate
     , findWindowIndexTarget
     , paneIndexOf
     , targetPane
+    , markedTarget
     , currentWindowOf
     , targetCurrentWindow
     , targetPaneScoped
@@ -140,7 +141,18 @@ targetWorld st mclient = do
     pbase <- (.paneBaseIndex) <$> readTVarIO st.options
     mmarked <- readTVarIO st.markedPane
     msid <- traverse (\c -> readTVarIO c.session) mclient
+    mambS <- ambientSession st mclient
+    (mambW, mambP) <- ambientWindowPane st mclient
     let entryById i = List.find (\se -> se.sessionId == i) entries
+        -- A clientless hook command's current state is its event's target.
+        ambientEntries = maybe entries
+            (\i -> filter ((== i) . (.sessionId)) entries <> entries) mambS
+        ambientCur = case (mambP, mambW) of
+            (Just p, _) -> Target.paneFound ambientEntries p
+            (Nothing, Just w) -> listToMaybe
+                [ Target.Found se.sessionId ix we.activePane
+                | se <- ambientEntries, (ix, we) <- se.windows, we.windowId == w ]
+            (Nothing, Nothing) -> Target.sessionCurrent =<< entryById =<< mambS
         clientCur = Target.sessionCurrent =<< entryById =<< msid
         tmuxPaneCur = do
             client <- mclient
@@ -153,7 +165,7 @@ targetWorld st mclient = do
         , paneBase = pbase
         , marked = Target.paneFound entries =<< mmarked
         , clientCurrent = clientCur
-        , current = clientCur <|> tmuxPaneCur <|> bestCur
+        , current = clientCur <|> tmuxPaneCur <|> ambientCur <|> bestCur
         }
   where
     parseDec t = case TR.decimal t of
@@ -209,15 +221,28 @@ paneIndexOf st win pane = do
     order <- atomically (map (.id) <$> windowPanes win)
     pure (maybe pbase (pbase +) (List.elemIndex pane.id order))
 
+-- | The marked pane as a source target, while it still exists (tmux's
+-- @CMD_FIND_DEFAULT_MARKED@).
+markedTarget :: ServerState -> IO (Maybe Text)
+markedTarget st = atomically $ do
+    mpid <- readTVar st.markedPane
+    case mpid of
+        Nothing -> pure Nothing
+        Just pid -> fmap (const ("%" <> tshow (rawPane pid))) <$> locatePane st pid
+
 -- | Resolve a @-t@ pane token: @!@ the last pane, @{marked}@ the
--- marked pane, @%N@ a pane by id anywhere; otherwise the current pane
--- of the caller's window.
+-- marked pane, @%N@ a pane by id anywhere, any other target through
+-- cmd-find ('findTarget'); with none, the current pane of the caller's
+-- window.
 targetPane :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
 targetPane st mclient mtok = case parsePaneTarget mtok of
     PaneById n -> atomically (findPaneById st n)
     PaneMarked -> atomically $ do
         mpid <- readTVar st.markedPane
         maybe (pure Nothing) (findPaneById st . rawPane) mpid
+    PaneCurrent | Just t <- mtok -> do
+        res <- findTarget st mclient Target.FindPane (Just t)
+        pure (either (const Nothing) (\(_, _, _, p) -> Just p) res)
     tgt -> do
         (_, mambPane) <- ambientWindowPane st mclient
         case (mtok, mambPane) of

@@ -10,6 +10,7 @@ module Hat.Model
     , Window (..)
     , Pane (..)
     , PaneStart (..)
+    , PaneKind (..)
     , PaneExit (..)
     , PipeHandle (..)
     , Client (..)
@@ -94,6 +95,7 @@ import System.Posix.Files qualified as PFiles
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
@@ -260,6 +262,9 @@ data Pane = Pane
     , exited   :: TVar (Maybe PaneExit)
         -- ^ 'Just' for a dead pane: its program ended and @remain-on-exit@
         -- kept it; see 'Hat.Server.Pane.paneEof'.
+    , kind     :: PaneKind
+    , inputOff :: TVar Bool
+        -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
     }
 
 -- | How a freshly-spawned pane chooses its process.

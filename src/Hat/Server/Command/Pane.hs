@@ -23,11 +23,13 @@ module Hat.Server.Command.Pane
     , noteActiveChange
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Exception (bracket_)
+import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -38,21 +40,24 @@ import Numeric (showOct)
 import Hat.Geometry
 import Hat.Model
 import Hat.Server.Command.Buffer (storeBuffer)
+import Hat.Server.Command.Option (SetDefault (..), cmdSet, cmdShow)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.ArgNumber (stringPercentage)
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Server.Format (truthy)
 import Hat.Server.Layout
 import Hat.Model.Options (quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
-import Hat.Server.Locate (findTarget, locatePane, paneIndexOf, siblingPane, targetPane, withCurrentWindow)
+import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
-    ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, respawnPane
-    , respawnStart, sessionSpawnEnv, shellStart, spawnPane, startPaneReader )
+    ( LifecycleNotify (..), hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
+    , emptyPane, launchOf, respawnStart, setScreenTitle, sessionSpawnEnv, spawnPane, startPaneReader )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
-import Hat.Server.Resize (windowArrange)
+import Hat.Server.Resize (windowArea, windowLayoutAt)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -331,83 +336,178 @@ captureLinks pane copts altFlag copyFlag sflag eflag
             | opts.captFlags = flagLetters l <> " "
             | otherwise      = ""
 
+-- | @split-window@ (@cmd-split-window.c@): give part of the target pane —
+-- or with @-f@ of the whole window — to a new pane.
 cmdSplitWindow :: CommandImpl
-cmdSplitWindow st mclient args = do
-    let (opts, flags, pos) = parseArgs "ctlpeF" args
-        orient
-            | "-h" `elem` flags = LeftRight
-            | otherwise = TopBottom
-        placement = if "-b" `elem` flags then Before else After
-        -- @-f@: split spans the whole window, not just the active pane.
-        full = "-f" `elem` flags
-        stay = "-d" `elem` flags
-        envPairs = reverse
-            [ (n, T.drop 1 v)
-            | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
-        mrun = case pos of
-            [] -> Nothing
-            ws -> Just (T.unwords ws)
-    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, wix, win, active) -> do
-                eff <- readTVarIO sess.lastSize
-                (rects, _) <- atomically (windowArrange (eff) win)
-                let mrect = List.lookup active.id rects
-                    wholeRect = sizeRect (eff)
-                    fitRect = if full then Just wholeRect else mrect
-                    fits = case (orient, fitRect) of
-                        (LeftRight, Just r) -> r.endCol - r.startCol >= 5
-                        (TopBottom, Just r) -> r.endRow - r.startRow >= 5
-                        _ -> False
-                if not fits
-                    then pure [RErr "create pane failed: pane too small"]
-                    else do
-                        pid <- PaneId <$> atomically (freshId st.nextPane)
-                        dir <- case lookup "-c" opts of
-                            Just d -> do
-                                env <- sessionFormatEnv st sess
-                                T.unpack <$> expandFormat st env d
-                            Nothing -> paneCurrentPath active
-                        environ0 <- sessionSpawnEnv st sess
-                        let environ = environ0 <> envPairs
-                            shellCmd = maybe "/bin/sh" T.unpack
-                                (List.lookup "SHELL" environ)
-                        pane <- spawnPane st pid sess.id shellCmd (shellStart mrun)
-                            dir environ (eff)
-                        atomically $ do
+cmdSplitWindow st mclient args
+    | Just e <- unknownFlag "split-window" "bdEfhIkPvWZ" flags = pure [RErr e]
+    | Left e <- launch = pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, wix, win, target) -> do
+                eff <- atomically (windowArea st win)
+                lay <- atomically (windowLayoutAt eff win)
+                msize <- splitSizeArg st sess orient spanning eff target.id lay opts
+                case msize of
+                    Left e -> pure [RErr ("invalid tiled geometry " <> e)]
+                    Right size -> do
+                        let spec = SplitSpec
+                                { orient = orient, size = size
+                                , placement = placement, span = spanning }
+                        splitInto sess wix win target spec eff
+  where
+    (opts, flags, pos) = parseArgs "BceFlmpRsStT" args
+    -- The pane options the flags set (tmux's order); the first a
+    -- @set-option -p@ refuses is the command's error.
+    setPaneOptions pane = firstError
+        [ cmdSet DefaultWindow st mclient ["-p", "-t", paneTok pane, name, value]
+        | (name, value) <- paneOptionValues ]
+    paneTok pane = "%" <> tshow (rawPane pane.id)
+    paneOptionValues =
+        concat [ [("window-style", v), ("window-active-style", v)] | Just v <- [lookup "-s" opts] ]
+        <> [ ("pane-active-border-style", v) | Just v <- [lookup "-S" opts] ]
+        <> [ ("pane-border-style", v) | Just v <- [lookup "-R" opts] ]
+        <> [ ("pane-border-lines", v) | Just v <- [lookup "-B" opts] ]
+        <> [ ("remain-on-exit", "key") | "-k" `elem` flags || isJust (lookup "-m" opts) ]
+        <> [ ("remain-on-exit-format", v) | Just v <- [lookup "-m" opts] ]
+    firstError = \case
+        [] -> pure Nothing
+        act : rest -> do
+            replies <- act
+            case [ e | RErr e <- replies ] of
+                e : _ -> pure (Just e)
+                [] -> firstError rest
+    -- The command client's standard input, written to the pane as if its
+    -- program had printed it (tmux's @window_pane_start_input@); an
+    -- attached client has none to give.
+    feedStdin pane = case mclient of
+        Just Client { stdinSource = StdinFrom fetch } -> fetch >>= \case
+            Right bytes -> do
+                _ <- Emu.feed pane.emulator bytes
+                atomically (bumpDirty st)
+            Left _ -> pure ()
+        _ -> pure ()
+    orient = if "-h" `elem` flags then LeftRight else TopBottom
+    placement = if "-b" `elem` flags then Before else After
+    spanning = if "-f" `elem` flags then SpanWindow else SpanPane
+    -- -I fills the new pane from the command client's standard input, so
+    -- it is always empty.
+    launch = launchOf ("-E" `elem` flags || "-I" `elem` flags) pos
+    (how, kind) = either (const (FreshShell, ProgramPane)) id launch
+    splitInto sess wix win target spec eff = do
+        pid <- PaneId <$> atomically (freshId st.nextPane)
+        planned <- atomically $ do
+            lay <- windowLayoutAt eff win
+            pure (splitPane spec target.id pid lay)
+        case planned >>= paneCell pid of
+            Nothing -> pure [RErr "no space for a new pane"]
+            Just newCell -> do
+                dir <- case lookup "-c" opts of
+                    Just d -> do
+                        env <- sessionFormatEnv st sess
+                        T.unpack <$> expandFormat st env d
+                    Nothing -> paneCurrentPath target
+                environ0 <- sessionSpawnEnv st sess
+                let environ = environ0 <> envPairs opts
+                    shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
+                    cellSize = Size { rows = fromIntegral newCell.sy
+                                    , cols = fromIntegral newCell.sx }
+                pane <- case kind of
+                    ProgramPane -> spawnPane st pid sess.id shellCmd how dir environ cellSize
+                    EmptyPane -> emptyPane st pid how dir cellSize
+                placed <- atomically $ do
+                    lay <- windowLayoutAt eff win
+                    case splitPane spec target.id pid lay of
+                        Nothing -> pure False
+                        Just lay' -> do
                             modifyTVar' win.panes (Map.insert pane.id pane)
-                            modifyTVar' win.layout $ if full
-                                then splitFull orient placement pane.id
-                                else splitLeaf active.id orient placement pane.id
-                            unless stay $ do
-                                lastA <- readTVar win.activeId
-                                modifyTVar' win.paneHist
-                                    (recordVisit lastA pane.id)
+                            writeTVar win.layout lay'
+                            active <- readTVar win.activeId
+                            unless ("-d" `elem` flags) $ do
+                                modifyTVar' win.paneHist (recordVisit active pane.id)
                                 writeTVar win.activeId pane.id
-                            writeTVar win.zoomed Nothing
-                            bumpDirty st
+                            -- tmux's window_push_zoom/window_pop_zoom: the
+                            -- split unzooms, and -Z zooms the active pane again.
+                            active' <- readTVar win.activeId
+                            writeTVar win.zoomed
+                                (if "-Z" `elem` flags then Just active' else Nothing)
+                            True <$ bumpDirty st
+                optErr <- if placed then setPaneOptions pane else pure Nothing
+                if | not placed -> [RErr "no space for a new pane"] <$ hangupPane pane
+                   | Just e <- optErr ->
+                        [RErr e] <$ killPaneLocs st [(sess.id, win, pane)]
+                   | otherwise -> do
+                        forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
                         startPaneReader st sess.id win pane
+                        when ("-I" `elem` flags) $ feedStdin pane
                         applySessionSize st sess.id
-                        notifyWindow st "window-layout-changed" (Just sess.id)
-                            win []
-                        let spawned = case mrun of
-                                Just cmdText -> quoteIfNeeded cmdText
-                                Nothing -> maybe "/bin/sh" id
-                                    (List.lookup "SHELL" environ)
+                        notifyWindow st "window-layout-changed" (Just sess.id) win []
+                        let spawned = case how of
+                                ShellCommand c -> quoteIfNeeded c
+                                ExecArgv argv -> T.unwords (map quoteIfNeeded argv)
+                                _ -> T.pack shellCmd
                         notifyPane st "pane-created" pane
                             [ ("pane_command", PText spawned)
-                            , ("created_empty", PInt 0)
+                            , ("created_empty", PInt (if kind == EmptyPane then 1 else 0))
                             , ("created_respawn", PInt 0) ]
-                        if "-P" `elem` flags
+                        printed <- if "-P" `elem` flags
                             then do
-                                let fmt = fromMaybe "#{session_name}:#{window_index}.#{pane_index}"
+                                let fmt = fromMaybe
+                                        "#{session_name}:#{window_index}.#{pane_index}"
                                         (lookup "-F" opts)
                                 pix <- paneIndexOf st win pane
                                 env <- paneFormatEnv st sess wix win pix pane
                                 out <- expandFormat st env fmt
                                 pure [ROutput out]
                             else pure []
+                        when ("-W" `elem` flags) (awaitPaneEnd st pane)
+                        pure printed
+
+-- | Block until a pane's program ends (it dies, or the pane goes), as
+-- @split-window -W@ waits; outside the command batch, so reconciliation
+-- runs meanwhile.
+awaitPaneEnd :: ServerState -> Pane -> IO ()
+awaitPaneEnd st pane = bracket_
+    (atomically (modifyTVar' st.commandDepth (subtract 1)))
+    (atomically (modifyTVar' st.commandDepth (+ 1)))
+    (atomically $ do
+        gone <- readTVar pane.dead
+        exited <- readTVar pane.exited
+        check (gone || isJust exited))
+
+-- | The @-e VAR=value@ pairs of a spawning command, in order.
+envPairs :: [(Text, Text)] -> [(Text, Text)]
+envPairs opts = reverse
+    [ (n, T.drop 1 v) | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
+
+-- | A split's requested size in cells from @-l@ (cells or a percentage) or
+-- @-p@ (a percentage), both of the pane's — or with @-f@ the window's —
+-- extent along the split, after format expansion
+-- (@layout_get_tiled_cell@).
+splitSizeArg
+    :: ServerState -> Session -> Orientation -> SplitSpan -> Size -> PaneId
+    -> Layout -> [(Text, Text)] -> IO (Either Text (Maybe Int))
+splitSizeArg st sess orient spanning eff target lay opts = do
+    env <- sessionFormatEnv st sess
+    let expand = expandFormat st env
+        whole = case spanning of
+            SpanWindow -> eff
+            SpanPane -> maybe eff layoutArea (paneCell target lay)
+        cur = case orient of
+            LeftRight -> fromIntegral whole.cols
+            TopBottom -> fromIntegral whole.rows
+    case (lookup "-l" opts, lookup "-p" opts) of
+        (Just l, _) -> do
+            v <- case T.stripSuffix "%" l of
+                Just body -> (<> "%") <$> expand body
+                Nothing -> expand l
+            pure (Just <$> stringPercentage 0 maxBound cur v)
+        (Nothing, Just p) -> do
+            v <- expand p
+            pure (Just . (\n -> cur * n `div` 100) <$> strtonum 0 100 v)
+        _ -> pure (Right Nothing)
 
 -- Fire window-pane-changed when a select actually moved the active pane.
 noteActiveChange :: ServerState -> Window -> IO a -> IO a
@@ -435,131 +535,184 @@ locateWindowOf st win = do
         pure [ (sid, ix) | (ix, w) <- Map.toList ws, w.id == win.id ]
     pure (listToMaybe (concat hits))
 
+-- | @select-pane@ (@cmd-select-pane.c@): make the target pane — or its
+-- neighbour in a @-L@\/@-R@\/@-U@\/@-D@ direction — active; @-l@ acts on
+-- the last pane instead; @-m@\/@-M@ set and clear the marked pane; @-d@\/@-e@
+-- turn the pane's input off and on; @-T@ sets its title.
 cmdSelectPane :: CommandImpl
-cmdSelectPane st mclient args = do
-    let (opts, flags, _) = parseArgs "tT" args
-        mdir
-            | "-L" `elem` flags = Just DirLeft
-            | "-R" `elem` flags = Just DirRight
-            | "-U" `elem` flags = Just DirUp
-            | "-D" `elem` flags = Just DirDown
-            | otherwise = Nothing
-        -- The @-t@ pane-index tail: @:.+N@ / @:.-N@ cycle by N (default 1)
-        -- and @:.N@ (or a bare number) selects an absolute index. See
-        -- 'parsePaneIndex'\/'resolvePaneIndex'.
-        -- Only bare index forms (@:.+N@, @.N@, @+@, @2@) take the
-        -- index shortcut; anything naming a window resolves as a full
-        -- target so @-t sess:0.1@ acts on that window, not the caller's.
-        indexish t = T.all (`elem` (":.+-0123456789" :: String)) t
-        mPaneIndex = do
-            t <- lookup "-t" opts
-            if indexish t then parsePaneIndex t else Nothing
-    case mdir of
-        Nothing
-            | "-M" `elem` flags -> do
-                atomically $ writeTVar st.markedPane Nothing >> bumpDirty st
-                pure []
-            | "-m" `elem` flags -> do
-                res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
-                case res of
-                    Left e -> pure [RErr e]
-                    Right (_, _, _, pane) -> do
-                        -- Marking the already-marked pane unmarks it.
-                        old <- atomically $ do
-                            old <- readTVar st.markedPane
-                            writeTVar st.markedPane
-                                (if old == Just pane.id
-                                    then Nothing else Just pane.id)
-                            bumpDirty st
-                            pure old
-                        let marked = old /= Just pane.id
-                        notifyPane st "marked-pane-changed" pane $
-                            [ ("marked", PInt (if marked then 1 else 0)) ]
-                            <> [ ("new_pane", PPaneRef pane.id) | marked ]
-                            <> [ ("old_pane", PPaneRef p)
-                               | Just p <- [old], not marked ]
-                        pure []
-            | "-l" `elem` flags -> cmdLastPane st mclient []
-            | Just idx <- mPaneIndex ->
-                withCurrentWindow st mclient $ \_ win ->
-                  noteActiveChange st win $ do
-                    atomically $ do
-                        -- Relative cycling walks layout order; an absolute
-                        -- index counts panes in window (creation) order.
-                        order <- case idx of
-                            IndexRelative _ _ -> layoutPanes <$> readTVar win.layout
-                            IndexAbsolute _   -> Map.keys <$> readTVar win.panes
-                        active <- readTVar win.activeId
-                        forM_ (resolvePaneIndex idx order active) $ \next ->
-                            when (next /= active) $ do
-                                modifyTVar' win.paneHist (recordVisit active next)
-                                writeTVar win.activeId next
-                                bumpDirty st
-                    pure []
-            -- A full cmd-find pane target (e.g. @sess:win.%id@) activates
-            -- that pane within its own window.
-            | Just t <- lookup "-t" opts -> do
-                res <- findTarget st mclient Target.FindPane (Just t)
-                case res of
-                    Left e -> pure [RErr e]
-                    Right (_, _, win, pane) -> noteActiveChange st win $ do
-                        atomically $ do
-                            active <- readTVar win.activeId
-                            when (pane.id /= active) $ do
-                                modifyTVar' win.paneHist (recordVisit active pane.id)
-                                writeTVar win.activeId pane.id
-                                bumpDirty st
-                        pure []
-            | otherwise -> pure [RErr "usage: select-pane -L|-R|-U|-D|-l|-t index|:.[+-][N]"]
-        Just dir -> withCurrentWindow st mclient $ \sess win ->
-          noteActiveChange st win $ do
-            atomically $ do
-                eff <- readTVar sess.lastSize
-                lay <- readTVar win.layout
-                active <- readTVar win.activeId
-                forM_ (directionalTarget (eff) lay active dir) $ \next -> do
-                    modifyTVar' win.paneHist (recordVisit active next)
-                    writeTVar win.activeId next
-                    -- Leaving a zoomed pane cancels the zoom (bug 5).
-                    writeTVar win.zoomed Nothing
-                    bumpDirty st
-            pure []
+cmdSelectPane st mclient args
+    | Just e <- unknownFlag "select-pane" "DdegLlMmRUZ" flags = pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, _, win, pane)
+                | "-l" `elem` flags -> lastPaneOf st sess win flags
+                | "-m" `elem` flags || "-M" `elem` flags -> [] <$ markPane st pane ("-M" `elem` flags)
+                -- The deprecated -P and -g set and show the pane's
+                -- window-style.
+                | Just style <- lookup "-P" opts -> do
+                    let tok = "%" <> tshow (rawPane pane.id)
+                    r <- cmdSet DefaultWindow st mclient ["-p", "-t", tok, "window-style", style]
+                    case [ e | RErr e <- r ] of
+                        e : _ -> pure [RErr e]
+                        [] -> do
+                            _ <- cmdSet DefaultWindow st mclient
+                                ["-p", "-t", tok, "window-active-style", style]
+                            pure []
+                | "-g" `elem` flags ->
+                    cmdShow st mclient ["-pv", "-t", "%" <> tshow (rawPane pane.id), "window-style"]
+                | otherwise -> do
+                    mtarget <- case direction of
+                        Nothing -> pure (Just pane)
+                        Just dir -> do
+                            eff <- atomically (windowArea st win)
+                            (lay, ps) <- atomically $ (,) <$> windowLayoutAt eff win <*> readTVar win.panes
+                            pure (directionalTarget eff lay pane.id dir >>= (`Map.lookup` ps))
+                    case mtarget of
+                        Nothing -> pure []
+                        Just wp
+                            | "-e" `elem` flags -> [] <$ setInputOff st wp False
+                            | "-d" `elem` flags -> [] <$ setInputOff st wp True
+                            | Just t <- lookup "-T" opts -> [] <$ setPaneTitle st sess win wp t
+                            | otherwise -> [] <$ activate st sess win wp ("-Z" `elem` flags)
+  where
+    (opts, flags, _) = parseArgs "PtT" args
+    direction
+        | "-L" `elem` flags = Just DirLeft
+        | "-R" `elem` flags = Just DirRight
+        | "-U" `elem` flags = Just DirUp
+        | "-D" `elem` flags = Just DirDown
+        | otherwise = Nothing
 
+-- | @last-pane@: @select-pane -l@ on the target window.
 cmdLastPane :: CommandImpl
-cmdLastPane st mclient _ =
-    withCurrentWindow st mclient $ \_ win -> do
-        atomically $ do
-            hist <- readTVar win.paneHist
-            ps <- readTVar win.panes
-            forM_ (listToMaybe hist) $ \lastP -> when (Map.member lastP ps) $ do
-                cur <- readTVar win.activeId
-                writeTVar win.paneHist (recordVisit cur lastP hist)
-                writeTVar win.activeId lastP
-                bumpDirty st
-        pure []
+cmdLastPane st mclient args
+    | Just e <- unknownFlag "last-pane" "deZ" flags = pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, _, win, _) -> lastPaneOf st sess win flags
+  where
+    (opts, flags, _) = parseArgs "t" args
+
+-- | The last pane of a window (the head of its history, or with exactly two
+-- panes the other one): switched to, or with @-e@\/@-d@ its input turned on
+-- or off.
+lastPaneOf :: ServerState -> Session -> Window -> [Text] -> IO [Reply]
+lastPaneOf st sess win flags = do
+    mlast <- atomically $ do
+        hist <- readTVar win.paneHist
+        ps <- readTVar win.panes
+        active <- readTVar win.activeId
+        order <- map (.id) <$> windowPanes win
+        let other = case break (== active) order of
+                (before, _ : after) | length order == 2 ->
+                    listToMaybe (reverse before) <|> listToMaybe after
+                _ -> Nothing
+            pick = case [ p | p <- hist, Map.member p ps ] of
+                p : _ -> Just p
+                [] -> other
+        pure (pick >>= (`Map.lookup` ps))
+    case mlast of
+        Nothing -> pure [RErr "no last pane"]
+        Just wp
+            | "-e" `elem` flags -> [] <$ setInputOff st wp False
+            | "-d" `elem` flags -> [] <$ setInputOff st wp True
+            | otherwise -> [] <$ activate st sess win wp ("-Z" `elem` flags)
+
+-- | Make a pane its window's active one. The window unzooms, unless
+-- @keepZoom@ zooms the new active pane instead (tmux's @window_push_zoom@\/
+-- @window_pop_zoom@ around @window_set_active_pane@).
+activate :: ServerState -> Session -> Window -> Pane -> Bool -> IO ()
+activate st sess win wp keepZoom = noteActiveChange st win $ do
+    changed <- atomically $ do
+        active <- readTVar win.activeId
+        if active == wp.id then pure False else do
+            zoomed <- readTVar win.zoomed
+            modifyTVar' win.paneHist (recordVisit active wp.id)
+            writeTVar win.activeId wp.id
+            writeTVar win.zoomed (if keepZoom && isJust zoomed then Just wp.id else Nothing)
+            True <$ bumpDirty st
+    when changed (applySessionSize st sess.id)
+
+setInputOff :: ServerState -> Pane -> Bool -> IO ()
+setInputOff st wp off = atomically $ writeTVar wp.inputOff off >> bumpDirty st
+
+-- | Set a pane's title as its program would (OSC 2), firing
+-- @pane-title-changed@ when that changes it.
+setPaneTitle :: ServerState -> Session -> Window -> Pane -> Text -> IO ()
+setPaneTitle st sess win wp raw = do
+    pix <- paneIndexOf st win wp
+    wix <- atomically $ do
+        ws <- readTVar sess.windows
+        pure (listToMaybe [ i | (i, w) <- Map.toList ws, w.id == win.id ])
+    env <- paneFormatEnv st sess (fromMaybe 0 wix) win pix wp
+    title <- T.filter (\c -> c >= ' ' && c /= '\DEL') <$> expandFormat st env raw
+    old <- Emu.title wp.emulator
+    when (title /= old) $ do
+        setScreenTitle wp title
+        atomically (bumpDirty st)
+        notifyPane st "pane-title-changed" wp [ ("new_title", PText title) ]
+
+-- | Set or clear the marked pane: @-M@ (or marking the marked pane again)
+-- clears it. Fires @marked-pane-changed@.
+markPane :: ServerState -> Pane -> Bool -> IO ()
+markPane st pane clearing = do
+    old <- atomically $ do
+        old <- readTVar st.markedPane
+        let unmark = clearing || old == Just pane.id
+        writeTVar st.markedPane (if unmark then Nothing else Just pane.id)
+        bumpDirty st
+        pure old
+    new <- readTVarIO st.markedPane
+    notifyPane st "marked-pane-changed" pane $
+        [ ("marked", PInt (if isJust new then 1 else 0)) ]
+        <> [ ("new_pane", PPaneRef p) | Just p <- [new] ]
+        <> [ ("old_pane", PPaneRef p) | Just p <- [old] ]
 
 -- | Kill the target pane: detach it from the model first so the reflow is
 -- synchronous with the command, then reap the child behind ('killPaneLocs').
 cmdKillPane :: CommandImpl
-cmdKillPane st mclient args = do
-    let (opts, _, _) = parseArgs "t" args
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane $ \pane -> do
-        mloc <- atomically (locatePane st pane.id)
-        forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
-    pure []
+cmdKillPane st mclient args
+    | Just e <- unknownFlag "kill-pane" "a" flags = pure [RErr e]
+    | Just _ <- lookup "-f" opts, "-a" `notElem` flags =
+        pure [RErr "-f only valid with -a"]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, wix, win, pane)
+                | "-a" `elem` flags -> do
+                    atomically (writeTVar win.zoomed Nothing)
+                    others <- filter ((/= pane.id) . (.id))
+                        <$> atomically (windowPanes win)
+                    doomed <- filterM (passes sess wix win) others
+                    [] <$ killPaneLocs st [ (sess.id, win, p) | p <- doomed ]
+                | otherwise -> [] <$ killPaneLocs st [(sess.id, win, pane)]
+  where
+    (opts, flags, _) = parseArgs "ft" args
+    passes sess wix win p = case lookup "-f" opts of
+        Nothing -> pure True
+        Just f -> do
+            pix <- paneIndexOf st win p
+            env <- paneFormatEnv st sess wix win pix p
+            truthy <$> expandFormat st env f
 
--- | @respawn-pane [-k] [-c dir] [-e VAR=value] [-t pane] [command ...]@:
--- run a new process in a dead pane, or with @-k@ in a live one.
+-- | @respawn-pane [-Ek] [-c dir] [-e VAR=value] [-t pane] [command ...]@:
+-- run a new process in a dead or empty pane, or with @-k@ in a live one;
+-- @-E@ instead leaves it empty, storing the command and directory for the
+-- next respawn.
 cmdRespawnPane :: CommandImpl
 cmdRespawnPane st mclient args = do
     let (opts, flags, pos) = parseArgs "cet" args
     res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
-    case (respawnFlagError flags, res) of
+    case (unknownFlag "respawn-pane" "Ek" flags, res) of
         (Just e, _) -> pure [RErr e]
         (_, Left e) -> pure [RErr e]
         (_, Right (sess, wix, win, pane)) -> do
-            live <- isNothing <$> readTVarIO pane.exited
+            live <- runsProgram pane
             if live && "-k" `notElem` flags
                 then do
                     sname <- readTVarIO sess.name
@@ -567,20 +720,20 @@ cmdRespawnPane st mclient args = do
                     pure [RErr ("respawn pane failed: pane " <> sname <> ":"
                         <> tshow wix <> "." <> tshow pix <> " still active")]
                 else respawnReply "respawn pane failed: "
-                    <$> respawnIn st mclient sess win pane opts pos
+                    <$> respawnIn st mclient sess win pane opts flags pos
 
--- | @respawn-window [-k] [-c dir] [-e VAR=value] [-t window] [command ...]@:
+-- | @respawn-window [-Ek] [-c dir] [-e VAR=value] [-t window] [command ...]@:
 -- reduce the window to its first pane and respawn that.
 cmdRespawnWindow :: CommandImpl
 cmdRespawnWindow st mclient args = do
     let (opts, flags, pos) = parseArgs "cet" args
     res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
-    case (respawnFlagError flags, res) of
+    case (unknownFlag "respawn-window" "Ek" flags, res) of
         (Just e, _) -> pure [RErr e]
         (_, Left e) -> pure [RErr e]
         (_, Right (sess, wix, win, _)) -> do
-            panes <- Map.elems <$> readTVarIO win.panes
-            live <- or <$> mapM (fmap isNothing . readTVarIO . (.exited)) panes
+            panes <- atomically (windowPanes win)
+            live <- or <$> mapM runsProgram panes
             case panes of
                 _ | live && "-k" `notElem` flags -> do
                     sname <- readTVarIO sess.name
@@ -594,14 +747,14 @@ cmdRespawnWindow st mclient args = do
                         writeTVar win.activeId first.id
                         writeTVar win.paneHist []
                     respawnReply "respawn window failed: "
-                        <$> respawnIn st mclient sess win first opts pos
+                        <$> respawnIn st mclient sess win first opts flags pos
 
--- | Respawn's flags beyond @-k@ that hat refuses rather than ignores.
-respawnFlagError :: [Text] -> Maybe Text
-respawnFlagError flags = case filter (/= "-k") flags of
-    [] -> Nothing
-    "-E" : _ -> Just "respawn: -E (an empty pane) is not supported"
-    f : _ -> Just ("unknown flag " <> f)
+-- | Whether a pane's program is running (tmux: its fd is open): not a dead
+-- pane, nor an empty one.
+runsProgram :: Pane -> IO Bool
+runsProgram pane = do
+    exited <- readTVarIO pane.exited
+    pure (pane.kind == ProgramPane && isNothing exited)
 
 respawnReply :: Text -> Either Text () -> [Reply]
 respawnReply prefix = either (\e -> [RErr (prefix <> e)]) (const [])
@@ -613,8 +766,8 @@ respawnReply prefix = either (\e -> [RErr (prefix <> e)]) (const [])
 -- directory.
 respawnIn
     :: ServerState -> Maybe Client -> Session -> Window -> Pane
-    -> [(Text, Text)] -> [Text] -> IO (Either Text ())
-respawnIn st mclient sess win pane opts pos = do
+    -> [(Text, Text)] -> [Text] -> [Text] -> IO (Either Text ())
+respawnIn st mclient sess win pane opts flags pos = do
     dir <- case lookup "-c" opts of
         Nothing -> pure pane.startCwd
         Just d -> do
@@ -628,15 +781,14 @@ respawnIn st mclient sess win pane opts pos = do
                 "" -> base
                 rel -> base <> "/" <> rel
     environ0 <- sessionSpawnEnv st sess
-    let envPairs = reverse
-            [ (n, T.drop 1 v) | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
-        environ = environ0 <> envPairs
+    let environ = environ0 <> envPairs opts
         shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
         how = case pos of
             [] -> respawnStart pane.start
             [c] -> ShellCommand c
             argv -> ExecArgv argv
-    mnew <- respawnPane st sess.id win pane shellCmd how dir environ
+        kind = if "-E" `elem` flags then EmptyPane else ProgramPane
+    mnew <- respawnPane st sess.id win pane shellCmd how kind dir environ
     case mnew of
         Nothing -> pure (Left "pane no longer exists")
         Just new -> do
@@ -644,120 +796,222 @@ respawnIn st mclient sess win pane opts pos = do
             notifyPane st "pane-created" new
                 [ ("pane_command", PText (spawnedCommand shellCmd how))
                 , ("pane_current_path", PText (T.pack dir))
-                , ("created_empty", PInt 0)
+                , ("created_empty", PInt (if kind == EmptyPane then 1 else 0))
                 , ("created_respawn", PInt 1) ]
             pure (Right ())
   where
     spawnedCommand shellCmd = \case
-        ShellCommand c -> c
+        ShellCommand c -> quoteIfNeeded c
         ExecArgv argv -> T.unwords (map quoteIfNeeded argv)
         _ -> T.pack shellCmd
 
--- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
--- positions. @src@ defaults to the active pane; without @-d@ the active
--- pane follows to @dst@'s slot, so the config's @splitw … \; swapp -t !
--- \; killp -t !@ edge-move idiom lands the content and kills the emptied
--- slot.
+-- | @swap-pane@ (@cmd-swap-pane.c@): exchange two panes' cells, within a
+-- window or across two. The source is @-s@, else the marked pane, else the
+-- current one; @-U@\/@-D@ instead take the target's previous\/next pane.
+-- Without @-d@ the target becomes active; @-Z@ keeps a zoomed window zoomed.
 cmdSwapPane :: CommandImpl
-cmdSwapPane st mclient args = do
-    let (opts, flags, _) = parseArgs "st" args
-        keepActive = "-d" `elem` flags
-    withCurrentWindow st mclient $ \sess win -> do
-        msrc <- targetPane st mclient (lookup "-s" opts)
-        mdst <- case lookup "-t" opts of
-            Just t -> targetPane st mclient (Just t)
-            Nothing
-                | "-U" `elem` flags -> siblingPane st win (-1)
-                | "-D" `elem` flags -> siblingPane st win 1
-                | otherwise -> pure Nothing
-        case (msrc, mdst) of
-            (Just src, Just dst) | src.id /= dst.id -> do
-                swapped <- atomically $ do
-                    ps <- readTVar win.panes
-                    let both = Map.member src.id ps && Map.member dst.id ps
-                    when both $ do
-                        modifyTVar' win.layout (swapLeaves src.id dst.id)
-                        unless keepActive $ do
-                            modifyTVar' win.paneHist (recordVisit src.id dst.id)
-                            writeTVar win.activeId dst.id
-                        writeTVar win.zoomed Nothing
-                        bumpDirty st
-                    pure both
-                applySessionSize st sess.id
-                when swapped $
-                    notifyWindow st "window-layout-changed" (Just sess.id) win []
-                pure []
-            _ -> pure []
+cmdSwapPane st mclient args
+    | Just e <- unknownFlag "swap-pane" "dDUZ" flags = pure [RErr e]
+    | otherwise = do
+        dstRes <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case dstRes of
+            Left e -> pure [RErr e]
+            Right (dsess, dwix, dwin, dpane) -> do
+                srcRes <- if
+                    | "-D" `elem` flags -> sibling dsess dwix dwin dpane 1
+                    | "-U" `elem` flags -> sibling dsess dwix dwin dpane (-1)
+                    | otherwise -> do
+                        tok <- maybe (markedTarget st) (pure . Just) (lookup "-s" opts)
+                        findTarget st mclient Target.FindPane tok
+                case srcRes of
+                    Left e -> pure [RErr e]
+                    Right src -> [] <$ swapPanes st (dsess, dwix, dwin, dpane) src
+                        ("-d" `elem` flags) ("-Z" `elem` flags)
+  where
+    (opts, flags, _) = parseArgs "st" args
+    sibling sess wix win pane step = do
+        order <- atomically (map (.id) <$> windowPanes win)
+        ps <- readTVarIO win.panes
+        let n = length order
+            i = fromMaybe 0 (List.elemIndex pane.id order)
+            pick = order !! ((i + step) `mod` n)
+        pure $ case Map.lookup pick ps of
+            Just p -> Right (sess, wix, win, p)
+            Nothing -> Left "no such pane"
+
+swapPanes
+    :: ServerState -> (Session, Int, Window, Pane) -> (Session, Int, Window, Pane)
+    -> Bool -> Bool -> IO ()
+swapPanes st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) detached keepZoom = do
+    let sameWindow = swin.id == dwin.id
+        wins = if sameWindow then [dwin] else [dwin, swin]
+    rezoom <- atomically $ forM wins $ \w -> do
+        z <- readTVar w.zoomed
+        writeTVar w.zoomed Nothing
+        pure (keepZoom && isJust z)
+    unless (spane.id == dpane.id) $ do
+        atomically $ do
+            if sameWindow
+                then modifyTVar' dwin.layout (swapLeaves spane.id dpane.id)
+                else do
+                    modifyTVar' swin.layout (swapLeaves spane.id dpane.id)
+                    modifyTVar' dwin.layout (swapLeaves spane.id dpane.id)
+                    modifyTVar' swin.panes (Map.insert dpane.id dpane . Map.delete spane.id)
+                    modifyTVar' dwin.panes (Map.insert spane.id spane . Map.delete dpane.id)
+                    writeTVar spane.home (Just (dsess.id, dwin))  -- See Note [Pane home]
+                    writeTVar dpane.home (Just (ssess.id, swin))  -- See Note [Pane home]
+                    modifyTVar' swin.paneHist (filter (/= spane.id))
+                    modifyTVar' dwin.paneHist (filter (/= dpane.id))
+            let setActive w p = do
+                    a <- readTVar w.activeId
+                    when (a /= p) $ do
+                        modifyTVar' w.paneHist (recordVisit a p)
+                        writeTVar w.activeId p
+            if not detached
+                then if sameWindow
+                    then setActive dwin dpane.id
+                    else setActive swin dpane.id >> setActive dwin spane.id
+                else do
+                    sa <- readTVar swin.activeId
+                    when (sa == spane.id) (setActive swin dpane.id)
+                    da <- readTVar dwin.activeId
+                    when (da == dpane.id) (setActive dwin spane.id)
+            bumpDirty st
+        unless sameWindow $ do
+            sname <- readTVarIO swin.name
+            dname <- readTVarIO dwin.name
+            let moved p (ow, own, oix) (nw, nwn, nix) = notifyPane st "pane-moved" p
+                    [ ("window", PWindowRef nw.id nwn)
+                    , ("old_window", PWindowRef ow.id own)
+                    , ("new_window", PWindowRef nw.id nwn)
+                    , ("old_window_index", PInt oix)
+                    , ("window_index", PInt nix)
+                    , ("new_window_index", PInt nix) ]
+            moved spane (swin, sname, swix) (dwin, dname, dwix)
+            moved dpane (dwin, dname, dwix) (swin, sname, swix)
+        forM_ (List.nubBy (\(_, a) (_, b) -> a.id == b.id) [(ssess, swin), (dsess, dwin)]) $
+            \(sess, w) -> notifyWindow st "window-layout-changed" (Just sess.id) w []
+    -- tmux's window_pop_zoom: re-zoom the active pane of a window -Z kept.
+    atomically $ forM_ (zip wins rezoom) $ \(w, again) -> when again $ do
+        ps <- readTVar w.panes
+        a <- readTVar w.activeId
+        when (Map.size ps > 1) (writeTVar w.zoomed (Just a))
+    mapM_ (applySessionSize st . (.id)) (List.nubBy (\a b -> a.id == b.id) [ssess, dsess])
 
 -- | @clear-history [-t target]@: drop a pane's scrollback.
 cmdClearHistory :: CommandImpl
 cmdClearHistory st mclient args = do
     let (opts, _, _) = parseArgs "t" args
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane $ \pane -> do
-        Emu.clearScrollback pane.emulator
-        atomically (bumpDirty st)
-    pure []
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (_, _, _, pane) -> do
+            Emu.clearScrollback pane.emulator
+            [] <$ atomically (bumpDirty st)
 
+-- | @resize-pane@ (@cmd-resize-pane.c@): @-T@ trims history, @-Z@ toggles
+-- zoom; otherwise the window unzooms and the pane is resized ('resizeSteps').
 cmdResizePane :: CommandImpl
-cmdResizePane st mclient args = do
-    let (opts, flags, pos) = parseArgs "t" args
-        delta = case pos of
-            (n : _) | Right (v, restT) <- TR.decimal n, T.null restT -> v
-            _ -> 1
-    if "-Z" `elem` flags
-        then zoomTarget st mclient (lookup "-t" opts) >> pure []
-        else do
-            let mdir
-                    | "-L" `elem` flags = Just DirLeft
-                    | "-R" `elem` flags = Just DirRight
-                    | "-U" `elem` flags = Just DirUp
-                    | "-D" `elem` flags = Just DirDown
-                    | otherwise = Nothing
-            case mdir of
-                Nothing ->
-                    pure [RErr "usage: resize-pane -L|-R|-U|-D [n] | -Z"]
-                Just dir -> withCurrentWindow st mclient $ \sess win -> do
-                    atomically $ do
-                        eff <- readTVar sess.lastSize
-                        active <- readTVar win.activeId
-                        modifyTVar' win.layout
-                            (resizeSplit active dir delta
-                                (sizeRect (eff)))
-                        bumpDirty st
-                    applySessionSize st sess.id
-                    pure []
+cmdResizePane st mclient args
+    | Just e <- unknownFlag "resize-pane" "DLMRTUZ" flags = pure [RErr e]
+    -- Without a mouse event to follow, tmux's -M does nothing.
+    | "-M" `elem` flags = pure []
+    -- -T trims the pane's history below the cursor, unless a mode is open.
+    | "-T" `elem` flags = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (_, _, _, pane) -> do
+                inMode <- isJust <$> readTVarIO pane.mode
+                unless inMode $ do
+                    Emu.trimHistoryBelowCursor pane.emulator
+                    atomically (bumpDirty st)
+                pure []
+    | "-Z" `elem` flags = do
+        r <- zoomTarget st mclient (lookup "-t" opts)
+        pure (either (\e -> [RErr e]) (const []) r)
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, _, win, pane) -> do
+                eff <- atomically (windowArea st win)
+                wasZoomed <- atomically $ do
+                    z <- readTVar win.zoomed
+                    writeTVar win.zoomed Nothing
+                    when (isJust z) (bumpDirty st)
+                    pure (isJust z)
+                when wasZoomed $
+                    notifyWindow st "window-unzoomed" (Just sess.id) win []
+                case resizeSteps pane.id eff opts flags pos of
+                    Left e -> pure [RErr e]
+                    Right resize -> do
+                        atomically $ do
+                            lay <- windowLayoutAt eff win
+                            writeTVar win.layout (resize lay)
+                            bumpDirty st
+                        applySessionSize st sess.id
+                        notifyWindow st "window-layout-changed" (Just sess.id) win []
+                        pure []
+  where
+    (opts, flags, pos) = parseArgs "txy" args
 
--- | Toggle zoom on the caller's current window. With a @-t@ target the
--- targeted pane becomes active first and the toggle keys off it, so
--- @resize-pane -t ! -Z@ zooms the alternate pane even while another pane is
--- already zoomed (as the config's @Z@ binding intends). See 'nextZoom'.
--- A solo pane has nothing to zoom over: the window is left untouched.
-zoomTarget :: ServerState -> Maybe Client -> Maybe Text -> IO ()
+-- | The layout change a non-zoom @resize-pane@ makes to a pane in a window of
+-- @area@: an absolute @-x@\/@-y@ (cells, or a percentage of the window), then
+-- each of @-U@\/@-D@\/@-L@\/@-R@ moving it by the positional count (default
+-- 1). Fails with tmux's message on a bad size or count.
+resizeSteps
+    :: PaneId -> Size -> [(Text, Text)] -> [Text] -> [Text]
+    -> Either Text (Layout -> Layout)
+resizeSteps pid area opts flags pos = do
+    xs <- absolute "-x" "width" (fromIntegral area.cols) LeftRight
+    ys <- absolute "-y" "height" (fromIntegral area.rows) TopBottom
+    rs <- traverse relative [ f | f <- ["-U", "-D", "-L", "-R"], f `elem` flags ]
+    pure (foldr (flip (.)) id (xs <> ys <> rs))
+  where
+    absolute flag what whole o = case lookup flag opts of
+        Nothing -> Right []
+        Just v -> case stringPercentage 0 10000 whole v of
+            Left e -> Left (what <> " " <> e)
+            Right n -> Right [resizePaneTo pid o n]
+    relative flag = do
+        n <- either (Left . ("adjustment " <>)) Right
+            (strtonum minBound maxBound (fromMaybe "1" (listToMaybe pos)))
+        pure $ case flag of
+            "-U" -> resizePane pid TopBottom (negate n)
+            "-D" -> resizePane pid TopBottom n
+            "-L" -> resizePane pid LeftRight (negate n)
+            _ -> resizePane pid LeftRight n
+
+-- | Toggle zoom on the target pane's window, the pane becoming active first
+-- so the toggle keys off it: @resize-pane -t ! -Z@ zooms the alternate pane
+-- even while another pane is already zoomed (as the config's @Z@ binding
+-- intends). See 'nextZoom'. A solo pane has nothing to zoom over: the window
+-- is left untouched.
+zoomTarget :: ServerState -> Maybe Client -> Maybe Text -> IO (Either Text ())
 zoomTarget st mclient mtok = do
-    mtarget <- targetPane st mclient mtok
-    void . withCurrentWindow st mclient $ \sess win -> do
-        toggled <- atomically $ do
-            ps <- readTVar win.panes
-            if Map.size ps < 2 then pure False else do
-                forM_ mtarget $ \pane -> when (Map.member pane.id ps) $ do
+    res <- findTarget st mclient Target.FindPane mtok
+    case res of
+        Left e -> pure (Left e)
+        Right (sess, _, win, pane) -> Right <$> do
+            toggled <- atomically $ do
+                ps <- readTVar win.panes
+                if Map.size ps < 2 then pure False else do
                     active <- readTVar win.activeId
                     when (active /= pane.id) $ do
                         modifyTVar' win.paneHist (recordVisit active pane.id)
                         writeTVar win.activeId pane.id
-                mz <- readTVar win.zoomed
-                newActive <- readTVar win.activeId
-                writeTVar win.zoomed (nextZoom mz newActive)
-                True <$ bumpDirty st
-        when toggled $ do
-            applySessionSize st sess.id
-            mz <- readTVarIO win.zoomed
-            case mz of
-                Just _ -> notifyWindow st "window-zoomed"
-                    (Just sess.id) win []
-                Nothing -> notifyWindow st "window-unzoomed"
-                    (Just sess.id) win []
-        pure []
+                    mz <- readTVar win.zoomed
+                    writeTVar win.zoomed (nextZoom mz pane.id)
+                    True <$ bumpDirty st
+            when toggled $ do
+                applySessionSize st sess.id
+                mz <- readTVarIO win.zoomed
+                case mz of
+                    Just _ -> notifyWindow st "window-zoomed"
+                        (Just sess.id) win []
+                    Nothing -> notifyWindow st "window-unzoomed"
+                        (Just sess.id) win []
 
 -- | The zoom state after toggling zoom on a target pane: unzoom only when
 -- that pane is the one already zoomed, otherwise zoom it. Keying off the
