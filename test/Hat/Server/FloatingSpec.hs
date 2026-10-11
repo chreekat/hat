@@ -7,6 +7,7 @@ import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Floating
 import Hat.Server.Layout
+import Hat.Server.Mouse (ClickOutside (..))
 
 area :: Size
 area = Size { rows = 24, cols = 80 }
@@ -54,20 +55,45 @@ spec = do
             stacking (restackTo 1 (PaneId 3) fs threeFloats) threeFloats
                 `shouldBe` map PaneId [1, 3, 2]
         it "stacks a new pane behind the modal pane" $ do
-            let modal = fs { modal = Just (Modal (PaneId 2) Nothing False) }
+            let modal = fs { modal = Just (Modal (PaneId 2) Nothing False KeepModal) }
             stacking (stackNew (PaneId 3) modal threeFloats) threeFloats
                 `shouldBe` map PaneId [1, 2, 3]
         it "puts tiled panes behind every floating one" $
             paneZ fs threeFloats (PaneId 0) `shouldBe` 4
 
     describe "loseModal" $ do
-        let open = noFloats { modal = Just (Modal (PaneId 5) (Just (PaneId 0)) True) }
+        let open = noFloats { modal = Just (Modal (PaneId 5) (Just (PaneId 0)) True KeepModal) }
         it "hands the window back when the modal pane goes" $
             loseModal (PaneId 5) open
                 `shouldBe` (noFloats, Just (ModalReturn (Just (PaneId 0)) True))
         it "has nothing to return to once that pane goes" $
             loseModal (PaneId 0) open
-                `shouldBe` (noFloats { modal = Just (Modal (PaneId 5) Nothing False) }, Nothing)
+                `shouldBe` (noFloats { modal = Just (Modal (PaneId 5) Nothing False KeepModal) }, Nothing)
+
+    describe "dragNewGeom (new-pane -M)" $ do
+        it "spans the drag, its border inside it" $
+            dragNewGeom Bordered (2, 0) (9, 4) `shouldBe` FloatGeom 6 3 3 1
+        it "dragged up and left, still from the start" $
+            dragNewGeom Bordered (9, 4) (2, 0) `shouldBe` FloatGeom 6 3 3 1
+        it "a borderless box is the drag itself, never under a cell" $ do
+            dragNewGeom Borderless (2, 0) (9, 4) `shouldBe` FloatGeom 8 5 2 0
+            dragNewGeom Bordered (2, 0) (3, 0) `shouldBe` FloatGeom 1 1 3 1
+    describe "dragFloatGeom (resize-pane -M on a floating pane)" $ do
+        let g = FloatGeom { width = 10, height = 4, left = 10, top = 5 }
+        it "the right border resizes across" $
+            dragFloatGeom g (20, 6) (25, 6) `shouldBe` Just g { width = 15 }
+        it "the bottom border resizes down" $
+            dragFloatGeom g (12, 9) (12, 11) `shouldBe` Just g { height = 6 }
+        it "the left border resizes, moving the left edge" $
+            dragFloatGeom g (9, 6) (7, 6) `shouldBe` Just g { width = 12, left = 8 }
+        it "a corner resizes both ways" $
+            dragFloatGeom g (20, 9) (22, 10) `shouldBe` Just g { width = 12, height = 5 }
+        it "the top border moves the box" $
+            dragFloatGeom g (14, 4) (16, 2) `shouldBe` Just g { left = 12, top = 3 }
+        it "never below a cell" $
+            dragFloatGeom g (20, 6) (5, 6) `shouldBe` Nothing
+        it "inside the box, nothing" $
+            dragFloatGeom g (12, 6) (14, 7) `shouldBe` Nothing
 
     describe "splitFloatingGeom" $
         it "puts the new box beside the old, sharing the space at the window edge" $

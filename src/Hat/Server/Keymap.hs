@@ -20,7 +20,7 @@ defaultKeymap = Map.fromList
     ]
   where
     -- tmux's default mouse bindings, less those whose commands Hat lacks
-    -- (display-menu, new-pane, move-pane -M, the scrollbars).
+    -- (display-menu, the scrollbars).
     inModeOrTracking = "#{||:#{pane_in_mode},#{mouse_any_flag}}"
     clickCopy sel =
         "copy-mode -H; send-keys -X " <> sel
@@ -28,6 +28,9 @@ defaultKeymap = Map.fromList
     rootMouseBindings =
         [ ("MouseDown1Pane", [["select-pane", "-t", "="], ["send-keys", "-M"]])
         , ("MouseDrag1Pane", [["if-shell", "-F", inModeOrTracking, "send-keys -M", "copy-mode -M"]])
+        , ("C-MouseDrag1Pane", [["new-pane", "-M"]])
+        , ("C-MouseDrag1Empty", [["new-pane", "-M"]])
+        , ("M-MouseDrag1Pane", [["move-pane", "-M"]])
         , ("WheelUpPane", [["if-shell", "-F"
             , "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}"
             , "send-keys -M", "copy-mode -e"]])
@@ -39,8 +42,10 @@ defaultKeymap = Map.fromList
             , ["if-shell", "-F", inModeOrTracking, "send-keys -M", clickCopy "select-line"]])
         , ("MouseDown1Border", [["select-pane", "-M"]])
         , ("MouseDrag1Border", [["resize-pane", "-M"]])
+        , ("M-MouseDrag1Border", [["move-pane", "-M"]])
         , ("MouseDown1Status", [["switch-client", "-t", "="]])
         , ("MouseDown1Control8", [["resize-pane", "-Z"]])
+        , ("MouseDown1Control7", [["if-shell", "-F", "-t", "=", "#{pane_floating_flag}", "join-pane", "break-pane -W"]])
         , ("WheelDownStatus", [["next-window"]])
         , ("WheelUpStatus", [["previous-window"]])
         ]

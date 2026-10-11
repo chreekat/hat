@@ -119,6 +119,7 @@ data ModalSnap = ModalSnap
     { pane     :: Int
     , returnTo :: Maybe Int
     , rezoom   :: Bool
+    , closeOnClick :: Bool  -- ^ a click outside closes it (@new-pane -C@)
     }
     deriving (Eq, Show)
 
@@ -127,13 +128,15 @@ instance ToJSON ModalSnap where
         ["pane" .= m.pane]
         <> ["return_to" .= r | Just r <- [m.returnTo]]
         <> ["rezoom" .= True | m.rezoom]
+        <> ["close_on_click" .= True | m.closeOnClick]
 
 instance FromJSON ModalSnap where
     parseJSON = withObject "modal" $ \o -> do
         p <- fromMaybe 0 <$> o .:? "pane"
         r <- o .:? "return_to"
         z <- fromMaybe False <$> o .:? "rezoom"
-        pure ModalSnap { pane = p, returnTo = r, rezoom = z }
+        c <- fromMaybe False <$> o .:? "close_on_click"
+        pure ModalSnap { pane = p, returnTo = r, rezoom = z, closeOnClick = c }
 
 -- Note [Captured links]
 -- ~~~~~~~~~~~~~~~~~~~~~

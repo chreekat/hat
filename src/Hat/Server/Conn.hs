@@ -58,7 +58,7 @@ import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
 import Hat.Server.Mouse
-    (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), checkMouse, clickExpired
+    (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), Placement (..), checkMouse, clickExpired
     , parseMouseInput, stripMods)
 import Hat.Server.MouseIO (mouseDragUpdate, mouseEventPane, mouseViewFor, sendMouse)
 import Hat.Server.Pane
@@ -697,8 +697,15 @@ runInputs d st client keys = do
                 Nothing -> pure (kst, Nothing)
                 Just view -> do
                     now <- monotonicMs
-                    let (ms, mk) = checkMouse now view kst.mouse inp
-                    pure (kst { mouse = ms }, mk)
+                    case checkMouse now view kst.mouse inp of
+                        (ms, Keyed mk) -> pure (kst { mouse = ms }, Just mk)
+                        (ms, Unplaced) -> pure (kst { mouse = ms }, Nothing)
+                        -- Outside the modal pane: the drag ends, and a
+                        -- click may close the modal pane.
+                        (ms, Swallowed mclose) -> do
+                            forM_ mclose $ \pid -> void $ d.runArgv st (Just client)
+                                ["kill-pane", "-t", "%" <> tshow (rawPane pid)]
+                            pure (kst { mouse = ms, drag = Nothing }, Nothing)
     flashTransition mpane before after = case (prefixArmed before, prefixArmed after) of
         (False, True) -> armFlash st client
         (True, False) -> do

@@ -17,6 +17,7 @@ import Hat.Model
 import Hat.Server.Floating (FloatState (..), Modal (..), stacking)
 import Hat.Server.Layout (fitLayout, layoutPanes)
 import Hat.Server.LayoutString (emitLayoutZ)
+import Hat.Server.Mouse (ClickOutside (..))
 import Hat.Server.Persist (ModalSnap (..))
 
 -- | One window's structure read as a single consistent unit. Its layout,
@@ -50,7 +51,8 @@ windowStruct eff (wix, w) = do
             m <- fs.modal
             p <- ordinal m.pane
             pure ModalSnap
-                { pane = p, returnTo = m.returnTo >>= ordinal, rezoom = m.rezoom }
+                { pane = p, returnTo = m.returnTo >>= ordinal, rezoom = m.rezoom
+                , closeOnClick = m.outside == CloseModal }
         activeOrd = fromMaybe 0 (List.elemIndex activeId order)
         lastOrds = mapMaybe (`List.elemIndex` order) hist
     pure WindowStruct

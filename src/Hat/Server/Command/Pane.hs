@@ -55,8 +55,9 @@ import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
 import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf)
-import Hat.Server.Mouse (Drag (..))
-import Hat.Server.MouseIO (clientMouseEvent, resizeBorderTo, startDrag)
+import Hat.Server.Mouse (ClickOutside (..), Drag (..))
+import Hat.Server.MouseIO
+    (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag, startNewPaneDrag)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     ( LifecycleNotify (..), hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
@@ -363,12 +364,10 @@ data SpawnEntry = SplitEntry | NewPaneEntry
 spawnInWindow :: SpawnEntry -> CommandImpl
 spawnInWindow entry st mclient args
     | Just e <- unknownFlag entryName boolFlags flags = pure [RErr e]
-    -- tmux closes a modal pane made with -C when a click lands outside it;
-    -- hat has no mouse input to click with.
-    | "-C" `elem` flags = pure [RErr "new-pane -C is not implemented"]
     | Left e <- launch = pure [RErr e]
     | otherwise = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        mouseDrag <- clientMouseEvent mclient
         case res of
             Left e -> pure [RErr e]
             Right (sess, wix, win, target) -> do
@@ -384,7 +383,8 @@ spawnInWindow entry st mclient args
                         pure [RErr "window already has a modal pane"]
                    -- -M sizes the pane by the mouse drag that ran it; with
                    -- no drag there is nothing to make.
-                   | "-M" `elem` flags && floating -> pure []
+                   | "-M" `elem` flags && floating && (isNothing mclient || isNothing mouseDrag) ->
+                        pure []
                    | floating -> do
                         border <- borderFor sess win
                         mgeom <- floatingCellGeom sess eff border lay fs target
@@ -523,7 +523,9 @@ spawnInWindow entry st mclient args
                                     writeTVar win.floats fs'
                                         { modal = Just Modal
                                             { pane = pane.id, returnTo = Just active
-                                            , rezoom = wasZoomed } }
+                                            , rezoom = wasZoomed
+                                            , outside = if "-C" `elem` flags
+                                                then CloseModal else KeepModal } }
                                     makeActive
                                 else do
                                     writeTVar win.floats fs'
@@ -545,6 +547,11 @@ spawnInWindow entry st mclient args
                         forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
                         startPaneReader st sess.id win pane
                         when ("-I" `elem` flags) $ feedStdin pane
+                        when ("-M" `elem` flags) $ do
+                            floated <- isFloating pane.id <$> readTVarIO win.layout
+                            mev <- clientMouseEvent mclient
+                            forM_ ((,) <$> mclient <*> mev) $ \(c, ev) ->
+                                when floated $ startNewPaneDrag st c pane.id ev
                         applySessionSize st sess.id
                         notifyWindow st "window-layout-changed" (Just sess.id) win []
                         let spawned = case how of
@@ -1037,13 +1044,23 @@ cmdClearHistory st mclient args = do
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args
     | Just e <- unknownFlag "resize-pane" "DLMRTUZ" flags = pure [RErr e]
-    -- -M follows the mouse: the border under the drag moves with it.
-    -- Without a mouse event to follow, it does nothing.
+    -- -M follows the mouse: the border under the drag moves with it; a
+    -- floating pane's border resizes it, or moves it by its top, and it
+    -- becomes active. Without a mouse event to follow, it does nothing.
     | "-M" `elem` flags = do
         mev <- clientMouseEvent mclient
         forM_ ((,) <$> mclient <*> mev) $ \(client, ev) -> do
-            startDrag client DragBorder
-            resizeBorderTo st ev
+            mp <- mouseEventPane st ev
+            floating <- case mp of
+                Just (sess, win, pane, _) -> do
+                    lay <- readTVarIO win.layout
+                    if isFloating pane.id lay
+                        then Just pane.id <$ activate st sess win pane False
+                        else pure Nothing
+                Nothing -> pure Nothing
+            let dr = maybe DragBorder DragFloat floating
+            startDrag client dr
+            mouseDragUpdate st dr ev
         pure []
     -- -T trims the pane's history below the cursor, unless a mode is open.
     | "-T" `elem` flags = do

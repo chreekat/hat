@@ -17,6 +17,11 @@ module Hat.Server.Mouse
       -- * Classifying
     , MouseView (..)
     , PaneBox (..)
+    , BoxKind (..)
+    , ModalView (..)
+    , ClickOutside (..)
+    , Placement (..)
+    , windowPoint
     , StatusRange (..)
     , Location (..)
     , MouseType (..)
@@ -106,6 +111,7 @@ data MouseState = MouseState
     { prevX, prevY, prevB :: Int  -- ^ the report before this one
     , dragFlag :: Int  -- ^ 0, or the dragging button + 1
     , dragPane :: Maybe PaneId  -- ^ the pane a drag started over
+    , dragStart :: (Int, Int)  -- ^ where the last drag started, in the window
     , click :: Click
     }
     deriving (Eq, Show)
@@ -130,12 +136,17 @@ data ClickStart = ClickStart
 initialMouseState :: MouseState
 initialMouseState = MouseState
     { prevX = 0, prevY = 0, prevB = 0, dragFlag = 0, dragPane = Nothing
-    , click = NoClick }
+    , dragStart = (0, 0), click = NoClick }
 
 -- | What a mouse drag in progress moves (tmux's @mouse_drag_update@).
 data Drag
     = DragSelection PaneId  -- ^ the copy-mode selection of a pane
     | DragBorder            -- ^ the pane border it started on
+    | DragNewPane PaneId (Int, Int)
+        -- ^ the box of a floating pane @new-pane -M@ made, from the window
+        -- point the drag started at
+    | DragFloat PaneId      -- ^ a floating pane's border: resize, or move by its top
+    | DragMove PaneId       -- ^ a floating pane, moved whole (@move-pane -M@)
     deriving (Eq, Show)
 
 -- | What a client shows, for placing a click (status line, panes, borders).
@@ -148,15 +159,32 @@ data MouseView = MouseView
         -- ^ the range under a column of a status line
     , width :: Int  -- ^ the window area
     , height :: Int
-    , boxes :: [PaneBox]  -- ^ the visible panes
+    , boxes :: [PaneBox]
+        -- ^ the visible panes, the floating ones first, front to back
+    , modal :: Maybe ModalView
     }
+
+-- | The window's modal pane, as clicks see it.
+data ModalView = ModalView
+    { pane :: PaneId
+    , outside :: ClickOutside
+    }
+
+-- | What a click outside a modal pane does to it (@new-pane -C@).
+data ClickOutside = KeepModal | CloseModal
+    deriving (Eq, Show)
 
 -- | A visible pane's place in the window area (tmux's @xoff@, @yoff@,
 -- @sx@, @sy@).
 data PaneBox = PaneBox
     { pane :: PaneId
     , xoff, yoff, sx, sy :: Int
+    , kind :: BoxKind
     }
+    deriving (Eq, Show)
+
+-- | A tiled pane, or a floating one with or without a border of its own.
+data BoxKind = TiledBox | FramedFloat | BareFloat
     deriving (Eq, Show)
 
 -- | A status line range a click can land in (tmux's @style_range@).
@@ -197,6 +225,15 @@ data MouseEvent = MouseEvent
     }
     deriving (Eq, Show)
 
+-- | What a report comes to.
+data Placement
+    = Keyed MouseKey
+    | Unplaced  -- ^ no key
+    | Swallowed (Maybe PaneId)
+        -- ^ outside the modal pane: no key, any drag ends, and a click
+        -- closes the modal pane named
+    deriving (Eq, Show)
+
 -- | A mouse report's key: its name (with modifiers) and the event.
 data MouseKey = MouseKey
     { name :: Text
@@ -207,9 +244,9 @@ data MouseKey = MouseKey
 
 -- | tmux's @server_client_check_mouse@: what a report means, at time @now@
 -- (ms). 'Nothing' for a report that makes no key.
-checkMouse :: Int -> MouseView -> MouseState -> MouseInput -> (MouseState, Maybe MouseKey)
+checkMouse :: Int -> MouseView -> MouseState -> MouseInput -> (MouseState, Placement)
 checkMouse now view st0 m = case classified of
-    Nothing -> (stRecorded, Nothing)
+    Nothing -> (stRecorded, Unplaced)
     Just (ty, ex, ey, eb) -> placed ty ex ey eb
   where
     stRecorded = st0 { prevX = m.x, prevY = m.y, prevB = m.b }
@@ -231,7 +268,13 @@ checkMouse now view st0 m = case classified of
             AwaitSecond _ -> Just (SecondClick, m.x, m.y, m.b)
             AwaitThird _ -> Just (TripleClick, m.x, m.y, m.b)
             NoClick -> Just (MouseDown, m.x, m.y, m.b)
-    placed ty ex ey eb =
+    placed ty ex ey eb
+        | Just md <- view.modal, outsideModal md ex ey, not (modalDrag md ty) =
+            ( stRecorded { dragFlag = 0, dragPane = Nothing }
+            , Swallowed (if md.outside == CloseModal
+                            && ty `elem` [MouseDown, SecondClick, TripleClick]
+                        then Just md.pane else Nothing) )
+        | otherwise =
         let (loc, mwin, mpane, mloc) = locate ty ex ey
             ev = MouseEvent
                 { input = m, lastX = lx, lastY = ly, lastB = lb
@@ -239,8 +282,19 @@ checkMouse now view st0 m = case classified of
                 , onSession = view.session, onWindow = mwin, onPane = mpane
                 , ignore = False }
         in case mloc of
-            Nothing -> (stRecorded, Nothing)
-            Just () -> finish ty loc ev eb
+            Nothing -> (stRecorded, Unplaced)
+            Just () -> finish ty loc ev eb (windowXY ex ey)
+    -- A report on the status line is never outside the modal pane.
+    outsideModal md ex ey = case view.statusAt of
+        Just at | ey >= at && ey < at + view.statusLines -> False
+        _ -> let (px, py) = windowXY ex ey
+             in px <= view.width && py <= view.height
+                && maybe True (\bx -> not (contains bx px py))
+                    (find (\bx -> bx.pane == md.pane) view.boxes)
+    -- A drag begun on the modal pane follows the mouse out of it.
+    modalDrag md ty = st0.dragPane == Just md.pane && st0.dragFlag /= 0
+        && ty `elem` [MouseDrag, MouseUp]
+    windowXY ex ey = (ex, windowRow view.statusAt view.statusLines ey)
     -- The status line range, or the pane, border or empty area.
     locate ty ex ey = case view.statusAt of
         Just at | ey >= at && ey < at + view.statusLines ->
@@ -256,11 +310,9 @@ checkMouse now view st0 m = case classified of
                     RangeUser -> (LocStatus, Nothing, Nothing, Just ())
                     RangeControl n -> (LocControl n, Nothing, Nothing, Just ())
         _ ->
-            let px = ex
-                py | view.statusAt == Just 0 && ey >= view.statusLines = ey - view.statusLines
-                   | Just at <- view.statusAt, at > 0, ey >= at = at - 1
-                   | otherwise = ey
-                byDrag = if ty == MouseDrag then st0.dragPane else Nothing
+            let (px, py) = windowXY ex ey
+                isModalDrag = maybe False (\md -> modalDrag md ty) view.modal
+                byDrag = if ty == MouseDrag || isModalDrag then st0.dragPane else Nothing
                 wp = case byDrag of
                     Just p -> find (\bx -> bx.pane == p) view.boxes
                     Nothing -> boxAt px py
@@ -268,10 +320,17 @@ checkMouse now view st0 m = case classified of
                 then (LocEmpty, Nothing, Nothing, Nothing)
                 else case wp of
                     Nothing -> (LocEmpty, Just view.window, Nothing, Just ())
-                    Just bx -> (inPane bx px py, Just view.window, Just bx.pane, Just ())
-    boxAt px py = find (\bx -> px >= bx.xoff && px < bx.xoff + bx.sx
+                    Just bx ->
+                        ( if isModalDrag then LocPane else inPane bx px py
+                        , Just view.window, Just bx.pane, Just () )
+    -- tmux's @window_get_active_at@: only the modal pane while there is
+    -- one; else the floating panes front to back, then the tiled ones.
+    boxAt px py = case view.modal of
+        Just md -> find (\bx -> bx.pane == md.pane && contains bx px py) view.boxes
+        Nothing -> find (\bx -> bx.kind /= TiledBox && contains bx px py) view.boxes
+            `orElse` find (\bx -> bx.kind == TiledBox && px >= bx.xoff && px < bx.xoff + bx.sx
                              && py >= bx.yoff && py < bx.yoff + bx.sy) view.boxes
-                  `orElse` find (\bx -> onBorderOf bx px py) view.boxes
+            `orElse` find (\bx -> bx.kind == TiledBox && onBorderOf bx px py) view.boxes
     orElse (Just v) _ = Just v
     orElse Nothing v = v
     -- tmux's @window_get_active_at@ counts a pane's right and bottom border
@@ -279,27 +338,28 @@ checkMouse now view st0 m = case classified of
     onBorderOf bx px py =
         px >= bx.xoff && px <= bx.xoff + bx.sx && py >= bx.yoff && py <= bx.yoff + bx.sy
     inPane bx px py
+        | bx.kind /= TiledBox = if insideContent bx px py then LocPane else LocBorder
         | (bx.yoff == 0 && py < bx.sy || py >= bx.yoff && py < bx.yoff + bx.sy)
           && px < bx.xoff + bx.sx = LocPane
-        | any (\f -> borderOf f px py) view.boxes = LocBorder
+        | any (\f -> f.kind /= BareFloat && borderOf f px py) view.boxes = LocBorder
         | otherwise = LocPane
     borderOf f px py =
         (py >= f.yoff - 1 && py <= f.yoff + f.sy && px == f.xoff + f.sx)
         || (px >= f.xoff - 1 && px <= f.xoff + f.sx
             && (py == f.yoff + f.sy || py == f.yoff - 1))
-    finish ty0 loc ev eb =
+    finish ty0 loc ev eb start =
         let -- A click run restarts on another button, place or pane.
             (ty, click1) = clickStep ty0 loc ev
             stClick = stRecorded { click = click1 }
             (ty', stDrag) = endDrag ty stClick
             stMoved = case ty' of
-                MouseDrag -> startDrag ev eb stDrag
+                MouseDrag -> startDrag ev eb start stDrag
                 _ -> stDrag
             dragUpdate = ty' == MouseDrag && st0.dragFlag /= 0
             key = MouseKey
                 { name = mouseKeyName ty' (buttonNumber eb) loc (modifiers eb)
                 , event = ev, dragging = dragUpdate }
-        in (stMoved, Just key)
+        in (stMoved, Keyed key)
     clickStep ty loc ev
         | ty `notElem` [MouseDown, SecondClick, TripleClick] = (ty, st0.click)
         | otherwise =
@@ -319,8 +379,9 @@ checkMouse now view st0 m = case classified of
         | ty `notElem` [MouseDrag, WheelUp, WheelDown, DoubleClick, TripleClick]
         , st.dragFlag /= 0 = (MouseDragEnd, st { dragFlag = 0, dragPane = Nothing })
         | otherwise = (ty, st)
-    startDrag ev eb st = st
+    startDrag ev eb start st = st
         { dragFlag = (eb .&. buttons) + 1
+        , dragStart = if st.dragFlag == 0 then start else st.dragStart
         , dragPane = case st.dragPane of
             Just p -> Just p
             Nothing -> ev.onPane }
@@ -336,6 +397,35 @@ checkMouse now view st0 m = case classified of
         130 -> 10
         131 -> 11
         _ -> 0
+
+-- | Whether a window point is on a pane's box (tmux's
+-- @window_pane_contains@): a tiled pane's to its right and bottom border, a
+-- floating pane's with its border all round, if it has one.
+contains :: PaneBox -> Int -> Int -> Bool
+contains bx px py = case bx.kind of
+    TiledBox -> px >= bx.xoff && px <= bx.xoff + bx.sx && py >= bx.yoff && py <= bx.yoff + bx.sy
+    FramedFloat -> px >= bx.xoff - 1 && px <= bx.xoff + bx.sx
+        && py >= bx.yoff - 1 && py <= bx.yoff + bx.sy
+    BareFloat -> insideContent bx px py
+
+insideContent :: PaneBox -> Int -> Int -> Bool
+insideContent bx px py =
+    px >= bx.xoff && px < bx.xoff + bx.sx && py >= bx.yoff && py < bx.yoff + bx.sy
+
+-- | A client row in the window: below a top status line, or clamped above
+-- a lower one.
+windowRow :: Maybe Int -> Int -> Int -> Int
+windowRow statusAt statusLines y
+    | statusAt == Just 0 && y >= statusLines = y - statusLines
+    | Just at <- statusAt, at > 0, y >= at = at - 1
+    | otherwise = y
+
+-- | Where an event (or, with @useLast@, the report before it) is in the
+-- window.
+windowPoint :: Bool -> MouseEvent -> (Int, Int)
+windowPoint useLast ev =
+    let (x, y) = if useLast then (ev.lastX, ev.lastY) else (ev.input.x, ev.input.y)
+    in (x, windowRow ev.statusAt ev.statusLines y)
 
 -- | tmux's click timer: once it lapses, a second click left waiting for a
 -- third was a double click.

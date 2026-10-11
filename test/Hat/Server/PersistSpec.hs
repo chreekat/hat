@@ -54,7 +54,7 @@ genWindow wix = do
 -- A modal pane among a window's @n@ panes, by ordinal.
 genModal :: Int -> Gen ModalSnap
 genModal n = ModalSnap <$> choose (0, n - 1)
-    <*> oneof [pure Nothing, Just <$> choose (0, n - 1)] <*> arbitrary
+    <*> oneof [pure Nothing, Just <$> choose (0, n - 1)] <*> arbitrary <*> arbitrary
 
 -- A window's capture key or link, when present: a window id.
 genMaybeKey :: Gen (Maybe Int)
@@ -225,7 +225,22 @@ spec = do
                 execute_ conn "INSERT INTO pane VALUES (0, 0, 1, '/h', '{}')"
                 loadSnapshot conn
             [ w.modal | s <- got.sessions, w <- s.windows ]
-                `shouldBe` [Just ModalSnap { pane = 1, returnTo = Just 0, rezoom = True }]
+                `shouldBe` [Just ModalSnap
+                    { pane = 1, returnTo = Just 0, rezoom = True, closeOnClick = False }]
+
+        it "reads a modal pane a click outside closes" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', \
+                    \'5746,80x24,0,0[80x24,0,0,0,18x4,9,4,1]<18x4,9,4,1>', 1, \
+                    \'{\"modal\":{\"pane\":1,\"close_on_click\":true}}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/h', '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 1, '/h', '{}')"
+                loadSnapshot conn
+            [ w.modal | s <- got.sessions, w <- s.windows ]
+                `shouldBe` [Just ModalSnap
+                    { pane = 1, returnTo = Nothing, rezoom = False, closeOnClick = True }]
 
         it "reads a legacy string command as a single-element argv" $ do
             got <- withRaw $ \conn -> do

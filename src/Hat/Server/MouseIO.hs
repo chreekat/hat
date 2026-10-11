@@ -9,6 +9,7 @@ module Hat.Server.MouseIO
     , mouseDragUpdate
     , clientMouseEvent
     , startDrag
+    , startNewPaneDrag
     , resizeBorderTo
     , mouseFormatVars
     , startSelectionDrag
@@ -27,16 +28,21 @@ import Data.Vector qualified as V
 
 import Hat.Geometry
 import Hat.Model
-import Hat.Model.Options (Options (..))
+import Hat.Model.Options (BorderLines (..), Options (..))
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatDraw qualified as FD
 import Hat.Server.Hooks (notifyWindow)
-import Hat.Server.Layout (Orientation (..), parentOrientation, resizeCellAt, searchByBorder)
+import Hat.Server.Layout
+    ( FloatGeom (..), Orientation (..), floatGeom, parentOrientation, resizeCellAt
+    , searchByBorder, setFloatGeom )
 import Hat.Server.Keys (KeyState (..))
 import Hat.Server.Locate (clientView)
 import Hat.Server.Mouse
 import Hat.Server.Pane (typeIntoPane)
-import Hat.Server.Resize (applySessionSize, windowArrange, windowLayoutAt)
+import Hat.Server.Floating
+    (Border, FloatState (..), Modal (..), borderOf, dragFloatGeom, dragNewGeom)
+import Hat.Server.Resize (applySessionSize, windowArrange, windowFloats, windowLayoutAt)
+import Hat.Server.Scene (FloatingPane (..))
 import Hat.Server.View (statusLayout, statusRangesFor)
 import Hat.Term.Emulator qualified as Emu
 
@@ -52,7 +58,7 @@ mouseViewFor st client ys = do
             sopts <- atomically (resolveForSession st sess)
             csize <- readTVarIO client.size
             eff <- readTVarIO sess.lastSize
-            (rects, _) <- atomically (windowArrange st eff win)
+            (boxes, modal) <- atomically $ (,) <$> windowBoxes st eff win <*> modalView win
             ws <- readTVarIO sess.windows
             let (_, mStatus) = statusLayout sopts.statusPosition sopts.statusLines
                     (fromIntegral csize.rows)
@@ -70,7 +76,7 @@ mouseViewFor st client ys = do
                 , statusAt = mStatus, statusLines = sopts.statusLines
                 , statusRange = rangeAt
                 , width = fromIntegral eff.cols, height = fromIntegral eff.rows
-                , boxes = map (uncurry boxOf) rects }
+                , boxes, modal }
   where
     -- An unranged column is the status line's default area; a range naming
     -- a window that is gone makes no key.
@@ -84,10 +90,27 @@ mouseViewFor st client ys = do
         FD.RangeUser _ -> Just RangeUser
         FD.RangeControl n -> Just (RangeControl n)
 
-boxOf :: PaneId -> Rect -> PaneBox
-boxOf pid r = PaneBox
+-- | A window's visible panes' boxes, the floating ones first, front to
+-- back.
+windowBoxes :: ServerState -> Size -> Window -> STM [PaneBox]
+windowBoxes st eff win = do
+    (rects, _) <- windowArrange st eff win
+    floats <- windowFloats st win
+    let floating = [ boxOf f.pane f.rect
+                        (if f.lineSet == BorderNone then BareFloat else FramedFloat)
+                   | f <- reverse floats ]
+    pure $ floating
+        <> [ boxOf p r TiledBox | (p, r) <- rects, p `notElem` map (.pane) floats ]
+
+modalView :: Window -> STM (Maybe ModalView)
+modalView win = do
+    fs <- readTVar win.floats
+    pure $ (\m -> ModalView { pane = m.pane, outside = m.outside }) <$> fs.modal
+
+boxOf :: PaneId -> Rect -> BoxKind -> PaneBox
+boxOf pid r k = PaneBox
     { pane = pid, xoff = r.startCol, yoff = r.startRow
-    , sx = r.endCol - r.startCol, sy = r.endRow - r.startRow }
+    , sx = r.endCol - r.startCol, sy = r.endRow - r.startRow, kind = k }
 
 -- | The pane an event is over, with its window and its box there when it
 -- is visible (tmux's @cmd_mouse_pane@).
@@ -118,8 +141,8 @@ mouseEventPane st ev = do
 paneBoxOf :: ServerState -> Session -> Window -> PaneId -> IO (Maybe PaneBox)
 paneBoxOf st sess win pid = do
     eff <- readTVarIO sess.lastSize
-    (rects, _) <- atomically (windowArrange st eff win)
-    pure (boxOf pid <$> List.lookup pid rects)
+    boxes <- atomically (windowBoxes st eff win)
+    pure (List.find (\b -> b.pane == pid) boxes)
 
 -- | The mouse event the client's key binding is acting on, if the event
 -- happened in the session the client shows.
@@ -137,6 +160,16 @@ clientMouseEvent = \case
 -- @mouse_drag_update@).
 startDrag :: Client -> Drag -> IO ()
 startDrag c dr = modifyIORef' c.keyState (\k -> k { drag = Just dr })
+
+-- | @new-pane -M@: the drag that ran it sizes the floating pane it made,
+-- from where the drag started (tmux's @mouse_last_pane@ and
+-- @cmd_split_window_mouse_resize@).
+startNewPaneDrag :: ServerState -> Client -> PaneId -> MouseEvent -> IO ()
+startNewPaneDrag st c pid ev = do
+    start <- (.mouse.dragStart) <$> readIORef c.keyState
+    let dr = DragNewPane pid start
+    modifyIORef' c.keyState $ \k -> k { drag = Just dr, mouse = k.mouse { dragPane = Just pid } }
+    mouseDragUpdate st dr ev
 
 -- | tmux's @window_copy_start_drag@: a copy-mode selection starts where the
 -- drag did, and follows it from here.
@@ -170,6 +203,35 @@ mouseDragUpdate st dr ev = case dr of
             forM_ (mouseAt False ev box) $ \(px, py) -> atomically $ do
                 modifyTVar' pane.mode (fmap (CopyMode.dragSelectionTo px py))
                 bumpDirty st
+    DragNewPane pid start -> reshapeFloat st ev pid $ \border _ ->
+        Just (dragNewGeom border start (windowPoint False ev))
+    DragFloat pid -> reshapeFloat st ev pid $ \_ g ->
+        dragFloatGeom g (windowPoint True ev) (windowPoint False ev)
+    DragMove pid -> reshapeFloat st ev pid $ \_ g ->
+        let (x, y) = windowPoint False ev
+            (lx, ly) = windowPoint True ev
+        in if (x, y) == (lx, ly) then Nothing
+           else Just g { left = g.left + x - lx, top = g.top + y - ly }
+
+-- | Give a floating pane the box @reshape@ makes of its border and box, if
+-- any; a pane no longer floating is left be.
+reshapeFloat
+    :: ServerState -> MouseEvent -> PaneId -> (Border -> FloatGeom -> Maybe FloatGeom)
+    -> IO ()
+reshapeFloat st ev pid reshape = do
+    mp <- mouseEventPane st ev { onPane = Just pid }
+    forM_ mp $ \(sess, win, pane, _) -> do
+        border <- borderOf . (.paneBorderLines) <$> atomically (resolveForPane st sess win pane)
+        changed <- atomically $ do
+            lay <- readTVar win.layout
+            case floatGeom pid lay >>= reshape border of
+                Just g | Just g /= floatGeom pid lay -> do
+                    writeTVar win.layout (setFloatGeom pid g lay)
+                    True <$ bumpDirty st
+                _ -> pure False
+        when changed $ do
+            applySessionSize st sess.id
+            notifyWindow st "window-layout-changed" (Just sess.id) win []
 
 -- | tmux's @cmd_resize_pane_mouse_resize_tiled@: the borders next to where
 -- the drag was move to where it is now.
@@ -178,11 +240,8 @@ resizeBorderTo st ev = do
     mp <- mouseEventPane st ev
     forM_ mp $ \(sess, win, _, _) -> do
         eff <- readTVarIO sess.lastSize
-        let row r | ev.statusAt == Just 0, r >= ev.statusLines = r - ev.statusLines
-                  | Just at <- ev.statusAt, at > 0, r >= at = at - 1
-                  | otherwise = r
-            (x, y) = (ev.input.x, row ev.input.y)
-            (lx, ly) = (ev.lastX, row ev.lastY)
+        let (x, y) = windowPoint False ev
+            (lx, ly) = windowPoint True ev
         changed <- atomically $ do
             lay <- windowLayoutAt eff win
             let paths = nub

@@ -18,8 +18,27 @@ view = MouseView
                             else if x < 20 then Just RangeLeft else Nothing
     , width = 80, height = 23
     , boxes =
-        [ PaneBox { pane = PaneId 0, xoff = 0, yoff = 0, sx = 40, sy = 23 }
-        , PaneBox { pane = PaneId 1, xoff = 41, yoff = 0, sx = 39, sy = 23 } ] }
+        [ PaneBox { pane = PaneId 0, xoff = 0, yoff = 0, sx = 40, sy = 23, kind = TiledBox }
+        , PaneBox { pane = PaneId 1, xoff = 41, yoff = 0, sx = 39, sy = 23, kind = TiledBox } ]
+    , modal = Nothing }
+
+-- 'view' with a floating pane over the left pane: content 10x4 at 10,5,
+-- its border around it.
+floatView :: BoxKind -> MouseView
+floatView k = view
+    { boxes = PaneBox { pane = PaneId 2, xoff = 10, yoff = 5, sx = 10, sy = 4, kind = k }
+        : view.boxes }
+
+-- The keys a run of reports makes against a view, all at time 0, with the
+-- pane each is for; a report swallowed outside a modal pane shows as the
+-- modal pane it closes.
+placed :: MouseView -> [MouseInput] -> [Either (Maybe PaneId) (Text, Maybe PaneId)]
+placed v = concatMap outcome . snd . mapAccumL (checkMouse 0 v) initialMouseState
+  where
+    outcome = \case
+        Keyed k -> [Right (k.name, k.event.onPane)]
+        Unplaced -> []
+        Swallowed m -> [Left m]
 
 sgr :: Int -> Int -> Int -> Char -> MouseInput
 sgr b x y t = case parseMouseInput bytes of
@@ -30,7 +49,7 @@ sgr b x y t = case parseMouseInput bytes of
 
 -- The key names a run of reports makes, all at time 0 unless timed.
 names :: [(Int, MouseInput)] -> [Text]
-names = concatMap (maybe [] (\k -> [k.name])) . snd
+names = concatMap (\case Keyed k -> [k.name]; _ -> []) . snd
     . mapAccumL (\st (t, m) -> checkMouse t view st m) initialMouseState
 
 at0 :: [MouseInput] -> [Text]
@@ -82,12 +101,41 @@ spec = do
             fmap (.name) (snd (clickExpired 300 st2)) `shouldBe` Nothing
             fmap (.name) (snd (clickExpired 400 st2)) `shouldBe` Just "DoubleClick1Pane"
 
+    describe "checkMouse over floating panes" $ do
+        it "a click inside one goes to it, not the pane beneath" $
+            placed (floatView FramedFloat) [sgr 0 12 6 'M']
+                `shouldBe` [Right ("MouseDown1Pane", Just (PaneId 2))]
+        it "its border is its own" $
+            placed (floatView FramedFloat) [sgr 0 9 6 'M', sgr 0 9 6 'm', sgr 0 12 4 'M']
+                `shouldBe` map (\n -> Right (n, Just (PaneId 2)))
+                    ["MouseDown1Border", "MouseUp1Border", "SecondClick1Border"]
+        it "one with no border leaves its edge to the pane beneath" $
+            placed (floatView BareFloat) [sgr 0 9 6 'M']
+                `shouldBe` [Right ("MouseDown1Pane", Just (PaneId 0))]
+        it "a drag remembers where it started" $ do
+            let (st, _) = mapAccumL (checkMouse 0 (floatView FramedFloat)) initialMouseState
+                    [sgr 0 12 6 'M', sgr 32 20 8 'M']
+            st.dragStart `shouldBe` (12, 6)
+    describe "checkMouse with a modal pane" $ do
+        let modalView how = (floatView FramedFloat) { modal = Just ModalView
+                { pane = PaneId 2, outside = how } }
+        it "only the modal pane takes clicks" $
+            placed (modalView KeepModal) [sgr 0 3 0 'M', sgr 0 12 6 'M']
+                `shouldBe` [Left Nothing, Right ("MouseDown1Pane", Just (PaneId 2))]
+        it "a click outside one made to close on it closes it" $
+            placed (modalView CloseModal) [sgr 0 3 0 'M']
+                `shouldBe` [Left (Just (PaneId 2))]
+        it "a drag begun on it stays with it outside" $
+            placed (modalView KeepModal) [sgr 0 12 6 'M', sgr 32 30 6 'M', sgr 0 30 6 'm']
+                `shouldBe` map (\n -> Right (n, Just (PaneId 2)))
+                    ["MouseDown1Pane", "MouseDrag1Pane", "MouseDragEnd1Pane"]
+
     describe "mouseBytes (what a pane's app is sent)" $ do
         let ev m = case checkMouse 0 view initialMouseState m of
-                (_, Just k) -> k.event
+                (_, Keyed k) -> k.event
                 _ -> error "no key"
             click = ev (sgr 0 50 5 'M')
-            box1 = PaneBox { pane = PaneId 1, xoff = 41, yoff = 0, sx = 39, sy = 23 }
+            box1 = PaneBox { pane = PaneId 1, xoff = 41, yoff = 0, sx = 39, sy = 23, kind = TiledBox }
         it "pane-relative, in SGR when the app asked for it" $ do
             mouseAt False click box1 `shouldBe` Just (9, 5)
             mouseBytes PaneMouseMode { tracking = 1, sgr = True, utf8 = False } click (9, 5)

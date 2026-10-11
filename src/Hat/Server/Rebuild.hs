@@ -27,6 +27,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Environ (environFromPairs)
 import Hat.Server.Floating (FloatState (..), Modal (..), noFloats)
+import Hat.Server.Mouse (ClickOutside (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (capturedArea, restoreLayout)
 import Hat.Server.Persist (ModalSnap (..))
@@ -158,7 +159,9 @@ rebuildWindow st mkPane sz cwin = do
         modal = do
             m <- cwin.modal
             p <- paneAt m.pane
-            pure Modal { pane = p, returnTo = m.returnTo >>= paneAt, rezoom = m.rezoom }
+            pure Modal
+                { pane = p, returnTo = m.returnTo >>= paneAt, rezoom = m.rezoom
+                , outside = if m.closeOnClick then CloseModal else KeepModal }
         fallback = case pids of
             p : _ -> fromMaybe (singlePane p)
                 (namedLayout defaultNamedSizes sz EvenHorizontal pids)

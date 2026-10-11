@@ -26,6 +26,8 @@ module Hat.Server.Floating
     , Spot (..)
     , parseSpot
     , placeAt
+    , dragNewGeom
+    , dragFloatGeom
     ) where
 
 import Data.List qualified as List
@@ -37,6 +39,7 @@ import Hat.Model.Options (BorderLines (..))
 import Hat.Model.Ids (PaneId)
 import Hat.Server.ArgNumber (stringPercentage)
 import Hat.Server.Layout (FloatGeom (..), Layout, floatingCells)
+import Hat.Server.Mouse (ClickOutside (..))
 
 -- | What a window keeps about its floating panes outside the layout tree.
 data FloatState = FloatState
@@ -60,6 +63,7 @@ data Modal = Modal
     , rezoom   :: Bool
         -- ^ the window was zoomed when it opened, and zooms again when it
         -- closes (@WINDOW_WASMODALZOOMED@)
+    , outside  :: ClickOutside  -- ^ @PANE_CLOSEONCLICK@
     }
     deriving (Eq, Show)
 
@@ -175,7 +179,7 @@ loseModal pid fs = case fs.modal of
             ( fs { modal = Nothing }
             , Just ModalReturn { returnTo = m.returnTo, rezoom = m.rezoom } )
         | m.returnTo == Just pid ->
-            (fs { modal = Just (Modal m.pane Nothing False) }, Nothing)
+            (fs { modal = Just (Modal m.pane Nothing False m.outside) }, Nothing)
     _ -> (fs, Nothing)
 
 -- | Whether a floating pane draws a border around its content box
@@ -394,3 +398,53 @@ placeAt area border spot g = g { left = x, top = y }
         TopRightCentre -> ((3 * wx) `div` 4 - px `div` 2, wy `div` 4 - py `div` 2)
         BottomLeftCentre -> (wx `div` 4 - px `div` 2, (3 * wy) `div` 4 - py `div` 2)
         BottomRightCentre -> ((3 * wx) `div` 4 - px `div` 2, (3 * wy) `div` 4 - py `div` 2)
+
+-- | The box of a floating pane @new-pane -M@ sizes by a drag from window
+-- point @start@ to @now@ (@cmd_split_window_mouse_resize@): the dragged
+-- rect, a border inside it if the pane has one, at least a cell.
+dragNewGeom :: Border -> (Int, Int) -> (Int, Int) -> FloatGeom
+dragNewGeom border (dx, dy) (x, y) = FloatGeom
+    { width = inner w, height = inner h, left = l, top = t }
+  where
+    b = if border == Bordered then 1 else 0
+    (l, w) = span1 dx x
+    (t, h) = span1 dy y
+    span1 d p
+        | p >= d = (d + b, p - d + 1)
+        | otherwise = let n = d - p + 1 in (d - n + 1 + b, n)
+    inner n
+        | border == Bordered = if n <= 2 then 1 else n - 2
+        | otherwise = max 1 n
+
+-- | A floating pane's box after a drag of its border from @(lx, ly)@ to
+-- @(x, y)@ (@cmd_resize_pane_mouse_resize_move_floating@): an edge resizes
+-- along its axis, a corner (or the cell beside it) both ways, the top edge
+-- moves the box instead. 'Nothing' when the drag was not on the border or
+-- would leave less than a cell.
+dragFloatGeom :: FloatGeom -> (Int, Int) -> (Int, Int) -> Maybe FloatGeom
+dragFloatGeom g (lx, ly) (x, y)
+    | nearLeft && ly == topEdge =
+        Just g { width = atLeast1 (g.width + lx - x), height = atLeast1 (g.height + ly - y)
+               , left = x + 1, top = y + 1 }
+    | nearRight && ly == topEdge =
+        Just g { width = atLeast1 (x - g.left), height = atLeast1 (g.height + ly - y)
+               , top = y + 1 }
+    | nearLeft && ly == bottomEdge =
+        if y - g.top < 1 then Nothing
+        else Just g { width = atLeast1 (g.width + lx - x), height = y - g.top, left = x + 1 }
+    | nearRight && ly == bottomEdge =
+        Just g { width = atLeast1 (x - g.left), height = atLeast1 (y - g.top) }
+    | lx == rightEdge = sized (x - g.left) $ \n -> g { width = n }
+    | lx == leftEdge = sized (g.width + lx - x) $ \n -> g { width = n, left = x + 1 }
+    | ly == bottomEdge = sized (y - g.top) $ \n -> g { height = n }
+    | ly == topEdge = Just g { left = g.left + x - lx, top = y + 1 }
+    | otherwise = Nothing
+  where
+    leftEdge = g.left - 1
+    rightEdge = g.left + g.width
+    topEdge = g.top - 1
+    bottomEdge = g.top + g.height
+    nearLeft = lx == leftEdge || lx == leftEdge + 1
+    nearRight = lx == rightEdge || lx == rightEdge + 1
+    atLeast1 = max 1
+    sized n f = if n < 1 then Nothing else Just (f n)

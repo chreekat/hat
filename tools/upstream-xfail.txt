@@ -45,7 +45,7 @@ choose-client.sh                # choose-client + list-clients unimplemented
 choose-tree.sh                  # needs list-clients + interactive mode-screen
 customize-mode.sh               # customize-mode unimplemented
 display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
-modal-pane.sh                   # modal model passes up to the mouse half: needs mouse + focus-follows-mouse options, MouseDown bindings, click/drag routing, then editor-as-modal-pane (choose-buffer e, customize-mode)
+modal-pane.sh                   # mouse half passes; needs choose-buffer (editor as a modal pane) and customize-mode
 mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 

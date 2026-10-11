@@ -37,6 +37,8 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
+import Hat.Server.Mouse (Drag (..))
+import Hat.Server.MouseIO (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag)
 import Hat.Server.Pane (rehomePanes, removePaneFromTree, switchActive, wrapPaneInWindow)
 import Hat.Server.Resize (applySessionSize, windowArea, windowLayoutAt)
 import Hat.Server.Target qualified as Target
@@ -213,11 +215,26 @@ cmdJoinPane st mclient args
 -- named spot or a stacking move (@-P@), a stacking depth (@-z@), a
 -- position (@-X@\/@-Y@) or by a cell (@-U@\/@-D@\/@-L@\/@-R@) — or, with
 -- none of those, join the source to it as @join-pane@ does. A tiled target
--- is refused. @-M@ without a mouse event does nothing.
+-- is refused. @-M@ moves the floating pane under the mouse with the drag
+-- that ran it, making it active; without one, or over a tiled pane, it does
+-- nothing.
 cmdMovePane :: CommandImpl
 cmdMovePane st mclient args
     | Just e <- unknownFlag "move-pane" "bdDfhLMRUv" flags = pure [RErr e]
-    | "-M" `elem` flags = pure []
+    | "-M" `elem` flags = do
+        mev <- clientMouseEvent mclient
+        forM_ ((,) <$> mclient <*> mev) $ \(client, ev) -> do
+            mp <- mouseEventPane st ev
+            forM_ mp $ \(sess, win, pane, _) -> do
+                lay <- readTVarIO win.layout
+                when (isFloating pane.id lay) $ do
+                    switched <- atomically (switchActive win pane.id)
+                    when switched $ do
+                        atomically (bumpDirty st)
+                        applySessionSize st sess.id
+                    startDrag client (DragMove pane.id)
+                    mouseDragUpdate st (DragMove pane.id) ev
+        pure []
     | otherwise = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
         case res of
