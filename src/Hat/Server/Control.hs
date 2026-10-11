@@ -59,6 +59,7 @@ import Hat.Server.HookMonitor (parseMonitorSpec)
 import Hat.Server.HookTypes (MonitorTarget (..))
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.HookTypes (EventSink, PayloadItem (..))
+import Hat.Server.Pane (syncAllPanes)
 import Hat.Server.Hooks (clientNameOf)
 import Hat.Server.Resize (applySessionSize, awaitReconciled)
 import Hat.Server.Winlink (windowLinks)
@@ -98,6 +99,7 @@ runControlCommands d st client cs origin = \case
     go [] = pure ()
     go (argv : rest) = do
         (t, n) <- begin
+        syncAllPanes st
         replies <- withCommandBatch st (d.runArgv st (Just client) argv)
         -- Report only once any layout change the command made reached the
         -- panes, so the next command observes their new sizes.

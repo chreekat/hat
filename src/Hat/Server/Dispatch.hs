@@ -761,7 +761,11 @@ cmdIfShell st mclient args = do
 
 
 cmdKillServer :: CommandImpl
-cmdKillServer st mclient _ = [] <$ shutDownServer st mclient
+cmdKillServer st mclient _ = do
+    -- See Note [Retiring the socket].
+    removeFile st.sockPath `catch` \(_ :: IOException) -> pure ()
+    atomically $ writeTVar st.acceptGate AcceptRetiring
+    [] <$ shutDownServer st mclient
 
 -- | End the server with its sessions still alive: keep the tree for a
 -- restore, send every client away (the issuing one too), and hang up every

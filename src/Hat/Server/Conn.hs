@@ -17,7 +17,7 @@ module Hat.Server.Conn
     , handleInput  -- ^ exported for the display-panes key tests
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -73,15 +73,23 @@ import Hat.Transport.Wire
 
 -- | Serve connections until 'acceptGate' closes; while parked, arrivals sit
 -- in the listen backlog (for the next image, across a reload's exec) until
--- the gate reopens.
+-- the gate reopens. Once retiring, it closes the listener and turns away
+-- whatever is still in the backlog. See Note [Retiring the socket].
 acceptLoop :: Dispatch -> ServerState -> N.Socket -> IO ()
 acceptLoop d st lsock = forever $ do
-    r <- race awaitClosing (N.accept lsock)
+    r <- race awaitGate (N.accept lsock)
     case r of
-        Left () -> do
+        Left AcceptRetiring -> retire
+        Left _ -> do
             atomically $ writeTVar st.acceptGate AcceptParked
-            atomically $ readTVar st.acceptGate >>= check . (== AcceptOpen)
+            gate <- atomically $ do
+                g <- readTVar st.acceptGate
+                check (g == AcceptOpen || g == AcceptRetiring)
+                pure g
+            when (gate == AcceptRetiring) retire
         Right (conn, _) -> do
+          gate <- readTVarIO st.acceptGate
+          if gate == AcceptRetiring then N.close conn else do
             -- Counting the handler as in-flight here, before its fork, is what
             -- lets us drop the old fixed-delay grace period without racing the
             -- autostarting client — and, since the count falls again when the
@@ -97,8 +105,23 @@ acceptLoop d st lsock = forever $ do
                         atomically $ modifyTVar' st.activeConns (subtract 1)
                         N.close conn `catch` \(_ :: SomeException) -> pure ()
   where
-    awaitClosing = atomically $
-        readTVar st.acceptGate >>= check . (== AcceptClosing)
+    awaitGate = atomically $ do
+        g <- readTVar st.acceptGate
+        check (g == AcceptClosing || g == AcceptRetiring)
+        pure g
+    -- Idles until the server's exit cancels the loop.
+    retire = N.close lsock >> forever (threadDelay maxBound)
+
+-- Note [Retiring the socket]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- kill-server unlinks the socket path before it replies, so every client
+-- that runs after it finds no server and autostarts a fresh one instead of
+-- joining, or being reset by, the old one while it drains its panes; a
+-- client that raced in before the unlink is turned away ('acceptLoop'). The
+-- retired server keeps the lock until it exits, so the fresh server cannot
+-- touch the store or bind the path early: it waits for a lock holder that
+-- has no path bound ('awaitLock'), and the autostarting client's connect
+-- poll covers the wait.
 
 helloOrigin :: Hello -> Autostart
 helloOrigin h = if h.autostarted then Autostarted else Joined
@@ -711,6 +734,7 @@ controlLoop d st re client = do
     case m of
         Just (Known (Command cmds)) -> do
             awaitStartup st client.autostart cmds
+            syncAllPanes st
             open <- newTVarIO True
             let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
             replies <- d.runCommands st (Just granted) cmds

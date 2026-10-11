@@ -236,6 +236,7 @@ stubPane n = do
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False
+    syncV <- newTVarIO noOutputSync
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -254,6 +255,7 @@ stubPane n = do
         , kind = ProgramPane
         , inputOff = inputOffV
         , onAlternate = alternateV
+        , outputSync = syncV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.

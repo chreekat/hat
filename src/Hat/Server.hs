@@ -113,7 +113,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Network.Socket qualified as N
 import System.Directory
-    (doesFileExist, removeFile)
+    (doesFileExist, doesPathExist, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
@@ -179,7 +179,7 @@ runServerWith path mconfig mhandover = do
     case mhandover of
         Just _ -> pure ()
         Nothing -> do
-            lockResult <- acquireLock (path <> ".lock")
+            lockResult <- awaitLock path lockWaitAttempts
             case lockResult of
                 LockHeldElsewhere -> exitSuccess  -- another server won the race
                 LockWon -> pure ()
@@ -327,14 +327,38 @@ data LockResult
     = LockWon            -- ^ this process now holds the lock
     | LockHeldElsewhere  -- ^ another server already holds it
 
+-- | Take the server lock for the socket at @path@. A holder with the path
+-- bound is serving (or about to), so it wins outright; one without it is
+-- starting up or retired and draining, so poll until it binds the path or
+-- exits. Gives up (as held) after @attempts@ polls.
+-- See Note [Retiring the socket].
+awaitLock :: FilePath -> Int -> IO LockResult
+awaitLock path attempts = do
+    r <- acquireLock (path <> ".lock")
+    bound <- doesPathExist path
+    case r of
+        LockWon -> pure LockWon
+        LockHeldElsewhere
+            | bound || attempts <= 1 -> pure LockHeldElsewhere
+            | otherwise -> do
+                threadDelay lockPollMicros
+                awaitLock path (attempts - 1)
+
+lockPollMicros :: Int
+lockPollMicros = 10_000
+
+-- | 10s of polls: past any drain, which 'reapPane' bounds.
+lockWaitAttempts :: Int
+lockWaitAttempts = 1_000
+
 -- flock-style: O_CREAT + posix write lock, held for the server's life.
 acquireLock :: FilePath -> IO LockResult
 acquireLock lockPath = do
     fd <- PIO.createFile lockPath 0o600
     r <- try $ PIO.setLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0)
-    pure $ case r of
-        Left (_ :: IOException) -> LockHeldElsewhere
-        Right () -> LockWon
+    case r of
+        Left (_ :: IOException) -> LockHeldElsewhere <$ PIO.closeFd fd
+        Right () -> pure LockWon
 
 -- | The reasons a server stays alive, gathered for 'serverIdle'. See it.
 data IdleInputs = IdleInputs
