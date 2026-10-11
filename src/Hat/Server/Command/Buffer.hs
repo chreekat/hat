@@ -174,7 +174,9 @@ cmdLoadBuffer st mclient args = withFlags "load-buffer" "w" flags $
 
 -- | The issuing client's standard input, which only a command client has.
 readClientStdin :: Maybe Client -> IO (Either Text ByteString)
-readClientStdin _ = pure (Left "Bad file descriptor: -")
+readClientStdin = \case
+    Just Client { stdinSource = StdinFrom fetch } -> fetch
+    _ -> pure (Left "Bad file descriptor: -")
 
 -- | @save-buffer [-a] [-b name] path@: write (or with @-a@ append) a
 -- buffer's bytes to a file, or for @-@ to the command client's standard

@@ -177,6 +177,24 @@ hatCtl h args = do
             >> pure (ExitFailure 1, "", ""))
           pure r
 
+-- Run a hat control command feeding it stdin, returning its raw stdout.
+hatBytes :: Hat -> [String] -> B.ByteString -> IO (ExitCode, B.ByteString)
+hatBytes h args input = do
+    path <- testPath
+    r <- timeout 30_000_000 $ do
+        (Just hin, Just hout, _, ph) <- P.createProcess
+            (P.proc h.bin (["-S", h.sock] <> args))
+                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+                , P.close_fds = True
+                , P.std_in = P.CreatePipe, P.std_out = P.CreatePipe }
+        B.hPut hin input >> hClose hin
+        out <- B.hGetContents hout
+        code <- P.waitForProcess ph
+        pure (code, out)
+    maybe (expectationFailure ("hat " <> unwords args <> ": no reply in 30s")
+            >> pure (ExitFailure 1, ""))
+          pure r
+
 -- Stdout of a hat control command.
 ctlOut :: Hat -> [String] -> IO String
 ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
@@ -710,6 +728,14 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         _ <- awaitExit c1
         pure ()
+
+    it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
+        withHat hatBin $ \h -> do
+        let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]
+        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
+        (ExitSuccess, _) <- hatBytes h ["load-buffer", "-b", "b", "-"] bytes
+        hatBytes h ["save-buffer", "-b", "b", "-"] ""
+            `shouldReturn` (ExitSuccess, bytes)
 
     it "renders vim to two simultaneous clients" $
         withHat hatBin $ \h -> do

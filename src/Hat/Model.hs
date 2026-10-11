@@ -12,6 +12,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
+    , StdinSource (..)
     , RowOrigin (..)
     , ChromeCache (..)
     , StatusCache (..)
@@ -69,6 +70,7 @@ import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM)
+import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
 import System.IO (Handle)
@@ -531,7 +533,12 @@ data Client = Client
     , envImport :: TVar EnvImport  -- ^ set by @attach-session -E@
     , env       :: [(Text, Text)]
     , cwd       :: Text
+    , stdinSource :: StdinSource
     }
+
+-- | Where a command's @-@ path reads from: the issuing command client's
+-- standard input while its command batch runs, else nowhere.
+data StdinSource = NoStdin | StdinFrom (IO (Either Text ByteString))
 
 newServerState :: Keymap -> Logger -> FilePath -> Maybe FilePath -> IO ServerState
 newServerState defaultKeymap lg path storePath = ServerState

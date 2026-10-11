@@ -64,7 +64,7 @@ mkClient = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
-            , env = [], cwd = "" }
+            , env = [], cwd = "", stdinSource = NoStdin }
     re <- newReadEnd b
     pure (client, re)
 

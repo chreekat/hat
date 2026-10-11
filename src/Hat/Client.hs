@@ -12,7 +12,7 @@ module Hat.Client
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, catch, bracket_)
+import Control.Exception (IOException, SomeException, catch, bracket_)
 import Control.Monad (forever)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -140,6 +140,10 @@ shuttle sock re = do
                 -- Informational: our decoder already reads every dialect
                 -- ≤ ours, and nothing we send upstream is dialect-sensitive.
                 ServerVersion _ -> receiver
+                -- Command-client traffic; an attached client's stdin and
+                -- stdout are its terminal.
+                ReadStdin -> receiver
+                WriteStdout _ -> receiver
     stdinReader outbox = forever $ do
         bs <- B.hGetSome stdin 4096
         if B.null bs
@@ -190,6 +194,20 @@ runClientControl sock origin setup = do
     -- After Detach, wait for the receiver to see DetachOk (race ends there).
     awaitClose = forever (threadDelay 1_000_000)
 
+-- | Answer 'ReadStdin': stream standard input to the server until EOF. An
+-- unreadable stdin ends the stream where it failed.
+sendStdin :: Socket -> IO ()
+sendStdin sock = do
+    hSetBinaryMode stdin True
+    let pump = do
+            chunk <- B.hGetSome stdin (1024 * 1024)
+            if B.null chunk
+                then pure ()
+                else sendMessage sock (StdinData chunk) >> pump
+    pump `catch` \(e :: IOException) ->
+        hPutStrLn stderr ("hat: reading standard input: " <> show e)
+    sendMessage sock StdinEnd
+
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell.
 runControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
@@ -215,6 +233,8 @@ controlAt v sock origin cmds = do
         case m of
             Nothing -> pure SessionEnded
             Just (Known (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain re
+            Just (Known (WriteStdout bs)) -> B.hPut stdout bs >> drain re
+            Just (Known ReadStdin) -> sendStdin re.sock >> drain re
             Just (Known (ServerError e)) -> pure (Rejected e)
             Just (Known CommandDone) -> pure SessionEnded
             Just (Known Exited) -> pure SessionEnded
