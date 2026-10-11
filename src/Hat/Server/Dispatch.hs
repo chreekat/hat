@@ -677,16 +677,14 @@ cmdIfShell st mclient args = do
 
 
 cmdKillServer :: CommandImpl
-cmdKillServer st mclient _ = do
-    forM_ mclient $ \client -> send client Exited
-    [] <$ shutDownServer st
+cmdKillServer st mclient _ = [] <$ shutDownServer st mclient
 
 -- | End the server with its sessions still alive: keep the tree for a
--- restore, send every attached client away, and hang up every pane, so the
--- idle exit follows once the children are reaped (see
+-- restore, send every client away (the issuing one too), and hang up every
+-- pane, so the idle exit follows once the children are reaped (see
 -- 'Hat.Server.serverIdle').
-shutDownServer :: ServerState -> IO ()
-shutDownServer st = do
+shutDownServer :: ServerState -> Maybe Client -> IO ()
+shutDownServer st missuer = do
     -- Flag first: pane readers race us into closePane once the ptys go,
     -- and the shutdown path must know this drain is a kill, not the last
     -- window closing (which drops the store instead).
@@ -696,6 +694,7 @@ shutDownServer st = do
     saveNow st  -- capture the tree before we tear it down
     sessions <- readTVarIO st.sessions
     forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
+    forM_ missuer $ \client -> send client Exited
     panes <- atomically $ do
         sess <- readTVar st.sessions
         fmap concat . forM (Map.elems sess) $ \s -> do

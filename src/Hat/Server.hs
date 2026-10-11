@@ -384,7 +384,7 @@ waitIdle st = do
             StayUp -> retry
             v -> pure v
     case verdict of
-        TearDown -> shutDownServer st >> waitIdle st
+        TearDown -> shutDownServer st Nothing >> waitIdle st
         _ -> pure ()
 
 
