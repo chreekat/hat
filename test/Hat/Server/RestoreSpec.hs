@@ -10,6 +10,7 @@ import Data.Map.Strict qualified as Map
 import Data.Vector qualified as V
 import System.Posix.IO (closeFd)
 import System.Posix.Terminal (openPseudoTerminal)
+import System.Process (getPid, spawnProcess, terminateProcess)
 import Test.Hspec
 
 import Hat.Geometry (Rect (..), Size (..))
@@ -257,13 +258,13 @@ spec = do
     describe "reload session size" $
         it "rebuilds a reloaded session at its captured window area" $
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
-                \(m, _) -> do
+                \(m, _) -> withLiveChild $ \child -> do
             st <- testState
             let lay = emitLayout
                     Rect { startRow = 0, endRow = 30, startCol = 0, endCol = 100 }
                     (Leaf (PaneId 0))
                 rp = HotPane
-                    { masterFd = fromIntegral m, childPid = 999999
+                    { masterFd = fromIntegral m, childPid = child
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
@@ -287,13 +288,13 @@ spec = do
     describe "reload links and groups" $
         it "shares a linked window and a group's window map, adopting each pane once" $
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
-                \(m, _) -> do
+                \(m, _) -> withLiveChild $ \child -> do
             st <- testState
             let lay = emitLayout
                     Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
                     (Leaf (PaneId 0))
                 rp = HotPane
-                    { masterFd = fromIntegral m, childPid = 999999
+                    { masterFd = fromIntegral m, childPid = child
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
@@ -537,3 +538,12 @@ spec = do
             atomically $ modifyTVar' st.options
                 (applyEntry (OptUser "@snapshot-limit") (OVText "many"))
             snapshotHistoryLimit st `shouldReturn` 10
+
+-- | A live child for a reload test's adopted pane, so the pane's reaper
+-- never reports it exited (taking its window, and session, with it) while
+-- the test inspects the rebuilt tree.
+withLiveChild :: (Int -> IO a) -> IO a
+withLiveChild act = bracket (spawnProcess "sleep" ["1000"]) terminateProcess $ \ph ->
+    getPid ph >>= \case
+        Just pid -> act (fromIntegral pid)
+        Nothing -> throwIO (ErrorCall "withLiveChild: child already gone")
