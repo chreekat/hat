@@ -259,7 +259,8 @@ controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
 controlAt v sock origin cmds = do
     re <- newReadEnd sock
     sendMessage sock =<< hello v origin ControlIntent []
-    greeting <- recvMessage re
+    -- A server exiting as we connect resets the connection: it never saw us.
+    greeting <- recvMessage re `catch` \(_ :: IOException) -> pure Nothing
     case greeting of
         Just (Known (Welcome _)) -> do
             sendMessage sock (Command cmds)

@@ -242,6 +242,9 @@ control path mconfig cmds = do
                 Rejected e -> do
                     hPutStrLn stderr (T.unpack e)
                     exitFailure
+                ServerDied -> do
+                    hPutStrLn stderr "hat: server exited unexpectedly"
+                    exitFailure
                 _ -> pure ()
 
 -- | Connect, spawning the server first if none is running. The origin says
