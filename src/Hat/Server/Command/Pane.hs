@@ -40,7 +40,7 @@ import Numeric (showOct)
 import Hat.Geometry
 import Hat.Model
 import Hat.Server.Command.Buffer (storeBuffer)
-import Hat.Server.Command.Option (SetDefault (..), cmdSet)
+import Hat.Server.Command.Option (SetDefault (..), cmdSet, cmdShow)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
 import Hat.Server.ArgNumber (stringPercentage)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
@@ -542,8 +542,6 @@ locateWindowOf st win = do
 cmdSelectPane :: CommandImpl
 cmdSelectPane st mclient args
     | Just e <- unknownFlag "select-pane" "DdegLlMmRUZ" flags = pure [RErr e]
-    | isJust (lookup "-P" opts) || "-g" `elem` flags =
-        pure [RErr "select-pane -P/-g (window-style) is not implemented"]
     | otherwise = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
         case res of
@@ -551,6 +549,19 @@ cmdSelectPane st mclient args
             Right (sess, _, win, pane)
                 | "-l" `elem` flags -> lastPaneOf st sess win flags
                 | "-m" `elem` flags || "-M" `elem` flags -> [] <$ markPane st pane ("-M" `elem` flags)
+                -- The deprecated -P and -g set and show the pane's
+                -- window-style.
+                | Just style <- lookup "-P" opts -> do
+                    let tok = "%" <> tshow (rawPane pane.id)
+                    r <- cmdSet DefaultWindow st mclient ["-p", "-t", tok, "window-style", style]
+                    case [ e | RErr e <- r ] of
+                        e : _ -> pure [RErr e]
+                        [] -> do
+                            _ <- cmdSet DefaultWindow st mclient
+                                ["-p", "-t", tok, "window-active-style", style]
+                            pure []
+                | "-g" `elem` flags ->
+                    cmdShow st mclient ["-pv", "-t", "%" <> tshow (rawPane pane.id), "window-style"]
                 | otherwise -> do
                     mtarget <- case direction of
                         Nothing -> pure (Just pane)
