@@ -15,6 +15,7 @@ module Hat.Term.Pty
     , newReadBuf
     , readPtyBuf
     , readAvailBuf
+    , awaitOutput
     , writePty
     , resize
     , waitExit
@@ -33,7 +34,7 @@ module Hat.Term.Pty
     , ProcessStatus (..)
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadWaitRead)
 import Control.Concurrent.MVar
 import Control.Exception (IOException, catch, try)
 import Control.Monad (unless, when)
@@ -49,6 +50,8 @@ import Data.Text.IO qualified as TIO
 import Foreign
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types
+import GHC.IO.Device qualified as Device
+import GHC.IO.FD qualified as FD
 import System.IO
 import System.Posix.IO (closeFd, fdToHandle)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
@@ -223,6 +226,18 @@ readPtyBuf pty = bufRead (hGetBufSome pty.handle)
 -- | 'readAvail' through a reusable staging buffer.
 readAvailBuf :: PtyHandle -> ReadBuf -> IO ByteString
 readAvailBuf pty = bufRead (hGetBufNonBlocking pty.handle)
+
+-- | Block until the master has output to read (or has hung up), consuming
+-- none of it.
+awaitOutput :: PtyHandle -> IO ()
+awaitOutput pty = whenOpen pty () $ do
+    -- A raw poll of the fd: 'hWaitForInput' would look ahead into the
+    -- handle's buffer, consuming bytes. An unusable fd counts as ready: the
+    -- read that follows reports it.
+    let Fd fd = pty.master
+    ready <- Device.ready FD.FD { FD.fdFD = fd, FD.fdIsNonBlocking = 0 } False 0
+        `catch` \(_ :: IOException) -> pure True
+    unless ready (threadWaitRead pty.master)
 
 bufRead :: (Ptr Word8 -> Int -> IO Int) -> ReadBuf -> IO ByteString
 bufRead get (ReadBuf fp) = do

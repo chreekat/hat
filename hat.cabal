@@ -296,6 +296,7 @@ test-suite hat-test
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionsSpec
         Hat.Server.PaneCommandSpec
+        Hat.Server.PaneReaderSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
         Hat.Server.ReloadSpec
