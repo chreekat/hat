@@ -31,6 +31,7 @@ module Hat.Server.Hooks
     , clientNameOf
     , installHookEngine
     , installEventSink
+    , notifyPasteChanges
     ) where
 
 import Control.Concurrent (myThreadId)
@@ -47,6 +48,7 @@ import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 
 import Hat.Model
 import Hat.Model.Options (hookNames)
+import Hat.Model.PasteBuffers (BufferChange (..), PasteStore, pasteChanges)
 import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.HookTypes
 import Hat.Server.Locate (locatePane)
@@ -56,6 +58,15 @@ noTarget = NotifyTarget Nothing Nothing Nothing
 
 sessionTarget :: SessionId -> NotifyTarget
 sessionTarget sid = NotifyTarget (Just sid) Nothing Nothing
+
+-- | Fire @paste-buffer-deleted@ and @paste-buffer-changed@ for what a
+-- buffer store update did.
+notifyPasteChanges :: ServerState -> PasteStore -> PasteStore -> IO ()
+notifyPasteChanges st old new = forM_ (pasteChanges old new) $ \(change, n) ->
+    notify st (case change of
+        BufferDeleted -> "paste-buffer-deleted"
+        BufferChanged -> "paste-buffer-changed")
+        noTarget [("paste_buffer", PText n)]
 
 -- | Fire @session-added-to-group@ or @session-removed-from-group@ for a
 -- session, carrying the group's name and its size at that moment.
