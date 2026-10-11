@@ -70,7 +70,7 @@ main = do
     screens <- mapConcurrently (captureReloadScreen KeepScrollback . snd) emus
     t3 <- getMonotonicTime
     let hots = [ HotPane { masterFd = -1, childPid = -1
-                         , modes = ReloadModes False False 0 False 0
+                         , modes = ReloadModes False False 0 False 0 0 []
                          , screen = sc, start = StartShell, death = Nothing }
                | sc <- screens ]
         blob = encodeHandover

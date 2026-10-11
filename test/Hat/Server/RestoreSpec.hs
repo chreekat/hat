@@ -173,7 +173,7 @@ spec = do
             captured.altScreen `shouldBe` True
             let rp = HotPane
                     { masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0 False 0 0, screen = captured
+                    , modes = ReloadModes False False 0 False 0 0 [], screen = captured
                     , start = StartShell, death = Nothing }
                 (bytes, sb) = replayPane rp
             dst <- Emu.newEmulator sz 1000
@@ -200,7 +200,7 @@ spec = do
                 captured <- captureReloadScreen KeepScrollback src
                 let rp = HotPane
                         { masterFd = 0, childPid = 0
-                        , modes = ReloadModes False False 0 False 0 0, screen = captured
+                        , modes = ReloadModes False False 0 False 0 0 [], screen = captured
                     , start = StartShell, death = Nothing }
                     (bytes, _) = replayPane rp
                 dst <- Emu.newEmulator sz 1000
@@ -218,9 +218,9 @@ spec = do
         -- carry, or the adopted pane spells its keys the legacy way while the
         -- surviving program still expects the protocol.
         it "re-arms the key protocols the capture carried" $
-            forM_ [ ReloadModes False False 0 True 0 2
-                  , ReloadModes False False 0 False 0 1
-                  , ReloadModes False False 0 False 5 0 ] $ \ms -> do
+            forM_ [ ReloadModes False False 0 True 0 2 []
+                  , ReloadModes False False 0 False 0 1 []
+                  , ReloadModes False False 0 False 5 0 [] ] $ \ms -> do
                 let sz = Size { rows = 3, cols = 20 }
                     rp = HotPane
                         { masterFd = 0, childPid = 0
@@ -232,6 +232,22 @@ spec = do
                 Emu.keyModes dst `shouldReturn` Emu.KeyModes
                     { extendedKeys = ms.extendedKeys
                     , kittyFlags = ms.kittyFlags }
+
+        -- The mouse encoding, bracketed paste and the keypad mode, or the
+        -- adopted pane reports the mouse and pastes the legacy way.
+        it "re-arms the private modes the capture carried" $ do
+            src <- Emu.newEmulator Size { rows = 3, cols = 20 } 1000
+            _ <- Emu.feed src "\ESC[?1006h\ESC[?2004h\ESC="
+            decs <- Emu.decModes src
+            decs `shouldBe` [66, 1006, 2004]
+            let rp = HotPane
+                    { masterFd = 0, childPid = 0
+                    , modes = ReloadModes False False 0 False 0 0 decs
+                    , screen = emptyReloadScreen
+                    , start = StartShell, death = Nothing }
+            dst <- Emu.newEmulator Size { rows = 3, cols = 20 } 1000
+            _ <- Emu.feed dst (fst (replayPane rp))
+            Emu.decModes dst `shouldReturn` decs
 
         -- restart-server -C: restart as memory cleanup — the handover keeps
         -- the live grid but sheds every scrollback line.
@@ -261,7 +277,7 @@ spec = do
                     , pen = Cell.defaultStyle }
                 rp = HotPane
                     { masterFd = 0, childPid = 0
-                    , modes = ReloadModes False False 0 False 0 0, screen = sc
+                    , modes = ReloadModes False False 0 False 0 0 [], screen = sc
                     , start = StartShell, death = Nothing }
                 esz = fromMaybe (Size 24 80) (captureSize sc)
             esz `shouldBe` Size 42 330
@@ -282,7 +298,7 @@ spec = do
             let lay = emitLayout (fitLayout Size { rows = 30, cols = 100 } (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = fromIntegral sleeper
-                    , modes = ReloadModes False False 0 False 0 0
+                    , modes = ReloadModes False False 0 False 0 0 []
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
@@ -309,7 +325,7 @@ spec = do
             let lay = emitLayout (fitLayout Size { rows = 24, cols = 80 } (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = fromIntegral sleeper
-                    , modes = ReloadModes False False 0 False 0 0
+                    , modes = ReloadModes False False 0 False 0 0 []
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
@@ -341,17 +357,17 @@ spec = do
     -- scheme once into a subscribed pane.
     describe "reload color-scheme re-push" $ do
         it "re-pushes the current scheme to a pane that held the ?2031 subscription" $ do
-            reloadSchemePush (ReloadModes True False 0 False 0 0) (Just SchemeDark)
+            reloadSchemePush (ReloadModes True False 0 False 0 0 []) (Just SchemeDark)
                 `shouldBe` Just "\ESC[?997;1n"
-            reloadSchemePush (ReloadModes True False 0 False 0 0) (Just SchemeLight)
+            reloadSchemePush (ReloadModes True False 0 False 0 0 []) (Just SchemeLight)
                 `shouldBe` Just "\ESC[?997;2n"
 
         it "pushes nothing to a pane that never subscribed" $
-            reloadSchemePush (ReloadModes False False 0 False 0 0) (Just SchemeDark)
+            reloadSchemePush (ReloadModes False False 0 False 0 0 []) (Just SchemeDark)
                 `shouldBe` Nothing
 
         it "pushes nothing when the server does not yet know the scheme" $
-            reloadSchemePush (ReloadModes True False 0 False 0 0) Nothing
+            reloadSchemePush (ReloadModes True False 0 False 0 0 []) Nothing
                 `shouldBe` Nothing
 
     -- Fail loud rather than reload on top of an in-flight startup: a second

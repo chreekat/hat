@@ -103,12 +103,13 @@ captureHotPane carry pane = do
     let Fd fd = Hat.Term.Pty.masterFd pane.pty
     ms <- Emu.modes pane.emulator
     km <- Emu.keyModes pane.emulator
+    decs <- Emu.decModes pane.emulator
     sc <- captureReloadScreen carry pane.emulator
     mexit <- readTVarIO pane.exited
     pure HotPane
         { masterFd = maybe (fromIntegral fd) (const (-1)) mexit
         , childPid = fromIntegral (Hat.Term.Pty.pid pane.pty)
-        , modes = reloadModesOf ms km
+        , modes = reloadModesOf ms km decs
         , screen = sc
         , start = case pane.start of
             ShellCommand t -> StartCommand t
@@ -148,8 +149,8 @@ captureReloadScreen carry emu = do
 
 -- | The app-set subscriptions to carry across a reload; the inverse
 -- rebuild happens in 'adoptPane'.
-reloadModesOf :: Emu.Modes -> Emu.KeyModes -> ReloadModes
-reloadModesOf m km = ReloadModes
+reloadModesOf :: Emu.Modes -> Emu.KeyModes -> [Int] -> ReloadModes
+reloadModesOf m km decs = ReloadModes
     { colorReport = m.colorReport
     , focusReport = m.focusReport
     , mouse = case m.mouse of
@@ -160,6 +161,7 @@ reloadModesOf m km = ReloadModes
     , modifyOtherKeys = km.extendedKeys == 2
     , kittyFlags = km.kittyFlags
     , extendedKeys = km.extendedKeys
+    , decModes = decs
     }
 
 -- Read and consume the handover file the outgoing image wrote. The frozen
@@ -338,6 +340,7 @@ replayPane :: HotPane -> (B.ByteString, [B.ByteString])
 replayPane rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
         <> Emu.keyModeReplayBytes (keyModesOf rp.modes)
+        <> Emu.decModeReplayBytes rp.modes.decModes
         <> Emu.restorePainted restoreModes rp.screen.pen
             Pos { row = rp.screen.cursorRow, col = rp.screen.cursorCol }
             rp.screen.cursorVisible rp.screen.rows

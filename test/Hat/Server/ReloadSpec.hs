@@ -22,6 +22,7 @@ import Hat.Server.Persist
 import Hat.Server.PersistSpec ()  -- the tree generators, shared with the store
 import Hat.Server.Reload
 import Hat.Term.Cell
+import Hat.Term.Emulator (carriedDecModes)
 
 genText :: Gen T.Text
 genText = T.pack <$> listOf (chooseEnum (' ', '~'))
@@ -134,11 +135,12 @@ instance Arbitrary ReloadModes where
     arbitrary = ReloadModes
         <$> arbitrary <*> arbitrary <*> choose (0, 3)
         <*> arbitrary <*> choose (0, 31) <*> choose (0, 2)
+        <*> sublistOf carriedDecModes
     shrink m =
-        [ ReloadModes cr fr mo mok kf ek
-        | (cr, fr, mo, mok, kf, ek) <-
+        [ ReloadModes cr fr mo mok kf ek ds
+        | (cr, fr, mo, mok, kf, ek, ds) <-
             shrink (m.colorReport, m.focusReport, m.mouse
-                   , m.modifyOtherKeys, m.kittyFlags, m.extendedKeys) ]
+                   , m.modifyOtherKeys, m.kittyFlags, m.extendedKeys, m.decModes) ]
 
 instance Arbitrary ReloadScreen where
     arbitrary = ReloadScreen
@@ -313,8 +315,8 @@ emptyPaneTree = ReloadTree
         , modes = fixedModes, screen = fixedScreen
         , start = StartCommand "pwd", death = Nothing }
 
--- The current-era representative: 'emptyPaneTree' with its first pane in
--- extended-key mode 1, which only era 13 can carry.
+-- The era-13 representative: 'emptyPaneTree' with its first pane in
+-- extended-key mode 1, which only era 13 can carry: the era-13 row.
 extKeysTree :: ReloadTree
 extKeysTree = case emptyPaneTree of
     ReloadTree {..} -> ReloadTree { sessions = map session sessions, .. }
@@ -325,6 +327,19 @@ extKeysTree = case emptyPaneTree of
         (snap, HotPane {..}) : rest ->
             (snap, HotPane { modes = fixedModes { modifyOtherKeys = False, extendedKeys = 1 }, .. })
                 : rest
+        [] -> []
+
+-- The current-era representative: 'extKeysTree' with its first pane in SGR
+-- mouse and bracketed paste modes, which only era 14 can carry.
+decModesTree :: ReloadTree
+decModesTree = case extKeysTree of
+    ReloadTree {..} -> ReloadTree { sessions = map session sessions, .. }
+  where
+    session HotSession {..} = HotSession { windows = map window windows, .. }
+    window HotWindow {..} = HotWindow { panes = withModes panes, .. }
+    withModes = \case
+        (snap, HotPane {..}) : rest ->
+            (snap, HotPane { modes = modes { decModes = [1006, 2004] }, .. }) : rest
         [] -> []
 
 -- A non-trivial captured screen, to pin the current era's encoding: an
@@ -346,7 +361,7 @@ fixedTree = treeWith (Just "prev") fixedModes fixedScreen
 fixedModes :: ReloadModes
 fixedModes = ReloadModes
     { colorReport = True, focusReport = False, mouse = 2
-    , modifyOtherKeys = True, kittyFlags = 3, extendedKeys = 2 }
+    , modifyOtherKeys = True, kittyFlags = 3, extendedKeys = 2, decModes = [] }
 
 -- What an era 4-8 row migrates to: those payloads predate the key protocols,
 -- so their panes come back with none enabled.
@@ -368,13 +383,13 @@ corpus =
         \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
         \071864ffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes False False 0 False 0 0) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes False False 0 False 0 0 []) emptyReloadScreen )
     , ( 2
       , "851a4841545202039f82071864ff583683009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8500642f746d70\
         \0718648400f5f402ffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes True False 2 False 0 0) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes True False 2 False 0 0 []) emptyReloadScreen )
     , ( 3
       , "851a4841545203039f82071864ff586783009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -382,7 +397,7 @@ corpus =
         \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
         \ffffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes True False 2 False 0 0) fixedScreen )
+      , treeWith Nothing (ReloadModes True False 2 False 0 0 []) fixedScreen )
     , ( 4
       , "851a4841545204039f82071864ff586d84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -512,6 +527,27 @@ corpus =
         \028900f50102f5019f481b5b303b33316d78ff9f40ff8a00810081\
         \00f4f4f4f4f4f4f482016370776480ff816470726576"
       , fixedCleanup, extKeysTree )
+    , ( 14
+      , "851a484154520e039f82071864ff5901da840079010d7b226c6173\
+        \745f6163746976655f73657373696f6e223a22776f726b222c2273\
+        \657373696f6e73223a5b7b2263757272656e745f6978223a302c22\
+        \6e616d65223a22776f726b222c2273746172745f637764223a222f\
+        \686f6d65222c2277696e646f7773223a5b7b22616374697665223a\
+        \302c226175746f5f72656e616d65223a747275652c226978223a30\
+        \2c226c61796f7574223a224c222c226e616d65223a2277222c2270\
+        \616e6573223a5b7b22637764223a222f746d70227d2c7b22637764\
+        \223a222f746d70227d2c7b22637764223a222f737276222c22656d\
+        \707479223a747275652c22696e7075745f6f6666223a747275652c\
+        \227469746c65223a2269646c65227d5d7d5d7d5d7d9f8700071864\
+        \8800f5f402f403019f1903ee1907d4ff8900f50102f5019f481b5b\
+        \303b33316d78ff9f40ff8a0081008100f4f4f4f4f4f4f48201686d\
+        \616b65202d6a328087002018658800f5f402f50302808900f50102\
+        \f5019f481b5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4\
+        \f4f482029f6376696d63612062ff8184008103801a6553f1008700\
+        \20008800f5f402f50302808900f50102f5019f481b5b303b33316d\
+        \78ff9f40ff8a0081008100f4f4f4f4f4f4f482016370776480ff81\
+        \6470726576"
+      , fixedCleanup, decModesTree )
     ]
 
 spec :: Spec
@@ -562,7 +598,7 @@ spec = describe "reload handover" $ do
     -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
     -- one is a compat bug.
     it "encodes the current era to stable bytes" $
-        hexOf (encodeHandover fixedCleanup (hotOf extKeysTree))
+        hexOf (encodeHandover fixedCleanup (hotOf decModesTree))
             `shouldBe` currentGolden
   where
     decodesToTree (e, hex, cl, t) =
