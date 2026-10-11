@@ -43,6 +43,7 @@ import Hat.Server.OptionsSpec qualified
 import Hat.Server.PaneReaderSpec qualified
 import Hat.Server.PickerSpec qualified
 import Hat.Server.PromptSpec qualified
+import Hat.Server.PromptHistorySpec qualified
 import Hat.Server.ReloadSpec qualified
 import Hat.Server.RenderSpec qualified
 import Hat.Server.ResizeRenderSpec qualified
@@ -118,6 +119,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
     describe "Hat.Server.DisplayPanes" Hat.Server.DisplayPanesSpec.spec
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec
+    describe "Hat.Server.PromptHistory" Hat.Server.PromptHistorySpec.spec
     describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "Hat.Server.Hooks" Hat.Server.HooksSpec.spec

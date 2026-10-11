@@ -151,6 +151,7 @@ import Hat.Server.Startup
 import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.Pane
+import Hat.Server.PromptHistory (loadHistory, saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Resize
 import Hat.Server.Title (TitleParts (..), composeTitle)
@@ -225,6 +226,7 @@ runServerWith path mconfig mhandover = do
         atomically $ writeTVar st.startupPhase LoadingConfig
         _ <- forkIO $ finallyReady st $
             (do loadConfig st mconfig
+                loadHistory st
                 atomically $ writeTVar st.startupPhase
                     (phaseAfterConfig (persistOn || isJust mreload))
                 case mreload of
@@ -281,6 +283,7 @@ runServerWith path mconfig mhandover = do
                     logEvent lg ServerFatal { err = T.pack (displayException e) }
                     flushLogger lg
                     throwIO e
+        saveHistory st
         case r of
             Left () -> pure ()
             Right () -> do

@@ -321,7 +321,7 @@ optionTable =
     , live $ scalar "focus-events" ServerScope KFlag "off"
     , notYet $ scalar "get-clipboard" ServerScope
         (KChoice ["off", "buffer", "request", "both"]) "buffer"
-    , notYet $ scalar "history-file" ServerScope KString ""
+    , live $ scalar "history-file" ServerScope KString ""
     , notYet $ scalar "input-buffer-size" ServerScope
         (KNumber 1048576 uintMax) "1048576"
     , notYet $ scalar "menu-style" WindowScope KStyle

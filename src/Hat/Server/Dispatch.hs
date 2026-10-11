@@ -80,6 +80,7 @@ import Hat.Server.Keys
 import Hat.Server.Overlay (handlePickerInput)
 import Hat.Server.Locate
 import Hat.Server.Pane
+import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Target qualified as Target
 import Hat.Transport.Wire
@@ -501,6 +502,7 @@ cmdReload' scope st mclient args =
                     -- orphans accrued on the dev box across upgrades). Reap it here,
                     -- while we can still signal it.
                     reapMonitor st.monitorRegistry
+                    saveHistory st  -- the next image loads it after its config
                     logEvent st.logger ReloadExec { panes = length cleanup.live }
                     -- The self-exec replaces this image, so 'withLogger's
                     -- flush-on-exit never runs; drain the queue now or the

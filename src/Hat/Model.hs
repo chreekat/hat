@@ -164,6 +164,10 @@ data ServerState = ServerState
     , buffers     :: TVar PasteStore
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
+    , searchHistory :: TVar [Text]
+        -- ^ search-prompt history, most-recent first: hat has no search
+        --   prompt, so it only carries a @history-file@'s search entries
+        --   through to the next save. See 'Hat.Server.PromptHistory'.
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
     , lastActiveSession :: TVar (Maybe SessionId)
         -- ^ the session most recently focused by any client; captured into
@@ -634,6 +638,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO emptyPasteStore
     <*> newTVarIO Map.empty
     <*> newTVarIO []
+    <*> newTVarIO []       -- searchHistory
     <*> newTVarIO Nothing  -- markedPane
     <*> newTVarIO Nothing  -- lastActiveSession
     <*> newTVarIO Nothing  -- lastSession
