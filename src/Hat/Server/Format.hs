@@ -7,6 +7,7 @@
 module Hat.Server.Format
     ( FormatEnv
     , FormatCtx (..)
+    , Animation (..)
     , formatCtx
     , evaluate
     , evaluateCtx
@@ -14,6 +15,7 @@ module Hat.Server.Format
     , renderFormat
     , renderFormatCtx
     , formatReadsTree
+    , formatReadsLoops
     , truthy
     ) where
 
@@ -40,7 +42,8 @@ import Text.Regex.TDFA.Text qualified as RT
 import Hat.Glob (globMatch)
 import Hat.Server.Format.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)
-import Hat.TextWidth (charWidth, textWidth)
+import Hat.Server.FormatDraw (formatTrimLeft, formatTrimRight, formatWidth)
+import Hat.TextWidth (textWidth)
 
 type FormatEnv = Map Text Text
 
@@ -56,7 +59,13 @@ data FormatCtx = FormatCtx
     , panes     :: [FormatEnv]  -- ^ target window's panes, creation order
     , clients   :: [FormatEnv]  -- ^ attached clients
     , paneLines :: [Text]       -- ^ target pane's visible lines, for @C@
+    , animate   :: Animation
     }
+
+-- | Whether @A@ animation frames expand: only in a status format (tmux's
+-- @FORMAT_STATUS@).
+data Animation = Animate | NoAnimate
+    deriving (Eq, Show)
 
 -- | A context with no loop or search data.
 formatCtx :: FormatEnv -> (Text -> Text) -> ZonedTime -> FormatCtx
@@ -70,6 +79,7 @@ formatCtx env shell zt = FormatCtx
     , panes = []
     , clients = []
     , paneLines = []
+    , animate = NoAnimate
     }
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
@@ -315,6 +325,7 @@ data ModState = ModState
     , sortR :: Bool
     , repeatF :: Bool
     , clientQ :: Bool
+    , cycleCount :: Maybe Int  -- ^ @A@: periods per animation frame
     , unimpl :: Maybe Text
     }
 
@@ -326,7 +337,7 @@ emptyModState = ModState
     , baseF = False, dirF = False, lenF = False, widF = False
     , timeM = Nothing, quoteM = Nothing, expandF = False, expandTimeF = False
     , nameK = Nothing, loopK = Nothing, sortO = OrderList, sortR = False
-    , repeatF = False, clientQ = False, unimpl = Nothing
+    , repeatF = False, clientQ = False, cycleCount = Nothing, unimpl = Nothing
     }
 
 collectMods :: [Mod] -> ModState
@@ -355,7 +366,9 @@ collectMods = List.foldl' step emptyModState
         "p" -> case m.margs of
             (a1 : _) -> st { padW = numDefault (-10000) 10000 0 a1 }
             [] -> st
-        "A" -> st { unimpl = Just "A" }
+        "A" -> st { cycleCount = Just (case m.margs of
+            (a1 : _) -> numDefault 1 100 1 a1
+            [] -> 1) }
         "O" -> st { unimpl = Just "O" }
         "V" -> st { unimpl = Just "V" }
         "w" -> st { widF = True }
@@ -430,12 +443,16 @@ collectMods = List.foldl' step emptyModState
 -- not a function of the caller's environment alone. Conservative — text
 -- that merely resembles such a modifier also answers True.
 formatReadsTree :: Text -> Bool
-formatReadsTree t = case T.breakOn "#{" t of
+formatReadsTree = formatReadsLoops ["S", "W", "P", "L", "N", "C"]
+
+-- | 'formatReadsTree' for the given modifiers only.
+formatReadsLoops :: [Text] -> Text -> Bool
+formatReadsLoops toks t = case T.breakOn "#{" t of
     (_, rest)
         | T.null rest -> False
         | otherwise -> any (`T.isInfixOf` rest)
             [ tok <> d
-            | tok <- ["S", "W", "P", "L", "N", "C"]
+            | tok <- toks
             , d <- [":", "/", ";"]
             ]
 
@@ -451,6 +468,7 @@ replaceKey ctx depth key = postOps <$> value
         | ms.clientQ = Just ""  -- no per-client termcap/feature model
         | Just nm <- ms.unimpl =
             Just ("<format modifier '" <> nm <> "' unimplemented>")
+        | Just periods <- ms.cycleCount = Just (cycleVal periods)
         | ms.literalF = Just (unescape copy)
         | ms.charF = Just charVal
         | Just cm <- ms.colourM = Just (colourVal cm)
@@ -473,12 +491,12 @@ replaceKey ctx depth key = postOps <$> value
                | otherwise = v0
             v2 = List.foldl' applySub v1 ms.subs
             v3 | ms.limit > 0 =
-                    let trimmed = trimLeft ms.limit v2
+                    let trimmed = formatTrimLeft ms.limit v2
                     in case ms.marker of
                         Just mk | trimmed /= v2 -> trimmed <> mk
                         _ -> trimmed
                | ms.limit < 0 =
-                    let trimmed = trimRight (negate ms.limit) v2
+                    let trimmed = formatTrimRight (negate ms.limit) v2
                     in case ms.marker of
                         Just mk | trimmed /= v2 -> mk <> trimmed
                         _ -> trimmed
@@ -486,10 +504,20 @@ replaceKey ctx depth key = postOps <$> value
             v4 = padTo ms.padW v3
             v5 | ms.lenF = tshow (BS.length (TE.encodeUtf8 v4))
                | otherwise = v4
-            v6 | ms.widF = tshow (textWidth v5)
+            v6 | ms.widF = tshow (formatWidth v5)
                | otherwise = v5
         in v6
     applySub acc (p0, w0, icase) = regexSub icase (exp1 p0) (exp1 w0) acc
+
+    -- format_cycle: the frame for now, each lasting @periods@ x 100ms.
+    cycleVal periods
+        | ctx.animate == NoAnimate || T.null copy = ""
+        | otherwise =
+            let frames = T.splitOn "," copy
+                millis = floor (ctx.now * 1000) :: Integer
+                ix = (millis `div` (fromIntegral periods * 100))
+                    `mod` fromIntegral (length frames)
+            in frames !! fromIntegral ix
 
     charVal = case numFull 32 126 (exp1 copy) of
         Just n -> T.singleton (chr n)
@@ -820,34 +848,6 @@ dirnameT t
     t' = T.dropWhileEnd (== '/') t
     d = T.dropWhileEnd (/= '/') t'
     d' = T.dropWhileEnd (== '/') d
-
--- format_trim_left: width-aware truncation; a straddling wide character
--- is dropped but still counts toward the limit.
-trimLeft :: Int -> Text -> Text
-trimLeft limit = T.pack . go 0 . T.unpack
-  where
-    go w cs
-        | w >= limit = []
-        | otherwise = case cs of
-            [] -> []
-            (c : rest) ->
-                let cw = charWidth c
-                in if w + cw <= limit
-                    then c : go (w + cw) rest
-                    else go (w + cw) rest
-
-trimRight :: Int -> Text -> Text
-trimRight limit t
-    | total <= limit = t
-    | otherwise = T.pack (go 0 (T.unpack t))
-  where
-    total = textWidth t
-    skip = total - limit
-    go w cs
-        | w >= skip = cs
-        | otherwise = case cs of
-            [] -> []
-            (c : rest) -> go (w + charWidth c) rest
 
 -- utf8_padcstr / utf8_rpadcstr: pad with spaces to a display width.
 padTo :: Int -> Text -> Text

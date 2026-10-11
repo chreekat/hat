@@ -32,7 +32,6 @@ screen-redraw-indicators.sh
 screen-redraw-outside.sh
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
-screen-redraw-status.sh
 screen-redraw-tiled.sh
 screen-redraw-window-style.sh
 style-trim.sh
@@ -65,7 +64,6 @@ copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/sele
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
-format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
 format-modifiers.sh             # new-pane floating panes (P/z order)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
@@ -76,9 +74,8 @@ menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click 
 new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
 
 # option engine breadth: flat scalar table, global-only read-back
-options-array.sh                # needs status-format, user-keys, pane-colours (registered, not yet live)
-options-values.sh               # needs status-keys, status-bg, default-shell, default-client-command (not yet live)
-show-options-output.sh          # needs status-format (not yet live)
+options-array.sh                # needs user-keys, pane-colours (registered, not yet live)
+options-values.sh               # needs default-client-command (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that
 # asserts a tmux grid-storage detail libghostty-vt does not record stays

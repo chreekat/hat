@@ -5,7 +5,8 @@ import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Test.Hspec
 
-import Hat.Model (PromptState (..))
+import Hat.Model (PromptKeys (..), PromptMode (..), PromptState (..))
+import Hat.Model.Options (ModeKeys (..))
 import Hat.Server.Keys (tokenizeKeys)
 import Hat.Server.Prompt
 
@@ -181,3 +182,50 @@ spec = do
 
         it "runs the typed line verbatim when the template is empty" $
             applyTemplate "" "new-window" `shouldBe` "new-window"
+
+    describe "status-keys vi" $ do
+        let viPrompt = emptyPrompt
+                { promptKeys = PromptKeys
+                    { statusKeys = KeysVi, wordSeparators = "-" } }
+            -- Each chunk is its own keystroke batch, so a lone ESC is Escape.
+            typeVi chunks = foldl step (Editing viPrompt) chunks
+              where
+                step (Editing st) raw = foldl step1 (Editing st)
+                    (tokenizeKeys (TE.encodeUtf8 raw))
+                step done _ = done
+                step1 (Editing st) k = editPrompt [] st k
+                step1 done _ = done
+            viState chunks = case typeVi chunks of
+                Editing st -> st
+                other -> error ("prompt closed unexpectedly: " <> show other)
+            buf = (.input) . viState
+            at = (.cursor) . viState
+
+        it "types into insert mode" $
+            buf ["abc"] `shouldBe` "abc"
+        it "Escape enters command mode, backing the cursor up one" $ do
+            (viState ["abc", "\ESC"]).promptMode `shouldBe` PromptCommand
+            at ["abc", "\ESC"] `shouldBe` 2
+        it "command-mode letters move and edit, not insert" $ do
+            at ["abc", "\ESC", "h"] `shouldBe` 1
+            at ["abc", "\ESC", "0"] `shouldBe` 0
+            at ["abc", "\ESC", "0", "$"] `shouldBe` 3
+            buf ["abc", "\ESC", "x"] `shouldBe` "ab"
+            buf ["abc", "\ESC", "0", "D"] `shouldBe` ""
+            buf ["abc", "\ESC", "d"] `shouldBe` ""
+        it "i, a, A and I return to insert mode at their places" $ do
+            buf ["abc", "\ESC", "i", "Z"] `shouldBe` "abZc"
+            buf ["abc", "\ESC", "0", "a", "Z"] `shouldBe` "aZbc"
+            buf ["abc", "\ESC", "0", "A", "Z"] `shouldBe` "abcZ"
+            buf ["abc", "\ESC", "I", "Z"] `shouldBe` "Zabc"
+            buf ["abc", "\ESC", "S", "Z"] `shouldBe` "Z"
+        it "w, b and e move by words, stopping at separators" $ do
+            at ["foo-bar baz", "\ESC", "0", "w"] `shouldBe` 3
+            at ["foo-bar baz", "\ESC", "0", "W"] `shouldBe` 8
+            at ["foo-bar baz", "\ESC", "b"] `shouldBe` 8
+            at ["foo-bar baz", "\ESC", "0", "e"] `shouldBe` 2
+        it "Enter submits and q cancels from command mode" $ do
+            typeVi ["abc", "\ESC", "\r"] `shouldBe` Submit "abc"
+            typeVi ["abc", "\ESC", "q"] `shouldBe` Cancel
+        it "emacs-only keys do nothing in insert mode" $
+            buf ["abc", "\STX", "Z"] `shouldBe` "abcZ"

@@ -3,6 +3,7 @@
 -- listing, choose, capture, and display commands format against.
 module Hat.Server.FormatEnv
     ( windowFormatEnv
+    , windowOwnEnv
     , paneFormatEnv
     , paneEnvById
     , refreshAutoNames
@@ -12,6 +13,8 @@ module Hat.Server.FormatEnv
     , paneModeEnv
     , resolveShell
     , expandFormat
+    , formatCtxFor
+    , reachableValues
     , WindowFlagState (..)
     , windowFlags
     , clientFormatVars
@@ -21,10 +24,10 @@ import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (filterM, forM, forM_, void, when)
-import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -32,7 +35,7 @@ import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
-import System.IO.Unsafe (unsafeInterleaveIO)
+import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.Process
     (CreateProcess (..), readCreateProcessWithExitCode, shell)
 import Data.Vector qualified as V
@@ -41,7 +44,8 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
-import Hat.Server.Format (FormatCtx (..), FormatEnv, formatCtx, renderFormatCtx)
+import Hat.Server.Format
+    (FormatCtx (..), FormatEnv, evaluateCtx, formatCtx, renderFormatCtx)
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
@@ -55,8 +59,13 @@ import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
-windowFormatEnv st sess ix win = do
-    base <- sessionFormatEnv st sess
+windowFormatEnv st sess ix win =
+    Map.union <$> windowOwnEnv st sess ix win <*> sessionFormatEnv st sess
+
+-- | A window's own variables (and its window options), without its
+-- session's: what a @W:@ loop item adds over the session's environment.
+windowOwnEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
+windowOwnEnv st sess ix win = do
     eff <- atomically (windowArea st win)
     (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
@@ -77,8 +86,10 @@ windowFormatEnv st sess ix win = do
             , flagZoomed = isJust zoom
             }
     winUser <- deltaFormats <$> readTVarIO win.options
-    pure $ Map.union winUser $ Map.union (Map.fromList
+    viewers <- Map.findWithDefault 0 win.id <$> atomically (activeClientCounts st)
+    pure $ Map.union winUser $ Map.fromList
         [ ("window_index", tshow ix)
+        , ("window_active_clients", tshow viewers)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
         , ("window_width", tshow eff.cols)
@@ -100,11 +111,21 @@ windowFormatEnv st sess ix win = do
         , ("window_linked_sessions", tshow (length
             (List.nubBy (\a b -> a.windows == b.windows) links)))
         , ("window_linked_sessions_list", T.intercalate "," linkNames)
-        ]) base
+        , ("window_last_flag", if Just ix == mlast then "1" else "0")
+        ]
 
 -- | The full format environment for a specific pane, including the
 -- fields tmux-resurrect's @save.sh@ dumps (pid, command, cursor,
 -- history, cwd).
+-- | A pane's @pane_pid@: empty unless its program is still running (tmux:
+-- an open fd), so it also shadows the session's active-pane value.
+panePid :: Pane -> IO Text
+panePid pane = do
+    mexit <- readTVarIO pane.exited
+    pure $ if pane.kind == ProgramPane && isNothing mexit
+        then tshow (Hat.Term.Pty.pid pane.pty)
+        else ""
+
 paneFormatEnv
     :: ServerState -> Session -> Int -> Window -> Int -> Pane -> IO FormatEnv
 paneFormatEnv st sess wix win pix pane = do
@@ -114,7 +135,10 @@ paneFormatEnv st sess wix win pix pane = do
     scr <- Emu.snapshot pane.emulator
     hsize <- Emu.scrollbackLength pane.emulator
     pendingWrap <- Emu.cursorPendingWrap pane.emulator
-    active <- readTVarIO win.activeId
+    (active, lastPane, zoom) <- atomically $ (,,)
+        <$> readTVar win.activeId <*> (listToMaybe <$> readTVar win.paneHist)
+        <*> readTVar win.zoomed
+    title <- Emu.title pane.emulator
     sz <- readTVarIO pane.size
     area <- atomically (windowArea st win)
     geom <- atomically $ do
@@ -126,7 +150,6 @@ paneFormatEnv st sess wix win pix pane = do
     paneUser <- deltaFormats <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
-    title <- Emu.title pane.emulator
     -- A signal is reported by number, as tmux does where libc has no
     -- @sys_signame@ (glibc).
     let deadVars = case mexit of
@@ -136,9 +159,8 @@ paneFormatEnv st sess wix win pix pane = do
                 , ("pane_dead_time", tshow (floor e.diedAt :: Integer)) ]
                 <> [ ("pane_dead_status", tshow n) | Just n <- [e.status] ]
                 <> [ ("pane_dead_signal", tshow n) | Just n <- [e.signal] ]
-    -- Only a pane with its program still running has a pid (tmux: an open fd).
-    let pidVars = [ ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
-                  | pane.kind == ProgramPane, isNothing mexit ]
+    pid <- panePid pane
+    let pidVars = [ ("pane_pid", pid) ]
     pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <> pidVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
@@ -149,6 +171,10 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_marked_set", if isJust marked then "1" else "0")
         , ("pane_input_off", if inputOff then "1" else "0")
         , ("pane_title", title)
+        , ("pane_flags", T.concat
+            [ if pane.id == active then "*" else ""
+            , if Just pane.id == lastPane then "-" else ""
+            , if zoom == Just pane.id then "Z" else "" ])
         , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
         , ("cursor_y", tshow scr.cursor.row)
         , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
@@ -265,6 +291,7 @@ sessionFormatEnv st sess = do
             Just win -> do
                 wname <- readTVar win.name
                 pure [ ("window_index", tshow cur)
+                     , ("window_id", "@" <> tshow (rawWindow win.id))
                      , ("window_name", wname)
                      , ( "window_active_clients"
                        , tshow (Map.findWithDefault 0 win.id counts) )
@@ -272,14 +299,20 @@ sessionFormatEnv st sess = do
         mactive <- maybe (pure Nothing) activePane mwin
         cs <- sessionClients st sess.id
         gEnv <- groupEnv
-        pure (sname, wEnv <> gEnv, mactive, length cs, nwindows)
+        alerts <- sessionAlerts sess
+        pure (sname, wEnv <> gEnv <> alerts, mactive, length cs, nwindows)
     pEnv <- case mactive of
         Nothing -> pure []
         Just pane -> do
             dir <- paneCurrentPath pane
             title <- Emu.title pane.emulator
+            cmd <- paneCommandName pane
             modeEnv <- paneModeEnv pane
+            pid <- panePid pane
             pure $ [ ("pane_current_path", T.pack dir)
+                   , ("pane_current_command", cmd)
+                   , ("pane_pid", pid)
+                   , ("pane_active", "1")
                    , ("pane_title", title)
                    , ("pane_id", "%" <> tshow (rawPane pane.id))
                    ] <> modeEnv
@@ -317,6 +350,22 @@ sessionFormatEnv st sess = do
                  , ("session_group_attached", tshow attached)
                  , ("session_group_many_attached", if attached > 1 then "1" else "0")
                  ]
+
+-- | tmux's @session_alert@ (each alert kind once, in @#!~@ order) and
+-- @session_alerts@ (each alerted window's index and its alert marks).
+sessionAlerts :: Session -> STM [(Text, Text)]
+sessionAlerts sess = do
+    ws <- Map.toAscList <$> readTVar sess.windows
+    marks <- forM ws $ \(ix, win) -> do
+        (act, bell, sil) <- (,,) <$> readTVar win.activity
+            <*> readTVar win.bellFlag <*> readTVar win.silenceFlag
+        pure (ix, [ c | (on, c) <- [(act, '#'), (bell, '!'), (sil, '~')], on ])
+    let alerted = filter (not . null . snd) marks
+        kinds = List.foldl' (\seen c -> if c `elem` seen then seen else seen <> [c])
+            [] (concatMap snd alerted)
+    pure [ ("session_alert", T.pack kinds)
+         , ("session_alerts", T.intercalate ","
+             [ tshow ix <> T.pack cs | (ix, cs) <- alerted ]) ]
 
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
 -- plus @copy_cursor_{x,y,line}@ while in mode.
@@ -369,47 +418,52 @@ resolveShell st cmdText = do
 -- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)
 -- overlay the caller's environment.
 expandFormat :: ServerState -> FormatEnv -> Text -> IO Text
-expandFormat st env0 fmt = do
+expandFormat st env fmt = do
+    ctx <- formatCtxFor st env
+    pure $! renderFormatCtx ctx fmt
+
+-- | The evaluation context for expanding formats against @env0@: the hook
+-- overlay, @#(…)@ commands resolved through the cache, and the loop and
+-- search data. Each is read only if an expansion reaches it, so a job in
+-- an untaken branch never runs (as in tmux).
+formatCtxFor :: ServerState -> FormatEnv -> IO FormatCtx
+formatCtxFor st env0 = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
     let env = maybe env0 (\amb -> Map.union amb.formats env0) mamb
-    -- Pre-resolve shell segments so the evaluator stays pure.
-    resolved <- newIORef Map.empty
-    let collect t = case T.breakOn "#(" t of
-            (_, rest) | T.null rest -> pure ()
-            (_, rest) -> do
-                let inner = fst (breakBalanced (T.drop 2 rest))
-                val <- resolveShell st inner
-                modifyIORef' resolved (Map.insert inner val)
-                collect (T.drop (2 + T.length inner + 1) rest)
-    collect fmt
-    vals <- readIORef resolved
     now <- getZonedTime
-    -- Loop/search context, gathered only when the format demands it; the
-    -- strict return keeps every deferred read inside this call.
+    -- A command is itself a format, expanded (as tmux's format_job_get
+    -- does) without jobs, animation or strftime. The caller's strict use
+    -- of the expansion keeps the deferred reads inside its own call.
+    let jobCtx = formatCtx env (const "") now
+        job inner = unsafePerformIO (resolveShell st (evaluateCtx jobCtx inner))
     sessionItems <- unsafeInterleaveIO (loopSessionEnvs st)
     windowItems <- unsafeInterleaveIO (loopWindowEnvs st env)
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
-    let ctx = (formatCtx env (\c -> Map.findWithDefault "" c vals) now)
-            { sessions = sessionItems
-            , windows = windowItems
-            , panes = paneItems
-            , clients = clientItems
-            , paneLines = visibleLines
-            }
-    pure $! renderFormatCtx ctx fmt
+    pure (formatCtx env job now)
+        { sessions = sessionItems
+        , windows = windowItems
+        , panes = paneItems
+        , clients = clientItems
+        , paneLines = visibleLines
+        }
+
+-- | The formats plus every variable value satisfying @p@ that they name
+-- (as @{name}@ or @:name}@), transitively: what their @E:@ or @T:@
+-- expansions can reach.
+reachableValues :: (Text -> Bool) -> FormatEnv -> [Text] -> [Text]
+reachableValues p env = go Set.empty
   where
-    breakBalanced = go (0 :: Int) ""
-      where
-        go depth acc t = case T.uncons t of
-            Nothing -> (acc, "")
-            Just (')', rest) | depth == 0 -> (acc, rest)
-            Just (c, rest)
-                | c == '(' -> go (depth + 1) (acc <> T.singleton c) rest
-                | c == ')' -> go (depth - 1) (acc <> T.singleton c) rest
-                | otherwise -> go depth (acc <> T.singleton c) rest
+    wanted = Map.filter p env
+    names k t = ("{" <> k <> "}") `T.isInfixOf` t || (":" <> k <> "}") `T.isInfixOf` t
+    go _ [] = []
+    go seen (t : ts) =
+        let named = [ k | k <- Map.keys wanted, not (Set.member k seen)
+                        , names k t ]
+            seen' = foldr Set.insert seen named
+        in t : go seen' (ts <> [ v | k <- named, Just v <- [Map.lookup k wanted] ])
 
 -- | The conditions that produce a window's @#{window_flags}@ string.
 data WindowFlagState = WindowFlagState

@@ -2,6 +2,7 @@
 -- with the timer that clears it.
 module Hat.Server.Toast
     ( showToast
+    , showStyledToast
     , toastReplies
     , expireToast
     , dismissToast
@@ -22,11 +23,19 @@ import Hat.Model.Options (Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Locate (clientOptions)
 
+-- | Show a server message, its text shown as-is.
 showToast :: ServerState -> Client -> Text -> IO ()
-showToast st client t = do
+showToast = showMarkupToast MarkupLiteral
+
+-- | Show a @display-message@ message, its @#[…]@ styles drawn.
+showStyledToast :: ServerState -> Client -> Text -> IO ()
+showStyledToast = showMarkupToast MarkupStyled
+
+showMarkupToast :: Markup -> ServerState -> Client -> Text -> IO ()
+showMarkupToast markup st client t = do
     opts <- clientOptions st client
     now <- getMonotonicTimeNSec
-    let toast = Toast { text = t, deadline = toastDeadline opts now }
+    let toast = Toast { text = t, markup, deadline = toastDeadline opts now }
     atomically $ do
         writeTVar client.toast (Just toast)
         bumpDirty st

@@ -677,7 +677,7 @@ cmdDisplayMessage st mclient args = do
         _ | "-p" `elem` flags -> pure [ROutput text]
         Just client | Just _ <- client.control -> pure [ROutput ("%message " <> text)]
         _ -> do
-            forM_ mclient $ \client -> showToast st client text
+            forM_ mclient $ \client -> showStyledToast st client text
             pure []
 
 cmdRunShell :: CommandImpl

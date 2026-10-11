@@ -10,12 +10,10 @@ import Test.Hspec
 
 import Control.Concurrent.STM (readTVarIO)
 import Data.Map.Strict qualified as Map
-import Data.Text qualified as T
-import Data.Vector qualified as V
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Model (PaneStart (..), ServerState (..), Toast (..), newServerState)
+import Hat.Model (Markup (..), PaneStart (..), ServerState (..), Toast (..), newServerState)
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), OptionValue (..), Options (..)
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
@@ -30,9 +28,7 @@ import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
-import Hat.Server.View
-    ( assembleStatusRow, borderCells, mapGlyph, statusLayout
-    , windowEntryFormat, windowEntryStyle )
+import Hat.Server.View (borderCells, mapGlyph, messageLine, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -53,7 +49,7 @@ spec = do
             let ms n = n * 1000000  -- monotonic clock is in ns
                 shownAt = ms 41000
                 toastFor opts =
-                    Toast { text = "hi", deadline = toastDeadline opts shownAt }
+                    Toast { text = "hi", markup = MarkupLiteral, deadline = toastDeadline opts shownAt }
             it "750: alive at t+700ms, expired at t+800ms" $ do
                 let toast = toastFor (defaultOptions { displayTime = 750 })
                 toastExpired (shownAt + ms 700) toast `shouldBe` False
@@ -116,58 +112,17 @@ spec = do
             it "off: the active edge keeps the plain line" $
                 glyphWith IndicatorsOff `shouldBe` Just '\x2502'  -- │
 
-        -- window-status-style / -current-style / -bell-style: which style a
-        -- window's entry in the status bar takes.
-        describe "window-status styles pick the per-window entry style" $ do
-            let cur    = Cell.defaultStyle { Cell.fg = Cell.Indexed 1 }
-                bellS  = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
-                normal = Cell.defaultStyle { Cell.fg = Cell.Indexed 3 }
-                opts = defaultOptions
-                    { windowStatusCurrentStyle = cur
-                    , windowStatusBellStyle = bellS
-                    , windowStatusStyle = normal }
-            it "the current window takes -current-style (even with a bell)" $ do
-                windowEntryStyle opts True False `shouldBe` cur
-                windowEntryStyle opts True True `shouldBe` cur
-            it "a non-current window with a bell takes -bell-style" $
-                windowEntryStyle opts False True `shouldBe` bellS
-            it "any other window takes window-status-style" $
-                windowEntryStyle opts False False `shouldBe` normal
-            it "distinguishes the current window from the rest by default" $ do
-                -- tmux underscores the current window; the default must not
-                -- leave it indistinguishable from window-status-style.
-                let d = defaultOptions
-                windowEntryStyle d True False
-                    `shouldNotBe` windowEntryStyle d False False
-                (windowEntryStyle d True False).underline `shouldBe` True
-
-        -- window-status-format / -current-format: which format string a
-        -- window's entry renders through (the rendering itself is FormatSpec).
-        describe "window-status-format picks the per-window entry format" $ do
-            let opts = defaultOptions
-                    { windowStatusCurrentFormat = "CUR #W"
-                    , windowStatusFormat = "OTH #W" }
-            it "the current window renders window-status-current-format" $
-                windowEntryFormat opts True `shouldBe` "CUR #W"
-            it "any other window renders window-status-format" $
-                windowEntryFormat opts False `shouldBe` "OTH #W"
-
-        -- status-left-length / status-right-length / status-style: the bar caps
-        -- each side's text and pads with the status style.
-        describe "status-*-length cap the bar text and status-style pads it" $ do
-            let barSty = Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
-                opts = defaultOptions
-                    { statusStyle = barSty
-                    , statusLeftLength = 3
-                    , statusRightLength = 2 }
-                row = assembleStatusRow opts 10 "HELLO" "WORLD" []
-                rowText = T.pack (concatMap Cell.cluster (V.toList row))
-            it "status-left-length caps the left text" $
-                T.take 3 rowText `shouldBe` "HEL"
-            it "status-right-length caps the right text" $
-                T.takeEnd 2 rowText `shouldBe` "WO"
-            it "status-style paints the padding" $
-                (.style) (row V.! 5) `shouldBe` barSty
+        -- message-line: the status line the prompt and messages take,
+        -- clamped to the last line there is.
+        describe "message-line picks the message's status line" $ do
+            let with st ml = applyEntry "message-line" (OVScalar ml)
+                    (applyEntry "status" (OVScalar st) defaultOptions)
+            it "takes the given line" $
+                messageLine (with "3" "1") `shouldBe` 1
+            it "clamps to the last status line" $
+                messageLine (with "2" "4") `shouldBe` 1
+            it "is the first line by default" $
+                messageLine defaultOptions `shouldBe` 0
 
         -- status-position: bottom puts the bar on the last row with no
         -- content offset; top puts it on row 0 and pushes content down one.

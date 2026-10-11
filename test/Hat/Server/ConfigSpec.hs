@@ -12,7 +12,7 @@ import Test.Hspec
 
 import Hat.Log (newLogger)
 import Hat.Model (ServerState (..), newServerState)
-import Hat.Model.Options (Options (..))
+import Hat.Model.Options (optionText)
 import Hat.Server (cmdSourceFile, readConfigUtf8)
 import Hat.Server.Environ
     (EnvEntry (..), EnvVisibility (..), environFind)
@@ -58,7 +58,7 @@ spec = do
                 st <- newServerState Map.empty lg (dir <> "/s.sock") Nothing
                 _ <- cmdSourceFile st Nothing ["~/reload.conf"]
                 opts <- readTVarIO st.options
-                opts.statusLeft `shouldBe` "RELOADED"
+                optionText "status-left" opts `shouldBe` "RELOADED"
 
     -- tmux's config assignment forms (environ_put): a bare NAME=value line
     -- sets a global environment variable, %hidden NAME=value a hidden one.

@@ -15,7 +15,8 @@ import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as T
 
-import Hat.Model (PromptState (..))
+import Hat.Model (PromptKeys (..), PromptMode (..), PromptState (..))
+import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.Keys (Key (..))
 
 -- | What one key does to the prompt.
@@ -35,6 +36,10 @@ emptyPrompt = PromptState
     , template = ""
     , promptLabel = ":"
     , killed = ""
+    , promptKeys = PromptKeys
+        { statusKeys = KeysEmacs
+        , wordSeparators = defaultOptions.wordSeparators }
+    , promptMode = PromptInsert
     }
 
 -- | A prompt pre-filled with @initial@ and shown behind @prefix@. On
@@ -55,15 +60,90 @@ applyTemplate tmpl line
     | T.null tmpl = line
     | otherwise = T.replace "%1" line (T.replace "%%" line tmpl)
 
--- | Apply one key to the prompt. @history@ is the command history,
--- most-recent first, used by the Up/Down keys.
+-- | Apply one key to the prompt, read as its @status-keys@ say. @history@
+-- is the command history, most-recent first, used by the Up/Down keys.
 editPrompt :: [Text] -> PromptState -> Key -> PromptEdit
-editPrompt _history st key = case key.name of
+editPrompt history st key = case st.promptKeys.statusKeys of
+    KeysEmacs -> emacsKey history st key
+    KeysVi -> case st.promptMode of
+        PromptInsert -> viInsertKey history st key
+        PromptCommand -> viCommandKey history st key
+
+-- | A vi-keys prompt in insert mode (tmux's @prompt_translate_key@):
+-- Escape enters command mode, the line-editing keys they share act as in
+-- emacs mode, and any other key inserts itself if it is a character.
+viInsertKey :: [Text] -> PromptState -> Key -> PromptEdit
+viInsertKey history st key
+    | key.name `elem` ["Escape", "C-["] = Editing
+        (moveTo (st.cursor - 1) st) { promptMode = PromptCommand }
+    | key.name `elem` shared = emacsKey history st key
+    | otherwise = Editing (maybe st (`insert` st) (insertText key))
+  where
+    shared =
+        [ "C-a", "C-c", "C-e", "C-g", "C-h", "Tab", "C-k", "C-n", "C-p"
+        , "C-t", "C-u", "C-v", "C-w", "C-y", "Enter", "C-Left", "C-Right"
+        , "BSpace", "Delete", "Down", "End", "Home", "Left", "Right", "Up" ]
+
+-- | A vi-keys prompt in command mode (tmux's @prompt_translate_key@).
+viCommandKey :: [Text] -> PromptState -> Key -> PromptEdit
+viCommandKey history st key = case key.name of
+    "BSpace" -> as "Left"
+    "A" -> inserting (as "End")
+    "I" -> inserting (as "Home")
+    "C" -> inserting (as "C-k")
+    "s" -> inserting (as "Delete")
+    "a" -> inserting (as "Right")
+    "S" -> inserting (Editing (clearLine st))
+    "i" -> inserting (Editing st)
+    "$" -> as "End"
+    "0" -> as "Home"
+    "^" -> as "Home"
+    "D" -> as "C-k"
+    "X" -> as "BSpace"
+    "b" -> move (backwardWordTmux seps)
+    "B" -> move (backwardWordTmux "")
+    "d" -> Editing (clearLine st)
+    "e" -> move (endWordTmux seps)
+    "E" -> move (endWordTmux "")
+    "w" -> move (forwardWordVi seps)
+    "W" -> move (forwardWordVi "")
+    "p" -> as "C-y"
+    "q" -> Cancel
+    "x" -> as "Delete"
+    "Delete" -> as "Delete"
+    "j" -> as "Down"
+    "Down" -> as "Down"
+    "h" -> as "Left"
+    "Left" -> as "Left"
+    "l" -> as "Right"
+    "Right" -> as "Right"
+    "k" -> as "Up"
+    "Up" -> as "Up"
+    "C-h" -> as "C-h"
+    "C-c" -> as "C-c"
+    "Enter" -> as "Enter"
+    _ -> Editing st
+  where
+    seps = st.promptKeys.wordSeparators
+    as name = emacsKey history st key { name = name }
+    move f = Editing (moveTo (f st.input st.cursor) st)
+    inserting = \case
+        Editing st' -> Editing st' { promptMode = PromptInsert }
+        done -> done
+
+-- | tmux's @C-u@: empty the line.
+clearLine :: PromptState -> PromptState
+clearLine st = st { input = "", cursor = 0 }
+
+-- | The emacs-keys prompt (and the keys vi mode shares with it).
+emacsKey :: [Text] -> PromptState -> Key -> PromptEdit
+emacsKey _history st key = case key.name of
     "Enter"  -> Submit st.input
     "Escape" -> Cancel
     "C-c"    -> Cancel
     "C-g"    -> Cancel
     "BSpace" -> Editing (backspace st)
+    "C-h"    -> Editing (backspace st)
     "Delete" -> Editing (deleteAt st)
     "C-d"    -> Editing (deleteAt st)
     "Left"   -> Editing (moveTo (st.cursor - 1) st)
@@ -149,6 +229,60 @@ backwardWordIx s i = skipBack isAlphaNum (skipBack (not . isAlphaNum) i)
     skipBack p k
         | k > 0, p (T.index s (k - 1)) = skipBack p (k - 1)
         | otherwise = k
+
+-- | tmux's @prompt_forward_word@ in vi mode: past the rest of this word
+-- (a run of separators or of other characters) and any spaces after it.
+forwardWordVi :: Text -> Text -> Int -> Int
+forwardWordVi seps s i0
+    | i0 >= n = n
+    | otherwise = go (i0 + 1)
+  where
+    n = T.length s
+    cls = isSep seps (T.index s i0) && T.index s i0 /= ' '
+    go i
+        | i < n && T.index s i == ' ' = skipSpaces i
+        | i < n && isSep seps (T.index s i) == cls = go (i + 1)
+        | otherwise = i
+    skipSpaces i
+        | i < n && T.index s i == ' ' = skipSpaces (i + 1)
+        | otherwise = i
+
+-- | tmux's @prompt_end_word@: to the last character of the next word.
+endWordTmux :: Text -> Text -> Int -> Int
+endWordTmux seps s i0
+    | i0 >= n = i0
+    | otherwise = case firstWord (i0 + 1) of
+        Nothing -> n
+        Just j -> runEnd (isSep seps (T.index s j)) (j + 1) - 1
+  where
+    n = T.length s
+    firstWord i
+        | i >= n = Nothing
+        | T.index s i == ' ' = firstWord (i + 1)
+        | otherwise = Just i
+    runEnd cls i
+        | i < n, T.index s i /= ' ', isSep seps (T.index s i) == cls = runEnd cls (i + 1)
+        | otherwise = i
+
+-- | tmux's @prompt_backward_word@: to the start of this or the previous
+-- word.
+backwardWordTmux :: Text -> Text -> Int -> Int
+backwardWordTmux seps s i0 = case nonSpace i0 of
+    Nothing -> 0
+    Just j -> start (isSep seps (T.index s j)) j
+  where
+    nonSpace i
+        | i <= 0 = Nothing
+        | T.index s (i - 1) /= ' ' = Just (i - 1)
+        | i - 1 == 0 = Just 0
+        | otherwise = nonSpace (i - 1)
+    start cls j
+        | j <= 0 = 0
+        | T.index s (j - 1) == ' ' || isSep seps (T.index s (j - 1)) /= cls = j
+        | otherwise = start cls (j - 1)
+
+isSep :: Text -> Char -> Bool
+isSep seps c = T.elem c seps
 
 -- | The start of the previous whitespace-delimited word (readline @C-w@).
 backwardWSWordIx :: Text -> Int -> Int

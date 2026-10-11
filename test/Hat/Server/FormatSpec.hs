@@ -30,6 +30,7 @@ env = Map.fromList
     , ("@ts", "1000000000")
     , ("@sp", "a b$c")
     , ("@hash", "a#b")
+    , ("@styled", "#[fg=red]abc")
     , ("@sq", "a'b")
     , ("@sub", "abABab")
     , ("@slash", "foo/bar foo/")
@@ -309,6 +310,8 @@ spec = do
         , ("#{=/1/x:@cjk}", "x")
         , ("#{=/1/中:@s}", "a中")
         , ("#{=2:@emoji}", "😀")
+        , ("#{=2:@styled}", "#[fg=red]ab")
+        , ("#{=-2:@styled}", "#[fg=red]bc")
         , ("#{p12:@name}", "window-name ")
         , ("#{p-12:@name}", " window-name")
         , ("#{p3:@name}", "window-name")
@@ -327,6 +330,7 @@ spec = do
         , ("#{w:@cjk}", "4")
         , ("#{n:@emoji}", "8")
         , ("#{w:@emoji}", "4")
+        , ("#{w:@styled}", "3")
         ]
 
     cases "takes basename and dirname"
@@ -477,4 +481,20 @@ spec = do
             `shouldBe` "[charlie] alpha bravo "
 
     it "fails loudly on unimplemented modifiers" $
-        eval "#{A/2:a,b}" `shouldSatisfy` T.isInfixOf "unimplemented"
+        eval "#{O:x}" `shouldSatisfy` T.isInfixOf "unimplemented"
+
+    describe "the A animation modifier" $ do
+        let at dt = evaluateCtx ctx
+                { animate = Animate, now = fromIntegral testNow + dt }
+        it "is empty outside a status format" $
+            eval "#{A:a,b}" `shouldBe` ""
+        it "steps through its frames every 100ms" $ do
+            at 0 "#{A:a,b}" `shouldBe` "a"
+            at 0.15 "#{A:a,b}" `shouldBe` "b"
+        it "holds each frame for n periods with A/n" $ do
+            at 0.15 "#{A/2:a,b}" `shouldBe` "a"
+            at 0.25 "#{A/2:a,b}" `shouldBe` "b"
+        it "treats a bad count as 1 and empty frames as empty" $ do
+            at 0.15 "#{A/0:a,b}" `shouldBe` "b"
+            at 0.15 "#{A/x:a,b}" `shouldBe` "b"
+            at 0 "#{A:}" `shouldBe` ""

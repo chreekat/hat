@@ -120,6 +120,7 @@ library
         Hat.Server.Flash
         Hat.Server.Format
         Hat.Server.Format.Colour
+        Hat.Server.FormatDraw
         Hat.Server.Format.Fuzzy
         Hat.Server.Format.X11Colours
         Hat.Server.FormatEnv
@@ -129,6 +130,7 @@ library
         Hat.Server.Hooks
         Hat.Server.Keymap
         Hat.Server.Keys
+        Hat.Server.Message
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
@@ -147,6 +149,7 @@ library
         Hat.Server.Resize
         Hat.Server.Snapshot
         Hat.Server.Startup
+        Hat.Server.Status
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Title
@@ -298,10 +301,12 @@ test-suite hat-test
         Hat.Server.FlagsSpec
         Hat.Server.FlashSpec
         Hat.Server.FormatSpec
+        Hat.Server.FormatDrawSpec
         Hat.Server.HooksSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec
+        Hat.Server.MessageSpec
         Hat.Server.MruSpec
         Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec
@@ -314,6 +319,7 @@ test-suite hat-test
         Hat.Server.PromptHistorySpec
         Hat.Server.ReloadSpec
         Hat.Server.SendSpec
+        Hat.Server.StatusSpec
         Hat.Server.StyleSpec
         Hat.Server.TargetSpec
         Hat.Server.TitleSpec

@@ -107,17 +107,7 @@ data Options = Options
     , historyLimit    :: Int
     , defaultTerminal :: Text
     , wordSeparators  :: Text  -- ^ characters that split @next-word@ etc.
-    , statusLeft      :: Text
-    , statusLeftLength :: Int
-    , statusRight     :: Text
-    , statusRightLength :: Int
     , statusInterval  :: Int  -- ^ seconds between status redraws; 0 disables
-    , windowStatusFormat :: Text
-    , windowStatusCurrentFormat :: Text
-    , statusStyle            :: Cell.Style
-    , windowStatusStyle      :: Cell.Style
-    , windowStatusCurrentStyle :: Cell.Style
-    , windowStatusBellStyle  :: Cell.Style
     , paneBorderStyle        :: Cell.Style
     , paneActiveBorderStyle  :: Cell.Style
     , modeStyle              :: Cell.Style  -- ^ copy-mode selection highlight
@@ -167,17 +157,7 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , modeKeys = missing "mode-keys", historyLimit = missing "history-limit"
         , defaultTerminal = missing "default-terminal"
         , wordSeparators = missing "word-separators"
-        , statusLeft = missing "status-left"
-        , statusLeftLength = missing "status-left-length"
-        , statusRight = missing "status-right"
-        , statusRightLength = missing "status-right-length"
         , statusInterval = missing "status-interval"
-        , windowStatusFormat = missing "window-status-format"
-        , windowStatusCurrentFormat = missing "window-status-current-format"
-        , statusStyle = missing "status-style"
-        , windowStatusStyle = missing "window-status-style"
-        , windowStatusCurrentStyle = missing "window-status-current-style"
-        , windowStatusBellStyle = missing "window-status-bell-style"
         , paneBorderStyle = missing "pane-border-style"
         , paneActiveBorderStyle = missing "pane-active-border-style"
         , modeStyle = missing "mode-style"
@@ -222,20 +202,7 @@ fieldBindings = Map.fromList
     , ("history-limit", int (\v o -> o { historyLimit = v }))
     , ("default-terminal", text (\v o -> o { defaultTerminal = v }))
     , ("word-separators", text (\v o -> o { wordSeparators = v }))
-    , ("status-left", text (\v o -> o { statusLeft = v }))
-    , ("status-left-length", int (\v o -> o { statusLeftLength = v }))
-    , ("status-right", text (\v o -> o { statusRight = v }))
-    , ("status-right-length", int (\v o -> o { statusRightLength = v }))
     , ("status-interval", int (\v o -> o { statusInterval = v }))
-    , ("window-status-format", text (\v o -> o { windowStatusFormat = v }))
-    , ("window-status-current-format", text (\v o -> o
-        { windowStatusCurrentFormat = v }))
-    , ("status-style", style (\v o -> o { statusStyle = v }))
-    , ("window-status-style", style (\v o -> o { windowStatusStyle = v }))
-    , ("window-status-current-style", style (\v o -> o
-        { windowStatusCurrentStyle = v }))
-    , ("window-status-bell-style", style (\v o -> o
-        { windowStatusBellStyle = v }))
     , ("pane-border-style", style (\v o -> o { paneBorderStyle = v }))
     , ("pane-active-border-style", style (\v o -> o
         { paneActiveBorderStyle = v }))

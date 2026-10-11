@@ -19,6 +19,7 @@ module Hat.Model
     , RowOrigin (..)
     , ChromeCache (..)
     , StatusCache (..)
+    , WindowKey (..)
     , EnvImport (..)
     , StartupPhase (..)
     , Shutdown (..)
@@ -34,10 +35,13 @@ module Hat.Model
     , CharStop (..)
     , CharSearch (..)
     , Toast (..)
+    , Markup (..)
     , Flash (..)
     , PanesKeyHold (..)
     , DisplayPanesState (..)
     , PromptState (..)
+    , PromptKeys (..)
+    , PromptMode (..)
     , PickerState (..)
     , PickerNode (..)
     , Expansion (..)
@@ -102,7 +106,7 @@ import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( BorderIndicators, BorderLines, Keymap, Options, OptionsDelta, applyDelta
+    ( BorderIndicators, BorderLines, Keymap, ModeKeys, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.ControlTypes (ControlState)
@@ -408,9 +412,15 @@ data CharSearch = CharSearch
 -- | A display-message overlay.
 data Toast = Toast
     { text     :: !Text
+    , markup   :: !Markup
     , deadline :: !(Maybe Word64)  -- ^ monotonic ns, from 'toastDeadline';
                                    --   'Nothing' = until a key is pressed
     }
+
+-- | Whether a message's @#[…]@ directives style it (@display-message@) or
+-- show as text (errors and other server messages).
+data Markup = MarkupStyled | MarkupLiteral
+    deriving (Eq, Show)
 
 -- | Whether a non-selecting key closes the @display-panes@ overlay
 -- (default) or leaves it showing (@-N@); see
@@ -437,6 +447,19 @@ data Flash
     | FlashLinger !Word64      -- ^ fading after the move's frame; monotonic-ns deadline
     deriving (Eq)
 
+-- | How a prompt reads keys: @status-keys@, and the @word-separators@ its
+-- vi word motions stop at.
+data PromptKeys = PromptKeys
+    { statusKeys :: !ModeKeys
+    , wordSeparators :: !Text
+    }
+    deriving (Eq, Show)
+
+-- | A vi-keys prompt's mode (tmux's @PROMPT_COMMANDMODE@); an emacs-keys
+-- prompt is always inserting.
+data PromptMode = PromptInsert | PromptCommand
+    deriving (Eq, Show)
+
 -- | Per-client command-prompt state: the line being edited, the cursor's
 -- index into it, and (when browsing) the position in command history.
 data PromptState = PromptState
@@ -451,6 +474,8 @@ data PromptState = PromptState
     , promptLabel :: !Text     -- ^ text shown before the edit buffer (@:@ for
                                --   the bare prompt, @(rename-window) @ etc.)
     , killed  :: !Text         -- ^ the last killed text, yanked back by @C-y@
+    , promptKeys :: !PromptKeys  -- ^ fixed when the prompt opens
+    , promptMode :: !PromptMode
     }
     deriving (Eq, Show)
 
@@ -551,21 +576,33 @@ data ChromeCache = ChromeCache
     , chrome  :: Chrome
     }
 
--- | A client's rendered status row with everything its expansion
+-- | A client's rendered status rows with everything their expansion
 -- consumed; the render thread's cache. See
--- 'Hat.Server.View.statusCellsCached'.
+-- 'Hat.Server.View.statusRowsCached'.
 -- Fields are strict so the identity-matched ones hold the very objects
 -- they were built from, never a selector thunk 'samePtr' would miss on.
+-- | What a window's status entry usually changes with, cheap to read each
+-- frame: the status cache's per-window key. See
+-- 'Hat.Server.View.statusRowsCached'.
+data WindowKey = WindowKey
+    { index   :: !Int
+    , name    :: !Text
+    , flags   :: !Text  -- ^ @#{window_flags}@
+    , viewers :: !Int   -- ^ @#{window_active_clients}@
+    , options :: !OptionsDelta
+    }
+    deriving (Eq)
+
 data StatusCache = StatusCache
     { opts    :: !Options                    -- ^ matched by object identity
     , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
     , second  :: !Int                        -- ^ POSIX second of the render
     , width   :: !Int
     , env     :: !(Map Text Text)
-    , wins    :: ![(Int, Text, Text, Int, Bool, Bool)]
-        -- ^ per window: index, name, flags, active clients, current, bell
-    , plain   :: !Bool  -- ^ no format reads the tree; see 'Hat.Server.Format.formatReadsTree'
-    , rowCells :: !(V.Vector Cell.Cell)
+    , wins    :: ![WindowKey]
+    , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
+    , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
+    , rowCells :: ![V.Vector Cell.Cell]
     }
 
 data Client = Client

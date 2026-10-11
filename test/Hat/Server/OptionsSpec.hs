@@ -111,9 +111,9 @@ spec = do
             mapM (chosen "remain-on-exit") ["off", "on", "failed", "key"]
                 `shouldBe` Right ["off", "on", "failed", "key"]
 
-        it "rejects a multi-line status bar loudly (unsupported)" $
-            setOption Assign defaultOptions "status" "3"
-                `shouldBe` Left "status: value not yet supported by hat: 3"
+        it "sets a multi-line status bar" $
+            fmap (.statusLines) (setOption Assign defaultOptions "status" "3")
+                `shouldBe` Right 3
 
         it "rejects a junk status value" $
             setOption Assign defaultOptions "status" "yes"
@@ -134,7 +134,7 @@ spec = do
         it "appends to a string option with -a" $ do
             let opts0 = set Assign defaultOptions "status-right" "a"
                 opts1 = set Append opts0 "status-right" "b"
-            opts1.statusRight `shouldBe` "ab"
+            optionText "status-right" opts1 `shouldBe` "ab"
 
         it "sets one command-alias key, keeping the other entries" $ do
             let r = setOption Assign defaultOptions
@@ -238,10 +238,10 @@ spec = do
         it "deleting a scope's entry reveals the inherited value" $ do
             let g = singletonDelta "status-left" (OVScalar "GLOBAL")
                 s = singletonDelta "status-left" (OVScalar "SESSION")
-            (resolveOptions [deleteDelta "status-left" s, g]).statusLeft
+            optionText "status-left" (resolveOptions [deleteDelta "status-left" s, g])
                 `shouldBe` "GLOBAL"
-            (resolveOptions [deleteDelta "status-left" g]).statusLeft
-                `shouldBe` defaultOptions.statusLeft
+            optionText "status-left" (resolveOptions [deleteDelta "status-left" g])
+                `shouldBe` optionText "status-left" defaultOptions
 
         it "exposes any registered option through the typed accessors" $ do
             let opts = resolveOptions [singletonDelta "xterm-keys" (OVScalar "off")]

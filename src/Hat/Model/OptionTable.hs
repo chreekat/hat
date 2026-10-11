@@ -291,6 +291,128 @@ popupLines =
 bellActions = ["none", "any", "current", "other"]
 visualBell = ["off", "on", "both"]
 
+-- | tmux's @status-format@ defaults (@OPTIONS_TABLE_STATUS_FORMAT1..3@):
+-- the window list, the pane list and the session list.
+statusFormat1, statusFormat2, statusFormat3 :: Text
+statusFormat1 = T.concat
+    [ "#[align=left range=left #{E:status-left-style}]"
+    , "#[push-default]"
+    , "#{T;=/#{status-left-length}:status-left}"
+    , "#[pop-default]"
+    , "#[norange default]"
+    , "#[list=on align=#{status-justify}]"
+    , "#[list=left-marker]<#[list=right-marker]>#[list=on]"
+    , "#{W:"
+    ,     "#[range=window|#{window_index} "
+    ,         "#{E:window-status-style}"
+    ,         "#{?#{&&:#{window_last_flag},"
+    ,             "#{!=:#{E:window-status-last-style},default}}, "
+    ,             "#{E:window-status-last-style},"
+    ,         "}"
+    ,         "#{?#{&&:#{window_bell_flag},"
+    ,             "#{!=:#{E:window-status-bell-style},default}}, "
+    ,             "#{E:window-status-bell-style},"
+    ,             "#{?#{&&:#{||:#{window_activity_flag},"
+    ,                          "#{window_silence_flag}},"
+    ,                 "#{!=:"
+    ,                 "#{E:window-status-activity-style},"
+    ,                 "default}}, "
+    ,                 "#{E:window-status-activity-style},"
+    ,             "}"
+    ,         "}"
+    ,     "]"
+    ,     "#[push-default]"
+    ,     "#{T:window-status-format}"
+    ,     "#[pop-default]"
+    ,     "#[norange default]"
+    ,     "#{?loop_last_flag,,#{E:window-status-separator}}"
+    , ","
+    ,     "#[range=window|#{window_index} list=focus "
+    ,         "#{?#{!=:#{E:window-status-current-style},default},"
+    ,             "#{E:window-status-current-style},"
+    ,             "#{E:window-status-style}"
+    ,         "}"
+    ,         "#{?#{&&:#{window_last_flag},"
+    ,             "#{!=:#{E:window-status-last-style},default}}, "
+    ,             "#{E:window-status-last-style},"
+    ,         "}"
+    ,         "#{?#{&&:#{window_bell_flag},"
+    ,             "#{!=:#{E:window-status-bell-style},default}}, "
+    ,             "#{E:window-status-bell-style},"
+    ,             "#{?#{&&:#{||:#{window_activity_flag},"
+    ,                          "#{window_silence_flag}},"
+    ,                 "#{!=:"
+    ,                 "#{E:window-status-activity-style},"
+    ,                 "default}}, "
+    ,                 "#{E:window-status-activity-style},"
+    ,             "}"
+    ,         "}"
+    ,     "]"
+    ,     "#[push-default]"
+    ,     "#{T:window-status-current-format}"
+    ,     "#[pop-default]"
+    ,     "#[norange list=on default]"
+    ,     "#{?loop_last_flag,,#{E:window-status-separator}}"
+    , "}"
+    , "#[nolist align=right range=right #{E:status-right-style}]"
+    , "#[push-default]"
+    , "#{T;=/#{status-right-length}:status-right}"
+    , "#[pop-default]"
+    , "#[norange default]"
+    ]
+statusFormat2 = T.concat
+    [ "#[align=left]#{R: ,#{n:#{session_name}}}P: "
+    , "#[norange default]"
+    , "#[list=on align=#{status-justify}]"
+    , "#[list=left-marker]<#[list=right-marker]>#[list=on]"
+    , "#{P:"
+    ,     "#[range=pane|#{pane_id} "
+    ,         "#{E:pane-status-style}"
+    ,     "]"
+    ,     "#[push-default]"
+    ,     "#{T:window-pane-status-format}"
+    ,     "#[pop-default]"
+    ,     "#[norange list=on default]  "
+    , ","
+    ,     "#[range=pane|#{pane_id} list=focus "
+    ,         "#{?#{!=:#{E:pane-status-current-style},default},"
+    ,             "#{E:pane-status-current-style},"
+    ,             "#{E:pane-status-style}"
+    ,         "}"
+    ,     "]"
+    ,     "#[push-default]"
+    ,     "#{T:window-pane-current-status-format}"
+    ,     "#[pop-default]"
+    ,     "#[norange list=on default] "
+    , "}"
+    ]
+statusFormat3 = T.concat
+    [ "#[align=left]#{R: ,#{n:#{session_name}}}S: "
+    , "#[norange default]"
+    , "#[list=on align=#{status-justify}]"
+    , "#[list=left-marker]<#[list=right-marker]>#[list=on]"
+    , "#{S:"
+    ,     "#[range=session|#{session_id} "
+    ,         "#{E:session-status-style}"
+    ,     "]"
+    ,     "#[push-default]"
+    ,     "#S#{session_alert}"
+    ,     "#[pop-default]"
+    ,     "#[norange list=on default]  "
+    , ","
+    ,     "#[range=session|#{session_id} list=focus "
+    ,         "#{?#{!=:#{E:session-status-current-style},default},"
+    ,                 "#{E:session-status-current-style},"
+    ,                 "#{E:session-status-style}"
+    ,         "}"
+    ,     "]"
+    ,     "#[push-default]"
+    ,     "#S*#{session_alert}"
+    ,     "#[pop-default]"
+    ,     "#[norange list=on default] "
+    , "}"
+    ]
+
 -- | Every option, in @options-table.c@ order (which is also the order
 -- @show-options@ lists them in). Defaults are hat's: for a live option the
 -- value hat actually uses, which may differ from tmux's (noted inline).
@@ -387,16 +509,16 @@ optionTable =
     , notYet $ scalar "key-table" SessionScope KString "root"
     , notYet $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
     , notYet $ scalar "lock-command" SessionScope KString "lock -np"
-    , notYet $ scalar "message-command-style" SessionScope KStyle
+    , live $ scalar "message-command-style" SessionScope KStyle
         "bg=themeblack,fg=themeyellow,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeblack}"
-    , notYet $ scalar "message-format" SessionScope KString
+    , live $ scalar "message-format" SessionScope KString
         "#[#{?#{command_prompt},#{E:message-command-style},\
         \#{E:message-style}}]#{message}"
-    , notYet $ scalar "message-line" SessionScope
+    , live $ scalar "message-line" SessionScope
         (KChoice ["0", "1", "2", "3", "4"]) "0"
-    , notYet $ scalar "message-style" SessionScope KStyle
+    , live $ scalar "message-style" SessionScope KStyle
         "bg=themeyellow,fg=themeblack,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeyellow}"
@@ -411,37 +533,37 @@ optionTable =
     , notYet $ scalar "set-titles-string" SessionScope KString
         "#S:#I:#W - \"#T\" #{session_alerts}"
     , notYet $ scalar "silence-action" SessionScope (KChoice bellActions) "other"
-    -- Extra status lines need status-format[i], which hat does not draw yet.
-    , choicesOnly ["off", "on"] $ live $ scalar "status" SessionScope
+    , live $ scalar "status" SessionScope
         (KChoice ["off", "on", "2", "3", "4", "5"]) "on"
-    , notYet $ scalar "status-bg" SessionScope KColour "default"
-    , notYet $ scalar "status-fg" SessionScope KColour "default"
-    , notYet $ arrayOf "status-format" SessionScope KString " ," []
+    , live $ scalar "status-bg" SessionScope KColour "default"
+    , live $ scalar "status-fg" SessionScope KColour "default"
+    , live $ arrayOf "status-format" SessionScope KString " ,"
+        [statusFormat1, statusFormat2, statusFormat3]
     , live $ scalar "status-interval" SessionScope (KNumber 0 intMax) "15"
-    , notYet $ scalar "status-justify" SessionScope
+    , live $ scalar "status-justify" SessionScope
         (KChoice ["left", "centre", "right", "absolute-centre"]) "left"
-    , notYet $ scalar "status-keys" SessionScope (KChoice ["emacs", "vi"]) "emacs"
+    , live $ scalar "status-keys" SessionScope (KChoice ["emacs", "vi"]) "emacs"
     , live $ scalar "status-left" SessionScope KString "[#{session_name}] "
     , live $ scalar "status-left-length" SessionScope (KNumber 0 shrtMax) "10"
-    , notYet $ scalar "status-left-style" SessionScope KStyle "default"
+    , live $ scalar "status-left-style" SessionScope KStyle "default"
     , live $ scalar "status-position" SessionScope
         (KChoice ["top", "bottom"]) "bottom"
     -- tmux's default also shows the pane title and window offset.
     , live $ scalar "status-right" SessionScope KString "%H:%M %d-%b-%y #H"
     , live $ scalar "status-right-length" SessionScope (KNumber 0 shrtMax) "40"
-    , notYet $ scalar "status-right-style" SessionScope KStyle "default"
-    , live $ scalar "status-style" SessionScope KStyle "fg=black,bg=green"
-    , notYet $ scalar "pane-status-current-style" WindowScope KStyle "underscore"
-    , notYet $ scalar "pane-status-style" WindowScope KStyle "default"
+    , live $ scalar "status-right-style" SessionScope KStyle "default"
+    , live $ scalar "status-style" SessionScope KStyle "bg=themegreen,fg=themeblack"
+    , live $ scalar "pane-status-current-style" WindowScope KStyle "underscore"
+    , live $ scalar "pane-status-style" WindowScope KStyle "default"
     , notYet $ scalar "prompt-cursor-colour" SessionScope KColourString ""
     , notYet $ scalar "prompt-command-cursor-colour" SessionScope KColourString ""
     , notYet $ scalar "prompt-cursor-style" SessionScope
         (KChoice cursorStyles) "default"
     , notYet $ scalar "prompt-command-cursor-style" SessionScope
         (KChoice cursorStyles) "default"
-    , notYet $ scalar "session-status-current-style" WindowScope KStyle
+    , live $ scalar "session-status-current-style" WindowScope KStyle
         "underscore"
-    , notYet $ scalar "session-status-style" WindowScope KStyle "default"
+    , live $ scalar "session-status-style" WindowScope KStyle "default"
     -- tmux's default also lists MSYSTEM, WAYLAND_DISPLAY and the XDG_* names.
     , live $ arrayOf "update-environment" SessionScope KString " ,"
         [ "DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK"
@@ -565,23 +687,23 @@ optionTable =
     , notYet $ scalar "tree-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
     , notYet $ scalar "window-active-style" WindowPaneScope KStyle "default"
-    , notYet $ scalar "window-pane-current-status-format" WindowScope KString
+    , live $ scalar "window-pane-current-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
-    , notYet $ scalar "window-pane-status-format" WindowScope KString
+    , live $ scalar "window-pane-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
     , live $ scalar "window-size" WindowScope
         (KChoice ["largest", "smallest", "manual", "latest"]) "latest"
     , notYet $ scalar "window-style" WindowPaneScope KStyle "default"
-    , notYet $ scalar "window-status-activity-style" WindowScope KStyle "reverse"
-    , live $ scalar "window-status-bell-style" WindowScope KStyle
-        "fg=black,bg=green"
-    , live $ scalar "window-status-current-format" WindowScope KString "#I:#W#F"
-    , live $ scalar "window-status-current-style" WindowScope KStyle
-        "fg=black,bg=green,underscore"
-    , live $ scalar "window-status-format" WindowScope KString "#I:#W#F"
-    , notYet $ scalar "window-status-last-style" WindowScope KStyle "default"
-    , notYet $ scalar "window-status-separator" WindowScope KString " "
-    , live $ scalar "window-status-style" WindowScope KStyle "fg=black,bg=green"
+    , live $ scalar "window-status-activity-style" WindowScope KStyle "reverse"
+    , live $ scalar "window-status-bell-style" WindowScope KStyle "reverse"
+    , live $ scalar "window-status-current-format" WindowScope KString
+        "#I:#W#{?window_flags,#{window_flags}, }"
+    , live $ scalar "window-status-current-style" WindowScope KStyle "underscore"
+    , live $ scalar "window-status-format" WindowScope KString
+        "#I:#W#{?window_flags,#{window_flags}, }"
+    , live $ scalar "window-status-last-style" WindowScope KStyle "default"
+    , live $ scalar "window-status-separator" WindowScope KString " "
+    , live $ scalar "window-status-style" WindowScope KStyle "default"
     , notYet $ scalar "wrap-search" WindowScope KFlag "on"
     -- tmux keeps this only for compatibility: it has no effect there either.
     , live $ scalar "xterm-keys" WindowScope KFlag "on"
