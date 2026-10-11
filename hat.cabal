@@ -114,6 +114,7 @@ library
         Hat.Server.Flash
         Hat.Server.Format
         Hat.Server.Format.Colour
+        Hat.Server.FormatDraw
         Hat.Server.Format.Fuzzy
         Hat.Server.Format.X11Colours
         Hat.Server.FormatEnv
@@ -290,6 +291,7 @@ test-suite hat-test
         Hat.Server.FlagsSpec
         Hat.Server.FlashSpec
         Hat.Server.FormatSpec
+        Hat.Server.FormatDrawSpec
         Hat.Server.HooksSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec

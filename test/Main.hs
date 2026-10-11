@@ -50,6 +50,7 @@ import Hat.Server.RestoreSpec qualified
 import Hat.Server.SessionSpec qualified
 import Hat.Server.SendSpec qualified
 import Hat.Server.StyleSpec qualified
+import Hat.Server.FormatDrawSpec qualified
 import Hat.Server.TargetSpec qualified
 import Hat.Server.TitleSpec qualified
 import Hat.Transport.SocketSpec qualified
@@ -107,6 +108,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
+    describe "Hat.Server.FormatDraw" Hat.Server.FormatDrawSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
