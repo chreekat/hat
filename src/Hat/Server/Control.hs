@@ -4,9 +4,9 @@
 -- @%window-renamed@, and pane output as @%output@ — until @%exit@.
 --
 -- The connection's reader runs command lines ('feedControlInput'); a
--- writer thread ('controlWriter') alone sends the queued stream (see
--- "Hat.Server.ControlQueue") so a client that reads slowly holds up only
--- itself.
+-- writer thread ('controlWriter') alone renders the queued stream (see
+-- "Hat.Server.ControlQueue") onto the client's socket, so a client that
+-- reads slowly holds up only itself.
 module Hat.Server.Control
     ( BlockOrigin (..)
     , runControlCommands
@@ -49,7 +49,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hat.Command.Parser (parseCommandLine)
 import Hat.Geometry
 import Hat.Model
-import Hat.Server.ClientIO (sendDirect)
+import Hat.Server.ClientIO (hasRoom, sendDirect, sendFinal)
 import Hat.Server.Command.Types
 import Hat.Server.ControlQueue
 import Hat.Server.ControlTypes
@@ -169,11 +169,6 @@ feedControlInput d st client cs pendingRef chunk = do
 
 -- Output ----------------------------------------------------------------
 
--- | tmux's @CONTROL_MAXIMUM_AGE@: how far behind (ms) a client without
--- @pause-after@ may fall before it is made to exit.
-maximumAge :: Word64
-maximumAge = 300000
-
 -- | Pane output as @%output@ text: bytes below space and backslash become
 -- @\\ooo@ octal escapes; everything else passes through.
 escapeOutput :: ByteString -> BB.Builder
@@ -197,14 +192,15 @@ controlWriter client cs = loop
             Left reason -> do
                 (status, fl) <- atomically $
                     (,) <$> readTVar cs.retval <*> readTVar cs.flags
-                sendDirect client (ControlExit reason fl.exitWait status)
+                sendFinal client (ControlExit reason fl.exitWait status)
             Right out -> do
                 unless (BL.null out) $
                     sendDirect client (WriteStdout (BL.toStrict out))
                 loop
-    -- Everything queued, rendered; or, with nothing left on an exiting
-    -- client, its exit reason.
+    -- Everything queued, rendered once the client's socket has room for
+    -- it; or, with nothing left on an exiting client, its exit reason.
     nextBatch now = do
+        check =<< hasRoom client  -- See Note [Falling behind]
         q <- swapTVar cs.queue Seq.empty
         writeTVar cs.outputBytes 0
         case q of
@@ -217,21 +213,21 @@ controlWriter client cs = loop
         ControlLine l :<| rest -> ((BB.byteString l <> BB.char7 '\n') <>)
             <$> render now rest
         ControlOutput pid t bytes :<| rest -> do
-            let age = if now > t then now - t else 0
+            let age = ageAt now t
             fl <- readTVar cs.flags
-            case fl.pauseAfter of
-                Just limit | age >= limit -> do
+            case ageVerdict fl age of
+                PausePane -> do
                     modifyTVar' cs.panes (Map.insert pid PanePaused)
                     let rest' = Seq.filter (not . ofPane pid) rest
                     ((pauseLine pid <> BB.char7 '\n') <>) <$> render now rest'
-                Just _ -> ((extended pid age bytes <> BB.char7 '\n') <>)
-                    <$> render now rest
-                Nothing
-                    | age >= maximumAge -> do
-                        requestExit cs (Just "too far behind")
-                        render now (Seq.filter isLine rest)
-                    | otherwise -> ((plain pid bytes <> BB.char7 '\n') <>)
-                        <$> render now rest
+                TooFarBehind -> do
+                    requestExit cs (Just "too far behind")
+                    render now (Seq.filter isLine rest)
+                InTime -> ((line <> BB.char7 '\n') <>) <$> render now rest
+                  where
+                    line = case fl.pauseAfter of
+                        Just _ -> extended pid age bytes
+                        Nothing -> plain pid bytes
     plain pid bytes =
         "%output " <> paneRef pid <> BB.char7 ' ' <> escapeOutput bytes
     extended pid age bytes =

@@ -131,6 +131,7 @@ library
         Hat.Server.LayoutString
         Hat.Server.Locate
         Hat.Server.Mru
+        Hat.Server.Outbound
         Hat.Server.Winlink
         Hat.Server.Overlay
         Hat.Server.Pane

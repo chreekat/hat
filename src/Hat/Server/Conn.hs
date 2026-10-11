@@ -18,7 +18,6 @@ module Hat.Server.Conn
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
-import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (forM_, forever, unless, void, when)
@@ -40,12 +39,13 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Types
-import Hat.Server.ClientIO (send)
+import Hat.Server.ClientIO (send, withClientWriter)
 import Hat.Server.Control
     ( BlockOrigin (..), controlWriter, feedControlInput, runControlCommands
     , subscriptionLoop )
 import Hat.Server.ControlQueue (requestExit)
 import Hat.Server.ControlTypes (ControlState, newControlState)
+import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Overlay
 import Hat.Server.Startup
 import Hat.Server.DisplayPanes
@@ -140,7 +140,7 @@ welcome :: Dispatch -> ServerState -> ReadEnd -> Hello -> IO ()
 welcome d st re h = do
     let conn = re.sock
     client <- newClient st conn h
-    case h.intent of
+    withClientWriter client $ case h.intent of
         ControlIntent -> do
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
             sendMessage conn (Welcome "")
@@ -230,7 +230,7 @@ currentSession st client = do
 newClient :: ServerState -> N.Socket -> Hello -> IO Client
 newClient st conn h = do
     cid <- atomically (freshId st.nextClient)
-    sendLock <- newMVar ()
+    outboundQ <- newOutbound
     sizeVar <- newTVarIO h.size
     activeVar <- newTVarIO 0
     sessVar <- newTVarIO (SessionId (-1))
@@ -264,7 +264,7 @@ newClient st conn h = do
         , autostart = helloOrigin h
         , sock = conn
         , wireLevel = min protocolVersion h.protoVersion
-        , sendLock = sendLock
+        , outbound = outboundQ
         , size = sizeVar
         , lastActive = activeVar
         , session = sessVar
