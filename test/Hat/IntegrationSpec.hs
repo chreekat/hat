@@ -12,13 +12,14 @@ import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef
 import System.Directory
-    (createDirectoryIfMissing, createFileLink, doesFileExist, listDirectory,
-     removeDirectoryRecursive)
+    (createDirectoryIfMissing, createFileLink, doesFileExist, getFileSize,
+     listDirectory, removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose, hSetBuffering, BufferMode (..))
+import System.IO (Handle, SeekMode (..), hClose, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (closeFd, createPipe, fdToHandle, handleToFd)
+import System.Posix.IO qualified as PIO
 import System.Posix.Process (ProcessStatus (..))
 import System.Mem
 import System.Posix.Temp (mkdtemp)
@@ -203,11 +204,17 @@ ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
 -- handle 'teardown' reaps by.
 serverPid :: Hat -> IO Int
 serverPid h = do
-    (_, out, _) <- P.readProcessWithExitCode
-        "pgrep" ["-f", "--", "--server " <> h.sock] ""
+    out <- serverPids h
     case mapMaybe readMaybe (lines out) of
         (p : _) -> pure p
         [] -> fail ("no server running on " <> h.sock)
+
+-- The pids of every server process on this Hat's socket, one per line.
+serverPids :: Hat -> IO String
+serverPids h = do
+    (_, out, _) <- P.readProcessWithExitCode
+        "pgrep" ["-f", "--", "--server " <> h.sock] ""
+    pure out
 
 -- How many fds the server holds on one path.
 fdsOn :: Hat -> FilePath -> IO Int
@@ -1575,6 +1582,30 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
+
+    -- An autostart comes up once the lock of a server still on its way out
+    -- frees.
+    it "an autostart outlasts a lock held by a server still exiting" $
+        withHat hatBin $ \h -> do
+        let lockPath = h.sock <> ".lock"
+        -- Non-empty, so the autostarted server's O_TRUNC open is observable.
+        B.writeFile lockPath "held"
+        fd <- PIO.openFd lockPath PIO.ReadWrite PIO.defaultFileFlags
+        released <- newIORef False
+        let release = do
+                first <- atomicModifyIORef' released (True,)
+                unless first (closeFd fd)
+        (do PIO.setLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0)
+            c <- startClient h
+            -- By stat: closing any fd on the file would drop our lock.
+            awaitTrue "the autostarted server to open the lock" $
+                (== 0) <$> getFileSize lockPath
+            lockedOut <- lines <$> serverPids h
+            awaitTrue "the locked-out server to exit" $
+                (\now -> all (`notElem` lines now) lockedOut) <$> serverPids h
+            release
+            awaitScreen c "0:sh*")
+            `finally` release
 
     it "attaches without a controlling terminal: exits with 'not a terminal'" $
         withHat hatBin $ \h -> do
