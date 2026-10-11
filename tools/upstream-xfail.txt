@@ -106,7 +106,6 @@ input-replies.sh                # set-clipboard/get-clipboard options missing (s
 input-requests.sh               # OSC 4/OSC 52 requests not forwarded to the outer terminal (first: OSC 4;99;?)
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 
-buffers.sh                      # buffer-limit option unimplemented (all else passes)
 
 pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, resize-pane -T, respawn -E (empty panes)
 

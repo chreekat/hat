@@ -298,7 +298,7 @@ optionTable :: [OptionDef]
 optionTable =
     -- Server options.
     [ notYet $ scalar "backspace" ServerScope KKey "C-?"
-    , notYet $ scalar "buffer-limit" ServerScope (KNumber 1 intMax) "50"
+    , live $ scalar "buffer-limit" ServerScope (KNumber 1 intMax) "50"
     -- hat's default omits tmux's aliases for commands hat lacks.
     , live $ arrayOf "command-alias" ServerScope KString ","
         ["split-pane=split-window", "splitp=split-window"]

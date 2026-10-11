@@ -33,6 +33,7 @@ import System.FilePath (isAbsolute, (</>))
 
 import Hat.Path (expandTilde)
 import Hat.Model
+import Hat.Model.Options (optionNumber)
 import Hat.Model.PasteBuffers
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Format (FormatEnv)
@@ -56,14 +57,14 @@ cmdSetBuffer st _ args = withFlags "set-buffer" "aw" flags $
                 pasteRename old new s
             (Nothing, [bytes]) -> do
                 now <- currentTime
-                modifyStore st $ \s ->
+                modifyStoreLimited st $ \limit s ->
                     let prev = case (appending, mname >>= (`pasteGet` s)) of
                             (True, Just pb) -> pb.body
                             _ -> B.empty
                         new = TE.encodeUtf8 bytes
                     in if B.null new
                         then Right s
-                        else pasteSet defaultBufferLimit mname now (prev <> new) s
+                        else pasteSet limit mname now (prev <> new) s
             (Nothing, []) -> pure [RErr "no data specified"]
             (Nothing, _) -> pure [RErr usage]
   where
@@ -167,7 +168,8 @@ cmdLoadBuffer st mclient args = withFlags "load-buffer" "w" flags $
                 Left e -> pure [RErr e]
                 Right bytes -> do
                     now <- currentTime
-                    modifyStore st (pasteSet defaultBufferLimit (lookup "-b" opts) now bytes)
+                    modifyStoreLimited st $ \limit ->
+                        pasteSet limit (lookup "-b" opts) now bytes
         _ -> pure [RErr "usage: load-buffer [-b buffer-name] [-t target-client] path"]
   where
     (opts, flags, pos) = parseArgs "bt" args
@@ -285,7 +287,7 @@ cmdPasteBuffer st mclient args = withFlags "paste-buffer" "dprS" flags $ do
 storeBuffer :: ServerState -> Maybe Text -> ByteString -> IO (Either Text ())
 storeBuffer st mname bytes = do
     now <- currentTime
-    replies <- modifyStore st (pasteSet defaultBufferLimit mname now bytes)
+    replies <- modifyStoreLimited st (\limit -> pasteSet limit mname now bytes)
     pure $ case replies of
         RErr e : _ -> Left e
         _ -> Right ()
@@ -322,9 +324,15 @@ pickBuffer mname s = case mname of
 
 -- | Apply a fallible store update, replying with its error.
 modifyStore :: ServerState -> (PasteStore -> Either Text PasteStore) -> IO [Reply]
-modifyStore st f = atomically $ do
+modifyStore st f = modifyStoreLimited st (const f)
+
+-- | 'modifyStore' for an update that may evict, given @buffer-limit@.
+modifyStoreLimited
+    :: ServerState -> (Int -> PasteStore -> Either Text PasteStore) -> IO [Reply]
+modifyStoreLimited st f = atomically $ do
+    limit <- optionNumber "buffer-limit" <$> readTVar st.options
     s <- readTVar st.buffers
-    case f s of
+    case f limit s of
         Left e -> pure [RErr e]
         Right s' -> do
             writeTVar st.buffers s'

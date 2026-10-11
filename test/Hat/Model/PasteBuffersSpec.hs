@@ -26,7 +26,7 @@ spec = do
             map snd (listing s) `shouldBe` ["a4", "a3", "a2", "precious"]
         it "keeps counting automatic names after deletions" $ do
             let s = pasteFree "buffer0" (adds ["one"])
-            listing (pasteAdd defaultBufferLimit "buffer" 0 "two" s)
+            listing (pasteAdd roomy "buffer" 0 "two" s)
                 `shouldBe` [("buffer1", "two")]
         it "holds at most limit automatic buffers" $
             property $ \(Positive limit) (named :: [Bool]) ->
@@ -73,10 +73,11 @@ spec = do
             pasteVisSafe "a\tb\r\ESC[1m\DEL\255\195\169"
                 `shouldBe` "a\tb\r^[[1m^?M^?\195\169"
   where
-    adds = foldl (flip (pasteAdd defaultBufferLimit "buffer" 0)) emptyPasteStore
+    adds = foldl (flip (pasteAdd roomy "buffer" 0)) emptyPasteStore
     set :: Maybe Text -> ByteString -> PasteStore -> PasteStore
-    set mname bytes s = fromRight s (pasteSet defaultBufferLimit mname 0 bytes s)
+    set mname bytes s = fromRight s (pasteSet roomy mname 0 bytes s)
     with s f = f s
+    roomy = 50
     listing s = [ (pb.name, pb.body) | pb <- pasteWalk s ]
     sample bytes = pasteSample PasteBuffer
         { name = "b", body = bytes, origin = Named, order = 0, created = 0 }

@@ -6,7 +6,6 @@ module Hat.Model.PasteBuffers
     , BufferOrigin (..)
     , PasteStore
     , emptyPasteStore
-    , defaultBufferLimit
     , pasteWalk
     , pasteTop
     , pasteGet
@@ -61,9 +60,6 @@ data PasteStore = PasteStore
 emptyPasteStore :: PasteStore
 emptyPasteStore = PasteStore Map.empty 0 0
 
--- | tmux's default @buffer-limit@.
-defaultBufferLimit :: Int
-defaultBufferLimit = 50
 
 -- | Every buffer, most recent first.
 pasteWalk :: PasteStore -> [PasteBuffer]

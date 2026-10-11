@@ -81,7 +81,7 @@ import Data.Vector qualified as V
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
-import Hat.Model.PasteBuffers (defaultBufferLimit, pasteAdd)
+import Hat.Model.PasteBuffers (pasteAdd)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -1097,6 +1097,6 @@ pushBuffer :: ServerState -> Text -> IO ()
 pushBuffer st body = do
     now <- floor <$> getPOSIXTime
     atomically $ do
-        modifyTVar' st.buffers
-            (pasteAdd defaultBufferLimit "buffer" now (TE.encodeUtf8 body))
+        limit <- optionNumber "buffer-limit" <$> readTVar st.options
+        modifyTVar' st.buffers (pasteAdd limit "buffer" now (TE.encodeUtf8 body))
         bumpDirty st

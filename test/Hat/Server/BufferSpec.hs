@@ -12,6 +12,7 @@ import Test.Hspec
 
 import Hat.Log (newLogger)
 import Hat.Model (ServerState, newServerState)
+import Hat.Server (runCommands)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Types (Reply (..))
 
@@ -52,6 +53,12 @@ spec = do
                     `shouldReturn` [RErr "unknown buffer: nosuch"]
                 cmdSetBuffer st Nothing ["-b", "other"]
                     `shouldReturn` [RErr "no data specified"]
+        it "evicts the oldest automatic buffers beyond buffer-limit" $
+            withState $ \_ st -> do
+                [] <- runCommands st Nothing [["set", "-s", "buffer-limit", "2"]]
+                mapM_ (\b -> cmdSetBuffer st Nothing [b]) ["one", "two", "three"]
+                cmdListBuffers st Nothing ["-F", "#{buffer_name}"] `shouldReturn`
+                    [ROutput "buffer2", ROutput "buffer1"]
         it "rejects -w loudly" $
             withState $ \_ st ->
                 cmdSetBuffer st Nothing ["-w", "x"] `shouldNotReturn` []
