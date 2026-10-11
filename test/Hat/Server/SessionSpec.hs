@@ -1477,6 +1477,14 @@ spec = do
             client <- addClient st sess.id (Size 24 80) 1
             [RErr e] <- arm st client ["-d", "soon"]
             e `shouldSatisfy` T.isInfixOf "bad delay"
+        it "rejects tmux's panes-mode flags loudly" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size 24 80) 1
+            arm st client ["-k"]
+                `shouldReturn` [RErr "command display-panes: unknown flag -k"]
+            arm st client ["-t", "%0"]
+                `shouldReturn` [RErr "display-panes -t: not supported"]
+            readTVarIO client.displayPanes `shouldReturn` Nothing
         it "a digit selects the pane showing that number and closes" $ do
             (st, sess) <- seedSession "/"
             win <- twoPanes sess

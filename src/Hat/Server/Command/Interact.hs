@@ -11,6 +11,7 @@ module Hat.Server.Command.Interact
 import Control.Concurrent.STM
 import Control.Monad (forM_)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (listToMaybe)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -82,24 +83,29 @@ cmdSendPrefix st mclient _ = do
 -- @select-pane -t '%%'@) against that pane. @-d@ overrides
 -- @display-panes-time@; @-N@ keeps the overlay up on non-selecting keys.
 -- @-b@ is tmux's \"don't block the command queue\" — hat never blocks, so
--- it is accepted as already satisfied.
+-- it is accepted as already satisfied. tmux's panes-mode flags (@-k@, @-Z@,
+-- @-s@, @-t@) fail: the numbers are a client overlay here, not a pane mode.
 cmdDisplayPanes :: CommandImpl
-cmdDisplayPanes st mclient args = do
-    let (opts, flags, pos) = parseArgs "d" args
-        hold = if "-N" `elem` flags then PanesHold else PanesClose
-        template = case pos of
-            (t : _) -> t
-            [] -> "select-pane -t '%%'"
-        mdelay = case lookup "-d" opts of
-            Nothing -> Right Nothing
-            Just v -> case TR.decimal v of
-                Right (n, rest) | T.null rest -> Right (Just n)
-                _ -> Left ("display-panes: bad delay: " <> v)
-    case (mclient, mdelay) of
+cmdDisplayPanes st mclient args
+    | Just e <- unknownFlag "display-panes" "bN" flags = pure [RErr e]
+    | Just f <- listToMaybe [ f | (f, _) <- opts, f `elem` ["-s", "-t"] ] =
+        pure [RErr ("display-panes " <> f <> ": not supported")]
+    | otherwise = case (mclient, mdelay) of
         (_, Left e) -> pure [RErr e]
         (Nothing, _) -> pure [RErr "display-panes: no client"]
         (Just client, Right delay) ->
             [] <$ armPanes st client delay hold template
+  where
+    (opts, flags, pos) = parseArgs "dst" args
+    hold = if "-N" `elem` flags then PanesHold else PanesClose
+    template = case pos of
+        (t : _) -> t
+        [] -> "select-pane -t '%%'"
+    mdelay = case lookup "-d" opts of
+        Nothing -> Right Nothing
+        Just v -> case TR.decimal v of
+            Right (n, rest) | T.null rest -> Right (Just n)
+            _ -> Left ("display-panes: bad delay: " <> v)
 
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
