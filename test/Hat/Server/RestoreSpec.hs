@@ -17,7 +17,7 @@ import Hat.Log (newLogger)
 import Hat.Model
     (PaneId (..), ServerState (..), Session (..), StartupPhase (..), Window (..),
      newServerState)
-import Hat.Model.Options (OptionValue (..), applyEntry)
+import Hat.Model.Options (OptionValue (..), applyEntry, singletonDelta)
 import Hat.Transport.Wire (Autostart (..))
 import Data.Maybe (fromMaybe)
 
@@ -289,6 +289,10 @@ spec = do
             bracket openPseudoTerminal (\(_, s) -> closeFd s) $
                 \(m, _) -> do
             st <- testState
+            -- The fake child is no child of ours, so its pane dies at once;
+            -- kept as a dead pane, it leaves the tree under test standing.
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta "remain-on-exit" (OVScalar "on"))
             let lay = emitLayout
                     Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
                     (Leaf (PaneId 0))
