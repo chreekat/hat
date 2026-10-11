@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -Wno-orphans #-}  -- Arbitrary instances for the reload types live with their test; the library must not depend on QuickCheck
 
 module Hat.Server.ReloadSpec (spec) where
@@ -132,12 +133,12 @@ instance Arbitrary ReloadDeath where
 instance Arbitrary ReloadModes where
     arbitrary = ReloadModes
         <$> arbitrary <*> arbitrary <*> choose (0, 3)
-        <*> arbitrary <*> choose (0, 31)
+        <*> arbitrary <*> choose (0, 31) <*> choose (0, 2)
     shrink m =
-        [ ReloadModes cr fr mo mok kf
-        | (cr, fr, mo, mok, kf) <-
+        [ ReloadModes cr fr mo mok kf ek
+        | (cr, fr, mo, mok, kf, ek) <-
             shrink (m.colorReport, m.focusReport, m.mouse
-                   , m.modifyOtherKeys, m.kittyFlags) ]
+                   , m.modifyOtherKeys, m.kittyFlags, m.extendedKeys) ]
 
 instance Arbitrary ReloadScreen where
     arbitrary = ReloadScreen
@@ -312,6 +313,20 @@ emptyPaneTree = ReloadTree
         , modes = fixedModes, screen = fixedScreen
         , start = StartCommand "pwd", death = Nothing }
 
+-- The current-era representative: 'emptyPaneTree' with its first pane in
+-- extended-key mode 1, which only era 13 can carry.
+extKeysTree :: ReloadTree
+extKeysTree = case emptyPaneTree of
+    ReloadTree {..} -> ReloadTree { sessions = map session sessions, .. }
+  where
+    session HotSession {..} = HotSession { windows = map window windows, .. }
+    window HotWindow {..} = HotWindow { panes = mode1 panes, .. }
+    mode1 = \case
+        (snap, HotPane {..}) : rest ->
+            (snap, HotPane { modes = fixedModes { modifyOtherKeys = False, extendedKeys = 1 }, .. })
+                : rest
+        [] -> []
+
 -- A non-trivial captured screen, to pin the current era's encoding: an
 -- alt-screen pane with one styled painted row and one blank scrollback line.
 -- Old corpus rows carry the same screen as cells (one red @x@, one blank
@@ -331,13 +346,13 @@ fixedTree = treeWith (Just "prev") fixedModes fixedScreen
 fixedModes :: ReloadModes
 fixedModes = ReloadModes
     { colorReport = True, focusReport = False, mouse = 2
-    , modifyOtherKeys = True, kittyFlags = 3 }
+    , modifyOtherKeys = True, kittyFlags = 3, extendedKeys = 2 }
 
 -- What an era 4-8 row migrates to: those payloads predate the key protocols,
 -- so their panes come back with none enabled.
 preKeyProtocolTree :: ReloadTree
 preKeyProtocolTree = treeWith (Just "prev")
-    fixedModes { modifyOtherKeys = False, kittyFlags = 0 } fixedScreen
+    fixedModes { modifyOtherKeys = False, kittyFlags = 0, extendedKeys = 0 } fixedScreen
 
 -- The reload corpus: one committed encoding per era. A build MUST decode every
 -- vector here into the current tree (armor-style backward-compat enforcement).
@@ -353,13 +368,13 @@ corpus =
         \652f686f6d6500809f8800006177614c0080f59f8400642f746d70\
         \071864ffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes False False 0 False 0) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes False False 0 False 0 0) emptyReloadScreen )
     , ( 2
       , "851a4841545202039f82071864ff583683009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8500642f746d70\
         \0718648400f5f402ffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes True False 2 False 0) emptyReloadScreen )
+      , treeWith Nothing (ReloadModes True False 2 False 0 0) emptyReloadScreen )
     , ( 3
       , "851a4841545203039f82071864ff586783009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -367,7 +382,7 @@ corpus =
         \f4f4f4f4f4f4ffff9f9f8400612001890081008100f4f4f4f4f4f4ff\
         \ffffffff8164776f726b"
       , fixedCleanup
-      , treeWith Nothing (ReloadModes True False 2 False 0) fixedScreen )
+      , treeWith Nothing (ReloadModes True False 2 False 0 0) fixedScreen )
     , ( 4
       , "851a4841545204039f82071864ff586d84009f860064776f726b\
         \652f686f6d6500809f8800006177614c0080f59f8600642f746d70\
@@ -477,6 +492,26 @@ corpus =
         \3b33316d78ff9f40ff8a0081008100f4f4f4f4f4f4f482016370\
         \776480ff816470726576"
       , fixedCleanup, emptyPaneTree )
+    , ( 13
+      , "851a484154520d039f82071864ff5901d0840079010d7b226c6173\
+        \745f6163746976655f73657373696f6e223a22776f726b222c2273\
+        \657373696f6e73223a5b7b2263757272656e745f6978223a302c22\
+        \6e616d65223a22776f726b222c2273746172745f637764223a222f\
+        \686f6d65222c2277696e646f7773223a5b7b22616374697665223a\
+        \302c226175746f5f72656e616d65223a747275652c226978223a30\
+        \2c226c61796f7574223a224c222c226e616d65223a2277222c2270\
+        \616e6573223a5b7b22637764223a222f746d70227d2c7b22637764\
+        \223a222f746d70227d2c7b22637764223a222f737276222c22656d\
+        \707479223a747275652c22696e7075745f6f6666223a747275652c\
+        \227469746c65223a2269646c65227d5d7d5d7d5d7d9f8700071864\
+        \8700f5f402f403018900f50102f5019f481b5b303b33316d78ff9f\
+        \40ff8a0081008100f4f4f4f4f4f4f48201686d616b65202d6a3280\
+        \87002018658700f5f402f503028900f50102f5019f481b5b303b33\
+        \316d78ff9f40ff8a0081008100f4f4f4f4f4f4f482029f6376696d\
+        \63612062ff8184008103801a6553f100870020008700f5f402f503\
+        \028900f50102f5019f481b5b303b33316d78ff9f40ff8a00810081\
+        \00f4f4f4f4f4f4f482016370776480ff816470726576"
+      , fixedCleanup, extKeysTree )
     ]
 
 spec :: Spec
@@ -527,7 +562,7 @@ spec = describe "reload handover" $ do
     -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
     -- one is a compat bug.
     it "encodes the current era to stable bytes" $
-        hexOf (encodeHandover fixedCleanup (hotOf emptyPaneTree))
+        hexOf (encodeHandover fixedCleanup (hotOf extKeysTree))
             `shouldBe` currentGolden
   where
     decodesToTree (e, hex, cl, t) =

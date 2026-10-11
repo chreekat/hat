@@ -557,7 +557,7 @@ runKeys d st client keys = do
               modeTable <- case mpane of
                 Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
                 Nothing -> pure Nothing
-              k <- reencodeKey (fmap (.emulator) mpane) k0
+              k <- reencodeKey (keyEncoding opts) (fmap (.emulator) mpane) k0
               -- The outer terminal's ?1004 focus reports track whether the
               -- user is watching this client, independent of whether the
               -- pane's app asked for them (the 'keepKey' gate below).

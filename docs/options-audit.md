@@ -38,6 +38,15 @@ spot-read of each suspect consumer.
 | `prefix` / `prefix2` | `keyContext` → `routeKey` (Conn.hs, Keys.hs); `send-prefix [-2]`; `None` is no key | implemented ✅ tested | pure (KeysSpec) |
 | `key-table` | `keyContext` → `routeKey`: the client's default table | implemented ✅ tested | pure (KeysSpec) |
 | `repeat-time` / `initial-repeat-time` | `routeKey` (a `bind -r` binding keeps its table open), `expireKeyRepeat` timer in `inputLoop` (Conn.hs) | implemented ✅ tested | pure (KeysSpec) |
+| `assume-paste-time` | none — tmux skips paste detection when the client terminal has bracketed paste, and every hat client enables it (`enterAltScreen`); pastes arrive bracketed and bypass the key tables (`routeKey`) | implemented (by design) | — |
+| `allow-set-title` | pane reader `TitleRequest` (Pane.hs): OSC 0/2 and APC, cleaned by `cleanName` | implemented ✅ tested | integration (check-names) |
+| `allow-rename` | pane reader `RenameRequest` → `renameFromApp` (Pane.hs): `ESC k` names the window | implemented ✅ tested | integration (check-names) |
+| `alternate-screen` | `hostPolicyOf` → `scrubHost` drops ?47/?1047/?1049 (HostProtocol.hs) | implemented ✅ tested | pure (EmulatorSpec) |
+| `scroll-on-clear` | `hostPolicyOf` → `scrollScreenIntoHistory` before ED 2 / ED 0 at home (Emulator.hs) | implemented ✅ tested | pure (EmulatorSpec) |
+| `set-clipboard` | `setSelection` (copy-mode copies, Clipboard.hs); `clipboardAction` for an app's OSC 52 | implemented ✅ tested | pure (ClipboardSpec) |
+| `get-clipboard` | `clipboardAction`/`appClipboard`: `buffer` answers from the newest buffer; `request`/`both` refused (no outer-terminal clipboard query yet) | partial ✅ tested | pure (ClipboardSpec) |
+| `allow-passthrough` | pane reader `UnhandledPassthrough` → `Notify` to `paneViewers` (`on`) or `paneHolders` (`all`) | implemented | integration |
+| `extended-keys` / `extended-keys-format` | `keyEncoding` → `reencodeKey` → `paneKeyMode`/`extendedKeyBytes` (Pane.hs, Keys.hs); the app's `CSI > 4` request is tracked by `scrubHost` | implemented ✅ tested | pure (SessionSpec, input-keys) |
 | `user-keys` | `userKeys` → `feedKeys` (Keys.hs): each sequence is key `User`/N/, bindable, never typed into a pane | implemented ✅ tested | pure (KeysSpec) |
 | `backspace` | `paneKeyBytes` → `backspaceBytes` (Pane.hs, Keys.hs): what BSpace sends to a pane | implemented ✅ tested | pure (KeysSpec) |
 | `prefix-timeout` | `routeKey`: a prefix-table key past the timeout falls back to the default table | implemented ✅ tested | pure (KeysSpec) |

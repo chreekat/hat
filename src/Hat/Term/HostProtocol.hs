@@ -34,9 +34,13 @@ module Hat.Term.HostProtocol
       -- * DCS tmux passthrough
     , PassState (..)
     , scrubPassthrough
-      -- * screen/tmux window title
-    , StitleState (..)
-    , scrubStitle
+      -- * Sequences hat handles above the grid engine
+    , HostCarry (..)
+    , HostPiece (..)
+    , HostSignal (..)
+    , HostPolicy (..)
+    , scrubHost
+    , cleanName
       -- * Color queries answered by the host
     , QuerySignal (..)
     , CsSignal (..)
@@ -48,6 +52,11 @@ module Hat.Term.HostProtocol
 import Control.Applicative ((<|>))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
+import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Word (Word8)
 
 -- | Which color an OSC query asks about: OSC 10 (foreground) or 11
 -- (background).
@@ -122,50 +131,208 @@ scrubPassthrough st0 chunk = case st0 of
             (k : _) -> B.drop (B.length bs - k) bs
             []      -> ""
 
--- | Scrubber state for the screen/tmux window-title escape, carried across
--- 'feed' chunks: outside a title (holding back a chunk-final bare @ESC@ that
--- might begin @ESC k@) or inside one (accumulating the name until its
--- terminator, holding back a trailing @ESC@ that might begin the ST).
-data StitleState
-    = StOutside ByteString
-        -- ^ carry: a trailing bare @ESC@ at chunk end
-    | StInside ByteString ByteString
-        -- ^ carry: a trailing @ESC@ that may start the ST, and the name so far
+-- | Scanner state for 'scrubHost', carried across 'feed' chunks.
+data HostCarry
+    = HostCarry ByteString
+        -- ^ an unfinished sequence the previous chunk ended in
+    | HostDiscarding
+        -- ^ inside a string that outgrew the input buffer, dropping it up to
+        --   its terminator
 
--- | Strip the screen/tmux window-title escape @ESC k <name> ST@ (also
--- accepting a BEL terminator) before the emulator parses it. hat advertises
--- @TERM=tmux-256color@, so tmux-aware apps set the title with this escape
--- instead of an OSC; the emulator does not know it and would spill the name onto
--- the screen as text. Returns the scrubbed bytes and every completed name, in
--- order. A title can span pty reads, so the state carries across 'feed' chunks.
-scrubStitle :: StitleState -> ByteString -> (StitleState, ByteString, [ByteString])
-scrubStitle st0 chunk = case st0 of
-    StOutside carry     -> outside [] [] (carry <> chunk)
-    StInside carry name -> inside [] [] [name] (carry <> chunk)
+-- | What 'scrubHost' makes of a pane's output: bytes for the grid engine, or
+-- a sequence hat acts on itself, in stream order.
+data HostPiece
+    = HostBytes ByteString
+    | HostSignal HostSignal
+    deriving (Eq, Show)
+
+-- | A sequence hat handles above the grid engine.
+data HostSignal
+    = HostTitle ByteString
+        -- ^ OSC 0\/2 or APC: the app sets the pane title
+    | HostRename ByteString
+        -- ^ @ESC k … ST@: the app renames the window
+    | HostClipboard ByteString OscTerm
+        -- ^ OSC 52: the app sets or queries the clipboard; the parameter
+        --   text after @52;@ and the terminator it used
+    | HostKeyMode Int
+        -- ^ @CSI > 4 ; n m@ (or @CSI > 4 n@, as 0): the extended-key mode the
+        --   app asks for
+    | HostErase Int ByteString
+        -- ^ ED 0 or 2 (the parameter, and the sequence itself), which may push
+        --   the screen into the history first
+    deriving (Eq, Show)
+
+-- | The pane options that shape how its output is taken.
+data HostPolicy = HostPolicy
+    { allowAltScreen :: Bool
+        -- ^ @alternate-screen@: the app may switch to the alternate screen
+    , scrollOnClear :: Bool
+        -- ^ @scroll-on-clear@: clearing the screen keeps its lines in the
+        --   history
+    , bufferSize :: Int
+        -- ^ @input-buffer-size@: the longest string payload kept
+    }
+    deriving (Eq, Show)
+
+-- | Pick the sequences hat handles itself out of a pane's output (see
+-- 'HostSignal'), dropping the alternate-screen switches @alternate-screen
+-- off@ forbids, and pass everything else on as bytes. A sequence torn across
+-- reads is held until it completes; a string payload longer than the
+-- @input-buffer-size@ is dropped whole, as tmux discards it.
+scrubHost :: HostPolicy -> HostCarry -> ByteString -> (HostCarry, [HostPiece])
+scrubHost pol carry0 chunk = case carry0 of
+    HostCarry held -> scan (held <> chunk)
+    HostDiscarding -> case stringEnd chunk 0 of
+        Just (_, end, _) -> scan (B.drop end chunk)
+        Nothing -> (HostDiscarding, [])
   where
-    intro = "\ESCk"
-    finish = B.concat . reverse
-    outside oacc titles bs = case B.breakSubstring intro bs of
-        (before, r)
-            | B.null r ->
-                let held = if "\ESC" `B.isSuffixOf` before then "\ESC" else ""
-                    emit = B.take (B.length before - B.length held) before
-                in (StOutside held, finish (emit : oacc), reverse titles)
-            | otherwise -> inside (before : oacc) titles [] (B.drop (B.length intro) r)
-    -- Inside the wrapper nothing reaches the emulator; the name accumulates until
-    -- a BEL or an ST (a lone @ESC@ then backslash) closes it. An @ESC@ that is
-    -- not the ST ends the name and is left for the emulator from the ESC onward.
-    inside oacc titles nacc bs = case B.elemIndex 0x07 bs of
-        Just j | maybe True (j <) (B.elemIndex 0x1b bs) ->
-            outside oacc (finish (B.take j bs : nacc) : titles) (B.drop (j + 1) bs)
-        _ -> case B.elemIndex 0x1b bs of
-            Nothing -> (StInside "" (finish (bs : nacc)), finish oacc, reverse titles)
-            Just i  ->
-                let nacc' = B.take i bs : nacc
-                in case B.uncons (B.drop (i + 1) bs) of
-                    Nothing           -> (StInside "\ESC" (finish nacc'), finish oacc, reverse titles)
-                    Just (0x5c, rest) -> outside oacc (finish nacc' : titles) rest
-                    Just (_, _)       -> outside oacc (finish nacc' : titles) (B.drop i bs)
+    scan bs = go 0 0 []
+      where
+        len = B.length bs
+        at i = B.index bs i
+        emit s e acc = if e > s then HostBytes (B.take (e - s) (B.drop s bs)) : acc else acc
+        finish carry s e acc = (carry, reverse (emit s e acc))
+        go s i acc = case B.elemIndex 0x1b (B.drop i bs) of
+            Nothing -> finish (HostCarry "") s len acc
+            Just d ->
+                let p = i + d
+                in case classify p of
+                    Incomplete
+                        | len - p > pol.bufferSize + 16 ->
+                            finish HostDiscarding s p acc
+                        | otherwise -> finish (HostCarry (B.drop p bs)) s p acc
+                    Skip n -> go s (p + n) acc
+                    Found end piece -> go end end (piece : emit s p acc)
+                    Dropped end -> go end end (emit s p acc)
+        classify p
+            | p + 1 >= len = Incomplete
+            | otherwise = case at (p + 1) of
+                0x5d -> osc p          -- ']'
+                0x5f -> str p HostTitle          -- '_' APC
+                0x6b -> str p HostRename         -- 'k'
+                0x5b -> csi p          -- '['
+                _ -> Skip 1
+        -- An OSC this layer takes: a title or the clipboard.
+        osc p =
+            let ds = B.takeWhile isDigitB (B.drop (p + 2) bs)
+                q = p + 2 + B.length ds
+            in if q >= len then Incomplete else
+                case (ds, at q) of
+                    ("0", c) -> titleAt c q
+                    ("2", c) -> titleAt c q
+                    ("52", 0x3b) -> case stringEnd bs (q + 1) of
+                        Nothing -> Incomplete
+                        Just (payload, end, term) -> keep end payload
+                            (HostSignal (HostClipboard payload term))
+                    _ -> Skip 2
+          where
+            -- tmux takes the title after the @;@, or an empty one when the
+            -- number is the whole string.
+            titleAt c q
+                | c == 0x3b = str' (q + 1) HostTitle
+                | c == 0x07 || c == 0x1b = str' q HostTitle
+                | otherwise = Skip 2
+        str p mk = str' (p + 2) mk
+        str' q mk = case stringEnd bs q of
+            Nothing -> Incomplete
+            Just (payload, end, _) -> keep end payload (HostSignal (mk payload))
+        keep end payload piece
+            | B.length payload > pol.bufferSize = Dropped end
+            | otherwise = Found end piece
+        csi p = case csiAt bs (p + 2) of
+            Nothing -> Incomplete
+            Just (prefix, params, inter, final, end) ->
+                let raw = B.take (end - p) (B.drop p bs)
+                    nums = map readParam (B.split 0x3b params)
+                in case (prefix, inter, final, nums) of
+                    (Just 0x3e, "", 0x6d, 4 : rest) ->
+                        Found end (HostSignal (HostKeyMode (headOr 0 rest)))
+                    (Just 0x3e, "", 0x6e, [4]) -> Found end (HostSignal (HostKeyMode 0))
+                    (Just 0x3f, "", f, _)
+                        | not pol.allowAltScreen, f == 0x68 || f == 0x6c
+                        , any (`elem` altModes) nums ->
+                            case filter (`notElem` altModes) nums of
+                                [] -> Dropped end
+                                kept -> Found end (HostBytes (decset kept f))
+                    (Nothing, "", 0x4a, ns) | ns `elem` [[], [0], [2]] ->
+                        Found end (HostSignal (HostErase (headOr 0 ns) raw))
+                    _ -> Skip (end - p)
+        altModes = [47, 1047, 1049]
+        decset ns f = "\ESC[?" <> B.intercalate ";" (map (B8.pack . show) ns) <> B.singleton f
+        headOr d = \case
+            (x : _) -> x
+            [] -> d
+        readParam f = case B8.readInt f of
+            Just (n, "") -> n
+            _ -> if B.null f then 0 else -1
+    isDigitB b = b >= 0x30 && b <= 0x39
+
+-- | tmux's @clean_name@ for a title or window name an app sent: refused
+-- unless valid UTF-8; @#(@ defused to @_(@ so no format ever runs a command
+-- from it; control characters and backslash made visible as @vis(3)@ does.
+cleanName :: ByteString -> Maybe Text
+cleanName raw = case TE.decodeUtf8' raw of
+    Left _ -> Nothing
+    Right t -> Just (T.concatMap visible (T.replace "#(" "_(" t))
+  where
+    visible c = case c of
+        '\\' -> "\\\\"
+        '\n' -> "\\n"
+        '\r' -> "\\r"
+        '\t' -> "\\t"
+        '\a' -> "\\a"
+        '\b' -> "\\b"
+        '\v' -> "\\v"
+        '\f' -> "\\f"
+        _ | c < ' ' || c == '\DEL' -> T.pack ('\\' : octal (fromEnum c))
+          | otherwise -> T.singleton c
+    octal n = [ toEnum (fromEnum '0' + d) | d <- [n `div` 64, n `div` 8 `mod` 8, n `mod` 8] ]
+
+-- | What 'scrubHost' makes of the escape sequence at one offset.
+data Scanned
+    = Incomplete           -- ^ it runs past the end of the bytes so far
+    | Skip Int             -- ^ not this layer's: scan on this many bytes later
+    | Found Int HostPiece  -- ^ taken, up to this offset, as this piece
+    | Dropped Int          -- ^ taken out of the stream, up to this offset
+
+-- | The payload of a string sequence starting at an offset, the offset just
+-- past it, and its terminator: BEL, ST, or an ESC that starts something else
+-- (left in the stream). 'Nothing' when the string has not ended yet.
+stringEnd :: ByteString -> Int -> Maybe (ByteString, Int, OscTerm)
+stringEnd bs q = go q
+  where
+    len = B.length bs
+    go j = case B.findIndex (\b -> b == 0x07 || b == 0x1b) (B.drop j bs) of
+        Nothing -> Nothing
+        Just d ->
+            let k = j + d
+                payload = B.take (k - q) (B.drop q bs)
+            in if B.index bs k == 0x07
+                then Just (payload, k + 1, TermBel)
+                else if k + 1 >= len
+                    then Nothing
+                    else if B.index bs (k + 1) == 0x5c
+                        then Just (payload, k + 2, TermSt)
+                        else Just (payload, k, TermSt)
+
+-- | A CSI's parts from just past its @ESC [@: a private prefix byte, the
+-- parameter bytes, the intermediates, the final byte, and the offset past
+-- it. 'Nothing' when the sequence has not ended yet; a byte no CSI may hold
+-- ends it at that byte, as no final.
+csiAt :: ByteString -> Int -> Maybe (Maybe Word8, ByteString, ByteString, Word8, Int)
+csiAt bs q0 = do
+    let len = B.length bs
+    (prefix, q1) <- if q0 >= len then Nothing else
+        let b = B.index bs q0
+        in Just (if b >= 0x3c && b <= 0x3f then (Just b, q0 + 1) else (Nothing, q0))
+    let params = B.takeWhile (\b -> (b >= 0x30 && b <= 0x3b)) (B.drop q1 bs)
+        q2 = q1 + B.length params
+        inter = B.takeWhile (\b -> b >= 0x20 && b <= 0x2f) (B.drop q2 bs)
+        q3 = q2 + B.length inter
+    if q3 >= len then Nothing else
+        let f = B.index bs q3
+        in pure (prefix, params, inter, f, q3 + 1)
 
 -- | Every host query hat recognises in a byte string, in order. Used to
 -- honour the payload of a DCS tmux passthrough: a tmux-aware app wraps a

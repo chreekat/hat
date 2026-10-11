@@ -264,29 +264,36 @@ data ReloadModes = ReloadModes
     { colorReport     :: Bool  -- ^ ?2031 color-scheme reporting
     , focusReport     :: Bool  -- ^ ?1004 focus reporting
     , mouse           :: Int   -- ^ mouse tracking: 0 off, 1 click, 2 drag, 3 move
-    , modifyOtherKeys :: Bool  -- ^ xterm modifyOtherKeys state 2
+    , modifyOtherKeys :: Bool  -- ^ extended-key mode 2 was asked for
     , kittyFlags      :: Int   -- ^ kitty keyboard protocol flags
+    , extendedKeys    :: Int   -- ^ the extended-key mode asked for: 0, 1 or 2
     }
     deriving (Eq, Show)
 
 -- Appended the key protocols tolerantly (era 9) with the same additive-leaf
 -- codec as 'ReloadScreen': an era ≤ 8 pane is a three-field list, and decodes
--- here with no key protocol enabled.
+-- here with no key protocol enabled. Era 13 appended the extended-key mode,
+-- which an older pane recorded only as 'modifyOtherKeys' (mode 2).
 instance Serialise ReloadModes where
     encode m =
-           encodeListLen 6
+           encodeListLen 7
         <> encodeWord 0
         <> encode m.colorReport <> encode m.focusReport <> encode m.mouse
         <> encode m.modifyOtherKeys <> encode m.kittyFlags
+        <> encode m.extendedKeys
     decode = do
         len <- decodeListLen
         _   <- decodeWord
-        m <- ReloadModes
-            <$> decode <*> decode <*> decode
-            <*> (if len >= 5 then decode else pure False)
-            <*> (if len >= 6 then decode else pure 0)
-        replicateM_ (max 0 (len - 6)) (() <$ decodeTerm)
-        pure m
+        colorR <- decode
+        focusR <- decode
+        mouseM <- decode
+        mok <- if len >= 5 then decode else pure False
+        kitty <- if len >= 6 then decode else pure 0
+        ext <- if len >= 7 then decode else pure (if mok then 2 else 0)
+        replicateM_ (max 0 (len - 7)) (() <$ decodeTerm)
+        pure ReloadModes
+            { colorReport = colorR, focusReport = focusR, mouse = mouseM
+            , modifyOtherKeys = mok, kittyFlags = kitty, extendedKeys = ext }
 
 -- | The version-INDEPENDENT core of a handover: the fds the incoming image
 -- inherited. Its shape is frozen forever, so a reader of ANY era recovers it —
@@ -315,7 +322,7 @@ data Handover = Handover
 -- through to safe cleanup rather than misdecode. The golden-byte test pins the
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 12
+reloadEra = 13
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -372,10 +379,11 @@ decodeHandover bs =
 -- shape, and adds an @e == X@ arm below.
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    -- Era 12 let a pane be empty (its tree 'PaneSnap' says so; it has no fd
+    -- Era 13 appended the extended-key mode, which 'ReloadModes' derives for
+    -- an older pane. Era 12 let a pane be empty (its tree 'PaneSnap' says so; it has no fd
     -- or child), which eras 10 and 11 never wrote; era 10 differs only by the
     -- two fields 'HotPane' appended in era 11, which its decoder defaults.
-    | e == reloadEra || e == 11 || e == 10 = hotTree =<< deser
+    | e == reloadEra || e == 12 || e == 11 || e == 10 = hotTree =<< deser
     -- Eras 8 and 9 differ from today only by cell-grid screens ('migrateV9'
     -- paints them) and, for era 8, the key protocols 'ReloadModes' defaults.
     | e == 9 || e == 8 = hotTree . migrateV9 =<< deser
@@ -542,7 +550,7 @@ migrateV1 (ReloadStateV1 sess cur) = ReloadStateV2 (map migSession sess) cur
     migWindow (ReloadWindowV1 ix' nm lay act la ar ps) =
         ReloadWindowV2 ix' nm lay act la ar (map migPane ps)
     migPane (ReloadPaneV1 cwd' mfd cpid) =
-        ReloadPaneV2 cwd' mfd cpid (ReloadModes False False 0 False 0)
+        ReloadPaneV2 cwd' mfd cpid (ReloadModes False False 0 False 0 0)
 
 -- | Carry an era-2 tree forward to the era-3 shape: every pane gains a blank
 -- screen, since an era-2 image never captured one, so it restores to a blank

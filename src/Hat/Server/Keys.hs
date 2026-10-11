@@ -35,6 +35,12 @@ module Hat.Server.Keys
     , namedKeyBytes
     , keypadAppBytes
     , extendedKeyCode
+    , ExtendedKeys (..)
+    , ExtendedFormat (..)
+    , KeyEncoding (..)
+    , keyEncodingOf
+    , paneKeyMode
+    , extendedKeyBytes
     , routeKey
     , routeKeys
     ) where
@@ -391,6 +397,61 @@ ctrlByte c
 
 charBytes :: Int -> ByteString
 charBytes = TE.encodeUtf8 . T.singleton . chr
+
+-- | @extended-keys@: whether panes get modified keys in an extended form.
+data ExtendedKeys = ExtendedOff | ExtendedOn | ExtendedAlways
+    deriving (Eq, Show)
+
+-- | @extended-keys-format@: which extended form.
+data ExtendedFormat = FormatXterm | FormatCsiU
+    deriving (Eq, Show)
+
+-- | How keys are encoded for panes, from the server options.
+data KeyEncoding = KeyEncoding
+    { extended :: ExtendedKeys
+    , format   :: ExtendedFormat
+    }
+    deriving (Eq, Show)
+
+-- | The @extended-keys@ and @extended-keys-format@ option values.
+keyEncodingOf :: Text -> Text -> KeyEncoding
+keyEncodingOf ext fmt = KeyEncoding
+    { extended = case ext of
+        "on" -> ExtendedOn
+        "always" -> ExtendedAlways
+        _ -> ExtendedOff
+    , format = if fmt == "csi-u" then FormatCsiU else FormatXterm }
+
+-- | tmux's pane key mode: what @extended-keys@ makes of the mode the app
+-- asked for with @CSI > 4 ; n m@ — ignored when off, forced to at least
+-- mode 1 when always.
+paneKeyMode :: ExtendedKeys -> Int -> Int
+paneKeyMode ext asked = case ext of
+    ExtendedOff -> 0
+    ExtendedOn -> asked
+    ExtendedAlways -> if asked == 2 then 2 else 1
+
+-- | tmux's @input_key@ for a modified character key (codepoint and xterm
+-- modifier parameter) in a pane key mode: mode 2 spells every one in the
+-- extended form; mode 1 keeps the ones with a usable legacy spelling (Alt
+-- alone, and Ctrl with a key that has a control code); 'Nothing' means the
+-- legacy bytes.
+extendedKeyBytes :: ExtendedFormat -> Int -> Int -> Int -> Maybe ByteString
+extendedKeyBytes fmt mode code param = case mode of
+    2 -> Just spelled
+    1 | altOnly || ctrlLegacy -> Nothing
+      | otherwise -> Just spelled
+    _ -> Nothing
+  where
+    bits = max 0 (param - 1)
+    ctrl = testBit bits 2
+    altOnly = testBit bits 1 && not ctrl
+    ctrlLegacy = ctrl &&
+        (code `elem` map ord " /@^" || (code >= ord '2' && code <= ord '8')
+         || (code >= ord '@' && code <= ord '~'))
+    spelled = B8.pack $ case fmt of
+        FormatXterm -> "\ESC[27;" <> show param <> ";" <> show code <> "~"
+        FormatCsiU -> "\ESC[" <> show code <> ";" <> show param <> "u"
 
 -- | The (codepoint, xterm modifier param) a canonical key name denotes, for
 -- the keys an extended-key sequence can carry — what a pane's key protocol

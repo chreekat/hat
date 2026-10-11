@@ -54,7 +54,9 @@ module Hat.Server.Pane
     , syncTargets
     , typeKeyIntoPane
     , typeIntoPaneSynced
+    , hostPolicyOf
     , reencodeKey
+    , keyEncoding
     , setScreenTitle
     , restorePaneState
     , claimPane
@@ -116,7 +118,8 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientIO (broadcast, send)
+import Hat.Server.Clipboard (appClipboard, paneViewers)
 import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
@@ -126,7 +129,7 @@ import Hat.Server.Layout
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
-import Hat.Server.FormatEnv (expandFormat, paneEnvById)
+import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Style (applyStyle)
 import Hat.Server.Winlink (unlinkEverywhere)
@@ -136,6 +139,7 @@ import Hat.Server.Mru (popOnClose, scrub)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
+import Hat.Term.HostProtocol (cleanName)
 import Hat.Transport.Wire
 
 -- The server's own environment seeds restored panes; spawnPane strips and
@@ -381,7 +385,7 @@ newPane pid pty emu sz dir pending start kind = do
     inputOffVar <- newTVarIO False
     -- A new pane is titled with the host's name until its program sets one.
     host <- Posix.nodeName <$> Posix.getSystemID
-    _ <- Emu.feed emu ("\ESC]2;" <> TE.encodeUtf8 (T.pack host) <> "\ESC\\")
+    _ <- Emu.setTitle emu (T.pack host)
     pure Pane
         { id = pid
         , pty = pty
@@ -503,8 +507,10 @@ runPaneReader st pane = do
             readTVar st.readGate >>= check . (== ReadersFlowing)
             modifyTVar' st.readsInFlight (+ 1)
         (do bs <- rd
+            mopts <- paneOptionsNow st pane
+            forM_ mopts (Emu.setHostPolicy pane.emulator . hostPolicyOf)
             events <- if B8.null bs then pure [] else Emu.feed pane.emulator bs
-            pure (bs, events))
+            pure (bs, events, mopts))
             `finally` atomically (modifyTVar' st.readsInFlight (subtract 1))
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
@@ -514,7 +520,8 @@ runPaneReader st pane = do
     -- shell has exited (an empty result ends the loop either way).
     readLoop unmask await rd pending = do
         unmask await
-        (bs, events) <- feedChunk rd
+        (bs, events, mopts) <- feedChunk rd
+        let allowed name = maybe False (optionFlag name) mopts
         unless (B8.null bs) $ do
           unmask $ do
             readIORef pending >>= mapM_ (\line -> do
@@ -544,12 +551,17 @@ runPaneReader st pane = do
                 -- the session's attached terminals to raise with the OS.
                 Emu.DesktopNotification raw ->
                     forM_ mhome $ \(sid, _) -> broadcast st sid (Notify raw)
-                -- The pane's own OSC title only feeds #{pane_title} (the
-                -- emulator stores it); the client's desktop title is
-                -- composed in 'refreshTitles'.
-                Emu.TitleChanged t ->
-                    notifyPane st "pane-title-changed" pane
-                        [ ("new_title", PText t) ]
+                -- The pane's own title only feeds #{pane_title}; the
+                -- client's desktop title is composed in 'refreshTitles'.
+                Emu.TitleRequest raw -> when (allowed "allow-set-title") $
+                    forM_ (cleanName raw) $ \t -> do
+                        changed <- Emu.setTitle pane.emulator t
+                        when changed $ notifyPane st "pane-title-changed" pane
+                            [ ("new_title", PText t) ]
+                Emu.RenameRequest raw -> when (allowed "allow-rename") $
+                    forM_ (cleanName raw) (renameFromApp st pane)
+                Emu.ClipboardRequest param term -> forM_ mopts $ \o ->
+                    appClipboard st o pane param term
                 Emu.Bell -> forM_ mhome $ \(sid, win) -> do
                     fires <- atomically $ do
                         r <- bellAlerts st win
@@ -575,16 +587,75 @@ runPaneReader st pane = do
                         , propKind = propKindLabel kind
                         , prop = prop
                         }
-                -- A tmux passthrough payload hat neither answers nor forwards
-                -- (OSC 52 clipboard, OSC 12 cursor color, OSC 4 palette, …);
-                -- log it rather than discard it silently (allow-passthrough
-                -- off would drop it with no trace).
+                -- A tmux passthrough payload hat does not answer itself goes
+                -- on to the outer terminals @allow-passthrough@ names; with it
+                -- off, it is logged rather than dropped without a trace.
                 Emu.UnhandledPassthrough raw ->
-                    logEvent st.logger UnhandledPassthrough
-                        { pane = rawPane pane.id
-                        , payload = T.pack (show raw)
-                        }
+                    case maybe "off" (optionText "allow-passthrough") mopts of
+                        "off" -> logEvent st.logger UnhandledPassthrough
+                            { pane = rawPane pane.id
+                            , payload = T.pack (show raw)
+                            }
+                        reach -> do
+                            cs <- atomically $ if reach == "all"
+                                then paneHolders st pane
+                                else paneViewers st pane
+                            forM_ cs $ \c -> send c (Notify raw)
           readLoop unmask await rd pending
+
+-- | A pane's options as of now, from its current home; 'Nothing' for a pane
+-- not yet homed.
+paneOptionsNow :: ServerState -> Pane -> IO (Maybe Options)
+paneOptionsNow st pane = atomically $ do
+    mhome <- readTVar pane.home  -- See Note [Pane home]
+    sessions <- readTVar st.sessions
+    case mhome of
+        Just (sid, win) | Just sess <- Map.lookup sid sessions ->
+            Just <$> resolveForPane st sess win pane
+        _ -> pure Nothing
+
+-- | The pane options that shape how its output is taken.
+hostPolicyOf :: Options -> Emu.HostPolicy
+hostPolicyOf o = Emu.defaultHostPolicy
+    { Emu.allowAltScreen = optionFlag "alternate-screen" o
+    , Emu.scrollOnClear = optionFlag "scroll-on-clear" o
+    }
+
+-- | The clients whose session holds @pane@'s window, current or not.
+paneHolders :: ServerState -> Pane -> STM [Client]
+paneHolders st pane = do
+    mhome <- readTVar pane.home  -- See Note [Pane home]
+    case mhome of
+        Nothing -> pure []
+        Just (_, win) -> do
+            cs <- Map.elems <$> readTVar st.clients
+            sessions <- readTVar st.sessions
+            flip filterM cs $ \c -> do
+                sid <- readTVar c.session
+                case Map.lookup sid sessions of
+                    Nothing -> pure False
+                    Just sess -> any (\w -> w.id == win.id) . Map.elems
+                        <$> readTVar sess.windows
+
+-- | An app renamed its window (@ESC k@, under @allow-rename@; tmux's
+-- @input_exit_rename@): a name pins the window's name; an empty one hands
+-- the window back to @automatic-rename@, or blanks the name when that is
+-- off.
+renameFromApp :: ServerState -> Pane -> Text -> IO ()
+renameFromApp st pane name = do
+    mhome <- readTVarIO pane.home  -- See Note [Pane home]
+    forM_ mhome $ \(sid, win) -> do
+        auto <- (.automaticRename) <$> readTVarIO st.options
+        if T.null name && auto
+            then do
+                atomically (writeTVar win.autoRename True)
+                refreshAutoNames st
+            else do
+                atomically $ do
+                    writeTVar win.name name
+                    writeTVar win.autoRename False
+                    bumpDirty st
+                notifyWindow st "window-renamed" (Just sid) win []
 
 -- | Quiesce the pane readers for a reload capture: close the read gate,
 -- then wait out every chunk already in flight, so on return every pane byte
@@ -766,10 +837,10 @@ noteOuterFocus st client k
 paneExitWaitMicros :: Int
 paneExitWaitMicros = 400_000
 
--- | Set the title on a pane's screen, as its program would with OSC 2.
+-- | Set the title on a pane's screen.
 setScreenTitle :: Pane -> Text -> IO ()
 setScreenTitle pane t =
-    void (Emu.feed pane.emulator ("\ESC]2;" <> TE.encodeUtf8 t <> "\ESC\\"))
+    void (Emu.setTitle pane.emulator t)
 
 -- | Give a rebuilt pane the input state and title it was captured with.
 restorePaneState :: Pane -> Bool -> Maybe Text -> IO ()
@@ -813,8 +884,9 @@ syncTargets st pane = do
 -- report concerns only the pane it was meant for.
 typeKeyIntoPane :: ServerState -> Pane -> Key -> IO ()
 typeKeyIntoPane st pane key = do
-    bspace <- optionText "backspace" <$> readTVarIO st.options
-    let typeInto p = mapM_ (typeIntoPane p) =<< paneKeyBytes bspace p key
+    o <- readTVarIO st.options
+    let bspace = optionText "backspace" o
+        typeInto p = mapM_ (typeIntoPane p) =<< paneKeyBytes (keyEncoding o) bspace p key
     typeInto pane
     targets <- if key.name `elem` ["FocusIn", "FocusOut"]
         then pure []
@@ -824,12 +896,17 @@ typeKeyIntoPane st pane key = do
 -- | The bytes a key sends to a pane (tmux's @input_key@): Backspace sends
 -- what the @backspace@ option names, a @User@/N/ key sends nothing, and
 -- every other key is encoded for the pane's terminal ('reencodeKey').
-paneKeyBytes :: Text -> Pane -> Key -> IO (Maybe B.ByteString)
-paneKeyBytes bspace p key = case key.name of
+paneKeyBytes :: KeyEncoding -> Text -> Pane -> Key -> IO (Maybe B.ByteString)
+paneKeyBytes kenc bspace p key = case key.name of
     "BSpace" -> pure (backspaceBytes bspace)
     "M-BSpace" -> pure (("\ESC" <>) <$> backspaceBytes bspace)
     n | isUserKey n -> pure Nothing
-    _ -> Just . (.raw) <$> reencodeKey (Just p.emulator) key
+    _ -> Just . (.raw) <$> reencodeKey kenc (Just p.emulator) key
+
+-- | How keys are encoded for panes under these (server) options.
+keyEncoding :: Options -> KeyEncoding
+keyEncoding o = keyEncodingOf (optionText "extended-keys" o)
+    (optionText "extended-keys-format" o)
 
 -- | Bytes typed into a pane as they are, copied to the panes synchronized
 -- with it (tmux's @window_pane_paste@).
@@ -845,8 +922,8 @@ typeIntoPaneSynced st pane bytes = do
 -- protocol the pane's app turned on, so the pane's emulator encodes both;
 -- every other named key forwards its tmux-256color terminfo bytes from
 -- 'namedKeys'. Unrecognized keys keep their raw bytes.
-reencodeKey :: Maybe Emu.Emulator -> Key -> IO Key
-reencodeKey memu key = case arrowOf key.name of
+reencodeKey :: KeyEncoding -> Maybe Emu.Emulator -> Key -> IO Key
+reencodeKey kenc memu key = case arrowOf key.name of
     Just ck | Just emu <- memu -> do
         enc <- Emu.encodeKey emu ck
         pure key { raw = enc }
@@ -854,12 +931,25 @@ reencodeKey memu key = case arrowOf key.name of
         on <- Emu.keypadMode emu
         pure $ if on then key { raw = app } else key
       | Just (code, mods) <- extendedKeyCode key.name
-      , Just emu <- memu -> do
-        enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
-        pure (maybe key (\bs -> key { raw = bs }) enc)
-      | Just canon <- Map.lookup key.name namedKeyBytes -> pure key { raw = canon }
-    _ -> pure key
+      , Just emu <- memu -> modified emu code mods
+      -- Mode 2 spells Shift-Tab as an extended S-Tab, as tmux does.
+      | key.name == "BTab", Just emu <- memu -> do
+        mode <- paneMode emu
+        pure $ if mode == 2 then extendedOr key 9 2 mode else canonical
+      | otherwise -> pure canonical
   where
+    canonical = maybe key (\canon -> key { raw = canon })
+        (Map.lookup key.name namedKeyBytes)
+    -- A kitty-protocol app gets its own spelling; otherwise the pane's
+    -- extended-key mode decides (see 'extendedKeyBytes').
+    modified emu code mods = do
+        kitty <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
+        case kitty of
+            Just bs -> pure key { raw = bs }
+            Nothing -> extendedOr key code mods <$> paneMode emu
+    paneMode emu = paneKeyMode kenc.extended . (.extendedKeys) <$> Emu.keyModes emu
+    extendedOr k code mods mode =
+        maybe k (\bs -> k { raw = bs }) (extendedKeyBytes kenc.format mode code mods)
     arrowOf n = case n of
         "Up"    -> Just Emu.CursorUp
         "Down"  -> Just Emu.CursorDown

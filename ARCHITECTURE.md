@@ -885,36 +885,26 @@ corpus; a reload reconstructs them by re-sourcing the config through the
 same `set-option` path. `ServerState.options` is a cache of the *global*
 resolution, refreshed in the same transaction as every global-scope write.
 
-## Clipboard policy (OSC 52, designed — not yet built)
+## Clipboard (OSC 52, resolved)
 
-No OSC 52 path exists in the alpha: local `xclip` (via `copy-pipe` and
-`pipe-pane -I`) covers ~99% of the copy/paste use, and FEATURES.md tags
-OSC 52 as P2, for the rare remote case. Per the fail-loud rule, a
-tmux-passthrough payload hat neither answers nor forwards (OSC 52 among
-them) is logged (`UnhandledPassthrough`), not silently dropped. When
-the real path is built, this is the shape:
+OSC 52 is the escape sequence apps use to write (and query) the system
+clipboard — a known footgun, since any program that can write to your
+terminal could otherwise stomp your clipboard or read it back. Hat follows
+tmux's two options rather than a policy of its own (`Hat.Server.Clipboard`):
 
-OSC 52 is the escape sequence apps use to write (and optionally read)
-the system clipboard. It is a known footgun: any program that can write
-to your terminal can stomp your clipboard, and `read` access leaks
-clipboard contents to whatever process is on the other end.
+- `set-clipboard` (`off` / `external` / `on`, default `external`): a copy
+  made in copy mode goes to the attached terminals as an OSC 52 unless it is
+  `off`; an app's own OSC 52 is honoured only under `on`, which also makes a
+  paste buffer of it.
+- `get-clipboard` (`off` / `buffer`, default `buffer`): an app's OSC 52 query
+  (allowed only under `set-clipboard on`) is answered from the newest paste
+  buffer. tmux's `request` and `both`, which ask the outer terminal for its
+  clipboard, are refused until that round trip exists.
 
-Modern terminals (kitty, foot, wezterm, alacritty) make it opt-in per
-direction, with read often disabled by default.
-
-**Decision:** a server option `clipboard-policy` with values
-`Disallow | AllowWrite | AllowReadWrite`. Default `AllowWrite`. The
-config command form follows tmux convention: `set -g clipboard-policy
-allow-write`. Map to the emulator's OSC handling — when policy denies, drop
-the sequence.
-
-Boolean-blindness avoidance applies; the type is
-
-```haskell
-data ClipboardPolicy = Disallow | AllowWrite | AllowReadWrite
-```
-
-not a `Bool`.
+The pane's OSC 52 never reaches the grid engine: `scrubHost` lifts it out of
+the stream for the server to decide. A tmux-passthrough payload hat does not
+answer itself goes to the outer terminals under `allow-passthrough`, and is
+logged (`UnhandledPassthrough`) under the default `off`.
 
 ## Logging (resolved)
 

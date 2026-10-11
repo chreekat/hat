@@ -592,12 +592,11 @@ spec = do
             enc e cSs `shouldReturn` Nothing
             enc e cEnter `shouldReturn` Nothing
 
-        it "spells every modified key as modifyOtherKeys once the app asked" $ do
+        it "leaves an extended-key request to the caller's encoding" $ do
             e <- new80x24
             _ <- feedStr e "\ESC[>4;2m"
-            enc e cSs `shouldReturn` Just "\ESC[27;5;115~"
-            enc e cEnter `shouldReturn` Just "\ESC[27;5;13~"
-            enc e mX `shouldReturn` Just "\ESC[27;3;120~"
+            enc e cSs `shouldReturn` Nothing
+            enc e mX `shouldReturn` Nothing
 
         it "spells modified keys as CSI-u once the app pushed kitty flags" $ do
             e <- new80x24
@@ -605,38 +604,41 @@ spec = do
             enc e cSs `shouldReturn` Just "\ESC[115;5u"
             enc e cEnter `shouldReturn` Just "\ESC[13;5u"
 
-        it "stops spelling keys once the app turns the protocol off" $ do
+        it "records the extended-key mode the app asks for" $ do
             e <- new80x24
+            let asked = (.extendedKeys) <$> keyModes e
+            asked `shouldReturn` 0
             _ <- feedStr e "\ESC[>4;2m"
-            _ <- feedStr e "\ESC[>4;0m"
-            enc e cSs `shouldReturn` Nothing
-            enc e cEnter `shouldReturn` Nothing
+            asked `shouldReturn` 2
+            _ <- feedStr e "\ESC[>4;1m"
+            asked `shouldReturn` 1
+            _ <- feedStr e "\ESC[>4n"
+            asked `shouldReturn` 0
 
         it "reads back the protocols an app turned on" $ do
             e <- new80x24
-            keyModes e `shouldReturn` KeyModes False 0
+            keyModes e `shouldReturn` KeyModes 0 0
             _ <- feedStr e "\ESC[>4;2m"
-            keyModes e `shouldReturn` KeyModes True 0
+            keyModes e `shouldReturn` KeyModes 2 0
             _ <- feedStr e "\ESC[>5u"
-            keyModes e `shouldReturn` KeyModes False 5
+            keyModes e `shouldReturn` KeyModes 2 5
 
         -- The reload contract: replaying the captured protocols into a fresh
-        -- emulator encodes keys as the surviving program still expects.
+        -- emulator restores what the surviving program asked for.
         it "re-arms a captured protocol in a fresh emulator" $
-            forM_ [("\ESC[>4;2m", Just "\ESC[27;5;115~"), ("\ESC[>1u", Just "\ESC[115;5u")]
-                $ \(enable, expected) -> do
-                    live <- new80x24
-                    _ <- feedStr live enable
-                    km <- keyModes live
-                    fresh <- new80x24
-                    _ <- feed fresh (keyModeReplayBytes km)
-                    keyModes fresh `shouldReturn` km
-                    enc fresh cSs `shouldReturn` expected
+            forM_ ["\ESC[>4;1m", "\ESC[>4;2m", "\ESC[>1u"] $ \enable -> do
+                live <- new80x24
+                _ <- feedStr live enable
+                km <- keyModes live
+                fresh <- new80x24
+                _ <- feed fresh (keyModeReplayBytes km)
+                keyModes fresh `shouldReturn` km
+                enc fresh cSs `shouldReturn` (if km.kittyFlags /= 0 then Just "\ESC[115;5u" else Nothing)
 
     it "reports title changes" $ do
         e <- new80x24
         evs <- feedStr e "\ESC]2;my title\BEL"
-        evs `shouldSatisfy` elem (TitleChanged "my title")
+        evs `shouldSatisfy` elem (TitleRequest "my title")
 
     it "reports bells" $ do
         e <- new80x24
@@ -868,7 +870,7 @@ spec = do
         -- command word via OSC 1 (icon/tab title) and the whole line via
         -- OSC 2 (window title). None of that payload may reach the grid.
         let allText scr = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
-            titles evs = [ t | TitleChanged t <- evs ]
+            titles evs = [ t | TitleRequest t <- evs ]
             noEcho scr = allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
 
         it "swallows an OSC 2 window title (BEL-terminated)" $ do
@@ -938,22 +940,21 @@ spec = do
                 scr <- snapshot e
                 allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
 
-    describe "screen/tmux ESC k title (hat advertises TERM=tmux-256color)" $ do
-        -- Under a tmux/screen TERM, oh-my-zsh sets the title with the screen
-        -- escape @ESC k <name> ST@ (name = the running command word) instead
-        -- of an OSC. The emulator doesn't know it, so hat swallows it here and
-        -- treats it as the pane title, exactly as it does OSC 0/2.
+    describe "screen/tmux ESC k window name (hat advertises TERM=tmux-256color)" $ do
+        -- Under a tmux/screen TERM, oh-my-zsh names the window with the
+        -- screen escape @ESC k <name> ST@ (name = the running command word).
+        -- The grid engine doesn't know it, so hat swallows it here and hands
+        -- it to the server as a rename request (honoured under allow-rename).
         let allText scr = T.concat [ screenRowText scr r | r <- [0 .. 23] ]
+            renames evs = [ x | RenameRequest x <- evs ]
 
-        it "swallows ESC k and records it as the pane title" $ do
+        it "swallows ESC k as a rename request" $ do
             e <- new80x24
             evs <- feedStr e "\ESCkecho\ESC\\lol"
             scr <- snapshot e
             rowText scr 0 `shouldBe` "lol"
             allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
-            t <- title e
-            t `shouldBe` "echo"
-            [ x | TitleChanged x <- evs ] `shouldBe` ["echo"]
+            renames evs `shouldBe` ["echo"]
 
         it "swallows a BEL-terminated ESC k title" $ do
             e <- new80x24
@@ -966,12 +967,53 @@ spec = do
             let full = "\ESCkecho\ESC\\lol" :: B8.ByteString
             forM_ [1 .. B.length full - 1] $ \k -> do
                 e <- new80x24
-                _ <- feedStr e (B.take k full)
-                _ <- feedStr e (B.drop k full)
+                evs1 <- feedStr e (B.take k full)
+                evs2 <- feedStr e (B.drop k full)
                 scr <- snapshot e
                 allText scr `shouldSatisfy` (not . T.isInfixOf "echo")
-                t <- title e
-                t `shouldBe` "echo"
+                renames (evs1 <> evs2) `shouldBe` ["echo"]
+
+    describe "host policy (pane options)" $ do
+        let small = newEmulator Size { rows = 3, cols = 6 } 100
+            clearAtHome = "one\r\ntwo\r\nthree\ESC[H\ESC[JZ"
+        it "scroll-on-clear: ED at home pushes the used lines into the history" $ do
+            e <- small
+            _ <- feedStr e clearAtHome
+            scrollbackLength e `shouldReturn` 3
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "Z"
+        it "scroll-on-clear off: ED at home clears in place" $ do
+            e <- small
+            setHostPolicy e defaultHostPolicy { scrollOnClear = False }
+            _ <- feedStr e clearAtHome
+            scrollbackLength e `shouldReturn` 0
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "Z"
+        it "scroll-on-clear: ED 0 away from home clears below without pushing" $ do
+            e <- small
+            _ <- feedStr e "one\r\ntwo\ESC[1;2H\ESC[J"
+            scrollbackLength e `shouldReturn` 0
+        it "alternate-screen off: the app stays on the primary screen" $ do
+            e <- new80x24
+            setHostPolicy e defaultHostPolicy { allowAltScreen = False }
+            _ <- feedStr e "\ESC[?1049;1004h"
+            m <- modes e
+            m.altScreen `shouldBe` False
+            m.focusReport `shouldBe` True
+        it "alternate-screen on: the switch reaches the screen" $ do
+            e <- new80x24
+            _ <- feedStr e "\ESC[?1049h"
+            ((.altScreen) <$> modes e) `shouldReturn` True
+        it "hands an OSC 52 to the server, terminator and all" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]52;c;SGVsbG8=\ESC\\x"
+            [ (p, t) | ClipboardRequest p t <- evs ] `shouldBe` [("c;SGVsbG8=", TermSt)]
+            scr <- snapshot e
+            rowText scr 0 `shouldBe` "x"
+        it "an APC string is a title request" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC_apc title\ESC\\"
+            [ x | TitleRequest x <- evs ] `shouldBe` ["apc title"]
 
     prop "plain ascii lands verbatim on row 0" $ \(PlainLine s) -> ioProperty $ do
         e <- new80x24

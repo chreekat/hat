@@ -24,6 +24,7 @@ import Hat.Server.FlashSpec qualified
 import Hat.Term.PtySpec qualified
 import Hat.Server.BufferSpec qualified
 import Hat.Server.CaptureSpec qualified
+import Hat.Server.ClipboardSpec qualified
 import Hat.Server.ColorSchemeSpec qualified
 import Hat.Server.ConfigSpec qualified
 import Hat.Server.ControlSpec qualified
@@ -111,6 +112,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Buffer" Hat.Server.BufferSpec.spec
     describe "Hat.Server.Capture" Hat.Server.CaptureSpec.spec
+    describe "Hat.Server.Clipboard" Hat.Server.ClipboardSpec.spec
     describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Status" Hat.Server.StatusSpec.spec

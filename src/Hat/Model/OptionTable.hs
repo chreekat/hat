@@ -430,12 +430,12 @@ optionTable =
     , live $ scalar "escape-time" ServerScope (KNumber 0 intMax) "0"
     , live $ scalar "exit-empty" ServerScope KFlag "on"
     , live $ scalar "exit-unattached" ServerScope KFlag "off"
-    , notYet $ scalar "extended-keys" ServerScope
+    , live $ scalar "extended-keys" ServerScope
         (KChoice ["off", "on", "always"]) "off"
-    , notYet $ scalar "extended-keys-format" ServerScope
+    , live $ scalar "extended-keys-format" ServerScope
         (KChoice ["csi-u", "xterm"]) "xterm"
     , live $ scalar "focus-events" ServerScope KFlag "off"
-    , notYet $ scalar "get-clipboard" ServerScope
+    , choicesOnly ["off", "buffer"] $ live $ scalar "get-clipboard" ServerScope
         (KChoice ["off", "buffer", "request", "both"]) "buffer"
     , live $ scalar "history-file" ServerScope KString ""
     , notYet $ scalar "input-buffer-size" ServerScope
@@ -450,7 +450,7 @@ optionTable =
     , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
     , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
     , notYet $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
-    , notYet $ scalar "set-clipboard" ServerScope
+    , live $ scalar "set-clipboard" ServerScope
         (KChoice ["off", "external", "on"]) "external"
     , notYet $ arrayOf "terminal-overrides" ServerScope KString "," ["linux*:AX@"]
     , notYet $ arrayOf "terminal-features" ServerScope KString ","
@@ -483,7 +483,7 @@ optionTable =
 
     -- Session options.
     , notYet $ scalar "activity-action" SessionScope (KChoice bellActions) "other"
-    , notYet $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
+    , live $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
     , live $ scalar "base-index" SessionScope (KNumber 0 intMax) "0"
     , live $ scalar "bell-action" SessionScope (KChoice bellActions) "any"
     , live $ scalar "default-command" SessionScope KString ""
@@ -568,11 +568,11 @@ optionTable =
 
     -- Window options.
     , live $ scalar "aggressive-resize" WindowScope KFlag "off"
-    , notYet $ scalar "allow-passthrough" WindowPaneScope
+    , paneLocal $ live $ scalar "allow-passthrough" WindowPaneScope
         (KChoice ["off", "on", "all"]) "off"
-    , notYet $ scalar "allow-rename" WindowPaneScope KFlag "off"
-    , notYet $ scalar "allow-set-title" WindowPaneScope KFlag "on"
-    , notYet $ scalar "alternate-screen" WindowPaneScope KFlag "on"
+    , paneLocal $ live $ scalar "allow-rename" WindowPaneScope KFlag "off"
+    , paneLocal $ live $ scalar "allow-set-title" WindowPaneScope KFlag "on"
+    , paneLocal $ live $ scalar "alternate-screen" WindowPaneScope KFlag "on"
     , live $ scalar "automatic-rename" WindowScope KFlag "on"
     -- tmux's default also marks panes in a mode or dead.
     , live $ scalar "automatic-rename-format" WindowScope KString
@@ -660,7 +660,7 @@ optionTable =
         \#{?#{!=:#{pane_dead_status},},status #{pane_dead_status},}\
         \#{?#{!=:#{pane_dead_signal},},signal #{pane_dead_signal},}, \
         \#{t:pane_dead_time})"
-    , notYet $ scalar "scroll-on-clear" WindowPaneScope KFlag "on"
+    , paneLocal $ live $ scalar "scroll-on-clear" WindowPaneScope KFlag "on"
     , notYet $ scalar "switch-mode-match-style" WindowPaneScope KStyle
         "bg=cyan fg=black"
     , paneLocal $ live $ scalar "synchronize-panes" WindowPaneScope KFlag "off"

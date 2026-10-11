@@ -62,7 +62,6 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text.Encoding qualified as TE
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
@@ -81,8 +80,7 @@ import Data.Vector qualified as V
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
-import Hat.Model.PasteBuffers (pasteAdd)
-import Hat.Server.Hooks (notifyPasteChanges)
+import Hat.Server.Clipboard (pushBufferBytes, setSelection)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -1016,6 +1014,7 @@ handlers = Map.fromList
         g <- paneGrid pane
         mtext <- extractSelection g opts.modeKeys s
         forM_ mtext $ \body -> do
+            setSelection sst pane (TE.encodeUtf8 body)
             unless (T.null cmd) $ runPipeCommand (T.unpack cmd) body
             pushBuffer sst body
         pure . Right $
@@ -1085,23 +1084,17 @@ otherEnd s = case s.selection of
         , selection = Just ((s.cursorRow, s.cursorCol), kind) }
 
 -- | Extract the current selection and push it onto the buffer store as
--- a fresh, auto-named buffer at the front of the stack.
+-- a fresh, auto-named buffer at the front of the stack, and onto the
+-- clipboard ('setSelection').
 yankSelection :: ServerState -> Pane -> CopyModeState -> IO ()
 yankSelection st pane s = do
     opts <- readTVarIO st.options
     g <- paneGrid pane
     mtext <- extractSelection g opts.modeKeys s
-    forM_ mtext (pushBuffer st)
+    forM_ mtext $ \body -> do
+        setSelection st pane (TE.encodeUtf8 body)
+        pushBuffer st body
 
 -- | Push a fresh, auto-named buffer onto the buffer store.
 pushBuffer :: ServerState -> Text -> IO ()
-pushBuffer st body = do
-    now <- floor <$> getPOSIXTime
-    (old, new) <- atomically $ do
-        limit <- optionNumber "buffer-limit" <$> readTVar st.options
-        old <- readTVar st.buffers
-        let new = pasteAdd limit "buffer" now (TE.encodeUtf8 body) old
-        writeTVar st.buffers new
-        bumpDirty st
-        pure (old, new)
-    notifyPasteChanges st old new
+pushBuffer st = pushBufferBytes st . TE.encodeUtf8

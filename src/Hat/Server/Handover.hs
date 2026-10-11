@@ -157,8 +157,9 @@ reloadModesOf m km = ReloadModes
         Emu.MouseClick -> 1
         Emu.MouseDrag  -> 2
         Emu.MouseMove  -> 3
-    , modifyOtherKeys = km.modifyOtherKeys
+    , modifyOtherKeys = km.extendedKeys == 2
     , kittyFlags = km.kittyFlags
+    , extendedKeys = km.extendedKeys
     }
 
 -- Read and consume the handover file the outgoing image wrote. The frozen
@@ -326,7 +327,7 @@ emuModesOf rm = Emu.Modes
 -- encoding keys as the surviving program expects. Inverse of 'reloadModesOf'.
 keyModesOf :: ReloadModes -> Emu.KeyModes
 keyModesOf rm = Emu.KeyModes
-    { modifyOtherKeys = rm.modifyOtherKeys, kittyFlags = rm.kittyFlags }
+    { extendedKeys = rm.extendedKeys, kittyFlags = rm.kittyFlags }
 
 -- | What 'adoptPane' feeds a reloaded pane's fresh emulator to reconstruct it:
 -- the bytes that replay the mode and key-protocol subscriptions then repaint

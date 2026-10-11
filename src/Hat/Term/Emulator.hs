@@ -22,10 +22,14 @@ module Hat.Term.Emulator
     , CursorKey (..)
     , KeyPress (..)
     , KeyModes (..)
-    , modifyOtherKeysBytes
+
     , keyModeReplayBytes
     , newEmulator
     , feed
+    , HostPolicy (..)
+    , defaultHostPolicy
+    , setHostPolicy
+    , setTitle
     , encodeKey
     , encodeKeyPress
     , keyModes
@@ -61,7 +65,7 @@ module Hat.Term.Emulator
 
 import Control.Concurrent.MVar
 import Control.Exception (finally)
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
@@ -69,11 +73,10 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Unsafe qualified as BU
 import Data.Char (chr)
 import Data.IORef
-import Data.List (intersperse)
+import Data.List (dropWhileEnd, intersperse)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Text (Text)
-import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import Foreign
@@ -126,17 +129,25 @@ data SnapBuf = SnapBuf
     }
 
 -- | The Haskell-side state libghostty does not hold: the color-scheme
--- subscription hat tracks itself (?2031, not fed to the terminal), the title
--- hat scrubs out of the stream (ESC k), and the two cross-chunk scrubber states
--- for tmux passthrough and screen\/tmux ESC k titles.
+-- subscription hat tracks itself (?2031, not fed to the terminal), the pane
+-- title (hat takes OSC 0\/2 out of the stream), the extended-key mode the app
+-- asked for, the host policy the server last set, and the two cross-chunk
+-- scrubber states for tmux passthrough and the host sequences.
 data EmulatorState = EmulatorState
     { colorSub    :: Bool
     , title       :: Text
+    , keyRequest  :: Int  -- ^ the app's last @CSI > 4 ; n m@: 0, 1 or 2
+    , policy      :: HostPolicy
     , passthrough :: PassState
-    , screenTitle :: StitleState
+    , hostCarry   :: HostCarry
     , output      :: [ByteString]  -- ^ write_pty callback bytes, reversed
     , events      :: [Event]       -- ^ bell callback events, reversed
     }
+
+-- | The policy a fresh emulator starts with: tmux's defaults.
+defaultHostPolicy :: HostPolicy
+defaultHostPolicy = HostPolicy
+    { allowAltScreen = True, scrollOnClear = True, bufferSize = 1048576 }
 
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz limit = do
@@ -155,8 +166,10 @@ newEmulator sz limit = do
     st <- newIORef EmulatorState
         { colorSub = False
         , title = ""
+        , keyRequest = 0
+        , policy = defaultHostPolicy
         , passthrough = Outside ""
-        , screenTitle = StOutside ""
+        , hostCarry = HostCarry ""
         , output = []
         , events = []
         }
@@ -187,45 +200,84 @@ newEmulator sz limit = do
         , render = rp, gridCache = gc, snapBuf = sb }
 
 -- | Feed pty output into the emulator; returns what happened. The
--- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
--- OSC 10\/11 and DEC 2031 queries hat answers, OSC 9\/777 notifications) run
--- here as pure byte-scanning above the grid engine, and only the leftover
--- bytes reach libghostty. libghostty's own write_pty\/bell callbacks land the 'Output'
--- (CPR\/DA replies) and 'Bell' events, and the OSC 0\/2 title is polled back
--- after the write.
+-- host-protocol scrubbers (tmux passthrough, the title, rename, clipboard and
+-- key-mode sequences, the OSC 10\/11 and DEC 2031 queries hat answers, OSC
+-- 9\/777 notifications) run here as pure byte-scanning above the grid engine,
+-- under the policy last set by 'setHostPolicy', and only the leftover bytes
+-- reach libghostty. libghostty's own write_pty\/bell callbacks land the
+-- 'Output' (CPR\/DA replies) and 'Bell' events.
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     s0 <- readIORef e.state
     let (pass1, depassed, passPayloads) = scrubPassthrough s0.passthrough bs0
-        (stitle1, scrubbed, stitles) = scrubStitle s0.screenTitle depassed
-        screenTitles = map TE.decodeUtf8Lenient stitles
-        latestTitle = case screenTitles of
-            [] -> s0.title
-            ts -> last ts
+        (carry1, pieces) = scrubHost s0.policy s0.hostCarry depassed
     modifyIORef' e.state $ \s -> s
         { passthrough = pass1
-        , screenTitle = stitle1
-        , title = latestTitle
+        , hostCarry = carry1
         , output = []
         , events = []
         }
     -- Split each passthrough payload into the host queries hat answers and the
-    -- leftover it surfaces as UnhandledPassthrough for the reader to log.
+    -- leftover it surfaces as UnhandledPassthrough for the server to forward or
+    -- log.
     let parts = map partitionPassthrough passPayloads
         unhandled = [UnhandledPassthrough r | (_, r) <- parts, not (B.null r)]
     passEvs <- concat <$> mapM (applySignal e) (concatMap fst parts)
-    (interleaved, oscTitleEvs) <- withForeignPtr e.term $ \t -> do
-        ievs <- feedSegments e t scrubbed
-        (,) ievs <$> pollTitle e t
+    interleaved <- withForeignPtr e.term $ \t ->
+        concat <$> mapM (feedPiece e t) pieces
     s1 <- readIORef e.state
     pure $ passEvs
         <> unhandled
-        <> map TitleChanged screenTitles
         <> interleaved
         <> reverse s1.events
-        <> oscTitleEvs
-        <> [ScreenChanged | not (B.null scrubbed) || not (null screenTitles)]
+        <> [ScreenChanged | not (null pieces)]
 
+-- | Set the options-driven policy 'feed' scrubs under (see 'HostPolicy').
+setHostPolicy :: Emulator -> HostPolicy -> IO ()
+setHostPolicy e pol = modifyIORef' e.state $ \s -> s { policy = pol }
+
+-- | Set the pane title (from @select-pane -T@, a restore, or a title the
+-- server accepted from the app); whether it changed.
+setTitle :: Emulator -> Text -> IO Bool
+setTitle e t = atomicModifyIORef' e.state $ \s ->
+    (s { title = t }, t /= s.title)
+
+-- | Act on one piece of scrubbed output, in stream order.
+feedPiece :: Emulator -> Ptr CTerm -> HostPiece -> IO [Event]
+feedPiece e t = \case
+    HostBytes bs -> feedSegments e t bs
+    HostSignal sig -> case sig of
+        HostTitle raw -> pure [TitleRequest raw]
+        HostRename raw -> pure [RenameRequest raw]
+        HostClipboard raw term -> pure [ClipboardRequest raw term]
+        HostKeyMode n -> [] <$ modifyIORef' e.state (\s -> s { keyRequest = n })
+        HostErase n raw -> do
+            pol <- (.policy) <$> readIORef e.state
+            when pol.scrollOnClear (scrollScreenIntoHistory t n)
+            feedSegments e t raw
+
+-- | tmux's @scroll-on-clear@: before an ED 2, or an ED 0 with the cursor
+-- home, the primary screen's used lines scroll into the history (tmux's
+-- @grid_view_clear_history@), with the cursor kept where it was.
+scrollScreenIntoHistory :: Ptr CTerm -> Int -> IO ()
+scrollScreenIntoHistory t n = do
+    alt <- c_get t dataActiveScreen
+    cx <- c_get t dataCursorX
+    cy <- c_get t dataCursorY
+    rows <- fromIntegral <$> c_get t dataRows
+    let wholeScreen = n == 2 || (cx == 0 && cy == 0)
+    when (alt /= screenAlternate && wholeScreen) $ do
+        (_, painted) <- screenPaintedT t
+        let used = length (dropWhileEnd B.null painted)
+        unless (used == 0) $ do
+            let moves = BL.toStrict $ BB.toLazyByteString $
+                    moveTo rows <> mconcat (replicate used (BB.char8 '\n'))
+                    <> BB.byteString "\ESC[" <> BB.intDec (fromIntegral cy + 1)
+                    <> BB.char8 ';' <> BB.intDec (fromIntegral cx + 1) <> BB.char8 'H'
+            BU.unsafeUseAsCStringLen moves $ \(p, len) ->
+                c_write t (castPtr p) (fromIntegral len)
+  where
+    moveTo r = BB.byteString "\ESC[" <> BB.intDec r <> BB.byteString ";1H"
 -- | Feed a chunk to libghostty piecewise, splitting at each color query hat
 -- answers itself so the query's event lands in stream order among the bytes
 -- around it.
@@ -263,27 +315,6 @@ applySignal e sig = case sig of
     SigColor CsQuery   -> pure [ColorSchemeQuery]
     SigOsc target term -> pure [OscColorQuery target term]
     SigNotify raw      -> pure [DesktopNotification raw]
-
--- | libghostty swallows an OSC 0\/2 title and stores it rather than exposing a
--- string in its callback, so read it back after a feed and raise a
--- 'TitleChanged' when it actually changed.
-pollTitle :: Emulator -> Ptr CTerm -> IO [Event]
-pollTitle e t = do
-    newT <- readTitle t
-    cur <- (.title) <$> readIORef e.state
-    if not (T.null newT) && newT /= cur
-        then [TitleChanged newT] <$ modifyIORef' e.state (\s -> s { title = newT })
-        else pure []
-
-readTitle :: Ptr CTerm -> IO Text
-readTitle t = allocaBytes cap $ \buf -> do
-    n <- c_get_title t buf (fromIntegral cap)
-    if n <= 0
-        then pure ""
-        else TE.decodeUtf8Lenient
-            <$> B.packCStringLen (castPtr buf, min (fromIntegral n) cap)
-  where
-    cap = 4096
 
 -- | Resize the terminal; libghostty reflows the primary screen itself.
 resize :: Emulator -> Size -> IO ()
@@ -514,40 +545,37 @@ encodeKey e key = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
             CursorEnd   -> "F"
     pure (intro <> final)
 
--- | Encode a modified key press per the key protocol the pane's app turned
--- on: the modifyOtherKeys form once it sent @CSI > 4 ; 2 m@, the kitty CSI-u
--- form once it pushed kitty flags. 'Nothing' when no protocol is on or the
--- encoder cannot spell the key: the caller keeps the key's own legacy bytes.
+-- | Encode a modified key press in the kitty CSI-u form once the pane's app
+-- pushed kitty flags. 'Nothing' when it has not or the encoder cannot spell
+-- the key: the caller encodes it as the extended-key mode says.
 encodeKeyPress :: Emulator -> KeyPress -> IO (Maybe ByteString)
 encodeKeyPress e kp = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    km <- readKeyModes t
-    if km.kittyFlags /= 0
+    kf <- readKittyFlags t
+    if kf /= 0
         then allocaBytes cap $ \buf -> do
             n <- c_encode_key t (fromIntegral kp.code) (fromIntegral kp.mods)
                     buf (fromIntegral cap)
             if n < 0
                 then pure Nothing
                 else Just <$> B.packCStringLen (castPtr buf, fromIntegral n)
-        -- Spelled by hat, not c_encode_key: libghostty keeps a legacy
-        -- encoding under modifyOtherKeys where xterm and tmux escape it, and
-        -- a half-escaped app reads the legacy byte as unmapped.
-        else pure $ if km.modifyOtherKeys
-            then Just (modifyOtherKeysBytes kp)
-            else Nothing
+        else pure Nothing
   where
     cap = 64 :: Int
 
--- | The key protocols the pane's app has turned on, for the reload carry.
+-- | The key protocols the pane's app has turned on: the extended-key mode
+-- hat tracks itself (its @CSI > 4@ requests never reach libghostty) and the
+-- kitty flags libghostty tracks.
 keyModes :: Emulator -> IO KeyModes
-keyModes e = withMVar e.lock $ \_ -> withForeignPtr e.term readKeyModes
+keyModes e = withMVar e.lock $ \_ -> do
+    ext <- (.keyRequest) <$> readIORef e.state
+    kf <- withForeignPtr e.term readKittyFlags
+    pure KeyModes { extendedKeys = ext, kittyFlags = kf }
 
-readKeyModes :: Ptr CTerm -> IO KeyModes
-readKeyModes t = alloca $ \kfp -> do
+readKittyFlags :: Ptr CTerm -> IO Int
+readKittyFlags t = alloca $ \kfp -> do
     poke kfp 0
-    mok <- c_key_modes t kfp
-    kf <- peek kfp
-    pure KeyModes
-        { modifyOtherKeys = mok > 0, kittyFlags = fromIntegral (kf :: Word8) }
+    _ <- c_key_modes t kfp
+    fromIntegral <$> (peek kfp :: IO Word8)
 
 -- | The current window title: an OSC 0\/2 title polled from libghostty, or a
 -- screen\/tmux ESC k title scrubbed from the stream.

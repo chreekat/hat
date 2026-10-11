@@ -94,6 +94,7 @@ library
         Hat.Server
         Hat.Server.ArgNumber
         Hat.Server.ClientIO
+        Hat.Server.Clipboard
         Hat.Server.ClientSession
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
@@ -292,6 +293,7 @@ test-suite hat-test
         Hat.Transport.SocketSpec
         Hat.Server.BufferSpec
         Hat.Server.CaptureSpec
+        Hat.Server.ClipboardSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
         Hat.Server.ControlSpec

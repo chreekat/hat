@@ -60,7 +60,9 @@ import Hat.Server.Environ
     , environSet )
 import Hat.Server.Snapshot (cmdListSnapshots, cmdRestoreSnapshot)
 import Hat.Term.Pty qualified as Pty
-import Hat.Server.Keys (EscPending (NoEscPending), Key (..), initialKeyState)
+import Hat.Server.Keys
+    ( EscPending (NoEscPending), ExtendedFormat (..), ExtendedKeys (..), Key (..)
+    , KeyEncoding (..), initialKeyState )
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
@@ -1551,34 +1553,50 @@ spec = do
         -- hat advertises TERM=tmux-256color (khome=\E[1~, kend=\E[4~), so Home
         -- and End must forward those bytes whatever xterm-ish form the outer
         -- terminal sent -- else a pager reads a bare H/F and less opens help.
-        let reraw form = (.raw) <$> reencodeKey Nothing (Key "Home" form)
+        let offEnc = KeyEncoding { extended = ExtendedOff, format = FormatXterm }
+            reraw form = (.raw) <$> reencodeKey offEnc Nothing (Key "Home" form)
         it "normalizes Home to khome (\\E[1~) from any incoming form" $ do
             reraw "\ESC[H"  `shouldReturn` "\ESC[1~"
             reraw "\ESCOH"  `shouldReturn` "\ESC[1~"
             reraw "\ESC[1~" `shouldReturn` "\ESC[1~"
         it "normalizes End to kend (\\E[4~)" $
-            ((.raw) <$> reencodeKey Nothing (Key "End" "\ESCOF"))
+            ((.raw) <$> reencodeKey offEnc Nothing (Key "End" "\ESCOF"))
                 `shouldReturn` "\ESC[4~"
         it "normalizes F1-F4 to the SS3 kf1..kf4 forms from the legacy CSI" $ do
             -- bug fad
-            ((.raw) <$> reencodeKey Nothing (Key "F1" "\ESC[11~"))
+            ((.raw) <$> reencodeKey offEnc Nothing (Key "F1" "\ESC[11~"))
                 `shouldReturn` "\ESCOP"
-            ((.raw) <$> reencodeKey Nothing (Key "F4" "\ESC[14~"))
+            ((.raw) <$> reencodeKey offEnc Nothing (Key "F4" "\ESC[14~"))
                 `shouldReturn` "\ESCOS"
         it "leaves an unrecognized sequence's raw bytes alone" $
             -- bug fad
-            ((.raw) <$> reencodeKey Nothing (Key "Unknown" "\ESC[97~"))
+            ((.raw) <$> reencodeKey offEnc Nothing (Key "Unknown" "\ESC[97~"))
                 `shouldReturn` "\ESC[97~"
 
         -- bug 64: a modified character key is spelled by the pane's own key
         -- protocol state, so what the app asked for is what it receives.
-        it "encodes a modified key through the pane's key protocol" $ do
+        it "encodes a modified key as the app's extended-key mode asks, under extended-keys on" $ do
             emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
             let cEnter = Key "C-Enter" "\r"
-            ((.raw) <$> reencodeKey (Just emu) cEnter) `shouldReturn` "\r"
+                on = KeyEncoding { extended = ExtendedOn, format = FormatXterm }
+            ((.raw) <$> reencodeKey on (Just emu) cEnter) `shouldReturn` "\r"
             _ <- Emu.feed emu "\ESC[>4;2m"
-            ((.raw) <$> reencodeKey (Just emu) cEnter)
+            ((.raw) <$> reencodeKey on (Just emu) cEnter)
                 `shouldReturn` "\ESC[27;5;13~"
+            ((.raw) <$> reencodeKey on { format = FormatCsiU } (Just emu) cEnter)
+                `shouldReturn` "\ESC[13;5u"
+        it "extended-keys off ignores the app's request" $ do
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            _ <- Emu.feed emu "\ESC[>4;2m"
+            ((.raw) <$> reencodeKey offEnc (Just emu) (Key "C-Enter" "\r"))
+                `shouldReturn` "\r"
+        it "extended-keys always puts every pane in mode 1" $ do
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            let always = KeyEncoding { extended = ExtendedAlways, format = FormatXterm }
+            ((.raw) <$> reencodeKey always (Just emu) (Key "C-Tab" "\t"))
+                `shouldReturn` "\ESC[27;5;9~"
+            ((.raw) <$> reencodeKey always (Just emu) (Key "C-a" "\SOH"))
+                `shouldReturn` "\SOH"
 
     describe "display-panes" $ do
         let arm :: ServerState -> Client -> [Text] -> IO [Reply]
