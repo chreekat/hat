@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , expandFormat
     , WindowFlagState (..)
     , windowFlags
+    , clientFormatVars
     ) where
 
 import Control.Concurrent (forkIO, myThreadId)
@@ -45,7 +46,9 @@ import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
+import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
 import Hat.Server.Resize (windowArea)
+import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -431,8 +434,27 @@ loopPaneEnvs st env = do
 loopClientEnvs :: ServerState -> IO [FormatEnv]
 loopClientEnvs st = do
     cs <- Map.elems <$> readTVarIO st.clients
-    pure [ Map.fromList [("client_name", "client" <> tshow (rawClient c.id))]
-         | c <- cs, c.role == Attached ]
+    mapM (fmap Map.fromList . clientFormatVars) [ c | c <- cs, c.role == Attached ]
+
+-- | A client's own format variables.
+clientFormatVars :: Client -> IO [(Text, Text)]
+clientFormatVars c = do
+    controlFlags <- case c.control of
+        Nothing -> pure []
+        Just cs -> do
+            fl <- readTVarIO cs.flags
+            pure $ ["control-mode"]
+                <> [ "no-output" | fl.output == NoOutput ]
+                <> [ "wait-exit" | fl.exitWait == AwaitEmptyLine ]
+                <> [ "pause-after=" <> tshow (age `div` 1000)
+                   | Just age <- [fl.pauseAfter] ]
+    focused <- readTVarIO c.outerFocused
+    pure
+        [ ("client_name", "client" <> tshow (rawClient c.id))
+        , ("client_control_mode", if isJust c.control then "1" else "0")
+        , ("client_flags", T.intercalate "," $
+            ["attached"] <> [ "focused" | focused ] <> controlFlags)
+        ]
 
 -- The target pane's visible lines, for the C search modifier.
 targetPaneLines :: ServerState -> FormatEnv -> IO [Text]

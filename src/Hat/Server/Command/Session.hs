@@ -40,7 +40,7 @@ import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , windowHolders )
 import Hat.Server.Resize (applySessionSize, defaultSizeOf)
-import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv (clientFormatVars, expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
 import Hat.Transport.Wire (ServerToClient (DetachOk, Exited))
 
@@ -393,10 +393,9 @@ cmdListClients st mclient args = do
                         , maybe True (== sid) msid -> do
                             senv <- sessionFormatEnv st sess
                             sname <- readTVarIO sess.name
+                            cvars <- clientFormatVars c
                             let env = Map.union (Map.fromList
-                                    [ ("client_session", sname)
-                                    , ("client_name", "client"
-                                        <> tshow (rawClient c.id)) ]) senv
+                                    (("client_session", sname) : cvars)) senv
                             out <- expandFormat st env $ fromMaybe
                                 "#{session_name}" (lookup "-F" opts)
                             pure [ROutput out]
