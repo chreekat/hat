@@ -62,6 +62,7 @@ module Hat.Model
     , resolveForSession
     , resolveForWindow
     , resolveForPane
+    , paneOptionsNow
     , sessionClients
     , currentWindow
     , activePane
@@ -840,6 +841,17 @@ resolveForPane st sess win pane = do
     p <- readTVar pane.options
     rest <- resolveForWindow st sess win
     pure (applyDelta p rest)
+
+-- | A pane's options as of now, from its current home; 'Nothing' for a pane
+-- not yet homed.
+paneOptionsNow :: ServerState -> Pane -> IO (Maybe Options)
+paneOptionsNow st pane = atomically $ do
+    mhome <- readTVar pane.home  -- See Note [Pane home]
+    sessions <- readTVar st.sessions
+    case mhome of
+        Just (sid, win) | Just sess <- Map.lookup sid sessions ->
+            Just <$> resolveForPane st sess win pane
+        _ -> pure Nothing
 
 freshId :: TVar Int -> STM Int
 freshId counter = do

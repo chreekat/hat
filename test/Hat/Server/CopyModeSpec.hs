@@ -16,7 +16,9 @@ import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..), FrozenGrid (..)
     , copyModeAt, PaneMode (..)
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
-import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
+import Hat.Model.OptionTable (OptionValue (..))
+import Hat.Model.Options
+    (ModeKeys (..), Options (..), applyDelta, defaultOptions, singletonDelta)
 import Hat.Server (defaultKeymap)
 import Hat.Server.Keys (Binding (..))
 import Hat.Server.CopyMode
@@ -437,6 +439,15 @@ spec = do
         it "a selection begun and not yet moved is not present" $
             look "selection_present" (at { selection = Just ((2, 5), SelChar) }) `shouldBe` Just "0"
 
+    describe "copy-pipe's command" $ do
+        let withCopyCommand c = applyDelta (singletonDelta "copy-command" (OVScalar c)) defaultOptions
+        it "is the one given" $
+            pipeCommand (withCopyCommand "xsel") "cat" `shouldBe` Just "cat"
+        it "falls back to copy-command" $
+            pipeCommand (withCopyCommand "xsel -i") "" `shouldBe` Just "xsel -i"
+        it "runs nothing when both are empty" $
+            pipeCommand defaultOptions "" `shouldBe` Nothing
+
     describe "char search (f/F/t/T)" $ do
         -- Row 0 is "A line of words"; 'o' is at columns 7 and 11.
         let row0 col = (start.sState) { cursorRow = 0, cursorCol = col }
@@ -459,8 +470,9 @@ spec = do
         -- "line" occurs at (0,2), (1,17) and (2,8) in the shared grid.
         let from r c = (start.sState) { cursorRow = r, cursorCol = c }
             pat kind q = either (error . T.unpack) id (compilePattern kind q)
-            find dir p st =
-                runIdentity (findMatch grid dir p (st.cursorRow, st.cursorCol))
+            findW wrap dir p st =
+                runIdentity (findMatch grid wrap dir p (st.cursorRow, st.cursorCol))
+            find = findW WrapAround
             regex = pat SearchRegex
         it "/ finds the next match" $
             find Forward (regex "line") (from 0 0) `shouldBe` Just (0, 2)
@@ -472,6 +484,10 @@ spec = do
             find Backward (regex "line") (from 2 8) `shouldBe` Just (1, 17)
         it "backward search wraps to the last match" $
             find Backward (regex "line") (from 0 2) `shouldBe` Just (2, 8)
+        it "with wrap-search off, a forward search stops at the last match" $
+            findW StopAtEnd Forward (regex "line") (from 2 8) `shouldBe` Nothing
+        it "with wrap-search off, a backward search stops at the first match" $
+            findW StopAtEnd Backward (regex "line") (from 0 2) `shouldBe` Nothing
         it "no match returns Nothing" $
             find Forward (regex "zzz") (from 0 0) `shouldBe` Nothing
         -- tmux >= 3.1: / and ? take a regex; -text variants are literal.

@@ -620,17 +620,6 @@ runPaneReader st pane = do
                             forM_ cs $ \c -> send c (Notify raw)
           readLoop unmask await rd pending
 
--- | A pane's options as of now, from its current home; 'Nothing' for a pane
--- not yet homed.
-paneOptionsNow :: ServerState -> Pane -> IO (Maybe Options)
-paneOptionsNow st pane = atomically $ do
-    mhome <- readTVar pane.home  -- See Note [Pane home]
-    sessions <- readTVar st.sessions
-    case mhome of
-        Just (sid, win) | Just sess <- Map.lookup sid sessions ->
-            Just <$> resolveForPane st sess win pane
-        _ -> pure Nothing
-
 -- | The pane options that shape how its output is taken.
 hostPolicyOf :: Options -> Emu.HostPolicy
 hostPolicyOf o = Emu.defaultHostPolicy

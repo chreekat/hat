@@ -51,6 +51,7 @@ module Hat.Server.CopyMode
     , SearchPattern
     , compilePattern
     , findMatch
+    , SearchWrap (..)
     , extractSelection
     , yankSelection
     , overlaySelection
@@ -61,12 +62,13 @@ module Hat.Server.CopyMode
     , cursorToScreen
     , scrollToCursor
     , withDevNullSink
+    , pipeCommand
     ) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, bracket, catch)
-import Control.Monad (forM, forM_, unless, void)
+import Control.Monad (forM, forM_, void)
 import Data.Array ((!))
 import Data.Char (isSpace, toLower)
 import Data.Functor.Identity (Identity, runIdentity)
@@ -659,29 +661,31 @@ gridMatches g p =
         txt <- rowText g r
         pure [ (r, c) | c <- matchCols p txt ]
 
+-- | Whether a search past the last match starts over from the other end
+-- (@wrap-search@).
+data SearchWrap = WrapAround | StopAtEnd
+    deriving (Eq, Show)
+
 -- | The next match of the pattern from @(row, col)@ in the given direction,
--- wrapping around the grid. 'Nothing' when there are no matches at all.
+-- wrapping around the grid if allowed. 'Nothing' when there is none.
 findMatch
     :: Monad m
-    => Grid m -> SearchDirection -> SearchPattern -> (Int, Int)
+    => Grid m -> SearchWrap -> SearchDirection -> SearchPattern -> (Int, Int)
     -> m (Maybe (Int, Int))
-findMatch g dir p (row, col) = do
+findMatch g wrap dir p (row, col) = do
     ms <- gridMatches g p
-    pure $ case ms of
-        [] -> Nothing
-        (first : _)
-            | Forward <- dir ->
-                -- first match after the cursor, else wrap to the very first
-                case filter (\(r, c) -> r > row || (r == row && c > col)) ms of
-                    (m : _) -> Just m
-                    []      -> Just first
-            | otherwise ->
-                -- last match before the cursor, else wrap to the very last
-                case reverse (filter (\(r, c) -> r < row || (r == row && c < col)) ms) of
-                    (m : _) -> Just m
-                    []      -> case reverse ms of
-                        (m : _) -> Just m
-                        []      -> Just first
+    pure $ case dir of
+        Forward -> firstOf (filter (\(r, c) -> r > row || (r == row && c > col)) ms) ms
+        Backward ->
+            firstOf (reverse (filter (\(r, c) -> r < row || (r == row && c < col)) ms))
+                (reverse ms)
+  where
+    firstOf (m : _) _ = Just m
+    firstOf [] wrapped = case wrap of
+        WrapAround -> case wrapped of
+            (m : _) -> Just m
+            [] -> Nothing
+        StopAtEnd -> Nothing
 
 -- | Whether a grid row has no non-blank content.
 blankRow :: Monad m => Grid m -> Int -> m Bool
@@ -1039,7 +1043,7 @@ handlers = Map.fromList
                     pure (Right (if exitHere st'' then Nothing else Just st''))
     -- tmux's select-word: the word under the cursor, selected.
     selectWordH sst pane st _ = do
-        opts <- readTVarIO sst.options
+        opts <- paneOpts sst pane
         g <- paneGrid pane
         let seps = opts.wordSeparators
             motion m = runMotion g opts.modeKeys seps (m seps)
@@ -1050,7 +1054,7 @@ handlers = Map.fromList
             , pinnedEnd = Nothing, anchorAt = AnchorAtStart }))
     pureH f _ _ s _ = pure (Right (Just (f s)))
     motionH mk sst pane st _ = do
-        opts <- readTVarIO sst.options
+        opts <- paneOpts sst pane
         g <- paneGrid pane
         st' <- runMotion g opts.modeKeys opts.wordSeparators
             (mk st opts.wordSeparators) st
@@ -1059,7 +1063,7 @@ handlers = Map.fromList
         g <- paneGrid pane
         Right . Just <$> f g st
     endOfLineH sst pane st _ = do
-        opts <- readTVarIO sst.options
+        opts <- paneOpts sst pane
         g <- paneGrid pane
         Right . Just <$> endOfLine opts.modeKeys g st
     armSearch dir stop' s = s { pendingSearch = Just (CharSearch dir stop') }
@@ -1076,36 +1080,54 @@ handlers = Map.fromList
                 { pendingSearch = Nothing, lastSearch = Just (cs, c) }))
         _ -> pure (Right (Just st { pendingSearch = Nothing }))
     -- / and ? submit their query as the command args.
-    searchStringH kind dir _ pane st args = do
+    searchStringH kind dir sst pane st args = do
         let query = T.unwords args
         if T.null query
             then pure (Right (Just st))
-            else runSearch dir kind query pane
+            else runSearch sst dir kind query pane
                 st { lastQuery = Just (query, dir, kind) }
     -- n repeats in the stored direction; N (flipDirection) reverses it.
-    searchRepeatH reverseDir _ pane st _ = case st.lastQuery of
+    searchRepeatH reverseDir sst pane st _ = case st.lastQuery of
         Nothing -> pure (Right (Just st))
-        Just (query, dir, kind) -> runSearch (reverseDir dir) kind query pane st
-    runSearch dir kind query pane st = case compilePattern kind query of
+        Just (query, dir, kind) -> runSearch sst (reverseDir dir) kind query pane st
+    runSearch sst dir kind query pane st = case compilePattern kind query of
         Left err -> pure (Left err)
         Right p -> do
             g <- paneGrid pane
-            m <- findMatch g dir p (st.cursorRow, st.cursorCol)
+            opts <- paneOpts sst pane
+            let wrap = if optionFlag "wrap-search" opts then WrapAround else StopAtEnd
+            m <- findMatch g wrap dir p (st.cursorRow, st.cursorCol)
             pure . Right . Just $ maybe st
                 (\(r, c) -> st { cursorRow = r, cursorCol = c }) m
     -- copy-pipe [-flags] <shell command>: yank the selection into a
     -- buffer AND feed it to @sh -c <command>@ on stdin.
     pipeH cancelAfter sst pane s args = do
         let cmd = T.strip (T.unwords (filter (not . T.isPrefixOf "-") args))
-        opts <- readTVarIO sst.options
+        opts <- paneOpts sst pane
+        global <- readTVarIO sst.options
         g <- paneGrid pane
         mtext <- extractSelection g opts.modeKeys s
         forM_ mtext $ \body -> do
             setSelection sst pane (TE.encodeUtf8 body)
-            unless (T.null cmd) $ runPipeCommand (T.unpack cmd) body
+            forM_ (pipeCommand global cmd) $ \c -> runPipeCommand (T.unpack c) body
             pushBuffer sst body
         pure . Right $
             if cancelAfter then Nothing else Just (clearSelection s)
+
+-- | The command a copy-pipe runs: its own, else @copy-command@; 'Nothing'
+-- when both are empty.
+pipeCommand :: Options -> Text -> Maybe Text
+pipeCommand opts cmd
+    | not (T.null cmd) = Just cmd
+    | T.null fallback = Nothing
+    | otherwise = Just fallback
+  where
+    fallback = optionText "copy-command" opts
+
+-- | The options copy mode reads for a pane: its own, else the global ones
+-- while it has no home.
+paneOpts :: ServerState -> Pane -> IO Options
+paneOpts st pane = paneOptionsNow st pane >>= maybe (readTVarIO st.options) pure
 
 -- | Feed a copy-mode selection to @sh -c cmd@ on stdin and return without
 -- waiting for the command to finish. The command's stdout and stderr are
@@ -1276,7 +1298,7 @@ stopSelection g s = case s.selection of
 -- clipboard ('setSelection').
 yankSelection :: ServerState -> Pane -> CopyModeState -> IO ()
 yankSelection st pane s = do
-    opts <- readTVarIO st.options
+    opts <- paneOpts st pane
     g <- paneGrid pane
     mtext <- extractSelection g opts.modeKeys s
     forM_ mtext $ \body -> do

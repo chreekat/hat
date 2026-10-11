@@ -420,7 +420,7 @@ optionTable =
     , live $ arrayOf "command-alias" ServerScope KString ","
         ["split-pane=split-window", "splitp=split-window"]
     , notYet $ arrayOf "codepoint-widths" ServerScope KString "," []
-    , notYet $ scalar "copy-command" ServerScope KString ""
+    , live $ scalar "copy-command" ServerScope KString ""
     , paneLocal $ live $
         scalar "cursor-colour" WindowPaneScope KColourString ""
     , notYet $ scalar "cursor-style" WindowPaneScope (KChoice cursorStyles) "default"
@@ -701,7 +701,7 @@ optionTable =
     , live $ scalar "window-status-last-style" WindowScope KStyle "default"
     , live $ scalar "window-status-separator" WindowScope KString " "
     , live $ scalar "window-status-style" WindowScope KStyle "default"
-    , notYet $ scalar "wrap-search" WindowScope KFlag "on"
+    , live $ scalar "wrap-search" WindowScope KFlag "on"
     -- tmux keeps this only for compatibility: it has no effect there either.
     , live $ scalar "xterm-keys" WindowScope KFlag "on"
 
