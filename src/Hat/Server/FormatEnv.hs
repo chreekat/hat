@@ -19,7 +19,7 @@ module Hat.Server.FormatEnv
 import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad (forM, forM_, void, when)
+import Control.Monad (filterM, forM, forM_, void, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -124,7 +124,6 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        , ("session_grouped", "0")  -- hat has no session groups
         ]) wenv
 
 -- | 'paneFormatEnv' for a pane named only by id: locate its window and
@@ -221,7 +220,8 @@ sessionFormatEnv st sess = do
                      ]
         mactive <- maybe (pure Nothing) activePane mwin
         cs <- sessionClients st sess.id
-        pure (sname, wEnv, mactive, length cs, nwindows)
+        gEnv <- groupEnv
+        pure (sname, wEnv <> gEnv, mactive, length cs, nwindows)
     pEnv <- case mactive of
         Nothing -> pure []
         Just pane -> do
@@ -252,6 +252,21 @@ sessionFormatEnv st sess = do
         , ("color_scheme", maybe "" schemeName msch)
         ]
         <> wEnv <> pEnv
+  where
+    groupEnv = readTVar sess.group >>= \case
+        Nothing -> pure [("session_grouped", "0")]
+        Just g -> do
+            ss <- Map.elems <$> readTVar st.sessions
+            members <- filterM (fmap (== Just g) . readTVar . (.group)) ss
+            names <- mapM (\m -> readTVar m.name) members
+            attached <- sum <$> mapM (fmap length . sessionClients st . (.id)) members
+            pure [ ("session_grouped", "1")
+                 , ("session_group", g)
+                 , ("session_group_size", tshow (length members))
+                 , ("session_group_list", T.intercalate "," names)
+                 , ("session_group_attached", tshow attached)
+                 , ("session_group_many_attached", if attached > 1 then "1" else "0")
+                 ]
 
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
 -- plus @copy_cursor_{x,y,line}@ while in mode.

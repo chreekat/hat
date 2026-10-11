@@ -544,6 +544,12 @@ spec = do
             -- "s" is the newest session, so it would be the default target:
             -- "work" being renamed instead pins that -t chooses.
             other <- addSession st 1
+            ws <- sequence [addWindow sess 0, addWindow other 1]
+            ps <- mapM stubPane [0, 1]
+            atomically $ do
+                V.forM_ (V.fromList (zip ws ps)) $ \(w, p) ->
+                    modifyTVar' w.panes (Map.insert p.id p)
+                writeTVar other.currentIx 1
             cmdRenameSession st Nothing ["-t", "work", "s"]
                 `shouldReturn` [RErr "duplicate session: s"]
             [] <- cmdRenameSession st Nothing ["-t", "work", "renamed"]
@@ -1082,6 +1088,35 @@ spec = do
             -- the shared window's pane survives, homed in the survivor
             readTVarIO p.dead `shouldReturn` False
             homeOf p `shouldReturn` Just (SessionId 1, w0.id)
+
+    describe "session groups" $ do
+        let grouped = do
+                (st, sess) <- seedSession "/"       -- "work"
+                w0 <- addWindow sess 0
+                w1 <- addWindow sess 1
+                ps <- mapM stubPane [0, 1]
+                atomically $ V.forM_ (V.fromList (zip [w0, w1] ps)) $ \(w, p) ->
+                    modifyTVar' w.panes (Map.insert p.id p)
+                atomically $ do
+                    writeTVar sess.currentIx 1
+                    writeTVar st.nextSession 1
+                [] <- cmdNewSession st Nothing ["-d", "-s", "g", "-t", "work"]
+                [_, g] <- Map.elems <$> readTVarIO st.sessions
+                pure (st, sess, g, ps)
+
+        it "new-session -t shares the window list, with its own current window" $ do
+            (_, sess, g, _) <- grouped
+            (g.windows == sess.windows) `shouldBe` True
+            readTVarIO g.currentIx `shouldReturn` 0
+            readTVarIO sess.currentIx `shouldReturn` 1
+            mapM (readTVarIO . (.group)) [sess, g]
+                `shouldReturn` [Just "work", Just "work"]
+
+        it "killing a member leaves the windows with the rest of the group" $ do
+            (st, sess, _, ps) <- grouped
+            [] <- cmdKillSession st Nothing ["-t", "g"]
+            Map.keys <$> readTVarIO sess.windows `shouldReturn` [0, 1]
+            mapM (readTVarIO . (.dead)) ps `shouldReturn` [False, False]
 
     describe "serverIdle" $ do
         let idle = IdleInputs

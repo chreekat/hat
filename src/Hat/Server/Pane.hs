@@ -57,6 +57,7 @@ module Hat.Server.Pane
     , paneCommandName
     , globalSpawnEnv
     , createSession
+    , createGroupedSession
     , sessionSpawnEnv
     ) where
 
@@ -1106,18 +1107,31 @@ globalSpawnEnv st pairs = do
     g <- readTVarIO st.globalEnviron
     pure (environPairs (environMerge g (environFromPairs pairs)))
 
+-- | A fresh session id, and the name a session created without @-s@ takes
+-- from it — the id itself, after @prefix-@ for a session group's member —
+-- skipping ids whose name is taken (tmux's @session_create@).
+freshSessionName :: ServerState -> Maybe Text -> Maybe Text -> STM (Int, Text)
+freshSessionName st prefix mname = do
+    sid <- freshId st.nextSession
+    case mname of
+        Just nm -> pure (sid, nm)
+        Nothing -> do
+            let nm = maybe "" (<> "-") prefix <> tshow sid
+            taken <- mapM (\s -> readTVar s.name) . Map.elems =<< readTVar st.sessions
+            if nm `elem` taken then freshSessionName st prefix mname else pure (sid, nm)
+
 createSession
     :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
     -> FilePath -> Size -> IO Session
 createSession st mname mrun environ dir sz = do
-    sid <- atomically (freshId st.nextSession)
+    (sid, sname0) <- atomically (freshSessionName st Nothing mname)
     opts <- readTVarIO st.options
     spawnEnv <- globalSpawnEnv st environ
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
         dir spawnEnv (sz)
     now <- getPOSIXTime
-    nameVar <- newTVarIO (fromMaybe (tshow sid) mname)
+    nameVar <- newTVarIO sname0
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
     windowHistVar <- newTVarIO []
@@ -1147,6 +1161,56 @@ createSession st mname mrun environ dir sz = do
     sname <- readTVarIO nameVar
     notify st "session-created"
         (NotifyTarget (Just sess.id) (Just win.id) (Just pane.id))
+        [("session", PSessionRef sess.id sname)]
+    pure sess
+
+-- | Create a session in @leader@'s session group, sharing its window map
+-- (tmux's @new-session -t@): no window is spawned, and the new session
+-- starts on the lowest-numbered window. The group takes @leader@'s name
+-- when @leader@ is not grouped yet.
+createGroupedSession
+    :: ServerState -> Session -> Maybe Text -> [(Text, Text)] -> FilePath
+    -> IO Session
+createGroupedSession st leader mname environ dir = do
+    now <- getPOSIXTime
+    sess <- atomically $ do
+        lname <- readTVar leader.name
+        gname <- fromMaybe lname <$> readTVar leader.group
+        writeTVar leader.group (Just gname)
+        (sid, sname) <- freshSessionName st (Just gname) mname
+        ws <- readTVar leader.windows
+        sz <- readTVar leader.lastSize
+        nameVar <- newTVar sname
+        currentVar <- newTVar (maybe 0 fst (Map.lookupMin ws))
+        windowHistVar <- newTVar []
+        sizeVar <- newTVar sz
+        environVar <- newTVar (environFromPairs environ)
+        cwdVar <- newTVar dir
+        optionsVar <- newTVar emptyDelta
+        resolvedVar <- newTVar Nothing
+        groupVar <- newTVar (Just gname)
+        let sess = Session
+                { id = SessionId sid
+                , createdAt = now
+                , restores = 0
+                , name = nameVar
+                , windows = leader.windows
+                , currentIx = currentVar
+                , windowHist = windowHistVar
+                , lastSize = sizeVar
+                , environ = environVar
+                , startCwd = cwdVar
+                , options = optionsVar
+                , resolvedOptions = resolvedVar
+                , group = groupVar
+                }
+        modifyTVar' st.sessions (Map.insert sess.id sess)
+        bumpDirty st
+        pure sess
+    sname <- readTVarIO sess.name
+    mwin <- atomically (currentWindow sess)
+    notify st "session-created"
+        (NotifyTarget (Just sess.id) ((.id) <$> mwin) Nothing)
         [("session", PSessionRef sess.id sname)]
     pure sess
 
