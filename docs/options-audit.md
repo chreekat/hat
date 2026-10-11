@@ -77,13 +77,21 @@ spot-read of each suspect consumer.
 | `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented ✅ tested | pure |
 | `window-size` | `resizeModeOf`/`effectiveWindowSize` (Resize.hs, Layout.hs) | implemented ✅ tested | pure |
+| `default-shell` | `paneShell`/`paneProgram` (Pane.hs) for every spawn; `checkValue` (Command/Option.hs) refuses an unsuitable shell; seeded from `$SHELL` at start (`seedDefaultShell`) | implemented ✅ tested | pure |
+| `default-command` | `shellStart` (Pane.hs) at new-session, new-window, split-window | implemented ✅ tested | pure |
 | `default-size` | `defaultSizeOf` (Resize.hs): detached `new-session`, `resize-window -A`/`-a` | implemented ✅ tested | integration |
 | `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
+| `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
 | `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
+| `destroy-unattached` | `checkUnattached` (Command/Session.hs) on every attach, switch, and client exit; a rebuilt session is spared until first attached | implemented ✅ tested | pure + model (SessionSpec) |
+| `detach-on-destroy` | `destroyDestination`/`sendClientsAway` (ClientSession.hs), at every session destruction | implemented ✅ tested | pure + model (SessionSpec) |
+| `exit-empty` | `serverIdle`/`waitIdle` (Server.hs) | implemented ✅ tested | pure |
+| `exit-unattached` | `serverIdle`/`waitIdle` → `shutDownServer` (Server.hs, Dispatch.hs) | implemented ✅ tested | pure + integration |
+| `renumber-windows` | `renumberIfSet` (Winlink.hs): window destruction, `move-window`, `kill-window -a` | implemented ✅ tested | model (SessionSpec) |
 | `xterm-keys` | none — tmux keeps it only for compatibility, with no effect | implemented (by design) | — |
 
 ## Defects (the backlog)
@@ -124,6 +132,18 @@ spot-read of each suspect consumer.
   size a window only from clients whose *current* window it is; hat sizes all
   of a session's windows together from that session's own clients, so the
   option could only matter for a window linked into several sessions.
+
+- **`default-shell`** runs as a plain interactive shell named by its path,
+  where tmux starts a login shell (`-name`) and runs `-c` commands under the
+  shell's base name (see `paneProgram`). The shell chosen is tmux's; only the
+  login-ness differs. `respawn-pane` re-reads `default-shell` where tmux
+  reuses the pane's original shell.
+
+- **`history-file`** loads every entry, where tmux keeps the newest
+  `prompt-history-limit` (default 100) of each type; hat's prompt history has
+  no limit yet. Hat has no search prompt, so a file's `search:` entries are
+  only carried through to the next save. Entries are text: a byte that is
+  not UTF-8 in a tmux-written entry is rewritten as U+FFFD.
 
 ## The effect-test sweep
 

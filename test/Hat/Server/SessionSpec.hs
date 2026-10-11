@@ -32,7 +32,8 @@ import Hat.Model.Options
     (Options (..), OptionValue (..)
     , defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
 import Hat.Server
-    ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..), serverIdle
+    ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
+    , IdleVerdict (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
@@ -44,12 +45,15 @@ import Hat.Server
     , welcome, windowActivity
     , zoomTarget )
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
+import Hat.Server.ClientSession
+    ( DetachOnDestroy (..), SessionChoice (..), destroyDestination )
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Pane (deadNoticeBytes)
 import Hat.Server.Command.Session
-    (cmdKillSession, cmdNewSession, cmdRenameSession)
+    ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
+    , cmdRenameSession, destroysUnattached )
 import Hat.Server.Command.Window (cmdRenameWindow, cmdResizeWindow, cmdUnlinkWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
@@ -81,6 +85,8 @@ addSession st n = do
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO 0
+        <*> newTVarIO NotHeld
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId n) sess)
     pure sess
 
@@ -101,6 +107,8 @@ seedSession start = do
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO 0
+        <*> newTVarIO NotHeld
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 
@@ -672,6 +680,28 @@ spec = do
             wsA <- readTVarIO sessA.windows
             Map.keys wsA `shouldBe` [0, 5]
 
+    describe "renumber-windows" $ do
+        -- Windows 0 1 2 9, each with one stub pane; window 1's pane closes.
+        let closeWindowOne setting = do
+                (st, sess) <- seedSession "/"
+                ws <- mapM (addWindow sess) [0, 1, 2, 9]
+                ps <- mapM stubPane [0, 1, 2, 9]
+                atomically $ do
+                    mapM_ (\(w, p) -> modifyTVar' w.panes (Map.insert p.id p))
+                        (zip ws ps)
+                    writeTVar sess.currentIx 9
+                    writeTVar sess.options
+                        (singletonDelta "renumber-windows" (OVScalar setting))
+                _ <- atomically (detachPane st (ws !! 1) (ps !! 1))
+                (,) <$> (map (fmap (.id)) . Map.toList <$> readTVarIO sess.windows)
+                    <*> readTVarIO sess.currentIx
+        it "closes the gap a destroyed window leaves when on" $
+            closeWindowOne "on" `shouldReturn`
+                ([(0, WindowId 0), (1, WindowId 2), (2, WindowId 9)], 2)
+        it "leaves the gap when off" $
+            closeWindowOne "off" `shouldReturn`
+                ([(0, WindowId 0), (2, WindowId 2), (9, WindowId 9)], 9)
+
     describe "current-window attention flags" $ do
         let small = Size { rows = 24, cols = 80 }
         -- tmux shows no bell/activity marker on the window you are looking
@@ -1114,6 +1144,84 @@ spec = do
             readTVarIO p.dead `shouldReturn` False
             homeOf p `shouldReturn` Just (SessionId 1, w0.id)
 
+    describe "detach-on-destroy" $ do
+        let choice nm act att = SessionChoice
+                { session = nm, name = nm, activity = act, attached = att }
+            others = [choice "b" 5 True, choice "d" 2 False, choice "a" 5 False]
+        it "on detaches the clients" $
+            destroyDestination DestroyDetach "c" others `shouldBe` Nothing
+        it "off picks the most recently active session, ties by name" $
+            destroyDestination DestroySwitch "c" others `shouldBe` Just "a"
+        it "no-detached picks the most recently active unattached session" $ do
+            destroyDestination DestroyNoDetached "c" (take 2 others)
+                `shouldBe` Just "d"
+            destroyDestination DestroyNoDetached "c" (take 1 others)
+                `shouldBe` Nothing
+        it "previous and next step through the names, wrapping" $ do
+            destroyDestination DestroyPrevious "c" others `shouldBe` Just "b"
+            destroyDestination DestroyNext "c" others `shouldBe` Just "d"
+            destroyDestination DestroyPrevious "0" others `shouldBe` Just "d"
+            destroyDestination DestroyNext "e" others `shouldBe` Just "a"
+        it "previous and next with nothing left detach" $
+            destroyDestination DestroyNext "c" ([] :: [SessionChoice Text])
+                `shouldBe` Nothing
+        it "kill-session moves an attached client off the destroyed session" $ do
+            (st, sess) <- seedSession "/"   -- "work"
+            older <- addSession st 1
+            newer <- addSession st 2
+            -- a window shared with the survivors, so the kill reaps no pane
+            w0 <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' w0.panes (Map.insert p.id p)
+                modifyTVar' older.windows (Map.insert 0 w0)
+                modifyTVar' newer.windows (Map.insert 0 w0)
+                writeTVar older.activity 1
+                writeTVar newer.activity 2
+                writeTVar sess.options
+                    (singletonDelta "detach-on-destroy" (OVScalar "off"))
+            client <- addClient st sess.id (Size 24 80) 3
+            cmdKillSession st Nothing ["-t", "work"] `shouldReturn` []
+            readTVarIO client.session `shouldReturn` newer.id
+
+    describe "destroy-unattached" $ do
+        it "destroys by mode and the session's group size" $ do
+            map (destroysUnattached KeepUnattached) [Nothing, Just 1, Just 2]
+                `shouldBe` [False, False, False]
+            map (destroysUnattached DestroyAlways) [Nothing, Just 1, Just 2]
+                `shouldBe` [True, True, True]
+            map (destroysUnattached DestroyKeepLast) [Nothing, Just 1, Just 2]
+                `shouldBe` [False, False, True]
+            map (destroysUnattached DestroyKeepGroup) [Nothing, Just 1, Just 2]
+                `shouldBe` [True, False, True]
+        -- "work" and "s" share a window, so destroying either reaps no pane.
+        let sharing setting = do
+                (st, sess) <- seedSession "/"   -- "work"
+                other <- addSession st 1
+                w0 <- addWindow sess 0
+                p <- stubPane 0
+                atomically $ do
+                    modifyTVar' w0.panes (Map.insert p.id p)
+                    modifyTVar' other.windows (Map.insert 0 w0)
+                    writeTVar st.globalSessionOptions (singletonDelta
+                        "destroy-unattached" (OVScalar setting))
+                _ <- addClient st other.id (Size 24 80) 1
+                pure (st, sess)
+            survivors st = map (.id) . Map.elems <$> readTVarIO st.sessions
+        it "destroys a session no client is attached to" $ do
+            (st, _) <- sharing "on"
+            checkUnattached st
+            survivors st `shouldReturn` [SessionId 1]
+        it "spares it when off" $ do
+            (st, _) <- sharing "off"
+            checkUnattached st
+            survivors st `shouldReturn` [SessionId 0, SessionId 1]
+        it "spares a rebuilt session until a client has attached to it" $ do
+            (st, sess) <- sharing "on"
+            atomically (writeTVar sess.destroyHold HeldUntilAttached)
+            checkUnattached st
+            survivors st `shouldReturn` [SessionId 0, SessionId 1]
+
     describe "session groups" $ do
         let grouped = do
                 (st, sess) <- seedSession "/"       -- "work"
@@ -1166,27 +1274,38 @@ spec = do
     describe "serverIdle" $ do
         let idle = IdleInputs
                 { idleActiveConns = 0, idleServed = True, idlePhase = Ready
-                , idleSessions = 0, idleClients = 0, idlePanes = 0 }
+                , idleSessions = 0, idleClients = 0, idlePanes = 0
+                , idleExitEmpty = True, idleExitUnattached = False
+                , idleShutdown = Serving }
         it "is idle once served, drained, and every pane reaped" $
-            serverIdle idle `shouldBe` True
+            serverIdle idle `shouldBe` ExitNow
         it "stays busy while a pane is still being reaped" $
             -- bug 98: a drained server must outlive its children's reap, so a
             -- SIGHUP-ignoring child is SIGKILLed rather than orphaned on exit.
-            serverIdle (idle { idlePanes = 1 }) `shouldBe` False
+            serverIdle (idle { idlePanes = 1 }) `shouldBe` StayUp
         it "stays busy until it has served a client" $
-            serverIdle (idle { idleServed = False }) `shouldBe` False
+            serverIdle (idle { idleServed = False }) `shouldBe` StayUp
         it "stays busy while a connection is still being handled" $
             -- the in-flight connection may yet create the first session.
-            serverIdle (idle { idleActiveConns = 1 }) `shouldBe` False
+            serverIdle (idle { idleActiveConns = 1 }) `shouldBe` StayUp
         it "exits after a connection came and went without a session (28)" $
             -- served, no handler left, nothing created: don't strand it.
-            serverIdle idle `shouldBe` True
+            serverIdle idle `shouldBe` ExitNow
         it "stays busy until startup lands at Ready" $ do
-            serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` False
-            serverIdle (idle { idlePhase = Restoring }) `shouldBe` False
+            serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` StayUp
+            serverIdle (idle { idlePhase = Restoring }) `shouldBe` StayUp
         it "stays busy while any session or client remains" $ do
-            serverIdle (idle { idleSessions = 1 }) `shouldBe` False
-            serverIdle (idle { idleClients = 1 }) `shouldBe` False
+            serverIdle (idle { idleSessions = 1 }) `shouldBe` StayUp
+            serverIdle (idle { idleClients = 1 }) `shouldBe` StayUp
+        it "stays up empty under exit-empty off, until killed" $ do
+            let keep = idle { idleExitEmpty = False }
+            serverIdle keep `shouldBe` StayUp
+            serverIdle (keep { idleShutdown = ShuttingDown }) `shouldBe` ExitNow
+        it "tears its sessions down once unattached under exit-unattached" $ do
+            let lone = idle { idleExitUnattached = True, idleSessions = 1 }
+            serverIdle lone `shouldBe` TearDown
+            serverIdle (lone { idleActiveConns = 1 }) `shouldBe` StayUp
+            serverIdle (lone { idlePhase = Restoring }) `shouldBe` StayUp
 
     describe "awaitReconciled" $ do
         let freshState = do

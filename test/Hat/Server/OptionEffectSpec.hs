@@ -14,10 +14,11 @@ import Data.Ratio ((%))
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Model (Markup (..), ServerState (..), Toast (..), newServerState)
+import Hat.Model (Markup (..), PaneStart (..), ServerState (..), Toast (..), newServerState)
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), OptionValue (..), Options (..)
-    , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions )
+    , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
+    , optionText )
 import Hat.Server
     ( Reply (..), deliversKey, escTiming, mainPaneRatio, resizeModeOf
     , runCommands, toastDeadline, toastExpired )
@@ -25,6 +26,7 @@ import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
 import Hat.Server.Keys (EscTiming (..), Key (..))
+import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
 import Hat.Server.Layout (LayoutName (..))
 import Hat.Server.View (borderCells, mapGlyph, messageLine, statusLayout)
 import Hat.Term.Cell qualified as Cell
@@ -200,3 +202,34 @@ spec = do
                         [["set", "-s", "command-alias[100]", "loop=loop"]]
                     rs <- runCommands st Nothing [["loop"]]
                     rs `shouldBe` [RErr "unknown command: loop"]
+
+        -- default-shell / default-command: what a new pane execs, as tmux's
+        -- spawn does it.
+        describe "default-shell and default-command choose a pane's program" $ do
+            it "a fresh pane runs default-shell" $
+                paneProgram "/usr/bin/zsh" FreshShell
+                    `shouldBe` ("/usr/bin/zsh", [])
+            it "a one-string command runs through default-shell -c" $
+                paneProgram "/usr/bin/zsh" (ShellCommand "top -d 1")
+                    `shouldBe` ("/usr/bin/zsh", ["-c", "top -d 1"])
+            it "an argv runs directly" $
+                paneProgram "/usr/bin/zsh" (ExecArgv ["vim", "x"])
+                    `shouldBe` ("vim", ["x"])
+            it "default-command stands in for a missing command" $ do
+                shellStart "" Nothing `shouldBe` FreshShell
+                shellStart "htop" Nothing `shouldBe` ShellCommand "htop"
+                shellStart "htop" (Just "top") `shouldBe` ShellCommand "top"
+            it "only an absolute, executable path is a suitable shell" $ do
+                suitableShell "/bin/sh" `shouldReturn` True
+                suitableShell "sh" `shouldReturn` False
+                suitableShell "/not/a/shell" `shouldReturn` False
+            it "set refuses an unsuitable default-shell, keeping the old" $ do
+                lg <- newLogger "/dev/null"
+                st <- newServerState Map.empty lg
+                    "/tmp/hat-optioneffectspec.sock" Nothing
+                runCommands st Nothing [["set", "-g", "default-shell", "/not/a/shell"]]
+                    `shouldReturn` [RErr "not a suitable shell: /not/a/shell"]
+                runCommands st Nothing [["set", "-g", "default-shell", "/bin/sh"]]
+                    `shouldReturn` []
+                opts <- readTVarIO st.options
+                optionText "default-shell" opts `shouldBe` "/bin/sh"

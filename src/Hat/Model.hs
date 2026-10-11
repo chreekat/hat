@@ -21,6 +21,8 @@ module Hat.Model
     , WindowKey (..)
     , EnvImport (..)
     , StartupPhase (..)
+    , Shutdown (..)
+    , DestroyHold (..)
     , AcceptGate (..)
     , ReadGate (..)
     , CopyModeState (..)
@@ -50,6 +52,7 @@ module Hat.Model
     , bumpDirty
     , withCommandBatch
     , markActive
+    , tickActivity
     , freshId
     , resolveGlobal
     , resolveForSession
@@ -77,7 +80,7 @@ import Control.Concurrent.Async (Async)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket_, try)
-import Control.Monad (forM)
+import Control.Monad (forM, forM_)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
@@ -146,6 +149,7 @@ data ServerState = ServerState
         --   survive shutdown. Set by @kill-server@; off across a natural
         --   drain. See 'runServer' (keep vs drop at drain) and
         --   'persistDecision' (the pin against mirror writes).
+    , shutdown :: TVar Shutdown  -- ^ see 'Hat.Server.serverIdle'
     , colorScheme :: TVar (Maybe ColorScheme)
         -- ^ the desktop's light/dark preference, when a watcher could
         --   determine it ('Nothing' outside a desktop session). Drives
@@ -164,6 +168,10 @@ data ServerState = ServerState
     , buffers     :: TVar PasteStore
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
+    , searchHistory :: TVar [Text]
+        -- ^ search-prompt history, most-recent first: hat has no search
+        --   prompt, so it only carries a @history-file@'s search entries
+        --   through to the next save. See 'Hat.Server.PromptHistory'.
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
     , lastActiveSession :: TVar (Maybe SessionId)
         -- ^ the session most recently focused by any client; captured into
@@ -210,7 +218,17 @@ data Session = Session
     , resolvedOptions :: TVar (Maybe ResolvedOpts)  -- ^ see 'memoResolve'
     , group    :: TVar (Maybe Text)
         -- ^ the name of the session group this session belongs to, if any
+    , activity :: TVar Int
+        -- ^ when a client last attached to or drove it, on the server's
+        --   activity clock (tmux's @activity_time@); see 'markActive'
+    , destroyHold :: TVar DestroyHold
+        -- ^ see 'Hat.Server.Command.Session.checkUnattached'
     }
+
+-- | Whether @destroy-unattached@ must spare a session no client has
+-- attached to since it was rebuilt from serialized state.
+data DestroyHold = HeldUntilAttached | NotHeld
+    deriving (Eq, Show)
 
 data Window = Window
     { id         :: WindowId
@@ -525,6 +543,11 @@ data EnvImport = ImportEnv | SkipEnvImport
 data StartupPhase = LoadingConfig | Restoring | Ready
     deriving (Eq, Show)
 
+-- | Whether the server was asked to end (@kill-server@), whatever its
+-- @exit-empty@ says.
+data Shutdown = Serving | ShuttingDown
+    deriving (Eq, Show)
+
 -- | Whether the accept loop takes new connections. A reload closes the gate
 -- ('AcceptClosing'), the loop confirms ('AcceptParked'), and arrivals wait in
 -- the listen backlog; 'AcceptOpen' resumes. See 'Hat.Server.Conn.acceptLoop'.
@@ -639,6 +662,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO ReadersFlowing
     <*> newTVarIO 0      -- readsInFlight
     <*> newTVarIO False  -- preserveStore
+    <*> newTVarIO Serving
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
     <*> newTVarIO emptyDelta  -- serverOptions
@@ -651,6 +675,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO emptyPasteStore
     <*> newTVarIO Map.empty
     <*> newTVarIO []
+    <*> newTVarIO []       -- searchHistory
     <*> newTVarIO Nothing  -- markedPane
     <*> newTVarIO Nothing  -- lastActiveSession
     <*> newTVarIO Nothing  -- lastSession
@@ -675,14 +700,25 @@ withCommandBatch st = bracket_
     (atomically (modifyTVar' st.commandDepth (subtract 1)))
 
 -- | Stamp a client as the most-recently-active on its session: advance the
--- server's activity clock and record the new value on the client, so
--- 'effectiveWindowSize' under @window-size latest@ sizes a
+-- server's activity clock and record the new value on the client and its
+-- session, so 'effectiveWindowSize' under @window-size latest@ sizes a
 -- window to whichever client most recently drove it.
 markActive :: ServerState -> Client -> STM ()
 markActive st client = do
+    n <- tickActivity st
+    writeTVar client.lastActive n
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    forM_ msess $ \sess -> do
+        writeTVar sess.activity n
+        writeTVar sess.destroyHold NotHeld
+
+-- | Advance the server's activity clock, yielding the new stamp.
+tickActivity :: ServerState -> STM Int
+tickActivity st = do
     n <- (+ 1) <$> readTVar st.activityClock
     writeTVar st.activityClock n
-    writeTVar client.lastActive n
+    pure n
 
 -- | Resolve the effective options with no session or window in context: the
 -- server-wide chain (global-window, global-session, server, then the color

@@ -107,9 +107,9 @@ input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 3
 pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, resize-pane -T, respawn -E (empty panes)
 
 # windows / sessions / pipe / lifecycle
-window-ops.sh                   # renumber-windows option + invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
-session-ops.sh                  # detach-on-destroy option + invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
-lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications + refresh-client -B
+window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
+session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
+lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} tree-mode) + control-mode %-notifications + refresh-client -B
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + floating panes

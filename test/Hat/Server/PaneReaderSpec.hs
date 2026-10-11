@@ -78,7 +78,7 @@ withStalledReader body = do
     (sink, stall) <- stallingSink
     bracket
         (newWindowWithPane st sid "/bin/sh"
-            (Just "printf b89-fed; exec sleep 600") "/" []
+            (ShellCommand "printf b89-fed; exec sleep 600") "/" []
             Size { rows = 24, cols = 80 })
         (\(_, pane) -> tryPutMVar stall.hold () >> hangupPane pane)
         (\(win, pane) -> do

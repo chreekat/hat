@@ -1,5 +1,3 @@
-{-# LANGUAGE RoleAnnotations #-}
-
 -- | The window commands: creating, selecting, navigating (next\/prev\/last\/
 -- activity), renaming, killing, moving, linking, and resizing windows.
 module Hat.Server.Command.Window
@@ -34,7 +32,7 @@ import Control.Concurrent.STM
 import Control.Monad (filterM, foldM, forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -45,22 +43,22 @@ import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
-import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupDrops
     , notifyWindow, sessionTarget )
 import Hat.Server.Layout (Rotation (..), layoutPanes, rotateLeaves)
 import Hat.Server.Winlink
-    ( Step (..), stepWindow, attachWindow, detachWindow, dropSessionGroup, groupMembers, shuffleUp
-    , windowLinks )
-import Hat.Transport.Wire (ServerToClient (Exited))
+    ( Step (..), Renumbered (..), stepWindow, attachWindow, detachWindow, dropSessionGroup
+    , groupMembers
+    , renumberIfSet, renumberSession, repackSession, shuffleUp, windowLinks )
 import Hat.Server.Locate
     (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
-    , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
+    , paneShell, shellStart, pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
     , windowActivity )
 import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
 import Hat.Server.FormatEnv
@@ -134,30 +132,6 @@ applyShifts shifts ws = List.foldl' step ws shifts
         Just w -> Map.insert to w (Map.delete from m)
         Nothing -> m
 
--- | A session's window state after a renumber: the re-keyed window map,
--- the current window's new index, and the remapped last-window stack.
-type role Renumbered representational
-data Renumbered a = Renumbered
-    { windows :: Map.Map Int a
-    , current :: Int
-    , history :: [Int]
-    }
-    deriving (Eq, Show)
-
--- | @move-window -r@'s repack of a session: the windows keep their order
--- and take consecutive indices from @base-index@, closing every gap. The
--- current window and the last-window stack follow their windows; a history
--- entry naming no window drops out rather than aliasing a renumbered one.
-renumberSession :: Int -> [Int] -> Int -> Map.Map Int a -> Renumbered a
-renumberSession cur hist base ws = Renumbered
-    { windows = Map.fromList (zip fresh (Map.elems ws))
-    , current = Map.findWithDefault cur cur remap
-    , history = mapMaybe (`Map.lookup` remap) hist
-    }
-  where
-    fresh = [base ..]
-    remap = Map.fromList (zip (Map.keys ws) fresh)
-
 -- | The window @new-window -S -n name@ reuses instead of creating:
 -- 'Nothing' when no window carries the name, its index when exactly one
 -- does, an error when several do.
@@ -215,8 +189,9 @@ createWindow st sess opts flags pos requested = do
         Right _ -> do
             eff <- readTVarIO sess.lastSize
             environ <- sessionSpawnEnv st sess
-            let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
-                mrun = case pos of
+            sopts <- atomically (resolveForSession st sess)
+            shellCmd <- paneShell sopts
+            let mrun = case pos of
                     [] -> Nothing
                     ws -> Just (T.unwords ws)
             dir <- case lookup "-c" opts of
@@ -224,8 +199,9 @@ createWindow st sess opts flags pos requested = do
                 Just d -> do
                     env <- sessionFormatEnv st sess
                     T.unpack <$> expandFormat st env d
-            (win, pane) <- newWindowWithPane st sess.id shellCmd mrun dir
-                environ (eff)
+            (win, pane) <- newWindowWithPane st sess.id shellCmd
+                (shellStart (optionText "default-command" sopts) mrun) dir
+                environ eff
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False
@@ -524,6 +500,8 @@ cmdKillWindow st mclient args
             let selves = [(ix, w) | (ix, w) <- ws', w.id == win.id]
             matched <- or <$> mapM (uncurry (passes sess)) selves
             when (matched && length selves > 1) (killWindow win)
+            atomically $
+                mapM_ (renumberIfSet st) . Map.elems =<< readTVar st.sessions
         pure []
 
 cmdRenameWindow :: CommandImpl
@@ -562,18 +540,7 @@ cmdMoveWindow st mclient args
     | otherwise = linkWindow DropSource st mclient opts flags
   where
     (opts, flags, _) = parseArgs "st" args
-    renumber sess = atomically $ do
-        sopts <- resolveForSession st sess
-        members <- groupMembers st sess
-        forM_ members $ \s -> do
-            ws <- readTVar s.windows
-            cur <- readTVar s.currentIx
-            hist <- readTVar s.windowHist
-            let r = renumberSession cur hist sopts.baseIndex ws
-            writeTVar s.windows r.windows
-            writeTVar s.currentIx r.current
-            writeTVar s.windowHist r.history
-        bumpDirty st
+    renumber sess = atomically (repackSession st sess)
 
 -- | @link-window@: link the source window at the destination too, the
 -- same window shared by both sessions.
@@ -661,7 +628,11 @@ linkWindow source st mclient opts flags = do
             KeepSource -> pure []
             DropSource -> do
                 emptied <- detachWindow st src srcIx
-                if emptied then dropSessionGroup st src else pure []
+                if emptied then dropSessionGroup st src else do
+                    -- tmux renumbers the source only when @-s@ did not
+                    -- name it.
+                    when (isNothing (lookup "-s" opts)) (renumberIfSet st src)
+                    pure []
         rehomePanes dst.id win  -- See Note [Pane home]
         orph <- case occupant of
             Nothing -> pure Nothing
@@ -695,9 +666,9 @@ closeSessions st gone = do
     info <- forM gone $ \s -> do
         sname <- readTVarIO s.name
         notify st "session-closed" noTarget [ ("session", PSessionRef s.id sname) ]
-        broadcast st s.id Exited
         (,,) s.id sname <$> readTVarIO s.group
     notifyGroupDrops st info
+    sendClientsAway st gone
 
 -- | @unlink-window [-k]@: drop one link of the window. Its last link
 -- outside the session group goes only under @-k@, destroying the window.

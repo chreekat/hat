@@ -18,6 +18,9 @@ module Hat.Server.Pane
     , commandName
     , shellLine
     , shellStart
+    , suitableShell
+    , paneShell
+    , paneProgram
     , spawnPane
     , respawnPane
     , dismissDeadPane
@@ -77,7 +80,7 @@ import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Vector qualified as V
 import Data.Text (Text)
@@ -85,8 +88,9 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Char (isAlphaNum)
-import System.Environment (getEnvironment)
+import System.Environment (getEnvironment, getProgName)
 import System.IO (Handle, hFlush)
+import System.Posix.Files (fileAccess)
 import System.Posix.Process (getProcessID)
 import System.Exit (ExitCode (..))
 import System.Posix.Process qualified as Posix
@@ -99,6 +103,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
@@ -165,15 +170,15 @@ resumeArgv "claude" (prog : _) = [prog, "--continue"]
 resumeArgv _        argv       = argv
 
 newWindowWithPane
-    :: ServerState -> SessionId -> FilePath -> Maybe Text -> FilePath
+    :: ServerState -> SessionId -> FilePath -> PaneStart -> FilePath
     -> [(Text, Text)] -> Size -> IO (Window, Pane)
-newWindowWithPane st sid shellCmd mrun dir environ sz = do
+newWindowWithPane st sid shellCmd start dir environ sz = do
     (wid, pid) <- atomically $
         (,) <$> freshId st.nextWindow <*> freshId st.nextPane
-    pane <- spawnPane st (PaneId pid) sid shellCmd (shellStart mrun) dir environ sz
-    nameVar <- newTVarIO $ case mrun of
-        Just cmd -> T.takeWhile (/= ' ') cmd
-        Nothing -> T.pack (baseName shellCmd)
+    pane <- spawnPane st (PaneId pid) sid shellCmd start dir environ sz
+    nameVar <- newTVarIO $ case start of
+        ShellCommand cmd -> T.takeWhile (/= ' ') cmd
+        _ -> T.pack (baseName shellCmd)
     layoutVar <- newTVarIO (Leaf pane.id)
     panesVar <- newTVarIO (Map.singleton pane.id pane)
     activeVar <- newTVarIO pane.id
@@ -205,8 +210,13 @@ newWindowWithPane st sid shellCmd mrun dir environ sz = do
             , arrangeCache = arrangeVar
             }
     pure (win, pane)
-  where
-    baseName = Prelude.reverse . takeWhile (/= '/') . Prelude.reverse
+
+-- | A path's last component, or the whole path when that is empty (how tmux
+-- names a shell).
+baseName :: FilePath -> String
+baseName path = case Prelude.reverse (takeWhile (/= '/') (Prelude.reverse path)) of
+    "" -> path
+    base -> base
 
 -- | Where a captured program was running: as a child of the pane's
 -- interactive shell (the user typed it), or as the pane's own top-level
@@ -216,8 +226,46 @@ data SpawnOrigin = ShellSpawned | Direct
 
 -- | The shell-command spawn semantics for the user-facing @new-window@ and
 -- @split-window@: an argument is a command line for the shell to interpret.
-shellStart :: Maybe Text -> PaneStart
-shellStart = maybe FreshShell ShellCommand
+-- | What a new pane given @mrun@ starts: that command, else the session's
+-- @default-command@ @dc@, else a fresh shell (tmux's spawn).
+shellStart :: Text -> Maybe Text -> PaneStart
+shellStart dc = \case
+    Just run -> ShellCommand run
+    Nothing
+        | T.null dc -> FreshShell
+        | otherwise -> ShellCommand dc
+
+-- | tmux's @checkshell@: an absolute path to an executable that is not hat
+-- itself.
+suitableShell :: FilePath -> IO Bool
+suitableShell path = case path of
+    '/' : _ -> do
+        self <- getProgName
+        if baseName path == self then pure False
+            else fileAccess path False False True
+                `catch` \(_ :: IOException) -> pure False
+    _ -> pure False
+
+-- | The shell a session's new panes run: its @default-shell@ when that is
+-- a 'suitableShell', else @/bin/sh@.
+paneShell :: Options -> IO FilePath
+paneShell o = do
+    let wanted = T.unpack (optionText "default-shell" o)
+    ok <- suitableShell wanted
+    pure (if ok then wanted else "/bin/sh")
+
+-- | The program a pane execs and its arguments: the shell alone with no
+-- command, @shell -c@ for one command string, an argv as is. Unlike tmux,
+-- the shell runs as a plain interactive shell, not a login shell: a login
+-- shell re-reads the system profile, resetting the prompt and environment
+-- the pane inherited.
+paneProgram :: FilePath -> PaneStart -> (FilePath, [String])
+paneProgram sh = \case
+    ShellCommand run -> (sh, ["-c", T.unpack run])
+    ExecArgv (p : rest) -> (T.unpack p, map T.unpack rest)
+    ExecArgv [] -> (sh, [])
+    FreshShell -> (sh, [])
+    ShellInject _ -> (sh, [])
 
 -- | Render an argv as one shell command line: each argument quoted so a single
 -- round of shell word-splitting reproduces it exactly (a filename with spaces
@@ -239,7 +287,7 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
     let cleanEnv =
             [ (T.unpack k, T.unpack v)
             | (k, v) <- environ
-            , k `notElem` ["TERM", "TMUX", "TMUX_PANE", "HAT", "HAT_PANE"]
+            , k `notElem` ["TERM", "TMUX", "TMUX_PANE", "HAT", "HAT_PANE", "SHELL"]
             ]
         hatVar = st.sockPath <> "," <> show serverPid <> ","
             <> show (rawSession sid)
@@ -250,15 +298,12 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
             , ("HAT", hatVar)
             , ("TMUX_PANE", "%" <> show (rawPane pid))
             , ("HAT_PANE", "%" <> show (rawPane pid))
+            , ("SHELL", shellCmd)
             ]
-        (cmd, args) = case mrun of
-            FreshShell             -> (shellCmd, [])
-            ShellCommand run       -> ("/bin/sh", ["-c", T.unpack run])
-            ExecArgv (p:rest)      -> (T.unpack p, map T.unpack rest)
-            ExecArgv []            -> (shellCmd, [])
-            -- A fresh shell like any other pane; the argv rides as pending
-            -- input the reader types once the shell prints (see startPaneReader).
-            ShellInject _          -> (shellCmd, [])
+        -- A 'ShellInject' pane is a fresh shell like any other; its argv
+        -- rides as pending input the reader types once the shell prints (see
+        -- startPaneReader).
+        (cmd, args) = paneProgram shellCmd mrun
         pending = case mrun of
             ShellInject argv@(_ : _) -> Just (shellLine argv)
             _                        -> Nothing
@@ -799,7 +844,7 @@ closePane st pane = teardownPane st pane (void (reapPane st pane))
 -- caller already reaped.
 teardownPane :: ServerState -> Pane -> IO () -> IO ()
 teardownPane st pane reap = do
-    (mctx, names) <- atomically $ do
+    (mctx, names, before) <- atomically $ do
         mloc <- locatePane st pane.id
         names <- sessionNames st
         ctx <- traverse
@@ -807,7 +852,7 @@ teardownPane st pane reap = do
                 wname <- readTVar win.name
                 pure (sid, maybe "" fst (Map.lookup sid names), win, wname))
             mloc
-        pure (ctx, names)
+        (,,) ctx names <$> readTVar st.sessions
     (msid, r) <- atomically (detachPaneCurrent st pane)
     forM_ msid $ \sid -> when (r /= AlreadyDetached) $ applySessionSize st sid
     -- End-of-life hooks fire only when the reader's own teardown detached
@@ -833,7 +878,8 @@ teardownPane st pane reap = do
         (AlreadyDetached, _) -> pure ()
     reap
     case r of
-        Detached _ sf -> forM_ (emptiedBy sf) $ \gone -> broadcast st gone Exited
+        Detached _ sf -> sendClientsAway st
+            (mapMaybe (`Map.lookup` before) (emptiedBy sf))
         AlreadyDetached -> pure ()
 
 -- | The model half of a pane's teardown, in one atomic transaction: drop
@@ -960,7 +1006,8 @@ data LifecycleNotify = NotifyLifecycle | QuietLifecycle
 killPaneLocsWith
     :: LifecycleNotify -> ServerState -> [(SessionId, Window, Pane)] -> IO ()
 killPaneLocsWith mode st locs = do
-    (results, names, snames, preActive) <- atomically $ do
+    (results, names, snames, preActive, before) <- atomically $ do
+        before <- readTVar st.sessions
         snames <- sessionNames st
         names <- forM locs $ \(sid, win, _) -> do
             wname <- readTVar win.name
@@ -968,7 +1015,7 @@ killPaneLocsWith mode st locs = do
         pre <- forM locs $ \(_, win, _) ->
             (,) win.id <$> readTVar win.activeId
         rs <- detachPanes st locs
-        pure (rs, Map.fromList names, snames, Map.fromList pre)
+        pure (rs, Map.fromList names, snames, Map.fromList pre, before)
     forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
     let removedWindows = List.nubBy (\(s1, w1) (s2, w2) ->
                 s1 == s2 && w1.id == w2.id)
@@ -1003,7 +1050,7 @@ killPaneLocsWith mode st locs = do
                         , ("pane", PPaneRef newActive)
                         , ("old_pane", PPaneRef old)
                         , ("new_pane", PPaneRef newActive) ]
-    forM_ emptied $ \sid -> broadcast st sid Exited
+    sendClientsAway st (mapMaybe (`Map.lookup` before) emptied)
     forM_ locs $ \(_, _, pane) -> hangupPane pane
 
 -- | Where @<leader> a@ should jump. An activity-marked window takes
@@ -1226,11 +1273,11 @@ createSession
     -> FilePath -> Size -> IO Session
 createSession st mname mrun environ dir sz = do
     (sid, sname0) <- atomically (freshSessionName st Nothing mname)
-    opts <- readTVarIO st.options
+    opts <- atomically (resolveGlobal st)
     spawnEnv <- globalSpawnEnv st environ
-    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" spawnEnv)
-    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd mrun
-        dir spawnEnv (sz)
+    shellCmd <- paneShell opts
+    (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd
+        (shellStart (optionText "default-command" opts) mrun) dir spawnEnv sz
     now <- getPOSIXTime
     nameVar <- newTVarIO sname0
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
@@ -1242,6 +1289,8 @@ createSession st mname mrun environ dir sz = do
     optionsVar <- newTVarIO emptyDelta
     resolvedVar <- newTVarIO Nothing
     groupVar <- newTVarIO Nothing
+    activityVar <- newTVarIO =<< atomically (tickActivity st)
+    holdVar <- newTVarIO NotHeld
     let sess = Session
             { id = SessionId sid
             , createdAt = now
@@ -1256,6 +1305,8 @@ createSession st mname mrun environ dir sz = do
             , options = optionsVar
             , resolvedOptions = resolvedVar
             , group = groupVar
+            , activity = activityVar
+            , destroyHold = holdVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -1291,6 +1342,8 @@ createGroupedSession st leader mname environ dir = do
         optionsVar <- newTVar emptyDelta
         resolvedVar <- newTVar Nothing
         groupVar <- newTVar (Just gname)
+        activityVar <- newTVar =<< tickActivity st
+        holdVar <- newTVar NotHeld
         let sess = Session
                 { id = SessionId sid
                 , createdAt = now
@@ -1305,6 +1358,8 @@ createGroupedSession st leader mname environ dir = do
                 , options = optionsVar
                 , resolvedOptions = resolvedVar
                 , group = groupVar
+                , activity = activityVar
+                , destroyHold = holdVar
                 }
         modifyTVar' st.sessions (Map.insert sess.id sess)
         bumpDirty st

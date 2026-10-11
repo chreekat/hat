@@ -62,6 +62,7 @@ module Hat.Server
     , SessionFate (..)
     , serverIdle  -- ^ exported for the idle-predicate test
     , IdleInputs (..)
+    , IdleVerdict (..)
     , markBell  -- ^ exported for the current-window bell test
     , markActivity  -- ^ exported for the outer-focus activity test
     , windowActivity  -- ^ exported for the output repaint gating test
@@ -103,10 +104,10 @@ import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, displayException,
      throwIO, try)
-import Control.Monad (forM_, forever, unless, void, when)
+import Control.Monad (filterM, forM_, forever, unless, void, when)
 import Data.IORef
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust)
+import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -118,6 +119,7 @@ import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
 import System.Posix.IO qualified as PIO
+import System.Posix.User (getRealUserID, getUserEntryForID, userShell)
 import System.Process
     (CreateProcess (..), StdStream (..), proc,
      readCreateProcess, withCreateProcess)
@@ -149,6 +151,7 @@ import Hat.Server.Startup
 import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.Pane
+import Hat.Server.PromptHistory (loadHistory, saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Resize
 import Hat.Server.Title (TitleParts (..), composeTitle)
@@ -187,6 +190,7 @@ runServerWith path mconfig mhandover = do
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
     installHooks st
+    seedDefaultShell st
     -- On a reload, read the handover the outgoing image left. An era match
     -- yields the tree to adopt (and the socket fd to reuse); an incompatible
     -- or corrupt payload yields only the cleanup core, so we hang the
@@ -222,6 +226,7 @@ runServerWith path mconfig mhandover = do
         atomically $ writeTVar st.startupPhase LoadingConfig
         _ <- forkIO $ finallyReady st $
             (do loadConfig st mconfig
+                loadHistory st
                 atomically $ writeTVar st.startupPhase
                     (phaseAfterConfig (persistOn || isJust mreload))
                 case mreload of
@@ -278,6 +283,7 @@ runServerWith path mconfig mhandover = do
                     logEvent lg ServerFatal { err = T.pack (displayException e) }
                     flushLogger lg
                     throwIO e
+        saveHistory st
         case r of
             Left () -> pure ()
             Right () -> do
@@ -290,6 +296,20 @@ runServerWith path mconfig mhandover = do
                 preserve <- readTVarIO st.preserveStore
                 unless preserve $ forM_ mstore (retireStore st)
                 removeFile path `catch` \(_ :: IOException) -> pure ()
+
+-- | tmux's start-up @default-shell@: the server's @$SHELL@, else the user's
+-- login shell, when suitable ('suitableShell'); the registry's @/bin/sh@
+-- otherwise.
+seedDefaultShell :: ServerState -> IO ()
+seedDefaultShell st = do
+    fromEnv <- lookupEnv "SHELL"
+    fromPasswd <- (Just . userShell <$> (getUserEntryForID =<< getRealUserID))
+        `catch` \(_ :: IOException) -> pure Nothing
+    found <- filterM suitableShell (catMaybes [fromEnv, fromPasswd])
+    forM_ (listToMaybe found) $ \sh -> atomically $ do
+        modifyTVar' st.globalSessionOptions
+            (insertDelta "default-shell" (OVScalar (T.pack sh)))
+        refreshGlobalOptions st
 
 -- | Run @body@ with each daemon alive under 'withAsync', so all are cancelled
 -- when @body@ returns or throws (the bracket pattern: no leaked threads, and
@@ -324,7 +344,17 @@ data IdleInputs = IdleInputs
     , idleSessions    :: Int
     , idleClients     :: Int
     , idlePanes       :: Int
+    , idleExitEmpty   :: Bool  -- ^ @exit-empty@
+    , idleExitUnattached :: Bool  -- ^ @exit-unattached@
+    , idleShutdown    :: Shutdown
     }
+
+-- | What 'serverIdle' tells the server to do.
+data IdleVerdict
+    = StayUp
+    | TearDown  -- ^ end the sessions it still holds ('shutDownServer')
+    | ExitNow
+    deriving (Eq, Show)
 
 -- | Whether the server may exit: it has served at least one connection,
 -- startup has fully landed at 'Ready', and no connection handler, session,
@@ -336,26 +366,45 @@ data IdleInputs = IdleInputs
 -- keeps a drained server alive until every child it spawned has been reaped —
 -- since 'cmdKillPane' detaches a pane from the model before its child is
 -- reaped, an empty session map no longer implies the children are gone, and
--- exiting first would orphan a SIGHUP-ignoring child mid-'reapPane'. See
+-- exiting first would orphan a SIGHUP-ignoring child mid-'reapPane'.
+--
+-- tmux's @server_loop@ options bend this: under @exit-unattached@ a server
+-- left with sessions but no connection tears them down first, and under
+-- @exit-empty@ off an emptied server stays up until @kill-server@. See
 -- 'waitIdle'.
-serverIdle :: IdleInputs -> Bool
-serverIdle i =
-    i.idleServed && i.idlePhase == Ready && i.idleActiveConns == 0
-        && i.idleSessions == 0 && i.idleClients == 0 && i.idlePanes == 0
+serverIdle :: IdleInputs -> IdleVerdict
+serverIdle i
+    | not (i.idleServed && i.idlePhase == Ready && i.idleActiveConns == 0) =
+        StayUp
+    | i.idleSessions > 0 =
+        if i.idleExitUnattached then TearDown else StayUp
+    | i.idleClients > 0 || i.idlePanes > 0 = StayUp
+    | i.idleExitEmpty || i.idleShutdown == ShuttingDown = ExitNow
+    | otherwise = StayUp
 
 -- Exit once every session is gone, every attached client has drained and
 -- disconnected (so nobody's final Exited message is cut off), and every
 -- pane's child has been reaped (so a drain never orphans one). See 'serverIdle'.
 waitIdle :: ServerState -> IO ()
-waitIdle st = atomically $ do
-    inputs <- IdleInputs
-        <$> readTVar st.activeConns
-        <*> readTVar st.served
-        <*> readTVar st.startupPhase
-        <*> (Map.size <$> readTVar st.sessions)
-        <*> (Map.size <$> readTVar st.clients)
-        <*> readTVar st.livePanes
-    check (serverIdle inputs)
+waitIdle st = do
+    verdict <- atomically $ do
+        opts <- readTVar st.options
+        inputs <- IdleInputs
+            <$> readTVar st.activeConns
+            <*> readTVar st.served
+            <*> readTVar st.startupPhase
+            <*> (Map.size <$> readTVar st.sessions)
+            <*> (Map.size <$> readTVar st.clients)
+            <*> readTVar st.livePanes
+            <*> pure (optionFlag "exit-empty" opts)
+            <*> pure (optionFlag "exit-unattached" opts)
+            <*> readTVar st.shutdown
+        case serverIdle inputs of
+            StayUp -> retry
+            v -> pure v
+    case verdict of
+        TearDown -> shutDownServer st Nothing >> waitIdle st
+        _ -> pure ()
 
 
 

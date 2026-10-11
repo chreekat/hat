@@ -304,7 +304,7 @@ restoreSession :: ServerState -> Rebuilt -> SessionSnap -> IO ()
 restoreSession st done ssnap = do
     env <- globalSpawnEnv st =<< restoreEnv
     whitelist <- restoreWhitelist st
-    let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
+    shellCmd <- paneShell =<< atomically (resolveGlobal st)
     rebuildSession st done env (restorePane st shellCmd env whitelist) ssnap
 
 restorePane

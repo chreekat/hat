@@ -17,6 +17,7 @@ module Hat.Server.Dispatch
     , cmdRestart
     , cmdRestartClient
     , cmdKillServer
+    , shutDownServer
     , cmdSendKeys
     , ReloadScope (..)
     , reloadFarewell
@@ -79,6 +80,7 @@ import Hat.Server.Keys
 import Hat.Server.Overlay (handlePickerInput)
 import Hat.Server.Locate
 import Hat.Server.Pane
+import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Target qualified as Target
 import Hat.Transport.Wire
@@ -500,6 +502,7 @@ cmdReload' scope st mclient args =
                     -- orphans accrued on the dev box across upgrades). Reap it here,
                     -- while we can still signal it.
                     reapMonitor st.monitorRegistry
+                    saveHistory st  -- the next image loads it after its config
                     logEvent st.logger ReloadExec { panes = length cleanup.live }
                     -- The self-exec replaces this image, so 'withLogger's
                     -- flush-on-exit never runs; drain the queue now or the
@@ -676,15 +679,24 @@ cmdIfShell st mclient args = do
 
 
 cmdKillServer :: CommandImpl
-cmdKillServer st mclient _ = do
+cmdKillServer st mclient _ = [] <$ shutDownServer st mclient
+
+-- | End the server with its sessions still alive: keep the tree for a
+-- restore, send every client away (the issuing one too), and hang up every
+-- pane, so the idle exit follows once the children are reaped (see
+-- 'Hat.Server.serverIdle').
+shutDownServer :: ServerState -> Maybe Client -> IO ()
+shutDownServer st missuer = do
     -- Flag first: pane readers race us into closePane once the ptys go,
     -- and the shutdown path must know this drain is a kill, not the last
     -- window closing (which drops the store instead).
-    atomically $ writeTVar st.preserveStore True
+    atomically $ do
+        writeTVar st.preserveStore True
+        writeTVar st.shutdown ShuttingDown
     saveNow st  -- capture the tree before we tear it down
     sessions <- readTVarIO st.sessions
     forM_ (Map.keys sessions) $ \sid -> broadcast st sid Exited
-    forM_ mclient $ \client -> send client Exited
+    forM_ missuer $ \client -> send client Exited
     panes <- atomically $ do
         sess <- readTVar st.sessions
         fmap concat . forM (Map.elems sess) $ \s -> do
@@ -692,7 +704,6 @@ cmdKillServer st mclient _ = do
             fmap concat . forM (Map.elems ws) $ windowPanes
     forM_ panes hangupPane
     atomically $ writeTVar st.sessions Map.empty
-    pure []
 
 cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do

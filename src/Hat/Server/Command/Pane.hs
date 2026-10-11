@@ -40,7 +40,7 @@ import Hat.Server.Command.Buffer (storeBuffer)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Layout
-import Hat.Model.Options (quoteIfNeeded)
+import Hat.Model.Options (optionText, quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
@@ -48,7 +48,8 @@ import Hat.Server.Locate (findTarget, locatePane, paneIndexOf, siblingPane, targ
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, respawnPane
-    , respawnStart, sessionSpawnEnv, shellStart, spawnPane, startPaneReader )
+    , paneShell, respawnStart, sessionSpawnEnv, shellStart, spawnPane
+    , startPaneReader )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowArrange)
@@ -369,11 +370,13 @@ cmdSplitWindow st mclient args = do
                                 T.unpack <$> expandFormat st env d
                             Nothing -> paneCurrentPath active
                         environ0 <- sessionSpawnEnv st sess
+                        sopts <- atomically (resolveForSession st sess)
+                        shellCmd <- paneShell sopts
                         let environ = environ0 <> envPairs
-                            shellCmd = maybe "/bin/sh" T.unpack
-                                (List.lookup "SHELL" environ)
-                        pane <- spawnPane st pid sess.id shellCmd (shellStart mrun)
-                            dir environ (eff)
+                            start = shellStart
+                                (optionText "default-command" sopts) mrun
+                        pane <- spawnPane st pid sess.id shellCmd start
+                            dir environ eff
                         atomically $ do
                             modifyTVar' win.panes (Map.insert pane.id pane)
                             modifyTVar' win.layout $ if full
@@ -390,10 +393,9 @@ cmdSplitWindow st mclient args = do
                         applySessionSize st sess.id
                         notifyWindow st "window-layout-changed" (Just sess.id)
                             win []
-                        let spawned = case mrun of
-                                Just cmdText -> quoteIfNeeded cmdText
-                                Nothing -> maybe "/bin/sh" id
-                                    (List.lookup "SHELL" environ)
+                        let spawned = case start of
+                                ShellCommand cmdText -> quoteIfNeeded cmdText
+                                _ -> T.pack shellCmd
                         notifyPane st "pane-created" pane
                             [ ("pane_command", PText spawned)
                             , ("created_empty", PInt 0)
@@ -630,11 +632,11 @@ respawnIn st mclient sess win pane opts pos = do
     let envPairs = reverse
             [ (n, T.drop 1 v) | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
         environ = environ0 <> envPairs
-        shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
         how = case pos of
             [] -> respawnStart pane.start
             [c] -> ShellCommand c
             argv -> ExecArgv argv
+    shellCmd <- paneShell =<< atomically (resolveForSession st sess)
     mnew <- respawnPane st sess.id win pane shellCmd how dir environ
     case mnew of
         Nothing -> pure (Left "pane no longer exists")

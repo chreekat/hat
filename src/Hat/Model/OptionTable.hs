@@ -434,8 +434,8 @@ optionTable =
     , notYet $ scalar "editor" ServerScope KString "/usr/bin/vi"
     -- tmux defaults to 10; hat's native escape handling needs no wait.
     , live $ scalar "escape-time" ServerScope (KNumber 0 intMax) "0"
-    , notYet $ scalar "exit-empty" ServerScope KFlag "on"
-    , notYet $ scalar "exit-unattached" ServerScope KFlag "off"
+    , live $ scalar "exit-empty" ServerScope KFlag "on"
+    , live $ scalar "exit-unattached" ServerScope KFlag "off"
     , notYet $ scalar "extended-keys" ServerScope
         (KChoice ["off", "on", "always"]) "off"
     , notYet $ scalar "extended-keys-format" ServerScope
@@ -443,7 +443,7 @@ optionTable =
     , live $ scalar "focus-events" ServerScope KFlag "off"
     , notYet $ scalar "get-clipboard" ServerScope
         (KChoice ["off", "buffer", "request", "both"]) "buffer"
-    , notYet $ scalar "history-file" ServerScope KString ""
+    , live $ scalar "history-file" ServerScope KString ""
     , notYet $ scalar "input-buffer-size" ServerScope
         (KNumber 1048576 uintMax) "1048576"
     , notYet $ scalar "menu-style" WindowScope KStyle
@@ -492,13 +492,13 @@ optionTable =
     , notYet $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
     , live $ scalar "base-index" SessionScope (KNumber 0 intMax) "0"
     , live $ scalar "bell-action" SessionScope (KChoice bellActions) "any"
-    , notYet $ scalar "default-command" SessionScope KString ""
-    , notYet $ scalar "default-shell" SessionScope KString "/bin/sh"
+    , live $ scalar "default-command" SessionScope KString ""
+    , live $ scalar "default-shell" SessionScope KString "/bin/sh"
     , live $ (scalar "default-size" SessionScope KString "80x24")
         { pattern = Just "[0-9]*x[0-9]*" }
-    , notYet $ scalar "destroy-unattached" SessionScope
+    , live $ scalar "destroy-unattached" SessionScope
         (KChoice ["off", "on", "keep-last", "keep-group"]) "off"
-    , notYet $ scalar "detach-on-destroy" SessionScope
+    , live $ scalar "detach-on-destroy" SessionScope
         (KChoice ["off", "on", "no-detached", "previous", "next"]) "on"
     -- tmux defaults to 750.
     , live $ scalar "display-time" SessionScope (KNumber 0 intMax) "3000"
@@ -527,7 +527,7 @@ optionTable =
     , refusing (noneKey "prefix") $ live $
         scalar "prefix" SessionScope KKey "C-b"
     , notYet $ scalar "prefix2" SessionScope KKey "None"
-    , notYet $ scalar "renumber-windows" SessionScope KFlag "off"
+    , live $ scalar "renumber-windows" SessionScope KFlag "off"
     , notYet $ scalar "repeat-time" SessionScope (KNumber 0 2000000) "500"
     , live $ scalar "set-titles" SessionScope KFlag "off"
     , notYet $ scalar "set-titles-string" SessionScope KString

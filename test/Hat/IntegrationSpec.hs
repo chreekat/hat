@@ -607,6 +607,13 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 50
         unless gone $ expectationFailure "empty server did not exit"
 
+    it "exit-unattached ends a server left with only detached sessions" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "sleep 300"]
+        _ <- hatCtl h ["set-option", "-g", "exit-unattached", "on"]
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "unattached server did not exit"
+
     -- A pane whose shell ignores SIGHUP (and keeps the pty slave open) gives
     -- the reader thread no EOF, so a teardown that closes the master Handle
     -- while the reader still blocks in it deadlocks. kill-server must instead

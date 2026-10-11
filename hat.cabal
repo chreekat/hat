@@ -92,6 +92,7 @@ library
         Hat.PtrEq
         Hat.Server
         Hat.Server.ClientIO
+        Hat.Server.ClientSession
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
         Hat.Server.Command.Buffer
@@ -136,6 +137,7 @@ library
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt
+        Hat.Server.PromptHistory
         Hat.Server.Rebuild
         Hat.Server.Reload
         Hat.Server.Render
@@ -307,6 +309,7 @@ test-suite hat-test
         Hat.Server.PaneReaderSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
+        Hat.Server.PromptHistorySpec
         Hat.Server.ReloadSpec
         Hat.Server.SendSpec
         Hat.Server.StatusSpec
