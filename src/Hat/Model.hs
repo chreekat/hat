@@ -187,7 +187,9 @@ data Session = Session
     , createdAt :: POSIXTime  -- ^ first creation time; see 'Hat.Server.Rebuild.rebuildSession'
     , restores :: Int  -- ^ rebuilds from serialized state; see 'Hat.Server.Rebuild.rebuildSession'
     , name     :: TVar Text
-    , windows  :: TVar (Map Int Window)  -- ^ keyed by window index (sparse)
+    , windows  :: TVar (Map Int Window)
+        -- ^ keyed by window index (sparse); the members of a session group
+        --   share one map. See 'Hat.Server.Winlink.groupMembers'.
     , currentIx :: TVar Int
     , windowHist :: TVar [Int]  -- ^ MRU window indices; see 'Hat.Server.Mru'
     , lastSize :: TVar Size              -- ^ the window's pane area; see 'sessionWindowArea'
@@ -195,6 +197,8 @@ data Session = Session
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
     , resolvedOptions :: TVar (Maybe ResolvedOpts)  -- ^ see 'memoResolve'
+    , group    :: TVar (Maybe Text)
+        -- ^ the name of the session group this session belongs to, if any
     }
 
 data Window = Window

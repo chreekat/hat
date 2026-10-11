@@ -28,6 +28,8 @@ import Database.SQLite.Simple (SQLError)
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
+import Data.Traversable (mapAccumM)
+import Data.Set qualified as Set
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -50,7 +52,7 @@ import Hat.Term.Pty qualified
 import Hat.Server.Command.Types (CommandImpl, Reply (..))
 import Hat.Server.WindowStruct (WindowStruct (..), windowStruct)
 import Hat.Server.Pane
-import Hat.Server.Rebuild (rebuildSession)
+import Hat.Server.Rebuild (Rebuilt, newRebuilt, rebuildSession)
 
 -- Persistence ----------------------------------------------------------
 
@@ -185,27 +187,49 @@ captureTree st = do
         laId    <- readTVar st.lastActiveSession
         laName  <- traverse (readTVar . (.name)) (laId >>= (`Map.lookup` sessMap))
         pure (Map.elems sessMap, laName)
-    (snaps, panes) <- unzip <$> mapM captureSession sess
+    (_, captured) <- mapAccumM captureSession (Set.empty, Set.empty) sess
+    let (snaps, panes) = unzip captured
     pure (Snapshot snaps laName, concat panes)
 
-captureSession :: Session -> IO (SessionSnap, [Pane])
-captureSession s = do
-    (nm, cwd, curIx, winHist, wstructs) <- atomically $ do
+-- | Capture one session, given the window ids and group names already
+-- captured. See Note [Captured links].
+captureSession
+    :: (Set.Set Int, Set.Set Text) -> Session
+    -> IO ((Set.Set Int, Set.Set Text), (SessionSnap, [Pane]))
+captureSession (seenWins, seenGroups) s = do
+    (nm, cwd, curIx, winHist, grp, wstructs) <- atomically $ do
         nm    <- readTVar s.name
         cwd   <- readTVar s.startCwd
         curIx <- readTVar s.currentIx
         winHist <- readTVar s.windowHist
+        grp   <- readTVar s.group
         eff   <- readTVar s.lastSize
         ws    <- Map.toAscList <$> readTVar s.windows
-        wstructs <- mapM (windowStruct eff) ws
-        pure (nm, cwd, curIx, winHist, wstructs)
-    (wsnaps, panes) <- unzip <$> mapM captureWindow wstructs
-    pure ( SessionSnap
-             { name = nm, startCwd = T.pack cwd
-             , currentIx = curIx, windowHist = winHist
-             , createdAt = Just s.createdAt, restores = s.restores
-             , windows = wsnaps }
-         , concat panes )
+        wstructs <- mapM (\(ix, w) -> (,) (rawWindow w.id) <$> windowStruct eff (ix, w)) ws
+        pure (nm, cwd, curIx, winHist, grp, wstructs)
+    let groupSeen = maybe False (`Set.member` seenGroups) grp
+        owned = if groupSeen then [] else wstructs
+    (seenWins', captured) <- mapAccumM captureLink seenWins owned
+    let (wsnaps, panes) = unzip captured
+    pure ( (seenWins', maybe seenGroups (`Set.insert` seenGroups) grp)
+         , ( SessionSnap
+               { name = nm, startCwd = T.pack cwd
+               , currentIx = curIx, windowHist = winHist
+               , createdAt = Just s.createdAt, restores = s.restores
+               , group = grp, windows = wsnaps }
+           , concat panes ) )
+  where
+    captureLink seen (wid, ws)
+        | Set.member wid seen = pure
+            (seen, ((linkEntry ws) { linkOf = Just wid }, []))
+        | otherwise = do
+            (wsnap, panes) <- captureWindow ws
+            pure (Set.insert wid seen, (wsnap { key = Just wid }, panes))
+    linkEntry ws = WindowSnap
+        { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
+        , active = ws.wsActive, paneHist = ws.wsLastActive
+        , autoRename = ws.wsAutoRename, key = Nothing, linkOf = Nothing
+        , panes = [] }
 
 captureWindow :: WindowStruct -> IO (WindowSnap, [Pane])
 captureWindow ws = do
@@ -221,7 +245,8 @@ captureWindow ws = do
     pure ( WindowSnap
              { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
              , active = ws.wsActive, paneHist = ws.wsLastActive
-             , autoRename = ws.wsAutoRename, panes = psnaps }
+             , autoRename = ws.wsAutoRename, key = Nothing, linkOf = Nothing
+             , panes = psnaps }
          , ws.wsPanes )
 
 -- Persistence restore ----------------------------------------------------
@@ -264,7 +289,8 @@ snapshotHistoryLimit st = do
 -- each pane's saved working directory and reapplying the saved layout.
 restoreSnapshot :: ServerState -> Snapshot -> IO ()
 restoreSnapshot st snap = do
-    forM_ snap.sessions (restoreSession st)
+    done <- newRebuilt
+    forM_ snap.sessions (restoreSession st done)
     -- Point the next attach at the session that was focused before the
     -- restart. Names are the stable key across restart (ids are fresh).
     forM_ snap.lastActiveSession $ \nm -> do
@@ -273,12 +299,12 @@ restoreSnapshot st snap = do
         forM_ (listToMaybe hits) $ \s ->
             atomically (writeTVar st.lastActiveSession (Just s.id))
 
-restoreSession :: ServerState -> SessionSnap -> IO ()
-restoreSession st ssnap = do
+restoreSession :: ServerState -> Rebuilt -> SessionSnap -> IO ()
+restoreSession st done ssnap = do
     env <- globalSpawnEnv st =<< restoreEnv
     whitelist <- restoreWhitelist st
     let shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" env)
-    rebuildSession st env (restorePane st shellCmd env whitelist) ssnap
+    rebuildSession st done env (restorePane st shellCmd env whitelist) ssnap
 
 restorePane
     :: ServerState -> FilePath -> [(Text, Text)] -> [Text]
@@ -333,7 +359,7 @@ restoreArchived st snap = do
         rename s n = SessionSnap
             { name = n, startCwd = s.startCwd, currentIx = s.currentIx
             , windowHist = s.windowHist, createdAt = s.createdAt
-            , restores = s.restores, windows = s.windows }
+            , restores = s.restores, group = s.group, windows = s.windows }
         renamed = zipWith rename snap.sessions news
     restoreSnapshot st
         Snapshot { sessions = renamed, lastActiveSession = Nothing }

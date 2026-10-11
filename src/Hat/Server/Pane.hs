@@ -1126,6 +1126,7 @@ createSession st mname mrun environ dir sz = do
     cwdVar <- newTVarIO dir
     optionsVar <- newTVarIO emptyDelta
     resolvedVar <- newTVarIO Nothing
+    groupVar <- newTVarIO Nothing
     let sess = Session
             { id = SessionId sid
             , createdAt = now
@@ -1139,6 +1140,7 @@ createSession st mname mrun environ dir sz = do
             , startCwd = cwdVar
             , options = optionsVar
             , resolvedOptions = resolvedVar
+            , group = groupVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
