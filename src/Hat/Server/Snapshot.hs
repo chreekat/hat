@@ -18,6 +18,7 @@ module Hat.Server.Snapshot
     , cmdListSnapshots
     , cmdRestoreSnapshot
     , uniquifySessionNames
+    , renameRestored
     ) where
 
 import Control.Concurrent (threadDelay)
@@ -30,7 +31,7 @@ import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Traversable (mapAccumM)
 import Data.Set qualified as Set
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -352,15 +353,13 @@ cmdRestoreSnapshot st _ args = case args of
 -- line per session.
 restoreArchived :: ServerState -> Snapshot -> IO [Reply]
 restoreArchived st snap = do
-    taken <- atomically $
-        mapM (readTVar . (.name)) . Map.elems =<< readTVar st.sessions
-    let olds = map (.name) snap.sessions
-        news = uniquifySessionNames taken olds
-        rename s n = SessionSnap
-            { name = n, startCwd = s.startCwd, currentIx = s.currentIx
-            , windowHist = s.windowHist, createdAt = s.createdAt
-            , restores = s.restores, group = s.group, windows = s.windows }
-        renamed = zipWith rename snap.sessions news
+    (taken, takenGroups) <- atomically $ do
+        live <- Map.elems <$> readTVar st.sessions
+        (,) <$> mapM (readTVar . (.name)) live
+            <*> (catMaybes <$> mapM (readTVar . (.group)) live)
+    let renamed = renameRestored taken takenGroups snap.sessions
+        olds = map (.name) snap.sessions
+        news = map (.name) renamed
     restoreSnapshot st
         Snapshot { sessions = renamed, lastActiveSession = Nothing }
     pure [ ROutput (restoredLine old new) | (old, new) <- zip olds news ]
@@ -368,6 +367,24 @@ restoreArchived st snap = do
     restoredLine old new
         | old == new = "restored session '" <> old <> "'"
         | otherwise = "restored session '" <> old <> "' as '" <> new <> "'"
+
+-- | Archived sessions renamed to come back beside the live ones, given the
+-- live session and group names: a taken session name, and a taken group
+-- name (so a restored group stays apart from a live one), each get the
+-- first free suffix ('uniquifySessionNames').
+renameRestored :: [Text] -> [Text] -> [SessionSnap] -> [SessionSnap]
+renameRestored taken takenGroups ss = zipWith rename ss news
+  where
+    news = uniquifySessionNames taken (map (.name) ss)
+    oldGroups = List.nub (mapMaybe (.group) ss)
+    regroup = Map.fromList
+        (zip oldGroups (uniquifySessionNames takenGroups oldGroups))
+    rename s n = SessionSnap
+        { name = n, startCwd = s.startCwd, currentIx = s.currentIx
+        , windowHist = s.windowHist, createdAt = s.createdAt
+        , restores = s.restores
+        , group = (`Map.lookup` regroup) =<< s.group
+        , windows = s.windows }
 
 -- | Final names for restored sessions, in order: a saved name that a live
 -- session (or an earlier entry) already holds gets the first free @-2@,

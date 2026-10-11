@@ -30,7 +30,7 @@ import Hat.Server
      phaseAfterConfig, rebuildReload, reloadSchemePush, replayPane,
      restoreRun, runCommands, shellLine, snapshotHistoryLimit, startupGate,
      IdleArming (..), idleArming,
-     uniquifySessionNames)
+     renameRestored, uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
 import Hat.Server.LayoutString (emitLayout)
@@ -46,11 +46,12 @@ import Hat.Term.Emulator qualified as Emu
 -- equality against the previous snapshot.
 sampleSnapshot :: Text -> Snapshot
 sampleSnapshot nm = Snapshot
-    { sessions =
-        [ SessionSnap
-            { name = nm, startCwd = "/tmp", currentIx = 0, windowHist = []
-            , createdAt = Nothing, restores = 0, group = Nothing, windows = [] } ]
-    , lastActiveSession = Nothing }
+    { sessions = [sampleSession nm Nothing], lastActiveSession = Nothing }
+
+sampleSession :: Text -> Maybe Text -> SessionSnap
+sampleSession nm g = SessionSnap
+    { name = nm, startCwd = "/tmp", currentIx = 0, windowHist = []
+    , createdAt = Nothing, restores = 0, group = g, windows = [] }
 
 emptySnapshot :: Snapshot
 emptySnapshot = Snapshot { sessions = [], lastActiveSession = Nothing }
@@ -506,6 +507,14 @@ spec = do
         it "dodges live and just-restored names with -2, -3, … suffixes" $
             uniquifySessionNames ["main", "log"] ["main", "fresh", "main"]
                 `shouldBe` ["main-2", "fresh", "main-3"]
+
+    describe "renameRestored" $
+        it "keeps a restored session group apart from a live group of its name" $ do
+            let sess = sampleSession
+                got = renameRestored ["main"] ["g"]
+                    [sess "main" (Just "g"), sess "two" (Just "g"), sess "lone" Nothing]
+            map (\s -> (s.name, s.group)) got `shouldBe`
+                [("main-2", Just "g-2"), ("two", Just "g-2"), ("lone", Nothing)]
 
     -- bb: @snapshot-limit drives the history depth; an unset or garbage
     -- value means the default, never a silently different behavior.
