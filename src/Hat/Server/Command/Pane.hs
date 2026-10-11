@@ -755,7 +755,7 @@ respawnIn st mclient sess win pane opts flags pos = do
             pure (Right ())
   where
     spawnedCommand shellCmd = \case
-        ShellCommand c -> c
+        ShellCommand c -> quoteIfNeeded c
         ExecArgv argv -> T.unwords (map quoteIfNeeded argv)
         _ -> T.pack shellCmd
 
