@@ -480,7 +480,7 @@ awaitReaped pid = go (500 :: Int)
             then pure ()
             else if n <= 0
                 then expectationFailure $
-                    "pipe-pane child " <> show pid <> " was not reaped"
+                    "child " <> show pid <> " was not reaped"
                 else threadDelay 10000 >> go (n - 1)
 
 -- Poll until the current pane's foreground command matches, so a test can
@@ -632,6 +632,13 @@ spec = parallel $ do
                 gone <- pollServerGone h.sock 50
                 unless gone $
                     expectationFailure "server did not exit after kill-server"
+
+    -- A kill escalates to SIGKILL for a SIGHUP-ignoring pane however many
+    -- times its window is linked.
+    it "kill-server SIGKILLs a SIGHUP-ignoring pane in a linked window" $
+        withHat hatBin $ \h -> killsLinkedStubborn h "b:5" ["kill-server"]
+    it "kill-session SIGKILLs a SIGHUP-ignoring pane linked twice into it" $
+        withHat hatBin $ \h -> killsLinkedStubborn h "a:5" ["kill-session", "-t", "a"]
 
     -- e7: a pane whose shell exits behind a child still holding the pty open
     -- must be torn down -- pane death tracks the shell, not pty EOF.
@@ -1887,6 +1894,22 @@ spec = parallel $ do
         -- the shell is still live: it runs our input as if nothing happened.
         typeInto c "echo survived-bad-reload\r"
         awaitScreen c "survived-bad-reload"
+
+-- A kill reaps a SIGHUP-ignoring pane whose window a:1 is also linked at
+-- @dst@.
+killsLinkedStubborn :: Hat -> String -> [String] -> IO ()
+killsLinkedStubborn h dst kill = do
+    _ <- ctlOut h ["new-session", "-d", "-s", "a"]
+    let pidFile = h.home </> "stubborn.pid"
+    _ <- ctlOut h ["new-window", "-d", "-t", "a:1"
+        , "trap '' HUP; echo $$ > " <> pidFile <> "; exec sleep 300"]
+    stubborn <- read . takeWhile (/= '\n') <$> awaitFile pidFile (not . null)
+    (do _ <- ctlOut h ["new-session", "-d", "-s", "b"]
+        _ <- ctlOut h ["link-window", "-d", "-s", "a:1", "-t", dst]
+        _ <- ctlOut h kill
+        awaitReaped stubborn)
+        `finally` P.readProcessWithExitCode
+            "kill" ["-9", show (stubborn :: Int)] ""
 
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False
