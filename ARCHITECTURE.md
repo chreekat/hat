@@ -346,6 +346,7 @@ Handy when cross-referencing behavior against upstream:
 | `Hat.Term.Cell` / `Hat.Server.Style` | `style.c`, `attributes.c`, `colour.c`      |
 | `Hat.Term.Pty`                     | `spawn.c`, `osdep-linux.c`                    |
 | `Hat.Transport.Wire`               | `tmux-protocol.h`, `proc.c`                   |
+| `Hat.Server.ClientIO` / `.Outbound` | `tty.c` (`tty_block_maybe`), `control.c` (buffer marks) |
 | `Hat.Client.Tty`                   | `tty.c`, `tty-keys.c`, `tty-term.c`           |
 | `Hat.Command.Parser` (config too) | `cfg.c`, `cmd-parse.y`                        |
 
