@@ -31,7 +31,8 @@ import Hat.Server.Command.Types
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.Format (truthy)
-import Hat.Server.Hooks (PayloadItem (..), noTarget, notify, sessionTarget)
+import Hat.Server.Hooks
+    ( PayloadItem (..), noTarget, notify, notifyGroupChange, sessionTarget )
 import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
@@ -147,6 +148,10 @@ cmdNewSession st mclient args
                     { cols = fromMaybe baseSz.cols mx
                     , rows = fromMaybe baseSz.rows my }
             sess <- createSession st (lookup "-s" opts) mrun environ dir' sz
+            forM_ mgroup $ \g -> do
+                sname <- readTVarIO sess.name
+                notifyGroupChange st "session-added-to-group"
+                    (sessionTarget sess.id) sess.id sname g 1
             atomically $ do
                 writeTVar sess.group mgroup
                 -- An explicit size becomes the session's default-size.
@@ -272,8 +277,12 @@ cmdKillSession st mclient args
 -- survive.
 killSession :: ServerState -> Session -> IO ()
 killSession st sess = do
-    (sname, winInfo) <- atomically $ do
+    (sname, mgroup, winInfo) <- atomically $ do
         sname <- readTVar sess.name
+        grp <- readTVar sess.group
+        mgroup <- forM grp $ \g -> do
+            ss <- Map.elems <$> readTVar st.sessions
+            (,) g . length <$> filterM (fmap (== grp) . readTVar . (.group)) ss
         ws <- Map.toAscList <$> readTVar sess.windows
         modifyTVar' st.sessions (Map.delete sess.id)
         winInfo <- forM ws $ \(_, win) -> do
@@ -284,9 +293,11 @@ killSession st sess = do
                 rehomePanes other.id win  -- See Note [Pane home]
             ps <- Map.elems <$> readTVar win.panes
             pure (win, wname, not (null holders), ps)
-        pure (sname, winInfo)
+        pure (sname, mgroup, winInfo)
     notify st "session-closed" noTarget
         [ ("session", PSessionRef sess.id sname) ]
+    forM_ mgroup $ \(g, size) -> notifyGroupChange st
+        "session-removed-from-group" noTarget sess.id sname g size
     forM_ winInfo $ \(win, wname, _, _) ->
         notify st "window-unlinked" noTarget
             [ ("session", PSessionRef sess.id sname)

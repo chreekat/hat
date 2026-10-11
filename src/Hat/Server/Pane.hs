@@ -98,8 +98,8 @@ import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyPane
-    , sessionTarget )
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
+    , notifyGroupDrops, notifyPane, sessionTarget )
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Server.Mru (popOnClose, scrub)
@@ -697,7 +697,7 @@ closePane st pane = do
         ctx <- traverse
             (\(sid, win) -> do
                 wname <- readTVar win.name
-                pure (sid, Map.findWithDefault "" sid names, win, wname))
+                pure (sid, maybe "" fst (Map.lookup sid names), win, wname))
             mloc
         pure (ctx, names)
     (msid, r) <- atomically (detachPaneCurrent st pane)
@@ -718,9 +718,7 @@ closePane st pane = do
                     , ("window", PWindowRef win.id wname) ]
                 notify st "window-closed" (sessionTarget sid)
                     [ ("window", PWindowRef win.id wname) ]
-            forM_ (emptiedBy sf) $ \gone -> notify st "session-closed"
-                noTarget
-                [ ("session", PSessionRef gone (Map.findWithDefault "" gone names)) ]
+            announceEmptied st names (emptiedBy sf)
         (Detached _ _, Nothing) -> notify st "pane-exited"
             (NotifyTarget Nothing Nothing (Just pane.id))
             [ ("pane", PPaneRef pane.id) ]
@@ -789,10 +787,20 @@ emptiedBy = \case
     SessionSurvives -> []
     SessionsEmptied sids -> sids
 
--- | Every live session's name, for announcing sessions about to vanish.
-sessionNames :: ServerState -> STM (Map.Map SessionId Text)
-sessionNames st =
-    traverse (\s -> readTVar s.name) =<< readTVar st.sessions
+-- | Every live session's name and group, for announcing sessions about to
+-- vanish.
+sessionNames :: ServerState -> STM (Map.Map SessionId (Text, Maybe Text))
+sessionNames st = traverse (\s -> (,) <$> readTVar s.name <*> readTVar s.group)
+    =<< readTVar st.sessions
+
+-- | Announce sessions emptied by a detach: session-closed, then their
+-- departure from their groups.
+announceEmptied :: ServerState -> Map.Map SessionId (Text, Maybe Text) -> [SessionId] -> IO ()
+announceEmptied st names gone = do
+    let info sid = Map.findWithDefault ("", Nothing) sid names
+    forM_ gone $ \sid -> notify st "session-closed" noTarget
+        [ ("session", PSessionRef sid (fst (info sid))) ]
+    notifyGroupDrops st [ (sid, nm, g) | sid <- gone, let (nm, g) = info sid ]
 
 -- | The OS half of a pane's teardown: stop any pipe-pane, wait for the
 -- child — bounded, since a child that ignores SIGHUP would never exit on
@@ -845,7 +853,7 @@ killPaneLocsWith mode st locs = do
         snames <- sessionNames st
         names <- forM locs $ \(sid, win, _) -> do
             wname <- readTVar win.name
-            pure ((sid, win.id), (Map.findWithDefault "" sid snames, wname))
+            pure ((sid, win.id), (maybe "" fst (Map.lookup sid snames), wname))
         pre <- forM locs $ \(_, win, _) ->
             (,) win.id <$> readTVar win.activeId
         rs <- detachPanes st locs
@@ -865,9 +873,7 @@ killPaneLocsWith mode st locs = do
                 , ("window", PWindowRef win.id wname) ]
             notify st "window-closed" (sessionTarget sid)
                 [ ("window", PWindowRef win.id wname) ]
-        forM_ emptied $ \sid ->
-            notify st "session-closed" noTarget
-                [ ("session", PSessionRef sid (Map.findWithDefault "" sid snames)) ]
+        announceEmptied st snames emptied
     -- A surviving window whose active pane was killed reports the switch.
     when (mode == NotifyLifecycle) $ do
         let survivors = List.nubBy (\(_, w1) (_, w2) -> w1.id == w2.id)
@@ -1173,9 +1179,10 @@ createGroupedSession
     -> IO Session
 createGroupedSession st leader mname environ dir = do
     now <- getPOSIXTime
-    sess <- atomically $ do
+    (sess, founded, gname) <- atomically $ do
         lname <- readTVar leader.name
-        gname <- fromMaybe lname <$> readTVar leader.group
+        lgroup <- readTVar leader.group
+        let gname = fromMaybe lname lgroup
         writeTVar leader.group (Just gname)
         (sid, sname) <- freshSessionName st (Just gname) mname
         ws <- readTVar leader.windows
@@ -1206,8 +1213,17 @@ createGroupedSession st leader mname environ dir = do
                 }
         modifyTVar' st.sessions (Map.insert sess.id sess)
         bumpDirty st
-        pure sess
+        pure (sess, lgroup == Nothing, gname)
+    size <- atomically $ do
+        ss <- Map.elems <$> readTVar st.sessions
+        length <$> filterM (fmap (== Just gname) . readTVar . (.group)) ss
+    when founded $ do
+        lname <- readTVarIO leader.name
+        notifyGroupChange st "session-added-to-group" (sessionTarget leader.id)
+            leader.id lname gname 1
     sname <- readTVarIO sess.name
+    notifyGroupChange st "session-added-to-group" (sessionTarget sess.id)
+        sess.id sname gname size
     mwin <- atomically (currentWindow sess)
     notify st "session-created"
         (NotifyTarget (Just sess.id) ((.id) <$> mwin) Nothing)

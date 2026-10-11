@@ -31,7 +31,7 @@ module Hat.Server.Command.Window
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (filterM, foldM, forM_, unless, void, when)
+import Control.Monad (filterM, foldM, forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
@@ -48,8 +48,8 @@ import Hat.Server.Command.Types
 import Hat.Server.ClientIO (broadcast)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyWindow
-    , sessionTarget )
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupDrops
+    , notifyWindow, sessionTarget )
 import Hat.Server.Layout (Rotation (..), layoutPanes, rotateLeaves)
 import Hat.Server.Winlink
     ( Step (..), stepWindow, attachWindow, detachWindow, dropSessionGroup, groupMembers, shuffleUp
@@ -691,10 +691,13 @@ linkWindow source st mclient opts flags = do
 -- | Announce sessions a command destroyed by emptying them, and send
 -- their clients away.
 closeSessions :: ServerState -> [Session] -> IO ()
-closeSessions st gone = forM_ gone $ \s -> do
-    sname <- readTVarIO s.name
-    notify st "session-closed" noTarget [ ("session", PSessionRef s.id sname) ]
-    broadcast st s.id Exited
+closeSessions st gone = do
+    info <- forM gone $ \s -> do
+        sname <- readTVarIO s.name
+        notify st "session-closed" noTarget [ ("session", PSessionRef s.id sname) ]
+        broadcast st s.id Exited
+        (,,) s.id sname <$> readTVarIO s.group
+    notifyGroupDrops st info
 
 -- | @unlink-window [-k]@: drop one link of the window. Its last link
 -- outside the session group goes only under @-k@, destroying the window.
