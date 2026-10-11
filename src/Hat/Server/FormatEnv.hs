@@ -45,6 +45,7 @@ import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
+import Hat.Server.Resize (windowArea)
 import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -53,7 +54,7 @@ import Hat.Term.Pty qualified
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = do
     base <- sessionFormatEnv st sess
-    eff <- readTVarIO sess.lastSize
+    eff <- atomically (windowArea st win)
     (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
         <*> readTVar sess.currentIx <*> (listToMaybe <$> readTVar sess.windowHist)
@@ -77,6 +78,8 @@ windowFormatEnv st sess ix win = do
         [ ("window_index", tshow ix)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
+        , ("window_width", tshow eff.cols)
+        , ("window_height", tshow eff.rows)
         , ("window_layout", emitLayout (sizeRect (eff)) lay)
         , ("window_visible_layout", emitLayout (sizeRect eff)
             (maybe lay Leaf zoom))
