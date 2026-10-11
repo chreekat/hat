@@ -80,7 +80,7 @@ data ScrollbackCarry = KeepScrollback | DropScrollback
 captureReload :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, ReloadHot)
 captureReload carry st = do
     (snap, panes) <- captureTree st
-    pauseReaders st panes
+    pauseReaders st
     (lsName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
         lsId    <- readTVar st.lastSession

@@ -134,6 +134,9 @@ data ServerState = ServerState
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
     , acceptGate  :: TVar AcceptGate    -- ^ see 'Hat.Server.Conn.acceptLoop'.
     , readGate    :: TVar ReadGate      -- ^ see 'Hat.Server.Pane.pauseReaders'.
+    , readsInFlight :: TVar Int
+        -- ^ pty chunks consumed but not yet fed to their emulators; see
+        --   'Hat.Server.Pane.pauseReaders'.
     , preserveStore :: TVar Bool
         -- ^ the store holds an explicitly saved final tree that must
         --   survive shutdown. Set by @kill-server@; off across a natural
@@ -593,6 +596,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Ready  -- startupPhase
     <*> newTVarIO AcceptOpen
     <*> newTVarIO ReadersFlowing
+    <*> newTVarIO 0      -- readsInFlight
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
