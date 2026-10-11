@@ -12,13 +12,14 @@ import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef
 import System.Directory
-    (createDirectoryIfMissing, createFileLink, doesFileExist, listDirectory,
-     removeDirectoryRecursive)
+    (createDirectoryIfMissing, createFileLink, doesFileExist, getFileSize,
+     listDirectory, removeDirectoryRecursive)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose, hSetBuffering, BufferMode (..))
+import System.IO (Handle, SeekMode (..), hClose, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (closeFd, createPipe, fdToHandle, handleToFd)
+import System.Posix.IO qualified as PIO
 import System.Posix.Process (ProcessStatus (..))
 import System.Mem
 import System.Posix.Temp (mkdtemp)
@@ -203,11 +204,17 @@ ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
 -- handle 'teardown' reaps by.
 serverPid :: Hat -> IO Int
 serverPid h = do
-    (_, out, _) <- P.readProcessWithExitCode
-        "pgrep" ["-f", "--", "--server " <> h.sock] ""
+    out <- serverPids h
     case mapMaybe readMaybe (lines out) of
         (p : _) -> pure p
         [] -> fail ("no server running on " <> h.sock)
+
+-- The pids of every server process on this Hat's socket, one per line.
+serverPids :: Hat -> IO String
+serverPids h = do
+    (_, out, _) <- P.readProcessWithExitCode
+        "pgrep" ["-f", "--", "--server " <> h.sock] ""
+    pure out
 
 -- How many fds the server holds on one path.
 fdsOn :: Hat -> FilePath -> IO Int
@@ -473,7 +480,7 @@ awaitReaped pid = go (500 :: Int)
             then pure ()
             else if n <= 0
                 then expectationFailure $
-                    "pipe-pane child " <> show pid <> " was not reaped"
+                    "child " <> show pid <> " was not reaped"
                 else threadDelay 10000 >> go (n - 1)
 
 -- Poll until the current pane's foreground command matches, so a test can
@@ -618,13 +625,17 @@ spec = parallel $ do
         typeInto c1 "trap '' HUP; sleep 300\r"
         awaitForeground h "sleep"
 
-        killed <- timeout 5_000_000 (hatCtl h ["kill-server"])
-        case killed of
-            Nothing -> expectationFailure "kill-server did not return within 5s"
-            Just _ -> do
-                gone <- pollServerGone h.sock 50
-                unless gone $
-                    expectationFailure "server did not exit after kill-server"
+        _ <- hatCtl h ["kill-server"]
+        gone <- pollServerGone h.sock 50
+        unless gone $
+            expectationFailure "server did not exit after kill-server"
+
+    -- A kill escalates to SIGKILL for a SIGHUP-ignoring pane however many
+    -- times its window is linked.
+    it "kill-server SIGKILLs a SIGHUP-ignoring pane in a linked window" $
+        withHat hatBin $ \h -> killsLinkedStubborn h "b:5" ["kill-server"]
+    it "kill-session SIGKILLs a SIGHUP-ignoring pane linked twice into it" $
+        withHat hatBin $ \h -> killsLinkedStubborn h "a:5" ["kill-session", "-t", "a"]
 
     -- e7: a pane whose shell exits behind a child still holding the pty open
     -- must be torn down -- pane death tracks the shell, not pty EOF.
@@ -1573,6 +1584,30 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
+    -- An autostart comes up once the lock of a server still on its way out
+    -- frees.
+    it "an autostart outlasts a lock held by a server still exiting" $
+        withHat hatBin $ \h -> do
+        let lockPath = h.sock <> ".lock"
+        -- Non-empty, so the autostarted server's O_TRUNC open is observable.
+        B.writeFile lockPath "held"
+        fd <- PIO.openFd lockPath PIO.ReadWrite PIO.defaultFileFlags
+        released <- newIORef False
+        let release = do
+                first <- atomicModifyIORef' released (True,)
+                unless first (closeFd fd)
+        (do PIO.setLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0)
+            c <- startClient h
+            -- By stat: closing any fd on the file would drop our lock.
+            awaitTrue "the autostarted server to open the lock" $
+                (== 0) <$> getFileSize lockPath
+            lockedOut <- lines <$> serverPids h
+            awaitTrue "the locked-out server to exit" $
+                (\now -> all (`notElem` lines now) lockedOut) <$> serverPids h
+            release
+            awaitScreen c "0:sh*")
+            `finally` release
+
     it "attaches without a controlling terminal: exits with 'not a terminal'" $
         withHat hatBin $ \h -> do
         (code, _, err) <- hatCtl h []
@@ -1853,6 +1888,22 @@ spec = parallel $ do
         -- the shell is still live: it runs our input as if nothing happened.
         typeInto c "echo survived-bad-reload\r"
         awaitScreen c "survived-bad-reload"
+
+-- A kill reaps a SIGHUP-ignoring pane whose window a:1 is also linked at
+-- @dst@.
+killsLinkedStubborn :: Hat -> String -> [String] -> IO ()
+killsLinkedStubborn h dst kill = do
+    _ <- ctlOut h ["new-session", "-d", "-s", "a"]
+    let pidFile = h.home </> "stubborn.pid"
+    _ <- ctlOut h ["new-window", "-d", "-t", "a:1"
+        , "trap '' HUP; echo $$ > " <> pidFile <> "; exec sleep 300"]
+    stubborn <- read . takeWhile (/= '\n') <$> awaitFile pidFile (not . null)
+    (do _ <- ctlOut h ["new-session", "-d", "-s", "b"]
+        _ <- ctlOut h ["link-window", "-d", "-s", "a:1", "-t", dst]
+        _ <- ctlOut h kill
+        awaitReaped stubborn)
+        `finally` P.readProcessWithExitCode
+            "kill" ["-9", show (stubborn :: Int)] ""
 
 pollServerGone :: FilePath -> Int -> IO Bool
 pollServerGone _ 0 = pure False

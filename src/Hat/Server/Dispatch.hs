@@ -30,7 +30,7 @@ module Hat.Server.Dispatch
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (forM, forM_, unless, void)
+import Control.Monad (filterM, forM, forM_, unless, void)
 import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
@@ -733,9 +733,10 @@ cmdKillServer st mclient _ = do
     forM_ mclient $ \client -> send client Exited
     panes <- atomically $ do
         sess <- readTVar st.sessions
-        fmap concat . forM (Map.elems sess) $ \s -> do
+        held <- fmap concat . forM (Map.elems sess) $ \s -> do
             ws <- readTVar s.windows
             fmap concat . forM (Map.elems ws) $ windowPanes
+        filterM claimPane held
     forM_ panes hangupPane
     atomically $ writeTVar st.sessions Map.empty
     pure []
