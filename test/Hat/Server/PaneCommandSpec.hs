@@ -8,6 +8,7 @@ import Control.Concurrent (threadDelay)
 import Control.Monad (filterM, forM_, unless, void)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as T
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -100,6 +101,19 @@ spec = do
                 paneIds st "S:0" `shouldReturn` [a, b]
                 run st ["kill-pane", "-a", "-t", b] `shouldReturn` []
                 paneIds st "S:0" `shouldReturn` [b]
+
+    describe "pipe-pane" $
+        it "pipes the pane a full -t target names, not the current one" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["new-window", "-d", "-t", "S:9", "cat"] `shouldReturn` []
+                run st ["pipe-pane", "-I", "-t", "S:9.0", "echo pasted-here"]
+                    `shouldReturn` []
+                let shown = do
+                        out <- run st ["capture-pane", "-p", "-t", "S:9.0"]
+                        pure (any (\r -> case r of ROutput t -> "pasted-here" `T.isInfixOf` t; _ -> False) out)
+                landed <- timeout 5_000_000 (untilM shown)
+                landed `shouldBe` Just ()
 
     describe "split-window" $ do
             it "sizes the new pane from -l, in cells or a percentage of the pane" $

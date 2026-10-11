@@ -231,14 +231,18 @@ markedTarget st = atomically $ do
         Just pid -> fmap (const ("%" <> tshow (rawPane pid))) <$> locatePane st pid
 
 -- | Resolve a @-t@ pane token: @!@ the last pane, @{marked}@ the
--- marked pane, @%N@ a pane by id anywhere; otherwise the current pane
--- of the caller's window.
+-- marked pane, @%N@ a pane by id anywhere, any other target through
+-- cmd-find ('findTarget'); with none, the current pane of the caller's
+-- window.
 targetPane :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
 targetPane st mclient mtok = case parsePaneTarget mtok of
     PaneById n -> atomically (findPaneById st n)
     PaneMarked -> atomically $ do
         mpid <- readTVar st.markedPane
         maybe (pure Nothing) (findPaneById st . rawPane) mpid
+    PaneCurrent | Just t <- mtok -> do
+        res <- findTarget st mclient Target.FindPane (Just t)
+        pure (either (const Nothing) (\(_, _, _, p) -> Just p) res)
     tgt -> do
         (_, mambPane) <- ambientWindowPane st mclient
         case (mtok, mambPane) of
