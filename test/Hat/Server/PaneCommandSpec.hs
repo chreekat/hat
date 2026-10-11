@@ -206,6 +206,23 @@ spec = do
                 fmt st "S:0" "#{pane_id} #{window_modal_pane} #{window_zoomed_flag}"
                     `shouldReturn` ["%0  1"]
 
+        it "select-pane -m on a floating pane brings it to the front, active" $
+            withServer $ \st -> do
+                session st
+                a <- newFloat st ["-x", "10", "-y", "4"]
+                b <- newFloat st ["-x", "10", "-y", "4"]
+                run st ["select-pane", "-t", "%0"] `shouldReturn` []
+                run st ["select-pane", "-m", "-t", a] `shouldReturn` []
+                fmt st "S:0" "#{pane_id} #{P/z:#{pane_id}}" `shouldReturn` [a <> " " <> a <> b <> "%0"]
+                fmt st a "#{pane_marked}" `shouldReturn` ["1"]
+        it "select-pane -m leaves a pane a zoom hides unmarked" $
+            withServer $ \st -> do
+                session st
+                run st ["split-window", "-d", "-t", "%0", "sleep 30"] `shouldReturn` []
+                [_, p1] <- paneIds st "S:0"
+                run st ["resize-pane", "-Z", "-t", "%0"] `shouldReturn` []
+                run st ["select-pane", "-m", "-t", p1] `shouldReturn` []
+                fmt st p1 "#{pane_marked}" `shouldReturn` ["0"]
         it "floating panes, their stacking and the modal pane survive a restore" $
             withServer $ \st -> do
                 session st

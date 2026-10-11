@@ -651,7 +651,15 @@ cmdSelectPane st mclient args
             Left e -> pure [RErr e]
             Right (sess, _, win, pane)
                 | "-l" `elem` flags -> lastPaneOf st sess win flags
-                | "-m" `elem` flags || "-M" `elem` flags -> [] <$ markPane st pane ("-M" `elem` flags)
+                | "-m" `elem` flags || "-M" `elem` flags -> do
+                    -- A pane a zoom hides cannot be marked; a floating one
+                    -- marked comes to the front as the active pane.
+                    (zoom, lay) <- atomically $ (,) <$> readTVar win.zoomed <*> readTVar win.layout
+                    let hidden = maybe False (/= pane.id) zoom
+                    if "-m" `elem` flags && hidden then pure [] else do
+                        markPane st pane ("-M" `elem` flags)
+                        when (isFloating pane.id lay) $ activate st sess win pane False
+                        pure []
                 -- The deprecated -P and -g set and show the pane's
                 -- window-style.
                 | Just style <- lookup "-P" opts -> do
