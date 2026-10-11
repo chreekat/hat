@@ -43,7 +43,8 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
-import Hat.Server.Format (FormatCtx (..), FormatEnv, formatCtx, renderFormatCtx)
+import Hat.Server.Format
+    (FormatCtx (..), FormatEnv, evaluateCtx, formatCtx, renderFormatCtx)
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
@@ -377,18 +378,21 @@ formatCtxFor st env0 fmts = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
     let env = maybe env0 (\amb -> Map.union amb.formats env0) mamb
-    -- Pre-resolve shell segments so the evaluator stays pure.
+    now <- getZonedTime
+    -- Pre-resolve shell segments so the evaluator stays pure. A command is
+    -- itself a format, expanded (as tmux's format_job_get does) without
+    -- jobs, animation or strftime.
+    let jobCtx = formatCtx env (const "") now
     resolved <- newIORef Map.empty
     let collect t = case T.breakOn "#(" t of
             (_, rest) | T.null rest -> pure ()
             (_, rest) -> do
                 let inner = fst (breakBalanced (T.drop 2 rest))
-                val <- resolveShell st inner
+                val <- resolveShell st (evaluateCtx jobCtx inner)
                 modifyIORef' resolved (Map.insert inner val)
                 collect (T.drop (2 + T.length inner + 1) rest)
     mapM_ collect (reachable env fmts)
     vals <- readIORef resolved
-    now <- getZonedTime
     -- Deferred reads: the caller's strict use of the expansion keeps them
     -- inside its own call.
     sessionItems <- unsafeInterleaveIO (loopSessionEnvs st)
