@@ -118,7 +118,7 @@ withHatOn hatBin persistOn sockRel action = do
 -- leaves.
 rethrowWithLog :: Hat -> HUnitFailure -> IO a
 rethrowWithLog h (HUnitFailure loc reason) = do
-    events <- readFile (h.home </> "server.log")
+    events <- (readFile (h.home </> "server.log") >>= \s -> s <$ evaluate (length s))
         `catch` \(_ :: SomeException) -> pure "(no server log)"
     -- From the last reload when there is one (the epoch failures hide in),
     -- middle elided; plain tail otherwise. Poll chatter is dropped.
