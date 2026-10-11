@@ -862,15 +862,16 @@ spec = parallel $ do
                         { name = "restored", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
                         , createdAt = Nothing, restores = 0
+                        , group = Nothing
                         , windows =
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
                                           , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
@@ -897,12 +898,13 @@ spec = parallel $ do
                         { name = "sized", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
                         , createdAt = Nothing, restores = 0
+                        , group = Nothing
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -924,12 +926,13 @@ spec = parallel $ do
                         { name = "stale", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
                         , createdAt = Nothing, restores = 0
+                        , group = Nothing
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1002,12 +1005,13 @@ spec = parallel $ do
                         { name = "bbsess", startCwd = "/tmp", currentIx = 0
                         , windowHist = []
                         , createdAt = Nothing, restores = 0
+                        , group = Nothing
                         , windows =
                             [ WindowSnap
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1195,6 +1199,34 @@ spec = parallel $ do
         meta1 <- ctlOut h
             ["list-sessions", "-F", "#{session_created} #{session_restores}"]
         words meta1 `shouldBe` [created0, "1"]
+
+    -- See Note [Captured links].
+    it "restores a linked window and a session group as shared, not copied" $
+        withHatPersist hatBin $ \h -> do
+        c1 <- startClient h
+        awaitScreen c1 "0:sh*"
+        _ <- ctlOut h ["new-window", "-d", "-t", "0:1", "-n", "shared"]
+        _ <- ctlOut h ["new-session", "-d", "-s", "other"]
+        _ <- ctlOut h ["link-window", "-d", "-s", "0:1", "-t", "other:5"]
+        _ <- ctlOut h ["new-session", "-d", "-s", "grp", "-t", "0"]
+        let probe = do
+                linked <- ctlOut h ["display-message", "-p", "-t", "other:5"
+                    , "#{window_linked_sessions_list}"]
+                grouped <- ctlOut h ["display-message", "-p", "-t", "grp:"
+                    , "#{session_group_list}"]
+                panes <- ctlOut h ["list-panes", "-a", "-F", "#{pane_id}"]
+                pure (lines linked, lines grouped, length (lines panes))
+        saved <- probe
+        saved `shouldBe` (["0,other,grp"], ["0,grp"], 6)
+
+        _ <- ctlOut h ["kill-server"]
+        _ <- awaitExit c1
+        gone <- pollServerGone h.sock 50
+        unless gone $ expectationFailure "server did not die"
+
+        c2 <- startClient h
+        awaitScreen c2 "shared"
+        probe `shouldReturn` saved
 
     -- b7: a window's automatic-rename status must survive save/restore, in
     -- both directions -- an auto-renaming window keeps tracking its pane, a
@@ -1431,10 +1463,12 @@ spec = parallel $ do
         withHat hatBin $ \h -> do
         _ <- hatCtl h
             [ "set", "-g", "remain-on-exit", "failed", ";", "new", "-d", ";"
-            , "new-window", "-d", "exit 1", ";", "new-window", "-d", "true" ]
+            , "new-window", "-d", "true", ";", "new-window", "-d", "exit 1" ]
+        -- By status, not window index: once true's window closes, the
+        -- next new-window may reuse its index.
         awaitTrue "only the failed pane to remain" $
-            (== "0 0\n1 1\n") <$> ctlOut h
-                ["list-panes", "-a", "-F", "#{window_index} #{pane_dead}"]
+            (== ["0 ", "1 1"]) . List.sort . lines <$> ctlOut h
+                ["list-panes", "-a", "-F", "#{pane_dead} #{pane_dead_status}"]
 
     it "respawn-pane reruns a dead pane's command, and needs -k when live" $
         withHat hatBin $ \h -> do

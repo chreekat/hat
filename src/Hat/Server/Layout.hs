@@ -18,9 +18,12 @@ module Hat.Server.Layout
     , arrange
     , sizeRect
     , layoutPanes
+    , paneOrder
     , splitLeaf
     , splitFull
     , swapLeaves
+    , Rotation (..)
+    , rotateLeaves
     , removeLeaf
     , neighbor
     , directionalTarget
@@ -171,6 +174,13 @@ sizeRect sz = Rect
     , endCol = fromIntegral sz.cols
     }
 
+-- | A window's panes in tmux's pane order (what @pane_index@ counts): the
+-- layout's leaf order, then any pane the layout does not hold.
+paneOrder :: Layout -> Map.Map PaneId a -> [PaneId]
+paneOrder lay ps = inLayout <> filter (`notElem` inLayout) (Map.keys ps)
+  where
+    inLayout = filter (`Map.member` ps) (layoutPanes lay)
+
 layoutPanes :: Layout -> [PaneId]
 layoutPanes = \case
     Leaf pid -> [pid]
@@ -208,6 +218,28 @@ swapLeaves a b = go
             | p == b -> Leaf a
             | otherwise -> Leaf p
         Split o r x y -> Split o r (go x) (go y)
+
+-- | Which way @rotate-window@ turns the panes: @-U@ moves each pane to
+-- the previous position (the first wraps to the last), @-D@ to the next.
+data Rotation = RotateUp | RotateDown
+    deriving (Eq, Show)
+
+-- | Rotate the panes through the layout's positions, keeping its shape.
+-- Backs @rotate-window@.
+rotateLeaves :: Rotation -> Layout -> Layout
+rotateLeaves dir lay = fst (relabel lay (turn (layoutPanes lay)))
+  where
+    turn ps = case (dir, ps) of
+        (_, []) -> []
+        (RotateUp, p : rest) -> rest <> [p]
+        (RotateDown, _) -> last ps : init ps
+    relabel l fresh = case (l, fresh) of
+        (Leaf _, p : rest) -> (Leaf p, rest)
+        (Leaf p, []) -> (Leaf p, [])
+        (Split o r a b, _) ->
+            let (a', rest) = relabel a fresh
+                (b', rest') = relabel b rest
+            in (Split o r a' b', rest')
 
 -- | Nothing when the last pane goes; the sibling absorbs the space.
 removeLeaf :: PaneId -> Layout -> Maybe Layout

@@ -4,6 +4,7 @@ module Hat.Server.LayoutSpec (spec) where
 
 import Control.Monad (forM_)
 import Data.List qualified as List
+import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -151,6 +152,25 @@ spec = do
                 (a : b : _) ->
                     swapLeaves a b (swapLeaves a b lay) === lay
                 _ -> property Discard
+
+    describe "paneOrder" $
+        it "numbers panes in layout order, not creation order" $ do
+            let lay = Split LeftRight 0.5 (Leaf (PaneId 7)) (Leaf (PaneId 3))
+                ps = Map.fromList [(PaneId 3, ()), (PaneId 7, ())]
+            paneOrder lay ps `shouldBe` [PaneId 7, PaneId 3]
+
+    describe "rotateLeaves" $ do
+        let three = Split LeftRight 0.5 (Leaf (PaneId 0))
+                (Split TopBottom 0.5 (Leaf (PaneId 1)) (Leaf (PaneId 2)))
+        it "-U moves each pane to the previous position" $
+            layoutPanes (rotateLeaves RotateUp three)
+                `shouldBe` map PaneId [1, 2, 0]
+        it "-D moves each pane to the next position" $
+            layoutPanes (rotateLeaves RotateDown three)
+                `shouldBe` map PaneId [2, 0, 1]
+        it "keeps the shape, and -D undoes -U" $
+            forAll (genLayout 3) $ \lay ->
+                rotateLeaves RotateDown (rotateLeaves RotateUp lay) === lay
 
     describe "namedLayout" $ do
         let pids4 = map PaneId [0, 1, 2, 3]

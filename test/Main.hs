@@ -36,9 +36,11 @@ import Hat.Server.KeysSpec qualified
 import Hat.Server.LayoutSpec qualified
 import Hat.Server.LayoutStringSpec qualified
 import Hat.Server.MruSpec qualified
+import Hat.Server.WinlinkSpec qualified
 import Hat.Server.OptionEffectSpec qualified
 import Hat.Server.OptionParseSpec qualified
 import Hat.Server.OptionsSpec qualified
+import Hat.Server.PaneReaderSpec qualified
 import Hat.Server.PickerSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.ReloadSpec qualified
@@ -96,11 +98,13 @@ main = hspec $ parallel $ do
     describe "Hat.Server.LayoutString" Hat.Server.LayoutStringSpec.spec
     describe "Hat.Server.Mru" Hat.Server.MruSpec.spec
     describe "Hat.Server.OptionParse" Hat.Server.OptionParseSpec.spec
+    describe "Hat.Server.Winlink" Hat.Server.WinlinkSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Buffer" Hat.Server.BufferSpec.spec
     describe "Hat.Server.Capture" Hat.Server.CaptureSpec.spec
+    describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
     describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec

@@ -13,6 +13,8 @@ module Hat.Server.Resize
     , awaitReconciled
     , reconcilePaneSizes
     , paneSizeTargets
+    , AreaClaim (..)
+    , pickArea
     , rectSize
     , windowArrange
     ) where
@@ -22,7 +24,7 @@ import Control.Exception (IOException, handle)
 import Control.Monad (forM, forM_, when)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -182,20 +184,58 @@ reconcilePaneSizes st = do
                     , ("height", PInt (fromIntegral sz.rows)) ]
 
 -- | The size the current layout assigns to every live pane across all
--- sessions. See 'reconcilePaneSizes'.
+-- sessions, each window laid out once at its 'windowAreas' size. See
+-- 'reconcilePaneSizes'.
 paneSizeTargets :: ServerState -> STM [(Pane, Size)]
 paneSizeTargets st = do
+    areas <- windowAreas st
+    fmap concat $ forM areas $ \(win, eff) -> do
+        (rects, _) <- windowArrange eff win
+        ps <- readTVar win.panes
+        pure [ (p, rectSize rect)
+             | (pidL, rect) <- rects
+             , Just p <- [Map.lookup pidL ps]
+             ]
+
+-- | Every window once, with the window area its panes are laid out at:
+-- that of the session holding it that 'pickArea' prefers.
+windowAreas :: ServerState -> STM [(Window, Size)]
+windowAreas st = do
     sessions <- Map.elems <$> readTVar st.sessions
-    fmap concat $ forM sessions $ \sess -> do
+    holdings <- forM sessions $ \sess -> do
         eff <- readTVar sess.lastSize
-        ws <- Map.elems <$> readTVar sess.windows
-        fmap concat $ forM ws $ \win -> do
-            (rects, _) <- windowArrange (eff) win
-            ps <- readTVar win.panes
-            pure [ (p, rectSize rect)
-                 | (pidL, rect) <- rects
-                 , Just p <- [Map.lookup pidL ps]
-                 ]
+        cur <- readTVar sess.currentIx
+        ws <- Map.toList <$> readTVar sess.windows
+        cs <- sessionClients st sess.id
+        stamps <- mapM (\c -> readTVar c.lastActive) cs
+        let latest = if null stamps then Nothing else Just (maximum stamps)
+        pure [ (win, AreaClaim (ix == cur) latest, eff) | (ix, win) <- ws ]
+    let claims = Map.fromListWith (flip (<>))
+            [ (win.id, [(claim, eff)]) | (win, claim, eff) <- concat holdings ]
+        wins = Map.fromList [ (win.id, win) | (win, _, _) <- concat holdings ]
+    pure [ (win, pickArea cs)
+         | (wid, cs) <- Map.toList claims, Just win <- [Map.lookup wid wins] ]
+
+-- | How strongly a session holding a window claims to size it: whether
+-- the window is its current one, and when its clients were last active.
+data AreaClaim = AreaClaim
+    { viewing :: Bool
+    , active  :: Maybe Int
+    }
+    deriving (Eq, Show)
+
+-- | The area a window held by several sessions (linked into them, or
+-- shared by a session group) is laid out at, so they never pull its panes
+-- to different sizes: the area of the session whose client most recently
+-- viewed it, else whose client was most recently active, else the first
+-- holder's.
+pickArea :: [(AreaClaim, Size)] -> Size
+pickArea = \case
+    [] -> Size { rows = 24, cols = 80 }
+    first : rest -> snd (foldl stronger first rest)
+  where
+    stronger a b = if rank (fst b) > rank (fst a) then b else a
+    rank c = (c.viewing && isJust c.active, c.active)
 
 rectSize :: Rect -> Size
 rectSize r = Size

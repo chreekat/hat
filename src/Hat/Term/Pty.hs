@@ -13,8 +13,9 @@ module Hat.Term.Pty
     , readAvail
     , ReadBuf
     , newReadBuf
-    , awaitReadable
+    , readPtyBuf
     , readAvailBuf
+    , awaitOutput
     , writePty
     , resize
     , waitExit
@@ -49,6 +50,8 @@ import Data.Text.IO qualified as TIO
 import Foreign
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types
+import GHC.IO.Device qualified as Device
+import GHC.IO.FD qualified as FD
 import System.IO
 import System.Posix.IO (closeFd, fdToHandle)
 import System.Posix.Process (ProcessStatus (..), getProcessStatus)
@@ -206,7 +209,7 @@ readAvail pty = do
         Left (_ :: IOException) -> B.empty
         Right bs -> bs
 
--- | A reader's staging buffer for 'readAvailBuf': each chunk allocates only
+-- | A reader's staging buffer for 'readPtyBuf': each chunk allocates only
 -- its own bytes, not a fresh maximum-size block.
 newtype ReadBuf = ReadBuf (ForeignPtr Word8)
 
@@ -216,16 +219,25 @@ readBufSize = 65536
 newReadBuf :: IO ReadBuf
 newReadBuf = ReadBuf <$> mallocForeignPtrBytes readBufSize
 
--- | Block until the master has bytes to read (or has hung up). Waiting apart
--- from reading lets a reader take async exceptions only here, where none
--- of the pty's bytes are in flight; 'readAvailBuf' then reads.
-awaitReadable :: PtyHandle -> IO ()
-awaitReadable pty = whenOpen pty () $
-    threadWaitRead pty.master `catch` \(_ :: IOException) -> pure ()
+-- | 'readPty' through a reusable staging buffer.
+readPtyBuf :: PtyHandle -> ReadBuf -> IO ByteString
+readPtyBuf pty = bufRead (hGetBufSome pty.handle)
 
 -- | 'readAvail' through a reusable staging buffer.
 readAvailBuf :: PtyHandle -> ReadBuf -> IO ByteString
 readAvailBuf pty = bufRead (hGetBufNonBlocking pty.handle)
+
+-- | Block until the master has output to read (or has hung up), consuming
+-- none of it.
+awaitOutput :: PtyHandle -> IO ()
+awaitOutput pty = whenOpen pty () $ do
+    -- A raw poll of the fd: 'hWaitForInput' would look ahead into the
+    -- handle's buffer, consuming bytes. An unusable fd counts as ready: the
+    -- read that follows reports it.
+    let Fd fd = pty.master
+    ready <- Device.ready FD.FD { FD.fdFD = fd, FD.fdIsNonBlocking = 0 } False 0
+        `catch` \(_ :: IOException) -> pure True
+    unless ready (threadWaitRead pty.master)
 
 bufRead :: (Ptr Word8 -> Int -> IO Int) -> ReadBuf -> IO ByteString
 bufRead get (ReadBuf fp) = do

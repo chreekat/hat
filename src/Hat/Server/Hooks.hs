@@ -12,6 +12,8 @@ module Hat.Server.Hooks
     , notify
     , notifyPane
     , notifyWindow
+    , notifyGroupChange
+    , notifyGroupDrops
     , fireMonitorHook
     , runHookNow
     , fireUserEvent
@@ -75,6 +77,27 @@ data PayloadItem
     | PPaneRef PaneId
     | PClientRef Text
     deriving (Eq, Show)
+
+-- | Fire @session-added-to-group@ or @session-removed-from-group@ for a
+-- session, carrying the group's name and its size at that moment.
+notifyGroupChange
+    :: ServerState -> Text -> NotifyTarget -> SessionId -> Text -> Text -> Int
+    -> IO ()
+notifyGroupChange st event tgt sid sname g size =
+    notify st event tgt
+        [ ("session", PSessionRef sid sname)
+        , ("group", PText g)
+        , ("group_size", PInt size) ]
+
+-- | Fire @session-removed-from-group@ for sessions destroyed together with
+-- their whole group (no member survives), in order, each group's size
+-- counting down as its members go.
+notifyGroupDrops :: ServerState -> [(SessionId, Text, Maybe Text)] -> IO ()
+notifyGroupDrops st gone = forM_ (List.tails gone) $ \case
+    (sid, sname, Just g) : rest -> notifyGroupChange st
+        "session-removed-from-group" noTarget sid sname g
+        (1 + length [ () | (_, _, Just g') <- rest, g' == g ])
+    _ -> pure ()
 
 printItem :: PayloadItem -> Text
 printItem = \case

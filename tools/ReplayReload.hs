@@ -71,7 +71,7 @@ main = do
     t3 <- getMonotonicTime
     let hots = [ HotPane { masterFd = -1, childPid = -1
                          , modes = ReloadModes False False 0 False 0
-                         , screen = sc }
+                         , screen = sc, start = StartShell, death = Nothing }
                | sc <- screens ]
         blob = encodeHandover
             ReloadCleanup { listenFd = -1, live = [] }
@@ -103,10 +103,12 @@ treeJson t = encodeSnapshotJson Snapshot
     sessionOf s = SessionSnap
         { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
         , windowHist = s.windowHist, createdAt = s.createdAt
-        , restores = s.restores, windows = map windowOf s.windows }
+        , restores = s.restores, group = s.group
+        , windows = map windowOf s.windows }
     windowOf w = WindowSnap
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename
+        , key = w.key, linkOf = w.linkOf
         , panes = map fst w.panes }
 
 -- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty

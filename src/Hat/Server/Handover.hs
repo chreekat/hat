@@ -45,7 +45,7 @@ import Hat.Term.Pty qualified
 import Hat.Server.ColorScheme
     ( ColorScheme, schemeReport )
 import Hat.Server.Pane
-import Hat.Server.Rebuild (rebuildSession)
+import Hat.Server.Rebuild (newRebuilt, rebuildSession)
 import Hat.Server.Snapshot (captureTree)
 import Hat.Term.Emulator qualified as Emu
 
@@ -80,7 +80,7 @@ data ScrollbackCarry = KeepScrollback | DropScrollback
 captureReload :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, ReloadHot)
 captureReload carry st = do
     (snap, panes) <- captureTree st
-    pauseReaders st panes
+    pauseReaders st
     (lsName, mfd) <- atomically $ do
         sessMap <- readTVar st.sessions
         lsId    <- readTVar st.lastSession
@@ -203,9 +203,10 @@ rebuildReload st rt = do
     let popPane _ _ _ = atomicModifyIORef' ready $ \case
             p : rest -> (rest, p)
             [] -> ([], error "reload: pane walk out of sync with the adoptions")
+    done <- newRebuilt
     forM_ rt.sessions $ \rsess -> do
         env <- restoreEnv
-        rebuildSession st env popPane rsess
+        rebuildSession st done env popPane rsess
     forM_ rt.currentSession $ \nm ->
         resolveSessionByName st nm $ \s ->
             atomically (writeTVar st.lastActiveSession (Just s.id))

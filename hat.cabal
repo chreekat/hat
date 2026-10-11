@@ -128,6 +128,7 @@ library
         Hat.Server.Locate
         Hat.Server.Mru
         Hat.Server.OptionParse
+        Hat.Server.Winlink
         Hat.Server.Overlay
         Hat.Server.Pane
         Hat.Server.Persist
@@ -294,9 +295,11 @@ test-suite hat-test
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec
         Hat.Server.MruSpec
+        Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionParseSpec
         Hat.Server.OptionsSpec
+        Hat.Server.PaneReaderSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
         Hat.Server.ReloadSpec

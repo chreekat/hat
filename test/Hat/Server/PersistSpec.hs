@@ -42,9 +42,15 @@ genWindow wix = do
     act   <- choose (0, npane - 1)
     hist  <- sublistOf (filter (/= act) [0 .. npane - 1])
     auto  <- arbitrary
+    k     <- genMaybeKey
+    l     <- genMaybeKey
     pure WindowSnap
         { ix = wix, name = nm, layout = lay, active = act
-        , paneHist = hist, autoRename = auto, panes = ps }
+        , paneHist = hist, autoRename = auto, key = k, linkOf = l, panes = ps }
+
+-- A window's capture key or link, when present: a window id.
+genMaybeKey :: Gen (Maybe Int)
+genMaybeKey = oneof [pure Nothing, Just . getNonNegative <$> arbitrary]
 
 instance Arbitrary Snapshot where
     arbitrary = do
@@ -75,16 +81,18 @@ instance Arbitrary SessionSnap where
         winHist <- sublistOf (filter (/= curIx) (map (.ix) ws))
         created <- genMaybeStamp
         rest  <- getNonNegative <$> arbitrary
+        grp   <- oneof [pure Nothing, Just <$> genText]
         pure SessionSnap
             { name = nm, startCwd = cwd0, currentIx = curIx
             , windowHist = winHist, createdAt = created, restores = rest
-            , windows = ws }
+            , group = grp, windows = ws }
     shrink s =
         [ s { windows = ws } | ws <- shrinkList shrink s.windows, not (null ws) ]
         ++ [ s { windowHist = h } | h <- shrinkList (const []) s.windowHist ]
         ++ [ s { startCwd = c } | c <- shrinkText s.startCwd ]
         ++ [ s { createdAt = Nothing } | isJust s.createdAt ]
         ++ [ s { restores = 0 } | s.restores /= 0 ]
+        ++ [ s { group = Nothing } | isJust s.group ]
 
 -- A creation stamp, when present, is whole epoch seconds: the codec floors
 -- on write, so only integral values round-trip.
@@ -100,6 +108,8 @@ instance Arbitrary WindowSnap where
     shrink w =
         [ w { panes = ps } | ps <- shrinkList shrink w.panes, not (null ps) ]
         ++ [ w { paneHist = h } | h <- shrinkList (const []) w.paneHist ]
+        ++ [ w { key = Nothing } | isJust w.key ]
+        ++ [ w { linkOf = Nothing } | isJust w.linkOf ]
         ++ [ w { autoRename = False } | w.autoRename ]
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
@@ -293,6 +303,30 @@ spec = do
             map (\s -> (s.windowHist, s.createdAt, s.restores)) got.sessions
                 `shouldBe` [([2], Nothing, 0)]
 
+        it "reads a group, window keys and links; defaults them when absent" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES \
+                    \(0, 's', '/h', 0, '{\"group\":\"g\"}')"
+                execute_ conn "INSERT INTO session VALUES (1, 't', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES \
+                    \(0, 0, 'w', 'l', 0, '{\"key\":7}')"
+                execute_ conn "INSERT INTO window VALUES \
+                    \(1, 2, 'w', 'l', 0, '{\"link_of\":7}')"
+                execute_ conn "INSERT INTO window VALUES (1, 3, 'w', 'l', 0, '{}')"
+                loadSnapshot conn
+            map (.group) got.sessions `shouldBe` [Just "g", Nothing]
+            [ (w.key, w.linkOf) | s <- got.sessions, w <- s.windows ]
+                `shouldBe` [(Just 7, Nothing), (Nothing, Just 7), (Nothing, Nothing)]
+
+        it "decodes snapshot JSON carrying a group, window keys and links" $ do
+            let js = "{\"sessions\":[{\"name\":\"s\",\"group\":\"g\",\
+                     \\"windows\":[{\"ix\":0,\"key\":7},{\"ix\":1,\"link_of\":7}]}]}"
+            fmap (map (\s -> (s.group, [ (w.key, w.linkOf) | w <- s.windows ]))
+                    . (.sessions))
+                (decodeSnapshotJson js)
+                `shouldBe` Just [(Just "g", [(Just 7, Nothing), (Nothing, Just 7)])]
+
         it "reads a session row carrying created_at and restores" $ do
             got <- withRaw $ \conn -> do
                 bootstrap conn
@@ -379,14 +413,16 @@ spec = do
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 2
                         , windowHist = [0]
                         , createdAt = Nothing, restores = 0
+                        , group = Nothing
                         , windows =
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
                                 , active = 1, paneHist = [0]
                                 , autoRename = False
+                                , key = Nothing, linkOf = Nothing
                                 , panes =
                                     [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }
                                     , PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False } ] }
@@ -401,13 +437,13 @@ spec = do
     it "round-trips each window's automatic-rename status" $ do
         let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
                 , active = 0, paneHist = [], autoRename = auto
-                , panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
+                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False }] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
                         , windowHist = []
                         , createdAt = Nothing, restores = 0
-                        , windows = [win 0 True, win 1 False] } ] }
+                        , group = Nothing, windows = [win 0 True, win 1 False] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         [ w.autoRename | s <- got.sessions, w <- s.windows ]
@@ -422,11 +458,12 @@ spec = do
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
                         , windowHist = []
                         , createdAt = Nothing, restores = 0
+                        , group = Nothing
                         , windows =
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , panes = [pane True, pane False] } ] } ] }
+                                , key = Nothing, linkOf = Nothing, panes = [pane True, pane False] } ] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         paneShellSpawned got `shouldBe` [True, False]
@@ -440,11 +477,12 @@ oneSession nm cwd0 wnm lay pcwd = Snapshot
             { name = nm, startCwd = cwd0, currentIx = 0
             , windowHist = []
             , createdAt = Nothing, restores = 0
+            , group = Nothing
             , windows =
                 [ WindowSnap { ix = 0, name = wnm, layout = lay
                     , active = 0, paneHist = []
                     , autoRename = False
-                    , panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False }] }
+                    , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False }] }
                 ] } ] }
 
 -- Every pane's captured command, in load order.

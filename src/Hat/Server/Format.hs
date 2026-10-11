@@ -14,6 +14,7 @@ module Hat.Server.Format
     , renderFormat
     , renderFormatCtx
     , formatReadsTree
+    , truthy
     ) where
 
 import Data.Array qualified as A

@@ -19,8 +19,9 @@ module Hat.Server.FormatEnv
 import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad (forM, forM_, void, when)
+import Control.Monad (filterM, forM, forM_, void, when)
 import Data.IORef
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
@@ -44,6 +45,7 @@ import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
+import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -59,6 +61,9 @@ windowFormatEnv st sess ix win = do
         <*> readTVar win.autoRename <*> readTVar win.zoomed
     sil <- readTVarIO win.silenceFlag
     ps <- readTVarIO win.panes
+    (links, linkNames) <- atomically $ do
+        links <- map fst <$> windowLinks st win
+        (,) links <$> mapM (\s -> readTVar s.name) links
     let flags = windowFlags WindowFlagState
             { flagCurrent = ix == cur
             , flagLast = Just ix == mlast
@@ -81,6 +86,11 @@ windowFormatEnv st sess ix win = do
         , ("window_activity_flag", if act then "1" else "0")
         , ("window_silence_flag", if sil then "1" else "0")
         , ("automatic_rename", if auto then "1" else "0")
+        , ("window_linked", if length links > 1 then "1" else "0")
+        -- A session group shares one window map, so it counts once.
+        , ("window_linked_sessions", tshow (length
+            (List.nubBy (\a b -> a.windows == b.windows) links)))
+        , ("window_linked_sessions_list", T.intercalate "," linkNames)
         ]) base
 
 -- | The full format environment for a specific pane, including the
@@ -123,7 +133,6 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        , ("session_grouped", "0")  -- hat has no session groups
         ]) wenv
 
 -- | 'paneFormatEnv' for a pane named only by id: locate its window and
@@ -220,7 +229,8 @@ sessionFormatEnv st sess = do
                      ]
         mactive <- maybe (pure Nothing) activePane mwin
         cs <- sessionClients st sess.id
-        pure (sname, wEnv, mactive, length cs, nwindows)
+        gEnv <- groupEnv
+        pure (sname, wEnv <> gEnv, mactive, length cs, nwindows)
     pEnv <- case mactive of
         Nothing -> pure []
         Just pane -> do
@@ -250,6 +260,21 @@ sessionFormatEnv st sess = do
         , ("color_scheme", maybe "" schemeName msch)
         ]
         <> wEnv <> pEnv
+  where
+    groupEnv = readTVar sess.group >>= \case
+        Nothing -> pure [("session_grouped", "0")]
+        Just g -> do
+            ss <- Map.elems <$> readTVar st.sessions
+            members <- filterM (fmap (== Just g) . readTVar . (.group)) ss
+            names <- mapM (\m -> readTVar m.name) members
+            attached <- sum <$> mapM (fmap length . sessionClients st . (.id)) members
+            pure [ ("session_grouped", "1")
+                 , ("session_group", g)
+                 , ("session_group_size", tshow (length members))
+                 , ("session_group_list", T.intercalate "," names)
+                 , ("session_group_attached", tshow attached)
+                 , ("session_group_many_attached", if attached > 1 then "1" else "0")
+                 ]
 
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
 -- plus @copy_cursor_{x,y,line}@ while in mode.

@@ -77,7 +77,7 @@ import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -103,7 +103,7 @@ import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
-import Hat.Server.Layout (Layout, LayoutName)
+import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Transport.Wire (Autostart)
@@ -134,6 +134,9 @@ data ServerState = ServerState
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
     , acceptGate  :: TVar AcceptGate    -- ^ see 'Hat.Server.Conn.acceptLoop'.
     , readGate    :: TVar ReadGate      -- ^ see 'Hat.Server.Pane.pauseReaders'.
+    , readsInFlight :: TVar Int
+        -- ^ pty chunks consumed but not yet fed to their emulators; see
+        --   'Hat.Server.Pane.pauseReaders'.
     , preserveStore :: TVar Bool
         -- ^ the store holds an explicitly saved final tree that must
         --   survive shutdown. Set by @kill-server@; off across a natural
@@ -191,7 +194,9 @@ data Session = Session
     , createdAt :: POSIXTime  -- ^ first creation time; see 'Hat.Server.Rebuild.rebuildSession'
     , restores :: Int  -- ^ rebuilds from serialized state; see 'Hat.Server.Rebuild.rebuildSession'
     , name     :: TVar Text
-    , windows  :: TVar (Map Int Window)  -- ^ keyed by window index (sparse)
+    , windows  :: TVar (Map Int Window)
+        -- ^ keyed by window index (sparse); the members of a session group
+        --   share one map. See 'Hat.Server.Winlink.groupMembers'.
     , currentIx :: TVar Int
     , windowHist :: TVar [Int]  -- ^ MRU window indices; see 'Hat.Server.Mru'
     , lastSize :: TVar Size              -- ^ the window's pane area; see 'sessionWindowArea'
@@ -199,6 +204,8 @@ data Session = Session
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
     , resolvedOptions :: TVar (Maybe ResolvedOpts)  -- ^ see 'memoResolve'
+    , group    :: TVar (Maybe Text)
+        -- ^ the name of the session group this session belongs to, if any
     }
 
 data Window = Window
@@ -593,6 +600,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Ready  -- startupPhase
     <*> newTVarIO AcceptOpen
     <*> newTVarIO ReadersFlowing
+    <*> newTVarIO 0      -- readsInFlight
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
@@ -729,8 +737,12 @@ activePane win = do
     ps <- readTVar win.panes
     pure (Map.lookup pid ps)
 
+-- | A window's panes in pane-index order ('paneOrder').
 windowPanes :: Window -> STM [Pane]
-windowPanes win = Map.elems <$> readTVar win.panes
+windowPanes win = do
+    ps <- readTVar win.panes
+    lay <- readTVar win.layout
+    pure (mapMaybe (`Map.lookup` ps) (paneOrder lay ps))
 
 -- | Where is a pane's child process now? /proc, with a fallback.
 paneCurrentPath :: Pane -> IO FilePath

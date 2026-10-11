@@ -191,6 +191,7 @@ data HotSession = HotSession
     , windowHist :: [Int]
     , createdAt  :: Maybe POSIXTime
     , restores   :: Int
+    , group      :: Maybe Text
     , windows    :: [HotWindow]
     }
     deriving (Eq, Show)
@@ -204,6 +205,8 @@ data HotWindow = HotWindow
     , active     :: Int
     , paneHist   :: [Int]
     , autoRename :: Bool
+    , key        :: Maybe Int
+    , linkOf     :: Maybe Int
     , panes      :: [(PaneSnap, HotPane)]
     }
     deriving (Eq, Show)
@@ -417,13 +420,14 @@ hotTree h = do
            , HotSession
                { name = s.name, startCwd = s.startCwd, currentIx = s.currentIx
                , windowHist = s.windowHist, createdAt = s.createdAt
-               , restores = s.restores, windows = ws } )
+               , restores = s.restores, group = s.group, windows = ws } )
     zipWindow hs w =
         let (mine, rest) = splitAt (length w.panes) hs
         in ( rest
            , HotWindow
                { ix = w.ix, name = w.name, layout = w.layout, active = w.active
                , paneHist = w.paneHist, autoRename = w.autoRename
+               , key = w.key, linkOf = w.linkOf
                , panes = zip w.panes mine } )
 
 -- Era ≤ 9 payload shapes, frozen: screens travelled as cell grids, which
@@ -614,10 +618,11 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
     migSession (ReloadSessionV7 nm cwd' ci hist wins) = HotSession
         { name = nm, startCwd = cwd', currentIx = ci
         , windowHist = hist, createdAt = Nothing, restores = 0
-        , windows = map migWindow wins }
+        , group = Nothing, windows = map migWindow wins }
     migWindow (ReloadWindowV7 ix' nm lay act hist ar ps) = HotWindow
         { ix = ix', name = nm, layout = lay, active = act
-        , paneHist = hist, autoRename = ar, panes = map migPane ps }
+        , paneHist = hist, autoRename = ar, key = Nothing, linkOf = Nothing
+        , panes = map migPane ps }
     migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
         ( PaneSnap { cwd = cwd', command = Nothing, shellSpawned = False }
         , HotPane { masterFd = mfd, childPid = cpid, modes = ms
