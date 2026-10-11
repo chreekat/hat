@@ -482,6 +482,11 @@ spec = do
             (.name) <$> parseKeyName "c-enter" `shouldBe` Just "C-Enter"
             (.name) <$> parseKeyName "S-M-s" `shouldBe` Just "M-S-s"
             (.raw) <$> parseKeyName "C-S-s" `shouldBe` Just "\x13"
+        it "parses the keypad keys, sending their numeric-mode bytes" $ do
+            (.raw) <$> parseKeyName "KP*" `shouldBe` Just "*"
+            (.raw) <$> parseKeyName "KPEnter" `shouldBe` Just "\n"
+            (.raw) <$> parseKeyName "M-KP5" `shouldBe` Just "\ESC5"
+            Map.lookup "KP5" keypadAppBytes `shouldBe` Just "\ESCOu"
         it "rejects nonsense" $
             parseKeyName "NotAKey" `shouldBe` Nothing
 

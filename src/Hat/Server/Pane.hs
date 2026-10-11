@@ -850,7 +850,10 @@ reencodeKey memu key = case arrowOf key.name of
     Just ck | Just emu <- memu -> do
         enc <- Emu.encodeKey emu ck
         pure key { raw = enc }
-    _ | Just (code, mods) <- extendedKeyCode key.name
+    _ | Just app <- Map.lookup key.name keypadAppBytes, Just emu <- memu -> do
+        on <- Emu.keypadMode emu
+        pure $ if on then key { raw = app } else key
+      | Just (code, mods) <- extendedKeyCode key.name
       , Just emu <- memu -> do
         enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
         pure (maybe key (\bs -> key { raw = bs }) enc)

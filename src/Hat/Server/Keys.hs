@@ -33,6 +33,7 @@ module Hat.Server.Keys
     , parseKeyName
     , namedKeys
     , namedKeyBytes
+    , keypadAppBytes
     , extendedKeyCode
     , routeKey
     , routeKeys
@@ -86,6 +87,23 @@ namedKeys =
     -- tmux-256color kf1..kf4 are the SS3 forms.
     , ("F1", "\ESCOP"), ("F2", "\ESCOQ"), ("F3", "\ESCOR"), ("F4", "\ESCOS")
     ] ++ [ (nm, "\ESC[" <> code <> "~") | (code, nm) <- fkeyTildes ]
+    ++ [ (nm, plain) | (nm, plain, _) <- keypadKeys ]
+
+-- | The keypad keys: their names, what they send with the keypad in numeric
+-- mode, and in application mode (DECKPAM).
+keypadKeys :: [(Text, ByteString, ByteString)]
+keypadKeys =
+    [ ("KP/", "/", "\ESCOo"), ("KP*", "*", "\ESCOj"), ("KP-", "-", "\ESCOm")
+    , ("KP7", "7", "\ESCOw"), ("KP8", "8", "\ESCOx"), ("KP9", "9", "\ESCOy")
+    , ("KP+", "+", "\ESCOk"), ("KP4", "4", "\ESCOt"), ("KP5", "5", "\ESCOu")
+    , ("KP6", "6", "\ESCOv"), ("KP1", "1", "\ESCOq"), ("KP2", "2", "\ESCOr")
+    , ("KP3", "3", "\ESCOs"), ("KPEnter", "\n", "\ESCOM")
+    , ("KP0", "0", "\ESCOp"), ("KP.", ".", "\ESCOn")
+    ]
+
+-- | What each keypad key sends with the keypad in application mode.
+keypadAppBytes :: Map Text ByteString
+keypadAppBytes = Map.fromList [ (nm, app) | (nm, _, app) <- keypadKeys ]
 
 -- | 'namedKeys' as a map, for the per-keystroke forwarding lookup.
 namedKeyBytes :: Map Text ByteString

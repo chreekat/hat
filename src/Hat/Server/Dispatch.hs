@@ -31,7 +31,7 @@ module Hat.Server.Dispatch
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (filterM, forM, forM_, unless, void)
+import Control.Monad (filterM, forM, forM_, unless, void, when)
 import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
@@ -85,6 +85,7 @@ import Hat.Server.Pane
 import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Target qualified as Target
+import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
 
 -- | Read a config file as UTF-8, independent of the process locale and
@@ -754,10 +755,6 @@ shutDownServer st missuer = do
 
 cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args = do
-    let (opts, flags, pos) = parseArgs "tN" args
-        literal = "-l" `elem` flags
-        hexBytes = "-H" `elem` flags
-        modeCmd = "-X" `elem` flags
     mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
     case (mpicker, mclient) of
         -- An open chooser owns send-keys: they drive its navigation/search
@@ -779,20 +776,30 @@ cmdSendKeys st mclient args = do
                 _ -> targetPane st mclient mtok
             case mpane of
                 Nothing -> pure []
-                Just pane
-                    | modeCmd -> case pos of
+                Just pane -> do
+                    -- -R: reset the pane's terminal state, as RIS does.
+                    when ("-R" `elem` flags) $ do
+                        _ <- Emu.feed pane.emulator "\ESCc"
+                        atomically (bumpDirty st)
+                    keysInto pane
+  where
+    keysInto pane
+                    | modeCmd = case pos of
                         (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
                         [] -> pure []
                     -- -H: each argument is one hex byte.
-                    | hexBytes -> case mapM hexByte pos of
+                    | hexBytes = case mapM hexByte pos of
                         Just bytes ->
                             [] <$ typeIntoPaneSynced st pane (B.pack bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise -> [] <$ forM_ pos (\a ->
+                    | otherwise = [] <$ forM_ pos (\a ->
                         case parseKeyName a of
                             Just k | not literal -> typeKeyIntoPane st pane k
                             _ -> typeIntoPaneSynced st pane (TE.encodeUtf8 a))
-  where
+    (opts, flags, pos) = parseArgs "tN" args
+    literal = "-l" `elem` flags
+    hexBytes = "-H" `elem` flags
+    modeCmd = "-X" `elem` flags
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
         Just k -> k.raw

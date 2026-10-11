@@ -37,6 +37,7 @@ module Hat.Term.Emulator
     , currentPen
     , modes
     , bracketedPaste
+    , keypadMode
     , modeReplayBytes
     , restoreBytes
     , restorePainted
@@ -487,6 +488,11 @@ modes e = withMVar e.lock $ \_ -> do
             , focusReport = foc /= 0
             , colorReport = cr
             }
+
+-- | Whether the app put the keypad in application mode (DECKPAM, @ESC =@).
+keypadMode :: Emulator -> IO Bool
+keypadMode e = withMVar e.lock $ \_ ->
+    withForeignPtr e.term $ \t -> (/= 0) <$> c_mode t 66 0
 
 -- | Whether the app enabled bracketed paste (?2004).
 bracketedPaste :: Emulator -> IO Bool
