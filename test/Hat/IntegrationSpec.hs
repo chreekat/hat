@@ -435,13 +435,12 @@ awaitScreen d needle = awaitWith (show needle) check d
   where
     check drv = T.isInfixOf needle <$> screenText drv
 
--- The command prompt replaces the status line, so the current window's
--- status marker (e.g. "0:sh*") disappearing is a reliable "the prompt is
--- open" signal — unlike the bare ':', which the status line also shows.
-awaitPromptOpen :: Driver -> T.Text -> IO ()
-awaitPromptOpen d marker = awaitWith "command prompt to open" check d
-  where
-    check drv = not . T.isInfixOf marker <$> screenText drv
+-- The command prompt replaces the status line: the bottom row is its bare
+-- ":", which no status line draws alone.
+awaitPromptOpen :: Driver -> IO ()
+awaitPromptOpen = awaitWith "command prompt to open" $ \d -> do
+    scr <- Emu.snapshot d.screen
+    pure (T.strip (Emu.screenRowText scr 23) == ":")
 
 -- | Poll a server-side observable to a bounded deadline (the pty-less
 -- sibling of 'awaitWith').
@@ -1781,7 +1780,7 @@ spec = parallel $ do
         awaitScreen c "[0]"                -- attached to the first session (named "0")
         -- Switch this client to a new session; the first becomes its alternate.
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "new-session -s work\r"
         awaitScreen c "[work]"
         -- Reload in place (deterministic binary path) and reattach.
@@ -1793,7 +1792,7 @@ spec = parallel $ do
         -- switch-client -l must return to the first session — the alternate
         -- survived the reload.
         typeInto c2 "\x02:"
-        awaitPromptOpen c2 "0:sh*"
+        awaitPromptOpen c2
         typeInto c2 "switch-client -l\r"
         awaitScreen c2 "[0]"
 
@@ -1853,11 +1852,11 @@ spec = parallel $ do
         c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
         awaitScreen c "[0]"
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "new-session -s a\r"
         awaitScreen c "[a]"
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "new-session -s b\r"
         awaitScreen c "[b]"
         _ <- hatCtl h ["restart", h.bin]
@@ -1868,7 +1867,7 @@ spec = parallel $ do
         awaitScreen c "[b]"
         _ <- hatCtl h ["kill-session", "-t", "a"]
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "switch-client -l\r"
         awaitScreen c "[0]"
 
