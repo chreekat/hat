@@ -72,6 +72,7 @@ spot-read of each suspect consumer.
 | `pane-border-status` | `statusAdjust` in `windowArrange` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-tiled` |
 | `pane-border-format` | `withStatusLines` (View.hs) over `statusBase` (Scene.hs) | implemented ✅ tested | regress `screen-redraw-tiled` |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
+| `window-style` / `window-active-style` | `paneDefaults`/`paintDefaults` (Render.hs) via `paneStyleOption` (View.hs): each pane's own value, formats expanded in the pane; `dim=` refused | implemented ✅ tested | pure (RenderSpec) + regress `screen-redraw-window-style` |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |

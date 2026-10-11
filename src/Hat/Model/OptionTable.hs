@@ -624,7 +624,11 @@ optionTable =
     , live $ scalar "monitor-silence" WindowScope (KNumber 0 intMax) "0"
     , live $ scalar "other-pane-height" WindowScope KString "0"
     , live $ scalar "other-pane-width" WindowScope KString "0"
-    , live $ scalar "pane-active-border-style" WindowPaneScope KStyle "fg=green"
+    , paneLocal $ live $ scalar "pane-active-border-style" WindowPaneScope KStyle
+        "fg=#{?pane_modal_flag,themeblue,\
+        \#{?pane_marked,thememagenta,\
+        \#{?synchronize-panes,themered,\
+        \#{?pane_in_mode,themeyellow,themegreen}}}}"
     , live $ scalar "pane-base-index" WindowScope (KNumber 0 ushrtMax) "0"
     , paneLocal $ live $ scalar "pane-border-format" WindowPaneScope KString
         "#{?pane_active,#[reverse],}#{pane_index}#[default] \"#{pane_title}\"\
@@ -639,7 +643,8 @@ optionTable =
             "single"
     , live $ scalar "pane-border-status" WindowPaneScope
         (KChoice ["off", "top", "bottom", "top-floating", "bottom-floating"]) "off"
-    , live $ scalar "pane-border-style" WindowPaneScope KStyle "default"
+    , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle
+        "fg=themelightgrey"
     , notYet $ arrayOf "pane-colours" WindowPaneScope KColour " ," []
     , notYet $ scalar "pane-scrollbars" WindowScope
         (KChoice ["off", "modal", "on", "auto-hide"]) "off"
@@ -677,14 +682,16 @@ optionTable =
         \#{&&:#{window_format},#{window_active}}},themered,themeblue}"
     , notYet $ scalar "tree-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
-    , notYet $ scalar "window-active-style" WindowPaneScope KStyle "default"
+    , refusing (dimmed "window-active-style") $ paneLocal $ live $
+        scalar "window-active-style" WindowPaneScope KStyle "default"
     , live $ scalar "window-pane-current-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
     , live $ scalar "window-pane-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
     , live $ scalar "window-size" WindowScope
         (KChoice ["largest", "smallest", "manual", "latest"]) "latest"
-    , notYet $ scalar "window-style" WindowPaneScope KStyle "default"
+    , refusing (dimmed "window-style") $ paneLocal $ live $
+        scalar "window-style" WindowPaneScope KStyle "default"
     , live $ scalar "window-status-activity-style" WindowScope KStyle "reverse"
     , live $ scalar "window-status-bell-style" WindowScope KStyle "reverse"
     , live $ scalar "window-status-current-format" WindowScope KString
@@ -795,4 +802,9 @@ optionTable =
         ("#{?#{e|>=:#{client_colours},256}," <> rich <> "," <> basic <> "}")
     noneKey n v
         | v == "None" = Just (n <> ": None not yet supported by hat")
+        | otherwise = Nothing
+    -- A pane's colours are not yet dimmed (tmux's @dim=@).
+    dimmed n v
+        | any ("dim=" `T.isPrefixOf`) (T.split (`elem` (" ," :: String)) (T.toLower v)) =
+            Just (n <> ": dim= not yet supported by hat")
         | otherwise = Nothing

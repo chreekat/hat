@@ -88,6 +88,21 @@ applyOps = foldl apply
 
 spec :: Spec
 spec = do
+    describe "pane default colours (window-style, window-active-style)" $ do
+        let ws = defaultStyle { fg = Indexed 2, bg = Indexed 4 }
+            was = defaultStyle { bg = Indexed 1 }
+        it "the active pane takes window-active-style where it sets a colour" $
+            paneDefaults True ws was `shouldBe` (Indexed 2, Indexed 1)
+        it "other panes take window-style" $
+            paneDefaults False ws was `shouldBe` (Indexed 2, Indexed 4)
+        it "paints only the default colours of a pane's cells" $ do
+            let cells = V.singleton (V.fromList
+                    [ glyphCell 'a' defaultStyle
+                    , glyphCell 'b' defaultStyle { fg = Indexed 7 } ])
+            V.map (V.map (.style)) (paintDefaults (Indexed 2, Indexed 4) cells)
+                `shouldBe` V.singleton (V.fromList
+                    [ defaultStyle { fg = Indexed 2, bg = Indexed 4 }
+                    , defaultStyle { fg = Indexed 7, bg = Indexed 4 } ])
     prop "diff ops transform old frame into new frame" $
         forAll ((,) <$> genFrame smallSize <*> genFrame smallSize) $
             \(old, new) -> applyOps old (diffFrame old new) === new

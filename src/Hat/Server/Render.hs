@@ -17,6 +17,8 @@ module Hat.Server.Render
     , overlayGrid
     , applyBorders
     , tintInnerRing
+    , paneDefaults
+    , paintDefaults
     , diffFrame
     , diffFrameKnown
     , fullRedraw
@@ -219,6 +221,22 @@ applyBorders frame borders = frame V.// updates
         , r < V.length frame
         , let row = frame V.! r
         ]
+
+-- | A pane's default foreground and background (tmux's
+-- @tty_default_colours@): for the active pane, @window-active-style@'s
+-- where it sets one, else @window-style@'s.
+paneDefaults :: Bool -> Style -> Style -> (Color, Color)
+paneDefaults active ws was =
+    ( if active && was.fg /= DefaultColor then was.fg else ws.fg
+    , if active && was.bg /= DefaultColor then was.bg else ws.bg )
+
+-- | Draw a pane's default-coloured cells in its default colours.
+paintDefaults :: (Color, Color) -> V.Vector (V.Vector Cell) -> V.Vector (V.Vector Cell)
+paintDefaults (dfg, dbg) = V.map (V.map paint)
+  where
+    paint c = c { style = c.style
+        { fg = if c.style.fg == DefaultColor then dfg else c.style.fg
+        , bg = if c.style.bg == DefaultColor then dbg else c.style.bg } }
 
 -- | Restyle the ring of cells just inside the rect, keeping their glyphs.
 tintInnerRing :: Style -> Frame -> Rect -> Frame

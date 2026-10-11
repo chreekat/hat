@@ -32,7 +32,6 @@ screen-redraw-indicators.sh
 screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
-screen-redraw-window-style.sh
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
@@ -95,7 +94,7 @@ input-requests.sh               # OSC 4/OSC 52 requests not forwarded to the out
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 
 
-pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot cross the Text wire) + split-window -s (window-style option)
+pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
 
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)

@@ -43,6 +43,7 @@ import Hat.Server.FormatEnv
      windowFormatEnv, windowOwnEnv)
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (windowArrange, windowPaneStatus)
+import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme)
 import Hat.Server.Picker qualified as Picker
@@ -158,17 +159,21 @@ renderOnce st client = do
                     }
             -- Snapshot each visible pane once; its cells and its cursor both
             -- come from that one read.
+            th <- clientTheme st
             paneViews <- fmap (Map.fromList . concat) $ forM rects $ \(pidL, _) ->
                 case Map.lookup pidL ps of
                     Nothing -> pure []
                     Just pane -> do
                         pv <- paneView st pane
-                        pure [(pidL, pv)]
+                        popts <- atomically (resolveForPane st sess win pane)
+                        ws <- paneStyleOption st th sess win pane popts "window-style"
+                        was <- paneStyleOption st th sess win pane popts "window-active-style"
+                        pure [(pidL, withPaneDefaults (paneDefaults (pidL == active) ws was) pv)]
             prevFrame <- readIORef client.lastFrame
             prevOrigins <- readIORef client.lastOrigins
             let sceneArea = csize
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
-            chrome <- cachedChrome st client sess win eff sceneArea rects active rowOff
+            chrome <- cachedChrome st th client sess win eff sceneArea rects active rowOff
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect rect
                                 , cells = pv.cells, gens = pv.rowGens }
@@ -438,15 +443,19 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 -- its cells differ, so an unchanged chrome keeps its 'Chrome' generation
 -- and every row's chrome provenance stays matchable.
 cachedChrome
-    :: ServerState -> Client -> Session -> Window -> Size -> Size
+    :: ServerState -> Theme -> Client -> Session -> Window -> Size -> Size
     -> [(PaneId, Rect)] -> PaneId -> Int -> IO Chrome
-cachedChrome st client sess win eff sceneArea rects active rowOff = do
+cachedChrome st th client sess win eff sceneArea rects active rowOff = do
     mcc <- readIORef client.lastChrome
-    th <- clientTheme st
-    (input, look0, panes) <- atomically (chromeInputs st th sess win eff sceneArea rects active)
+    (input, look1, panes) <- atomically (chromeInputs st th sess win eff sceneArea rects active)
     let scene = case mcc of
             Just cc | cc.input == input -> cc.scene
             _ -> buildScene input
+    -- A scene with no borders draws no pane's border style.
+    styles <- if not (V.any (V.any isBorder) scene) then pure [] else
+        forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st th sess win cp.pane
+            cp.options (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
+    let look0 = look1 { paneStyles = Map.fromList styles }
     look <- withStatusLines st th sess win input.paneStatus scene panes look0
         >>= withFills st th sess win scene
     case mcc of
@@ -461,6 +470,33 @@ cachedChrome st client sess win eff sceneArea rects active rowOff = do
             writeIORef client.lastChrome $ Just ChromeCache
                 { input, scene, look, rowOff, cells, chrome }
             pure chrome
+  where
+    isBorder = \case
+        SceneBorder _ -> True
+        SceneStatus {} -> True
+        _ -> False
+
+-- | A pane's style option, its formats expanded in the pane's context
+-- first (tmux's @style_add@ with the pane's format tree).
+paneStyleOption
+    :: ServerState -> Theme -> Session -> Window -> Pane -> Options -> Text
+    -> IO Cell.Style
+paneStyleOption st th sess win pane popts name
+    | "#{" `T.isInfixOf` raw = do
+        wix <- atomically (readTVar sess.currentIx)
+        pix <- paneIndexOf st win pane
+        env <- paneFormatEnv st sess wix win pix pane
+        styleCell th <$> expandFormat st env raw
+    | otherwise = pure (styleCell th raw)
+  where
+    raw = optionText name popts
+
+-- | A pane's view drawn in its default colours. A pane with its own
+-- colours gives up its row stamps: they do not cover the colours.
+withPaneDefaults :: (Cell.Color, Cell.Color) -> PaneView -> PaneView
+withPaneDefaults dflt pv
+    | dflt == (Cell.DefaultColor, Cell.DefaultColor) = pv
+    | otherwise = pv { cells = paintDefaults dflt pv.cells, rowGens = Nothing }
 
 -- | One visible pane's part in its window's chrome.
 data ChromePane = ChromePane
@@ -496,17 +532,14 @@ chromeInputs st th sess win eff sceneArea rects active = do
             pure [ ChromePane
                 { pane, options = popts
                 , number = wopts.paneBaseIndex + fromMaybe 0 (List.elemIndex pid order) } ]
-    let paneStyle cp = styleCell th $ optionText
-            (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
-            cp.options
-        useArrows = indicators `elem` [IndicatorsArrows, IndicatorsBoth]
+    let useArrows = indicators `elem` [IndicatorsArrows, IndicatorsBoth]
         input = SceneInput
             { window = eff, area = sceneArea, panes = markingOrder rects
             , paneStatus = status, twoPane }
         look = ChromeLook
             { borderLines = wopts.paneBorderLines
             , windowStyle = styleCell th (optionText "pane-border-style" wopts)
-            , paneStyles = Map.fromList [ (cp.pane.id, paneStyle cp) | cp <- panes ]
+            , paneStyles = Map.empty
             , active = Just active
             , marked
             , numbers = Map.fromList [ (cp.pane.id, cp.number) | cp <- panes ]
