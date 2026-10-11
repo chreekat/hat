@@ -19,8 +19,10 @@ module Hat.Server.Pane
     , shellLine
     , shellStart
     , spawnPane
+    , respawnPane
     , dismissDeadPane
     , deadNoticeBytes
+    , respawnStart
     , newWindowWithPane
     , startPaneReader
     , pauseReaders
@@ -74,7 +76,7 @@ import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set qualified as Set
 import Data.Vector qualified as V
 import Data.Text (Text)
@@ -292,6 +294,41 @@ spawnPane st pid sid shellCmd mrun dir environ sz = do
         , start = mrun
         , exited = exitedVar
         }
+
+-- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
+-- its id, slot, size and options; a fresh emulator, process and reader take
+-- over, so the screen and any copy mode start clean (tmux's
+-- @screen_reinit@). The old record is retired — marked so its reader's
+-- teardown only reaps — and swapped out atomically, then hung up if its
+-- process still runs. 'Nothing' when the pane left the tree meanwhile (a
+-- kill or its own exit won the race); the new process is then hung up.
+respawnPane
+    :: ServerState -> SessionId -> Window -> Pane -> FilePath -> PaneStart
+    -> FilePath -> [(Text, Text)] -> IO (Maybe Pane)
+respawnPane st sid win old shellCmd how dir environ = do
+    sz <- readTVarIO old.size
+    new <- spawnPane st old.id sid shellCmd how dir environ sz
+    swapped <- atomically $ do
+        gone <- readTVar old.dead
+        if gone then pure Nothing else do
+            writeTVar old.dead True
+            writeTVar new.options =<< readTVar old.options
+            modifyTVar' win.panes (Map.insert new.id new)
+            bumpDirty st
+            Just . isNothing <$> readTVar old.exited
+    case swapped of
+        Nothing -> Nothing <$ hangupPane new
+        Just wasLive -> do
+            when wasLive (hangupPane old)
+            startPaneReader st sid win new
+            pure (Just new)
+
+-- | What @respawn-pane@ without a command re-runs: the pane's own launch. A
+-- restored program typed into a fresh shell respawns as that shell.
+respawnStart :: PaneStart -> PaneStart
+respawnStart = \case
+    ShellInject _ -> FreshShell
+    other         -> other
 
 -- | Signals a pane's reader that its shell child has exited. See
 -- 'startPaneReader'.
