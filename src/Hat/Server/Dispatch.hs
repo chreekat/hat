@@ -8,6 +8,7 @@ module Hat.Server.Dispatch
     , runArgv
     , runCommands
     , runCommandText
+    , resolveCommand
     , commandTable
     , installHooks
     , readConfigUtf8
@@ -60,7 +61,8 @@ import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
 import Hat.Server.Command.Wait (cmdWaitFor)
-import Hat.Server.Hooks (PayloadItem (..), inHook, installHookEngine, notify)
+import Hat.Server.Hooks
+    (PayloadItem (..), inHook, installEventSink, installHookEngine, notify)
 import Hat.Server.Command.Buffer
 import Hat.Server.Command.Interact
 import Hat.Server.Command.Layout
@@ -71,6 +73,7 @@ import Hat.Server.Command.Window
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.ColorScheme
+import Hat.Server.Control (cmdRefreshClient, controlSink)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
@@ -96,7 +99,18 @@ dispatch :: Dispatch
 dispatch = Dispatch
     { runArgv = runArgv
     , runCommands = runCommands
-    , runCommandText = runCommandText }
+    , runCommandText = runCommandText
+    , unknownCommand = unknownCommand }
+
+unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
+unknownCommand _ [] = pure Nothing
+unknownCommand st argv@(name : _)
+    | Just _ <- envAssignment argv = pure Nothing
+    | otherwise = do
+        opts <- readTVarIO st.options
+        pure $ case lookupCommandAlias opts name of
+            Just _ -> Nothing
+            Nothing -> either Just (const Nothing) (resolveCommand name)
 
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
 runCommandText st mclient input = case parseCommandLine input of
@@ -143,14 +157,30 @@ runAlias st mclient body args = case parseCommandLine body of
 -- | Dispatch one command through the builtin table, then fire its
 -- @after-*@ hook (on success) or @command-error@ (on failure).
 runBuiltin :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
-runBuiltin st mclient name args = case Map.lookup name commandTable of
-    Nothing -> pure [RErr ("unknown command: " <> name)]
-    Just impl -> do
+runBuiltin st mclient name0 args = case resolveCommand name0 of
+    Left e -> pure [RErr e]
+    Right name | Just impl <- Map.lookup name commandTable -> do
         replies <- impl st mclient args
             `catch` \(e :: SomeException) ->
                 pure [RErr (name <> ": " <> T.pack (show e))]
         fireCommandHooks st mclient name args replies
         pure replies
+    Right name -> pure [RErr ("unknown command: " <> name)]
+
+-- | tmux's command lookup: an exact name or alias, else the one command
+-- whose name the word begins (the candidates listed when there are more).
+-- Hat's own commands answer only to their full names, so they never make
+-- an abbreviation tmux accepts ambiguous.
+resolveCommand :: Text -> Either Text Text
+resolveCommand name
+    | Map.member name commandTable = Right name
+    | otherwise = case List.sort [ c | (c : _, _) <- commandSpecs
+                                     , c `notElem` hatOnlyCommands
+                                     , name `T.isPrefixOf` c ] of
+        [c] -> Right c
+        [] -> Left ("unknown command: " <> name)
+        cs -> Left ("ambiguous command: " <> name <> ", could be: "
+            <> T.intercalate ", " cs)
 
 -- Commands run from inside a hook fire nothing (tmux's NOHOOKS state).
 fireCommandHooks
@@ -266,12 +296,21 @@ envAssignment = \case
 
 -- | Wire the hooks engine to this command table: hook commands run
 -- clientless through 'runCommandText', and @after-*@ hook names validate
--- against the canonical command names.
+-- against the canonical command names. Every event also reaches the
+-- control-mode clients.
 installHooks :: ServerState -> IO ()
-installHooks st = installHookEngine st
-    (\txt -> void (runCommandText st Nothing txt))
-    (expandFormat st)
-    [ n | (n : _, _) <- commandSpecs ]
+installHooks st = do
+    installHookEngine st
+        (\txt -> void (runCommandText st Nothing txt))
+        (expandFormat st)
+        [ n | (n : _, _) <- commandSpecs ]
+    installEventSink st (controlSink st)
+
+-- | Commands tmux does not have.
+hatOnlyCommands :: [Text]
+hatOnlyCommands =
+    [ "activity-window", "list-snapshots", "restore-snapshot"
+    , "restart-server", "restart-client", "restart" ]
 
 commandTable :: Map.Map Text CommandImpl
 commandTable = Map.fromList (concatMap expand commandSpecs)
@@ -317,6 +356,7 @@ commandSpecs =
     , (["resize-pane", "resizep"], cmdResizePane)
     , (["last-pane", "lastp"], cmdLastPane)
     , (["detach-client", "detach"], cmdDetachClient)
+    , (["refresh-client", "refresh"], cmdRefreshClient)
     , (["send-prefix"], cmdSendPrefix)
     , (["send-keys", "send"], cmdSendKeys)
     , (["copy-mode"], cmdCopyMode)
@@ -630,9 +670,10 @@ cmdDisplayMessage st mclient args = do
             pix <- paneIndexOf st win pane
             env <- paneFormatEnv st sess wix win pix pane
             expandFormat st env raw
-    if "-p" `elem` flags
-        then pure [ROutput text]
-        else do
+    case mclient of
+        _ | "-p" `elem` flags -> pure [ROutput text]
+        Just client | Just _ <- client.control -> pure [ROutput ("%message " <> text)]
+        _ -> do
             forM_ mclient $ \client -> showToast st client text
             pure []
 

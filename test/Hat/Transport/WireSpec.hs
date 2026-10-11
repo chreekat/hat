@@ -81,6 +81,7 @@ genIntent :: Gen Intent
 genIntent = oneof
     [ AttachIntent <$> listOf (listOf genText)
     , pure ControlIntent
+    , ControlModeIntent <$> listOf (listOf genText)
     ]
 
 genHello :: Gen Hello
@@ -135,6 +136,8 @@ instance Arbitrary ServerToClient where
         , RestartClientTo <$> genText <*> listOf genText
         , pure ReadStdin
         , WriteStdout . B.pack <$> arbitrary
+        , ControlExit <$> oneof [pure Nothing, Just <$> genText]
+            <*> elements [ExitNow, AwaitEmptyLine] <*> arbitrary
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -154,6 +157,10 @@ instance Arbitrary ServerToClient where
             ++ [ RestartClientTo t hs | hs <- shrinkList (const []) hist ]
         ReadStdin -> []
         WriteStdout bs -> WriteStdout . B.pack <$> shrink (B.unpack bs)
+        ControlExit reason wait status ->
+            [ ControlExit Nothing wait status | Just _ <- [reason] ]
+            ++ [ ControlExit reason ExitNow status | wait /= ExitNow ]
+            ++ [ ControlExit reason wait s | s <- shrink status ]
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -202,6 +209,18 @@ spec = do
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []))
               , "8200880465787465726d9f8261416142ff830018181850642f746d708101f480" )
+            , ( "ClientHello (attach intent)"
+              , encodeMessage (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
+                        (AttachIntent [["new"]]) False []))
+              , "8200880465787465726d9f8261416142ff830018181850642f746d70\
+                \82009f9f636e6577fffff480" )
+            , ( "ClientHello (control-mode intent)"
+              , encodeMessage (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
+                        (ControlModeIntent [["attach"]]) False []))
+              , "8200880465787465726d9f8261416142ff830018181850642f746d70\
+                \82029f9f66617474616368fffff480" )
             , ( "Input", encodeMessage (Input "hi"), "8201426869" )
             , ( "Resize", encodeMessage (Resize (Size 24 80)), "8202830018181850" )
             , ( "Command"
@@ -235,6 +254,12 @@ spec = do
               , "830c646d61696e9f63616c74ff" )
             , ( "ReadStdin", encodeMessage ReadStdin, "810d" )
             , ( "WriteStdout", encodeMessage (WriteStdout "o"), "820e416f" )
+            , ( "ControlExit"
+              , encodeMessage (ControlExit (Just "too far behind") AwaitEmptyLine 1)
+              , "840f816e746f6f2066617220626568696e640101" )
+            , ( "ControlExit (no reason)"
+              , encodeMessage (ControlExit Nothing ExitNow 0)
+              , "840f800000" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -307,6 +332,11 @@ spec = do
         it "downgrades WriteStdout to a Message below level 8" $
             hex (encodeServerMessageAt 7 (WriteStdout "o"))
                 `shouldBe` "8205616f"
+        -- The level-8 corpus vector for tag 15: a pre-control-mode peer
+        -- only learns its session ended.
+        it "downgrades ControlExit to Exited below level 9" $
+            hex (encodeServerMessageAt 8 (ControlExit Nothing ExitNow 0))
+                `shouldBe` "8109"
         it "reads a level-6 name-only RestartClientTo as empty history" $
             (decodeMessage (B.pack (hexBytes "820c646d61696e"))
                 :: Inbound ServerToClient)

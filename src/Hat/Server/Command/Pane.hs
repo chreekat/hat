@@ -20,6 +20,7 @@ module Hat.Server.Command.Pane
     , cmdResizePane
     , nextZoom
     , zoomTarget
+    , noteActiveChange
     ) where
 
 import Control.Applicative ((<|>))
@@ -54,7 +55,7 @@ import Hat.Server.Pane
     , emptyPane, launchOf, respawnStart, setScreenTitle, sessionSpawnEnv, spawnPane, startPaneReader )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
-import Hat.Server.Resize (windowLayoutAt)
+import Hat.Server.Resize (windowArea, windowLayoutAt)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -347,7 +348,7 @@ cmdSplitWindow st mclient args
         case res of
             Left e -> pure [RErr e]
             Right (sess, wix, win, target) -> do
-                eff <- readTVarIO sess.lastSize
+                eff <- atomically (windowArea st win)
                 lay <- atomically (windowLayoutAt eff win)
                 msize <- splitSizeArg st sess orient spanning eff target.id lay opts
                 case msize of
@@ -518,7 +519,7 @@ cmdSelectPane st mclient args
                     mtarget <- case direction of
                         Nothing -> pure (Just pane)
                         Just dir -> do
-                            eff <- readTVarIO sess.lastSize
+                            eff <- atomically (windowArea st win)
                             (lay, ps) <- atomically $ (,) <$> windowLayoutAt eff win <*> readTVar win.panes
                             pure (directionalTarget eff lay pane.id dir >>= (`Map.lookup` ps))
                     case mtarget of
@@ -887,7 +888,7 @@ cmdResizePane st mclient args
         case res of
             Left e -> pure [RErr e]
             Right (sess, _, win, pane) -> do
-                eff <- readTVarIO sess.lastSize
+                eff <- atomically (windowArea st win)
                 wasZoomed <- atomically $ do
                     z <- readTVar win.zoomed
                     writeTVar win.zoomed Nothing

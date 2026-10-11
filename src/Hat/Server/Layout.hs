@@ -88,18 +88,17 @@ effectiveWindowSize mode _ clients = case mode of
         , cols = pick (map (\(_, s) -> s.cols) cs)
         }
 
--- | The pane area of a session's window: its 'effectiveWindowSize' with the
--- status bar's @statusLines@ rows carved out of the clients' sizes when a
--- client is attached to draw it. A detached session keeps its full size —
--- tmux draws no status line without a client, so @new-session -d -x W -y H@
--- gives an H-row window, not H-1 — and @status off@ (0 lines) carves nothing
--- even when attached. A manual size is the window's own and is never carved.
-sessionWindowArea :: Int -> WindowSizeMode -> Size -> [(Int, Size)] -> Size
-sessionWindowArea _ SizeManual fallback _ = fallback
-sessionWindowArea _ _ fallback [] = fallback
-sessionWindowArea statusLines mode fallback clients =
-    let s = effectiveWindowSize mode fallback clients
-    in s { rows = fromIntegral (max 1 (fromIntegral s.rows - statusLines)) }
+-- | The pane area of a session's window: its 'effectiveWindowSize' over its
+-- clients' claims, each with the status rows that client draws carved out
+-- of its size. A detached session keeps its full size — tmux draws no
+-- status line without a client, so @new-session -d -x W -y H@ gives an
+-- H-row window, not H-1 — and @status off@ (0 lines) carves nothing even
+-- when attached. A manual size is the window's own and is never carved.
+sessionWindowArea :: WindowSizeMode -> Size -> [(Int, Size, Int)] -> Size
+sessionWindowArea mode fallback claims =
+    effectiveWindowSize mode fallback
+        [ (stamp, sz { rows = fromIntegral (max 1 (fromIntegral sz.rows - status)) })
+        | (stamp, sz, status) <- claims ]
 
 data Direction = DirLeft | DirRight | DirUp | DirDown
     deriving (Eq, Show)

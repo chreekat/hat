@@ -35,7 +35,7 @@ import Hat.Server.LayoutString (layoutFromString)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane (rehomePanes, removePaneFromTree, wrapPaneInWindow)
-import Hat.Server.Resize (applySessionSize, windowLayoutAt)
+import Hat.Server.Resize (applySessionSize, windowArea, windowLayoutAt)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Winlink (attachWindow, shuffleUp)
 
@@ -192,7 +192,7 @@ joinPane st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) opts flags = d
     if spane.id == dpane.id
         then pure [RErr "source and target panes must be different"]
         else do
-            eff <- readTVarIO dsess.lastSize
+            eff <- atomically (windowArea st dwin)
             lay <- atomically (windowLayoutAt eff dwin)
             let expand t = sessionFormatEnv st dsess >>= \env -> expandFormat st env t
             let orient = if "-h" `elem` flags then LeftRight else TopBottom
@@ -317,7 +317,7 @@ stepLayout st sess win step = do
 -- cycles onward from it and a bare @select-layout@ reapplies it.
 applyNamed :: ServerState -> Session -> Window -> LayoutName -> IO [Reply]
 applyNamed st sess win name = do
-    eff <- readTVarIO sess.lastSize
+    eff <- atomically (windowArea st win)
     sizes <- namedSizesOf <$> atomically (resolveForWindow st sess win)
     atomically $ writeTVar win.layoutName (Just name)
     relayout st sess win $ \lay -> pure . Right $
@@ -336,7 +336,7 @@ relayout
     :: ServerState -> Session -> Window -> (Layout -> IO (Either Text Layout))
     -> IO [Reply]
 relayout st sess win change = do
-    eff <- readTVarIO sess.lastSize
+    eff <- atomically (windowArea st win)
     lay <- atomically (windowLayoutAt eff win)
     r <- change lay
     case r of

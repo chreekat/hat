@@ -36,6 +36,7 @@ import Hat.Model
 import Hat.Model.PasteBuffers
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Format (FormatEnv)
+import Hat.Server.Hooks (notifyPasteChanges)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
 import Hat.Server.Locate (findTarget, paneIndexOf, targetPane)
 import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe, typeIntoPane)
@@ -321,14 +322,18 @@ pickBuffer mname s = case mname of
 
 -- | Apply a fallible store update, replying with its error.
 modifyStore :: ServerState -> (PasteStore -> Either Text PasteStore) -> IO [Reply]
-modifyStore st f = atomically $ do
-    s <- readTVar st.buffers
-    case f s of
+modifyStore st f = do
+    r <- atomically $ do
+        s <- readTVar st.buffers
+        case f s of
+            Left e -> pure (Left e)
+            Right s' -> do
+                writeTVar st.buffers s'
+                bumpDirty st
+                pure (Right (s, s'))
+    case r of
         Left e -> pure [RErr e]
-        Right s' -> do
-            writeTVar st.buffers s'
-            bumpDirty st
-            pure []
+        Right (old, new) -> [] <$ notifyPasteChanges st old new
 
 modifyStore_ :: ServerState -> (PasteStore -> PasteStore) -> IO ()
 modifyStore_ st f = () <$ modifyStore st (Right . f)

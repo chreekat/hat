@@ -30,6 +30,8 @@ module Hat.Server.Hooks
     , inHook
     , clientNameOf
     , installHookEngine
+    , installEventSink
+    , notifyPasteChanges
     ) where
 
 import Control.Concurrent (myThreadId)
@@ -46,18 +48,10 @@ import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 
 import Hat.Model
 import Hat.Model.Options (hookNames)
+import Hat.Model.PasteBuffers (BufferChange (..), PasteStore, pasteChanges)
 import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.HookTypes
 import Hat.Server.Locate (locatePane)
-
--- | The object an event happened to, as the scope-chain lookup and the
--- hook commands' ambient context see it.
-data NotifyTarget = NotifyTarget
-    { session :: Maybe SessionId
-    , window :: Maybe WindowId
-    , pane :: Maybe PaneId
-    }
-    deriving (Eq, Show)
 
 noTarget :: NotifyTarget
 noTarget = NotifyTarget Nothing Nothing Nothing
@@ -65,16 +59,14 @@ noTarget = NotifyTarget Nothing Nothing Nothing
 sessionTarget :: SessionId -> NotifyTarget
 sessionTarget sid = NotifyTarget (Just sid) Nothing Nothing
 
--- | One event payload entry. Refs print in tmux's id syntax; session and
--- window refs also expose a @_name@ variant to hook formats.
-data PayloadItem
-    = PText Text
-    | PInt Int
-    | PSessionRef SessionId Text
-    | PWindowRef WindowId Text
-    | PPaneRef PaneId
-    | PClientRef Text
-    deriving (Eq, Show)
+-- | Fire @paste-buffer-deleted@ and @paste-buffer-changed@ for what a
+-- buffer store update did.
+notifyPasteChanges :: ServerState -> PasteStore -> PasteStore -> IO ()
+notifyPasteChanges st old new = forM_ (pasteChanges old new) $ \(change, n) ->
+    notify st (case change of
+        BufferDeleted -> "paste-buffer-deleted"
+        BufferChanged -> "paste-buffer-changed")
+        noTarget [("paste_buffer", PText n)]
 
 -- | Fire @session-added-to-group@ or @session-removed-from-group@ for a
 -- session, carrying the group's name and its size at that moment.
@@ -246,6 +238,8 @@ fire
     :: ServerState -> Text -> NotifyTarget -> [(Text, PayloadItem)] -> Bool
     -> IO ()
 fire st name tgt payload runHooks = do
+    deliver <- readTVarIO st.hooks.sink
+    deliver name tgt payload
     let bare = barePayload name payload
     wakeEventWaiters st name bare
     suppressed <- inHook st
@@ -350,3 +344,8 @@ installHookEngine st run expand cmdNames = atomically $ do
     writeTVar st.hooks.runner run
     writeTVar st.hooks.expander expand
     writeTVar st.hooks.knownCommands (Set.fromList cmdNames)
+
+-- | Wire the event sink every built-in event is delivered to; called once at
+-- startup.
+installEventSink :: ServerState -> EventSink -> IO ()
+installEventSink st = atomically . writeTVar st.hooks.sink

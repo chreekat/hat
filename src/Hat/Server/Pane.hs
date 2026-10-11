@@ -90,6 +90,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import GHC.Clock (getMonotonicTimeNSec)
 import Data.Char (isAlphaNum)
 import System.Environment (getEnvironment)
 import System.IO (Handle, hFlush)
@@ -105,13 +106,14 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
 import Hat.Server.Layout
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
-    , notifyGroupDrops, notifyPane, sessionTarget )
+    , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Style (applyStyle)
@@ -428,7 +430,9 @@ runPaneReader st pane = do
         -- the 'finally' cleanup, so a late async 'ChildExited' can never land in
         -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
-            \_ -> readLoop unmask (Hat.Term.Pty.awaitOutput pane.pty)
+            \_ -> readLoop unmask
+                    (atomically (awaitControlRoom st pane)
+                        >> Hat.Term.Pty.awaitOutput pane.pty)
                     (Hat.Term.Pty.readPtyBuf pane.pty rbuf) pendingRef
                 `catch` \ChildExited -> do
                     writeIORef pendingRef Nothing
@@ -462,6 +466,8 @@ runPaneReader st pane = do
                 Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
                 writeIORef pending Nothing)
             forwardToPipe pane bs
+            now <- (`div` 1000000) <$> getMonotonicTimeNSec
+            atomically (forwardToControl st pane now bs)
             mhome <- readTVarIO pane.home  -- See Note [Pane home]
             forM_ events $ \case
                 Emu.Output out -> Hat.Term.Pty.writePty pane.pty out
@@ -880,6 +886,8 @@ teardownPane st pane reap = do
                 (NotifyTarget (Just sid) (Just win.id) (Just pane.id))
                 [ ("pane", PPaneRef pane.id)
                 , ("window", PWindowRef win.id wname) ]
+            when (wf == WindowSurvives) $
+                notifyWindow st "window-layout-changed" (Just sid) win []
             when (wf == WindowRemoved) $ do
                 notify st "window-unlinked"
                     (sessionTarget sid)
@@ -1052,6 +1060,7 @@ killPaneLocsWith mode st locs = do
                 [ (sid, win)
                 | ((sid, win), Detached WindowSurvives _) <- results ]
         forM_ survivors $ \(sid, win) -> do
+            notifyWindow st "window-layout-changed" (Just sid) win []
             newActive <- readTVarIO win.activeId
             forM_ (Map.lookup win.id preActive) $ \old ->
                 when (old /= newActive) $ do
@@ -1394,6 +1403,10 @@ createGroupedSession st leader mname environ dir = do
     sname <- readTVarIO sess.name
     notifyGroupChange st "session-added-to-group" (sessionTarget sess.id)
         sess.id sname gname size
+    -- Joining a group links each of its windows into the new session.
+    shared <- Map.elems <$> readTVarIO sess.windows
+    forM_ shared $ \win -> notifyWindow st "window-linked" (Just sess.id) win
+        [ ("session", PSessionRef sess.id sname) ]
     mwin <- atomically (currentWindow sess)
     notify st "session-created"
         (NotifyTarget (Just sess.id) ((.id) <$> mwin) Nothing)

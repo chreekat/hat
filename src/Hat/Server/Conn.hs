@@ -17,7 +17,7 @@ module Hat.Server.Conn
     ) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.Async (link, race, withAsync)
+import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
@@ -41,10 +41,16 @@ import Hat.Model.Options
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
+import Hat.Server.Control
+    ( BlockOrigin (..), controlWriter, feedControlInput, runControlCommands
+    , subscriptionLoop )
+import Hat.Server.ControlQueue (requestExit)
+import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Overlay
 import Hat.Server.Startup
 import Hat.Server.DisplayPanes
 import Hat.Server.Flash
+import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
@@ -120,6 +126,17 @@ welcome d st re h = do
             sendMessage conn (ServerVersion protocolVersion)
             atomically $ writeTVar client.ready True
             controlLoop d st re client `finally` removeClient st client
+        ControlModeIntent setupCmds -> case client.control of
+            Nothing -> sendMessage conn (ServerError "control state missing")
+            Just cs -> do
+                atomically $ modifyTVar' st.clients (Map.insert client.id client)
+                sendMessage conn (Welcome "")
+                sendMessage conn (ServerVersion protocolVersion)
+                atomically $ writeTVar client.ready True
+                logEvent st.logger ClientConnected
+                    { client = rawClient client.id, term = h.term }
+                controlModeSession d st re client cs setupCmds
+                    `finally` removeClient st client
         AttachIntent setupCmds -> do
             -- Register early so the setup commands (new-session,
             -- attach-session -t) act on a live client and can switch it.
@@ -212,11 +229,15 @@ newClient st conn h = do
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
+    controlState <- case h.intent of
+        ControlModeIntent {} -> Just <$> newControlState
+        _ -> pure Nothing
     pure Client
         { id = ClientId cid
         , role = case h.intent of
             AttachIntent {} -> Attached
             ControlIntent   -> Control
+            ControlModeIntent {} -> Attached
         , autostart = helloOrigin h
         , sock = conn
         , wireLevel = min protocolVersion h.protoVersion
@@ -245,6 +266,7 @@ newClient st conn h = do
         , env = h.env
         , cwd = h.cwd
         , stdinSource = NoStdin
+        , control = controlState
         }
 
 -- | Resolve MRU session names to the ids of the sessions that still exist,
@@ -260,6 +282,12 @@ removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do
     sid <- readTVarIO client.session
     atomically $ modifyTVar' st.clients (Map.delete client.id)
+    attached <- atomically (findSessionById st sid)
+    forM_ attached $ \sess -> do
+        sname <- readTVarIO sess.name
+        notify st "client-detached" (sessionTarget sid)
+            [ ("client", PClientRef (clientNameOf (Just client)))
+            , ("session", PSessionRef sid sname) ]
     applySessionSize st sid
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
@@ -596,6 +624,40 @@ controlLoop d st re client = do
         Nothing -> pure ()
         _ -> controlLoop d st re client
 
+
+-- | A control-mode client's life: run the command it was started with
+-- (normally an attach), then its command lines, until it exits — by an
+-- empty line, the end of its input, a detach, or its session ending — and
+-- its writer has sent everything queued and the farewell.
+controlModeSession
+    :: Dispatch -> ServerState -> ReadEnd -> Client -> ControlState -> [[Text]]
+    -> IO ()
+controlModeSession d st re client cs setup = do
+    awaitStartup st client.autostart setup
+    withAsync (subscriptionLoop st client cs) $ \subs -> do
+        link subs
+        withAsync (controlWriter client cs) $ \writer -> do
+            runControlCommands d st client cs SetupCommand (Right setup)
+            msess <- currentSession st client
+            case msess of
+                -- tmux's client that is left unattached by its command exits.
+                Nothing -> atomically (requestExit cs Nothing)
+                Just sess -> refreshSessionEnv st sess client
+            pendingRef <- newIORef B.empty
+            void (race (reader pendingRef) (wait writer))
+  where
+    reader pendingRef = recvMessage re >>= \case
+        Nothing -> pure ()
+        Just (Malformed err) -> logEvent st.logger ProtocolError
+            { client = rawClient client.id, err = T.pack err }
+        Just (Known (Input bs)) -> do
+            feedControlInput d st client cs pendingRef bs
+            reader pendingRef
+        -- The client's input ended.
+        Just (Known Detach) -> do
+            atomically (requestExit cs Nothing)
+            reader pendingRef
+        Just _ -> reader pendingRef
 
 -- | Collect a command client's standard input over its connection. Only
 -- valid while its command batch runs (@open@): the connection's reader is
