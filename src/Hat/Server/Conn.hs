@@ -639,7 +639,7 @@ controlModeSession d st re client cs setup = do
     withAsync (subscriptionLoop st client cs) $ \subs -> do
         link subs
         withAsync (controlWriter client cs) $ \writer -> do
-            runControlCommands d st client cs SetupCommand setup
+            runControlCommands d st client cs SetupCommand (Right setup)
             msess <- currentSession st client
             case msess of
                 -- tmux's client that is left unattached by its command exits.

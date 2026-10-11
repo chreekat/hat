@@ -80,18 +80,20 @@ guardLine guard t n origin = B8.pack $ concat
         SetupCommand -> "0"
         ClientLine -> "1" ]
 
--- | Run a command list, each command in its own reply block, stopping at
--- the first that fails (tmux drops the rest of a failed command's group).
--- A list naming any unknown command runs nothing: the whole line fails as
--- one parse-error block.
+-- | Run a parsed command list, each command in its own reply block,
+-- stopping at the first that fails (tmux drops the rest of a failed
+-- command's group). A list that did not parse, or names any unknown
+-- command, runs nothing: it fails as one parse-error block.
 runControlCommands
     :: Dispatch -> ServerState -> Client -> ControlState -> BlockOrigin
-    -> [[Text]] -> IO ()
-runControlCommands d st client cs origin cmds = do
-    unknown <- mapM (d.unknownCommand st) cmds
-    case [ e | Just e <- unknown ] of
-        e : _ -> parseError e
-        [] -> go cmds
+    -> Either Text [[Text]] -> IO ()
+runControlCommands d st client cs origin = \case
+    Left e -> parseError e
+    Right cmds -> do
+        unknown <- mapM (d.unknownCommand st) cmds
+        case [ e | Just e <- unknown ] of
+            e : _ -> parseError e
+            [] -> go cmds
   where
     go [] = pure ()
     go (argv : rest) = do
@@ -109,7 +111,8 @@ runControlCommands d st client cs origin cmds = do
     parseError e = do
         (t, n) <- begin
         atomically $ do
-            controlEmit cs ("parse error: " <> TE.encodeUtf8 e)
+            controlEmit cs ("parse error: "
+                <> TE.encodeUtf8 (T.takeWhile (/= '\n') e))
             end t n "error"
             writeTVar cs.retval 1
     begin = do
@@ -158,22 +161,9 @@ feedControlInput d st client cs pendingRef chunk = do
             case live of
                 Exiting _ -> pure ()
                 Running -> do
-                    case parseCommandLine (TE.decodeUtf8Lenient l) of
-                        Left e -> runParseError e
-                        Right cmds -> runControlCommands d st client cs
-                            ClientLine cmds
+                    runControlCommands d st client cs ClientLine
+                        (parseCommandLine (TE.decodeUtf8Lenient l))
                     run more
-    runParseError e = do
-        t <- floor <$> getPOSIXTime
-        atomically $ do
-            n <- stateTVar cs.commandNumber (\k -> (k + 1, k + 1))
-            openBlock cs
-            controlEmit cs (guardLine "begin" t n ClientLine)
-            controlEmit cs ("parse error: " <> TE.encodeUtf8 (firstLine e))
-            controlEmit cs (guardLine "error" t n ClientLine)
-            closeBlock cs
-            writeTVar cs.retval 1
-    firstLine = T.takeWhile (/= '\n')
 
 -- Output ----------------------------------------------------------------
 
