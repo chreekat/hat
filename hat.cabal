@@ -147,6 +147,7 @@ library
         Hat.Term.Ghostty
         Hat.Term.HostProtocol
         Hat.Term.Pty
+        Hat.Term.RawGrid
         Hat.Term.Winsize
         Hat.Transport.Socket
         Hat.Transport.Wire

@@ -18,6 +18,9 @@ module Hat.Term.Ghostty
     , c_format_release
     , c_graphemes
     , c_row_wrapped
+    , c_raw_row
+    , c_cell_link
+    , c_row_prompt
     , c_render_new
     , c_render_free
     , c_render_snapshot
@@ -38,12 +41,16 @@ module Hat.Term.Ghostty
     , peekCellFgVal
     , peekCellBgTag
     , peekCellBgVal
+    , RawCellFields (..)
+    , rawCellSize
+    , peekRawCell
     , tagActive
     , tagHistory
     , dataCols
     , dataRows
     , dataCursorX
     , dataCursorY
+    , dataCursorPendingWrap
     , dataCursorVisible
     , dataActiveScreen
     , dataScrollbackRows
@@ -92,6 +99,13 @@ foreign import ccall unsafe "ghost_shim_cell_graphemes"
                 -> Ptr Word32 -> CSize -> Ptr CSize -> IO CInt
 foreign import ccall unsafe "ghost_shim_row_wrapped"
     c_row_wrapped :: Ptr CTerm -> CInt -> CUInt -> IO CInt
+foreign import ccall unsafe "ghost_shim_raw_row"
+    c_raw_row :: Ptr CTerm -> CInt -> CUInt -> CUShort -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_cell_link"
+    c_cell_link :: Ptr CTerm -> CInt -> CUShort -> CUInt -> Ptr Word8 -> CSize
+                -> IO CLong
+foreign import ccall unsafe "ghost_shim_row_prompt"
+    c_row_prompt :: Ptr CTerm -> CInt -> CUInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_render_new"
     c_render_new :: IO (Ptr CRender)
 foreign import ccall unsafe "ghost_shim_render_free"
@@ -146,18 +160,56 @@ peekCellBgVal :: Ptr () -> IO Word32
 peekCellBgVal = #{peek GhostShimCell, bg_val}
 {-# INLINE peekCellBgVal #-}
 
+-- | One 'GhostShimRawCell' as read: every field verbatim, decoded by
+-- "Hat.Term.Emulator".
+data RawCellFields = RawCellFields
+    { rfCodepoint :: Word32
+    , rfContent   :: CInt
+    , rfWide      :: CInt
+    , rfHasLink   :: CInt
+    , rfAttrs     :: CUInt
+    , rfUnderline :: CInt
+    , rfFgTag     :: CInt
+    , rfFgVal     :: Word32
+    , rfBgTag     :: CInt
+    , rfBgVal     :: Word32
+    , rfUsTag     :: CInt
+    , rfUsVal     :: Word32
+    }
+
+-- | Bytes of one 'GhostShimRawCell', as 'c_raw_row' fills them.
+rawCellSize :: Int
+rawCellSize = #{size GhostShimRawCell}
+
+peekRawCell :: Ptr () -> IO RawCellFields
+peekRawCell p = RawCellFields
+    <$> #{peek GhostShimRawCell, codepoint} p
+    <*> #{peek GhostShimRawCell, content} p
+    <*> #{peek GhostShimRawCell, wide} p
+    <*> #{peek GhostShimRawCell, has_link} p
+    <*> #{peek GhostShimRawCell, attrs} p
+    <*> #{peek GhostShimRawCell, underline} p
+    <*> #{peek GhostShimRawCell, fg_tag} p
+    <*> #{peek GhostShimRawCell, fg_val} p
+    <*> #{peek GhostShimRawCell, bg_tag} p
+    <*> #{peek GhostShimRawCell, bg_val} p
+    <*> #{peek GhostShimRawCell, us_tag} p
+    <*> #{peek GhostShimRawCell, us_val} p
+
 -- Point tags for 'c_row_cells', 'c_graphemes', and 'c_row_wrapped'.
 tagActive, tagHistory :: CInt
 tagActive  = #{const GHOST_SHIM_ACTIVE}
 tagHistory = #{const GHOST_SHIM_HISTORY}
 
 -- GhosttyTerminalData selectors for 'c_get'.
-dataCols, dataRows, dataCursorX, dataCursorY, dataCursorVisible,
+dataCols, dataRows, dataCursorX, dataCursorY, dataCursorPendingWrap,
+    dataCursorVisible,
     dataActiveScreen, dataScrollbackRows :: CInt
 dataCols           = #{const GHOSTTY_TERMINAL_DATA_COLS}
 dataRows           = #{const GHOSTTY_TERMINAL_DATA_ROWS}
 dataCursorX        = #{const GHOSTTY_TERMINAL_DATA_CURSOR_X}
 dataCursorY        = #{const GHOSTTY_TERMINAL_DATA_CURSOR_Y}
+dataCursorPendingWrap = #{const GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP}
 dataCursorVisible  = #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
 dataActiveScreen   = #{const GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN}
 dataScrollbackRows = #{const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS}

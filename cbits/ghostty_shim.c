@@ -507,6 +507,112 @@ int ghost_shim_row_wrapped(void *t, int tag, uint32_t y) {
     return wrapped ? 1 : 0;
 }
 
+static void raw_from_cell(GhosttyCell cell, const GhosttyStyle *st,
+                          GhostShimRawCell *out) {
+    memset(out, 0, sizeof(*out));
+
+    uint32_t cp = 0;
+    GhosttyCellContentTag content = GHOSTTY_CELL_CONTENT_CODEPOINT;
+    GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+    bool link = false;
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CODEPOINT, &cp);
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CONTENT_TAG, &content);
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide);
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &link);
+    out->codepoint = cp;
+    out->content = (int)content;
+    out->wide = (int)wide;
+    out->has_link = link ? 1 : 0;
+
+    if (st) {
+        unsigned a = 0;
+        if (st->bold)          a |= 1;
+        if (st->faint)         a |= 2;
+        if (st->italic)        a |= 4;
+        if (st->blink)         a |= 8;
+        if (st->inverse)       a |= 16;
+        if (st->invisible)     a |= 32;
+        if (st->strikethrough) a |= 64;
+        if (st->overline)      a |= 128;
+        out->attrs = a;
+        out->underline = st->underline;
+        color_of(st->fg_color, &out->fg_tag, &out->fg_val);
+        color_of(st->bg_color, &out->bg_tag, &out->bg_val);
+        color_of(st->underline_color, &out->us_tag, &out->us_val);
+    }
+
+    if (content == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+        GhosttyColorPaletteIndex idx = 0;
+        ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_PALETTE, &idx);
+        out->bg_tag = 1;
+        out->bg_val = idx;
+    } else if (content == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+        GhosttyColorRgb c = { 0 };
+        ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_RGB, &c);
+        out->bg_tag = 2;
+        out->bg_val = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
+    }
+}
+
+int ghost_shim_raw_row(void *t, int tag, uint32_t y, uint16_t cols,
+                       GhostShimRawCell *out) {
+    memset(out, 0, (size_t)cols * sizeof(*out));
+
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = 0;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return 0;
+    for (uint16_t x = 0; x < cols; x++) {
+        ref.x = x;
+        GhosttyCell cell;
+        if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS) {
+            memset(out, 0, (size_t)cols * sizeof(*out));
+            return 0;
+        }
+        GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+        const GhosttyStyle *stp =
+            ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS ? &st : NULL;
+        raw_from_cell(cell, stp, &out[x]);
+    }
+    return 1;
+}
+
+long ghost_shim_cell_link(void *t, int tag, uint16_t x, uint32_t y,
+                          uint8_t *buf, size_t buflen) {
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = x;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return -1;
+    size_t n = 0;
+    GhosttyResult r = ghostty_grid_ref_hyperlink_uri(&ref, buf, buflen, &n);
+    if (r != GHOSTTY_SUCCESS && r != GHOSTTY_OUT_OF_SPACE)
+        return -1;
+    return (long)n;
+}
+
+int ghost_shim_row_prompt(void *t, int tag, uint32_t y) {
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = 0;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return -1;
+    GhosttyRow row;
+    if (ghostty_grid_ref_row(&ref, &row) != GHOSTTY_SUCCESS)
+        return -1;
+    GhosttyRowSemanticPrompt sp = GHOSTTY_ROW_SEMANTIC_NONE;
+    if (ghostty_row_get(row, GHOSTTY_ROW_DATA_SEMANTIC_PROMPT, &sp) != GHOSTTY_SUCCESS)
+        return -1;
+    return (int)sp;
+}
+
 /* The render-state trio, created once per terminal and reused every snapshot:
  * the state, plus a row iterator and a row-cells cursor to walk it. */
 typedef struct {
