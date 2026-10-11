@@ -1382,6 +1382,13 @@ spec = parallel $ do
         _ <- ctlOut h ["kill-pane"]
         awaitReaped pid2
 
+    it "a command list holding a new-session autostarts the server" $
+        withHat hatBin $ \h -> do
+        (code, _, err) <- hatCtl h
+            ["set", "-g", "@early", "yes", ";", "new", "-d"]
+        (code, err) `shouldBe` (ExitSuccess, "")
+        ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
+
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
     -- runs, or the pane spawns before `set -g default-terminal` applies.
