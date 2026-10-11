@@ -67,11 +67,13 @@ spot-read of each suspect consumer.
 | `message-line` | `messageLine` (View.hs) | implemented ✅ tested | pure |
 | `message-command-style` | `drawPrompt` in vi command mode (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
 | `status-keys` | `editPrompt` (Prompt.hs), fixed when `command-prompt` opens | implemented ✅ tested | pure (PromptSpec) |
-| `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
-| `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
+| `pane-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): each pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
+| `pane-active-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): the active pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
+| `pane-border-status` | `statusAdjust` in `windowArrange` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-tiled` |
+| `pane-border-format` | `withStatusLines` (View.hs) over `statusBase` (Scene.hs) | implemented ✅ tested | regress `screen-redraw-tiled` |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
-| `pane-border-lines` | `mapGlyph`/`borderCells` (View.hs) | implemented ✅ tested | pure |
-| `pane-border-indicators` | `borderCells` (View.hs) | implemented ✅ tested | pure |
+| `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
+| `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
 | `escape-time` | `escTiming`/`feedKeys`/`flushEscape` (Server.hs, Keys.hs) | implemented ✅ tested | pure |
 | `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
@@ -123,6 +125,19 @@ spot-read of each suspect consumer.
   integration test.
 
 ## Minor divergences (not defects)
+
+- **`pane-border-indicators`** `arrows` draws hat's triangles at each edge's
+  midpoint, where tmux draws ACS arrows next to the pane's corner (a
+  deliberate design choice; see `border-arrows.sh` in the xfail list).
+
+- **`pane-border-status`** takes its row from the edge panes when drawn, but
+  the layout's minimum sizes (tmux's `layout_resize_check` and split check
+  count the status row) do not yet, so a split or resize can leave an edge
+  pane one row smaller than tmux allows.
+
+- **Border ownership** where several panes' borders meet follows tmux's
+  marking order, newest pane first; hat orders by pane id, which matches
+  until `swap-pane`/`join-pane` reorder tmux's z-order.
 
 - **`aggressive-resize`** is accepted but read by nothing. tmux uses it to
   size a window only from clients whose *current* window it is; hat sizes all

@@ -82,7 +82,11 @@ data RemainOnExit = RemainOff | RemainOn | RemainFailed | RemainKey
     deriving (Eq, Show)
 
 -- | @pane-border-lines@: which box-drawing glyph set draws pane borders.
-data BorderLines = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
+data BorderLines
+    = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
+    | BorderNumber  -- ^ each border cell shows its pane's index
+    | BorderSpaces
+    | BorderNone
     deriving (Eq, Show)
 
 -- | @pane-border-indicators@: how the active pane's border is marked.
@@ -207,6 +211,9 @@ fieldBindings = Map.fromList
         "heavy" -> BorderHeavy
         "double" -> BorderDouble
         "simple" -> BorderSimple
+        "number" -> BorderNumber
+        "spaces" -> BorderSpaces
+        "none" -> BorderNone
         _ -> BorderSingle }))
     , ("pane-border-indicators", text (\v o -> o
         { paneBorderIndicators = case v of

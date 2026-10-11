@@ -24,6 +24,7 @@ module Hat.Model.OptionTable
     , lookupOptionDef
     , isLive
     , notYetError
+    , choicesOnly
       -- * Values
     , OptionValue (..)
     , ArrayKey (..)
@@ -625,7 +626,7 @@ optionTable =
     , live $ scalar "other-pane-width" WindowScope KString "0"
     , live $ scalar "pane-active-border-style" WindowPaneScope KStyle "fg=green"
     , live $ scalar "pane-base-index" WindowScope (KNumber 0 ushrtMax) "0"
-    , notYet $ scalar "pane-border-format" WindowPaneScope KString
+    , paneLocal $ live $ scalar "pane-border-format" WindowPaneScope KString
         "#{?pane_active,#[reverse],}#{pane_index}#[default] \"#{pane_title}\"\
         \#{?#{mouse},#[align=right]\
         \#[range=control|7][#{?#{pane_floating_flag},t,f}]#[norange]\
@@ -633,11 +634,10 @@ optionTable =
         \#[range=control|9][x]#[norange],}"
     , live $ scalar "pane-border-indicators" WindowScope
         (KChoice ["off", "colour", "arrows", "both"]) "colour"
-    , choicesOnly ["single", "double", "heavy", "simple"] $ live $
-        scalar "pane-border-lines" WindowPaneScope
+    , live $ scalar "pane-border-lines" WindowPaneScope
             (KChoice ["single", "double", "heavy", "simple", "number", "spaces", "none"])
             "single"
-    , notYet $ scalar "pane-border-status" WindowPaneScope
+    , live $ scalar "pane-border-status" WindowPaneScope
         (KChoice ["off", "top", "bottom", "top-floating", "bottom-floating"]) "off"
     , live $ scalar "pane-border-style" WindowPaneScope KStyle "default"
     , notYet $ arrayOf "pane-colours" WindowPaneScope KColour " ," []

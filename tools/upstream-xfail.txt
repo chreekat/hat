@@ -26,13 +26,12 @@ prompt-keys.sh
 prompt-mechanics.sh
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
-screen-redraw-cache.sh
+screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-floating.sh
 screen-redraw-indicators.sh
 screen-redraw-outside.sh
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
-screen-redraw-tiled.sh
 screen-redraw-window-style.sh
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity

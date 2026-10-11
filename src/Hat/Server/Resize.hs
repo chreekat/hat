@@ -19,6 +19,7 @@ module Hat.Server.Resize
     , pickArea
     , rectSize
     , windowArrange
+    , windowPaneStatus
     , windowLayoutAt
     ) where
 
@@ -38,6 +39,7 @@ import Hat.Model.Options
 import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.Scene (PaneStatus (..), statusAdjust)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
@@ -234,7 +236,7 @@ paneSizeTargets st = do
     areas <- windowAreas st
     fmap concat $ forM areas $ \(win, eff) -> do
         _ <- windowLayoutAt eff win
-        (rects, _) <- windowArrange eff win
+        (rects, _) <- windowArrange st eff win
         ps <- readTVar win.panes
         pure [ (p, rectSize rect)
              | (pidL, rect) <- rects
@@ -317,22 +319,38 @@ windowLayoutAt eff win = do
     let lay' = fitLayout eff lay
     if lay' == lay then pure lay else lay' <$ writeTVar win.layout lay'
 
--- | Pane rects and borders for a window, honoring zoom. Arranging is
--- pure in the window rect and the layout tree, so the last result is
--- kept until either input changes — renderers hit this every frame.
-windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
-windowArrange eff win = do
+-- | Pane rects and borders for a window, honoring zoom and leaving room
+-- for the window's pane status line. Arranging is pure in the window rect
+-- and the layout tree, so the last result is kept until either input
+-- changes — renderers hit this every frame.
+windowArrange
+    :: ServerState -> Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
+windowArrange st eff win = do
     mz <- readTVar win.zoomed
     lay <- readTVar win.layout
     ps <- readTVar win.panes
+    status <- windowPaneStatus st win
+    let adjust (rects, borders) =
+            ([ (p, statusAdjust status (fromIntegral eff.rows) r) | (p, r) <- rects ], borders)
     case mz of
-        Just zpid | Map.member zpid ps -> pure ([(zpid, sizeRect eff)], [])
+        Just zpid | Map.member zpid ps -> pure (adjust ([(zpid, sizeRect eff)], []))
         _ -> do
             let rect = sizeRect eff
             hit <- readTVar win.arrangeCache
             case hit of
-                Just (k, res) | k == (rect, lay) -> pure res
+                Just (k, res) | k == (rect, lay) -> pure (adjust res)
                 _ -> do
                     let res = arrange rect lay
                     writeTVar win.arrangeCache (Just ((rect, lay), res))
-                    pure res
+                    pure (adjust res)
+
+-- | A window's @pane-border-status@: its own value, else the global
+-- window table's, else the default.
+windowPaneStatus :: ServerState -> Window -> STM PaneStatus
+windowPaneStatus st win = do
+    own <- lookupDelta "pane-border-status" <$> readTVar win.options
+    global <- lookupDelta "pane-border-status" <$> readTVar st.globalWindowOptions
+    pure $ case maybe "off" valueText (maybe global Just own) of
+        "top" -> PaneStatusTop
+        "bottom" -> PaneStatusBottom
+        _ -> PaneStatusOff

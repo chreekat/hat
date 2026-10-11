@@ -7,8 +7,6 @@ module Hat.Server.View
     , renderOnce
     , statusCells
     , flashTarget
-    , borderCells  -- ^ exported for the pane-border option-effect tests
-    , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
     , messageLine  -- ^ exported for the message-line effect test
     ) where
@@ -38,10 +36,14 @@ import Hat.Server.Flash (startLingerClock)
 import Hat.Server.Format (formatReadsLoops)
 import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
+import Hat.Server.FormatDraw (formatDraw, styleCell)
 import Hat.Server.FormatEnv
-    (WindowFlagState (..), activeClientCounts, formatCtxFor, reachableValues,
-     sessionFormatEnv, windowFlags, windowOwnEnv)
-import Hat.Server.Resize (windowArrange)
+    (WindowFlagState (..), activeClientCounts, expandFormat, formatCtxFor,
+     paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
+     windowOwnEnv)
+import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
+import Hat.Server.Resize (windowArrange, windowPaneStatus)
+import Hat.Server.Scene
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
@@ -133,10 +135,10 @@ renderOnce st client = do
                     Nothing -> pure Nothing
                     Just win -> do
                         eff <- readTVar sess.lastSize
-                        (rects, borders) <- windowArrange (eff) win
+                        (rects, _) <- windowArrange st eff win
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
-                        pure (Just (sess, win, rects, borders, ps, active))
+                        pure (Just (sess, win, rects, eff, ps, active))
     sopts <- case view of
         Just (sess, _, _, _, _, _) -> atomically (resolveForSession st sess)
         Nothing -> pure opts
@@ -148,7 +150,7 @@ renderOnce st client = do
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
             , (Pos 0 0, False), Nothing )
-        Just (sess, _, rects, borders, ps, active) -> do
+        Just (sess, win, rects, eff, ps, active) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
                     , endRow = r.endRow + rowOff
@@ -163,8 +165,9 @@ renderOnce st client = do
                         pure [(pidL, pv)]
             prevFrame <- readIORef client.lastFrame
             prevOrigins <- readIORef client.lastOrigins
-            chrome <- cachedChrome client opts (List.lookup active rects)
-                rowOff borders
+            let sceneArea = csize
+                    { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
+            chrome <- cachedChrome st client sess win eff sceneArea rects active rowOff
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect rect
                                 , cells = pv.cells, gens = pv.rowGens }
@@ -330,13 +333,25 @@ windowCompositeCells
     :: ServerState -> Window -> Size -> IO (V.Vector (V.Vector Cell.Cell))
 windowCompositeCells st win size = do
     opts <- readTVarIO st.options
-    (rects, borders, ps, active) <- atomically $ do
-        (r, b) <- windowArrange size win
+    (rects, ps, active, status) <- atomically $ do
+        (r, _) <- windowArrange st size win
         ps     <- readTVar win.panes
         a      <- readTVar win.activeId
-        pure (r, b, ps, a)
-    let base = applyBorders (blankFrame size)
-            (borderCells opts (List.lookup active rects) 0 borders)
+        s      <- windowPaneStatus st win
+        pure (r, ps, a, s)
+    let input = SceneInput
+            { window = size, area = size, panes = markingOrder rects, paneStatus = status
+            , twoPane = Nothing }
+        look = ChromeLook
+            { borderLines = opts.paneBorderLines
+            , windowStyle = styleCell (optionText "pane-border-style" opts)
+            , paneStyles = Map.singleton active
+                (styleCell (optionText "pane-active-border-style" opts))
+            , active = Just active, marked = Nothing, numbers = Map.empty
+            , paneLines = Map.empty
+            , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
+            , arrows = Map.empty }
+        base = applyBorders (blankFrame size) (sceneChrome look (buildScene input))
     foldM (\acc (pid, rect) -> case Map.lookup pid ps of
               Nothing   -> pure acc
               Just pane -> do
@@ -415,63 +430,108 @@ paneOrigin rects pidL = case List.lookup pidL rects of
     Just r -> Pos { row = r.startRow, col = r.startCol }
     Nothing -> Pos 0 0
 
--- | 'borderCells' through the client's render-side cache: recomputed
--- only when an input changes, and restamped only when the cells
--- themselves differ — an unchanged border set keeps its 'Chrome'
--- generation, so every row's chrome provenance stays matchable.
+-- | The chrome around a client's current window — borders, pane status
+-- lines and fill — through the client's render-side cache: the scene is
+-- rebuilt only when its inputs change, and the chrome restamped only when
+-- its cells differ, so an unchanged chrome keeps its 'Chrome' generation
+-- and every row's chrome provenance stays matchable.
 cachedChrome
-    :: Client -> Options -> Maybe Rect -> Int -> [(Pos, Char)] -> IO Chrome
-cachedChrome client opts mActive rowOff borders = do
+    :: ServerState -> Client -> Session -> Window -> Size -> Size
+    -> [(PaneId, Rect)] -> PaneId -> Int -> IO Chrome
+cachedChrome st client sess win eff sceneArea rects active rowOff = do
     mcc <- readIORef client.lastChrome
-    let look = ( opts.paneBorderLines, opts.paneBorderIndicators
-               , opts.paneBorderStyle, opts.paneActiveBorderStyle )
+    (input, look0, panes) <- atomically (chromeInputs st sess win eff sceneArea rects active)
+    let scene = case mcc of
+            Just cc | cc.input == input -> cc.scene
+            _ -> buildScene input
+    look <- withStatusLines st sess win input.paneStatus scene panes look0
     case mcc of
-        Just cc | cc.borders == borders, cc.active == mActive
-                , cc.rowOff == rowOff, cc.look == look -> pure cc.chrome
+        Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
+            pure cc.chrome
         _ -> do
-            let cells = borderCells opts mActive rowOff borders
+            let cells = [ (p { row = p.row + rowOff }, c) | (p, c) <- sceneChrome look scene ]
                 gen
                     | Just cc <- mcc, cc.cells == cells = cc.chrome.gen
                     | otherwise = maybe 0 (\cc -> cc.chrome.gen) mcc + 1
                 chrome = Chrome { gen, byRow = (chromeFromCells cells).byRow }
             writeIORef client.lastChrome $ Just ChromeCache
-                { borders, active = mActive, rowOff, look, cells, chrome }
+                { input, scene, look, rowOff, cells, chrome }
             pure chrome
 
--- | Turn @arrange@'s raw border glyphs into styled cells: the active
--- pane's border takes @pane-active-border-style@ (when
--- @pane-border-indicators@ colours it) and gains direction arrows (when
--- it uses arrows); everything else takes @pane-border-style@. Glyphs are
--- remapped per @pane-border-lines@. Positions are shifted by @rowOff@ for
--- a top status line.
-borderCells
-    :: Options -> Maybe Rect -> Int -> [(Pos, Char)] -> [(Pos, Cell.Cell)]
-borderCells opts mActive rowOff borders =
-    [ (p { row = p.row + rowOff }, cellAt p ch) | (p, ch) <- borders ]
-  where
-    (useColor, useArrows) = case opts.paneBorderIndicators of
-        IndicatorsOff     -> (False, False)
-        IndicatorsColour  -> (True, False)
-        IndicatorsArrows  -> (False, True)
-        IndicatorsBoth    -> (True, True)
-    activeAt p = maybe False (`onPerimeter` p) mActive
-    arrows = if useArrows then maybe Map.empty edgeArrows mActive else Map.empty
-    cellAt p ch =
-        let active = activeAt p
-            sty | active && useColor = opts.paneActiveBorderStyle
-                | otherwise          = opts.paneBorderStyle
-            glyph = case (active, Map.lookup p arrows) of
-                (True, Just arr) -> arr
-                _                -> mapGlyph opts.paneBorderLines ch
-        in Cell.glyphCell glyph sty
+-- | One visible pane's part in its window's chrome.
+data ChromePane = ChromePane
+    { pane :: Pane
+    , options :: Options
+    , number :: Int
+    }
 
--- | Is a position on the (border) perimeter just outside a pane's rect?
-onPerimeter :: Rect -> Pos -> Bool
-onPerimeter r p =
-    ((p.col == r.endCol || p.col == r.startCol - 1)
-        && p.row >= r.startRow && p.row < r.endRow)
-    || ((p.row == r.endRow || p.row == r.startRow - 1)
-        && p.col >= r.startCol && p.col < r.endCol)
+-- | The scene a window's panes make and how its chrome looks, before any
+-- pane status line is drawn.
+chromeInputs
+    :: ServerState -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
+    -> PaneId -> STM (SceneInput, ChromeLook, [ChromePane])
+chromeInputs st sess win eff sceneArea rects active = do
+    wopts <- resolveForWindow st sess win
+    status <- windowPaneStatus st win
+    lay <- readTVar win.layout
+    ps <- readTVar win.panes
+    marked <- readTVar st.markedPane
+    let order = paneOrder lay ps
+        indicators = wopts.paneBorderIndicators
+        colourSplit = indicators `elem` [IndicatorsColour, IndicatorsBoth]
+        twoPane = case lay.cell of
+            NodeCell o [a, b] | colourSplit, isLeaf a, isLeaf b -> Just o
+            _ -> Nothing
+        isLeaf l = case l.cell of
+            LeafCell _ -> True
+            NodeCell _ _ -> False
+    panes <- fmap concat $ forM rects $ \(pid, _) -> case Map.lookup pid ps of
+        Nothing -> pure []
+        Just pane -> do
+            popts <- resolveForPane st sess win pane
+            pure [ ChromePane
+                { pane, options = popts
+                , number = wopts.paneBaseIndex + fromMaybe 0 (List.elemIndex pid order) } ]
+    let paneStyle cp = styleCell $ optionText
+            (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
+            cp.options
+        useArrows = indicators `elem` [IndicatorsArrows, IndicatorsBoth]
+        input = SceneInput
+            { window = eff, area = sceneArea, panes = markingOrder rects
+            , paneStatus = status, twoPane }
+        look = ChromeLook
+            { borderLines = wopts.paneBorderLines
+            , windowStyle = styleCell (optionText "pane-border-style" wopts)
+            , paneStyles = Map.fromList [ (cp.pane.id, paneStyle cp) | cp <- panes ]
+            , active = Just active
+            , marked
+            , numbers = Map.fromList [ (cp.pane.id, cp.number) | cp <- panes ]
+            , paneLines = Map.empty
+            , fillInside = Cell.blankCell
+            , fillOutside = Cell.blankCell
+            , arrows = if useArrows
+                then maybe Map.empty edgeArrows (List.lookup active rects)
+                else Map.empty }
+    pure (input, look, panes)
+
+-- | Draw each pane's @pane-border-format@ over the border its status line
+-- replaces (tmux's @window_make_pane_status@).
+withStatusLines
+    :: ServerState -> Session -> Window -> PaneStatus -> Scene -> [ChromePane]
+    -> ChromeLook -> IO ChromeLook
+withStatusLines st sess win status scene panes look
+    | status == PaneStatusOff = pure look
+    | otherwise = do
+        wix <- atomically (readTVar sess.currentIx)
+        lines' <- forM panes $ \cp -> do
+            let sty = Map.findWithDefault look.windowStyle cp.pane.id look.paneStyles
+            case statusBase look.borderLines sty cp.number scene cp.pane.id of
+                Nothing -> pure []
+                Just base -> do
+                    env <- paneFormatEnv st sess wix win cp.number cp.pane
+                    expanded <- expandFormat st env (optionText "pane-border-format" cp.options)
+                    pure [ (cp.pane.id, formatDraw sty expanded base) ]
+        pure look { paneLines = Map.fromList (concat lines') }
 
 -- | An arrow at the midpoint of each of a pane's four border edges,
 -- pointing inward.
@@ -494,28 +554,6 @@ midOf :: [a] -> Maybe a
 midOf xs = case drop (length xs `div` 2) xs of
     (x : _) -> Just x
     []      -> Nothing
-
--- | Remap the single-line glyphs @arrange@ emits to the chosen line set.
-mapGlyph :: BorderLines -> Char -> Char
-mapGlyph bl ch = case bl of
-    BorderSingle -> ch
-    BorderHeavy  -> heavy ch
-    BorderDouble -> dbl ch
-    BorderSimple -> simple ch
-  where
-    -- Straight runs and every junction the layout can emit (see
-    -- 'Hat.Server.Layout.junction': │ ─ ┼ ┤ ├ ┬ ┴).
-    heavy '\x2502' = '\x2503'; heavy '\x2500' = '\x2501'
-    heavy '\x253c' = '\x254b'; heavy '\x2524' = '\x252b'
-    heavy '\x251c' = '\x2523'; heavy '\x252c' = '\x2533'
-    heavy '\x2534' = '\x253b'; heavy c = c
-    dbl '\x2502' = '\x2551'; dbl '\x2500' = '\x2550'
-    dbl '\x253c' = '\x256c'; dbl '\x2524' = '\x2563'
-    dbl '\x251c' = '\x2560'; dbl '\x252c' = '\x2566'
-    dbl '\x2534' = '\x2569'; dbl c = c
-    simple '\x2502' = '|'; simple '\x2500' = '-'
-    simple '\x253c' = '+'; simple '\x2524' = '+'; simple '\x251c' = '+'
-    simple '\x252c' = '+'; simple '\x2534' = '+'; simple c = c
 
 -- | A pane's contribution to a frame, from ONE emulator snapshot: its cells
 -- and its pane-local cursor. Normally the live screen; in copy mode, a

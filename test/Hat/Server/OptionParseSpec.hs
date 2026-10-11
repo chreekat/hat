@@ -13,6 +13,10 @@ import Hat.Server.OptionParse
 def :: Text -> OptionDef
 def = fromJust . lookupOptionDef
 
+-- | A row narrowed to two of its choices.
+narrowed :: Text -> OptionDef
+narrowed = choicesOnly ["single", "double"] . def
+
 -- A scalar set with no own value at the scope, against a current value.
 setScalar :: Text -> Text -> Maybe Text -> Either Text Text
 setScalar n current = parseScalar (def n) Assign Nothing current
@@ -111,10 +115,10 @@ spec = do
 
     describe "implementation gate" $ do
         it "refuses an unimplemented choice of a live option" $
-            supportedValue (def "pane-border-lines") "number"
+            supportedValue (narrowed "pane-border-lines") "number"
                 `shouldBe` Left "pane-border-lines: value not yet supported by hat: number"
         it "passes an implemented choice" $
-            supportedValue (def "pane-border-lines") "double" `shouldBe` Right ()
+            supportedValue (narrowed "pane-border-lines") "double" `shouldBe` Right ()
 
     describe "commands" $ do
         it "accepts a command that parses" $

@@ -47,6 +47,7 @@ import Hat.Server.PickerSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.PromptHistorySpec qualified
 import Hat.Server.ReloadSpec qualified
+import Hat.Server.SceneSpec qualified
 import Hat.Server.RenderSpec qualified
 import Hat.Server.ResizeRenderSpec qualified
 import Hat.Server.RestoreSpec qualified
@@ -96,6 +97,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.ResizeRender" Hat.Server.ResizeRenderSpec.spec
     describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec
+    describe "Hat.Server.Scene" Hat.Server.SceneSpec.spec
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
     describe "Hat.Client.Tty" Hat.Client.TtySpec.spec
     describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec

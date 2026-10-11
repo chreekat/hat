@@ -9,13 +9,14 @@ module Hat.Server.OptionEffectSpec (spec) where
 import Test.Hspec
 
 import Control.Concurrent.STM (readTVarIO)
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model (Markup (..), PaneStart (..), ServerState (..), Toast (..), newServerState)
 import Hat.Model.Options
-    ( BorderIndicators (..), BorderLines (..), OptionValue (..), Options (..)
+    ( BorderLines (..), OptionValue (..), Options (..)
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
     , optionText )
 import Hat.Server
@@ -28,7 +29,8 @@ import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
-import Hat.Server.View (borderCells, mapGlyph, messageLine, statusLayout)
+import Hat.Server.Scene
+import Hat.Server.View (messageLine, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -88,46 +90,43 @@ spec = do
                 map (\p -> (.xoff) <$> (lay >>= paneCell (PaneId p))) [0 .. 3]
                     `shouldBe` replicate 4 (Just 0)
 
-        -- pane-border-lines picks the box-drawing glyph set the borders draw.
-        describe "pane-border-lines maps the border glyph set" $ do
-            let horiz = '\x2500'  -- ─
-            it "single leaves the glyph, heavy/double/simple remap it" $ do
-                mapGlyph BorderSingle horiz `shouldBe` '\x2500'  -- ─
-                mapGlyph BorderHeavy  horiz `shouldBe` '\x2501'  -- ━
-                mapGlyph BorderDouble horiz `shouldBe` '\x2550'  -- ═
-                mapGlyph BorderSimple horiz `shouldBe` '-'
+        -- pane-border-lines picks the glyph set the borders draw.
+        describe "pane-border-lines maps the border glyph set" $
+            it "single, heavy, double, simple, number, spaces" $
+                map (\l -> borderGlyph l (Just 4) CellLR)
+                    [ BorderSingle, BorderHeavy, BorderDouble, BorderSimple
+                    , BorderNumber, BorderSpaces ]
+                    `shouldBe` "\x2500\x2501\x2550-4 "
 
-        -- pane-border-style / -active-border-style: the active pane's
-        -- perimeter takes the active style, every other border the plain one.
+        -- pane-border-style / -active-border-style: a border takes the
+        -- style of the active pane beside it, else of any pane beside it.
         describe "pane-border styles mark the active pane" $ do
             let borderSty = Cell.defaultStyle { Cell.fg = Cell.Indexed 5 }
                 activeSty = Cell.defaultStyle { Cell.fg = Cell.Indexed 9 }
-                opts = defaultOptions
-                    { paneBorderStyle = borderSty
-                    , paneActiveBorderStyle = activeSty
-                    , paneBorderIndicators = IndicatorsColour }
-                rect = Rect { startRow = 0, endRow = 2, startCol = 1, endCol = 3 }
-                cells = borderCells opts (Just rect) 0
-                    [ (Pos { row = 0, col = 0 }, '\x2502')    -- on the perimeter
-                    , (Pos { row = 5, col = 5 }, '\x2502') ]  -- off it
-                styleAt p = (.style) <$> lookup p cells
-            it "an active-perimeter cell takes pane-active-border-style" $
-                styleAt (Pos { row = 0, col = 0 }) `shouldBe` Just activeSty
-            it "a non-perimeter cell takes pane-border-style" $
-                styleAt (Pos { row = 5, col = 5 }) `shouldBe` Just borderSty
-
-        -- pane-border-indicators: arrows draws an inward arrow on the active
-        -- edge; off leaves the plain line glyph.
-        describe "pane-border-indicators toggles the active-edge arrow" $ do
-            let rect = Rect { startRow = 0, endRow = 2, startCol = 1, endCol = 3 }
-                arrowPos = Pos { row = 1, col = 0 }  -- midpoint of the left edge
-                glyphWith ind = Cell.baseChar <$> lookup arrowPos
-                    (borderCells (defaultOptions { paneBorderIndicators = ind })
-                        (Just rect) 0 [ (arrowPos, '\x2502') ])
-            it "arrows: the active edge shows an arrow" $
-                glyphWith IndicatorsArrows `shouldBe` Just '\x25b6'  -- ▶
-            it "off: the active edge keeps the plain line" $
-                glyphWith IndicatorsOff `shouldBe` Just '\x2502'  -- │
+                rect r0 r1 c0 c1 = Rect { startRow = r0, endRow = r1, startCol = c0, endCol = c1 }
+                input = SceneInput
+                    { window = Size { rows = 3, cols = 5 }, area = Size { rows = 3, cols = 5 }
+                    , panes = [ (PaneId 0, rect 0 3 0 2), (PaneId 1, rect 0 1 3 5)
+                              , (PaneId 2, rect 2 3 3 5) ]
+                    , paneStatus = PaneStatusOff, twoPane = Nothing }
+                look ind = ChromeLook
+                    { borderLines = BorderSingle, windowStyle = Cell.defaultStyle
+                    , paneStyles = Map.fromList
+                        [ (PaneId 0, borderSty), (PaneId 1, activeSty), (PaneId 2, borderSty) ]
+                    , active = Just (PaneId 1), marked = Nothing, numbers = Map.empty
+                    , paneLines = Map.empty
+                    , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
+                    , arrows = ind }
+                styleAt p = (.style) <$> lookup p (sceneChrome (look Map.empty) (buildScene input))
+            it "a border beside the active pane takes its style" $
+                styleAt (Pos { row = 1, col = 4 }) `shouldBe` Just activeSty
+            it "a border away from it takes its neighbour's" $
+                styleAt (Pos { row = 2, col = 2 }) `shouldBe` Just borderSty
+            -- pane-border-indicators: arrows replace the border glyph.
+            it "indicator arrows replace the border glyph" $
+                (Cell.baseChar . snd <$> List.find ((== Pos 1 2) . fst)
+                    (sceneChrome (look (Map.singleton (Pos 1 2) '\x25b6')) (buildScene input)))
+                    `shouldBe` Just '\x25b6'
 
         -- message-line: the status line the prompt and messages take,
         -- clamped to the last line there is.

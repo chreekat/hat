@@ -106,7 +106,7 @@ import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( BorderIndicators, BorderLines, Keymap, ModeKeys, Options, OptionsDelta, applyDelta
+    ( Keymap, ModeKeys, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.ControlTypes (ControlState)
@@ -116,6 +116,7 @@ import Hat.Server.Keys (EscPending, PrefixState)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
+import Hat.Server.Scene (ChromeLook, Scene, SceneInput)
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -565,13 +566,14 @@ data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
 data ReadGate = ReadersFlowing | ReadersPaused
     deriving (Eq, Show)
 
--- | A client's styled border cells with the inputs that produced them;
--- the render thread's cache. See 'Hat.Server.View.renderOnce'.
+-- | A client's window scene and its drawn chrome, with the inputs that
+-- produced them; the render thread's cache. See
+-- 'Hat.Server.View.cachedChrome'.
 data ChromeCache = ChromeCache
-    { borders :: [(Pos, Char)]
-    , active  :: Maybe Rect
+    { input   :: SceneInput
+    , scene   :: Scene
+    , look    :: ChromeLook
     , rowOff  :: Int
-    , look    :: (BorderLines, BorderIndicators, Cell.Style, Cell.Style)
     , cells   :: [(Pos, Cell.Cell)]
     , chrome  :: Chrome
     }
