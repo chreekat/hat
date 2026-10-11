@@ -36,6 +36,8 @@ module Hat.Model
     , PanesKeyHold (..)
     , DisplayPanesState (..)
     , PromptState (..)
+    , PromptKeys (..)
+    , PromptMode (..)
     , PickerState (..)
     , PickerNode (..)
     , Expansion (..)
@@ -98,7 +100,7 @@ import Hat.Model.Ids
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( BorderIndicators, BorderLines, Keymap, Options, OptionsDelta, applyDelta
+    ( BorderIndicators, BorderLines, Keymap, ModeKeys, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.HookTypes (HooksState, newHooksState)
@@ -420,6 +422,19 @@ data Flash
     | FlashLinger !Word64      -- ^ fading after the move's frame; monotonic-ns deadline
     deriving (Eq)
 
+-- | How a prompt reads keys: @status-keys@, and the @word-separators@ its
+-- vi word motions stop at.
+data PromptKeys = PromptKeys
+    { statusKeys :: !ModeKeys
+    , wordSeparators :: !Text
+    }
+    deriving (Eq, Show)
+
+-- | A vi-keys prompt's mode (tmux's @PROMPT_COMMANDMODE@); an emacs-keys
+-- prompt is always inserting.
+data PromptMode = PromptInsert | PromptCommand
+    deriving (Eq, Show)
+
 -- | Per-client command-prompt state: the line being edited, the cursor's
 -- index into it, and (when browsing) the position in command history.
 data PromptState = PromptState
@@ -434,6 +449,8 @@ data PromptState = PromptState
     , promptLabel :: !Text     -- ^ text shown before the edit buffer (@:@ for
                                --   the bare prompt, @(rename-window) @ etc.)
     , killed  :: !Text         -- ^ the last killed text, yanked back by @C-y@
+    , promptKeys :: !PromptKeys  -- ^ fixed when the prompt opens
+    , promptMode :: !PromptMode
     }
     deriving (Eq, Show)
 

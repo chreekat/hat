@@ -84,7 +84,7 @@ new-pane-mouse.sh               # mouse/default-command options + list-keys + ne
 
 # option engine breadth: flat scalar table, global-only read-back
 options-array.sh                # needs user-keys, pane-colours (registered, not yet live)
-options-values.sh               # needs status-keys, status-bg, default-shell, default-client-command (not yet live)
+options-values.sh               # needs default-shell, default-client-command (not yet live; lifecycle area)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that
 # asserts a tmux grid-storage detail libghostty-vt does not record stays

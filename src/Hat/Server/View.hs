@@ -609,7 +609,7 @@ messageCtx st sess sopts = do
 promptView :: PromptState -> PromptView
 promptView pr = PromptView
     { label = pr.promptLabel, input = pr.input, cursor = pr.cursor
-    , commandMode = False }
+    , commandMode = pr.promptMode == PromptCommand }
 
 -- | The status line's rows for a session at @width@ cells (see
 -- 'Hat.Server.Status.statusRows').

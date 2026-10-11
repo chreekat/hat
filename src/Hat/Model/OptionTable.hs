@@ -509,7 +509,7 @@ optionTable =
     , notYet $ scalar "key-table" SessionScope KString "root"
     , notYet $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
     , notYet $ scalar "lock-command" SessionScope KString "lock -np"
-    , notYet $ scalar "message-command-style" SessionScope KStyle
+    , live $ scalar "message-command-style" SessionScope KStyle
         "bg=themeblack,fg=themeyellow,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeblack}"
@@ -542,7 +542,7 @@ optionTable =
     , live $ scalar "status-interval" SessionScope (KNumber 0 intMax) "15"
     , live $ scalar "status-justify" SessionScope
         (KChoice ["left", "centre", "right", "absolute-centre"]) "left"
-    , notYet $ scalar "status-keys" SessionScope (KChoice ["emacs", "vi"]) "emacs"
+    , live $ scalar "status-keys" SessionScope (KChoice ["emacs", "vi"]) "emacs"
     , live $ scalar "status-left" SessionScope KString "[#{session_name}] "
     , live $ scalar "status-left-length" SessionScope (KNumber 0 shrtMax) "10"
     , live $ scalar "status-left-style" SessionScope KStyle "default"

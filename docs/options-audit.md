@@ -65,6 +65,8 @@ spot-read of each suspect consumer.
 | `message-style` | `drawMessage` / `drawPrompt`, `messageArea` (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
 | `message-format` | `drawMessage` / `drawPrompt` (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
 | `message-line` | `messageLine` (View.hs) | implemented ✅ tested | pure |
+| `message-command-style` | `drawPrompt` in vi command mode (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
+| `status-keys` | `editPrompt` (Prompt.hs), fixed when `command-prompt` opens | implemented ✅ tested | pure (PromptSpec) |
 | `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |

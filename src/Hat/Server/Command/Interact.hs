@@ -31,7 +31,7 @@ import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientActivePane, clientView, findTarget)
+import Hat.Server.Locate (clientActivePane, clientOptions, clientView, findTarget)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
@@ -150,8 +150,14 @@ cmdCommandPrompt st mclient args = do
             Just raw -> do
                 env <- clientPromptEnv st client
                 expandFormat st env raw
+        copts <- clientOptions st client
+        let keys = PromptKeys
+                { statusKeys = if optionText "status-keys" copts == "vi"
+                    then KeysVi else KeysEmacs
+                , wordSeparators = copts.wordSeparators }
         atomically $ do
-            writeTVar client.prompt (Just (Prompt.promptFor pfx initial tmpl))
+            writeTVar client.prompt $ Just
+                (Prompt.promptFor pfx initial tmpl) { promptKeys = keys }
             bumpDirty st
     pure []
 
