@@ -31,6 +31,7 @@ module Hat.Model
     , CharStop (..)
     , CharSearch (..)
     , Toast (..)
+    , Markup (..)
     , Flash (..)
     , PanesKeyHold (..)
     , DisplayPanesState (..)
@@ -384,9 +385,15 @@ data CharSearch = CharSearch
 -- | A display-message overlay.
 data Toast = Toast
     { text     :: !Text
+    , markup   :: !Markup
     , deadline :: !(Maybe Word64)  -- ^ monotonic ns, from 'toastDeadline';
                                    --   'Nothing' = until a key is pressed
     }
+
+-- | Whether a message's @#[…]@ directives style it (@display-message@) or
+-- show as text (errors and other server messages).
+data Markup = MarkupStyled | MarkupLiteral
+    deriving (Eq, Show)
 
 -- | Whether a non-selecting key closes the @display-panes@ overlay
 -- (default) or leaves it showing (@-N@); see

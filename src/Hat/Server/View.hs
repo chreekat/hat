@@ -10,6 +10,7 @@ module Hat.Server.View
     , borderCells  -- ^ exported for the pane-border option-effect tests
     , mapGlyph  -- ^ exported for the pane-border-lines effect test
     , statusLayout  -- ^ exported for the status-position effect test
+    , messageLine  -- ^ exported for the message-line effect test
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
@@ -41,6 +42,7 @@ import Hat.Server.FormatEnv (formatCtxFor, sessionFormatEnv, windowOwnEnv)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
+import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
 import Hat.Server.Status (statusRows)
 import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
@@ -175,12 +177,20 @@ renderOnce st client = do
                 Just ix | fits -> zip [ix ..]
                     <$> statusRowsCached st client sess sopts w
                 _ -> pure []
-            let msgRow = case (mprompt, mtoast) of
-                    _ | not fits -> []
-                    (Just pr, _) -> [(msgIx, promptCells pr w)]
-                    (Nothing, Just t) -> [(msgIx, toastCells t.text w)]
-                    (Nothing, Nothing) -> []
-                overRows = [ r | r@(ix, _) <- barRows <> msgRow
+            -- The message line draws over whatever status line it takes.
+            let under = fromMaybe (V.replicate w Cell.blankCell)
+                    (List.lookup msgIx barRows)
+            msgRow <- case (mprompt, mtoast) of
+                _ | not fits -> pure []
+                (Just pr, _) -> do
+                    ctx <- messageCtx st sess sopts
+                    let (row, cx) = drawPrompt ctx sopts (promptView pr) under
+                    pure [(msgIx, row, Just cx)]
+                (Nothing, Just t) -> do
+                    ctx <- messageCtx st sess sopts
+                    pure [(msgIx, drawMessage ctx sopts t.markup t.text under, Nothing)]
+                (Nothing, Nothing) -> pure []
+            let overRows = [ r | r@(ix, _) <- barRows <> [ (ix, row) | (ix, row, _) <- msgRow ]
                                , ix >= 0, ix < V.length flashed ]
                 (withStatus, statusOrigins) =
                     ( flashed V.// overRows
@@ -188,9 +198,8 @@ renderOnce st client = do
                         [ (ix, VolatileRow) | (ix, _) <- overRows
                         , ix < V.length flashedOrigins ] )
             cur <- case (mprompt, msgRow) of
-                (Just pr, (ix, _) : _) ->
-                    pure (Pos { row = ix
-                              , col = min (w - 1) (promptCursorCol pr) }, True)
+                (Just _, (ix, _, Just cx) : _) ->
+                    pure (Pos { row = ix, col = min (w - 1) cx }, True)
                 _ -> pure $ case Map.lookup active paneViews of
                     Nothing -> (Pos 0 0, False)
                     Just pv -> placePaneCursor (paneOrigin rects active) rowOff pv
@@ -587,23 +596,20 @@ lineCells style width line = V.fromList (take width (cells <> repeat blank))
     cells = [ Cell.glyphCell ch style | ch <- T.unpack line ]
     blank = Cell.glyphCell ' ' style
 
-toastCells :: Text -> Int -> V.Vector Cell.Cell
-toastCells t width = lineCells toastStyle width t
-  where
-    toastStyle = Cell.defaultStyle
-        { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
+-- | The context a message or the prompt expands its formats in: the
+-- session's, as tmux's @format_create_defaults@ for the client.
+messageCtx :: ServerState -> Session -> Options -> IO F.FormatCtx
+messageCtx st sess sopts = do
+    env <- sessionFormatEnv st sess
+    formatCtxFor st env
+        [ optionText "message-format" sopts, optionText "message-style" sopts
+        , optionText "message-command-style" sopts ]
 
--- | The command-prompt status row: the @:@ prefix followed by the line
--- being edited, styled like tmux's message line.
-promptCells :: PromptState -> Int -> V.Vector Cell.Cell
-promptCells pr width = lineCells promptStyle width (pr.promptLabel <> pr.input)
-  where
-    promptStyle = Cell.defaultStyle
-        { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
-
--- | The screen column of the prompt's edit cursor.
-promptCursorCol :: PromptState -> Int
-promptCursorCol pr = T.length pr.promptLabel + pr.cursor
+-- | What the prompt draws: see 'drawPrompt'.
+promptView :: PromptState -> PromptView
+promptView pr = PromptView
+    { label = pr.promptLabel, input = pr.input, cursor = pr.cursor
+    , commandMode = False }
 
 -- | The status line's rows for a session at @width@ cells (see
 -- 'Hat.Server.Status.statusRows').

@@ -124,6 +124,7 @@ library
         Hat.Server.Hooks
         Hat.Server.Keymap
         Hat.Server.Keys
+        Hat.Server.Message
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
@@ -297,6 +298,7 @@ test-suite hat-test
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec
+        Hat.Server.MessageSpec
         Hat.Server.MruSpec
         Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec

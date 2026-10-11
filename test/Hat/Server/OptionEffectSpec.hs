@@ -14,7 +14,7 @@ import Data.Ratio ((%))
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Model (ServerState (..), Toast (..), newServerState)
+import Hat.Model (Markup (..), ServerState (..), Toast (..), newServerState)
 import Hat.Model.Options
     ( BorderIndicators (..), BorderLines (..), OptionValue (..), Options (..)
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions )
@@ -26,7 +26,7 @@ import Hat.Server.Environ
     , environUpdate )
 import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Layout (LayoutName (..))
-import Hat.Server.View (borderCells, mapGlyph, statusLayout)
+import Hat.Server.View (borderCells, mapGlyph, messageLine, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -47,7 +47,7 @@ spec = do
             let ms n = n * 1000000  -- monotonic clock is in ns
                 shownAt = ms 41000
                 toastFor opts =
-                    Toast { text = "hi", deadline = toastDeadline opts shownAt }
+                    Toast { text = "hi", markup = MarkupLiteral, deadline = toastDeadline opts shownAt }
             it "750: alive at t+700ms, expired at t+800ms" $ do
                 let toast = toastFor (defaultOptions { displayTime = 750 })
                 toastExpired (shownAt + ms 700) toast `shouldBe` False
@@ -112,6 +112,18 @@ spec = do
                 glyphWith IndicatorsArrows `shouldBe` Just '\x25b6'  -- ▶
             it "off: the active edge keeps the plain line" $
                 glyphWith IndicatorsOff `shouldBe` Just '\x2502'  -- │
+
+        -- message-line: the status line the prompt and messages take,
+        -- clamped to the last line there is.
+        describe "message-line picks the message's status line" $ do
+            let with st ml = applyEntry "message-line" (OVScalar ml)
+                    (applyEntry "status" (OVScalar st) defaultOptions)
+            it "takes the given line" $
+                messageLine (with "3" "1") `shouldBe` 1
+            it "clamps to the last status line" $
+                messageLine (with "2" "4") `shouldBe` 1
+            it "is the first line by default" $
+                messageLine defaultOptions `shouldBe` 0
 
         -- status-position: bottom puts the bar on the last row with no
         -- content offset; top puts it on row 0 and pushes content down one.

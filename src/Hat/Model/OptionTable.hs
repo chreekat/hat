@@ -513,12 +513,12 @@ optionTable =
         "bg=themeblack,fg=themeyellow,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeblack}"
-    , notYet $ scalar "message-format" SessionScope KString
+    , live $ scalar "message-format" SessionScope KString
         "#[#{?#{command_prompt},#{E:message-command-style},\
         \#{E:message-style}}]#{message}"
-    , notYet $ scalar "message-line" SessionScope
+    , live $ scalar "message-line" SessionScope
         (KChoice ["0", "1", "2", "3", "4"]) "0"
-    , notYet $ scalar "message-style" SessionScope KStyle
+    , live $ scalar "message-style" SessionScope KStyle
         "bg=themeyellow,fg=themeblack,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeyellow}"

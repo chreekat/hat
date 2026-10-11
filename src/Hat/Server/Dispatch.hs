@@ -628,7 +628,7 @@ cmdDisplayMessage st mclient args = do
     if "-p" `elem` flags
         then pure [ROutput text]
         else do
-            forM_ mclient $ \client -> showToast st client text
+            forM_ mclient $ \client -> showStyledToast st client text
             pure []
 
 cmdRunShell :: CommandImpl

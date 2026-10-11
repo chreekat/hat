@@ -62,6 +62,9 @@ spot-read of each suspect consumer.
 | `window-status-last-style` / `window-status-activity-style` | `#{W:}` loop in `status-format[0]` | implemented ✅ tested | pure (StatusSpec) |
 | `pane-status-style` / `pane-status-current-style` / `window-pane-status-format` / `window-pane-current-status-format` | `#{P:}` loop in `status-format[1]` | implemented ✅ tested | pure (StatusSpec) |
 | `session-status-style` / `session-status-current-style` | `#{S:}` loop in `status-format[2]` | implemented (format-driven, as tmux) | rendered |
+| `message-style` | `drawMessage` / `drawPrompt`, `messageArea` (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
+| `message-format` | `drawMessage` / `drawPrompt` (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
+| `message-line` | `messageLine` (View.hs) | implemented ✅ tested | pure |
 | `pane-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `pane-active-border-style` | `borderCells` (View.hs) | implemented ✅ tested | pure |
 | `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
