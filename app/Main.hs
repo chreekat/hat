@@ -11,7 +11,8 @@ import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO
 import System.Posix.Process (executeFile)
 import System.Process
-    (CreateProcess (..), StdStream (..), createProcess, proc)
+    ( CreateProcess (..), ProcessHandle, StdStream (..), createProcess
+    , getProcessExitCode, proc )
 
 import Hat.Client
 import Hat.Command.Parser (parseArgv)
@@ -254,11 +255,11 @@ connectOrStart path mconfig = do
     case msock of
         Just sock -> pure (sock, Joined)
         Nothing -> do
-            startServer path mconfig
+            server <- startServer path mconfig
             -- 10s of headroom: the fresh server forks, sets up its socket
             -- dir/lock, and loads config before it starts listening, which
             -- can take a while under heavy load.
-            (, Autostarted) <$> waitForServer path 100
+            (, Autostarted) <$> waitForServer path mconfig server 100
 
 -- Spawn the detached server via 'createProcess' rather than a manual
 -- 'forkProcess'/'executeFile': createProcess does the fork+exec entirely
@@ -267,13 +268,13 @@ connectOrStart path mconfig = do
 -- before exec (the threaded-RTS fork hazard) — the server then never came
 -- up and the client gave up with "server failed to start". @new_session@
 -- setsid()s the daemon off the controlling tty.
-startServer :: FilePath -> Maybe FilePath -> IO ()
+startServer :: FilePath -> Maybe FilePath -> IO ProcessHandle
 startServer path mconfig = do
     self <- getExecutablePath
     devIn <- openFile "/dev/null" ReadMode
     devOut <- openFile "/dev/null" WriteMode
     devErr <- openFile "/dev/null" WriteMode
-    _ <- createProcess
+    (_, _, _, ph) <- createProcess
         (proc self (["--server", path] <> maybe [] (: []) mconfig))
             { std_in = UseHandle devIn
             , std_out = UseHandle devOut
@@ -281,10 +282,12 @@ startServer path mconfig = do
             , new_session = True
             , close_fds = True
             }
-    pure ()
+    pure ph
 
-waitForServer :: FilePath -> Int -> IO Socket
-waitForServer path attempts
+-- | Poll until a server listens at @path@, keeping one of ours spawned until
+-- one does.
+waitForServer :: FilePath -> Maybe FilePath -> ProcessHandle -> Int -> IO Socket
+waitForServer path mconfig server attempts
     | attempts <= 0 = do
         hPutStrLn stderr "hat: server failed to start"
         exitFailure
@@ -293,5 +296,8 @@ waitForServer path attempts
         case msock of
             Just sock -> pure sock
             Nothing -> do
+                server' <- getProcessExitCode server >>= \case
+                    Just _ -> startServer path mconfig
+                    Nothing -> pure server
                 threadDelay 100_000
-                waitForServer path (attempts - 1)
+                waitForServer path mconfig server' (attempts - 1)
