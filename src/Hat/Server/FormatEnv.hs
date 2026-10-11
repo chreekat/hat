@@ -21,6 +21,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.IORef
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
@@ -45,6 +46,7 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.Pane (paneCommandName)
+import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -60,6 +62,9 @@ windowFormatEnv st sess ix win = do
         <*> readTVar win.autoRename <*> readTVar win.zoomed
     sil <- readTVarIO win.silenceFlag
     ps <- readTVarIO win.panes
+    (links, linkNames) <- atomically $ do
+        links <- map fst <$> windowLinks st win
+        (,) links <$> mapM (\s -> readTVar s.name) links
     let flags = windowFlags WindowFlagState
             { flagCurrent = ix == cur
             , flagLast = Just ix == mlast
@@ -82,6 +87,11 @@ windowFormatEnv st sess ix win = do
         , ("window_activity_flag", if act then "1" else "0")
         , ("window_silence_flag", if sil then "1" else "0")
         , ("automatic_rename", if auto then "1" else "0")
+        , ("window_linked", if length links > 1 then "1" else "0")
+        -- A session group shares one window map, so it counts once.
+        , ("window_linked_sessions", tshow (length
+            (List.nubBy (\a b -> a.windows == b.windows) links)))
+        , ("window_linked_sessions_list", T.intercalate "," linkNames)
         ]) base
 
 -- | The full format environment for a specific pane, including the
