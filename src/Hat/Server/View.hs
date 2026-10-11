@@ -39,7 +39,8 @@ import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
 import Hat.Server.Clock qualified as Clock
 import Hat.Server.CopyMode qualified as CopyMode
-import Hat.Server.ClientIO (send)
+import Hat.Server.ClientIO (hasRoom, send, sendAs)
+import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
 import Hat.Server.Format (formatReadsLoops)
@@ -110,7 +111,7 @@ animationPeriod = 100000
 -- keeps a layout change — a zoom, an unzoom, a split, a client resize — off
 -- the screen until the emulators behind it grow or shrink to match; painting
 -- earlier flashes one frame of the old grid composited into the new geometry.
--- Blocks until such a generation exists.
+-- Blocks until such a generation exists and the client has room for it.
 awaitRenderable :: ServerState -> Client -> Int -> STM Int
 awaitRenderable st client lastGen = do
     g <- readTVar st.dirty
@@ -118,6 +119,7 @@ awaitRenderable st client lastGen = do
     check (g /= lastGen || full)
     done <- readTVar st.reconciled
     check (done >= g)
+    check =<< hasRoom client  -- See Note [Falling behind]
     pure g
 
 -- | Where the status bar sits in a client of @rows@ rows: the vertical offset
@@ -352,7 +354,8 @@ renderOnce st client = do
     oldColour <- readIORef client.lastCursorColour
     when (colour /= oldColour) $ do
         writeIORef client.lastCursorColour colour
-        send client $ Notify $ case colour of
+        -- See Note [Falling behind]
+        sendAs (Superseding CursorColourSlot) client $ Notify $ case colour of
             Nothing -> "\ESC]112\a"
             Just (r, g, b) -> TE.encodeUtf8 $ T.concat
                 [ "\ESC]12;rgb:", hex2 r, "/", hex2 g, "/", hex2 b, "\a" ]
@@ -360,7 +363,8 @@ renderOnce st client = do
     oldShape <- readIORef client.lastCursorShape
     when (shape /= oldShape) $ do
         writeIORef client.lastCursorShape shape
-        send client (Notify (decscusr shape))
+        -- See Note [Falling behind]
+        sendAs (Superseding CursorShapeSlot) client (Notify (decscusr shape))
     syncMouseMode st client (fmap (\(sess, win, _, _, ps, active) -> (sess, win, ps, active)) view)
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
@@ -463,6 +467,7 @@ syncMouseMode st client view = do
     old <- readIORef client.lastMouseMode
     when (want /= old) $ do
         writeIORef client.lastMouseMode want
+        -- See Note [Falling behind]
         send client (Notify (Mouse.mouseModeBytes want))
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them

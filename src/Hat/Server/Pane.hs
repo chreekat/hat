@@ -128,7 +128,8 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Alerts (AlertKind (..), AlertWhere (..), alertApplies, deliverAlert)
-import Hat.Server.ClientIO (broadcast, send)
+import Hat.Server.ClientIO (broadcastAs, sendAs)
+import Hat.Server.Outbound (Delivery (..))
 import Hat.Server.Clipboard (appClipboard, paneViewers)
 import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
@@ -624,8 +625,9 @@ runPaneReader st pane = do
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
                 -- the session's attached terminals to raise with the OS.
+                -- See Note [Falling behind]
                 Emu.DesktopNotification raw ->
-                    forM_ mhome $ \(sid, _) -> broadcast st sid (Notify raw)
+                    forM_ mhome $ \(sid, _) -> broadcastAs Expendable st sid (Notify raw)
                 -- The pane's own title only feeds #{pane_title}; the
                 -- client's desktop title is composed in 'refreshTitles'.
                 Emu.TitleRequest raw -> when (allowed "allow-set-title") $
@@ -670,7 +672,8 @@ runPaneReader st pane = do
                             cs <- atomically $ if reach == "all"
                                 then paneHolders st pane
                                 else paneViewers st pane
-                            forM_ cs $ \c -> send c (Notify raw)
+                            -- See Note [Falling behind]
+                            forM_ cs $ \c -> sendAs Expendable c (Notify raw)
 
 -- | The pane options that shape how its output is taken.
 hostPolicyOf :: Options -> Emu.HostPolicy

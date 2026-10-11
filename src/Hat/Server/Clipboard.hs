@@ -29,21 +29,23 @@ import Hat.Model
 import Hat.Model.Options (Options, optionNumber, optionText)
 import Hat.Model.PasteBuffers (PasteBuffer (..), pasteAdd, pasteTop)
 
-import Hat.Server.ClientIO (send)
+import Hat.Server.ClientIO (sendAs)
 import Hat.Server.Hooks (notifyPane, notifyPasteChanges)
+import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Term.Pty qualified
 import Hat.Transport.Wire (ServerToClient (..))
 
 -- | A copy made in @pane@ (tmux's @screen_write_setselection@): unless
 -- @set-clipboard@ is off, it goes to every client showing the pane's window
--- as an OSC 52, and @pane-set-clipboard@ fires.
-setSelection :: ServerState -> Pane -> ByteString -> IO ()
-setSelection st pane body = do
+-- as an OSC 52, and @pane-set-clipboard@ fires. See Note [Falling behind]
+-- for the @delivery@ each copy takes.
+setSelection :: Delivery -> ServerState -> Pane -> ByteString -> IO ()
+setSelection delivery st pane body = do
     setting <- optionText "set-clipboard" <$> readTVarIO st.options
     when (setting /= "off") $ do
         viewers <- atomically (paneViewers st pane)
-        forM_ viewers $ \c -> send c (Notify (selectionBytes body))
+        forM_ viewers $ \c -> sendAs delivery c (Notify (selectionBytes body))
         notifyPane st "pane-set-clipboard" pane []
 
 -- | The clients whose current window holds @pane@.
@@ -112,7 +114,7 @@ appClipboard :: ServerState -> Options -> Pane -> ByteString -> OscTerm -> IO ()
 appClipboard st o pane param term = case clipboardAction o param of
     ClipboardIgnored -> pure ()
     ClipboardSet body -> do
-        setSelection st pane body
+        setSelection (Superseding ClipboardSlot) st pane body
         pushBufferBytes st body
     ClipboardAnswer clip -> do
         top <- pasteTop <$> readTVarIO st.buffers

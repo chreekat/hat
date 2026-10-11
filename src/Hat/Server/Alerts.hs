@@ -21,7 +21,8 @@ import Data.Text qualified as T
 
 import Hat.Model
 import Hat.Model.Options (Options, optionText)
-import Hat.Server.ClientIO (send)
+import Hat.Server.ClientIO (sendAs)
+import Hat.Server.Outbound (Delivery (..))
 import Hat.Server.Toast (showToast)
 import Hat.Transport.Wire (ServerToClient (..))
 
@@ -69,7 +70,8 @@ deliverAlert st sess opts kind ix = do
     let at = if ix == cur then InCurrentWindow else InWindow ix
         (ring, message) = alertNotice kind (visualOf kind opts) at
     forM_ (filter (isNothing . (.control)) clients) $ \c -> do
-        when (ring == Rings) $ send c RingBell
+        -- See Note [Falling behind]
+        when (ring == Rings) $ sendAs Expendable c RingBell
         forM_ message (showToast st c)
 
 visualOf :: AlertKind -> Options -> Visual

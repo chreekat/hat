@@ -75,7 +75,7 @@ import Hat.Server.Command.Pane
 import Hat.Server.Command.Session
 import Hat.Server.Command.Window
 import Hat.Server.Command.Types
-import Hat.Server.ClientIO (broadcast, send)
+import Hat.Server.ClientIO (broadcast, farewellGrace, send, sendFarewells)
 import Hat.Server.ColorScheme
 import Hat.Server.Control (cmdRefreshClient, controlSink)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
@@ -537,16 +537,19 @@ cmdReload' scope st mclient args =
                     atomically $ writeTVar st.acceptGate AcceptClosing
                     atomically $ readTVar st.acceptGate >>= check . (== AcceptParked)
                     sessions <- readTVarIO st.sessions
-                    forM_ (Map.elems sessions) $ \sess -> do
+                    attached <- fmap concat . forM (Map.elems sessions) $ \sess -> do
                         nm <- readTVarIO sess.name
                         cs <- atomically (sessionClients st sess.id)
-                        forM_ cs $ \c -> do
+                        forM cs $ \c -> do
                             hist <- clientSessionHistNames st c
-                            send c (reloadFarewell scope c.role (Just nm) hist)
-                    forM_ mclient $ \client -> do
+                            pure (c, reloadFarewell scope c.role (Just nm) hist)
+                    issuer <- forM (maybe [] pure mclient) $ \client -> do
                         msess <- clientSessionName st client
                         hist <- clientSessionHistNames st client
-                        send client (reloadFarewell scope client.role msess hist)
+                        pure (client, reloadFarewell scope client.role msess hist)
+                    unsent <- sendFarewells farewellGrace (attached <> issuer)
+                    forM_ unsent $ \c ->
+                        logEvent st.logger FarewellUnsent { client = rawClient c.id }
                     -- Test-only knob: hold the farewell->exec window open (µs)
                     -- so the suite can pin the reattach race deterministically.
                     linger <- lookupEnv "HAT_TEST_RELOAD_LINGER"

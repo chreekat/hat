@@ -137,7 +137,8 @@ import Hat.Server.Command.Session
 import Hat.Server.Command.Window
 import Hat.Server.Command.Types
     (Reply (..))
-import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientIO (broadcastAs)
+import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
     , watcherFault, withRegisteredMonitor )
@@ -579,7 +580,7 @@ refreshTitles st ref = do
                     prev <- Map.lookup sid <$> readIORef ref
                     unless (prev == Just t) $ do
                         modifyIORef' ref (Map.insert sid t)
-                        broadcast st sid (SetTitle t)
+                        broadcastAs (Superseding TitleSlot) st sid (SetTitle t)
 
 -- | Room for the composed desktop title. The title bar's real width is
 -- unknowable from here; this keeps the tail visible in any reasonable

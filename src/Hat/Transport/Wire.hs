@@ -54,7 +54,8 @@ module Hat.Transport.Wire
     , encodeServerMessageAt
     , decodeMessage
     , sendMessage
-    , sendMessageAt
+    , frameServerMessageAt
+    , sendFrame
     , ReadEnd (..)
     , newReadEnd
     , recvMessage
@@ -453,24 +454,28 @@ maxFrame :: Word32
 maxFrame = 64 * 1024 * 1024
 
 sendMessage :: WireMessage a => Socket -> a -> IO ()
-sendMessage sock = sendPayload sock . encodeMessage
+sendMessage sock = sendFrame sock . framePayload . encodeMessage
 
--- | 'sendMessage' at a peer's negotiated dialect; see 'encodeServerMessageAt'.
-sendMessageAt :: Word16 -> Socket -> ServerToClient -> IO ()
-sendMessageAt lvl sock = sendPayload sock . encodeServerMessageAt lvl
+-- | A message as 'sendFrame' writes it, at a peer's negotiated dialect; see
+-- 'encodeServerMessageAt'.
+frameServerMessageAt :: Word16 -> ServerToClient -> ByteString
+frameServerMessageAt lvl = framePayload . encodeServerMessageAt lvl
 
-sendPayload :: Socket -> ByteString -> IO ()
-sendPayload sock payload = do
-    let n = fromIntegral (B.length payload) :: Word32
-        header = B.pack
-            [ fromIntegral (n `shiftR` 24 .&. 0xff)
-            , fromIntegral (n `shiftR` 16 .&. 0xff)
-            , fromIntegral (n `shiftR` 8 .&. 0xff)
-            , fromIntegral (n .&. 0xff)
-            ]
-    -- One contiguous buffer, one write: a frame is small and per-frame
-    -- syscalls outweigh the copy.
-    SB.sendAll sock (header <> payload)
+framePayload :: ByteString -> ByteString
+framePayload payload = header <> payload
+  where
+    n = fromIntegral (B.length payload) :: Word32
+    header = B.pack
+        [ fromIntegral (n `shiftR` 24 .&. 0xff)
+        , fromIntegral (n `shiftR` 16 .&. 0xff)
+        , fromIntegral (n `shiftR` 8 .&. 0xff)
+        , fromIntegral (n .&. 0xff)
+        ]
+
+-- | Write one framed message. One contiguous buffer, one write: a frame is
+-- small and per-frame syscalls outweigh the copy.
+sendFrame :: Socket -> ByteString -> IO ()
+sendFrame = SB.sendAll
 
 -- | A connection's receive side: the socket with its pull buffer, so a
 -- framed message is normally served by a single recv. Owned by the one

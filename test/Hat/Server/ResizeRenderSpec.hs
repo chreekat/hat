@@ -2,7 +2,6 @@
 -- must be fully repainted (regression guard, bug 97).
 module Hat.Server.ResizeRenderSpec (spec) where
 
-import Control.Concurrent.MVar (newMVar)
 import Control.Concurrent.STM (newTVarIO)
 import Data.IORef (newIORef)
 import Data.Map.Strict qualified as Map
@@ -16,6 +15,8 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model hiding (Toast (..))
+import Hat.Server.ClientIO (withClientWriter)
+import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
 import Hat.Server.Render (Frame)
 import Hat.Server.View (renderOnce)
@@ -29,7 +30,7 @@ import Hat.Transport.Wire
 mkClient :: Size -> Frame -> IO (Client, ReadEnd)
 mkClient sz lastFrame = do
     (a, b) <- socketPair AF_UNIX Stream 0
-    lock    <- newMVar ()
+    outboundQ <- newOutbound
     sizeV   <- newTVarIO sz
     activeV <- newTVarIO 0
     sessV   <- newTVarIO (SessionId 0)
@@ -56,7 +57,7 @@ mkClient sz lastFrame = do
     envImpV <- newTVarIO ImportEnv
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a
-            , wireLevel = protocolVersion, sendLock = lock, size = sizeV
+            , wireLevel = protocolVersion, outbound = outboundQ, size = sizeV
             , lastActive = activeV, session = sessV, sessionHist = lastV
             , ready = readyV, keyState = keyV, escState = escV
             , lastFrame = frameV, lastOrigins = originsV
@@ -112,7 +113,7 @@ spec =
         -- On screen and in the server's model: the busy pane painted at the
         -- old wide size. The client is now narrow with no pending full flag.
         (client, peer) <- mkClient narrow (filledFrame wide)
-        renderOnce st client
+        withClientWriter client (renderOnce st client)
         ops <- drawOps peer
         -- The narrow client shows no session, so its frame is all blank.
         -- Executing the ops against the wide on-screen frame must erase
