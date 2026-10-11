@@ -98,6 +98,9 @@ data OptionDef = OptionDef
         -- splits on (tmux's @separator@; @" ,"@ when the row leaves it unset,
         -- @""@ for hooks, which never split)
     , role :: OptionRole
+    , pattern :: Maybe Text
+        -- ^ an @fnmatch(3)@ glob a string value must match (tmux's
+        -- @pattern@)
     , defaultValue :: OptionValue
     , gate :: Gate
     }
@@ -230,12 +233,13 @@ ushrtMax = 65535
 scalar :: Text -> OptionScope -> OptionKind -> Text -> OptionDef
 scalar n sc k def = OptionDef
     { name = n, scope = sc, kind = k, array = Nothing, role = PlainOption
-    , defaultValue = OVScalar def, gate = NotYet }
+    , pattern = Nothing, defaultValue = OVScalar def, gate = NotYet }
 
 -- | An array option whose default is the given entries at keys 0, 1, ….
 arrayOf :: Text -> OptionScope -> OptionKind -> Text -> [Text] -> OptionDef
 arrayOf n sc k sep def = OptionDef
     { name = n, scope = sc, kind = k, array = Just sep, role = PlainOption
+    , pattern = Nothing
     , defaultValue = OVArray (Map.fromList (zip (map KeyIndex [0 ..]) def))
     , gate = NotYet }
 
@@ -368,7 +372,8 @@ optionTable =
     , live $ scalar "bell-action" SessionScope (KChoice bellActions) "any"
     , notYet $ scalar "default-command" SessionScope KString ""
     , notYet $ scalar "default-shell" SessionScope KString "/bin/sh"
-    , notYet $ scalar "default-size" SessionScope KString "80x24"
+    , live $ (scalar "default-size" SessionScope KString "80x24")
+        { pattern = Just "[0-9]*x[0-9]*" }
     , notYet $ scalar "destroy-unattached" SessionScope
         (KChoice ["off", "on", "keep-last", "keep-group"]) "off"
     , notYet $ scalar "detach-on-destroy" SessionScope
@@ -535,10 +540,10 @@ optionTable =
     , notYet $ scalar "popup-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
     , notYet $ scalar "popup-border-lines" WindowScope (KChoice popupLines) "single"
-    , paneLocal $ choicesOnly ["off", "on"] $ live $
+    , paneLocal $ live $
         scalar "remain-on-exit" WindowPaneScope
             (KChoice ["off", "on", "failed", "key"]) "off"
-    , notYet $ scalar "remain-on-exit-format" WindowPaneScope KString
+    , paneLocal $ live $ scalar "remain-on-exit-format" WindowPaneScope KString
         "Pane is dead (\
         \#{?#{!=:#{pane_dead_status},},status #{pane_dead_status},}\
         \#{?#{!=:#{pane_dead_signal},},signal #{pane_dead_signal},}, \
@@ -564,7 +569,7 @@ optionTable =
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
     , notYet $ scalar "window-pane-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
-    , notYet $ scalar "window-size" WindowScope
+    , live $ scalar "window-size" WindowScope
         (KChoice ["largest", "smallest", "manual", "latest"]) "latest"
     , notYet $ scalar "window-style" WindowPaneScope KStyle "default"
     , notYet $ scalar "window-status-activity-style" WindowScope KStyle "reverse"

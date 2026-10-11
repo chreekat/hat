@@ -62,7 +62,8 @@ spot-read of each suspect consumer.
 | `escape-time` | `escTiming`/`feedKeys`/`flushEscape` (Server.hs, Keys.hs) | implemented ✅ tested | pure |
 | `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented ✅ tested | pure |
-| `aggressive-resize` | `resizeModeOf` (Server.hs) | implemented ✅ tested | pure |
+| `window-size` | `resizeModeOf`/`effectiveWindowSize` (Resize.hs, Layout.hs) | implemented ✅ tested | pure |
+| `default-size` | `defaultSizeOf` (Resize.hs): detached `new-session`, `resize-window -A`/`-a` | implemented ✅ tested | integration |
 | `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |
@@ -104,6 +105,11 @@ spot-read of each suspect consumer.
   not silent no-ops: the main pane is clamped to 10–90% of the window (tmux
   clamps only to leave the other panes room), and a `%`-suffixed percentage
   value is refused at `set` (the row's `refusing` gate) rather than parsed.
+
+- **`aggressive-resize`** is accepted but read by nothing. tmux uses it to
+  size a window only from clients whose *current* window it is; hat sizes all
+  of a session's windows together from that session's own clients, so the
+  option could only matter for a window linked into several sessions.
 
 ## The effect-test sweep
 

@@ -21,7 +21,8 @@ import Control.Concurrent.Async (link, race, withAsync)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (forM_, forever, void, when)
+import Control.Monad (forM_, forever, unless, void, when)
+import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.IORef
 import Data.List (nub)
@@ -29,6 +30,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import Network.Socket qualified as N
 import Hat.Geometry
@@ -243,6 +245,7 @@ newClient st conn h = do
         , envImport = envImportVar
         , env = h.env
         , cwd = h.cwd
+        , stdinSource = NoStdin
         }
 
 -- | Resolve MRU session names to the ids of the sessions that still exist,
@@ -334,8 +337,12 @@ inputLoop d st re client = loop
                     forM_ replies $ \case
                         ROutput out -> showToast st client out
                         RErr e -> showToast st client ("error: " <> e)
+                        RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)
                     loop
                 ClientHello {} -> pure ()
+                -- Never requested of an attached client.
+                StdinData _ -> loop
+                StdinEnd -> loop
 
 -- | Whether @client@ already holds the largest activity stamp among the
 -- clients attached to its session (so it is the one an aggressive-resize
@@ -494,8 +501,12 @@ runKeys d st client keys = do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
                     forM_ actions $ \case
-                        Passthrough raw ->
-                            forM_ mpane $ \pane -> Hat.Term.Pty.writePty pane.pty raw
+                        Passthrough raw -> forM_ mpane $ \pane -> do
+                            dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
+                                then pure False
+                                else dismissDeadPane st pane
+                            unless dismissed $
+                                Hat.Term.Pty.writePty pane.pty raw
                         RunCommands cmds -> withCommandBatch st $
                             forM_ cmds $ \argv ->
                                 toastReplies st client
@@ -567,10 +578,15 @@ controlLoop d st re client = do
     case m of
         Just (Known (Command cmds)) -> do
             awaitStartup st client.autostart cmds
-            replies <- d.runCommands st (Just client) cmds
+            open <- newTVarIO True
+            let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
+            replies <- d.runCommands st (Just granted) cmds
+                `finally` atomically (writeTVar open False)
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
                 RErr e -> send client (ServerError e)
+                RData bytes -> forM_ (chunksOf stdoutChunk bytes) $
+                    send client . WriteStdout
             -- Report done only once any layout change the command made has
             -- been reconciled into the panes, so a caller that immediately
             -- inspects a pane's size never races the pty resize.
@@ -582,6 +598,31 @@ controlLoop d st re client = do
         Nothing -> pure ()
         _ -> controlLoop d st re client
 
+
+-- | Collect a command client's standard input over its connection. Only
+-- valid while its command batch runs (@open@): the connection's reader is
+-- otherwise 'controlLoop'.
+requestStdin :: ReadEnd -> Client -> TVar Bool -> IO (Either Text ByteString)
+requestStdin re client open = do
+    live <- readTVarIO open
+    if not live || client.wireLevel < 8
+        then pure (Left "Bad file descriptor: -")
+        else send client ReadStdin >> collect []
+  where
+    collect acc = recvMessage re >>= \case
+        Just (Known (StdinData bytes)) -> collect (bytes : acc)
+        Just (Known StdinEnd) -> pure (Right (B.concat (reverse acc)))
+        Just (UnknownTag _) -> collect acc
+        _ -> pure (Left "client went away while sending standard input")
+
+-- | 'WriteStdout' payload size, well under the wire's frame limit.
+stdoutChunk :: Int
+stdoutChunk = 1024 * 1024
+
+chunksOf :: Int -> ByteString -> [ByteString]
+chunksOf n bytes
+    | B.null bytes = []
+    | otherwise = let (h, t) = B.splitAt n bytes in h : chunksOf n t
 
 -- | @kill-server [-a]@: drain every session (a normal shutdown). @-a@ keeps
 -- the store's saved tree; a bare kill drops it. See 'saveNow'.

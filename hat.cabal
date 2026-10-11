@@ -87,6 +87,7 @@ library
         Hat.Model.Ids
         Hat.Model.OptionTable
         Hat.Model.Options
+        Hat.Model.PasteBuffers
         Hat.Path
         Hat.PtrEq
         Hat.Server
@@ -94,6 +95,7 @@ library
         Hat.Server.ColorScheme
         Hat.Server.Command.Bind
         Hat.Server.Command.Buffer
+        Hat.Server.Command.CaptureRaw
         Hat.Server.Command.CopyMode
         Hat.Server.Command.Hook
         Hat.Server.Command.Interact
@@ -150,6 +152,7 @@ library
         Hat.Term.Ghostty
         Hat.Term.HostProtocol
         Hat.Term.Pty
+        Hat.Term.RawGrid
         Hat.Term.Winsize
         Hat.Transport.Socket
         Hat.Transport.Wire
@@ -271,6 +274,7 @@ test-suite hat-test
         Hat.IntegrationSpec
         Hat.LogSpec
         Hat.PathSpec
+        Hat.Model.PasteBuffersSpec
         Hat.Server.PersistSpec
         Hat.TestSupport
         Hat.Term.PtySpec

@@ -1,3 +1,5 @@
+{-# LANGUAGE MultiWayIf #-}
+
 -- | The pane commands: capturing a pane's grid (@capture-pane@), splitting
 -- a window (@split-window@), selecting\/killing\/swapping panes, clearing
 -- scrollback, resizing, and zooming.
@@ -11,6 +13,8 @@ module Hat.Server.Command.Pane
     , cmdSelectPane
     , cmdLastPane
     , cmdKillPane
+    , cmdRespawnPane
+    , cmdRespawnWindow
     , cmdSwapPane
     , cmdClearHistory
     , cmdResizePane
@@ -22,16 +26,18 @@ import Control.Concurrent.STM
 import Control.Monad (forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
+import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import Numeric (showOct)
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Server.Command.Buffer (storeBuffer)
+import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Layout
 import Hat.Model.Options (quoteIfNeeded)
@@ -41,7 +47,8 @@ import Hat.Server.Hooks
 import Hat.Server.Locate (findTarget, locatePane, paneIndexOf, siblingPane, targetPane, withCurrentWindow)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
-    (killPaneLocs, sessionSpawnEnv, shellStart, spawnPane, startPaneReader)
+    ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, respawnPane
+    , respawnStart, sessionSpawnEnv, shellStart, spawnPane, startPaneReader )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowArrange)
@@ -49,6 +56,7 @@ import Hat.Server.Target qualified as Target
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Emulator.Types (rtrimBlank)
+import Hat.Term.RawGrid (RawCell (..), RawGrid (..), RawLine (..))
 
 -- | Modifiers that shape a @capture-pane@ grid dump. See 'captureText'.
 data CaptureOpts = CaptureOpts
@@ -58,14 +66,17 @@ data CaptureOpts = CaptureOpts
     , captSeq    :: Bool  -- ^ @-e@: emit SGR escape sequences before styled runs
     , captOctal  :: Bool  -- ^ @-C@: octal-escape controls and backslash
     , captNumber :: Bool  -- ^ @-L@: prefix each line with its screen-relative number
+    , captFlags  :: Bool  -- ^ @-F@: prefix each line with its line flags
     }
     deriving stock (Eq, Show)
 
 -- | One captured grid row: its screen-relative line number (history rows
--- negative), whether it soft-wraps onto the next row, and its cells.
+-- negative), whether it soft-wraps onto the next row, its @-F@ flag letters
+-- (read only when @-F@ asks), and its cells.
 data CaptureRow = CaptureRow
     { number  :: Int
     , wrapped :: Bool
+    , flags   :: Text
     , cells   :: V.Vector Cell.Cell
     }
     deriving stock (Eq, Show)
@@ -112,10 +123,14 @@ captureText opts = T.concat . go Cell.defaultStyle
         let (body, pen') = renderCells pen (visible r)
             trimmed = if trimSpaces then T.dropWhileEnd (== ' ') body else body
             nl = if opts.captJoin && r.wrapped then "" else "\n"
-        in (numberPrefix r.number <> trimmed <> nl) : go pen' rs
+        in (numberPrefix r.number <> flagPrefix r.flags <> trimmed <> nl)
+            : go pen' rs
     numberPrefix n
         | opts.captNumber = tshow n <> " "
         | otherwise       = ""
+    flagPrefix f
+        | opts.captFlags = f <> " "
+        | otherwise      = ""
     -- tmux's cellused has no libghostty analogue: the used extent is
     -- approximated as everything up to the last non-default cell, and a
     -- wrapped row under @-J@ is fully used by construction.
@@ -199,8 +214,9 @@ cmdCapturePane st mclient args = do
             , captSeq    = has "-e"
             , captOctal  = has "-C"
             , captNumber = has "-L"
+            , captFlags  = has "-F"
             }
-    case filter has ["-F", "-H", "-P", "-R"] of
+    case filter has ["-P"] of
         (bad : _) ->
             pure [RErr ("capture-pane: " <> bad <> " is not implemented")]
         [] -> do
@@ -208,15 +224,21 @@ cmdCapturePane st mclient args = do
             case res of
                 Left e -> pure [RErr e]
                 Right (_, _, _, pane) -> do
-                    ecap <- capturePane pane copts (has "-a") (has "-q")
-                        (has "-M") (lookup "-S" opts) (lookup "-E" opts)
+                    ecap <- if
+                        | has "-R" -> Right . rawDump <$> Emu.rawGrid pane.emulator
+                        | has "-H" -> captureLinks pane copts (has "-a")
+                            (has "-M") (lookup "-S" opts) (lookup "-E" opts)
+                        | otherwise -> capturePane pane copts (has "-a") (has "-q")
+                            (has "-M") (lookup "-S" opts) (lookup "-E" opts)
                     case ecap of
                         Left err -> pure [RErr err]
                         Right txt
                             | has "-p" -> pure
                                 [ROutput (fromMaybe txt (T.stripSuffix "\n" txt))]
-                            | otherwise -> [] <$ atomically
-                                (storeBuffer st (lookup "-b" opts) txt)
+                            | otherwise ->
+                                either (\e -> [RErr e]) (const [])
+                                    <$> storeBuffer st (lookup "-b" opts)
+                                            (TE.encodeUtf8 txt)
 
 -- | Capture a pane's rows per tmux's source selection: @-a@ asks for the
 -- screen saved behind an active alternate screen (which libghostty keeps
@@ -239,28 +261,74 @@ capturePane pane copts altFlag quiet copyFlag sflag eflag
             Just pm
                 | copts.captJoin ->
                     pure (Left "capture-pane: -J with -M is not implemented")
+                | copts.captFlags ->
+                    pure (Left "capture-pane: -F with -M is not implemented")
                 | otherwise -> do
                     let fg = pm.frozen
                         (top, bottom) = captureBounds fg.fgHsize fg.fgSy sflag eflag
                     pure . Right . captureText copts $
-                        [ CaptureRow (i - fg.fgHsize) False
+                        [ CaptureRow (i - fg.fgHsize) False ""
                             (fromMaybe V.empty (fg.fgRows V.!? i))
                         | i <- [top .. bottom] ]
             Nothing -> do
                 scr <- Emu.snapshot pane.emulator
                 hsize <- Emu.scrollbackLength pane.emulator
+                rawLines <- if copts.captFlags
+                    then V.fromList . (.lines) <$> Emu.rawGrid pane.emulator
+                    else pure V.empty
                 let sy = V.length scr.cells
                     (top, bottom) = captureBounds hsize sy sflag eflag
-                Right . captureText copts <$> mapM (liveRow hsize scr) [top .. bottom]
+                    flagsAt i = maybe "-" flagLetters (rawLines V.!? i)
+                Right . captureText copts
+                    <$> mapM (liveRow hsize scr flagsAt) [top .. bottom]
   where
-    liveRow hsize scr i
+    liveRow hsize scr flagsAt i
         | i < hsize = CaptureRow (i - hsize)
             <$> wrapAt (Emu.scrollbackLineWrapped pane.emulator i)
+            <*> pure (flagsAt i)
             <*> (fromMaybe V.empty <$> Emu.scrollbackLine pane.emulator i)
         | otherwise = CaptureRow (i - hsize)
             <$> wrapAt (Emu.screenRowWrapped pane.emulator (i - hsize))
+            <*> pure (flagsAt i)
             <*> pure (fromMaybe V.empty (scr.cells V.!? (i - hsize)))
     wrapAt act = if copts.captJoin then act else pure False
+
+-- | @capture-pane -H@: per captured line, the distinct hyperlink URIs its
+-- cells carry, space-separated; a URI already listed on an earlier line is
+-- not repeated, and a line left with none is dropped. tmux tells links apart
+-- by OSC 8 identity, which libghostty-vt reduces to the URI, so two separate
+-- links to one URI list once.
+captureLinks
+    :: Pane -> CaptureOpts -> Bool -> Bool -> Maybe Text -> Maybe Text
+    -> IO (Either Text Text)
+captureLinks pane copts altFlag copyFlag sflag eflag
+    | altFlag = pure (Left "capture-pane: -H with -a is not implemented")
+    | otherwise = do
+        mmode <- if copyFlag then readTVarIO pane.mode else pure Nothing
+        case mmode of
+            Just _ -> pure (Left "capture-pane: -H with -M is not implemented")
+            Nothing -> Right . linksText copts <$> Emu.rawGrid pane.emulator
+  where
+    linksText opts g = T.concat (go [] picked)
+      where
+        (top, bottom) = captureBounds g.hsize g.rows sflag eflag
+        picked = take (bottom - top + 1) (drop top (zip [0 ..] g.lines))
+        go _ [] = []
+        go seen ((i, l) : rest) =
+            let new = List.nub
+                    [ u | Just u <- map (.link) (take (cellUsed l) l.cells)
+                    , u `notElem` seen ]
+            in if null new
+                then go seen rest
+                else (numberPrefix (i - g.hsize) <> flagPrefix l
+                        <> T.intercalate " " new <> "\n")
+                    : go (seen <> new) rest
+        numberPrefix n
+            | opts.captNumber = tshow n <> " "
+            | otherwise       = ""
+        flagPrefix l
+            | opts.captFlags = flagLetters l <> " "
+            | otherwise      = ""
 
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args = do
@@ -479,6 +547,110 @@ cmdKillPane st mclient args = do
         mloc <- atomically (locatePane st pane.id)
         forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
     pure []
+
+-- | @respawn-pane [-k] [-c dir] [-e VAR=value] [-t pane] [command ...]@:
+-- run a new process in a dead pane, or with @-k@ in a live one.
+cmdRespawnPane :: CommandImpl
+cmdRespawnPane st mclient args = do
+    let (opts, flags, pos) = parseArgs "cet" args
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case (respawnFlagError flags, res) of
+        (Just e, _) -> pure [RErr e]
+        (_, Left e) -> pure [RErr e]
+        (_, Right (sess, wix, win, pane)) -> do
+            live <- isNothing <$> readTVarIO pane.exited
+            if live && "-k" `notElem` flags
+                then do
+                    sname <- readTVarIO sess.name
+                    pix <- paneIndexOf st win pane
+                    pure [RErr ("respawn pane failed: pane " <> sname <> ":"
+                        <> tshow wix <> "." <> tshow pix <> " still active")]
+                else respawnReply "respawn pane failed: "
+                    <$> respawnIn st mclient sess win pane opts pos
+
+-- | @respawn-window [-k] [-c dir] [-e VAR=value] [-t window] [command ...]@:
+-- reduce the window to its first pane and respawn that.
+cmdRespawnWindow :: CommandImpl
+cmdRespawnWindow st mclient args = do
+    let (opts, flags, pos) = parseArgs "cet" args
+    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+    case (respawnFlagError flags, res) of
+        (Just e, _) -> pure [RErr e]
+        (_, Left e) -> pure [RErr e]
+        (_, Right (sess, wix, win, _)) -> do
+            panes <- Map.elems <$> readTVarIO win.panes
+            live <- or <$> mapM (fmap isNothing . readTVarIO . (.exited)) panes
+            case panes of
+                _ | live && "-k" `notElem` flags -> do
+                    sname <- readTVarIO sess.name
+                    pure [RErr ("respawn window failed: window " <> sname
+                        <> ":" <> tshow wix <> " still active")]
+                [] -> pure [RErr "respawn window failed: no panes"]
+                first : others -> do
+                    killPaneLocsWith QuietLifecycle st
+                        [ (sess.id, win, p) | p <- others ]
+                    atomically $ do
+                        writeTVar win.activeId first.id
+                        writeTVar win.paneHist []
+                    respawnReply "respawn window failed: "
+                        <$> respawnIn st mclient sess win first opts pos
+
+-- | Respawn's flags beyond @-k@ that hat refuses rather than ignores.
+respawnFlagError :: [Text] -> Maybe Text
+respawnFlagError flags = case filter (/= "-k") flags of
+    [] -> Nothing
+    "-E" : _ -> Just "respawn: -E (an empty pane) is not supported"
+    f : _ -> Just ("unknown flag " <> f)
+
+respawnReply :: Text -> Either Text () -> [Reply]
+respawnReply prefix = either (\e -> [RErr (prefix <> e)]) (const [])
+
+-- | Replace @pane@'s process: the given command (one word for the shell,
+-- several exec'd directly), else the pane's own launch; in @-c@ (a format;
+-- a relative one resolves as tmux's @server_client_get_cwd@: against a
+-- command client's directory, else the session's), else the pane's start
+-- directory.
+respawnIn
+    :: ServerState -> Maybe Client -> Session -> Window -> Pane
+    -> [(Text, Text)] -> [Text] -> IO (Either Text ())
+respawnIn st mclient sess win pane opts pos = do
+    dir <- case lookup "-c" opts of
+        Nothing -> pure pane.startCwd
+        Just d -> do
+            env <- sessionFormatEnv st sess
+            expanded <- T.unpack <$> expandFormat st env d
+            base <- case mclient of
+                Just c | c.role == Control -> pure (T.unpack c.cwd)
+                _ -> readTVarIO sess.startCwd
+            pure $ case expanded of
+                '/' : _ -> expanded
+                "" -> base
+                rel -> base <> "/" <> rel
+    environ0 <- sessionSpawnEnv st sess
+    let envPairs = reverse
+            [ (n, T.drop 1 v) | ("-e", nv) <- opts, let (n, v) = T.breakOn "=" nv ]
+        environ = environ0 <> envPairs
+        shellCmd = maybe "/bin/sh" T.unpack (List.lookup "SHELL" environ)
+        how = case pos of
+            [] -> respawnStart pane.start
+            [c] -> ShellCommand c
+            argv -> ExecArgv argv
+    mnew <- respawnPane st sess.id win pane shellCmd how dir environ
+    case mnew of
+        Nothing -> pure (Left "pane no longer exists")
+        Just new -> do
+            applySessionSize st sess.id
+            notifyPane st "pane-created" new
+                [ ("pane_command", PText (spawnedCommand shellCmd how))
+                , ("pane_current_path", PText (T.pack dir))
+                , ("created_empty", PInt 0)
+                , ("created_respawn", PInt 1) ]
+            pure (Right ())
+  where
+    spawnedCommand shellCmd = \case
+        ShellCommand c -> c
+        ExecArgv argv -> T.unwords (map quoteIfNeeded argv)
+        _ -> T.pack shellCmd
 
 -- | @swap-pane [-s src] [-t dst] [-U|-D] [-d]@: exchange two panes'
 -- positions. @src@ defaults to the active pane; without @-d@ the active

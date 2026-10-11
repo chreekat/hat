@@ -104,6 +104,13 @@ spec = do
                 (setOption Assign defaultOptions "status" "on")
                 `shouldBe` Right 1
 
+        it "takes each of window-size's and remain-on-exit's choices" $ do
+            let chosen n v = optionText n <$> setOption Assign defaultOptions n v
+            mapM (chosen "window-size") ["largest", "smallest", "manual", "latest"]
+                `shouldBe` Right ["largest", "smallest", "manual", "latest"]
+            mapM (chosen "remain-on-exit") ["off", "on", "failed", "key"]
+                `shouldBe` Right ["off", "on", "failed", "key"]
+
         it "rejects a multi-line status bar loudly (unsupported)" $
             setOption Assign defaultOptions "status" "3"
                 `shouldBe` Left "status: value not yet supported by hat: 3"

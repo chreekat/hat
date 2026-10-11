@@ -114,6 +114,7 @@ flashStubPane pid = do
     tidV <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
+    exitedV <- newTVarIO Nothing
     pure Pane
         { id = pid
         , pty = error "flashStubPane: pty never touched"
@@ -127,4 +128,6 @@ flashStubPane pid = do
         , readerTid = tidV
         , home = homeV
         , pendingInput = Nothing
+        , start = FreshShell
+        , exited = exitedV
         }

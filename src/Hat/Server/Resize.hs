@@ -5,6 +5,9 @@
 module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
+    , clientWindowArea
+    , defaultSizeOf
+    , clampWindowSize
     , reconcileLoop
     , awaitReconcileTick
     , awaitReconciled
@@ -17,8 +20,11 @@ module Hat.Server.Resize
 import Control.Concurrent.STM
 import Control.Exception (IOException, handle)
 import Control.Monad (forM, forM_, when)
+import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
+import Data.Text.Read qualified as TR
 
 import Hat.Geometry
 import Hat.Log
@@ -29,13 +35,19 @@ import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
--- | The resize mode @aggressive-resize@ selects: on, follow the active
--- client; off, fit the smallest. See 'resizeModeFor'.
-resizeModeOf :: Options -> ResizeMode
-resizeModeOf opts = if opts.aggressiveResize then ActiveClient else SmallestClient
+-- | How a window is sized: @window-size@. tmux's @aggressive-resize@ only
+-- narrows which clients count to those whose current window it is; hat sizes
+-- all of a session's windows together from that session's own clients, so
+-- the distinction has nothing to select here.
+resizeModeOf :: Options -> WindowSizeMode
+resizeModeOf opts = case optionText "window-size" opts of
+    "largest" -> SizeLargest
+    "smallest" -> SizeSmallest
+    "manual" -> SizeManual
+    _ -> SizeLatest
 
 -- | Recompute a session's effective window size from its clients (honoring
--- @aggressive-resize@) and mark the clients for a full redraw. Pane pty and
+-- @window-size@) and mark the clients for a full redraw. Pane pty and
 -- emulator sizes are not touched here: 'reconcileLoop' pulls them into
 -- agreement with the layout off the same dirty tick this bumps, so a session
 -- resized here — or a layout changed anywhere else — reconciles uniformly.
@@ -53,6 +65,37 @@ applySessionSize st sid = atomically $ do
         writeTVar sess.lastSize eff
         forM_ cs $ \c -> writeTVar c.needsFull True
         bumpDirty st
+
+-- | The window size @mode@ derives from the session's attached clients, or
+-- @default-size@ when none is attached (tmux's @default_window_size@). Used
+-- by @resize-window -A@\/@-a@, which pick a size from the clients without
+-- leaving the window following them.
+clientWindowArea :: ServerState -> Session -> WindowSizeMode -> STM Size
+clientWindowArea st sess mode = do
+    cs <- sessionClients st sess.id
+    stamps <- mapM (\c -> (,) <$> readTVar c.lastActive <*> readTVar c.size) cs
+    mwin <- currentWindow sess
+    opts <- maybe (resolveForSession st sess) (resolveForWindow st sess) mwin
+    pure (clampWindowSize
+        (sessionWindowArea opts.statusLines mode (defaultSizeOf opts) stamps))
+
+-- | @default-size@ read as tmux's @sscanf("%ux%u")@ does: leading digits, an
+-- @x@, digits, anything after ignored; anything else is 80x24.
+defaultSizeOf :: Options -> Size
+defaultSizeOf opts = fromMaybe Size { rows = 24, cols = 80 } $ do
+    (w, afterW) <- either (const Nothing) Just (TR.decimal (optionText "default-size" opts))
+    rest <- T.stripPrefix "x" afterW
+    (h, _) <- either (const Nothing) Just (TR.decimal rest)
+    pure Size { rows = dim h, cols = dim w }
+  where
+    dim :: Integer -> Word16
+    dim = fromInteger . max 1 . min 10000
+
+-- | tmux's @WINDOW_MINIMUM@..@WINDOW_MAXIMUM@ bounds on either dimension.
+clampWindowSize :: Size -> Size
+clampWindowSize s = Size { rows = clampDim s.rows, cols = clampDim s.cols }
+  where
+    clampDim = max 1 . min 10000
 
 -- | A single server-wide task that pulls every pane's pty and emulator size
 -- into agreement with the current layout whenever the screen is marked

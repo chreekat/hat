@@ -14,6 +14,7 @@ import Test.QuickCheck hiding (resize)
 import Hat.Geometry
 import Hat.Term.Cell
 import Hat.Term.Emulator
+import Hat.Term.RawGrid qualified as Raw
 
 new80x24 :: IO Emulator
 new80x24 = newEmulator Size { rows = 24, cols = 80 } 1000
@@ -309,6 +310,12 @@ spec = do
         m2 <- modes e
         m2.focusReport `shouldBe` False
 
+    it "tracks bracketed paste (?2004)" $ do
+        e <- new80x24
+        bracketedPaste e `shouldReturn` False
+        _ <- feedStr e "\ESC[?2004h"
+        bracketedPaste e `shouldReturn` True
+
     it "tracks color-scheme reporting (?2031)" $ do
         e <- new80x24
         m0 <- modes e
@@ -524,6 +531,38 @@ spec = do
         _ <- feedStr e "\ESC[?1l"          -- DECCKM off (normal)
         back <- encodeKey e CursorUp
         back `shouldBe` "\ESC[A"
+
+    describe "cursorPendingWrap" $ do
+        it "is set once a glyph lands in the last column under autowrap" $ do
+            e <- newEmulator Size { rows = 3, cols = 5 } 1000
+            _ <- feedStr e "ABCD"
+            cursorPendingWrap e `shouldReturn` False
+            _ <- feedStr e "E"
+            cursorPendingWrap e `shouldReturn` True
+        it "stays clear with autowrap off" $ do
+            e <- newEmulator Size { rows = 3, cols = 5 } 1000
+            _ <- feedStr e "\ESC[?7lABCDE"
+            cursorPendingWrap e `shouldReturn` False
+
+    describe "rawGrid" $ do
+        it "reads history then screen with wrap, width, style and link" $ do
+            e <- newEmulator Size { rows = 2, cols = 4 } 1000
+            _ <- feedStr e "old\r\nABCDE\r\n\ESC]8;;https://x\ESC\\\ESC[1;4:3m\227\129\130"
+            g <- rawGrid e
+            (g.cols, g.rows, g.hsize, g.hlimit) `shouldBe` (4, 2, 2, 1000)
+            map (.wrapped) g.lines `shouldBe` [False, True, False, False]
+            let wideCell = (g.lines !! 3).cells !! 0
+            (wideCell.text, wideCell.width, wideCell.link)
+                `shouldBe` ("\12354", Raw.RawWide, Just "https://x")
+            (wideCell.attrs.bold, wideCell.attrs.underline)
+                `shouldBe` (True, Raw.Curly)
+            ((g.lines !! 3).cells !! 1).width `shouldBe` Raw.SpacerTail
+        it "tells a colored erase from a never-written blank" $ do
+            e <- newEmulator Size { rows = 2, cols = 4 } 1000
+            _ <- feedStr e "\ESC[44m\ESC[K"
+            g <- rawGrid e
+            map (.bgOnly) (g.lines !! 0).cells `shouldBe` replicate 4 True
+            map (.bgOnly) (g.lines !! 1).cells `shouldBe` replicate 4 False
 
     -- bug 64: what a pane receives for a modified key depends on the key
     -- protocol its app turned on, and an app that turned none on must never

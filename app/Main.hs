@@ -218,14 +218,15 @@ restartClient path mconfig msess hist = do
 
 control :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
 control path mconfig cmds = do
-    -- Session-creating commands start the server, like tmux; anything
-    -- else against a dead server is an error.
+    -- A list holding any session-creating command starts the server, like
+    -- tmux (so @set -g … \; new -d@ works); anything else against a dead
+    -- server is an error.
     let starters = ["new-session", "new", "start-server", "start",
                     "attach-session", "attach"] :: [T.Text]
-        firstWord = case cmds of
-            ((w : _) : _) -> w
-            _ -> ""
-    msock <- if firstWord `elem` starters
+        starts = \case
+            (w : _) -> w `elem` starters
+            [] -> False
+    msock <- if any starts cmds
         then Just <$> connectOrStart path mconfig
         else fmap (, Joined) <$> connectTo path
     case msock of

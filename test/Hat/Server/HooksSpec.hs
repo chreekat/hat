@@ -322,6 +322,7 @@ fakeClient _ = do
         , envImport = envImportVar
         , env = []
         , cwd = "/"
+        , stdinSource = NoStdin
         }
 
 -- Wait (bounded) until a channel waiter registers.

@@ -7,6 +7,8 @@ module Hat.Term.Pty
     , PtyHandle
     , spawn
     , adopt
+    , exitedPty
+    , isClosed
     , readPty
     , readAvail
     , ReadBuf
@@ -34,7 +36,9 @@ module Hat.Term.Pty
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 import Control.Exception (IOException, catch, try)
-import Control.Monad (when)
+import Control.Monad (unless, when)
+import Data.IORef (IORef, atomicWriteIORef, newIORef, readIORef)
+import Data.Maybe (isJust)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Text (Text)
@@ -83,6 +87,9 @@ data PtyHandle = PtyHandle
     , exited :: MVar (Maybe ProcessStatus)
         -- ^ filled exactly once by the reaper thread; 'Nothing' when the
         -- reap itself failed (e.g. the child was already reaped elsewhere).
+    , closed :: IORef Bool
+        -- ^ set by 'closePty'; never read off 'handle', whose lock a blocked
+        -- read holds
     }
 
 -- Forks and execs the child entirely in C (see cbits/hat_shim.c), so no
@@ -120,11 +127,13 @@ spawn s = do
     when (rawPid < 0) $ ioError (userError "hat: fork failed")
     let childPid = fromIntegral rawPid :: ProcessID
     exitVar <- startReaper childPid
+    closedRef <- newIORef False
     pure PtyHandle
         { master = mFd
         , handle = h
         , child = childPid
         , exited = exitVar
+        , closed = closedRef
         }
 
 -- Fills the returned slot exactly once with the child's exit status. The put
@@ -156,11 +165,13 @@ adopt mFd childPid = do
     hSetBuffering h NoBuffering
     setTerminalAttributes mFd saved Immediately
     exitVar <- startReaper childPid
+    closedRef <- newIORef False
     pure PtyHandle
         { master = mFd
         , handle = h
         , child = childPid
         , exited = exitVar
+        , closed = closedRef
         }
 
 withMaybeCString :: Maybe String -> (CString -> IO a) -> IO a
@@ -228,7 +239,41 @@ writePty pty bs =
 
 -- | Change the pty size; the kernel delivers SIGWINCH to the child.
 resize :: PtyHandle -> Size -> IO ()
-resize pty = setWinsize pty.master
+resize pty sz = whenOpen pty () (setWinsize pty.master sz)
+
+-- | Whether 'closePty' has released the master. A dead pane kept by
+-- @remain-on-exit@ outlives its pty, and its fd number may since have been
+-- reused by an unrelated file, so every raw-fd operation checks this first.
+isClosed :: PtyHandle -> IO Bool
+isClosed pty = readIORef pty.closed
+
+whenOpen :: PtyHandle -> a -> IO a -> IO a
+whenOpen pty dflt act = do
+    closed <- isClosed pty
+    if closed then pure dflt else act
+
+-- | Whether the reaper has collected the child. Its pid is then free for
+-- the kernel to reuse, so it must never be signalled again.
+isReaped :: PtyHandle -> IO Bool
+isReaped pty = isJust <$> tryReadMVar pty.exited
+
+-- | A pty whose child is long gone and whose master is already closed: what a
+-- dead (@remain-on-exit@) pane carries across a reload, where there is no fd
+-- left to inherit. Every operation on it is a no-op; 'waitExit' answers the
+-- recorded status at once.
+exitedPty :: ProcessID -> Maybe ProcessStatus -> IO PtyHandle
+exitedPty childPid status = do
+    h <- openFile "/dev/null" ReadMode
+    hClose h
+    exitVar <- newMVar status
+    closedRef <- newIORef True
+    pure PtyHandle
+        { master = Fd (-1)
+        , handle = h
+        , child = childPid
+        , exited = exitVar
+        , closed = closedRef
+        }
 
 -- | Wait for the child to exit. Idempotent. 'Nothing' when the reaper
 -- could not obtain a status (e.g. the child was already reaped).
@@ -254,7 +299,7 @@ masterFd pty = pty.master
 -- 'Nothing' if the terminal has no foreground group or @/proc@ can't be
 -- read (e.g. the process just exited).
 foregroundCommand :: PtyHandle -> IO (Maybe Text)
-foregroundCommand pty = do
+foregroundCommand pty = whenOpen pty Nothing $ do
     r <- try (getTerminalProcessGroupID pty.master)
     case r of
         Left (_ :: IOException) -> pure Nothing
@@ -272,7 +317,7 @@ foregroundCommand pty = do
 -- 'Nothing' when there is no foreground group or @\/proc@ can't be read; the
 -- shell's own argv when no child is running (callers filter that out).
 foregroundArgv :: PtyHandle -> IO (Maybe [Text])
-foregroundArgv pty = do
+foregroundArgv pty = whenOpen pty Nothing $ do
     r <- try (getTerminalProcessGroupID pty.master)
     case r of
         Left (_ :: IOException) -> pure Nothing
@@ -290,7 +335,7 @@ foregroundArgv pty = do
 -- signal a restore uses to decide whether to relaunch a program through the
 -- shell (so the shell init — direnv, per-dir env — runs) or exec it bare.
 foregroundIsChild :: PtyHandle -> IO Bool
-foregroundIsChild pty = do
+foregroundIsChild pty = whenOpen pty False $ do
     r <- try (getTerminalProcessGroupID pty.master)
     pure $ case r of
         Left (_ :: IOException) -> False
@@ -321,17 +366,22 @@ procField pgrp name trim = do
 -- Unlike 'closePty' this does not touch the master Handle, so it is safe
 -- to call while the reader thread is still blocked inside it.
 signalHangup :: PtyHandle -> IO ()
-signalHangup pty =
-    signalProcess sigHUP pty.child `catch` \(_ :: IOException) -> pure ()
+signalHangup pty = do
+    reaped <- isReaped pty
+    unless reaped $
+        signalProcess sigHUP pty.child `catch` \(_ :: IOException) -> pure ()
 
 -- | Send SIGKILL to the pane's child, swallowing "process gone" errors.
 -- The escalation for a child that outlives SIGHUP.
 signalKill :: PtyHandle -> IO ()
-signalKill pty =
-    signalProcess sigKILL pty.child `catch` \(_ :: IOException) -> pure ()
+signalKill pty = do
+    reaped <- isReaped pty
+    unless reaped $
+        signalProcess sigKILL pty.child `catch` \(_ :: IOException) -> pure ()
 
 -- | Hang up the pane: signal the child and close the master side.
 closePty :: PtyHandle -> IO ()
 closePty pty = do
     signalHangup pty
+    atomicWriteIORef pty.closed True
     hClose pty.handle `catch` \(_ :: IOException) -> pure ()

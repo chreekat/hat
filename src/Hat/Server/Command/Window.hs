@@ -37,13 +37,12 @@ import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Read qualified as TR
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyWindow
     , sessionTarget )
@@ -53,7 +52,7 @@ import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
     , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
     , windowActivity, windowHolders )
-import Hat.Server.Resize (applySessionSize)
+import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
 
@@ -385,29 +384,64 @@ cycleWindow st mclient step =
                     switchTo st sess ix
         pure []
 
+-- | @resize-window@: size a window by hand. Like tmux, any resize leaves the
+-- window at @window-size manual@, so attached clients stop moving it.
 cmdResizeWindow :: CommandImpl
-cmdResizeWindow st mclient args = do
-    let (opts, _, _) = parseArgs "txy" args
-        parseInt t = case TR.decimal t of
-            Right (n, rest) | T.null rest -> Just n
-            _ -> Nothing
-    res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
-    case res of
-      Left e -> pure [RErr e]
-      Right (sess, _, win, _) -> do
-        current <- readTVarIO sess.lastSize
-        let sz = current
-                { cols = fromMaybe current.cols (parseInt =<< lookup "-x" opts)
-                , rows = fromMaybe current.rows (parseInt =<< lookup "-y" opts)
-                }
-        atomically $ writeTVar sess.lastSize sz
-        applySessionSize st sess.id
-        notifyWindow st "window-resized" (Just sess.id) win
-            [ ("old_width", PInt (fromIntegral current.cols))
-            , ("old_height", PInt (fromIntegral current.rows))
-            , ("width", PInt (fromIntegral sz.cols))
-            , ("height", PInt (fromIntegral sz.rows)) ]
-        pure []
+cmdResizeWindow st mclient args
+    | bad : _ <- filter (`notElem` ["-a", "-A", "-D", "-L", "-R", "-U"]) flags =
+        pure [RErr ("resize-window: unknown flag " <> bad)]
+    | length pos > 1 = pure [RErr usage]
+    | otherwise = case parsed of
+        Left e -> pure [RErr e]
+        Right (mx, my, adjust) -> do
+            res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
+            case res of
+              Left e -> pure [RErr e]
+              Right (sess, _, win, _) -> do
+                current <- readTVarIO sess.lastSize
+                let given = current
+                        { cols = maybe current.cols fromIntegral mx
+                        , rows = maybe current.rows fromIntegral my }
+                    nudged
+                        | has "-L" = given { cols = shrink given.cols }
+                        | has "-R" = given { cols = given.cols + fromIntegral adjust }
+                        | has "-U" = given { rows = shrink given.rows }
+                        | has "-D" = given { rows = given.rows + fromIntegral adjust }
+                        | otherwise = given
+                    shrink n
+                        | toInteger n >= toInteger adjust = n - fromIntegral adjust
+                        | otherwise = n
+                let fromClients = atomically . clientWindowArea st sess
+                sz <- clampWindowSize <$> case () of
+                    _ | has "-A" -> fromClients SizeLargest
+                      | has "-a" -> fromClients SizeSmallest
+                      | otherwise -> pure nudged
+                atomically $ do
+                    modifyTVar' win.options
+                        (insertDelta "window-size" (OVScalar "manual"))
+                    writeTVar sess.lastSize sz
+                applySessionSize st sess.id
+                notifyWindow st "window-resized" (Just sess.id) win
+                    [ ("old_width", PInt (fromIntegral current.cols))
+                    , ("old_height", PInt (fromIntegral current.rows))
+                    , ("width", PInt (fromIntegral sz.cols))
+                    , ("height", PInt (fromIntegral sz.rows)) ]
+                pure []
+  where
+    (opts, flags, pos) = parseArgs "txy" args
+    has f = f `elem` flags
+    usage = "usage: resize-window [-aADLRU] [-x width] [-y height] "
+        <> "[-t target-window] [adjustment]"
+    parsed = do
+        adjust <- case pos of
+            [] -> Right 1
+            t : _ -> either (Left . ("adjustment " <>)) Right
+                (strtonum 1 maxBound t)
+        mx <- traverse (either (Left . ("width " <>)) Right . strtonum 1 10000)
+            (lookup "-x" opts)
+        my <- traverse (either (Left . ("height " <>)) Right . strtonum 1 10000)
+            (lookup "-y" opts)
+        pure (mx, my, adjust :: Int)
 
 cmdKillWindow :: CommandImpl
 cmdKillWindow st mclient args = do

@@ -44,7 +44,7 @@ import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
-import Hat.Server.Pane (paneCommandName)
+import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
@@ -94,18 +94,32 @@ paneFormatEnv st sess wix win pix pane = do
     cmd <- paneCommandName pane
     scr <- Emu.snapshot pane.emulator
     hsize <- Emu.scrollbackLength pane.emulator
+    pendingWrap <- Emu.cursorPendingWrap pane.emulator
     active <- readTVarIO win.activeId
     sz <- readTVarIO pane.size
     paneUser <- deltaFormats <$> readTVarIO pane.options
-    pure $ Map.union paneUser $ Map.union (Map.fromList
+    mexit <- readTVarIO pane.exited
+    -- A signal is reported by number, as tmux does where libc has no
+    -- @sys_signame@ (glibc).
+    let deadVars = case mexit of
+            Nothing -> [("pane_dead", "0")]
+            Just e ->
+                [ ("pane_dead", "1")
+                , ("pane_dead_time", tshow (floor e.diedAt :: Integer)) ]
+                <> [ ("pane_dead_status", tshow n) | Just n <- [e.status] ]
+                <> [ ("pane_dead_signal", tshow n) | Just n <- [e.signal] ]
+    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
         , ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
         , ("pane_current_path", T.pack dir)
         , ("pane_current_command", cmd)
         , ("pane_active", if pane.id == active then "1" else "0")
-        , ("cursor_x", tshow scr.cursor.col)
+        , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
         , ("cursor_y", tshow scr.cursor.row)
+        , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
+              Cell.Glyph c cs _ -> T.pack (c : cs)
+              Cell.Continuation -> "")
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)

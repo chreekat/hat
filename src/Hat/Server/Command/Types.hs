@@ -6,8 +6,10 @@ module Hat.Server.Command.Types
     , CommandImpl
     , Dispatch (..)
     , parseArgs
+    , strtonum
     ) where
 
+import Data.ByteString (ByteString)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -15,8 +17,9 @@ import Data.Text.Read qualified as TR
 
 import Hat.Model (Client, ServerState)
 
--- | A single line of command output: normal text or an error.
-data Reply = ROutput Text | RErr Text
+-- | A single line of command output: normal text or an error; or raw
+-- bytes for the issuing command client's standard output.
+data Reply = ROutput Text | RErr Text | RData ByteString
     deriving (Eq, Show)
 
 -- | A command handler: the server, the issuing client (if any), and the
@@ -66,3 +69,13 @@ parseArgs spec = go [] []
     isNumber a = case TR.signed TR.decimal a of
         Right (_ :: Int, restT) -> T.null restT
         Left _ -> False
+
+-- | A bounded decimal argument, failing with OpenBSD @strtonum@'s words
+-- (\"invalid\", \"too small\", \"too large\") that tmux's errors embed.
+strtonum :: Int -> Int -> Text -> Either Text Int
+strtonum lo hi t = case TR.signed TR.decimal t of
+    Right (n, rest) | T.null rest ->
+        if n < toInteger lo then Left "too small"
+        else if n > toInteger hi then Left "too large"
+        else Right (fromInteger n)
+    _ -> Left "invalid"

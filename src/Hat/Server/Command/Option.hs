@@ -47,6 +47,7 @@ import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPaneScoped, targetSession )
 import Hat.Server.OptionParse
+import Hat.Server.Resize (applySessionSize)
 import Hat.Server.Target qualified as Target
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Term.Emulator qualified as Emu
@@ -359,7 +360,10 @@ hookEntryValue mdef hs me = case (mdef, me) of
     _ -> Nothing
 
 -- | Decide and write one option's entry atomically, refreshing the cached
--- global resolution; a changed @history-limit@ reaches open panes.
+-- global resolution; then push the change out as tmux's
+-- @options_push_changes@ does: a changed @history-limit@ reaches open
+-- panes, and every session's size is re-derived (@window-size@,
+-- @default-size@, @status@ and the rest all feed 'applySessionSize').
 writeOption
     :: ServerState -> Scope -> Text
     -> (Maybe OptionValue -> Maybe OptionValue -> Either Text SetAction)
@@ -382,7 +386,12 @@ writeOption st sc n decide = do
         Left e -> pure [RErr e]
         Right () -> do
             when (n == "history-limit") (applyHistoryLimit st)
+            resizeAllSessions st
             pure []
+
+resizeAllSessions :: ServerState -> IO ()
+resizeAllSessions st =
+    mapM_ (applySessionSize st) . Map.keys =<< readTVarIO st.sessions
 
 -- | @set -U@ at a window table: also drop the option (or its key) from
 -- each of the target window's panes, so they fall back to inheritance.

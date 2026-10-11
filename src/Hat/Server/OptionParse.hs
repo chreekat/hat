@@ -39,7 +39,10 @@ parseScalar d mode own current mvalue = case (d.kind, mvalue) of
     (KFlag, _) -> flagValue current mvalue
     (KChoice cs, _) -> choiceValue cs current mvalue
     (_, Nothing) -> Left "empty value"
-    (KString, Just v) -> Right (appended "" v)
+    (KString, Just v) ->
+        let new = appended "" v
+        in if maybe True (`fnmatch` new) d.pattern then Right new
+           else Left ("value is invalid: " <> new)
     (KStyle, Just v) ->
         let new = appended "," v
         in if formatBearing new || styleValid new then Right new
@@ -57,6 +60,41 @@ parseScalar d mode own current mvalue = case (d.kind, mvalue) of
         (Append, Just old) -> old <> sep <> v
         _ -> v
     formatBearing = T.isInfixOf "#{"
+
+-- | @fnmatch(3)@ with no flags: @*@, @?@, bracket sets (ranges, @!@\/@^@
+-- negation) and backslash escapes.
+fnmatch :: Text -> Text -> Bool
+fnmatch pat = go (T.unpack pat) . T.unpack
+  where
+    go [] s = null s
+    go ('*' : ps) s = any (go ps) (List.tails s)
+    go ('?' : ps) (_ : s) = go ps s
+    go ('[' : ps) (c : s)
+        | Just (matched, rest) <- bracket ps c = matched && go rest s
+    go ('\\' : p : ps) (c : s) = p == c && go ps s
+    go (p : ps) (c : s) = p == c && go ps s
+    go _ [] = False
+    -- A set's members up to its closing @]@ (a leading @]@ is a member);
+    -- 'Nothing' when unterminated, so the @[@ matches itself.
+    bracket ps c = do
+        let (neg, body) = case ps of
+                x : r | x `elem` ("!^" :: String) -> (True, r)
+                _ -> (False, ps)
+        (members, rest) <- splitSet body
+        pure (inSet members /= neg, rest)
+      where
+        inSet = \case
+            a : '-' : b : r -> (a <= c && c <= b) || inSet r
+            a : r -> a == c || inSet r
+            [] -> False
+    splitSet body = case body of
+        ']' : r -> first (']' :) <$> close r
+        _ -> close body
+    close = \case
+        ']' : r -> Just ([], r)
+        x : r -> first (x :) <$> close r
+        [] -> Nothing
+    first f (a, b) = (f a, b)
 
 flagValue :: Text -> Maybe Text -> Either Text Text
 flagValue current = \case

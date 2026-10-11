@@ -1,4 +1,5 @@
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE MultiWayIf #-}
 
 -- | The terminal emulator: libghostty-vt wrapped behind a narrow interface
 -- (bug 17). The event/mode vocabulary and the pure byte-synthesizers live in
@@ -35,6 +36,7 @@ module Hat.Term.Emulator
     , cursorState
     , currentPen
     , modes
+    , bracketedPaste
     , modeReplayBytes
     , restoreBytes
     , restorePainted
@@ -51,6 +53,8 @@ module Hat.Term.Emulator
     , clearScrollback
     , screenRowText
     , screenCell
+    , rawGrid
+    , cursorPendingWrap
     ) where
 
 import Control.Concurrent.MVar
@@ -81,6 +85,7 @@ import Hat.Term.Cell
 import Hat.Term.Emulator.Types
 import Hat.Term.Ghostty
 import Hat.Term.HostProtocol
+import Hat.Term.RawGrid qualified as Raw
 
 -- | Per-emulator cell intern table; see 'peekShimCell'.
 type CellIntern = IORef (Map Cell (Weak Cell))
@@ -482,6 +487,11 @@ modes e = withMVar e.lock $ \_ -> do
             , colorReport = cr
             }
 
+-- | Whether the app enabled bracketed paste (?2004).
+bracketedPaste :: Emulator -> IO Bool
+bracketedPaste e = withMVar e.lock $ \_ ->
+    withForeignPtr e.term $ \t -> (/= 0) <$> c_mode t 2004 0
+
 -- | Encode a cursor key per the terminal's DECCKM state: application cursor
 -- keys get @ESC O _@, normal mode @ESC [ _@.
 encodeKey :: Emulator -> CursorKey -> IO ByteString
@@ -589,6 +599,91 @@ cursorState e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     cy  <- fromIntegral <$> c_get t dataCursorY
     vis <- c_get t dataCursorVisible
     pure (Pos { row = cy, col = cx }, vis /= 0)
+
+-- | Whether the next glyph wraps to a new line before printing: the cursor
+-- printed into the last column with autowrap (DECAWM) on. libghostty holds
+-- the cursor on that column with a flag where tmux steps it one past.
+cursorPendingWrap :: Emulator -> IO Bool
+cursorPendingWrap e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    pending <- c_get t dataCursorPendingWrap
+    awm <- c_mode t 7 0
+    pure (pending > 0 && awm /= 0)
+
+-- | The whole grid, exposed history then screen, as libghostty records each
+-- cell ('Raw.RawGrid'), read under one lock hold.
+rawGrid :: Emulator -> IO Raw.RawGrid
+rawGrid e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    lim <- readIORef e.sbLimit
+    phys <- physicalScrollback t
+    cols <- fromIntegral <$> c_get t dataCols
+    rows <- fromIntegral <$> c_get t dataRows
+    let exposed = min phys (max 0 lim)
+        coords = [ (tagHistory, y) | y <- [phys - exposed .. phys - 1] ]
+              <> [ (tagActive, y)  | y <- [0 .. rows - 1] ]
+    ls <- allocaBytes (max 1 cols * rawCellSize) $ \out ->
+        mapM (\(tag, y) -> rawLine t tag y cols out) coords
+    pure Raw.RawGrid
+        { cols = cols, rows = rows, hsize = exposed, hlimit = max 0 lim
+        , lines = ls }
+
+rawLine :: Ptr CTerm -> CInt -> Int -> Int -> Ptr () -> IO Raw.RawLine
+rawLine t tag y cols out = do
+    _ <- c_raw_row t tag (fromIntegral y) (fromIntegral cols) out
+    w <- c_row_wrapped t tag (fromIntegral y)
+    sp <- c_row_prompt t tag (fromIntegral y)
+    cs <- mapM (\x -> rawCell t tag x y (out `plusPtr` (x * rawCellSize)))
+        [0 .. cols - 1]
+    pure Raw.RawLine { wrapped = w /= 0, prompt = sp == 1, cells = cs }
+
+-- | Decode one 'GhostShimRawCell' per the shim header's field encoding.
+rawCell :: Ptr CTerm -> CInt -> Int -> Int -> Ptr () -> IO Raw.RawCell
+rawCell t tag x y p = do
+    f <- peekRawCell p
+    let width = case f.rfWide of
+            1 -> Raw.RawWide
+            2 -> Raw.SpacerTail
+            3 -> Raw.SpacerHead
+            _ -> Raw.RawNarrow
+        isGlyph = f.rfContent <= 1 && f.rfCodepoint /= 0
+    marks <- if isGlyph && f.rfContent == 1
+        then graphemeMarks t tag x y
+        else pure []
+    link <- if f.rfHasLink /= 0 then cellLink t tag x y else pure Nothing
+    let has m = f.rfAttrs .&. m /= 0
+        ul = case f.rfUnderline of
+            n | n >= 1 && n <= 5 -> toEnum (fromIntegral n)
+            _ -> Raw.NoUnderline
+    pure Raw.RawCell
+        { text = if isGlyph then chr (fromIntegral f.rfCodepoint) : marks else []
+        , width = width
+        , bgOnly = f.rfContent >= 2
+        , attrs = Raw.RawAttrs
+            { bold = has 1, faint = has 2, italic = has 4, blink = has 8
+            , inverse = has 16, invisible = has 32, strike = has 64
+            , overline = has 128, underline = ul }
+        , fg = rawColor f.rfFgTag f.rfFgVal
+        , bg = rawColor f.rfBgTag f.rfBgVal
+        , us = rawColor f.rfUsTag f.rfUsVal
+        , link = link
+        }
+  where
+    rawColor :: CInt -> Word32 -> Raw.RawColor
+    rawColor tg v
+        | tg == 1   = Raw.RawPalette (fromIntegral v)
+        | tg == 2   = Raw.RawRgb (chan 16) (chan 8) (chan 0)
+        | otherwise = Raw.RawDefault
+      where chan s = fromIntegral ((v `shiftR` s) .&. 0xff)
+
+cellLink :: Ptr CTerm -> CInt -> Int -> Int -> IO (Maybe Text)
+cellLink t tag x y = go 256
+  where
+    go cap = allocaBytes cap $ \buf -> do
+        n <- fromIntegral <$>
+            c_cell_link t tag (fromIntegral x) (fromIntegral y) buf (fromIntegral cap)
+        if | n <= 0 -> pure Nothing
+           | n > cap -> go n
+           | otherwise -> Just . TE.decodeUtf8Lenient
+                <$> B.packCStringLen (castPtr buf, n)
 
 -- | Every exposed scrollback line painted to its replay bytes, oldest first,
 -- under one lock hold: one native formatter pass over the history range

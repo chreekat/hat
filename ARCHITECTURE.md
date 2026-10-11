@@ -412,9 +412,9 @@ newtype WindowId  = WindowId  Int   deriving (Eq, Ord, Show)  -- prints as "@N"
 newtype PaneId    = PaneId    Int   deriving (Eq, Ord, Show)  -- prints as "%N"
 ```
 
-**Boolean blindness avoidance** (CLAUDE.md rule): `aggressive-resize`
-resolves to `data ResizeMode = SmallestClient | ActiveClient`, not a
-`Bool`. `mode-keys` is `data ModeKeys = KeysVi | KeysEmacs`.
+**Boolean blindness avoidance** (CLAUDE.md rule): `window-size`
+resolves to `data WindowSizeMode = SizeLargest | SizeSmallest | SizeManual
+| SizeLatest`, not an `Int`. `mode-keys` is `data ModeKeys = KeysVi | KeysEmacs`.
 
 ## Wire protocol shape
 

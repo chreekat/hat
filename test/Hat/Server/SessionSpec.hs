@@ -30,7 +30,7 @@ import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionValue (..)
-    , defaultOptions, emptyDelta, insertDelta, singletonDelta)
+    , defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
@@ -47,9 +47,10 @@ import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
+import Hat.Server.Pane (deadNoticeBytes)
 import Hat.Server.Command.Session
     (cmdKillSession, cmdNewSession, cmdRenameSession)
-import Hat.Server.Command.Window (cmdRenameWindow, cmdUnlinkWindow)
+import Hat.Server.Command.Window (cmdRenameWindow, cmdResizeWindow, cmdUnlinkWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
@@ -154,6 +155,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO ImportEnv
         <*> pure []
         <*> pure ""
+        <*> pure NoStdin
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -193,6 +195,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO ImportEnv
         <*> pure clientEnv
         <*> pure ""
+        <*> pure NoStdin
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 
@@ -208,6 +211,7 @@ stubPane n = do
     tidV  <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
+    exitedV <- newTVarIO Nothing
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -221,6 +225,8 @@ stubPane n = do
         , readerTid = tidV
         , home = homeV
         , pendingInput = Nothing
+        , start = FreshShell
+        , exited = exitedV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -258,6 +264,23 @@ copyModeAt hsize = PaneMode
 
 spec :: Spec
 spec = do
+    describe "deadNoticeBytes" $
+        it "scrolls a line and draws the styled notice, cursor hidden" $ do
+            let sz = Size { rows = 3, cols = 8 }
+            e <- Emu.newEmulator sz 100
+            _ <- Emu.feed e "a\r\nb\r\nc"
+            _ <- Emu.feed e (deadNoticeBytes sz "x#[fg=red]dead#[bold]!too long")
+            scr <- Emu.snapshot e
+            let glyphs row = [ ch | Cell.Cell { content = Cell.Glyph ch _ _ }
+                                        <- V.toList row ]
+            map glyphs (V.toList scr.cells)
+                `shouldBe` ["b       ", "c       ", "xdead!to"]
+            let styleAt col = ((scr.cells V.! 2) V.! col).style
+            (styleAt 0).fg `shouldBe` Cell.DefaultColor
+            (styleAt 1).fg `shouldBe` Cell.Indexed 1
+            ((styleAt 5).fg, (styleAt 5).bold) `shouldBe` (Cell.Indexed 1, True)
+            snd <$> Emu.cursorState e `shouldReturn` False
+
     -- User options resolve per scope: a session-local @set @v@ is visible
     -- to formats and shadows the global value (upstream format-strings.sh).
     describe "user options in formats" $
@@ -409,19 +432,52 @@ spec = do
             touchSocket client.sock
             got `shouldBe` Nothing
 
-    describe "aggressive-resize sizing" $ do
+    describe "window-size sizing" $ do
         let big = Size { rows = 50, cols = 200 }
             small = Size { rows = 24, cols = 80 }
             -- an attached client's window area is its viewport minus the status row
             pane s = s { rows = s.rows - 1 }
-        it "follows the most-recently-active client under aggressive-resize" $ do
+        it "follows the most-recently-active client by default (latest)" $ do
             (st, sess) <- seedSession "/"
-            atomically $ writeTVar st.globalWindowOptions
-                (singletonDelta "aggressive-resize" (OVScalar "on"))
             _ <- addClient st (SessionId 0) big 2      -- bigger client is newer
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
             readTVarIO sess.lastSize `shouldReturn` pane big
+        it "fits the smallest client under window-size smallest" $ do
+            (st, sess) <- seedSession "/"
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta "window-size" (OVScalar "smallest"))
+            _ <- addClient st (SessionId 0) big 2
+            _ <- addClient st (SessionId 0) small 1
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` pane small
+        it "keeps a manual size whatever the clients" $ do
+            (st, sess) <- seedSession "/"
+            sz0 <- readTVarIO sess.lastSize
+            atomically $ writeTVar st.globalWindowOptions
+                (singletonDelta "window-size" (OVScalar "manual"))
+            _ <- addClient st (SessionId 0) big 1
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` sz0
+        it "resize-window sizes the window and pins it to manual" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            _ <- addClient st (SessionId 0) big 1
+            cmdResizeWindow st Nothing ["-t", "work", "-x", "33", "-y", "7"]
+                `shouldReturn` []
+            readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 33 }
+            -- a later client change no longer moves it
+            applySessionSize st (SessionId 0)
+            readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 33 }
+        it "resize-window rejects an out-of-range width" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            cmdResizeWindow st Nothing ["-t", "work", "-x", "0"]
+                `shouldReturn` [RErr "width too small"]
         it "carves no status row when status is off" $ do
             (st, sess) <- seedSession "/"
             atomically $ writeTVar st.globalSessionOptions
@@ -466,7 +522,25 @@ spec = do
             environFind "MYVAR" env
                 `shouldBe` Just (EnvEntry (Just "new") EnvVisible)
 
-    describe "new-session" $
+    describe "new-session" $ do
+        it "sizes a detached session from default-size, overridden by -x/-y" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-newsess-size.sock" Nothing
+            atomically $ writeTVar st.globalSessionOptions
+                (singletonDelta "default-size" (OVScalar "50x20"))
+            cmdNewSession st Nothing ["-d", "-x", "0"]
+                `shouldReturn` [RErr "width too small"]
+            [] <- cmdNewSession st Nothing ["-d", "-s", "a", "-y", "7", "sleep 30"]
+            [sess] <- Map.elems <$> readTVarIO st.sessions
+            [win] <- Map.elems <$> readTVarIO sess.windows
+            [pane] <- Map.elems <$> readTVarIO win.panes
+            let reap = do
+                    _ <- cmdKillSession st Nothing ["-t", "a"]
+                    () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
+            flip finally reap $ do
+                readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 50 }
+                lookupDelta "default-size" <$> readTVarIO sess.options
+                    `shouldReturn` Just (OVScalar "50x7")
         it "creates a named session with its first window; a duplicate name is refused" $ do
             lg <- newLogger "/dev/null"
             st <- newServerState Map.empty lg "/tmp/hat-newsess.sock" Nothing

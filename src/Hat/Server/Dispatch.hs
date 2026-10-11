@@ -184,6 +184,8 @@ hookArgSpec = \case
     "attach-session" -> "tc"
     "new-window" -> "nct"
     "split-window" -> "ctlpeF"
+    "respawn-pane" -> "cet"
+    "respawn-window" -> "cet"
     "capture-pane" -> "bESt"
     "select-pane" -> "tT"
     "copy-mode" -> "st"
@@ -192,8 +194,13 @@ hookArgSpec = \case
     "link-window" -> "st"
     "resize-window" -> "txy"
     "send-keys" -> "tN"
-    "set-buffer" -> "bn"
-    "save-buffer" -> "bt"
+    "set-buffer" -> "btn"
+    "delete-buffer" -> "b"
+    "show-buffer" -> "b"
+    "save-buffer" -> "b"
+    "load-buffer" -> "bt"
+    "paste-buffer" -> "bst"
+    "list-buffers" -> "FfO"
     "list-clients" -> "tF"
     "list-sessions" -> "F"
     "list-windows" -> "Ft"
@@ -289,6 +296,8 @@ commandSpecs =
     , (["split-window", "splitw"], cmdSplitWindow)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
+    , (["respawn-pane", "respawnp"], cmdRespawnPane)
+    , (["respawn-window", "respawnw"], cmdRespawnWindow)
     , (["swap-pane", "swapp"], cmdSwapPane)
     , (["clear-history", "clearhist"], cmdClearHistory)
     , (["break-pane", "breakp"], cmdBreakPane)
@@ -310,6 +319,7 @@ commandSpecs =
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)
     , (["delete-buffer", "deleteb"], cmdDeleteBuffer)
+    , (["load-buffer", "loadb"], cmdLoadBuffer)
     , (["save-buffer", "saveb"], cmdSaveBuffer)
     , (["paste-buffer", "pasteb"], cmdPasteBuffer)
     , (["pipe-pane", "pipep"], cmdPipePane)

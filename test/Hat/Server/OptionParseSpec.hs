@@ -43,6 +43,18 @@ spec = do
         it "toggles between the first two choices with no value" $
             setScalar "status" "on" Nothing `shouldBe` Right "off"
 
+    describe "patterns" $ do
+        it "accepts what default-size's glob matches, scannable or not" $ do
+            setScalar "default-size" "80x24" (Just "100x30") `shouldBe` Right "100x30"
+            setScalar "default-size" "80x24" (Just "1junkx2") `shouldBe` Right "1junkx2"
+        it "rejects what the glob does not match" $ do
+            setScalar "default-size" "80x24" (Just "100") `shouldBe` Left "value is invalid: 100"
+            setScalar "default-size" "80x24" (Just "x24") `shouldBe` Left "value is invalid: x24"
+            setScalar "default-size" "80x24" (Just "80x") `shouldBe` Left "value is invalid: 80x"
+        it "checks an appended value whole" $
+            parseScalar (def "default-size") Append (Just "80") "80x24" (Just "x2")
+                `shouldBe` Right "80x2"
+
     describe "flags" $ do
         it "toggles with no value" $ do
             setScalar "focus-events" "off" Nothing `shouldBe` Right "on"

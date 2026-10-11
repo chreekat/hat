@@ -13,12 +13,14 @@ import Test.Hspec
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
-    ( CharSearch (..), CharStop (..), CopyModeState (..)
+    ( CharSearch (..), CharStop (..), CopyModeState (..), FrozenGrid (..)
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
 import Hat.Server.CopyMode
-import Hat.Term.Cell (Cell (..), Color (..), Style (..), defaultStyle, glyphCell)
+import Hat.Term.Cell
+    ( Cell (..), Color (..), Content (..), Style (..), Width (..), defaultStyle
+    , glyphCell )
 import Hat.Term.Emulator qualified as Emu
 
 import Data.Map.Strict qualified as Map
@@ -205,6 +207,28 @@ spec = do
                , "begin-selection", "copy-selection" ]
                 `shouldBe` ["e"]  -- row 1 "        Indented line", col 14
 
+    describe "a wide character's padding column" $ do
+        -- Row 0 "abc中" (中 at cols 3-4, col 4 its padding), row 1 "xyz",
+        -- mirroring the tail of upstream copy-mode-test-vi.
+        let narrow c = glyphCell c defaultStyle
+            row0 = V.fromList ([narrow 'a', narrow 'b', narrow 'c'
+                       , Cell { content = Glyph '中' [] Wide, style = defaultStyle }
+                       , Cell { content = Continuation, style = defaultStyle }]
+                       <> replicate 15 (narrow ' '))
+            row1 = V.fromList (map narrow "xyz" <> replicate 17 (narrow ' '))
+            wide = frozenGrid FrozenGrid
+                { fgHsize = 0, fgSy = 2, fgSx = 20
+                , fgRows = V.fromList [row0, row1] }
+            at col row = start.sState { cursorRow = row, cursorCol = col }
+            go m s = runIdentity (runMotion wide KeysVi viSeparators m s)
+            pos s = (s.cursorCol, s.cursorRow)
+        it "vi cursor-right skips it onto the next line" $
+            pos (go (mCursorRight ContentColumns) (at 3 0)) `shouldBe` (0, 1)
+        it "vi cursor-left from the next line lands on the wide character" $
+            pos (go mCursorLeft (at 0 1)) `shouldBe` (3, 0)
+        it "cursor-left steps off the wide character normally" $
+            pos (go mCursorLeft (at 3 0)) `shouldBe` (2, 0)
+
     describe "rectangle selection frees the column band" $ do
         -- Row 0 "A line of words" has content length 15; the grid is 40
         -- wide. A rectangular selection lets the cursor roam the blank
@@ -216,10 +240,12 @@ spec = do
                     (mCursorRight (selColumnBound st)) st)
         it "cursor-right advances past the last character" $
             (right (rect (at 0 15))).cursorCol `shouldBe` 16
-        it "cursor-right stops at the grid width" $
-            (right (rect (at 0 40))).cursorCol `shouldBe` 40
-        it "cursor-right still clamps without a rectangle" $
-            (right (at 0 15)).cursorCol `shouldBe` 15
+        it "cursor-right wraps to the next line at the grid width" $ do
+            let s = right (rect (at 0 40))
+            (s.cursorRow, s.cursorCol) `shouldBe` (1, 0)
+        it "cursor-right wraps past the last character without a rectangle" $ do
+            let s = right (at 0 14)
+            (s.cursorRow, s.cursorCol) `shouldBe` (1, 0)
         it "cursor-down keeps the column" $ do
             let s = runIdentity (cursorVertical 1 grid (rect (at 0 30)))
             (s.cursorRow, s.cursorCol) `shouldBe` (1, 30)

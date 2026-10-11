@@ -11,8 +11,10 @@ module Hat.Model.Options
     , ModeKeys (..)
     , AlertAction (..)
     , alertAllows
+    , RemainOnExit (..)
     , BorderLines (..)
     , BorderIndicators (..)
+    , WindowSizeMode (..)
     , Keymap
     , defaultOptions
       -- * Overlays
@@ -73,6 +75,12 @@ alertAllows action isCurrent = case action of
     AlertCurrent -> isCurrent
     AlertOther -> not isCurrent
 
+-- | @remain-on-exit@: whether a pane whose program exited stays in the tree
+-- as a dead pane — always, only when it failed (nonzero exit or a signal), or
+-- until a key is pressed in it.
+data RemainOnExit = RemainOff | RemainOn | RemainFailed | RemainKey
+    deriving (Eq, Show)
+
 -- | @pane-border-lines@: which box-drawing glyph set draws pane borders.
 data BorderLines = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
     deriving (Eq, Show)
@@ -80,6 +88,11 @@ data BorderLines = BorderSingle | BorderHeavy | BorderDouble | BorderSimple
 -- | @pane-border-indicators@: how the active pane's border is marked.
 data BorderIndicators
     = IndicatorsOff | IndicatorsColour | IndicatorsArrows | IndicatorsBoth
+    deriving (Eq, Show)
+
+-- | @window-size@: how a window's size follows its clients. See
+-- 'Hat.Server.Layout.effectiveWindowSize'.
+data WindowSizeMode = SizeLargest | SizeSmallest | SizeManual | SizeLatest
     deriving (Eq, Show)
 
 -- | One scope chain's resolved options. Every field below is decoded from
@@ -124,7 +137,6 @@ data Options = Options
     , monitorSilence         :: Int   -- ^ seconds of quiet before alert-silence; 0 disables
     , bellAction             :: AlertAction
     , automaticRename        :: Bool   -- ^ windows track their foreground command
-    , remainOnExit           :: Bool   -- ^ a dead pane stays until killed; see 'Hat.Server.Pane.paneEof'
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
@@ -184,7 +196,6 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , monitorSilence = missing "monitor-silence"
         , bellAction = missing "bell-action"
         , automaticRename = missing "automatic-rename"
-        , remainOnExit = missing "remain-on-exit"
         , automaticRenameFormat = missing "automatic-rename-format"
         , updateEnvironment = missing "update-environment"
         , mainPaneWidth = missing "main-pane-width"
@@ -259,7 +270,6 @@ fieldBindings = Map.fromList
         "other" -> AlertOther
         _ -> AlertAny }))
     , ("automatic-rename", flag (\v o -> o { automaticRename = v }))
-    , ("remain-on-exit", text (\v o -> o { remainOnExit = v == "on" }))
     , ("automatic-rename-format", text (\v o -> o
         { automaticRenameFormat = v }))
     , ("update-environment", arr (\v o -> o { updateEnvironment = Map.elems v }))

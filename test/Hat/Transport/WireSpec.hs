@@ -101,6 +101,8 @@ instance Arbitrary ClientToServer where
         , Resize <$> arbitrary
         , Command <$> listOf (listOf genText)
         , pure Detach
+        , StdinData . B.pack <$> arbitrary
+        , pure StdinEnd
         ]
     shrink = \case
         ClientHello h ->
@@ -113,6 +115,8 @@ instance Arbitrary ClientToServer where
         Resize sz -> Resize <$> shrink sz
         Command cmds -> Command . unstrs <$> shrink (strs cmds)
         Detach -> []
+        StdinData bs -> StdinData . B.pack <$> shrink (B.unpack bs)
+        StdinEnd -> []
 
 instance Arbitrary ServerToClient where
     arbitrary = oneof
@@ -129,6 +133,8 @@ instance Arbitrary ServerToClient where
         , ServerVersion <$> arbitrary
         , pure RestartClient
         , RestartClientTo <$> genText <*> listOf genText
+        , pure ReadStdin
+        , WriteStdout . B.pack <$> arbitrary
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -146,6 +152,8 @@ instance Arbitrary ServerToClient where
         RestartClientTo t hist ->
             [ RestartClientTo (T.pack t') hist | t' <- shrink (T.unpack t) ]
             ++ [ RestartClientTo t hs | hs <- shrinkList (const []) hist ]
+        ReadStdin -> []
+        WriteStdout bs -> WriteStdout . B.pack <$> shrink (B.unpack bs)
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -200,6 +208,8 @@ spec = do
               , encodeMessage (Command [["kill-server"]])
               , "82039f9f6b6b696c6c2d736572766572ffff" )
             , ( "Detach", encodeMessage Detach, "8104" )
+            , ( "StdinData", encodeMessage (StdinData "in"), "820542696e" )
+            , ( "StdinEnd", encodeMessage StdinEnd, "8106" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -223,6 +233,8 @@ spec = do
             , ( "RestartClientTo"
               , encodeMessage (RestartClientTo "main" ["alt"])
               , "830c646d61696e9f63616c74ff" )
+            , ( "ReadStdin", encodeMessage ReadStdin, "810d" )
+            , ( "WriteStdout", encodeMessage (WriteStdout "o"), "820e416f" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -290,6 +302,11 @@ spec = do
         it "drops the history, to the name-only RestartClientTo, at level 6" $
             hex (encodeServerMessageAt 6 (RestartClientTo "main" ["alt"]))
                 `shouldBe` "820c646d61696e"
+        -- The level-7 corpus vector for tag 14: a pre-stdout peer prints the
+        -- bytes as a text line.
+        it "downgrades WriteStdout to a Message below level 8" $
+            hex (encodeServerMessageAt 7 (WriteStdout "o"))
+                `shouldBe` "8205616f"
         it "reads a level-6 name-only RestartClientTo as empty history" $
             (decodeMessage (B.pack (hexBytes "820c646d61696e"))
                 :: Inbound ServerToClient)

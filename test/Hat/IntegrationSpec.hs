@@ -177,6 +177,24 @@ hatCtl h args = do
             >> pure (ExitFailure 1, "", ""))
           pure r
 
+-- Run a hat control command feeding it stdin, returning its raw stdout.
+hatBytes :: Hat -> [String] -> B.ByteString -> IO (ExitCode, B.ByteString)
+hatBytes h args input = do
+    path <- testPath
+    r <- timeout 30_000_000 $ do
+        (Just hin, Just hout, _, ph) <- P.createProcess
+            (P.proc h.bin (["-S", h.sock] <> args))
+                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+                , P.close_fds = True
+                , P.std_in = P.CreatePipe, P.std_out = P.CreatePipe }
+        B.hPut hin input >> hClose hin
+        out <- B.hGetContents hout
+        code <- P.waitForProcess ph
+        pure (code, out)
+    maybe (expectationFailure ("hat " <> unwords args <> ": no reply in 30s")
+            >> pure (ExitFailure 1, ""))
+          pure r
+
 -- Stdout of a hat control command.
 ctlOut :: Hat -> [String] -> IO String
 ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
@@ -710,6 +728,14 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         _ <- awaitExit c1
         pure ()
+
+    it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
+        withHat hatBin $ \h -> do
+        let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]
+        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
+        (ExitSuccess, _) <- hatBytes h ["load-buffer", "-b", "b", "-"] bytes
+        hatBytes h ["save-buffer", "-b", "b", "-"] ""
+            `shouldReturn` (ExitSuccess, bytes)
 
     it "renders vim to two simultaneous clients" $
         withHat hatBin $ \h -> do
@@ -1381,6 +1407,96 @@ spec = parallel $ do
         pidAlive pid2 `shouldReturn` True
         _ <- ctlOut h ["kill-pane"]
         awaitReaped pid2
+
+    it "a command list holding a new-session autostarts the server" $
+        withHat hatBin $ \h -> do
+        (code, _, err) <- hatCtl h
+            ["set", "-g", "@early", "yes", ";", "new", "-d"]
+        (code, err) `shouldBe` (ExitSuccess, "")
+        ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
+
+    it "remain-on-exit keeps an exited pane, dead, with its status" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "on", ";"
+            , "new", "-d", "-x", "60", "-y", "5", "echo DEADBEACON; exit 3" ]
+        awaitTrue "the pane to die" $
+            (== "1 3\n") <$> ctlOut h
+                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
+        screen <- ctlOut h ["capture-pane", "-p", "-S", "-"]
+        screen `shouldSatisfy` List.isInfixOf "DEADBEACON"
+        screen `shouldSatisfy` List.isInfixOf "Pane is dead (status 3, "
+
+    it "remain-on-exit failed drops a pane whose program succeeded" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "failed", ";", "new", "-d", ";"
+            , "new-window", "-d", "true", ";", "new-window", "-d", "exit 1" ]
+        awaitTrue "only the failed pane to remain" $
+            (== "0 0\n2 1\n") <$> ctlOut h
+                ["list-panes", "-a", "-F", "#{window_index} #{pane_dead}"]
+
+    it "respawn-pane reruns a dead pane's command, and needs -k when live" $
+        withHat hatBin $ \h -> do
+        let runs = h.home <> "/runs"
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "on", ";"
+            , "new", "-d", "echo run >> " <> runs ]
+        let dead = ctlOut h ["display", "-p", "#{pane_dead}"]
+        awaitTrue "the pane to die" ((== "1\n") <$> dead)
+        _ <- hatCtl h ["respawn-pane"]
+        _ <- awaitFile runs ((== 2) . length . lines)
+        awaitTrue "the rerun to die" ((== "1\n") <$> dead)
+
+        _ <- hatCtl h ["respawn-pane", "sleep 100"]
+        dead `shouldReturn` "0\n"
+        pid <- read <$> ctlOut h ["display", "-p", "#{pane_pid}"]
+        (_, _, err) <- hatCtl h ["respawn-pane", "true"]
+        err `shouldBe` "respawn pane failed: pane 0:0.0 still active\n"
+        _ <- hatCtl h ["respawn-pane", "-k", "sleep 200"]
+        awaitReaped pid
+        dead `shouldReturn` "0\n"
+
+    it "respawn-window -k reduces the window to one respawned pane" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new", "-d", "sleep 100", ";", "split-window", "-d"]
+        ctlOut h ["display", "-p", "#{window_panes}"] `shouldReturn` "2\n"
+        (_, _, err) <- hatCtl h ["respawn-window", "true"]
+        err `shouldBe` "respawn window failed: window 0:0 still active\n"
+        let ran = h.home <> "/ran"
+        _ <- hatCtl h ["respawn-window", "-k", "echo yes > " <> ran <> "; sleep 300"]
+        ctlOut h ["display", "-p", "#{window_panes}"] `shouldReturn` "1\n"
+        awaitFile ran (== "yes\n") `shouldReturn` "yes\n"
+
+    it "remain-on-exit key closes a dead pane on the next key" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "remain-on-exit", "key"]
+        typeInto c "exit\r"
+        awaitScreen c "Pane is dead"
+        typeInto c "x"
+        _ <- awaitExit c
+        pure ()
+
+    it "restart-server keeps a dead pane dead, and its command respawnable" $
+        withHat hatBin $ \h -> do
+        let runs = h.home <> "/runs"
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "on", ";"
+            , "new", "-d", "echo run >> " <> runs <> "; exit 7" ]
+        let deadStatus = ctlOut h
+                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
+        awaitTrue "the pane to die" ((== "1 7\n") <$> deadStatus)
+        _ <- hatCtl h ["restart-server", h.bin]
+        awaitTrue "the handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        deadStatus `shouldReturn` "1 7\n"
+        ctlOut h ["capture-pane", "-p"]
+            >>= (`shouldSatisfy` List.isInfixOf "Pane is dead (status 7, ")
+        _ <- hatCtl h ["respawn-pane"]
+        _ <- awaitFile runs ((== 2) . length . lines)
+        pure ()
 
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
