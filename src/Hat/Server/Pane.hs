@@ -51,6 +51,10 @@ module Hat.Server.Pane
     , paneExitWaitMicros
     , hangupPane
     , typeIntoPane
+    , syncTargets
+    , typeKeyIntoPane
+    , typeIntoPaneSynced
+    , reencodeKey
     , setScreenTitle
     , restorePaneState
     , detachPaneCurrent
@@ -779,6 +783,75 @@ typeIntoPane :: Pane -> B.ByteString -> IO ()
 typeIntoPane pane bytes = do
     off <- readTVarIO pane.inputOff
     unless off (Hat.Term.Pty.writePty pane.pty bytes)
+
+-- | The panes input typed into @pane@ is copied to under
+-- @synchronize-panes@ (tmux's @window_pane_copy_key@): when @pane@ has the
+-- option on, every other visible, live pane of its window that has it on
+-- and is not in a mode.
+syncTargets :: ServerState -> Pane -> STM [Pane]
+syncTargets st pane = do
+    mhome <- readTVar pane.home  -- See Note [Pane home]
+    sessions <- readTVar st.sessions
+    case mhome of
+        Just (sid, win) | Just sess <- Map.lookup sid sessions -> do
+            let synced p = optionFlag "synchronize-panes"
+                    <$> resolveForPane st sess win p
+            on <- synced pane
+            if not on then pure [] else do
+                zoom <- readTVar win.zoomed
+                active <- readTVar win.activeId
+                others <- filter (\p -> p.id /= pane.id) <$> windowPanes win
+                flip filterM others $ \p -> do
+                    inMode <- isJust <$> readTVar p.mode
+                    gone <- isJust <$> readTVar p.exited
+                    let visible = isNothing zoom || p.id == active
+                    if inMode || gone || not visible then pure False else synced p
+        _ -> pure []
+
+-- | A key pressed in a pane (tmux's @window_pane_key@): typed as the pane's
+-- terminal expects it, and copied to the panes synchronized with it. A focus
+-- report concerns only the pane it was meant for.
+typeKeyIntoPane :: ServerState -> Pane -> Key -> IO ()
+typeKeyIntoPane st pane key = do
+    typeIntoPane pane . (.raw) =<< reencodeKey (Just pane.emulator) key
+    targets <- if key.name `elem` ["FocusIn", "FocusOut"]
+        then pure []
+        else atomically (syncTargets st pane)
+    forM_ targets $ \p ->
+        typeIntoPane p . (.raw) =<< reencodeKey (Just p.emulator) key
+
+-- | Bytes typed into a pane as they are, copied to the panes synchronized
+-- with it (tmux's @window_pane_paste@).
+typeIntoPaneSynced :: ServerState -> Pane -> B.ByteString -> IO ()
+typeIntoPaneSynced st pane bytes = do
+    typeIntoPane pane bytes
+    targets <- atomically (syncTargets st pane)
+    forM_ targets $ \p -> typeIntoPane p bytes
+
+-- | Forward a recognized key as the pane's advertised terminal expects, not
+-- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
+-- (@\ESC[A@ vs @\ESCOA@), and a modified character key depends on the key
+-- protocol the pane's app turned on, so the pane's emulator encodes both;
+-- every other named key forwards its tmux-256color terminfo bytes from
+-- 'namedKeys'. Unrecognized keys keep their raw bytes.
+reencodeKey :: Maybe Emu.Emulator -> Key -> IO Key
+reencodeKey memu key = case arrowOf key.name of
+    Just ck | Just emu <- memu -> do
+        enc <- Emu.encodeKey emu ck
+        pure key { raw = enc }
+    _ | Just (code, mods) <- extendedKeyCode key.name
+      , Just emu <- memu -> do
+        enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
+        pure (maybe key (\bs -> key { raw = bs }) enc)
+      | Just canon <- Map.lookup key.name namedKeyBytes -> pure key { raw = canon }
+    _ -> pure key
+  where
+    arrowOf n = case n of
+        "Up"    -> Just Emu.CursorUp
+        "Down"  -> Just Emu.CursorDown
+        "Left"  -> Just Emu.CursorLeft
+        "Right" -> Just Emu.CursorRight
+        _       -> Nothing
 
 -- | Tear a pane down from an external command (kill-pane/window/session,
 -- kill-server) without deadlocking. 'closePty' would block closing the

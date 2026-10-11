@@ -29,7 +29,9 @@ cmdBind st _ args = do
                 let cmds = splitBinding rest
                 atomically $ modifyTVar' st.keymap $
                     Map.insertWith Map.union table
-                        (Map.singleton key.name cmds)
+                        (Map.singleton key.name Binding
+                            { commands = cmds
+                            , repeats = if "-r" `elem` flags then Repeats else Once })
                 pure []
         (keyName : _) ->
             pure [RErr ("bind: bad key or command: " <> keyName)]

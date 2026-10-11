@@ -50,7 +50,7 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
-import Hat.Server.Pane (deadNoticeBytes)
+import Hat.Server.Pane (deadNoticeBytes, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
@@ -60,7 +60,7 @@ import Hat.Server.Environ
     , environSet )
 import Hat.Server.Snapshot (cmdListSnapshots, cmdRestoreSnapshot)
 import Hat.Term.Pty qualified as Pty
-import Hat.Server.Keys (EscPending (NoEscPending), Key (..), PrefixState (NoPrefix))
+import Hat.Server.Keys (EscPending (NoEscPending), Key (..), initialKeyState)
 import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
@@ -151,7 +151,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO sid
         <*> newTVarIO []
         <*> newTVarIO True
-        <*> newIORef NoPrefix
+        <*> newIORef initialKeyState
         <*> newIORef NoEscPending
         <*> newIORef (blankFrame sz)
         <*> newIORef V.empty
@@ -192,7 +192,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO (SessionId 0)
         <*> newTVarIO []
         <*> newTVarIO True    -- ready
-        <*> newIORef NoPrefix
+        <*> newIORef initialKeyState
         <*> newIORef NoEscPending
         <*> newIORef (blankFrame (Size 24 80))
         <*> newIORef V.empty
@@ -993,6 +993,44 @@ spec = do
             _ <- atomically (detachPane st win pc)
             readTVarIO win.activeId `shouldReturn` pb.id
             readTVarIO win.paneHist `shouldReturn` [pa.id]
+
+    describe "synchronize-panes" $ do
+        -- Three panes in one window: which ones a key typed into the first
+        -- is copied to (tmux's window_pane_copy_key).
+        let syncWindow = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                ps@[pa, pb, pc] <- mapM stubPane [1, 2, 3]
+                atomically $ do
+                    writeTVar win.layout
+                        (nodeOf LeftRight (map (singlePane . (.id)) ps))
+                    writeTVar win.panes (Map.fromList [(p.id, p) | p <- ps])
+                    writeTVar win.activeId pa.id
+                    mapM_ (\p -> writeTVar p.home (Just (sess.id, win))) ps
+                pure (st, win, pa, pb, pc)
+            syncOn p = atomically $ modifyTVar' p.options
+                (insertDelta "synchronize-panes" (OVScalar "on"))
+            targetIds st p = map (.id) <$> atomically (syncTargets st p)
+        it "off (the default): nothing is copied" $ do
+            (st, _, pa, _, _) <- syncWindow
+            targetIds st pa `shouldReturn` []
+        it "on for the window: every other pane gets the key" $ do
+            (st, win, pa, pb, pc) <- syncWindow
+            atomically $ modifyTVar' win.options
+                (insertDelta "synchronize-panes" (OVScalar "on"))
+            targetIds st pa `shouldReturn` [pb.id, pc.id]
+        it "a pane's own value counts, on both ends" $ do
+            (st, _, pa, pb, pc) <- syncWindow
+            mapM_ syncOn [pa, pc]
+            targetIds st pa `shouldReturn` [pc.id]
+            targetIds st pb `shouldReturn` []
+        it "a pane in a mode or hidden by a zoom is skipped" $ do
+            (st, win, pa, pb, pc) <- syncWindow
+            mapM_ syncOn [pa, pb, pc]
+            atomically $ writeTVar pb.mode (Just (copyModeAt 0))
+            targetIds st pa `shouldReturn` [pc.id]
+            atomically $ writeTVar win.zoomed (Just pa.id)
+            targetIds st pa `shouldReturn` []
 
     describe "detachPanes" $ do
         -- kill-window/-session detach a whole set of panes in one

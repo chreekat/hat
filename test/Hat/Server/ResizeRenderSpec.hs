@@ -16,7 +16,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model hiding (Toast (..))
-import Hat.Server.Keys (EscPending (NoEscPending), PrefixState (NoPrefix))
+import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
 import Hat.Server.Render (Frame)
 import Hat.Server.View (renderOnce)
 import Hat.Term.Cell
@@ -35,7 +35,7 @@ mkClient sz lastFrame = do
     sessV   <- newTVarIO (SessionId 0)
     lastV   <- newTVarIO []
     readyV  <- newTVarIO True
-    keyV    <- newIORef NoPrefix
+    keyV    <- newIORef initialKeyState
     escV    <- newIORef NoEscPending
     frameV  <- newIORef lastFrame
     originsV <- newIORef V.empty

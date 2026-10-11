@@ -83,8 +83,8 @@ spec = do
                 `shouldBe` Left "invalid option: no-such-option"
 
         it "refuses a registered option hat does not implement" $
-            setOption Assign defaultOptions "synchronize-panes" "on"
-                `shouldBe` Left "synchronize-panes: option not yet supported by hat"
+            setOption Assign defaultOptions "codepoint-widths" "U+0041=2"
+                `shouldBe` Left "codepoint-widths: option not yet supported by hat"
 
         it "stores @-options in the user map" $
             fmap (Map.lookup "@foo" . (.user))
@@ -271,7 +271,7 @@ spec = do
                 `shouldBe` Just "split-pane=split-window splitp=split-window"
             Map.lookup "@x" fmts `shouldBe` Just "y"
         it "leaves out options hat does not implement" $
-            Map.member "synchronize-panes" (optionFormats defaultOptions)
+            Map.member "codepoint-widths" (optionFormats defaultOptions)
                 `shouldBe` False
         it "renders one scope's own entries the same way" $
             deltaFormats (mergeDeltas

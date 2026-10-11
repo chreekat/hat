@@ -17,6 +17,7 @@ import Hat.Model
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server (defaultKeymap)
+import Hat.Server.Keys (Binding (..))
 import Hat.Server.CopyMode
 import Hat.Term.Cell
     ( Cell (..), Color (..), Content (..), Style (..), Width (..), defaultStyle
@@ -117,7 +118,7 @@ spec :: Spec
 spec = do
     describe "default copy-mode key bindings" $ do
         let bound table key =
-                Map.lookup key =<< Map.lookup table defaultKeymap
+                (.commands) <$> (Map.lookup key =<< Map.lookup table defaultKeymap)
             beginSel = Just [["send-keys", "-X", "begin-selection"]]
         it "vi mode: Space begins a selection (tmux parity)" $
             bound "copy-mode-vi" "Space" `shouldBe` beginSel
@@ -132,7 +133,7 @@ spec = do
             bound "copy-mode" "R" `shouldBe` rectToggle
 
     describe "default prefix key bindings (tmux parity)" $ do
-        let bound key = Map.lookup key =<< Map.lookup "prefix" defaultKeymap
+        let bound key = (.commands) <$> (Map.lookup key =<< Map.lookup "prefix" defaultKeymap)
         it "! breaks the pane into a new window" $
             bound "!" `shouldBe` Just [["break-pane"]]
         it "q shows the pane numbers" $

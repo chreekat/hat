@@ -32,8 +32,8 @@ import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientActivePane, clientOptions, clientView, findTarget)
-import Hat.Server.Pane (typeIntoPane)
+import Hat.Server.Locate (clientOptions, clientView, findTarget)
+import Hat.Server.Pane (typeKeyIntoPane)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
@@ -69,14 +69,18 @@ cmdDetachClient st mclient args
     (opts, flags, _) = parseArgs "Est" args
     filterM' xs p = map fst . filter snd . zip xs <$> mapM p xs
 
+-- | @send-prefix [-2] [-t pane]@: press the session's @prefix@ (or
+-- @prefix2@) in the pane; @None@ presses nothing.
 cmdSendPrefix :: CommandImpl
-cmdSendPrefix st mclient _ = do
-    forM_ mclient $ \client -> do
-        opts <- readTVarIO st.options
-        forM_ (parseKeyName opts.prefix) $ \key -> do
-            mpane <- clientActivePane st client
-            forM_ mpane $ \pane -> typeIntoPane pane key.raw
-    pure []
+cmdSendPrefix st mclient args = do
+    let (opts, flags, _) = parseArgs "t" args
+        which = if "-2" `elem` flags then "prefix2" else "prefix"
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, _, win, pane) -> do
+            o <- atomically (resolveForPane st sess win pane)
+            [] <$ forM_ (parseKeyName (optionText which o)) (typeKeyIntoPane st pane)
 
 -- | @display-panes [-bN] [-d delay-ms] [template]@: overlay each pane's
 -- number on the issuing client; a digit press runs @template@ (default

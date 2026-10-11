@@ -7,6 +7,7 @@ import Test.QuickCheck
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
 
 import Hat.Server.Keys
 
@@ -235,72 +236,152 @@ spec = do
     describe "routeKeys" $ do
         let km = Map.fromList
                 [ ("prefix", Map.fromList
-                    [ ("d", [["detach-client"]])
-                    , ("C-Space", [["send-prefix"]])
+                    [ ("d", bindOnce [["detach-client"]])
+                    , ("C-Space", bindOnce [["send-prefix"]])
+                    , ("Up", bindRepeat [["select-pane", "-U"]])
+                    , ("Down", bindRepeat [["select-pane", "-D"]])
                     ])
                 , ("root", Map.fromList
-                    [ ("M-Up", [["resize-pane", "-U"]]) ])
+                    [ ("M-Up", bindOnce [["resize-pane", "-U"]]) ])
+                , ("custom", Map.fromList
+                    [ ("x", bindOnce [["kill-pane"]]) ])
                 ]
-            run st bs = routeKeys "C-Space" km Nothing st (tokenizeKeys bs)
+            run st bs = tableOf (routeKeys ctx0 km st (tokenizeKeys bs))
         it "passes plain input through, coalesced" $
-            run NoPrefix "hello" `shouldBe` (NoPrefix, [Passthrough "hello"])
+            run initialKeyState "hello" `shouldBe` (Nothing, [Passthrough "hello"])
         it "arms on prefix and runs the bound command" $
-            run NoPrefix "\x00\&d" `shouldBe`
-                (NoPrefix, [RunCommands [["detach-client"]]])
+            run initialKeyState "\x00\&d" `shouldBe`
+                (Nothing, [RunCommands [["detach-client"]]])
         it "holds the armed state across chunks" $ do
-            run NoPrefix "\x00" `shouldBe` (PrefixArmed, [])
-            run PrefixArmed "d" `shouldBe`
-                (NoPrefix, [RunCommands [["detach-client"]]])
+            run initialKeyState "\x00" `shouldBe` (Just "prefix", [])
+            run armed "d" `shouldBe` (Nothing, [RunCommands [["detach-client"]]])
         it "runs root-table bindings without the prefix" $
-            run NoPrefix "\ESC\ESC[A" `shouldBe`
-                (NoPrefix, [RunCommands [["resize-pane", "-U"]]])
+            run initialKeyState "\ESC\ESC[A" `shouldBe`
+                (Nothing, [RunCommands [["resize-pane", "-U"]]])
         it "fires a root-table M-Up binding on the CSI alt-arrow" $
             -- bug 149
-            run NoPrefix "\ESC[1;3A" `shouldBe`
-                (NoPrefix, [RunCommands [["resize-pane", "-U"]]])
+            run initialKeyState "\ESC[1;3A" `shouldBe`
+                (Nothing, [RunCommands [["resize-pane", "-U"]]])
         it "passes an unbound modified arrow through raw" $
-            run NoPrefix "\ESC[1;2A" `shouldBe`
-                (NoPrefix, [Passthrough "\ESC[1;2A"])
+            run initialKeyState "\ESC[1;2A" `shouldBe`
+                (Nothing, [Passthrough "\ESC[1;2A"])
         it "swallows unbound prefixed keys" $
-            run NoPrefix "\x00q after" `shouldBe`
-                (NoPrefix, [Passthrough " after"])
+            run initialKeyState "\x00q after" `shouldBe`
+                (Nothing, [Passthrough " after"])
+        it "the prefix key twice runs the prefix table's binding for it" $
+            run initialKeyState "\x00\x00" `shouldBe`
+                (Nothing, [RunCommands [["send-prefix"]]])
+
+        describe "prefix2" $ do
+            let ctx2 = ctx0 { prefixKeys = ["C-Space", "C-a"] }
+            it "either prefix key arms the prefix table" $ do
+                tableOf (routeKeys ctx2 km initialKeyState (tokenizeKeys "\x01\&d"))
+                    `shouldBe` (Nothing, [RunCommands [["detach-client"]]])
+                tableOf (routeKeys ctx2 km initialKeyState (tokenizeKeys "\x00\&d"))
+                    `shouldBe` (Nothing, [RunCommands [["detach-client"]]])
+            it "with prefix None, the old prefix key is just a key" $
+                tableOf (routeKeys ctx0 { prefixKeys = [] } km initialKeyState
+                    (tokenizeKeys "\x00\&d"))
+                    `shouldBe` (Nothing, [Passthrough "\x00\&d"])
+
+        describe "key-table" $ do
+            let custom = ctx0 { defaultTable = "custom" }
+            it "a key bound in the default table runs" $
+                tableOf (routeKeys custom km initialKeyState (tokenizeKeys "x"))
+                    `shouldBe` (Nothing, [RunCommands [["kill-pane"]]])
+            it "a key unbound there reaches the pane" $
+                tableOf (routeKeys custom km initialKeyState (tokenizeKeys "y"))
+                    `shouldBe` (Nothing, [Passthrough "y"])
+            it "root-table bindings no longer apply" $
+                tableOf (routeKeys custom km initialKeyState (tokenizeKeys "\ESC[1;3A"))
+                    `shouldBe` (Nothing, [Passthrough "\ESC[1;3A"])
+
+        describe "repeat-time" $ do
+            let at t = ctx0 { now = t }
+                step t st bs = routeKeys (at t) km st (tokenizeKeys bs)
+                (afterUp, upActs) = step 0 initialKeyState "\x00\ESC[A"
+            it "a repeating binding keeps the prefix table open" $ do
+                upActs `shouldBe` [RunCommands [["select-pane", "-U"]]]
+                afterUp.table `shouldBe` Just "prefix"
+            it "within repeat-time another repeating key runs without the prefix" $
+                snd (step 400 afterUp "\ESC[B")
+                    `shouldBe` [RunCommands [["select-pane", "-D"]]]
+            it "each repeat restarts the window" $ do
+                let (upAgain, _) = step 400 afterUp "\ESC[A"
+                snd (step 800 upAgain "\ESC[B")
+                    `shouldBe` [RunCommands [["select-pane", "-D"]]]
+            it "after repeat-time the key goes to the pane" $
+                tableOf (step 600 afterUp "\ESC[B")
+                    `shouldBe` (Nothing, [Passthrough "\ESC[B"])
+            it "a non-repeating key ends the repeat and runs from the root table" $
+                tableOf (step 100 afterUp "d")
+                    `shouldBe` (Nothing, [Passthrough "d"])
+            it "expireRepeat drops the client back to its default table" $ do
+                (expireRepeat 499 afterUp).table `shouldBe` Just "prefix"
+                (expireRepeat 500 afterUp).table `shouldBe` Nothing
+            it "0 turns repeating off" $
+                (fst (routeKeys ctx0 { repeatTime = 0 } km initialKeyState
+                    (tokenizeKeys "\x00\ESC[A"))).table `shouldBe` Nothing
+            it "initial-repeat-time opens the window; repeat-time extends it" $ do
+                let ctxI t = ctx0 { initialRepeatTime = 100, now = t }
+                    (st1, _) = routeKeys (ctxI 0) km initialKeyState (tokenizeKeys "\x00\ESC[A")
+                (expireRepeat 100 st1).table `shouldBe` Nothing
+                let (st2, _) = routeKeys (ctxI 50) km st1 (tokenizeKeys "\ESC[A")
+                (expireRepeat 549 st2).table `shouldBe` Just "prefix"
+
+        describe "prefix-timeout" $ do
+            let timed t = ctx0 { prefixTimeout = 1000, now = t }
+                (armedAt0, _) = routeKeys (timed 0) km initialKeyState (tokenizeKeys "\x00")
+            it "a key within the timeout runs from the prefix table" $
+                snd (routeKeys (timed 1000) km armedAt0 (tokenizeKeys "d"))
+                    `shouldBe` [RunCommands [["detach-client"]]]
+            it "a key after it goes to the pane" $
+                tableOf (routeKeys (timed 1001) km armedAt0 (tokenizeKeys "d"))
+                    `shouldBe` (Nothing, [Passthrough "d"])
+
+        describe "bracketed paste" $ do
+            it "pasted keys bypass the tables, brackets included" $
+                tableOf (routeKeys ctx0 km initialKeyState
+                    (tokenizeKeys "\ESC[200~\x00\&d\ESC[201~d"))
+                    `shouldBe`
+                        (Nothing, [Paste, Paste, Paste, Paste, Passthrough "d"])
+            it "a paste spanning chunks stays a paste" $ do
+                let (st1, _) = routeKeys ctx0 km initialKeyState (tokenizeKeys "\ESC[200~ab")
+                snd (routeKeys ctx0 km st1 (tokenizeKeys "\x00\ESC[201~"))
+                    `shouldBe` [Paste, Paste]
 
     describe "routeKeys in copy mode" $ do
         let km = Map.fromList
                 [ ("prefix", Map.fromList
-                    [ ("]", [["paste-buffer"]]) ])
+                    [ ("]", bindOnce [["paste-buffer"]]) ])
                 , ("root", Map.fromList
-                    [ ("M-Up", [["resize-pane", "-U"]]) ])
+                    [ ("M-Up", bindOnce [["resize-pane", "-U"]]) ])
                 , ("copy-mode-vi", Map.fromList
-                    [ ("h", [["send-keys", "-X", "cursor-left"]])
-                    , ("q", [["send-keys", "-X", "cancel"]])
+                    [ ("h", bindOnce [["send-keys", "-X", "cursor-left"]])
+                    , ("q", bindOnce [["send-keys", "-X", "cancel"]])
+                    , ("C-Space", bindOnce [["send-keys", "-X", "top-line"]])
                     ])
                 ]
-            run st bs =
-                routeKeys "C-Space" km (Just "copy-mode-vi") st (tokenizeKeys bs)
+            inMode = ctx0 { modeTable = Just "copy-mode-vi" }
+            run st bs = tableOf (routeKeys inMode km st (tokenizeKeys bs))
         it "runs bindings from the pane's copy-mode table" $
-            run NoPrefix "h" `shouldBe`
-                (NoPrefix, [RunCommands [["send-keys", "-X", "cursor-left"]]])
+            run initialKeyState "h" `shouldBe`
+                (Nothing, [RunCommands [["send-keys", "-X", "cursor-left"]]])
         it "swallows keys not bound in the copy-mode table" $
-            run NoPrefix "xyz" `shouldBe` (NoPrefix, [])
+            run initialKeyState "xyz" `shouldBe` (Nothing, [])
         it "arms the prefix in copy mode so prefix-table commands still run" $
             -- bug 83: prefix ] pastes even while in copy mode, rather than
             -- being swallowed by the mode.
-            run NoPrefix "\x00]" `shouldBe`
-                (NoPrefix, [RunCommands [["paste-buffer"]]])
+            run initialKeyState "\x00]" `shouldBe`
+                (Nothing, [RunCommands [["paste-buffer"]]])
         it "holds the armed state across chunks while in copy mode" $ do
-            run NoPrefix "\x00" `shouldBe` (PrefixArmed, [])
-            run PrefixArmed "]" `shouldBe`
-                (NoPrefix, [RunCommands [["paste-buffer"]]])
-        it "runs a copy-mode binding on the prefix key rather than arming" $ do
-            let kmp = Map.insert "copy-mode-vi"
-                    (Map.fromList [("C-Space", [["send-keys", "-X", "top-line"]])])
-                    km
-            routeKeys "C-Space" kmp (Just "copy-mode-vi") NoPrefix
-                (tokenizeKeys "\x00")
-                `shouldBe` (NoPrefix, [RunCommands [["send-keys", "-X", "top-line"]]])
-        it "does not fall through to root bindings while in mode" $
-            run NoPrefix "\ESC\ESC[A" `shouldBe` (NoPrefix, [])
+            run initialKeyState "\x00" `shouldBe` (Just "prefix", [])
+            run armed "]" `shouldBe` (Nothing, [RunCommands [["paste-buffer"]]])
+        it "the prefix key arms even when the mode table binds it" $
+            run initialKeyState "\x00" `shouldBe` (Just "prefix", [])
+        it "falls back to root-table bindings" $
+            run initialKeyState "\ESC\ESC[A" `shouldBe`
+                (Nothing, [RunCommands [["resize-pane", "-U"]]])
 
     describe "parseKeyName" $ do
         it "parses plain characters" $ do
@@ -386,3 +467,21 @@ isExtended :: B.ByteString -> Bool
 isExtended bs =
     "\ESC[27;" `B.isPrefixOf` bs
     || ("\ESC[" `B.isPrefixOf` bs && "u" `B.isSuffixOf` bs)
+
+-- Routing at time 0 with only C-Space as the prefix and tmux's default
+-- repeat-time.
+ctx0 :: KeyContext
+ctx0 = KeyContext
+    { prefixKeys = ["C-Space"], defaultTable = "root", modeTable = Nothing
+    , prefixTimeout = 0, repeatTime = 500, initialRepeatTime = 0, now = 0 }
+
+bindOnce, bindRepeat :: [[Text]] -> Binding
+bindOnce cmds = Binding { commands = cmds, repeats = Once }
+bindRepeat cmds = Binding { commands = cmds, repeats = Repeats }
+
+-- A client that just pressed the prefix.
+armed :: KeyState
+armed = initialKeyState { table = Just "prefix" }
+
+tableOf :: (KeyState, a) -> (Maybe Text, a)
+tableOf (st, a) = (st.table, a)

@@ -12,6 +12,7 @@ module Hat.Server.Conn
     , pickAttachSession
     , deliversKey
     , escTiming
+    , keyContext
     , reencodeKey
     , handleInput  -- ^ exported for the display-panes key tests
     ) where
@@ -25,13 +26,14 @@ import Control.Monad (forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.IORef
-import Data.List (nub)
+import Data.List (nub, sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket qualified as N
 import Hat.Geometry
 import Hat.Log
@@ -213,7 +215,7 @@ newClient st conn h = do
     activeVar <- newTVarIO 0
     sessVar <- newTVarIO (SessionId (-1))
     sessionHistVar <- newTVarIO []
-    keyVar <- newIORef NoPrefix
+    keyVar <- newIORef initialKeyState
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame h.size)
     originsVar <- newIORef V.empty
@@ -336,17 +338,27 @@ inputLoop :: Dispatch -> ServerState -> ReadEnd -> Client -> IO ()
 inputLoop d st re client = loop
   where
     loop = do
-        -- A lone trailing ESC held by escape-time races the next chunk: if
-        -- nothing arrives within the window, flush it as the Escape key.
+        -- Each timer races the next chunk: a lone trailing ESC held by
+        -- escape-time flushes as the Escape key, and a closing repeat
+        -- window drops the client back to its default key table.
         held <- readIORef client.escState
-        m <- case held of
-            NoEscPending -> Right <$> recvMessage re
-            EscPending -> do
-                opts <- clientOptions st client
-                timer <- registerDelay (opts.escapeTime * 1000)
-                race (atomically (readTVar timer >>= check)) (recvMessage re)
+        ks <- readIORef client.keyState
+        now <- monotonicMs
+        opts <- clientOptions st client
+        let escWake = case held of
+                EscPending -> [(opts.escapeTime, flushHeldEscape d st client)]
+                NoEscPending -> []
+            repeatWake = case ks.repeating of
+                Just r -> [(max 0 (r.expires - now), expireKeyRepeat st client)]
+                Nothing -> []
+        m <- case sortOn fst (escWake <> repeatWake) of
+            [] -> Right <$> recvMessage re
+            (ms, fire) : _ -> do
+                timer <- registerDelay (ms * 1000)
+                either (const (Left fire)) Right <$>
+                    race (atomically (readTVar timer >>= check)) (recvMessage re)
         case m of
-            Left () -> flushHeldEscape d st client >> loop
+            Left fire -> fire >> loop
             Right Nothing -> pure ()
             Right (Just (Malformed err)) -> logEvent st.logger ProtocolError
                 { client = rawClient client.id, err = T.pack err }
@@ -372,6 +384,17 @@ inputLoop d st re client = loop
                 -- Never requested of an attached client.
                 StdinData _ -> loop
                 StdinEnd -> loop
+
+-- | The repeat window closed before another key: the client drops back to
+-- its default key table.
+expireKeyRepeat :: ServerState -> Client -> IO ()
+expireKeyRepeat st client = do
+    now <- monotonicMs
+    before <- readIORef client.keyState
+    let after = expireRepeat now before
+    writeIORef client.keyState after
+    when (prefixArmed before && not (prefixArmed after)) $
+        disarmFlash st client False
 
 -- | Whether @client@ already holds the largest activity stamp among the
 -- clients attached to its session (so it is the one an aggressive-resize
@@ -474,6 +497,24 @@ selectPaneNumber d st client template num = do
 escTiming :: Options -> EscTiming
 escTiming opts = if opts.escapeTime <= 0 then EscImmediate else EscBuffered
 
+-- | How a key arriving at @now@ (ms) is routed, from the client's session
+-- options and its active pane's mode table.
+keyContext :: Options -> Maybe Text -> Int -> KeyContext
+keyContext opts modeTable now = KeyContext
+    { prefixKeys = filter (/= "None") [opts.prefix, optionText "prefix2" opts]
+    , defaultTable = case optionText "key-table" opts of
+        "" -> "root"
+        t -> t
+    , modeTable = modeTable
+    , prefixTimeout = optionNumber "prefix-timeout" opts
+    , repeatTime = optionNumber "repeat-time" opts
+    , initialRepeatTime = optionNumber "initial-repeat-time" opts
+    , now = now
+    }
+
+monotonicMs :: IO Int
+monotonicMs = fromIntegral . (`div` 1000000) <$> getMonotonicTimeNSec
+
 -- | Tokenize a chunk under the client's escape-time, coalescing any ESC held
 -- from the previous chunk, then route the resulting keys. A fresh lone
 -- trailing ESC is left in 'escState' for 'inputLoop' to resolve.
@@ -527,14 +568,24 @@ runKeys d st client keys = do
                             , input = T.pack (show k.raw) }
                     loop kst rest
                 else do
+                    now <- monotonicMs
                     let (kst', actions) =
-                            routeKeys opts.prefix km modeTable kst [k]
+                            routeKey (keyContext opts modeTable now) km kst k
                     forM_ actions $ \case
-                        Passthrough raw -> forM_ mpane $ \pane -> do
+                        Passthrough _ -> forM_ mpane $ \pane -> do
                             dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
                                 then pure False
                                 else dismissDeadPane st pane
-                            unless dismissed $ typeIntoPane pane raw
+                            unless dismissed $ typeKeyIntoPane st pane k0
+                        Paste -> forM_ mpane $ \pane -> do
+                            inMode <- isJust <$> readTVarIO pane.mode
+                            -- The brackets reach only an app that asked for
+                            -- them (?2004).
+                            bracketsOk <- if k0.name `elem` ["PasteStart", "PasteEnd"]
+                                then Emu.bracketedPaste pane.emulator
+                                else pure True
+                            unless (inMode || not bracketsOk) $
+                                typeIntoPaneSynced st pane k0.raw
                         RunCommands cmds -> withCommandBatch st $
                             forM_ cmds $ \argv ->
                                 toastReplies st client
@@ -542,16 +593,17 @@ runKeys d st client keys = do
                     -- Arming lights the highlight; disarming clears it, unless
                     -- the command just moved the active pane — then it lingers
                     -- on the new pane to trace the motion.
-                    case (kst, kst') of
-                        (NoPrefix, PrefixArmed) -> armFlash st client
-                        (PrefixArmed, NoPrefix) -> do
-                            after <- fmap (fmap (.id)) (clientActivePane st client)
-                            disarmFlash st client (after /= fmap (.id) mpane)
-                        _ -> pure ()
+                    flashTransition mpane kst kst'
                     loop kst' rest
     st0 <- readIORef client.keyState
     loop st0 keys
   where
+    flashTransition mpane before after = case (prefixArmed before, prefixArmed after) of
+        (False, True) -> armFlash st client
+        (True, False) -> do
+            moved <- fmap (fmap (.id)) (clientActivePane st client)
+            disarmFlash st client (moved /= fmap (.id) mpane)
+        _ -> pure ()
     -- Reads the pane's live focus-reporting mode, then defers the actual
     -- keep/drop decision to the pure 'deliversKey'.
     keepKey opts mpane k
@@ -574,31 +626,6 @@ runKeys d st client keys = do
                     else runCopyModeCommand st pane "cancel-search" []
                 pure True
             _ -> pure False
-
--- | Forward a recognized key as the pane's advertised terminal expects, not
--- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent
--- (@\ESC[A@ vs @\ESCOA@), and a modified character key depends on the key
--- protocol the pane's app turned on, so the pane's emulator encodes both;
--- every other named key forwards its tmux-256color terminfo bytes from
--- 'namedKeys'. Unrecognized keys keep their raw bytes.
-reencodeKey :: Maybe Emu.Emulator -> Key -> IO Key
-reencodeKey memu key = case arrowOf key.name of
-    Just ck | Just emu <- memu -> do
-        enc <- Emu.encodeKey emu ck
-        pure key { raw = enc }
-    _ | Just (code, mods) <- extendedKeyCode key.name
-      , Just emu <- memu -> do
-        enc <- Emu.encodeKeyPress emu Emu.KeyPress { code = code, mods = mods }
-        pure (maybe key (\bs -> key { raw = bs }) enc)
-      | Just canon <- Map.lookup key.name namedKeyBytes -> pure key { raw = canon }
-    _ -> pure key
-  where
-    arrowOf n = case n of
-        "Up"    -> Just Emu.CursorUp
-        "Down"  -> Just Emu.CursorDown
-        "Left"  -> Just Emu.CursorLeft
-        "Right" -> Just Emu.CursorRight
-        _       -> Nothing
 
 controlLoop :: Dispatch -> ServerState -> ReadEnd -> Client -> IO ()
 controlLoop d st re client = do

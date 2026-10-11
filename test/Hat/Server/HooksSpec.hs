@@ -28,7 +28,7 @@ import Hat.Server.Environ (emptyEnviron)
 import Hat.Server.HookMonitor (addMonitor, parseMonitorSpec, sampleMonitors)
 import Hat.Server.HookTypes
 import Hat.Server.Hooks
-import Hat.Server.Keys (EscPending (..), PrefixState (..))
+import Hat.Server.Keys (EscPending (..), initialKeyState)
 import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire (Autostart (..))
 
@@ -282,7 +282,7 @@ fakeClient _ = do
     sessVar <- newTVarIO (SessionId (-1))
     histVar <- newTVarIO []
     readyVar <- newTVarIO False
-    keyVar <- newIORef NoPrefix
+    keyVar <- newIORef initialKeyState
     escVar <- newIORef NoEscPending
     frameVar <- newIORef (blankFrame (Size 80 24))
     originsVar <- newIORef V.empty

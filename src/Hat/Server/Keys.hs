@@ -10,7 +10,15 @@
 -- arrive first, else emitting Escape on timeout.
 module Hat.Server.Keys
     ( Key (..)
-    , PrefixState (..)
+    , Binding (..)
+    , Repeat (..)
+    , Keymap
+    , KeyState (..)
+    , Repeating (..)
+    , initialKeyState
+    , prefixArmed
+    , expireRepeat
+    , KeyContext (..)
     , KeyAction (..)
     , EscTiming (..)
     , EscPending (..)
@@ -22,6 +30,7 @@ module Hat.Server.Keys
     , namedKeys
     , namedKeyBytes
     , extendedKeyCode
+    , routeKey
     , routeKeys
     ) where
 
@@ -31,6 +40,7 @@ import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Char (chr, ord)
 import Data.List (sort)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -42,10 +52,6 @@ data Key = Key
     , raw  :: ByteString  -- ^ bytes to forward when the key is unbound
     }
     deriving (Eq, Ord, Show)
-
--- | Per-client input state: has the prefix key been pressed?
-data PrefixState = NoPrefix | PrefixArmed
-    deriving (Eq, Show)
 
 mkKey :: Text -> ByteString -> Key
 mkKey n r = Key { name = n, raw = r }
@@ -108,6 +114,7 @@ csiNames =
     -- legacy xterm CSI forms of F1-F4
     , ("[11~", "F1"), ("[12~", "F2"), ("[13~", "F3"), ("[14~", "F4")
     , ("[I", "FocusIn"), ("[O", "FocusOut")
+    , ("[200~", "PasteStart"), ("[201~", "PasteEnd")
     ]
     ++ [ ("[" <> code <> "~", nm) | (code, nm) <- fkeyTildes ]
     ++ modifiedCsiNames
@@ -366,52 +373,144 @@ baseKeyCode t
         [ ("enter", 13), ("tab", 9), ("escape", 27)
         , ("space", 32), ("bspace", 127) ]
 
--- | What a batch of keys should do, in order. Consecutive unbound
--- keys coalesce into one passthrough write.
+-- | A key binding: the commands it runs and whether it repeats.
+data Binding = Binding
+    { commands :: [[Text]]
+    , repeats  :: Repeat
+    }
+    deriving (Eq, Show)
+
+-- | Whether a binding keeps its table open for @repeat-time@ after it runs
+-- (@bind -r@).
+data Repeat = Repeats | Once
+    deriving (Eq, Show)
+
+-- | table name -> key name -> binding
+type Keymap = Map Text (Map Text Binding)
+
+-- | A client's place in the key tables (tmux's @c->keytable@ and its repeat
+-- and bracketed-paste flags). Times are monotonic milliseconds.
+data KeyState = KeyState
+    { table :: Maybe Text
+        -- ^ the table the client switched to; 'Nothing' is the default table
+        --   (@key-table@)
+    , tableSince :: Int
+        -- ^ when 'table' was entered, for @prefix-timeout@
+    , repeating :: Maybe Repeating
+    , bracketPasting :: Bool
+        -- ^ inside the outer terminal's bracketed paste
+    }
+    deriving (Eq, Show)
+
+-- | An open repeat window: the key whose binding repeats, and when the
+-- window closes.
+data Repeating = Repeating
+    { key   :: Text
+    , expires :: Int
+    }
+    deriving (Eq, Show)
+
+initialKeyState :: KeyState
+initialKeyState = KeyState
+    { table = Nothing, tableSince = 0, repeating = Nothing
+    , bracketPasting = False }
+
+-- | Whether the client is in the prefix table.
+prefixArmed :: KeyState -> Bool
+prefixArmed ks = ks.table == Just "prefix"
+
+-- | tmux's repeat timer: once the window has closed, the client is back in
+-- its default table.
+expireRepeat :: Int -> KeyState -> KeyState
+expireRepeat now ks = case ks.repeating of
+    Just r | now >= r.expires -> ks { table = Nothing, repeating = Nothing }
+    _ -> ks
+
+-- | What the client's session options and its active pane say about routing
+-- a key, at the moment it arrives.
+data KeyContext = KeyContext
+    { prefixKeys :: [Text]
+        -- ^ @prefix@ and @prefix2@, without a @None@
+    , defaultTable :: Text            -- ^ @key-table@
+    , modeTable :: Maybe Text         -- ^ the active pane's mode table, if any
+    , prefixTimeout :: Int            -- ^ ms; 0 never times out
+    , repeatTime :: Int               -- ^ ms
+    , initialRepeatTime :: Int        -- ^ ms; 0 uses @repeat-time@
+    , now :: Int
+    }
+
+-- | What a key should do. Consecutive passthroughs coalesce into one write.
 data KeyAction
     = Passthrough ByteString
+    | Paste
+        -- ^ the key is part of a bracketed paste, or brackets one: its bytes
+        --   as typed go to the pane, unless it is in a mode
     | RunCommands [[Text]]
     deriving (Eq, Show)
 
--- | Drive the prefix state machine over tokenized keys, resolving
--- bindings from the given tables.
---
--- When the active pane is in copy mode, its key table name is passed as
--- @Just table@: that table /owns/ every unprefixed key. Bound keys run
--- their command; a miss is /swallowed/ rather than forwarded to the pty
--- (so browsing keys never leak into the shell). The prefix key is not
--- intercepted while in mode — copy mode binds it itself (e.g. @C-b@ ->
--- @cursor-left@ in emacs), matching tmux.
-routeKeys
-    :: Text                        -- ^ prefix key name
-    -> Map Text (Map Text [[Text]]) -- ^ keymap: table -> key -> commands
-    -> Maybe Text                  -- ^ active pane's copy-mode table, if any
-    -> PrefixState
-    -> [Key]
-    -> (PrefixState, [KeyAction])
-routeKeys prefixName keymap modeTable = go
+-- | Route one key through the key tables, as tmux's
+-- @server_client_key_callback@ does: a prefix key switches to the prefix
+-- table; a key bound in the current table runs its binding (staying in the
+-- table while a @bind -r@ binding repeats); a miss in any table but the
+-- default falls back to it; a key that reaches the default table unbound is
+-- passed to the pane, unless it started in another table. A pane in a mode
+-- puts the mode's table in front of the default one. A bracketed paste
+-- bypasses the tables altogether.
+routeKey :: KeyContext -> Keymap -> KeyState -> Key -> (KeyState, [KeyAction])
+routeKey ctx km st0 k
+    | k.name == "PasteStart" = (st1 { bracketPasting = True }, [Paste])
+    | k.name == "PasteEnd" = (st1 { bracketPasting = False }, [Paste])
+    | st1.bracketPasting = (st1, [Paste])
+    | otherwise = tableChanged first0 first0 st1
   where
-    rootTable = Map.findWithDefault Map.empty "root" keymap
-    prefixTable = Map.findWithDefault Map.empty "prefix" keymap
+    st1 = expireRepeat ctx.now st0
+    current s = fromMaybe ctx.defaultTable s.table
+    isDefault t = t == ctx.defaultTable
+    first0 = case ctx.modeTable of
+        Just m | isDefault (current st1) -> m
+        _ -> current st1
+    reset s = s { table = Nothing, tableSince = ctx.now, repeating = Nothing }
+    tableChanged first tbl st
+        | k.name `elem` ctx.prefixKeys && tbl /= "prefix" =
+            (st { table = Just "prefix", tableSince = ctx.now }, [])
+        | ctx.prefixTimeout > 0, tbl == "prefix"
+        , ctx.now - st.tableSince > ctx.prefixTimeout
+        , not (repeatingWith bd st) = retry (reset st)
+        | Just b <- bd = case st.repeating of
+            Just _ | b.repeats == Once -> retry (reset st)
+            _ -> (fire b st, [RunCommands b.commands])
+        | not (isDefault tbl) || isJust st.repeating =
+            let st' = reset st
+                first' = if isJust st.repeating then current st' else first
+            in tableChanged first' (current st') st'
+        | first /= tbl = (reset st, [])
+        | otherwise = (st, [Passthrough k.raw])
+      where
+        bd = Map.lookup tbl km >>= Map.lookup k.name
+        retry st' = tableChanged (current st') (current st') st'
+    repeatingWith bd st = case (bd, st.repeating) of
+        (Just b, Just _) -> b.repeats == Repeats
+        _ -> False
+    fire b st = case repeatFor b st of
+        0 -> reset st
+        r -> st { repeating = Just Repeating { key = k.name, expires = ctx.now + r } }
+    -- tmux's @server_client_repeat_time@: @initial-repeat-time@ opens a
+    -- fresh repeat, @repeat-time@ extends one already running on this key.
+    repeatFor b st
+        | b.repeats == Once || ctx.repeatTime == 0 = 0
+        | Just r <- st.repeating, r.key == k.name = ctx.repeatTime
+        | ctx.initialRepeatTime /= 0 = ctx.initialRepeatTime
+        | otherwise = ctx.repeatTime
+
+-- | 'routeKey' over a run of keys arriving together.
+routeKeys :: KeyContext -> Keymap -> KeyState -> [Key] -> (KeyState, [KeyAction])
+routeKeys ctx km = go
+  where
     go st [] = (st, [])
-    go NoPrefix (k : ks)
-        | Just table <- modeTable =
-            case Map.lookup k.name (Map.findWithDefault Map.empty table keymap) of
-                Just cmds -> emit (RunCommands cmds) (go NoPrefix ks)
-                Nothing
-                    -- The prefix key still arms in copy mode (unless the mode
-                    -- table bound it above), so prefix-table commands remain
-                    -- reachable without leaving the mode.
-                    | k.name == prefixName -> go PrefixArmed ks
-                    | otherwise -> go NoPrefix ks  -- unbound in copy mode: swallowed
-        | k.name == prefixName = go PrefixArmed ks
-        | Just cmds <- Map.lookup k.name rootTable =
-            emit (RunCommands cmds) (go NoPrefix ks)
-        | otherwise = emit (Passthrough k.raw) (go NoPrefix ks)
-    go PrefixArmed (k : ks) = case Map.lookup k.name prefixTable of
-        Just cmds -> emit (RunCommands cmds) (go NoPrefix ks)
-        Nothing -> go NoPrefix ks  -- unbound prefixed key: swallowed
-    emit a (st, as) = (st, merge a as)
+    go st (k : ks) =
+        let (st', as) = routeKey ctx km st k
+            (st'', rest) = go st' ks
+        in (st'', foldr merge rest as)
     merge (Passthrough a) (Passthrough b : rest) = Passthrough (a <> b) : rest
     merge a rest = a : rest
 

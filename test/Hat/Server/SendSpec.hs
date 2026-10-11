@@ -17,7 +17,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Server.ClientIO (send)
-import Hat.Server.Keys (EscPending (NoEscPending), PrefixState (NoPrefix))
+import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
 import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire
     ( Autostart (..), Inbound (..), ReadEnd (..), ServerToClient (..)
@@ -35,7 +35,7 @@ mkClient = do
     sessV   <- newTVarIO (SessionId 0)
     lastV   <- newTVarIO []
     readyV  <- newTVarIO False
-    keyV    <- newIORef NoPrefix
+    keyV    <- newIORef initialKeyState
     escV    <- newIORef NoEscPending
     frameV  <- newIORef (blankFrame sz)
     originsV <- newIORef V.empty

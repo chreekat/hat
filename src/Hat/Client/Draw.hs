@@ -92,11 +92,12 @@ bgCode = \case
 
 -- Also enables focus reporting (@?1004@) so the outer terminal sends
 -- @\ESC[I@/@\ESC[O@; the server forwards them to panes when
--- @focus-events@ is on.
+-- @focus-events@ is on. And bracketed paste (@?2004@), so a paste reaches
+-- the pane whole rather than through the key tables.
 enterAltScreen :: ByteString
-enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[2J\ESC[H"
+enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[?2004h\ESC[2J\ESC[H"
 
 -- Also resets the cursor colour (OSC 112) in case a pane's
 -- @cursor-colour@ was mirrored onto the outer terminal.
 leaveAltScreen :: ByteString
-leaveAltScreen = "\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a"
+leaveAltScreen = "\ESC[?2004l\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a"

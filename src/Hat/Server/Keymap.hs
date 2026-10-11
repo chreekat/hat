@@ -8,19 +8,22 @@ module Hat.Server.Keymap
 import Data.Map.Strict qualified as Map
 
 import Hat.Model (tshow)
-import Hat.Model.Options (Keymap)
+import Hat.Server.Keys (Binding (..), Keymap, Repeat (..))
 
 defaultKeymap :: Keymap
 defaultKeymap = Map.fromList
-    [ ("prefix", Map.fromList (map bindArgv prefixBindings))
+    [ ("prefix", Map.fromList (map bindArgv prefixBindings <> map repeatArgv repeatBindings))
     , ("root", Map.empty)
     , ("copy-mode", Map.fromList (map copyBind copyModeBindings))
-    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings <> digitBinds <> searchBinds))
+    , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings <> map once (digitBinds <> searchBinds)))
     ]
   where
-    bindArgv (k, cmd) = (k, [cmd])
+    bindArgv (k, cmd) = (k, Binding { commands = [cmd], repeats = Once })
+    -- @bind -r@: these keep the prefix table open for @repeat-time@.
+    repeatArgv (k, cmd) = (k, Binding { commands = [cmd], repeats = Repeats })
+    once (k, cmds) = (k, Binding { commands = cmds, repeats = Once })
     -- A copy-mode key runs a single @send-keys -X <name>@ command.
-    copyBind (k, name) = (k, [["send-keys", "-X", name]])
+    copyBind (k, name) = once (k, [["send-keys", "-X", name]])
     -- Digit keys feed the vi @[count]@ prefix; a bare @0@ is start-of-line.
     digitBinds =
         [ (tshow d, [["send-keys", "-X", "digit", tshow d]]) | d <- [0 .. 9 :: Int] ]
@@ -65,7 +68,12 @@ defaultKeymap = Map.fromList
         , ("[", ["copy-mode"])
         , ("]", ["paste-buffer"])
         , (":", ["command-prompt"])
-        , ("Left", ["select-pane", "-L"])
+        ]
+        <> [ (tshow i, ["select-window", "-t", tshow (i :: Int)])
+           | i <- [0 .. 9]
+           ]
+    repeatBindings =
+        [ ("Left", ["select-pane", "-L"])
         , ("Right", ["select-pane", "-R"])
         , ("Up", ["select-pane", "-U"])
         , ("Down", ["select-pane", "-D"])
@@ -74,9 +82,6 @@ defaultKeymap = Map.fromList
         , ("C-Up", ["resize-pane", "-U"])
         , ("C-Down", ["resize-pane", "-D"])
         ]
-        <> [ (tshow i, ["select-window", "-t", tshow (i :: Int)])
-           | i <- [0 .. 9]
-           ]
     copyModeViBindings =
         [ ("h", "cursor-left"), ("j", "cursor-down")
         , ("k", "cursor-up"), ("l", "cursor-right")

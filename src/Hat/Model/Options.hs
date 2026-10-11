@@ -15,7 +15,6 @@ module Hat.Model.Options
     , BorderLines (..)
     , BorderIndicators (..)
     , WindowSizeMode (..)
-    , Keymap
     , defaultOptions
       -- * Overlays
     , OptionsDelta
@@ -136,9 +135,6 @@ data Options = Options
         -- accessors ('optionFlag' …)
     }
     deriving (Eq, Show)
-
--- | table name -> key name -> command sequence (argv lists)
-type Keymap = Map Text (Map Text [[Text]])
 
 -- | The registry's defaults, decoded. The record starts with no field set:
 -- every field must be bound by some row in 'fieldBindings', which the

@@ -785,9 +785,9 @@ cmdSendKeys st mclient args = do
                     -- -H: each argument is one hex byte.
                     | hexBytes -> case mapM hexByte pos of
                         Just bytes ->
-                            [] <$ typeIntoPane pane (B.pack bytes)
+                            [] <$ typeIntoPaneSynced st pane (B.pack bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise -> [] <$ typeIntoPane pane
+                    | otherwise -> [] <$ typeIntoPaneSynced st pane
                         (B.concat (map (argBytes literal) pos))
   where
     argBytes True a = TE.encodeUtf8 a

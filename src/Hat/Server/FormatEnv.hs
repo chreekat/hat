@@ -150,6 +150,8 @@ paneFormatEnv st sess wix win pix pane = do
     paneUser <- deltaFormats <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
+    synced <- optionFlag "synchronize-panes"
+        <$> atomically (resolveForPane st sess win pane)
     -- A signal is reported by number, as tmux does where libc has no
     -- @sys_signame@ (glibc).
     let deadVars = case mexit of
@@ -170,6 +172,7 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_marked", if marked == Just pane.id then "1" else "0")
         , ("pane_marked_set", if isJust marked then "1" else "0")
         , ("pane_input_off", if inputOff then "1" else "0")
+        , ("pane_synchronized", if synced then "1" else "0")
         , ("pane_title", title)
         , ("pane_flags", T.concat
             [ if pane.id == active then "*" else ""

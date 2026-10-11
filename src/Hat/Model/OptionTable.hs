@@ -24,6 +24,7 @@ module Hat.Model.OptionTable
     , lookupOptionDef
     , isLive
     , notYetError
+    , refusing
       -- * Values
     , OptionValue (..)
     , ArrayKey (..)
@@ -447,7 +448,7 @@ optionTable =
         "bg=themedarkgrey,fg=themelightgrey"
     , notYet $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
     , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
-    , notYet $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
+    , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
     , notYet $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
     , notYet $ scalar "set-clipboard" ServerScope
         (KChoice ["off", "external", "on"]) "external"
@@ -498,8 +499,8 @@ optionTable =
     , notYet $ scalar "focus-follows-mouse" SessionScope KFlag "off"
     -- tmux defaults to 2000.
     , live $ scalar "history-limit" SessionScope (KNumber 0 intMax) "50000"
-    , notYet $ scalar "initial-repeat-time" SessionScope (KNumber 0 2000000) "0"
-    , notYet $ scalar "key-table" SessionScope KString "root"
+    , live $ scalar "initial-repeat-time" SessionScope (KNumber 0 2000000) "0"
+    , live $ scalar "key-table" SessionScope KString "root"
     , notYet $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
     , notYet $ scalar "lock-command" SessionScope KString "lock -np"
     , live $ scalar "message-command-style" SessionScope KStyle
@@ -516,12 +517,10 @@ optionTable =
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
         \fill=themeyellow}"
     , notYet $ scalar "mouse" SessionScope KFlag "off"
-    -- "None" (no prefix key at all) is not modelled yet.
-    , refusing (noneKey "prefix") $ live $
-        scalar "prefix" SessionScope KKey "C-b"
-    , notYet $ scalar "prefix2" SessionScope KKey "None"
+    , live $ scalar "prefix" SessionScope KKey "C-b"
+    , live $ scalar "prefix2" SessionScope KKey "None"
     , live $ scalar "renumber-windows" SessionScope KFlag "off"
-    , notYet $ scalar "repeat-time" SessionScope (KNumber 0 2000000) "500"
+    , live $ scalar "repeat-time" SessionScope (KNumber 0 2000000) "500"
     , live $ scalar "set-titles" SessionScope KFlag "off"
     , notYet $ scalar "set-titles-string" SessionScope KString
         "#S:#I:#W - \"#T\" #{session_alerts}"
@@ -664,7 +663,7 @@ optionTable =
     , notYet $ scalar "scroll-on-clear" WindowPaneScope KFlag "on"
     , notYet $ scalar "switch-mode-match-style" WindowPaneScope KStyle
         "bg=cyan fg=black"
-    , notYet $ scalar "synchronize-panes" WindowPaneScope KFlag "off"
+    , paneLocal $ live $ scalar "synchronize-panes" WindowPaneScope KFlag "off"
     , live $ scalar "tiled-layout-max-columns" WindowScope
         (KNumber 0 ushrtMax) "0"
     , notYet $ scalar "tree-mode-border-style" WindowScope KStyle
@@ -793,6 +792,3 @@ optionTable =
   where
     themeColour n rich basic = scalar n ServerScope KColourString
         ("#{?#{e|>=:#{client_colours},256}," <> rich <> "," <> basic <> "}")
-    noneKey n v
-        | v == "None" = Just (n <> ": None not yet supported by hat")
-        | otherwise = Nothing

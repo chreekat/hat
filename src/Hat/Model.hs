@@ -106,13 +106,13 @@ import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( BorderIndicators, BorderLines, Keymap, ModeKeys, Options, OptionsDelta, applyDelta
+    ( BorderIndicators, BorderLines, ModeKeys, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.ControlTypes (ControlState)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
-import Hat.Server.Keys (EscPending, PrefixState)
+import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
@@ -618,7 +618,7 @@ data Client = Client
     , sessionHist :: TVar [SessionId]  -- ^ MRU sessions (@switch-client -l@); see 'Hat.Server.Mru'
     , ready     :: TVar Bool  -- ^ the client's Welcome greeting has been sent.
                              --   See 'send'.
-    , keyState  :: IORef PrefixState  -- input thread only
+    , keyState  :: IORef KeyState  -- input thread only
     , escState  :: IORef EscPending   -- ^ held trailing ESC; input thread only
     , lastFrame :: IORef Frame        -- render thread only
     , lastOrigins :: IORef (V.Vector RowOrigin)
