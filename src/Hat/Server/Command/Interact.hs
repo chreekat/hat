@@ -1,23 +1,16 @@
 -- | The interactive client commands: detaching, sending keys to a pane,
--- entering copy-mode, the command prompt, and the choose-tree\/choose-window
--- pickers.
+-- entering copy-mode, and the command prompt.
 module Hat.Server.Command.Interact
     ( cmdDetachClient
     , cmdSendPrefix
     , cmdCopyMode
     , cmdCommandPrompt
-    , cmdChooseTree
-    , cmdChooseWindow
     , cmdDisplayPanes
-    , buildTreeNodes
-    , buildWindowItems
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_)
-import Data.Maybe (listToMaybe)
+import Control.Monad (forM_)
 import Data.Map.Strict qualified as Map
-import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -31,11 +24,10 @@ import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientActivePane, clientView, findTarget)
+import Hat.Server.Locate (clientActivePane, clientView, findClientNamed, findTarget)
 import Hat.Server.Pane (typeIntoPane)
 import Hat.Server.PaneMode (resetPaneModeAll, setPaneMode)
 import Hat.Server.Target qualified as Target
-import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.FormatEnv (expandFormat)
 import Hat.Term.Emulator qualified as Emu
@@ -47,8 +39,8 @@ import Hat.Transport.Wire
 cmdDetachClient :: CommandImpl
 cmdDetachClient st mclient args
     | Just e <- unknownFlag "detach-client" "a" flags = pure [RErr e]
-    | Just f <- listToMaybe [ f | (f, _) <- opts, f `elem` ["-E", "-t"] ] =
-        pure [RErr ("detach-client " <> f <> ": not supported")]
+    | Just _ <- lookup "-E" opts =
+        pure [RErr "detach-client -E: not supported"]
     | Just t <- lookup "-s" opts = do
         res <- findTarget st mclient Target.FindSession (Just t)
         case res of
@@ -57,14 +49,21 @@ cmdDetachClient st mclient args
             Right (sess, _, _, _) -> do
                 cs <- atomically (sessionClients st sess.id)
                 [] <$ mapM_ (`send` DetachOk) cs
-    | "-a" `elem` flags = do
-        cs <- Map.elems <$> readTVarIO st.clients
-        others <- atomically $ filterM' cs $ \c -> do
-            sid <- readTVar c.session
-            live <- Map.member sid <$> readTVar st.sessions
-            pure (live && Just c.id /= fmap (.id) mclient)
-        [] <$ mapM_ (`send` DetachOk) others
-    | otherwise = [] <$ forM_ mclient (`send` DetachOk)
+    | otherwise = do
+        etarget <- case lookup "-t" opts of
+            Just name -> fmap Just <$> findClientNamed st name
+            Nothing -> pure (Right mclient)
+        case etarget of
+            Left e -> pure [RErr e]
+            Right mtarget
+                | "-a" `elem` flags -> do
+                    cs <- Map.elems <$> readTVarIO st.clients
+                    others <- atomically $ filterM' cs $ \c -> do
+                        sid <- readTVar c.session
+                        live <- Map.member sid <$> readTVar st.sessions
+                        pure (live && Just c.id /= fmap (.id) mtarget)
+                    [] <$ mapM_ (`send` DetachOk) others
+                | otherwise -> [] <$ forM_ mtarget (`send` DetachOk)
   where
     (opts, flags, _) = parseArgs "Est" args
     filterM' xs p = map fst . filter snd . zip xs <$> mapM p xs
@@ -171,100 +170,3 @@ clientPromptEnv st client = do
         Just (sess, win) -> do
             ix <- readTVarIO sess.currentIx
             windowFormatEnv st sess ix win
-
--- | Open a chooser overlay on the invoking client.
-openPicker :: ServerState -> Client -> Text -> PickerFill -> [PickerNode] -> IO ()
-openPicker st client titleText fill picked = atomically $ do
-    writeTVar client.picker $ Just PickerState
-        { title = titleText
-        , roots = picked
-        , cursor = 0
-        , query = ""
-        , search = ""
-        , mode = Browsing
-        , fill = fill
-        }
-    bumpDirty st
-
--- | @choose-tree [-GswZ]@: a filterable tree of every session, its
--- windows and their panes; Enter switches to the chosen one. @-s@ opens
--- with sessions collapsed (sessions only), @-w@ with windows expanded but
--- panes collapsed, and neither fully expanded. The config opens it with
--- @… \; send-keys /@ to jump straight into search.
-cmdChooseTree :: CommandImpl
-cmdChooseTree st mclient args = do
-    let (_, flags, _) = parseArgs "" args
-        sessionsOnly = "-s" `elem` flags
-        windowsOnly  = "-w" `elem` flags
-        windowsExp = if sessionsOnly then Collapsed else Expanded
-        panesExp   = if sessionsOnly || windowsOnly then Collapsed else Expanded
-        fill = if "-Z" `elem` flags then FillWindow else PaneRegion
-    forM_ mclient $ \client -> do
-        picked <- buildTreeNodes st windowsExp panesExp
-        openPicker st client "choose a window" fill picked
-    pure []
-
--- Panes are shown under their window for visual context, but tmux can't name
--- them, so they carry no meaningful search text; the picker marks them
--- (via 'PreviewPane') as non-matching so search never targets them.
-buildTreeNodes :: ServerState -> Expansion -> Expansion -> IO [PickerNode]
-buildTreeNodes st windowsExp panesExp = do
-    sessions <- Map.elems <$> readTVarIO st.sessions
-    forM sessions $ \sess -> do
-        sname <- readTVarIO sess.name
-        ws <- Map.toAscList <$> readTVarIO sess.windows
-        winNodes <- forM ws $ \(ix, win) -> do
-            wname <- readTVarIO win.name
-            apid <- readTVarIO win.activeId
-            ordered <- Map.elems <$> readTVarIO win.panes
-            let winCmd = "switch-client -t " <> sname
-                    <> " ; select-window -t " <> sname <> ":" <> tshow ix
-                paneNodes =
-                    [ PickerNode
-                        { label = "pane " <> tshow pix
-                            <> (if pane.id == apid then "*" else "")
-                        , command = winCmd <> " ; select-pane -t " <> tshow pix
-                        , preview = Just (PreviewPane pane.id)
-                        , children = []
-                        , expanded = Collapsed }
-                    | (pix, pane) <- zip [0 :: Int ..] ordered ]
-            pure PickerNode
-                { label = tshow ix <> ":" <> wname
-                , command = winCmd
-                , preview = Just (PreviewWindow win.id)
-                , children = Picker.windowChildren paneNodes
-                , expanded = panesExp }
-        pure PickerNode
-            { label = sname
-            , command = "switch-client -t " <> sname
-            , preview = Just (PreviewSession sess.id)
-            , children = winNodes
-            , expanded = windowsExp }
-
--- | @choose-window <template>@: a list of the current session's windows;
--- selecting one runs @template@ with each @%%@ replaced by that window's
--- active pane id, so @choose-window 'join-pane -hs \"%%\"'@ joins it here.
-cmdChooseWindow :: CommandImpl
-cmdChooseWindow st mclient args = do
-    let (_, _, pos) = parseArgs "" args
-    case (mclient, pos) of
-        (Just client, template : _) -> do
-            picked <- buildWindowItems st client template
-            openPicker st client "choose a window" PaneRegion picked
-            pure []
-        _ -> pure [RErr "usage: choose-window template"]
-
-buildWindowItems :: ServerState -> Client -> Text -> IO [PickerNode]
-buildWindowItems st client template = do
-    sid <- readTVarIO client.session
-    msess <- Map.lookup sid <$> readTVarIO st.sessions
-    case msess of
-        Nothing -> pure []
-        Just sess -> do
-            ws <- Map.toAscList <$> readTVarIO sess.windows
-            forM ws $ \(ix, win) -> do
-                wname <- readTVarIO win.name
-                apid <- readTVarIO win.activeId
-                let target = "%" <> tshow (rawPane apid)
-                pure $ Picker.leaf (tshow ix <> ":" <> wname)
-                    (T.replace "%%" target template)

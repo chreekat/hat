@@ -15,6 +15,7 @@ module Hat.Server.FormatEnv
     , WindowFlagState (..)
     , windowFlags
     , clientFormatVars
+    , clientFormatEnv
     ) where
 
 import Control.Concurrent (forkIO, myThreadId)
@@ -298,6 +299,7 @@ sessionFormatEnv st sess = do
         , ("session_created", tshow (floor sess.createdAt :: Integer))
         , ("session_restores", tshow sess.restores)
         , ("host", T.pack hostname)
+        , ("host_short", T.pack (takeWhile (/= '.') hostname))
         , ("window_active_clients", "0")
         , ("window_width", tshow sz.cols)
         , ("window_height", tshow sz.rows)
@@ -470,6 +472,21 @@ loopClientEnvs :: ServerState -> IO [FormatEnv]
 loopClientEnvs st = do
     cs <- Map.elems <$> readTVarIO st.clients
     mapM (fmap Map.fromList . clientFormatVars) [ c | c <- cs, c.role == Attached ]
+
+-- | An attached client's format environment: its own variables over its
+-- session's. 'Nothing' when its session is gone.
+clientFormatEnv :: ServerState -> Client -> IO (Maybe FormatEnv)
+clientFormatEnv st c = do
+    msess <- atomically $ do
+        sid <- readTVar c.session
+        Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Nothing -> pure Nothing
+        Just sess -> do
+            senv <- sessionFormatEnv st sess
+            sname <- readTVarIO sess.name
+            cvars <- clientFormatVars c
+            pure (Just (Map.union (Map.fromList (("client_session", sname) : cvars)) senv))
 
 -- | A client's own format variables.
 clientFormatVars :: Client -> IO [(Text, Text)]

@@ -35,12 +35,13 @@ import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( PayloadItem (..), clientNameOf, noTarget, notify, notifyGroupChange, sessionTarget )
-import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
+import Hat.Server.Locate
+    (findClientNamed, findTarget, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , windowHolders )
 import Hat.Server.Resize (applySessionSize, defaultSizeOf)
-import Hat.Server.FormatEnv (clientFormatVars, expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv (clientFormatEnv, expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
 import Hat.Transport.Wire (ServerToClient (DetachOk, Exited))
 
@@ -383,19 +384,14 @@ cmdListClients st mclient args = do
     case efilter of
         Left err -> pure [RErr err]
         Right msid -> do
-            (cs, sessions) <- atomically $
-                (,) <$> readTVar st.clients <*> readTVar st.sessions
+            cs <- readTVarIO st.clients
             fmap concat . forM (Map.elems cs) $ \c -> do
                 sid <- readTVarIO c.session
-                case Map.lookup sid sessions of
-                    Just sess
+                menv <- clientFormatEnv st c
+                case menv of
+                    Just env
                         | c.role == Attached
                         , maybe True (== sid) msid -> do
-                            senv <- sessionFormatEnv st sess
-                            sname <- readTVarIO sess.name
-                            cvars <- clientFormatVars c
-                            let env = Map.union (Map.fromList
-                                    (("client_session", sname) : cvars)) senv
                             out <- expandFormat st env $ fromMaybe
                                 "#{session_name}" (lookup "-F" opts)
                             pure [ROutput out]
@@ -486,11 +482,15 @@ cmdListPanes st mclient args = do
                         <> tshow sz.cols <> "x" <> tshow sz.rows <> "]"
 
 cmdSwitchClient :: CommandImpl
-cmdSwitchClient st mclient args = do
-    let (opts, flags, _) = parseArgs "t" args
-    case mclient of
-        Nothing -> pure [RErr "no client"]
-        Just client
+cmdSwitchClient st mclient0 args = do
+    let (opts, flags, _) = parseArgs "ct" args
+    etarget <- case lookup "-c" opts of
+        Just name -> fmap Just <$> findClientNamed st name
+        Nothing -> pure (Right mclient0)
+    case etarget of
+        Left e -> pure [RErr e]
+        Right Nothing -> pure [RErr "no client"]
+        Right (Just client)
             | "-l" `elem` flags -> do
                 hist <- readTVarIO client.sessionHist
                 sessions <- readTVarIO st.sessions
@@ -500,7 +500,7 @@ cmdSwitchClient st mclient args = do
                     (sess : _) -> switchClientTo st client sess >> pure []
             -- A target naming a window or pane also makes it current there.
             | Just t <- lookup "-t" opts, T.any (`elem` (":.%" :: String)) t || t == "=" -> do
-                res <- findTarget st mclient Target.FindPane (Just t)
+                res <- findTarget st mclient0 Target.FindPane (Just t)
                 case res of
                     Left e -> pure [RErr e]
                     Right (sess, ix, win, pane) -> do
@@ -514,5 +514,5 @@ cmdSwitchClient st mclient args = do
                         switchClientTo st client sess
                         pure []
             | otherwise ->
-                withTargetSession st mclient (lookup "-t" opts) $ \sess ->
+                withTargetSession st mclient0 (lookup "-t" opts) $ \sess ->
                     switchClientTo st client sess >> pure []

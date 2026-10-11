@@ -23,6 +23,7 @@ module Hat.Server.Locate
     , locatePane
     , siblingPane
     , withDispatchTarget
+    , findClientNamed
     ) where
 
 import Control.Applicative ((<|>))
@@ -421,3 +422,12 @@ dispatchLoc st = do
             Nothing -> pure Nothing
             Just pid -> fmap (\(sid, win) -> (sid, win.id, pid))
                 <$> locatePane st pid
+
+-- | The client a @-c@ or target-client @-t@ names, by its
+-- @#{client_name}@ (tmux's @cmd_find_client@), or tmux's error.
+findClientNamed :: ServerState -> Text -> IO (Either Text Client)
+findClientNamed st name = do
+    cs <- Map.elems <$> readTVarIO st.clients
+    pure $ case [ c | c <- cs, "client" <> tshow (rawClient c.id) == name ] of
+        c : _ -> Right c
+        [] -> Left ("can't find client: " <> name)

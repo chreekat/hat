@@ -17,7 +17,7 @@ module Hat.Server.View
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
-import Control.Monad (foldM, forM, when)
+import Control.Monad (forM, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -32,7 +32,7 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.PtrEq (samePtr)
-import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
+import Hat.Server.ColorScheme (flashStyle)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.DisplayPanes qualified as DisplayPanes
@@ -43,7 +43,7 @@ import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
      windowFlags)
 import Hat.Server.Resize (windowArrange)
-import Hat.Server.Picker qualified as Picker
+import Hat.Server.TreeMode qualified as TreeMode
 import Hat.Server.Render
 import Hat.Server.Style (parseColor)
 import Hat.Term.Cell qualified as Cell
@@ -125,11 +125,11 @@ renderOnce st client = do
                         ps <- readTVar win.panes
                         active <- readTVar win.activeId
                         pure (Just (sess, win, rects, borders, ps, active))
-    (frame, origins, cursor, mActiveRect) <- case view of
+    (frame, origins, cursor) <- case view of
         Nothing -> pure
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
-            , (Pos 0 0, False), Nothing )
+            , (Pos 0 0, False) )
         Just (sess, _, rects, borders, ps, active) -> do
             let shiftRect r = r
                     { startRow = r.startRow + rowOff
@@ -194,26 +194,8 @@ renderOnce st client = do
                 _ -> pure $ case Map.lookup active paneViews of
                     Nothing -> (Pos 0 0, False)
                     Just pv -> placePaneCursor (paneOrigin rects active) rowOff pv
-            pure ( withStatus, statusOrigins, cur
-                 , shiftRect <$> List.lookup active rects )
-    -- A chooser overlay, when open, is drawn in the active pane's rect
-    -- (or the whole window under -Z), with a live preview of the
-    -- highlighted node's pane beside the list.
-    mpicker <- readTVarIO client.picker
-    (frame', origins', cursor') <- case mpicker of
-        Nothing -> pure (frame, origins, cursor)
-        Just pk -> do
-            let region = Picker.pickerRegion pk.fill csize rowOff mActiveRect
-                width = region.endCol - region.startCol
-                rows = region.endRow - region.startRow
-            mPreview <- case Picker.pickerSplit width of
-                Just listW -> pickerPreviewCells st pk Size
-                    { rows = fromIntegral (max 0 rows)
-                    , cols = fromIntegral (max 0 (width - listW - 1)) }
-                Nothing -> pure Nothing
-            pure ( overlayPicker region pk mPreview frame
-                 , volatileRows region origins
-                 , (Pos 0 0, False) )
+            pure (withStatus, statusOrigins, cur)
+    let (frame', origins', cursor') = (frame, origins, cursor)
     -- The display-panes overlay stamps each pane's number over its rect.
     mdpanes <- readTVarIO client.displayPanes
     (frame'', origins'') <- case (mdpanes, view) of
@@ -278,112 +260,6 @@ volatileRows :: Rect -> V.Vector RowOrigin -> V.Vector RowOrigin
 volatileRows rect o = o V.//
     [ (r, VolatileRow)
     | r <- [max 0 rect.startRow .. min (V.length o) rect.endRow - 1] ]
-
--- | The rendered cells previewing the highlighted node, sized to the
--- preview column (@size@): a single pane's contents, a whole window
--- composited in its split layout, or a session's windows. 'Nothing' when
--- the node has no preview, or its target no longer exists.
-pickerPreviewCells
-    :: ServerState -> PickerState -> Size
-    -> IO (Maybe (V.Vector (V.Vector Cell.Cell)))
-pickerPreviewCells st pk size = case Picker.selectedPreview pk of
-    Nothing -> pure Nothing
-    Just (PreviewPane pid) -> do
-        mpane <- atomically (findPaneById st (rawPane pid))
-        traverse (paneViewCells st) mpane
-    Just (PreviewWindow wid) -> do
-        mwin <- atomically (findWindowById st wid)
-        traverse (\w -> windowCompositeCells st w size) mwin
-    Just (PreviewSession sid) -> do
-        msess <- atomically (findSessionById st sid)
-        traverse (\s -> sessionPreviewCells st s size) msess
-
--- | Composite a whole window — every pane painted into its layout rect,
--- with the borders between them — into a @size@-sized grid. This is what
--- makes a window preview show its splits, not just the active pane.
-windowCompositeCells
-    :: ServerState -> Window -> Size -> IO (V.Vector (V.Vector Cell.Cell))
-windowCompositeCells st win size = do
-    opts <- readTVarIO st.options
-    (rects, borders, ps, active) <- atomically $ do
-        (r, b) <- windowArrange size win
-        ps     <- readTVar win.panes
-        a      <- readTVar win.activeId
-        pure (r, b, ps, a)
-    let base = applyBorders (blankFrame size)
-            (borderCells opts (List.lookup active rects) 0 borders)
-    foldM (\acc (pid, rect) -> case Map.lookup pid ps of
-              Nothing   -> pure acc
-              Just pane -> do
-                  cells <- paneViewCells st pane
-                  pure (overlayGrid acc rect cells)) base rects
-
--- | Preview a session as a vertical stack of its windows: each window's
--- index\/name on a coloured label bar dividing it from the window above,
--- then a thumbnail of that window's composited split layout. Windows that do not fit are omitted (the list still names
--- them).
-sessionPreviewCells
-    :: ServerState -> Session -> Size -> IO (V.Vector (V.Vector Cell.Cell))
-sessionPreviewCells st sess size = do
-    wins <- Map.toAscList <$> readTVarIO sess.windows
-    labelStyle <- previewLabelStyle <$> readTVarIO st.colorScheme
-    let slices = Picker.stackThumbnails (fromIntegral size.rows) (length wins)
-    foldM (place labelStyle) (blankFrame size) (zip wins slices)
-  where
-    place labelStyle acc ((ix, win), (labelRow, bodyTop, bodyH)) = do
-        wname <- readTVarIO win.name
-        thumb <- windowCompositeCells st win
-            (Size { rows = fromIntegral bodyH, cols = size.cols })
-        let width = fromIntegral size.cols
-            label = lineCells labelStyle width (tshow ix <> ":" <> wname)
-            body  = Rect { startRow = bodyTop, endRow = bodyTop + bodyH
-                         , startCol = 0, endCol = width }
-        pure (overlayGrid (acc V.// [(labelRow, label)]) body thumb)
-
--- | Paint a chooser into @region@: the list on the left and, when wide
--- enough, a preview of the highlighted node's pane on the right, divided
--- by a vertical rule. Cells outside @region@ (other panes, borders, the
--- status line) are left untouched.
-overlayPicker
-    :: Rect -> PickerState -> Maybe (V.Vector (V.Vector Cell.Cell))
-    -> Frame -> Frame
-overlayPicker region pk mPreview frame = overlayGrid frame region grid
-  where
-    rows = region.endRow - region.startRow
-    width = region.endCol - region.startCol
-    rendered = Picker.pickerLines rows pk
-    padded = take rows (rendered <> repeat (Picker.UnselectedRow, ""))
-    -- Split only when a preview pane exists and the width allows it.
-    split = case (mPreview, Picker.pickerSplit width) of
-        (Just previewCells, Just listW) -> Just (listW, previewCells)
-        _                               -> Nothing
-    grid = V.fromList [ rowCells k | k <- [0 .. rows - 1] ]
-    rowCells k =
-        let (sel, txt) = padded !! k
-            sty = case sel of
-                Picker.SelectedRow   -> pickerSelStyle
-                Picker.UnselectedRow -> pickerStyle
-        in case split of
-            Nothing -> lineCells sty width txt
-            Just (listW, previewCells) ->
-                lineCells sty listW txt
-                    <> V.singleton dividerCell
-                    <> previewRow previewCells k (width - listW - 1)
-
--- | Row @k@ of a preview pane's cells, padded or clipped to @w@ columns.
-previewRow :: V.Vector (V.Vector Cell.Cell) -> Int -> Int -> V.Vector Cell.Cell
-previewRow grid k w =
-    let row = fromMaybe V.empty (grid V.!? k)
-    in V.generate w (\c -> fromMaybe Cell.blankCell (row V.!? c))
-
-dividerCell :: Cell.Cell
-dividerCell = Cell.glyphCell '\x2502' pickerStyle
-
-pickerStyle :: Cell.Style
-pickerStyle = Cell.defaultStyle
-
-pickerSelStyle :: Cell.Style
-pickerSelStyle = Cell.defaultStyle { Cell.reverse = True }
 
 paneOrigin :: [(PaneId, Rect)] -> PaneId -> Pos
 paneOrigin rects pidL = case List.lookup pidL rects of
@@ -510,7 +386,15 @@ paneView st pane = do
     mmode <- atomically (topMode pane)
     case mmode of
         Nothing -> live
-        Just (TreeMode _) -> live
+        Just (TreeMode ts) -> do
+            size <- readTVarIO pane.size
+            (cells, cur) <- TreeMode.drawTreeMode st ts size
+            pure PaneView
+                { cells = cells
+                , rowGens = Nothing
+                , cursor = cur
+                , cursorVisible = isJust cur
+                }
         Just (CopyMode pm) -> copyView pm
   where
     live = do
@@ -543,11 +427,6 @@ paneView st pane = do
     viewportRow fg a =
         let row = fromMaybe V.empty (fg.fgRows V.!? a)
         in V.generate fg.fgSx (\c -> fromMaybe Cell.blankCell (row V.!? c))
-
--- | The cells a pane contributes, discarding the cursor: for previews and
--- the chooser, which draw no cursor.
-paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
-paneViewCells st pane = (.cells) <$> paneView st pane
 
 -- | tmux's copy-mode position indicator: black on yellow, like the
 -- default @mode-style@.

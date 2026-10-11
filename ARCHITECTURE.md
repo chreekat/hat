@@ -263,8 +263,11 @@ keys→commands cycle.
   |  Hat.Server.Dispatch / .Command.*       | -- command table + per-area impls
   |  Hat.Server.View / .Render / .Toast     | -- tree -> frames -> DrawOps; toasts
   |  Hat.Server.Pane / .Resize              | -- pane lifecycle; the reconcile loop
-  |  Hat.Server.Overlay / .Picker / .Prompt | -- keyboard-grabbing overlays
+  |  Hat.Server.Overlay / .Prompt           | -- the keyboard-grabbing prompt
+  |  Hat.Server.PaneMode                    | -- a pane's mode stack (-k, hooks)
   |  Hat.Server.CopyMode                    | -- copy mode over a frozen snapshot
+  |  Hat.Server.ModeTree / .TreeMode /      | -- tmux's list screens: choose-tree,
+  |    .FormatDraw                          |    -buffer, -client; #[...] to cells
   |  Hat.Server.Format / .FormatEnv         | -- #{...} engine; env construction
   |  Hat.Server.Layout / .LayoutString      | -- pane geometry + layout-string codec
   |  Hat.Server.Keys / .Keymap /            | -- key names; default binds;
@@ -295,7 +298,7 @@ keys→commands cycle.
   |  Hat.Command.Parser                     | -- pure (megaparsec)
   |  Hat.Geometry / .Path / .Intern         | -- Size/Pos; path building; interning
   |  Hat.TextWidth / .Glob / .PtrEq         | -- wcwidth; fnmatch; identity equality
-  |  Hat.FuzzyMatch / .Debug                | -- fuzzy scorer; ghc-debug socket
+  |  Hat.Debug                              | -- ghc-debug socket
   |  Hat.Log                                | -- structured JSON events
   +-----------------------------------------+
   |  Hat.Bench.*                            | -- benchmark fitting + reports (tools only)
@@ -335,6 +338,8 @@ Handy when cross-referencing behavior against upstream:
 | `Hat.Server.Layout` / `.LayoutString` | `layout.c`, `layout-set.c`, `layout-custom.c` |
 | `Hat.Server.Target` / `.Locate`    | `cmd-find.c`                                  |
 | `Hat.Server.Environ`               | `environ.c`                                   |
+| `Hat.Server.PaneMode`              | `window.c` (`window_pane_set_mode` et al.)    |
+| `Hat.Server.ModeTree` / `.TreeMode` | `mode-tree.c`, `window-{tree,buffer,client}.c` |
 | `Hat.Server.Snapshot` / `.Persist` | (no tmux analogue — native, vs. resurrect)    |
 | `Hat.Model` / `.Options`           | `session.c`, `window.c`, `options.c`          |
 | `Hat.Term.Emulator`                | `input.c`, `grid.c`, `grid-view.c`            |

@@ -9,17 +9,21 @@ module Hat.Server.PaneMode
     , resetPaneMode
     , resetPaneModeAll
     , modifyTopMode
+    , zoomForMode
     ) where
 
 import Control.Concurrent.STM
 import Control.Monad (forM_, when)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 
 import Hat.Model
-import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.Hooks (PayloadItem (..), notifyPane, notifyWindow)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.Pane (killPaneLocs)
+import Hat.Server.Mru (recordVisit)
+import Hat.Server.Resize (applySessionSize)
 
 -- | Whether 'setPaneMode' entered the mode or found it already showing.
 data SetMode = ModeEntered | ModeAlreadyShown
@@ -70,6 +74,7 @@ resetPaneMode st pane = do
                 bumpDirty st
                 pure (Just (e, modeName . (.mode) <$> listToMaybe rest))
     forM_ popped $ \(e, next) -> do
+        leaveMode st pane e.mode
         let fire = fireModeChange st pane
         fire "pane-mode-exited" (Just (modeName e.mode)) next 0
         fire "pane-mode-changed" (Just (modeName e.mode)) next 0
@@ -101,3 +106,39 @@ fireModeChange st pane hook previous current entered =
         [ ("current_mode", PText m) | Just m <- [current] ]
         <> [ ("previous_mode", PText m) | Just m <- [previous] ]
         <> [ ("mode_entered", PInt entered) ]
+
+-- | Zoom the pane for a mode entered with @-Z@ (tmux's @mode_tree_zoom@):
+-- 'ModeZoomed' when this did the zooming, so leaving the mode unzooms;
+-- a window already zoomed, or with nothing to zoom over, is left alone.
+zoomForMode :: ServerState -> Session -> Window -> Pane -> IO ModeZoom
+zoomForMode st sess win pane = do
+    zoomed <- atomically $ do
+        z <- readTVar win.zoomed
+        n <- Map.size <$> readTVar win.panes
+        if z /= Nothing || n < 2 then pure False else do
+            active <- readTVar win.activeId
+            when (active /= pane.id) $ do
+                modifyTVar' win.paneHist (recordVisit active pane.id)
+                writeTVar win.activeId pane.id
+            writeTVar win.zoomed (Just pane.id)
+            True <$ bumpDirty st
+    if not zoomed then pure ModeLeftZoom else do
+        applySessionSize st sess.id
+        notifyWindow st "window-zoomed" (Just sess.id) win []
+        pure ModeZoomed
+
+-- | What leaving a mode undoes: the zoom a @-Z@ tree mode made.
+leaveMode :: ServerState -> Pane -> PaneMode -> IO ()
+leaveMode st pane = \case
+    TreeMode t | t.zoom == ModeZoomed -> do
+        mloc <- atomically (locatePane st pane.id)
+        forM_ mloc $ \(sid, win) -> do
+            was <- atomically $ do
+                z <- readTVar win.zoomed
+                writeTVar win.zoomed Nothing
+                bumpDirty st
+                pure z
+            when (was /= Nothing) $ do
+                applySessionSize st sid
+                notifyWindow st "window-unzoomed" (Just sid) win []
+    _ -> pure ()

@@ -12,7 +12,6 @@ import Hat.Client.DrawSpec qualified
 import Hat.Client.TtySpec qualified
 import Hat.Command.ParserSpec qualified
 import Hat.DebugSpec qualified
-import Hat.FuzzyMatchSpec qualified
 import Hat.GlobSpec qualified
 import Hat.InternSpec qualified
 import Hat.IntegrationSpec qualified
@@ -42,8 +41,8 @@ import Hat.Server.OptionEffectSpec qualified
 import Hat.Server.OptionsSpec qualified
 import Hat.Server.PaneCommandSpec qualified
 import Hat.Server.PaneModeSpec qualified
+import Hat.Server.ModeTreeSpec qualified
 import Hat.Server.PaneReaderSpec qualified
-import Hat.Server.PickerSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.ReloadSpec qualified
 import Hat.Server.RenderSpec qualified
@@ -103,17 +102,16 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.PaneCommand" Hat.Server.PaneCommandSpec.spec
     describe "Hat.Server.PaneMode" Hat.Server.PaneModeSpec.spec
+    describe "Hat.Server.ModeTree" Hat.Server.ModeTreeSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Buffer" Hat.Server.BufferSpec.spec
     describe "Hat.Server.Capture" Hat.Server.CaptureSpec.spec
     describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
-    describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
-    describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
     describe "Hat.Glob" Hat.GlobSpec.spec
     describe "Hat.Server.ColorScheme" Hat.Server.ColorSchemeSpec.spec
     describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec

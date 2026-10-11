@@ -8,6 +8,7 @@ module Hat.Server.Command.Types
     , parseArgs
     , unknownFlag
     , strtonum
+    , templateReplace
     ) where
 
 import Data.ByteString (ByteString)
@@ -86,3 +87,33 @@ unknownFlag name allowed flags =
     flagLetter f = case T.unpack f of
         ['-', c] -> Just c
         _ -> Nothing
+
+-- | tmux's @cmd_template_replace@: put @s@ in for the template's first
+-- @%%@ (single-quote escaped for a @'%%'@ context) and every @%idx@; a
+-- doubled @%%%@ or @%idx%@ form escapes it for double quotes instead.
+templateReplace :: Text -> Text -> Int -> Text
+templateReplace template s idx
+    | not (T.any (== '%') template) = template
+    | otherwise = go False (T.unpack template)
+  where
+    go _ [] = ""
+    go replaced ('%' : rest) = case rest of
+        c : rest'
+            | c >= '1' && c <= '9', fromEnum c - fromEnum '0' == idx ->
+                let (q, rest'') = quoting NoQuote rest'
+                in quote q <> go replaced rest''
+        '%' : rest' | not replaced ->
+            let (q, rest'') = quoting SingleQuote rest'
+            in quote q <> go True rest''
+        _ -> T.cons '%' (go replaced rest)
+    go replaced (c : rest) = T.cons c (go replaced rest)
+    quoting _ ('%' : rest) = (DoubleQuote, rest)
+    quoting q rest = (q, rest)
+    quote = \case
+        NoQuote -> s
+        SingleQuote -> T.replace "'" "'\\''" s
+        DoubleQuote -> T.concatMap
+            (\c -> if c `elem` ("\"\\$;~" :: String) then T.pack ['\\', c] else T.singleton c) s
+
+-- | How 'templateReplace' escapes the string it puts in.
+data TemplateQuote = NoQuote | SingleQuote | DoubleQuote

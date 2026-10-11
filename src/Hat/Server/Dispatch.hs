@@ -78,7 +78,7 @@ import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
 import Hat.Server.Keys
-import Hat.Server.Overlay (handlePickerInput)
+import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree, treeModeKey)
 import Hat.Server.Locate
 import Hat.Server.Pane
 import Hat.Server.Snapshot
@@ -362,7 +362,11 @@ commandSpecs =
     , (["copy-mode"], cmdCopyMode)
     , (["command-prompt"], cmdCommandPrompt)
     , (["choose-tree"], cmdChooseTree)
-    , (["choose-window", "choosew"], cmdChooseWindow)
+    , (["choose-buffer"], cmdChooseBuffer)
+    , (["choose-client"], cmdChooseClient)
+    -- tmux's default command-alias entries for these.
+    , (["choose-window"], \st mc args -> cmdChooseTree st mc ("-w" : args))
+    , (["choose-session"], \st mc args -> cmdChooseTree st mc ("-s" : args))
     , (["display-panes", "displayp"], cmdDisplayPanes)
     , (["show-buffer", "showb"], cmdShowBuffer)
     , (["set-buffer", "setb"], cmdSetBuffer)
@@ -747,57 +751,45 @@ cmdSendKeys st mclient args = do
         literal = "-l" `elem` flags
         hexBytes = "-H" `elem` flags
         modeCmd = "-X" `elem` flags
-    mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
-    case (mpicker, mclient) of
-        -- An open chooser owns send-keys: they drive its navigation/search
-        -- (this is how the config's @… \; send-keys /@ enters search).
-        (Just pk, Just client) | not modeCmd -> do
-            handlePickerInput dispatch st client pk
-                (concatMap (tokenizeKeys . argBytes literal) pos)
-            pure []
-        _ -> do
-            -- A full pane target (sess:win.N) resolves through cmd-find;
-            -- the special pane tokens (%N, !, {marked}) keep the old path.
-            let mtok = lookup "-t" opts
-            mpane <- case Target.parsePaneTarget mtok of
-                Target.PaneCurrent | Just t <- mtok -> do
-                    res <- findTarget st mclient Target.FindPane (Just t)
-                    pure $ case res of
-                        Right (_, _, _, p) -> Just p
-                        Left _ -> Nothing
-                _ -> targetPane st mclient mtok
-            case mpane of
-                Nothing -> pure []
-                Just pane
-                    | modeCmd -> case pos of
-                        (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
-                        [] -> pure []
-                    -- -H: each argument is one hex byte.
-                    | hexBytes -> case mapM hexByte pos of
-                        Just bytes -> concat <$> mapM (injectKey pane)
-                            [ k | b <- bytes, k <- tokenizeKeys (B.singleton b) ]
-                        Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise -> concat <$> mapM (injectKey pane)
-                        (concatMap (argKeys literal) pos)
+    -- A full pane target (sess:win.N) resolves through cmd-find; the
+    -- special pane tokens (%N, !, {marked}) keep the old path.
+    let mtok = lookup "-t" opts
+    mpane <- case Target.parsePaneTarget mtok of
+        Target.PaneCurrent | Just t <- mtok -> do
+            res <- findTarget st mclient Target.FindPane (Just t)
+            pure $ case res of
+                Right (_, _, _, p) -> Just p
+                Left _ -> Nothing
+        _ -> targetPane st mclient mtok
+    case mpane of
+        Nothing -> pure []
+        Just pane
+            | modeCmd -> case pos of
+                (name : cmdArgs) -> runCopyModeCommand st pane name cmdArgs
+                [] -> pure []
+            -- -H: each argument is one hex byte.
+            | hexBytes -> case mapM hexByte pos of
+                Just bytes -> concat <$> mapM (injectKey pane)
+                    [ k | b <- bytes, k <- tokenizeKeys (B.singleton b) ]
+                Nothing -> pure [RErr "send-keys -H: bad hex byte"]
+            | otherwise -> concat <$> mapM (injectKey pane)
+                (concatMap (argKeys literal) pos)
   where
-    argBytes True a = TE.encodeUtf8 a
-    argBytes False a = case parseKeyName a of
-        Just k -> k.raw
-        Nothing -> TE.encodeUtf8 a
     -- A named key is one key; anything else (and every -l argument) is
     -- its characters, one key each.
     argKeys lit a
         | not lit, Just k <- parseKeyName a = [k]
         | otherwise = tokenizeKeys (TE.encodeUtf8 a)
     -- tmux's cmd_send_keys_inject_key: a pane in copy mode runs the key's
-    -- binding in its mode table against the pane; any other pane takes the
-    -- key's bytes.
+    -- binding in its mode table against the pane; a tree mode takes the key
+    -- itself; a pane in no mode takes the key's bytes.
     injectKey pane key = atomically (topMode pane) >>= \case
         Just (CopyMode cm) -> do
             km <- readTVarIO st.keymap
             case Map.lookup key.name =<< Map.lookup cm.copyState.keyTable km of
                 Nothing -> pure []
                 Just cmds -> withDispatchTarget st pane.id (runCommands st mclient cmds)
+        Just (TreeMode _) -> [] <$ treeModeKey dispatch st mclient pane key
         _ -> [] <$ typeIntoPane pane key.raw
     hexByte t = case TR.hexadecimal t of
         Right (n, rest) | T.null rest, n >= 0, n <= 255 ->

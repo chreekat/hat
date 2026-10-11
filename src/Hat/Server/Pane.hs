@@ -582,18 +582,25 @@ windowSeen st sess win = do
     pure (attentionSeen current anyFocused)
 
 -- | Whether some attached client has @win@ on screen: it is the current
--- window of the client's session, or the client has a chooser open (whose
+-- window of the client's session, or that window shows a tree mode (whose
 -- live preview can show any window).
 windowDisplayed :: ServerState -> Window -> STM Bool
 windowDisplayed st win = do
     sessions <- readTVar st.sessions
     cs <- Map.elems <$> readTVar st.clients
-    let displays c = readTVar c.picker >>= \case
-            Just _ -> pure True
-            Nothing -> do
-                sid <- readTVar c.session
-                maybe (pure False) (\sess -> isCurrentWindow sess win)
-                    (Map.lookup sid sessions)
+    let displays c = do
+            sid <- readTVar c.session
+            case Map.lookup sid sessions of
+                Nothing -> pure False
+                Just sess -> do
+                    here <- isCurrentWindow sess win
+                    if here then pure True else do
+                        mcur <- currentWindow sess
+                        panes <- maybe (pure []) (fmap Map.elems . readTVar . (.panes)) mcur
+                        or <$> mapM (fmap isTree . topMode) panes
+        isTree = \case
+            Just (TreeMode _) -> True
+            _ -> False
     or <$> mapM displays [c | c <- cs, c.role == Attached]
 
 -- | Register activity on a window: restart its silence timer, raise the

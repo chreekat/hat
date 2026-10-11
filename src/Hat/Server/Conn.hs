@@ -47,6 +47,7 @@ import Hat.Server.Control
 import Hat.Server.ControlQueue (requestExit)
 import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Overlay
+import Hat.Server.TreeMode (treeModeKey)
 import Hat.Server.Startup
 import Hat.Server.DisplayPanes
 import Hat.Server.Flash
@@ -224,7 +225,6 @@ newClient st conn h = do
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
-    pickerVar <- newTVarIO Nothing
     displayPanesVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
@@ -259,7 +259,6 @@ newClient st conn h = do
         , toast = toastVar
         , flash = flashVar
         , prompt = promptVar
-        , picker = pickerVar
         , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
@@ -413,13 +412,11 @@ handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
     mpanes <- readTVarIO client.displayPanes
-    mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
-    case (mpanes, mpicker, mprompt) of
-        (Just dp, _, _) -> handlePanesInput d st client dp (tokenizeKeys bs)
-        (_, Just pk, _) -> handlePickerInput d st client pk (tokenizeKeys bs)
-        (_, _, Just pr) -> handlePromptInput d st client pr bs
-        _               -> handleKeys d st client bs
+    case (mpanes, mprompt) of
+        (Just dp, _) -> handlePanesInput d st client dp (tokenizeKeys bs)
+        (_, Just pr) -> handlePromptInput d st client pr bs
+        _            -> handleKeys d st client bs
 
 -- | Keys while the @display-panes@ overlay shows: each key is decided by
 -- 'panesKeyAction'; once the overlay closes, the rest of the chunk flows
@@ -530,11 +527,16 @@ runKeys d st client keys = do
                     let (kst', actions) =
                             routeKeys opts.prefix km modeTable kst [k]
                     forM_ actions $ \case
-                        Passthrough raw -> forM_ mpane $ \pane -> do
-                            dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
-                                then pure False
-                                else dismissDeadPane st pane
-                            unless dismissed $ typeIntoPane pane raw
+                        Passthrough raw -> forM_ mpane $ \pane ->
+                            atomically (topMode pane) >>= \case
+                                -- tmux's window_pane_key: a key no table
+                                -- binds goes to the pane's mode.
+                                Just (TreeMode _) -> treeModeKey d st (Just client) pane k
+                                _ -> do
+                                    dismissed <- if k.name `elem` ["FocusIn", "FocusOut"]
+                                        then pure False
+                                        else dismissDeadPane st pane
+                                    unless dismissed $ typeIntoPane pane raw
                         RunCommands cmds -> withCommandBatch st $
                             forM_ cmds $ \argv ->
                                 toastReplies st client

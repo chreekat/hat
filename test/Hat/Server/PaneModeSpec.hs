@@ -86,6 +86,67 @@ spec = do
                 run st ["send-keys", "-t", "S:0.0", "q"] `shouldReturn` []
                 display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
 
+    describe "tree modes" $ do
+        it "choose-tree shows tree-mode until q" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["choose-tree", "-t", "S:0.0"] `shouldReturn` []
+                display st "S:0.0" "#{pane_in_mode} #{pane_mode}"
+                    `shouldReturn` [ROutput "1 tree-mode"]
+                run st ["send-keys", "-t", "S:0.0", "q"] `shouldReturn` []
+                display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+        it "choose-tree -k kills the pane when the mode exits" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "cat"] `shouldReturn` []
+                [a, b] <- paneIds st "S:0"
+                run st ["choose-tree", "-k", "-t", b] `shouldReturn` []
+                run st ["send-keys", "-t", b, "q"] `shouldReturn` []
+                paneIds st "S:0" `shouldReturn` [a]
+        it "stacks over copy mode and returns to it" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["copy-mode", "-t", "S:0.0"] `shouldReturn` []
+                run st ["choose-tree", "-t", "S:0.0"] `shouldReturn` []
+                run st ["send-keys", "-t", "S:0.0", "Escape"] `shouldReturn` []
+                display st "S:0.0" "#{pane_mode}" `shouldReturn` [ROutput "copy-mode"]
+        it "rejects an unknown sort order" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["choose-tree", "-O", "sideways", "-t", "S:0.0"]
+                    `shouldReturn` [RErr "invalid sort order"]
+        it "choose-buffer has nothing to show without a buffer" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["choose-buffer", "-t", "S:0.0"] `shouldReturn` []
+                display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+        it "choose-buffer d deletes the selected buffer" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["set-buffer", "-b", "one", "1"] `shouldReturn` []
+                run st ["set-buffer", "-b", "two", "2"] `shouldReturn` []
+                run st ["choose-buffer", "-O", "name", "-t", "S:0.0"] `shouldReturn` []
+                run st ["send-keys", "-t", "S:0.0", "d"] `shouldReturn` []
+                run st ["list-buffers", "-F", "#{buffer_name}"]
+                    `shouldReturn` [ROutput "two"]
+                display st "S:0.0" "#{pane_mode}" `shouldReturn` [ROutput "buffer-mode"]
+        it "choose-client has nothing to show without a client" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["choose-client", "-t", "S:0.0"] `shouldReturn` []
+                display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+
+    describe "target clients" $ do
+        it "switch-client -c names an unknown client loudly" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["switch-client", "-c", "client99", "-t", "S"]
+                    `shouldReturn` [RErr "can't find client: client99"]
+        it "detach-client -t names an unknown client loudly" $
+            withServer $ \st ->
+                run st ["detach-client", "-t", "client99"]
+                    `shouldReturn` [RErr "can't find client: client99"]
+
 -- | A window's pane ids, in pane-index order.
 paneIds :: ServerState -> Text -> IO [Text]
 paneIds st tgt = do

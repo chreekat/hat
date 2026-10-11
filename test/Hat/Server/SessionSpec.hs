@@ -156,7 +156,6 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing
         <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO True     -- outerFocused
         <*> newTVarIO ImportEnv
@@ -194,7 +193,6 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef (Pos 0 0, True)
         <*> newIORef ""
         <*> newTVarIO True
-        <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
@@ -276,6 +274,20 @@ copyModeAt hsize = [ModeEntry { mode = CopyMode copyData, onExit = KeepPane }]
             }
         }
 
+-- An open choose-tree started on the given pane, with nothing yet seen.
+treeAt :: PaneId -> TreeState
+treeAt pid = TreeState
+    { kind = SessionTree
+    , origin = TreeOrigin { fromSession = SessionId 0, fromWinlink = 0, fromPane = pid }
+    , format = "", keyFormat = Nothing, command = "", filter = Nothing
+    , sort = TreeSort { order = SortIndex, reversed = False }
+    , preview = PreviewNormal, view = ViewPreview, expanded = Map.empty
+    , tagged = [], current = Nothing, currentIx = 0, offset = 0
+    , modePrompt = Nothing, search = Nothing, hidePane = Nothing
+    , groups = SquashGroups, confirm = AskBeforeKill, zoom = ModeLeftZoom
+    , showHelp = False
+    }
+
 spec :: Spec
 spec = do
     describe "deadNoticeBytes" $
@@ -307,6 +319,13 @@ spec = do
                     (insertDelta (OptUser "@v") (OVText "local"))
             env <- sessionFormatEnv st sess
             Map.lookup "@v" env `shouldBe` Just "local"
+
+    describe "host_short" $
+        it "is the host name up to its first dot" $ do
+            (st, sess) <- seedSession "/"
+            env <- sessionFormatEnv st sess
+            Map.lookup "host_short" env
+                `shouldBe` (T.takeWhile (/= '.') <$> Map.lookup "host" env)
 
     describe "session format counts" $ do
         it "session_created and session_restores expose identity metadata" $ do
@@ -1358,11 +1377,13 @@ spec = do
             windowActivity st (SessionId 0) back
             readTVarIO st.dirty `shouldReturn` gen'
 
-        it "keeps a chooser's live preview fresh" $ do
-            (st, _, back, client) <- watchedPair
-            atomically $ writeTVar client.picker $ Just PickerState
-                { title = "choose", roots = [], cursor = 0
-                , query = "", search = "", mode = Browsing, fill = PaneRegion }
+        it "keeps a tree mode's live preview fresh" $ do
+            (st, front, back, _) <- watchedPair
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' front.panes (Map.insert p.id p)
+                writeTVar p.modes
+                    [ModeEntry { mode = TreeMode (treeAt p.id), onExit = KeepPane }]
             gen <- readTVarIO st.dirty
             windowActivity st (SessionId 0) back
             readTVarIO st.dirty `shouldNotReturn` gen

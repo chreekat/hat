@@ -55,12 +55,6 @@ module Hat.Model
     , PanesKeyHold (..)
     , DisplayPanesState (..)
     , PromptState (..)
-    , PickerState (..)
-    , PickerNode (..)
-    , Expansion (..)
-    , PickerMode (..)
-    , PickerFill (..)
-    , PreviewTarget (..)
     , SelKind (..)
     , newServerState
     , bumpDirty
@@ -403,7 +397,7 @@ data TreeState = TreeState
     , current    :: !(Maybe TreeTag)  -- ^ the selected item
     , currentIx  :: !Int              -- ^ its line, kept when it vanishes
     , offset     :: !Int              -- ^ the first line on screen
-    , prompt     :: !(Maybe TreePrompt)
+    , modePrompt :: !(Maybe TreePrompt)
     , search     :: !(Maybe Text)
     , hidePane   :: !(Maybe PaneId)   -- ^ @-h@: the pane left out of the list
     , groups     :: !GroupView
@@ -599,59 +593,6 @@ data PromptState = PromptState
     }
     deriving (Eq, Show)
 
--- | A modal chooser overlay (@choose-tree@ / @choose-window@): a
--- filterable tree of sessions, windows and panes where each node carries
--- the command to run when selected. Opens in 'Browsing' mode; @/@ switches
--- to 'Searching', where keys type into 'query' instead of navigating.
-data PickerState = PickerState
-    { title     :: !Text
-    , roots     :: ![PickerNode]
-    , cursor    :: !Int    -- ^ index into the /visible/ (flattened) rows
-    , query     :: !Text
-    , search    :: !Text  -- ^ committed search term; see 'Hat.Server.Picker.editPicker'
-    , mode      :: !PickerMode
-    , fill      :: !PickerFill
-    }
-    deriving (Eq, Show)
-
--- | Whether the picker is navigating its menu or typing a search query.
-data PickerMode
-    = Browsing   -- ^ keys navigate and expand\/collapse the tree
-    | Searching  -- ^ keys type into 'query'
-    deriving (Eq, Show)
-
--- | @-Z@: how much of the screen the overlay paints over.
-data PickerFill
-    = FillWindow  -- ^ the whole content area, not just the active pane
-    | PaneRegion  -- ^ only the active pane's rectangle
-    deriving (Eq, Show)
-
--- | What the preview column shows for a node: a single pane's contents, a
--- whole window composited in its split layout, or a session as a stack of
--- its windows' thumbnails.
-data PreviewTarget
-    = PreviewPane !PaneId
-    | PreviewWindow !WindowId
-    | PreviewSession !SessionId
-    deriving (Eq, Show)
-
--- | One node in the chooser tree. Sessions hold window nodes, which hold
--- pane nodes; a childless node (e.g. @choose-window@) is a plain leaf.
-data PickerNode = PickerNode
-    { label    :: !Text  -- ^ shown, and matched against 'query'
-    , command  :: !Text  -- ^ command line run when the node is chosen
-    , preview  :: !(Maybe PreviewTarget)  -- ^ what to show beside the list
-    , children :: ![PickerNode]
-    , expanded :: !Expansion  -- ^ whether 'children' are shown
-    }
-    deriving (Eq, Show)
-
--- | Whether a tree node's children are revealed.
-data Expansion
-    = Expanded
-    | Collapsed
-    deriving (Eq, Show)
-
 -- | Whether a connected client renders a session or is a bare control
 -- connection (@hat \<command\>@ from a shell). See 'Hat.Server.restartClientAction'.
 data ClientRole = Attached | Control
@@ -735,7 +676,6 @@ data Client = Client
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
-    , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see
         -- 'noteOuterFocus' and 'attentionSeen'.

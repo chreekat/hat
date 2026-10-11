@@ -47,7 +47,6 @@ mkClient = do
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
-    pickV   <- newTVarIO Nothing
     dpanesV <- newTVarIO Nothing
     focusV  <- newTVarIO True
     envImpV <- newTVarIO ImportEnv
@@ -62,7 +61,7 @@ mkClient = do
             , lastStatus = statusV
             , lastCursorColour = colourV
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
-            , picker = pickV, displayPanes = dpanesV
+            , displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "", stdinSource = NoStdin, control = Nothing }
     re <- newReadEnd b
