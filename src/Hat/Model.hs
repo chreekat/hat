@@ -27,6 +27,9 @@ module Hat.Model
     , AcceptGate (..)
     , ReadGate (..)
     , CopyModeState (..)
+    , copyModeAt
+    , Recentre (..)
+    , SelAnchor (..)
     , FrozenGrid (..)
     , PaneMode (..)
     , SearchDirection (..)
@@ -357,7 +360,42 @@ data CopyModeState = CopyModeState
         -- ^ @copy-mode -e@: scrolling down to the bottom leaves the mode
     , hidePosition  :: !Bool
         -- ^ @copy-mode -H@: no position indicator
+    , pinnedEnd     :: !(Maybe (Int, Int))
+        -- ^ the selection's far end once it stops following the cursor
+        -- (tmux's @CURSORDRAG_NONE@); 'Nothing' while the cursor is that end
+    , anchorAt      :: !SelAnchor
+    , recentre      :: !(Maybe (Int, Recentre))
+        -- ^ the row @recentre-top-bottom@ last moved and where it goes next
     }
+    deriving (Eq, Show)
+
+-- | A fresh copy mode over the given key table, its cursor at an absolute
+-- @(row, col)@ and nothing selected.
+copyModeAt :: Text -> Int -> Int -> CopyModeState
+copyModeAt table row col = CopyModeState
+    { cursorRow = row
+    , cursorCol = col
+    , selection = Nothing
+    , keyTable = table
+    , viewportOffY = 0
+    , numPrefix = Nothing
+    , pendingSearch = Nothing
+    , lastSearch = Nothing
+    , lastQuery = Nothing
+    , scrollExit = False
+    , hidePosition = False
+    , pinnedEnd = Nothing
+    , anchorAt = AnchorAtStart
+    , recentre = Nothing
+    }
+
+-- | Which of tmux's two selection ends (@selx@ where it began, @endselx@)
+-- the anchor is; @other-end@ swaps them.
+data SelAnchor = AnchorAtStart | AnchorAtEnd
+    deriving (Eq, Show)
+
+-- | Where @recentre-top-bottom@ puts the cursor's line next.
+data Recentre = RecentreMiddle | RecentreTop | RecentreBottom
     deriving (Eq, Show)
 
 -- | A pane's active copy mode: a frozen snapshot of the pane's grid

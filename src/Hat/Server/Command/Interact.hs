@@ -161,18 +161,7 @@ cmdCopyMode st mclient args = do
                         KeysEmacs -> "copy-mode"
                     startRow = frozen.fgHsize + scr.cursor.row
                     startCol = scr.cursor.col
-                    state = CopyModeState
-                        { cursorRow = startRow
-                        , cursorCol = startCol
-                        , selection = Nothing
-                        , keyTable = table
-                        , viewportOffY = 0
-                        , numPrefix = Nothing
-                        , pendingSearch = Nothing
-                        , lastSearch = Nothing
-                        , lastQuery = Nothing
-                        , scrollExit = False, hidePosition = False
-                        }
+                    state = copyModeAt table startRow startCol
                 atomically $ do
                     writeTVar pane.mode (Just PaneMode
                         { frozen = frozen, copyState = state })

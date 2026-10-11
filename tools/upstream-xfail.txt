@@ -54,8 +54,6 @@ mode-mutation.sh                # needs client attach tracking + choose-client/c
 
 # copy-mode advanced motions/options
 copy-mode-redraw.sh             # needs status + copy-mode-position-format/line-numbers + mode redraw
-copy-mode-scroll-exit.sh        # needs copy-mode -e + send-keys -N + selection/scroll formats (#{selection_present})
-copy-mode-selection-scroll.sh   # copy-mode copy-selection-no-clear, stop-selection, scroll-middle/top/bottom, recentre-top-bottom
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)

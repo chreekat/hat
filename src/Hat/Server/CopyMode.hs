@@ -41,6 +41,12 @@ module Hat.Server.CopyMode
     , beginLineSelection
     , rectangleToggle
     , otherEnd
+    , selectionEnd
+    , clearSelection
+    , stopSelection
+    , scrollUpCmd
+    , scrollCursorTo
+    , recentreTopBottom
     , charSearch
     , SearchPattern
     , compilePattern
@@ -49,6 +55,7 @@ module Hat.Server.CopyMode
     , yankSelection
     , overlaySelection
     , copyCursorPos
+    , copyModeFormats
     , startDragSelection
     , dragSelectionTo
     , cursorToScreen
@@ -62,7 +69,7 @@ import Control.Exception (SomeException, bracket, catch)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Array ((!))
 import Data.Char (isSpace, toLower)
-import Data.Functor.Identity (Identity)
+import Data.Functor.Identity (Identity, runIdentity)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing)
@@ -715,8 +722,8 @@ extractSelection g keys st = case st.selection of
     Nothing -> pure Nothing
     -- Line-wise (vi @V@): whole lines from the anchor row to the cursor row.
     Just ((ar, _), SelLine) -> do
-        let sy = min ar st.cursorRow
-            ey = max ar st.cursorRow
+        let sy = min ar er
+            ey = max ar er
         pieces <- mapM (\i -> g.gLineLen i >>= copyLine g i 0) [sy .. ey]
         let joined = T.concat pieces
         pure . Just $
@@ -724,12 +731,12 @@ extractSelection g keys st = case st.selection of
                 then T.init joined else joined
     -- Rectangular (vi @C-v@): every row clamped to the same column band.
     Just ((ar, ac), SelRect) -> do
-        let sy = min ar st.cursorRow
-            ey = max ar st.cursorRow
-            loCol = min ac st.cursorCol
+        let sy = min ar er
+            ey = max ar er
+            loCol = min ac ec
             hiCol = case keys of
-                KeysEmacs -> max ac st.cursorCol       -- exclusive end column
-                KeysVi    -> max ac st.cursorCol + 1    -- inclusive end column
+                KeysEmacs -> max ac ec       -- exclusive end column
+                KeysVi    -> max ac ec + 1    -- inclusive end column
         pieces <- mapM (\i -> copyLine g i loCol hiCol) [sy .. ey]
         let joined = T.concat pieces
         pure . Just $
@@ -737,7 +744,7 @@ extractSelection g keys st = case st.selection of
                 then T.init joined else joined
     Just ((ar, ac), _kind) -> do
         let selx = ac; sely = ar
-            endx = st.cursorCol; endy = st.cursorRow
+            endx = ec; endy = er
             (sx, sy, ex0, ey)
                 | endy < sely || (endy == sely && endx < selx) =
                     (endx, endy, selx, sely)
@@ -759,6 +766,8 @@ extractSelection g keys st = case st.selection of
                     = T.init joined
                 | otherwise = joined
         pure (Just body)
+  where
+    (er, ec) = selectionEnd st
 
 -- | One line of a selection, always terminated with @\\n@ (rows never
 -- wrap in this model). Returns the empty text if @sx > ex@.
@@ -784,24 +793,25 @@ cellSelected keys st sx row col = case st.selection of
     Nothing -> False
     -- Line-wise: every column of every row between anchor and cursor.
     Just ((ar, _), SelLine) ->
-        row >= min ar st.cursorRow && row <= max ar st.cursorRow && col < sx
+        row >= min ar er && row <= max ar er && col < sx
     -- Rectangular: the same column band on every row between the ends.
     Just ((ar, ac), SelRect) ->
         let inclusive = case keys of KeysVi -> 1; KeysEmacs -> 0
-            lo = min ac st.cursorCol
-            hi = min sx (max ac st.cursorCol + inclusive)
-        in row >= min ar st.cursorRow && row <= max ar st.cursorRow
+            lo = min ac ec
+            hi = min sx (max ac ec + inclusive)
+        in row >= min ar er && row <= max ar er
             && col >= lo && col < hi
     Just ((ar, ac), _) ->
         let (sRow, sCol, eRow, eCol)
-                | (st.cursorRow, st.cursorCol) `before` (ar, ac) =
-                    (st.cursorRow, st.cursorCol, ar, ac)
-                | otherwise = (ar, ac, st.cursorRow, st.cursorCol)
+                | (er, ec) `before` (ar, ac) =
+                    (er, ec, ar, ac)
+                | otherwise = (ar, ac, er, ec)
             inclusive = case keys of KeysVi -> 1; KeysEmacs -> 0
             lo = if row == sRow then sCol else 0
             hi = min sx (if row == eRow then eCol + inclusive else sx)
         in row >= sRow && row <= eRow && col >= lo && col < hi
   where
+    (er, ec) = selectionEnd st
     before (a, b) (x, y) = a < x || (a == x && b < y)
 
 -- | Paint @mode-style@ over the selected cells of an assembled viewport
@@ -845,6 +855,43 @@ copyCursorPos topRow sy st =
     in if r >= 0 && r < sy
         then Just Pos { row = r, col = st.cursorCol }
         else Nothing
+
+-- | tmux's @window_copy_formats@: the copy-mode variables of a pane in the
+-- mode, words split by the given separators.
+copyModeFormats :: Text -> PaneMode -> [(Text, Text)]
+copyModeFormats seps pm =
+    [ ("scroll_position", tshow s.viewportOffY)
+    , ("copy_position", tshow s.viewportOffY)
+    , ("copy_position_limit", tshow hsize)
+    , ("rectangle_toggle", flag (fmap snd s.selection == Just SelRect))
+    , ("copy_cursor_x", tshow s.cursorCol)
+    , ("copy_cursor_y", tshow (s.cursorRow - top))
+    , ("copy_cursor_line", runIdentity (gridLine g s.cursorRow))
+    , ("copy_cursor_word", runIdentity (gridWord seps g s.cursorRow s.cursorCol))
+    , ("selection_mode", case fmap snd s.selection of
+        Just SelLine -> "line"
+        Just SelWord -> "word"
+        _ -> "char")
+    ] <> case s.selection of
+        Nothing -> [("selection_active", "0"), ("selection_present", "0")]
+        Just (anchor, _) ->
+            let far = selectionEnd s
+                ((sy, sx), (ey, ex)) = case s.anchorAt of
+                    AnchorAtStart -> (anchor, far)
+                    AnchorAtEnd -> (far, anchor)
+            in [ ("selection_start_x", tshow sx)
+               , ("selection_start_y", tshow sy)
+               , ("selection_end_x", tshow ex)
+               , ("selection_end_y", tshow ey)
+               , ("selection_active", flag (isNothing s.pinnedEnd))
+               , ("selection_present", flag (anchor /= far))
+               ]
+  where
+    s = pm.copyState
+    g = frozenGrid pm.frozen :: Grid Identity
+    hsize = pm.frozen.fgHsize
+    top = hsize - s.viewportOffY
+    flag b = if b then "1" else "0"
 
 -- | Adjust @viewportOffY@ (lines scrolled up from the live screen) so the
 -- copy cursor stays visible in an @sy@-row viewport over a grid with
@@ -915,7 +962,12 @@ handlers = Map.fromList
     , ("select-line",       pureH beginLineSelection)
     , ("rectangle-toggle",  pureH rectangleToggle)
     , ("other-end",         pureH otherEnd)
-    , ("clear-selection",   pureH (\s -> s { selection = Nothing }))
+    , ("clear-selection",   pureH clearSelection)
+    , ("stop-selection",    gridH stopSelection)
+    , ("scroll-top",        gridH (\g -> pure . scrollCursorTo 0 g))
+    , ("scroll-middle",     gridH (\g -> pure . scrollCursorTo ((g.gSy - 1) `div` 2) g))
+    , ("scroll-bottom",     gridH (\g -> pure . scrollCursorTo (g.gSy - 1) g))
+    , ("recentre-top-bottom", gridH (\g -> pure . recentreTopBottom g))
     , ("next-word",         motionH (\_ seps -> mNextWord seps))
     , ("next-word-end",     motionH (\_ seps -> mNextWordEnd seps))
     , ("previous-word",     motionH (\_ seps -> mPreviousWord seps))
@@ -959,7 +1011,9 @@ handlers = Map.fromList
     , ("end-of-line",       endOfLineH)
     , ("copy-selection",
         \sst p s _ -> yankSelection sst p s
-            >> pure (Right (Just s { selection = Nothing })))
+            >> pure (Right (Just (clearSelection s))))
+    , ("copy-selection-no-clear",
+        \sst p s _ -> yankSelection sst p s >> pure (Right (Just s)))
     , ("copy-selection-and-cancel",
         \sst p s _ -> yankSelection sst p s >> pure (Right Nothing))
     , ("copy-pipe",            pipeH False)
@@ -978,7 +1032,7 @@ handlers = Map.fromList
         if st.viewportOffY == 0
             then pure (Right (if exitHere st then Nothing else Just st))
             else case st.selection of
-                Just _ -> Right . Just <$> scrollDown 1 g st
+                Just _ -> Right . Just <$> scrollDown 1 g (pinSelection st)
                 Nothing -> do
                     st' <- cursorVertical 1 g st
                     let st'' = scrollToCursor g.gHsize g.gSy st'
@@ -991,7 +1045,9 @@ handlers = Map.fromList
             motion m = runMotion g opts.modeKeys seps (m seps)
         atEnd <- motion mNextWordEnd =<< motion mPreviousWord st
         start <- motion mPreviousWord st
-        pure (Right (Just atEnd { selection = Just ((start.cursorRow, start.cursorCol), SelChar) }))
+        pure (Right (Just atEnd
+            { selection = Just ((start.cursorRow, start.cursorCol), SelChar)
+            , pinnedEnd = Nothing, anchorAt = AnchorAtStart }))
     pureH f _ _ s _ = pure (Right (Just (f s)))
     motionH mk sst pane st _ = do
         opts <- readTVarIO sst.options
@@ -1049,7 +1105,7 @@ handlers = Map.fromList
             unless (T.null cmd) $ runPipeCommand (T.unpack cmd) body
             pushBuffer sst body
         pure . Right $
-            if cancelAfter then Nothing else Just s { selection = Nothing }
+            if cancelAfter then Nothing else Just (clearSelection s)
 
 -- | Feed a copy-mode selection to @sh -c cmd@ on stdin and return without
 -- waiting for the command to finish. The command's stdout and stderr are
@@ -1085,12 +1141,44 @@ withDevNullSink :: (Handle -> IO a) -> IO a
 withDevNullSink = bracket (openFile "/dev/null" WriteMode) hClose
 
 -- | tmux's scroll-up: nothing at the top; with a selection only the view
--- moves; otherwise the cursor goes up a line.
+-- moves, the selection staying put; otherwise the cursor goes up a line.
 scrollUpCmd :: Monad m => Grid m -> CopyModeState -> m CopyModeState
 scrollUpCmd g st
     | st.viewportOffY >= g.gHsize = pure st
-    | Just _ <- st.selection = scrollUp 1 g st
+    | Just _ <- st.selection = scrollUp 1 g (pinSelection st)
     | otherwise = cursorVertical (-1) g st
+
+-- | tmux's @window_copy_cmd_scroll_to@: scroll so the cursor's line sits on
+-- screen row @to@, keeping the cursor on that line; nothing when the history
+-- cannot scroll that far.
+scrollCursorTo :: Int -> Grid m -> CopyModeState -> CopyModeState
+scrollCursorTo to g st
+    | delta > 0, st.viewportOffY >= delta = st { viewportOffY = st.viewportOffY - delta }
+    | delta < 0, g.gHsize - st.viewportOffY >= negate delta =
+        st { viewportOffY = st.viewportOffY - delta }
+    | otherwise = st
+  where
+    delta = st.cursorRow - viewportTop g st - to
+
+-- | @recentre-top-bottom@: the cursor's line to the middle row, then the
+-- top, then the bottom on repeated presses, scrolling as far as the history
+-- allows; another line starts over at the middle.
+recentreTopBottom :: Grid m -> CopyModeState -> CopyModeState
+recentreTopBottom g st = (towards target) { recentre = Just (st.cursorRow, next) }
+  where
+    now = case st.recentre of
+        Just (row, r) | row == st.cursorRow -> r
+        _ -> RecentreMiddle
+    (target, next) = case now of
+        RecentreMiddle -> ((g.gSy - 1) `div` 2, RecentreTop)
+        RecentreTop -> (0, RecentreBottom)
+        RecentreBottom -> (g.gSy - 1, RecentreMiddle)
+    cy = st.cursorRow - viewportTop g st
+    towards to
+        | cy > to = st { viewportOffY = st.viewportOffY - min (cy - to) st.viewportOffY }
+        | cy < to, to - cy <= g.gHsize =
+            st { viewportOffY = st.viewportOffY + min (to - cy) (g.gHsize - st.viewportOffY) }
+        | otherwise = st
 
 -- | tmux's @window_copy_start_drag@: the cursor to a pane position, with a
 -- character selection starting there.
@@ -1118,33 +1206,70 @@ cursorToScreen px py pm = pm { copyState = s
 
 beginSelection :: CopyModeState -> CopyModeState
 beginSelection s = s
-    { selection = Just ((s.cursorRow, s.cursorCol), SelChar) }
+    { selection = Just ((s.cursorRow, s.cursorCol), SelChar), pinnedEnd = Nothing
+    , anchorAt = AnchorAtStart }
 
 -- | @select-line@ (vi @V@): start a line-wise selection anchored at the
 -- current line; moving up/down then extends it whole lines at a time.
 beginLineSelection :: CopyModeState -> CopyModeState
 beginLineSelection s = s
-    { selection = Just ((s.cursorRow, s.cursorCol), SelLine) }
+    { selection = Just ((s.cursorRow, s.cursorCol), SelLine), pinnedEnd = Nothing
+    , anchorAt = AnchorAtStart }
 
 -- | @rectangle-toggle@ (vi @C-v@, emacs @R@): flip the selection between
 -- rectangular and non-rectangular, keeping both endpoints. With no
 -- selection yet, begin a rectangular one anchored at the cursor.
 rectangleToggle :: CopyModeState -> CopyModeState
-rectangleToggle s = s { selection = Just (anchor, kind) }
-  where
-    (anchor, kind) = case s.selection of
-        Just (a, SelRect) -> (a, SelChar)
-        Just (a, _)       -> (a, SelRect)
-        Nothing           -> ((s.cursorRow, s.cursorCol), SelRect)
+rectangleToggle s = case s.selection of
+    Just (a, SelRect) -> s { selection = Just (a, SelChar) }
+    Just (a, _)       -> s { selection = Just (a, SelRect) }
+    Nothing           -> (beginSelection s) { selection = Just ((s.cursorRow, s.cursorCol), SelRect) }
 
 -- | @other-end@ (vi @o@): swap the cursor with the selection anchor, so
--- motions extend the opposite end. A no-op without a selection.
+-- motions extend the opposite end; a stopped selection's far end is picked
+-- back up instead. A no-op without a selection.
 otherEnd :: CopyModeState -> CopyModeState
-otherEnd s = case s.selection of
-    Nothing -> s
-    Just ((ar, ac), kind) -> s
+otherEnd s = case (s.selection, s.pinnedEnd) of
+    (Nothing, _) -> s
+    -- tmux then drives the selection's end, wherever the anchor is
+    (Just _, Just (r, c))
+        | AnchorAtStart <- s.anchorAt ->
+            s { cursorRow = r, cursorCol = c, pinnedEnd = Nothing }
+    (Just (a, kind), Just p) -> (swapTo a kind p) { pinnedEnd = Nothing }
+    (Just (a, kind), Nothing) -> swapTo a kind (s.cursorRow, s.cursorCol)
+  where
+    swapTo (ar, ac) kind far = s
         { cursorRow = ar, cursorCol = ac
-        , selection = Just ((s.cursorRow, s.cursorCol), kind) }
+        , selection = Just (far, kind)
+        , anchorAt = case s.anchorAt of
+            AnchorAtStart -> AnchorAtEnd
+            AnchorAtEnd -> AnchorAtStart }
+
+-- | The selection's far end: where it was stopped, else the cursor.
+selectionEnd :: CopyModeState -> (Int, Int)
+selectionEnd s = fromMaybe (s.cursorRow, s.cursorCol) s.pinnedEnd
+
+clearSelection :: CopyModeState -> CopyModeState
+clearSelection s = s { selection = Nothing, pinnedEnd = Nothing }
+
+-- | Leave the selection's far end where it is while the cursor moves on.
+pinSelection :: CopyModeState -> CopyModeState
+pinSelection s = case s.selection of
+    Nothing -> s
+    Just _ -> s { pinnedEnd = Just (selectionEnd s) }
+
+-- | @stop-selection@: the cursor no longer extends the selection. A line
+-- selection becomes the character span over its lines, as tmux keeps it.
+stopSelection :: Monad m => Grid m -> CopyModeState -> m CopyModeState
+stopSelection g s = case s.selection of
+    Just ((ar, _), SelLine) -> do
+        let (er, _) = selectionEnd s
+            hi = max ar er
+        len <- g.gLineLen hi
+        pure s
+            { selection = Just ((min ar er, 0), SelChar), pinnedEnd = Just (hi, len)
+            , anchorAt = AnchorAtStart }
+    _ -> pure (pinSelection s)
 
 -- | Extract the current selection and push it onto the buffer store as
 -- a fresh, auto-named buffer at the front of the stack, and onto the

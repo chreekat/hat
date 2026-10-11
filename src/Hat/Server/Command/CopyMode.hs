@@ -35,7 +35,7 @@ runCopyModeCommand st pane name cmdArgs = do
                     -- Motions repeat [count] times; yanks never do. Every
                     -- command clears the pending count.
                     let count
-                            | name `elem` ["copy-selection", "copy-pipe"] = 1
+                            | name `elem` ["copy-selection", "copy-selection-no-clear", "copy-pipe"] = 1
                             | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
                     result <- applyN h (state { numPrefix = Nothing }) count
                     case result of

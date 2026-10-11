@@ -270,22 +270,11 @@ adoptedPane n = do
 
 -- An open copy mode over a blank frozen 24x80 grid with @hsize@ scrollback
 -- lines, viewing the bottom.
-copyModeAt :: Int -> PaneMode
-copyModeAt hsize = PaneMode
+blankCopyMode :: Int -> PaneMode
+blankCopyMode hsize = PaneMode
     { frozen = FrozenGrid
         { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
-    , copyState = CopyModeState
-        { cursorRow = hsize
-        , cursorCol = 0
-        , selection = Nothing
-        , keyTable = "copy-mode"
-        , viewportOffY = 0
-        , numPrefix = Nothing
-        , pendingSearch = Nothing
-        , lastSearch = Nothing
-        , lastQuery = Nothing
-        , scrollExit = False, hidePosition = False
-        }
+    , copyState = copyModeAt "copy-mode" hsize 0
     }
 
 spec :: Spec
@@ -340,12 +329,13 @@ spec = do
 
     describe "pane_in_mode" $
         it "is 1 while copy mode is open, 0 otherwise" $ do
+            (st, _) <- seedSession "/"
             p <- stubPane 0
-            env0 <- paneModeEnv p
+            env0 <- paneModeEnv st p
             lookup "pane_in_mode" env0 `shouldBe` Just "0"
             lookup "pane_mode" env0 `shouldBe` Just ""
-            atomically $ writeTVar p.mode (Just (copyModeAt 3))
-            env1 <- paneModeEnv p
+            atomically $ writeTVar p.mode (Just (blankCopyMode 3))
+            env1 <- paneModeEnv st p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
 
@@ -358,7 +348,7 @@ spec = do
             let p = p0 { emulator = emu }
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
-                writeTVar p.mode (Just (copyModeAt 3))
+                writeTVar p.mode (Just (blankCopyMode 3))
                 -- status off: statusCells would touch the stub pane
                 writeTVar st.globalSessionOptions
                     (singletonDelta "status" (OVScalar "off"))
@@ -1058,7 +1048,7 @@ spec = do
         it "a pane in a mode or hidden by a zoom is skipped" $ do
             (st, win, pa, pb, pc) <- syncWindow
             mapM_ syncOn [pa, pb, pc]
-            atomically $ writeTVar pb.mode (Just (copyModeAt 0))
+            atomically $ writeTVar pb.mode (Just (blankCopyMode 0))
             targetIds st pa `shouldReturn` [pc.id]
             atomically $ writeTVar win.zoomed (Just pa.id)
             targetIds st pa `shouldReturn` []
