@@ -47,7 +47,7 @@ import Hat.Server.ArgNumber (stringPercentage)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.Floating
     ( Border (..), FloatSplit (..), FloatState (..), GeomArgs (..), Modal (..), borderOf
-    , floatingGeom, splitFloatingGeom, stackNew )
+    , floatingGeom, modalPane, splitFloatingGeom, stackNew, swapStacked )
 import Hat.Server.Format (truthy)
 import Hat.Server.Layout
 import Hat.Model.Options (Options (..), quoteIfNeeded)
@@ -921,7 +921,12 @@ cmdSwapPane st mclient args
         case dstRes of
             Left e -> pure [RErr e]
             Right (dsess, dwix, dwin, dpane) -> do
+                dfloating <- atomically (isFloating dpane.id <$> readTVar dwin.layout)
                 srcRes <- if
+                    | "-D" `elem` flags, dfloating ->
+                        pure (Left "cannot swap down on floating pane")
+                    | "-U" `elem` flags, dfloating ->
+                        pure (Left "cannot swap up on floating pane")
                     | "-D" `elem` flags -> sibling dsess dwix dwin dpane 1
                     | "-U" `elem` flags -> sibling dsess dwix dwin dpane (-1)
                     | otherwise -> do
@@ -929,14 +934,23 @@ cmdSwapPane st mclient args
                         findTarget st mclient Target.FindPane tok
                 case srcRes of
                     Left e -> pure [RErr e]
-                    Right src -> [] <$ swapPanes st (dsess, dwix, dwin, dpane) src
-                        ("-d" `elem` flags) ("-Z" `elem` flags)
+                    Right src@(_, _, swin, spane) -> do
+                        modal <- atomically $ (,)
+                            <$> (modalPane <$> readTVar swin.floats)
+                            <*> (modalPane <$> readTVar dwin.floats)
+                        if fst modal == Just spane.id || snd modal == Just dpane.id
+                            then pure [RErr "pane is modal"]
+                            else [] <$ swapPanes st (dsess, dwix, dwin, dpane) src
+                                ("-d" `elem` flags) ("-Z" `elem` flags)
   where
     (opts, flags, _) = parseArgs "st" args
+    -- The next or previous tiled pane, wrapping.
     sibling sess wix win pane step = do
-        order <- atomically (map (.id) <$> windowPanes win)
+        (order0, lay) <- atomically $
+            (,) <$> (map (.id) <$> windowPanes win) <*> readTVar win.layout
         ps <- readTVarIO win.panes
-        let n = length order
+        let order = filter (\p -> p == pane.id || not (isFloating p lay)) order0
+            n = length order
             i = fromMaybe 0 (List.elemIndex pane.id order)
             pick = order !! ((i + step) `mod` n)
         pure $ case Map.lookup pick ps of
@@ -955,6 +969,7 @@ swapPanes st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) detached keep
         pure (keepZoom && isJust z)
     unless (spane.id == dpane.id) $ do
         atomically $ do
+            forM_ wins $ \w -> modifyTVar' w.floats (swapStacked spane.id dpane.id)
             if sameWindow
                 then modifyTVar' dwin.layout (swapLeaves spane.id dpane.id)
                 else do
