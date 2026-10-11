@@ -702,7 +702,7 @@ commandFormatEnv st mclient mtarget = do
 
 cmdRunShell :: CommandImpl
 cmdRunShell st mclient args = do
-    let (opts, _, pos) = parseArgs "tdc" args
+    let (opts, flags, pos) = parseArgs "tdc" args
     menv <- commandFormatEnv st mclient (lookup "-t" opts)
     cmdText <- maybe pure (expandFormat st) menv (T.unwords pos)
     -- -d: tmux waits this many seconds before running the command.
@@ -714,7 +714,10 @@ cmdRunShell st mclient args = do
     -- blocks the queue), as the default double-click bindings rely on.
     if T.null (T.strip cmdText)
         then [] <$ threadDelay (round (delay * 1000000))
-        else runShellAsync st mclient cmdText delay
+        -- -C: the expanded argument is hat's own command, run in turn.
+        else if "-C" `elem` flags
+            then threadDelay (round (delay * 1000000)) >> runCommandText st mclient cmdText
+            else runShellAsync st mclient cmdText delay
 
 runShellAsync :: ServerState -> Maybe Client -> Text -> Double -> IO [Reply]
 runShellAsync st mclient cmdText delay = do
