@@ -38,6 +38,8 @@ spot-read of each suspect consumer.
 | `prefix` / `prefix2` | `keyContext` → `routeKey` (Conn.hs, Keys.hs); `send-prefix [-2]`; `None` is no key | implemented ✅ tested | pure (KeysSpec) |
 | `key-table` | `keyContext` → `routeKey`: the client's default table | implemented ✅ tested | pure (KeysSpec) |
 | `repeat-time` / `initial-repeat-time` | `routeKey` (a `bind -r` binding keeps its table open), `expireKeyRepeat` timer in `inputLoop` (Conn.hs) | implemented ✅ tested | pure (KeysSpec) |
+| `user-keys` | `userKeys` → `feedKeys` (Keys.hs): each sequence is key `User`/N/, bindable, never typed into a pane | implemented ✅ tested | pure (KeysSpec) |
+| `backspace` | `paneKeyBytes` → `backspaceBytes` (Pane.hs, Keys.hs): what BSpace sends to a pane | implemented ✅ tested | pure (KeysSpec) |
 | `prefix-timeout` | `routeKey`: a prefix-table key past the timeout falls back to the default table | implemented ✅ tested | pure (KeysSpec) |
 | `synchronize-panes` | `syncTargets` → `typeKeyIntoPane`/`typeIntoPaneSynced` (Pane.hs): typed keys, pastes, `send-keys`; `#{pane_synchronized}` | implemented ✅ tested | model (SessionSpec) |
 | `base-index` | `nextFreeWindowIndex` for new-window + break-pane (Server.hs) | implemented ✅ tested | integration |

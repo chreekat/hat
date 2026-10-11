@@ -813,12 +813,23 @@ syncTargets st pane = do
 -- report concerns only the pane it was meant for.
 typeKeyIntoPane :: ServerState -> Pane -> Key -> IO ()
 typeKeyIntoPane st pane key = do
-    typeIntoPane pane . (.raw) =<< reencodeKey (Just pane.emulator) key
+    bspace <- optionText "backspace" <$> readTVarIO st.options
+    let typeInto p = mapM_ (typeIntoPane p) =<< paneKeyBytes bspace p key
+    typeInto pane
     targets <- if key.name `elem` ["FocusIn", "FocusOut"]
         then pure []
         else atomically (syncTargets st pane)
-    forM_ targets $ \p ->
-        typeIntoPane p . (.raw) =<< reencodeKey (Just p.emulator) key
+    mapM_ typeInto targets
+
+-- | The bytes a key sends to a pane (tmux's @input_key@): Backspace sends
+-- what the @backspace@ option names, a @User@/N/ key sends nothing, and
+-- every other key is encoded for the pane's terminal ('reencodeKey').
+paneKeyBytes :: Text -> Pane -> Key -> IO (Maybe B.ByteString)
+paneKeyBytes bspace p key = case key.name of
+    "BSpace" -> pure (backspaceBytes bspace)
+    "M-BSpace" -> pure (("\ESC" <>) <$> backspaceBytes bspace)
+    n | isUserKey n -> pure Nothing
+    _ -> Just . (.raw) <$> reencodeKey (Just p.emulator) key
 
 -- | Bytes typed into a pane as they are, copied to the panes synchronized
 -- with it (tmux's @window_pane_paste@).

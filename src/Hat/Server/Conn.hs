@@ -522,7 +522,10 @@ handleKeys :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleKeys d st client bs = do
     opts <- clientOptions st client
     held <- readIORef client.escState
-    let toks = feedKeys (escTiming opts) held bs
+    let users = case optionValue "user-keys" opts of
+            OVArray m -> userKeys m
+            OVScalar _ -> []
+        toks = feedKeys (escTiming opts) users held bs
     writeIORef client.escState toks.escPending
     runKeys d st client toks.escKeys
 

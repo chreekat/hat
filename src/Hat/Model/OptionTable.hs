@@ -413,7 +413,7 @@ statusFormat3 = T.concat
 optionTable :: [OptionDef]
 optionTable =
     -- Server options.
-    [ notYet $ scalar "backspace" ServerScope KKey "C-?"
+    [ live $ scalar "backspace" ServerScope KKey "C-?"
     , live $ scalar "buffer-limit" ServerScope (KNumber 1 intMax) "50"
     -- hat's default omits tmux's aliases for commands hat lacks.
     , live $ arrayOf "command-alias" ServerScope KString ","
@@ -478,7 +478,7 @@ optionTable =
     , notYet $ themeColour "light-theme-blue" "steelblue" "blue"
     , notYet $ themeColour "light-theme-cyan" "darkcyan" "cyan"
     , notYet $ themeColour "light-theme-magenta" "purple4" "magenta"
-    , notYet $ arrayOf "user-keys" ServerScope KString "," []
+    , live $ arrayOf "user-keys" ServerScope KString "," []
     , notYet $ scalar "variation-selector-always-wide" ServerScope KFlag "on"
 
     -- Session options.

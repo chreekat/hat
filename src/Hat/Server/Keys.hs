@@ -25,6 +25,10 @@ module Hat.Server.Keys
     , EscTokens (..)
     , tokenizeKeys
     , feedKeys
+    , UserKeys
+    , userKeys
+    , isUserKey
+    , backspaceBytes
     , flushEscape
     , parseKeyName
     , namedKeys
@@ -39,13 +43,16 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Char (chr, ord)
-import Data.List (sort)
+import Data.List (sort, sortOn)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Text.Read qualified as TR
+
+import Hat.Model.OptionTable (ArrayKey (..))
 
 data Key = Key
     { name :: Text        -- ^ canonical name, as written in configs
@@ -161,13 +168,49 @@ data EscTokens = EscTokens
 -- under 'EscBuffered' a fresh /lone trailing/ ESC is held (reported as
 -- 'EscPending') rather than emitted, so the next chunk — or 'flushEscape' on
 -- timeout — decides it. Under 'EscImmediate' this matches 'tokenizeKeys'.
-feedKeys :: EscTiming -> EscPending -> ByteString -> EscTokens
-feedKeys timing pending bs =
+-- The @user-keys@ sequences are recognised ahead of every other key.
+feedKeys :: EscTiming -> UserKeys -> EscPending -> ByteString -> EscTokens
+feedKeys timing users pending bs =
     let full = case pending of
             EscPending   -> "\ESC" <> bs
             NoEscPending -> bs
-        (keys, pending') = tokenize timing full
+        (keys, pending') = tokenize timing users full
     in EscTokens { escKeys = keys, escPending = pending' }
+
+-- | The @user-keys@ sequences and the @User@/N/ keys they denote, longest
+-- first.
+type UserKeys = [(ByteString, Text)]
+
+-- | The @user-keys@ array as 'UserKeys': entry /N/ is the key @User@/N/
+-- (tmux's @KEYC_USER + N@); an empty entry denotes nothing.
+userKeys :: Map ArrayKey Text -> UserKeys
+userKeys m = sortOn (negate . B.length . fst)
+    [ (TE.encodeUtf8 sq, "User" <> T.pack (show n))
+    | (KeyIndex n, sq) <- Map.toList m, n <= maxUserKey, not (T.null sq) ]
+
+-- | tmux's @KEYC_NUSER@: the highest user key number.
+maxUserKey :: Integer
+maxUserKey = 1000
+
+-- | Whether a key is a @User@/N/ key, which only bindings act on: it is never
+-- typed into a pane.
+isUserKey :: Text -> Bool
+isUserKey = isJust . userKeyNumber
+
+userKeyNumber :: Text -> Maybe Integer
+userKeyNumber t = do
+    digits <- T.stripPrefix "User" t
+    case TR.decimal digits of
+        Right (n, "") | n <= maxUserKey -> Just n
+        _ -> Nothing
+
+-- | The byte the @backspace@ option says the Backspace key sends (tmux's
+-- @input_key@): a plain or control key's own byte; any other key sends
+-- nothing.
+backspaceBytes :: Text -> Maybe ByteString
+backspaceBytes name = case parseKeyName name of
+    Just k | B.length k.raw == 1 -> Just k.raw
+    _ -> Nothing
 
 -- | The escape-time timer fired with an ESC still held: it is the Escape key.
 flushEscape :: EscPending -> [Key]
@@ -175,13 +218,16 @@ flushEscape EscPending   = [mkKey "Escape" "\ESC"]
 flushEscape NoEscPending = []
 
 tokenizeKeys :: ByteString -> [Key]
-tokenizeKeys = fst . tokenize EscImmediate
+tokenizeKeys = fst . tokenize EscImmediate []
 
-tokenize :: EscTiming -> ByteString -> ([Key], EscPending)
-tokenize timing = go
+tokenize :: EscTiming -> UserKeys -> ByteString -> ([Key], EscPending)
+tokenize timing users = go
   where
     go bs = case B.uncons bs of
         Nothing -> ([], NoEscPending)
+        Just _
+            | ((sq, nm) : _) <- filter ((`B.isPrefixOf` bs) . fst) users ->
+                cons (mkKey nm sq) (go (B.drop (B.length sq) bs))
         Just (b, rest)
             | b == 0x1b -> escape rest
             | b == 0x00 -> cons (mkKey "C-Space" (B.singleton b)) (go rest)
@@ -519,6 +565,7 @@ routeKeys ctx km = go
 -- tmux does; the caret form @^h@ is an alias for @C-h@.
 parseKeyName :: Text -> Maybe Key
 parseKeyName t
+    | Just n <- userKeyNumber t = Just (mkKey ("User" <> T.pack (show n)) "")
     | Just (n, r) <- lookupNamed t = Just (mkKey n r)
     | Just (n, r) <- lookupModified t = Just (mkKey n r)
     | Just k <- extendedByName t = Just k

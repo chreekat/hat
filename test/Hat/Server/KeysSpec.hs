@@ -9,6 +9,7 @@ import Data.ByteString.Char8 qualified as B8
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 
+import Hat.Model.OptionTable (ArrayKey (..))
 import Hat.Server.Keys
 
 -- A key an outer terminal can spell as an extended-key sequence: a base
@@ -201,29 +202,29 @@ spec = do
     -- held, then either coalesced with the next bytes or flushed on timeout.
     describe "feedKeys / flushEscape (escape-time)" $ do
         it "EscImmediate: a lone trailing ESC is Escape now, nothing held" $
-            feedKeys EscImmediate NoEscPending "a\ESC"
+            feedKeys EscImmediate [] NoEscPending "a\ESC"
                 `shouldBe` EscTokens
                     { escKeys = tokenizeKeys "a\ESC", escPending = NoEscPending }
 
         it "EscBuffered: a lone trailing ESC is held, not emitted" $
-            feedKeys EscBuffered NoEscPending "a\ESC"
+            feedKeys EscBuffered [] NoEscPending "a\ESC"
                 `shouldBe` EscTokens
                     { escKeys = [Key { name = "a", raw = "a" }]
                     , escPending = EscPending }
 
         it "EscBuffered: a held ESC coalesces with a following [A into Up" $ do
-            let held = feedKeys EscBuffered NoEscPending "\ESC"
+            let held = feedKeys EscBuffered [] NoEscPending "\ESC"
             held.escPending `shouldBe` EscPending
-            map (.name) (feedKeys EscBuffered held.escPending "[A").escKeys
+            map (.name) (feedKeys EscBuffered [] held.escPending "[A").escKeys
                 `shouldBe` ["Up"]
 
         it "EscBuffered: a held ESC coalesces with a following x into M-x" $ do
-            let held = feedKeys EscBuffered NoEscPending "\ESC"
-            map (.name) (feedKeys EscBuffered held.escPending "x").escKeys
+            let held = feedKeys EscBuffered [] NoEscPending "\ESC"
+            map (.name) (feedKeys EscBuffered [] held.escPending "x").escKeys
                 `shouldBe` ["M-x"]
 
         it "EscBuffered: bytes with no trailing ESC hold nothing" $
-            feedKeys EscBuffered NoEscPending "ab"
+            feedKeys EscBuffered [] NoEscPending "ab"
                 `shouldBe` EscTokens
                     { escKeys = tokenizeKeys "ab", escPending = NoEscPending }
 
@@ -232,6 +233,29 @@ spec = do
 
         it "flushEscape emits nothing when no ESC is held" $
             flushEscape NoEscPending `shouldBe` []
+
+    describe "user-keys" $ do
+        let users = userKeys (Map.fromList
+                [ (KeyIndex 0, "\ESC[5;30012~"), (KeyIndex 3, "x"), (KeyIndex 4, "") ])
+            names bs = map (.name) (feedKeys EscImmediate users NoEscPending bs).escKeys
+        it "a user sequence is the User key of its array index" $
+            names "a\ESC[5;30012~b" `shouldBe` ["a", "User0", "b"]
+        it "a user sequence wins over the key its bytes would spell" $
+            names "xy" `shouldBe` ["User3", "y"]
+        it "User keys are bindable names, up to User1000" $ do
+            (.name) <$> parseKeyName "User0" `shouldBe` Just "User0"
+            (.name) <$> parseKeyName "User1000" `shouldBe` Just "User1000"
+            parseKeyName "User1001" `shouldBe` Nothing
+
+    describe "backspaceBytes" $ do
+        it "the default C-? sends DEL" $
+            backspaceBytes "C-?" `shouldBe` Just "\DEL"
+        it "a control key sends its control byte" $
+            backspaceBytes "C-h" `shouldBe` Just "\b"
+        it "a plain key sends itself" $
+            backspaceBytes "x" `shouldBe` Just "x"
+        it "a key with other modifiers sends nothing" $
+            backspaceBytes "M-x" `shouldBe` Nothing
 
     describe "routeKeys" $ do
         let km = Map.fromList

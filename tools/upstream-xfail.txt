@@ -74,7 +74,7 @@ menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click 
 new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
 
 # option engine breadth: flat scalar table, global-only read-back
-options-array.sh                # needs user-keys, pane-colours (registered, not yet live)
+options-array.sh                # needs pane-colours (registered, not yet live)
 options-values.sh               # needs default-client-command (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that

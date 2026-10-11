@@ -787,8 +787,10 @@ cmdSendKeys st mclient args = do
                         Just bytes ->
                             [] <$ typeIntoPaneSynced st pane (B.pack bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise -> [] <$ typeIntoPaneSynced st pane
-                        (B.concat (map (argBytes literal) pos))
+                    | otherwise -> [] <$ forM_ pos (\a ->
+                        case parseKeyName a of
+                            Just k | not literal -> typeKeyIntoPane st pane k
+                            _ -> typeIntoPaneSynced st pane (TE.encodeUtf8 a))
   where
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
