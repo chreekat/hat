@@ -1246,6 +1246,7 @@ createSession st mname mrun environ dir sz = do
     resolvedVar <- newTVarIO Nothing
     groupVar <- newTVarIO Nothing
     activityVar <- newTVarIO =<< atomically (tickActivity st)
+    holdVar <- newTVarIO NotHeld
     let sess = Session
             { id = SessionId sid
             , createdAt = now
@@ -1261,6 +1262,7 @@ createSession st mname mrun environ dir sz = do
             , resolvedOptions = resolvedVar
             , group = groupVar
             , activity = activityVar
+            , destroyHold = holdVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -1297,6 +1299,7 @@ createGroupedSession st leader mname environ dir = do
         resolvedVar <- newTVar Nothing
         groupVar <- newTVar (Just gname)
         activityVar <- newTVar =<< tickActivity st
+        holdVar <- newTVar NotHeld
         let sess = Session
                 { id = SessionId sid
                 , createdAt = now
@@ -1312,6 +1315,7 @@ createGroupedSession st leader mname environ dir = do
                 , resolvedOptions = resolvedVar
                 , group = groupVar
                 , activity = activityVar
+                , destroyHold = holdVar
                 }
         modifyTVar' st.sessions (Map.insert sess.id sess)
         bumpDirty st

@@ -13,12 +13,16 @@ module Hat.Server.Command.Session
     , cmdListWindows
     , cmdListPanes
     , cmdSwitchClient
+    , DestroyUnattached (..)
+    , destroysUnattached
+    , checkUnattached
     ) where
 
 import Control.Concurrent.STM
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Text (Text)
 import Data.Text qualified as T
 import System.Environment (getEnvironment)
 
@@ -40,6 +44,7 @@ import Hat.Server.Pane
 import Hat.Server.Resize (defaultSizeOf)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
+import Hat.Server.Winlink (groupMembers)
 import Hat.Transport.Wire (ServerToClient (DetachOk))
 
 -- | @new-session@: create a session, or with @-t@ a member of the target's
@@ -84,7 +89,7 @@ cmdNewSession st mclient args
                     forM_ (lookup "-c" opts) $ \d -> atomically $ do
                         writeTVar sess.startCwd (T.unpack d)
                         bumpDirty st
-                    switchClientTo st client sess
+                    attachClient st client sess
                     pure []
         _ -> pure [RErr "open terminal failed: not a terminal"]
     detachOthers client sess = do
@@ -166,7 +171,7 @@ cmdNewSession st mclient args
             finish sess
     finish sess = do
         unless ("-d" `elem` flags) $
-            forM_ mclient $ \client -> switchClientTo st client sess
+            forM_ mclient $ \client -> attachClient st client sess
         if "-P" `elem` flags
             then do
                 mctx <- atomically $ do
@@ -184,6 +189,68 @@ cmdNewSession st mclient args
                 pure [ROutput out]
             else pure []
 
+-- | Show @sess@ on @client@, then let @destroy-unattached@ collect any
+-- session the move left without a client (tmux's
+-- @server_client_set_session@).
+attachClient :: ServerState -> Client -> Session -> IO ()
+attachClient st client sess = do
+    switchClientTo st client sess
+    checkUnattached st
+
+-- | @destroy-unattached@'s values.
+data DestroyUnattached
+    = KeepUnattached    -- ^ @off@
+    | DestroyAlways     -- ^ @on@
+    | DestroyKeepLast   -- ^ @keep-last@
+    | DestroyKeepGroup  -- ^ @keep-group@
+    deriving (Eq, Show)
+
+destroyUnattachedMode :: Text -> DestroyUnattached
+destroyUnattachedMode = \case
+    "on" -> DestroyAlways
+    "keep-last" -> DestroyKeepLast
+    "keep-group" -> DestroyKeepGroup
+    _ -> KeepUnattached
+
+-- | Whether an unattached session goes, given how many sessions its group
+-- holds ('Nothing' when it is in none): @keep-last@ destroys only a group
+-- member with company, @keep-group@ everything but a group's last member.
+destroysUnattached :: DestroyUnattached -> Maybe Int -> Bool
+destroysUnattached mode grouped = case mode of
+    KeepUnattached -> False
+    DestroyAlways -> True
+    DestroyKeepLast -> maybe False (> 1) grouped
+    DestroyKeepGroup -> maybe True (/= 1) grouped
+
+-- | tmux's @server_check_unattached@: destroy each session no client is
+-- attached to whose @destroy-unattached@ says so ('destroysUnattached'),
+-- one at a time, since each destruction shrinks a group the next decision
+-- counts. Sessions rebuilt from serialized state are spared until a client
+-- has attached to them ('HeldUntilAttached'), and nothing is destroyed
+-- while startup or a reload is in flight, when clients are expected back.
+checkUnattached :: ServerState -> IO ()
+checkUnattached st = mapM_ collect =<< Map.elems <$> readTVarIO st.sessions
+  where
+    collect sess = do
+        doomed <- atomically $ do
+            settled <- (&&)
+                <$> ((== Ready) <$> readTVar st.startupPhase)
+                <*> ((== AcceptOpen) <$> readTVar st.acceptGate)
+            live <- Map.member sess.id <$> readTVar st.sessions
+            hold <- readTVar sess.destroyHold
+            viewers <- filter (\c -> c.role == Attached)
+                <$> sessionClients st sess.id
+            grp <- readTVar sess.group
+            grouped <- case grp of
+                Nothing -> pure Nothing
+                Just _ -> Just . length <$> groupMembers st sess
+            o <- resolveForSession st sess
+            pure $ settled && live && hold == NotHeld && null viewers
+                && destroysUnattached
+                    (destroyUnattachedMode (optionText "destroy-unattached" o))
+                    grouped
+        when doomed (killSession st sess)
+
 -- @-c@ re-anchors the session's default working directory for new
 -- windows, so it is useful (and valid) even without a client to attach.
 cmdAttachSession :: CommandImpl
@@ -200,7 +267,7 @@ cmdAttachSession st mclient args = do
                 writeTVar sess.startCwd dir
                 bumpDirty st
         case mclient of
-            Just client -> switchClientTo st client sess >> pure []
+            Just client -> attachClient st client sess >> pure []
             Nothing
                 | isJust (lookup "-c" opts) -> pure []
                 | otherwise -> pure [RErr "no client to attach"]
@@ -467,7 +534,7 @@ cmdSwitchClient st mclient args = do
                 -- Skip any sessions killed since they were visited.
                 case mapMaybe (`Map.lookup` sessions) hist of
                     []         -> pure [RErr "no last session"]
-                    (sess : _) -> switchClientTo st client sess >> pure []
+                    (sess : _) -> attachClient st client sess >> pure []
             | otherwise ->
                 withTargetSession st mclient (lookup "-t" opts) $ \sess ->
-                    switchClientTo st client sess >> pure []
+                    attachClient st client sess >> pure []

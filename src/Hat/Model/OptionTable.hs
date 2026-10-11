@@ -374,7 +374,7 @@ optionTable =
     , notYet $ scalar "default-shell" SessionScope KString "/bin/sh"
     , live $ (scalar "default-size" SessionScope KString "80x24")
         { pattern = Just "[0-9]*x[0-9]*" }
-    , notYet $ scalar "destroy-unattached" SessionScope
+    , live $ scalar "destroy-unattached" SessionScope
         (KChoice ["off", "on", "keep-last", "keep-group"]) "off"
     , live $ scalar "detach-on-destroy" SessionScope
         (KChoice ["off", "on", "no-detached", "previous", "next"]) "on"

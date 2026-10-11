@@ -40,6 +40,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Term.Pty qualified
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.Session (checkUnattached)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send)
 import Hat.Server.Overlay
@@ -264,6 +265,7 @@ removeClient st client = do
     applySessionSize st sid
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
+    checkUnattached st
 
 -- Sessions --------------------------------------------------------------
 

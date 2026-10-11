@@ -52,7 +52,8 @@ import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Pane (deadNoticeBytes)
 import Hat.Server.Command.Session
-    (cmdKillSession, cmdNewSession, cmdRenameSession)
+    ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
+    , cmdRenameSession, destroysUnattached )
 import Hat.Server.Command.Window (cmdRenameWindow, cmdResizeWindow, cmdUnlinkWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
@@ -85,6 +86,7 @@ addSession st n = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO 0
+        <*> newTVarIO NotHeld
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId n) sess)
     pure sess
 
@@ -106,6 +108,7 @@ seedSession start = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO 0
+        <*> newTVarIO NotHeld
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 
@@ -1178,6 +1181,44 @@ spec = do
             client <- addClient st sess.id (Size 24 80) 3
             cmdKillSession st Nothing ["-t", "work"] `shouldReturn` []
             readTVarIO client.session `shouldReturn` newer.id
+
+    describe "destroy-unattached" $ do
+        it "destroys by mode and the session's group size" $ do
+            map (destroysUnattached KeepUnattached) [Nothing, Just 1, Just 2]
+                `shouldBe` [False, False, False]
+            map (destroysUnattached DestroyAlways) [Nothing, Just 1, Just 2]
+                `shouldBe` [True, True, True]
+            map (destroysUnattached DestroyKeepLast) [Nothing, Just 1, Just 2]
+                `shouldBe` [False, False, True]
+            map (destroysUnattached DestroyKeepGroup) [Nothing, Just 1, Just 2]
+                `shouldBe` [True, False, True]
+        -- "work" and "s" share a window, so destroying either reaps no pane.
+        let sharing setting = do
+                (st, sess) <- seedSession "/"   -- "work"
+                other <- addSession st 1
+                w0 <- addWindow sess 0
+                p <- stubPane 0
+                atomically $ do
+                    modifyTVar' w0.panes (Map.insert p.id p)
+                    modifyTVar' other.windows (Map.insert 0 w0)
+                    writeTVar st.globalSessionOptions (singletonDelta
+                        "destroy-unattached" (OVScalar setting))
+                _ <- addClient st other.id (Size 24 80) 1
+                pure (st, sess)
+            survivors st = map (.id) . Map.elems <$> readTVarIO st.sessions
+        it "destroys a session no client is attached to" $ do
+            (st, _) <- sharing "on"
+            checkUnattached st
+            survivors st `shouldReturn` [SessionId 1]
+        it "spares it when off" $ do
+            (st, _) <- sharing "off"
+            checkUnattached st
+            survivors st `shouldReturn` [SessionId 0, SessionId 1]
+        it "spares a rebuilt session until a client has attached to it" $ do
+            (st, sess) <- sharing "on"
+            atomically (writeTVar sess.destroyHold HeldUntilAttached)
+            checkUnattached st
+            survivors st `shouldReturn` [SessionId 0, SessionId 1]
 
     describe "session groups" $ do
         let grouped = do

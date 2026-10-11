@@ -21,6 +21,7 @@ module Hat.Model
     , EnvImport (..)
     , StartupPhase (..)
     , Shutdown (..)
+    , DestroyHold (..)
     , AcceptGate (..)
     , ReadGate (..)
     , CopyModeState (..)
@@ -212,7 +213,14 @@ data Session = Session
     , activity :: TVar Int
         -- ^ when a client last attached to or drove it, on the server's
         --   activity clock (tmux's @activity_time@); see 'markActive'
+    , destroyHold :: TVar DestroyHold
+        -- ^ see 'Hat.Server.Command.Session.checkUnattached'
     }
+
+-- | Whether @destroy-unattached@ must spare a session no client has
+-- attached to since it was rebuilt from serialized state.
+data DestroyHold = HeldUntilAttached | NotHeld
+    deriving (Eq, Show)
 
 data Window = Window
     { id         :: WindowId
@@ -659,7 +667,9 @@ markActive st client = do
     writeTVar client.lastActive n
     sid <- readTVar client.session
     msess <- Map.lookup sid <$> readTVar st.sessions
-    forM_ msess $ \sess -> writeTVar sess.activity n
+    forM_ msess $ \sess -> do
+        writeTVar sess.activity n
+        writeTVar sess.destroyHold NotHeld
 
 -- | Advance the server's activity clock, yielding the new stamp.
 tickActivity :: ServerState -> STM Int
