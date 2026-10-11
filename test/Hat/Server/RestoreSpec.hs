@@ -1,14 +1,17 @@
 module Hat.Server.RestoreSpec (spec) where
 
 import Control.Concurrent.STM (atomically, modifyTVar', readTVarIO, writeTVar)
-import Control.Exception (ErrorCall (..), bracket, throwIO)
-import Control.Monad (forM_)
+import Control.Exception (ErrorCall (..), IOException, bracket, throwIO, try)
+import Control.Monad (forM_, void)
 import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Map.Strict qualified as Map
 import Data.Vector qualified as V
+import System.Exit (ExitCode)
 import System.Posix.IO (closeFd)
+import System.Posix.Types (CPid, Fd)
+import System.Process (createProcess, getPid, proc, terminateProcess, waitForProcess)
 import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
 
@@ -58,6 +61,25 @@ emptySnapshot = Snapshot { sessions = [], lastActiveSession = Nothing }
 
 errStrings :: [Reply] -> [Text]
 errStrings replies = [e | RErr e <- replies]
+
+-- | A pty master with a live child of this process behind it, for a reload
+-- fixture to adopt: the pane's reaper waits on the pid, so a pid that is not
+-- our child would read as already dead. Only the slave is ours to close: the
+-- adopted pane's Handle owns the master and closes it when collected.
+withAdoptablePane :: ((Fd, CPid) -> IO a) -> IO a
+withAdoptablePane body =
+    bracket openPseudoTerminal (\(_, s) -> closeFd s) $ \(m, _) ->
+        bracket spawnSleeper stopSleeper $ \(_, pid) -> body (m, pid)
+  where
+    spawnSleeper = do
+        (_, _, _, ph) <- createProcess (proc "sleep" ["1000"])
+        mpid <- getPid ph
+        maybe (throwIO (ErrorCall "sleeper exited before adoption"))
+            (pure . (,) ph) mpid
+    -- The adopted pane's reaper may have collected it already.
+    stopSleeper (ph, _) = do
+        terminateProcess ph
+        void (try (waitForProcess ph) :: IO (Either IOException ExitCode))
 
 -- A bare server-state shell, enough to exercise the startup gates.
 testState :: IO ServerState
@@ -251,19 +273,15 @@ spec = do
 
     -- A reloaded session must come back at its captured window area, not a
     -- 24x80 placeholder (bug 4b).
-    --
-    -- Only the slave is ours to close: the adopted pane's Handle owns the
-    -- master and closes it when collected.
     describe "reload session size" $
         it "rebuilds a reloaded session at its captured window area" $
-            bracket openPseudoTerminal (\(_, s) -> closeFd s) $
-                \(m, _) -> do
+            withAdoptablePane $ \(m, sleeper) -> do
             st <- testState
             let lay = emitLayout
                     Rect { startRow = 0, endRow = 30, startCol = 0, endCol = 100 }
                     (Leaf (PaneId 0))
                 rp = HotPane
-                    { masterFd = fromIntegral m, childPid = 999999
+                    { masterFd = fromIntegral m, childPid = fromIntegral sleeper
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
@@ -286,8 +304,7 @@ spec = do
     -- See Note [Captured links].
     describe "reload links and groups" $
         it "shares a linked window and a group's window map, adopting each pane once" $
-            bracket openPseudoTerminal (\(_, s) -> closeFd s) $
-                \(m, _) -> do
+            withAdoptablePane $ \(m, sleeper) -> do
             st <- testState
             -- The fake child is no child of ours, so its pane dies at once;
             -- kept as a dead pane, it leaves the tree under test standing.
@@ -297,7 +314,7 @@ spec = do
                     Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
                     (Leaf (PaneId 0))
                 rp = HotPane
-                    { masterFd = fromIntegral m, childPid = 999999
+                    { masterFd = fromIntegral m, childPid = fromIntegral sleeper
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
