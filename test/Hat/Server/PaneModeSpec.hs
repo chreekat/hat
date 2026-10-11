@@ -15,6 +15,7 @@ import Hat.Model
 import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Keymap (defaultKeymap)
+import Hat.Server.PaneMode (dropModesForReload)
 import Hat.Term.Pty qualified as Pty
 
 -- | A fresh server for one test; on exit every pane still alive is killed
@@ -135,6 +136,19 @@ spec = do
                 run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
                 run st ["choose-client", "-t", "S:0.0"] `shouldReturn` []
                 display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+
+    describe "dropModesForReload" $
+        it "clears every mode and undoes a -Z zoom, keeping -k panes" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "cat"] `shouldReturn` []
+                [a, b] <- paneIds st "S:0"
+                run st ["choose-tree", "-k", "-Z", "-t", b] `shouldReturn` []
+                display st b "#{window_zoomed_flag}" `shouldReturn` [ROutput "1"]
+                dropModesForReload st
+                display st b "#{pane_in_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "0 0"]
+                paneIds st "S:0" `shouldReturn` [a, b]
 
     describe "target clients" $ do
         it "switch-client -c names an unknown client loudly" $

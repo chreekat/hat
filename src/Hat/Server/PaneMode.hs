@@ -10,6 +10,7 @@ module Hat.Server.PaneMode
     , resetPaneModeAll
     , modifyTopMode
     , zoomForMode
+    , dropModesForReload
     ) where
 
 import Control.Concurrent.STM
@@ -142,3 +143,21 @@ leaveMode st pane = \case
                 applySessionSize st sid
                 notifyWindow st "window-unzoomed" (Just sid) win []
     _ -> pure ()
+
+-- | Clear every pane's modes ahead of a reload, which carries no mode state:
+-- each mode's own effect on its window (a @-Z@ zoom) is undone so the
+-- handover captures the tree as it stands outside the modes. A @-k@ mode
+-- leaves its pane alive and no mode hook fires: the panes outlive the reload,
+-- only the modes do not.
+dropModesForReload :: ServerState -> IO ()
+dropModesForReload st = do
+    panes <- atomically $ do
+        sessions <- Map.elems <$> readTVar st.sessions
+        wins <- concat <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
+        concat <$> mapM (fmap Map.elems . readTVar . (.panes)) wins
+    forM_ panes $ \pane -> do
+        held <- atomically $ do
+            es <- readTVar pane.modes
+            writeTVar pane.modes []
+            pure es
+        mapM_ (leaveMode st pane . (.mode)) held

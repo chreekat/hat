@@ -78,6 +78,7 @@ import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
 import Hat.Server.Keys
+import Hat.Server.PaneMode (dropModesForReload)
 import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree, treeModeKey)
 import Hat.Server.Locate
 import Hat.Server.Pane
@@ -515,7 +516,8 @@ cmdReload' scope st mclient args =
                 -- A failure anywhere past the capture reopens what the
                 -- reload closed — the parked readers and the accept gate —
                 -- so a failed reload keeps serving instead of freezing.
-                (do (cleanup, tree) <- captureReload req.carry st
+                (do dropModesForReload st
+                    (cleanup, tree) <- captureReload req.carry st
                     let blobPath = st.sockPath <> ".reload"
                     B.writeFile blobPath (encodeHandover cleanup tree)
                     keepOpenAcrossExec cleanup
