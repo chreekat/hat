@@ -3,6 +3,9 @@
 #
 # Usage: tools/run-upstream-tests.sh /path/to/tmux-source [-j N] [test.sh ...]
 #
+# Prints each script's outcome and wall-clock seconds, slowest first. Set
+# HAT_UPSTREAM_LOGS=DIR to keep each script's combined output as DIR/<name>.log.
+#
 # Outcomes per script (see ARCHITECTURE.md "Testing strategy"):
 #   PASS  - exit 0, not in xfail list
 #   XFAIL - nonzero, listed in tools/upstream-xfail.txt   -> suite ok
@@ -95,21 +98,30 @@ run_one() {
         esac
         cp -r --no-preserve=mode "$f" "$tdir/"
     done
+    log=/dev/null
+    [ -n "${HAT_UPSTREAM_LOGS:-}" ] && log="$HAT_UPSTREAM_LOGS/$name.log"
+    start=$(date +%s.%N)
     (
         cd "$tdir"
         TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" HAT_PERSIST=0 \
             timeout 150 sh "$name"
-    ) >/dev/null 2>&1
-    printf '%d %s\n' "$?" "$name" >> "$results"
+    ) >"$log" 2>&1
+    code=$?
+    end=$(date +%s.%N)
+    awk -v c="$code" -v s="$start" -v e="$end" -v n="$name" \
+        'BEGIN { printf "%d %.1f %s\n", c, e - s, n }' >> "$results"
 }
 export -f run_one
-export regress hat_bin results
+[ -n "${HAT_UPSTREAM_LOGS:-}" ] && mkdir -p "$HAT_UPSTREAM_LOGS"
+export regress hat_bin results HAT_UPSTREAM_LOGS
 
 printf '%s\n' $tests | xargs -P"$jobs" -I{} bash -c 'run_one "$@"' _ {}
 
 pass=0; fail=0; xfail=0; xpass=0
 failed_names=""; xpassed_names=""
-while read -r code name; do
+outcomes="$work/outcomes"
+: > "$outcomes"
+while read -r code secs name; do
     expected_fail=false
     if [ -f "$xfail_file" ] && grep -q "^$name" "$xfail_file"; then
         expected_fail=true
@@ -117,17 +129,24 @@ while read -r code name; do
     if [ "$code" -eq 0 ]; then
         if $expected_fail; then
             xpass=$((xpass + 1)); xpassed_names="$xpassed_names $name"
+            outcome=XPASS
         else
             pass=$((pass + 1))
+            outcome=PASS
         fi
     else
         if $expected_fail; then
             xfail=$((xfail + 1))
+            outcome=XFAIL
         else
             fail=$((fail + 1)); failed_names="$failed_names $name"
+            outcome=FAIL
         fi
     fi
+    printf '%-5s %6ss  %s\n' "$outcome" "$secs" "$name" >> "$outcomes"
 done < "$results"
+
+sort -k2 -rn "$outcomes"
 
 echo "pass=$pass xfail=$xfail fail=$fail xpass=$xpass"
 [ -n "$failed_names" ] && echo "FAILED:$failed_names"
