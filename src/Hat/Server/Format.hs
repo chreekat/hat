@@ -40,7 +40,8 @@ import Text.Regex.TDFA.Text qualified as RT
 import Hat.Glob (globMatch)
 import Hat.Server.Format.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)
-import Hat.TextWidth (charWidth, textWidth)
+import Hat.Server.FormatDraw (formatTrimLeft, formatTrimRight, formatWidth)
+import Hat.TextWidth (textWidth)
 
 type FormatEnv = Map Text Text
 
@@ -473,12 +474,12 @@ replaceKey ctx depth key = postOps <$> value
                | otherwise = v0
             v2 = List.foldl' applySub v1 ms.subs
             v3 | ms.limit > 0 =
-                    let trimmed = trimLeft ms.limit v2
+                    let trimmed = formatTrimLeft ms.limit v2
                     in case ms.marker of
                         Just mk | trimmed /= v2 -> trimmed <> mk
                         _ -> trimmed
                | ms.limit < 0 =
-                    let trimmed = trimRight (negate ms.limit) v2
+                    let trimmed = formatTrimRight (negate ms.limit) v2
                     in case ms.marker of
                         Just mk | trimmed /= v2 -> mk <> trimmed
                         _ -> trimmed
@@ -486,7 +487,7 @@ replaceKey ctx depth key = postOps <$> value
             v4 = padTo ms.padW v3
             v5 | ms.lenF = tshow (BS.length (TE.encodeUtf8 v4))
                | otherwise = v4
-            v6 | ms.widF = tshow (textWidth v5)
+            v6 | ms.widF = tshow (formatWidth v5)
                | otherwise = v5
         in v6
     applySub acc (p0, w0, icase) = regexSub icase (exp1 p0) (exp1 w0) acc
@@ -820,34 +821,6 @@ dirnameT t
     t' = T.dropWhileEnd (== '/') t
     d = T.dropWhileEnd (/= '/') t'
     d' = T.dropWhileEnd (== '/') d
-
--- format_trim_left: width-aware truncation; a straddling wide character
--- is dropped but still counts toward the limit.
-trimLeft :: Int -> Text -> Text
-trimLeft limit = T.pack . go 0 . T.unpack
-  where
-    go w cs
-        | w >= limit = []
-        | otherwise = case cs of
-            [] -> []
-            (c : rest) ->
-                let cw = charWidth c
-                in if w + cw <= limit
-                    then c : go (w + cw) rest
-                    else go (w + cw) rest
-
-trimRight :: Int -> Text -> Text
-trimRight limit t
-    | total <= limit = t
-    | otherwise = T.pack (go 0 (T.unpack t))
-  where
-    total = textWidth t
-    skip = total - limit
-    go w cs
-        | w >= skip = cs
-        | otherwise = case cs of
-            [] -> []
-            (c : rest) -> go (w + charWidth c) rest
 
 -- utf8_padcstr / utf8_rpadcstr: pad with spaces to a display width.
 padTo :: Int -> Text -> Text

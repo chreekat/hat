@@ -30,6 +30,7 @@ env = Map.fromList
     , ("@ts", "1000000000")
     , ("@sp", "a b$c")
     , ("@hash", "a#b")
+    , ("@styled", "#[fg=red]abc")
     , ("@sq", "a'b")
     , ("@sub", "abABab")
     , ("@slash", "foo/bar foo/")
@@ -309,6 +310,8 @@ spec = do
         , ("#{=/1/x:@cjk}", "x")
         , ("#{=/1/中:@s}", "a中")
         , ("#{=2:@emoji}", "😀")
+        , ("#{=2:@styled}", "#[fg=red]ab")
+        , ("#{=-2:@styled}", "#[fg=red]bc")
         , ("#{p12:@name}", "window-name ")
         , ("#{p-12:@name}", " window-name")
         , ("#{p3:@name}", "window-name")
@@ -327,6 +330,7 @@ spec = do
         , ("#{w:@cjk}", "4")
         , ("#{n:@emoji}", "8")
         , ("#{w:@emoji}", "4")
+        , ("#{w:@styled}", "3")
         ]
 
     cases "takes basename and dirname"
