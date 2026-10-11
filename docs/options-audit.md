@@ -85,8 +85,11 @@ spot-read of each suspect consumer.
 | `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
-| `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
-| `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
+| `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
+| `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
+| `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
+| `other-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
+| `tiled-layout-max-columns` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs) | implemented ✅ tested | pure |
 | `destroy-unattached` | `checkUnattached` (Command/Session.hs) on every attach, switch, and client exit; a rebuilt session is spared until first attached | implemented ✅ tested | pure + model (SessionSpec) |
 | `detach-on-destroy` | `destroyDestination`/`sendClientsAway` (ClientSession.hs), at every session destruction | implemented ✅ tested | pure + model (SessionSpec) |
 | `exit-empty` | `serverIdle`/`waitIdle` (Server.hs) | implemented ✅ tested | pure |
@@ -120,13 +123,6 @@ spot-read of each suspect consumer.
   integration test.
 
 ## Minor divergences (not defects)
-
-- **`main-pane-width`/`-height`** correctly implement tmux's *absolute cell
-  count* (the ratio `mainPaneWidth / cols` yields `mainPaneWidth` cells), pinned
-  by `mainPaneRatio` effect tests. Two small divergences remain as follow-ups,
-  not silent no-ops: the main pane is clamped to 10–90% of the window (tmux
-  clamps only to leave the other panes room), and a `%`-suffixed percentage
-  value is refused at `set` (the row's `refusing` gate) rather than parsed.
 
 - **`aggressive-resize`** is accepted but read by nothing. tmux uses it to
   size a window only from clients whose *current* window it is; hat sizes all

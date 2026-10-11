@@ -59,17 +59,34 @@ spec = do
                 toast.deadline `shouldBe` Nothing
                 toastExpired (shownAt + ms 3600000) toast `shouldBe` False
 
-        -- main-pane-width/-height: an absolute cell count for the main pane.
-        describe "main-pane-width/-height give the main pane an absolute cell count" $ do
+        -- main-pane-*/other-pane-*: cells or a percentage of the window.
+        describe "main-pane-width/-height and other-pane-width/-height size the named layouts" $ do
             let pids = map PaneId [0, 1, 2]
-                mainCell opts area name =
-                    namedLayout (namedSizesOf opts) area name pids >>= paneCell (PaneId 0)
+                with = foldr (\(n, v) -> applyEntry n (OVScalar v)) defaultOptions
+                cellOf p sets area name =
+                    namedLayout (namedSizesOf (with sets)) area name pids >>= paneCell (PaneId p)
+                wide = Size { rows = 50, cols = 200 }
+                tall = Size { rows = 40, cols = 200 }
             it "main-vertical: main-pane-width cells wide" $
-                fmap (.sx) (mainCell (defaultOptions { mainPaneWidth = 100 })
-                    Size { rows = 50, cols = 200 } MainVertical) `shouldBe` Just 100
+                fmap (.sx) (cellOf 0 [("main-pane-width", "100")] wide MainVertical)
+                    `shouldBe` Just 100
             it "main-horizontal: main-pane-height cells tall" $
-                fmap (.sy) (mainCell (defaultOptions { mainPaneHeight = 10 })
-                    Size { rows = 40, cols = 200 } MainHorizontal) `shouldBe` Just 10
+                fmap (.sy) (cellOf 0 [("main-pane-height", "10")] tall MainHorizontal)
+                    `shouldBe` Just 10
+            it "main-vertical: a main-pane-width percentage of the window" $
+                fmap (.sx) (cellOf 0 [("main-pane-width", "25%")] wide MainVertical)
+                    `shouldBe` Just 49
+            it "main-vertical: other-pane-width sizes the other panes" $
+                fmap (.sx) (cellOf 1 [("other-pane-width", "30")] wide MainVertical)
+                    `shouldBe` Just 30
+
+        describe "tiled-layout-max-columns caps the tiled grid's columns" $
+            it "1: every pane on its own row" $ do
+                let pids = map PaneId [0, 1, 2, 3]
+                    opts = applyEntry "tiled-layout-max-columns" (OVScalar "1") defaultOptions
+                    lay = namedLayout (namedSizesOf opts) Size { rows = 50, cols = 200 } Tiled pids
+                map (\p -> (.xoff) <$> (lay >>= paneCell (PaneId p))) [0 .. 3]
+                    `shouldBe` replicate 4 (Just 0)
 
         -- pane-border-lines picks the box-drawing glyph set the borders draw.
         describe "pane-border-lines maps the border glyph set" $ do

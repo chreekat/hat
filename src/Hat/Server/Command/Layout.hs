@@ -323,13 +323,14 @@ applyNamed st sess win name = do
     relayout st sess win $ \lay -> pure . Right $
         fromMaybe lay (namedLayout sizes eff name (layoutPanes lay))
 
--- | The named layouts' sizing options. @other-pane-width@\/@-height@ and
--- @tiled-layout-max-columns@ are not hat options yet, so they keep tmux's
--- defaults.
+-- | The named layouts' sizing options.
 namedSizesOf :: Options -> NamedSizes
-namedSizesOf opts = defaultNamedSizes
-    { mainWidth = tshow opts.mainPaneWidth
-    , mainHeight = tshow opts.mainPaneHeight }
+namedSizesOf opts = NamedSizes
+    { mainWidth = optionText "main-pane-width" opts
+    , mainHeight = optionText "main-pane-height" opts
+    , otherWidth = optionText "other-pane-width" opts
+    , otherHeight = optionText "other-pane-height" opts
+    , maxColumns = optionNumber "tiled-layout-max-columns" opts }
 
 -- | Replace a window's layout (fitted to its area first) and announce it.
 relayout

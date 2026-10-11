@@ -111,6 +111,16 @@ spec = do
             mapM (chosen "remain-on-exit") ["off", "on", "failed", "key"]
                 `shouldBe` Right ["off", "on", "failed", "key"]
 
+        it "takes the named layouts' sizes as cells or a percentage" $ do
+            let chosen n v = optionText n <$> setOption Assign defaultOptions n v
+            mapM (uncurry chosen)
+                [ ("main-pane-width", "50%"), ("main-pane-height", "30")
+                , ("other-pane-width", "20%"), ("other-pane-height", "5") ]
+                `shouldBe` Right ["50%", "30", "20%", "5"]
+            optionNumber "tiled-layout-max-columns"
+                <$> setOption Assign defaultOptions "tiled-layout-max-columns" "3"
+                `shouldBe` Right 3
+
         it "sets a multi-line status bar" $
             fmap (.statusLines) (setOption Assign defaultOptions "status" "3")
                 `shouldBe` Right 3

@@ -275,13 +275,6 @@ adjustSupport f d = case d.gate of
     Live s -> d { gate = Live (f s) }
     NotYet -> d { gate = Live (f fullSupport) }
 
--- | A @main-pane-*@ size: tmux also takes a percentage, which hat's layouts
--- do not model yet.
-cellsOnly :: Text -> Text -> Maybe Text
-cellsOnly n v
-    | T.all isDigit v && not (T.null v) = Nothing
-    | otherwise = Just (n <> ": only a cell count is supported by hat, not " <> v)
-
 cursorStyles, popupLines, bellActions, visualBell :: [Text]
 cursorStyles =
     [ "default", "blinking-block", "block", "blinking-underline"
@@ -621,17 +614,15 @@ optionTable =
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
     , notYet $ scalar "fill-character" WindowScope KString
         "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"
-    , refusing (cellsOnly "main-pane-height") $ live $
-        scalar "main-pane-height" WindowScope KString "24"
-    , refusing (cellsOnly "main-pane-width") $ live $
-        scalar "main-pane-width" WindowScope KString "80"
+    , live $ scalar "main-pane-height" WindowScope KString "24"
+    , live $ scalar "main-pane-width" WindowScope KString "80"
     , live $ scalar "mode-keys" WindowScope (KChoice ["emacs", "vi"]) "emacs"
     , live $ scalar "mode-style" WindowScope KStyle "reverse"
     , live $ scalar "monitor-activity" WindowScope KFlag "off"
     , live $ scalar "monitor-bell" WindowScope KFlag "on"
     , live $ scalar "monitor-silence" WindowScope (KNumber 0 intMax) "0"
-    , notYet $ scalar "other-pane-height" WindowScope KString "0"
-    , notYet $ scalar "other-pane-width" WindowScope KString "0"
+    , live $ scalar "other-pane-height" WindowScope KString "0"
+    , live $ scalar "other-pane-width" WindowScope KString "0"
     , live $ scalar "pane-active-border-style" WindowPaneScope KStyle "fg=green"
     , live $ scalar "pane-base-index" WindowScope (KNumber 0 ushrtMax) "0"
     , notYet $ scalar "pane-border-format" WindowPaneScope KString
@@ -674,7 +665,7 @@ optionTable =
     , notYet $ scalar "switch-mode-match-style" WindowPaneScope KStyle
         "bg=cyan fg=black"
     , notYet $ scalar "synchronize-panes" WindowPaneScope KFlag "off"
-    , notYet $ scalar "tiled-layout-max-columns" WindowScope
+    , live $ scalar "tiled-layout-max-columns" WindowScope
         (KNumber 0 ushrtMax) "0"
     , notYet $ scalar "tree-mode-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"

@@ -129,8 +129,6 @@ data Options = Options
     , automaticRename        :: Bool   -- ^ windows track their foreground command
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
-    , mainPaneWidth          :: Int     -- ^ main-* layouts' main pane, cells
-    , mainPaneHeight         :: Int
     , commandAlias    :: Map ArrayKey Text   -- ^ array of @name=command@ entries; see 'lookupCommandAlias'
     , user            :: Map Text Text  -- ^ @\@foo@ options
     , values          :: Map Text OptionValue
@@ -178,8 +176,6 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , automaticRename = missing "automatic-rename"
         , automaticRenameFormat = missing "automatic-rename-format"
         , updateEnvironment = missing "update-environment"
-        , mainPaneWidth = missing "main-pane-width"
-        , mainPaneHeight = missing "main-pane-height"
         , commandAlias = missing "command-alias"
         , user = Map.empty
         , values = Map.empty
@@ -240,8 +236,6 @@ fieldBindings = Map.fromList
     , ("automatic-rename-format", text (\v o -> o
         { automaticRenameFormat = v }))
     , ("update-environment", arr (\v o -> o { updateEnvironment = Map.elems v }))
-    , ("main-pane-width", int (\v o -> o { mainPaneWidth = v }))
-    , ("main-pane-height", int (\v o -> o { mainPaneHeight = v }))
     , ("command-alias", arr (\v o -> o { commandAlias = v }))
     ]
   where
