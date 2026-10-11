@@ -30,6 +30,9 @@ module Hat.Model
     , copyModeAt
     , Recentre (..)
     , SelAnchor (..)
+    , PaneClock (..)
+    , clockOnTop
+    , paneClockOnTop
     , PromptCursor (..)
     , CursorShape (..)
     , LineNumbers (..)
@@ -93,7 +96,7 @@ import Control.Monad (forM, forM_)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isNothing, mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -299,7 +302,25 @@ data Pane = Pane
     , onAlternate :: TVar Bool
         -- ^ whether the pane's program is on the alternate screen, as of
         -- the last output its reader fed
+    , clock :: TVar PaneClock
     }
+
+-- | A pane's clock mode, and whether it was entered over its copy mode or
+-- under it (tmux keeps a pane's modes as a stack, the top one shown).
+data PaneClock = NoClock | ClockOnTop | ClockUnderCopy
+    deriving (Eq, Show)
+
+-- | Whether clock mode is the pane's top mode: the one shown, and given
+-- the keys.
+clockOnTop :: PaneClock -> Maybe PaneMode -> Bool
+clockOnTop c copy = case c of
+    ClockOnTop -> True
+    ClockUnderCopy -> isNothing copy
+    NoClock -> False
+
+-- | 'clockOnTop' for a pane now.
+paneClockOnTop :: Pane -> STM Bool
+paneClockOnTop pane = clockOnTop <$> readTVar pane.clock <*> readTVar pane.mode
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart

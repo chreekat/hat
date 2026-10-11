@@ -367,6 +367,7 @@ commandSpecs =
     , (["send-prefix"], cmdSendPrefix)
     , (["send-keys", "send"], cmdSendKeys)
     , (["copy-mode"], cmdCopyMode)
+    , (["clock-mode"], cmdClockMode)
     , (["command-prompt"], cmdCommandPrompt)
     , (["choose-tree"], cmdChooseTree)
     , (["choose-window", "choosew"], cmdChooseWindow)
@@ -852,8 +853,10 @@ cmdSendKeys st mclient args = do
                         Just bytes ->
                             [] <$ typeIntoPaneSynced st pane (B.pack bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise = [] <$ forM_ pos (\a ->
-                        case parseKeyName a of
+                    | otherwise = [] <$ forM_ pos (\a -> do
+                        -- a key sent to a pane in clock mode ends it instead
+                        spent <- clockModeKey st pane
+                        unless spent $ case parseKeyName a of
                             Just k | not literal -> typeKeyIntoPane st pane k
                             _ -> typeIntoPaneSynced st pane (TE.encodeUtf8 a))
     (opts, flags, pos) = parseArgs "tN" args

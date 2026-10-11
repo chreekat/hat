@@ -5,6 +5,7 @@ module Hat.Server.Command.Interact
     ( cmdDetachClient
     , cmdSendPrefix
     , cmdCopyMode
+    , cmdClockMode
     , cmdCommandPrompt
     , promptCursor
     , cmdChooseTree
@@ -34,7 +35,7 @@ import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientOptions, clientView, findTarget)
-import Hat.Server.Pane (typeKeyIntoPane)
+import Hat.Server.Pane (enterClockMode, typeKeyIntoPane)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
 import Hat.Server.Target qualified as Target
@@ -129,6 +130,10 @@ cmdCopyMode st mclient args = do
             | not quit -> do
                 was <- isJust <$> readTVarIO pane.mode
                 unless was (enterCopyMode pane)
+                -- copy mode comes to the top over a clock
+                atomically $ modifyTVar' pane.clock $ \case
+                    ClockOnTop -> ClockUnderCopy
+                    c -> c
                 -- The flags apply whether or not the mode was already open;
                 -- a mouse key opens it without line numbers.
                 atomically $ modifyTVar' pane.mode $ fmap $ \pm -> pm
@@ -145,6 +150,7 @@ cmdCopyMode st mclient args = do
                 was <- atomically $ do
                     old <- readTVar pane.mode
                     writeTVar pane.mode Nothing
+                    writeTVar pane.clock NoClock
                     bumpDirty st
                     pure old
                 forM_ was $ \_ -> do
@@ -175,6 +181,15 @@ cmdCopyMode st mclient args = do
                     [ ("mode_entered", PInt 1)
                     , ("current_mode", PText "copy-mode")
                     , ("previous_mode", PText "") ]
+
+-- | @clock-mode [-t pane]@.
+cmdClockMode :: CommandImpl
+cmdClockMode st mclient args = do
+    let (opts, _, _) = parseArgs "t" args
+    res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+    case res of
+        Left e -> pure [RErr e]
+        Right (_, _, _, pane) -> [] <$ enterClockMode st pane
 
 -- | Open the interactive command prompt on the invoking client.
 -- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line

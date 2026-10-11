@@ -426,8 +426,9 @@ sessionAlerts sess = do
 -- plus the copy-mode variables while in mode.
 paneModeEnv :: ServerState -> Pane -> IO [(Text, Text)]
 paneModeEnv st pane = do
-    mmode <- readTVarIO pane.mode
+    (mmode, clockTop) <- atomically $ (,) <$> readTVar pane.mode <*> paneClockOnTop pane
     case mmode of
+        _ | clockTop -> pure [("pane_in_mode", "1"), ("pane_mode", "clock-mode")]
         Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
         Just pm -> do
             global <- readTVarIO st.options

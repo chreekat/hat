@@ -109,6 +109,7 @@ spot-read of each suspect consumer.
 | `cursor-colour` | `cursorColourOf` via `renderOnce` (View.hs): the program's OSC 12 colour, else the active pane's value, theme colours resolved, sent as `rgb:` | implemented ✅ tested | pure (OptionEffectSpec) |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
+| `clock-mode-colour` / `clock-mode-style` | `clockCells`/`clockText` (Clock.hs) via `clockView` (View.hs): the `clock-mode` screen, each pane's window's values, theme colours resolved | implemented ✅ tested | pure (ClockSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |

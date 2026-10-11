@@ -121,6 +121,7 @@ flashStubPane pid = do
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False
+    clockV <- newTVarIO NoClock
     pure Pane
         { id = pid
         , pty = error "flashStubPane: pty never touched"
@@ -139,4 +140,5 @@ flashStubPane pid = do
         , kind = ProgramPane
         , inputOff = inputOffV
         , onAlternate = alternateV
+        , clock = clockV
         }

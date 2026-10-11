@@ -29,6 +29,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.LocalTime (getZonedTime, zonedTimeToLocalTime)
 import Data.Vector qualified as V
 
 import Hat.Geometry
@@ -36,6 +37,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
+import Hat.Server.Clock qualified as Clock
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.DisplayPanes qualified as DisplayPanes
@@ -738,8 +740,12 @@ data PaneView = PaneView
 
 paneView :: ServerState -> Pane -> IO PaneView
 paneView st pane = do
-    mmode <- readTVarIO pane.mode
+    (mmode, clockTop) <- atomically $ (,) <$> readTVar pane.mode <*> paneClockOnTop pane
     case mmode of
+        _ | clockTop -> do
+            cells <- clockView st pane
+            pure PaneView
+                { cells, rowGens = Nothing, cursor = Nothing, cursorVisible = False }
         Nothing -> do
             (scr, gens) <- Emu.snapshotWithGens pane.emulator
             pure PaneView
@@ -757,6 +763,18 @@ paneView st pane = do
                 , cursor = cur
                 , cursorVisible = isJust cur
                 }
+
+-- | Clock mode's screen for a pane, in its options' colour and style.
+clockView :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
+clockView st pane = do
+    th <- clientTheme st
+    global <- readTVarIO st.options
+    opts <- maybe global id <$> paneOptionsNow st pane
+    size <- readTVarIO pane.size
+    now <- zonedTimeToLocalTime <$> getZonedTime
+    let colour = fromMaybe Cell.DefaultColor
+            (join (colourValue th (optionText "clock-mode-colour" opts)))
+    pure (Clock.clockCells colour (Clock.clockStyleOf (optionText "clock-mode-style" opts)) size now)
 
 -- | How copy mode draws in a pane: its options' styles and position format,
 -- formats expanded in the pane's context as tmux's @window_copy_write_line@

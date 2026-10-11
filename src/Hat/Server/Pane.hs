@@ -42,6 +42,8 @@ module Hat.Server.Pane
     , pumpPipeOutput
     , stopPipe
     , isCurrentWindow
+    , enterClockMode
+    , clockModeKey
     , attentionSeen
     , windowSeen
     , markActivity
@@ -82,7 +84,7 @@ module Hat.Server.Pane
     ) where
 
 import Control.Concurrent
-    (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
+    (forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Applicative ((<|>))
@@ -389,6 +391,7 @@ newPane pid pty emu sz dir pending start kind = do
     host <- Posix.nodeName <$> Posix.getSystemID
     _ <- Emu.setTitle emu (T.pack host)
     alternateVar <- newTVarIO False
+    clockVar <- newTVarIO NoClock
     pure Pane
         { id = pid
         , pty = pty
@@ -407,6 +410,7 @@ newPane pid pty emu sz dir pending start kind = do
         , kind = kind
         , inputOff = inputOffVar
         , onAlternate = alternateVar
+        , clock = clockVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -681,6 +685,41 @@ propKindLabel = \case
     Emu.PropStr  -> "str"
 
 -- | Whether @win@ is the session's current (foreground) window.
+-- | @clock-mode@: clock mode becomes the pane's top mode, redrawn each
+-- second while the pane keeps it.
+enterClockMode :: ServerState -> Pane -> IO ()
+enterClockMode st pane = do
+    was <- atomically $ do
+        c <- readTVar pane.clock
+        writeTVar pane.clock ClockOnTop
+        bumpDirty st
+        pure c
+    unless (was == ClockOnTop) $ notifyPane st "pane-mode-changed" pane []
+    when (was == NoClock) $ void $ forkIO tick
+  where
+    tick = do
+        now <- getPOSIXTime
+        let toNext = 1 - (realToFrac now - fromIntegral (floor now :: Integer)) :: Double
+        threadDelay (max 1000 (round (toNext * 1_000_000)))
+        on <- atomically $ do
+            c <- readTVar pane.clock
+            when (c /= NoClock) (bumpDirty st)
+            pure (c /= NoClock)
+        when on tick
+
+-- | A key reaching a pane whose top mode is clock mode ends it, as tmux's
+-- @window_clock_key@ does; 'True' when the key was spent so.
+clockModeKey :: ServerState -> Pane -> IO Bool
+clockModeKey st pane = do
+    ended <- atomically $ do
+        top <- paneClockOnTop pane
+        when top $ do
+            writeTVar pane.clock NoClock
+            bumpDirty st
+        pure top
+    when ended $ notifyPane st "pane-mode-changed" pane []
+    pure ended
+
 isCurrentWindow :: Session -> Window -> STM Bool
 isCurrentWindow sess win = do
     cur <- readTVar sess.currentIx

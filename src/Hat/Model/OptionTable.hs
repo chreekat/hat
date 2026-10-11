@@ -578,8 +578,8 @@ optionTable =
     -- tmux's default also marks panes in a mode or dead.
     , live $ scalar "automatic-rename-format" WindowScope KString
         "#{pane_current_command}"
-    , notYet $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
-    , notYet $ scalar "clock-mode-style" WindowScope
+    , live $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
+    , live $ scalar "clock-mode-style" WindowScope
         (KChoice ["12", "24", "12-with-seconds", "24-with-seconds"]) "24"
     , live $ scalar "display-panes-active-colour" WindowScope KColourString "themered"
     , notYet $ scalar "display-panes-border-style" WindowScope KStyle

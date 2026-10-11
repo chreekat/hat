@@ -51,7 +51,7 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
-import Hat.Server.Pane (deadNoticeBytes, syncTargets)
+import Hat.Server.Pane (clockModeKey, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
@@ -237,6 +237,7 @@ stubPane n = do
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False
+    clockV <- newTVarIO NoClock
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -255,6 +256,7 @@ stubPane n = do
         , kind = ProgramPane
         , inputOff = inputOffV
         , onAlternate = alternateV
+        , clock = clockV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -341,6 +343,20 @@ spec = do
             env1 <- paneModeEnv st p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
+
+    describe "clock mode" $ do
+        it "is the pane's mode until a key ends it" $ do
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            enterClockMode st p
+            (lookup "pane_mode" <$> paneModeEnv st p) `shouldReturn` Just "clock-mode"
+            clockModeKey st p `shouldReturn` True
+            (lookup "pane_in_mode" <$> paneModeEnv st p) `shouldReturn` Just "0"
+            clockModeKey st p `shouldReturn` False
+        it "under copy mode, shows again once copy mode ends" $ do
+            clockOnTop ClockUnderCopy (Just (blankCopyMode 0)) `shouldBe` False
+            clockOnTop ClockUnderCopy Nothing `shouldBe` True
+            clockOnTop ClockOnTop (Just (blankCopyMode 0)) `shouldBe` True
 
     describe "copy-mode position indicator" $
         it "stamps [scroll/history] on the pane's top-right row" $ do
