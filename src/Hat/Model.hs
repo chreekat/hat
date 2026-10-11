@@ -91,7 +91,6 @@ module Hat.Model
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
-import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM, forM_)
@@ -123,6 +122,7 @@ import Hat.Model.Options
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.ControlTypes (ControlState)
+import Hat.Server.Outbound (Outbound)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, KeyState, Keymap)
@@ -747,7 +747,7 @@ data Client = Client
     , autostart :: Autostart  -- ^ from the hello; see 'Hat.Server.startupGate'
     , sock      :: Socket
     , wireLevel :: Word16  -- ^ negotiated dialect; see 'Hat.Transport.Wire.negotiate'
-    , sendLock  :: MVar ()
+    , outbound  :: Outbound  -- ^ see "Hat.Server.ClientIO"
     , size      :: TVar Size
     , lastActive :: TVar Int  -- ^ activity stamp; see 'markActive'
     , session   :: TVar SessionId

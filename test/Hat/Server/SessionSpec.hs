@@ -1,7 +1,8 @@
 module Hat.Server.SessionSpec (spec) where
 
 import Control.Concurrent.Async (withAsync)
-import Control.Concurrent.MVar (newMVar)
+import Hat.Server.ClientIO (withClientWriter)
+import Hat.Server.Outbound (newOutbound)
 import Control.Concurrent.STM
 import Control.Exception (finally)
 import Data.IORef (newIORef, readIORef)
@@ -150,8 +151,8 @@ addWindow sess n = do
 addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
 addClient st sid sz stamp = do
     sock <- socket AF_UNIX Stream defaultProtocol
-    lock <- newMVar ()
-    client <- Client (ClientId stamp) Attached Joined sock protocolVersion lock
+    outboundQ <- newOutbound
+    client <- Client (ClientId stamp) Attached Joined sock protocolVersion outboundQ
         <$> newTVarIO sz
         <*> newTVarIO stamp
         <*> newTVarIO sid
@@ -193,8 +194,8 @@ wiredClientEnv
     :: ServerState -> ClientRole -> [(Text, Text)] -> IO (Client, Socket)
 wiredClientEnv st clientRole clientEnv = do
     (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
-    lock <- newMVar ()
-    client <- Client (ClientId 1) clientRole Joined server protocolVersion lock
+    outboundQ <- newOutbound
+    client <- Client (ClientId 1) clientRole Joined server protocolVersion outboundQ
         <$> newTVarIO (Size 24 80)
         <*> newTVarIO 0
         <*> newTVarIO (SessionId 0)
@@ -458,7 +459,7 @@ spec = do
         it "sends the issuer its own session to rejoin (81)" $ do
             (st, _) <- seedSession "/"
             (client, peer) <- wiredClient st Attached
-            [] <- cmdRestartClient st (Just client) []
+            [] <- withClientWriter client (cmdRestartClient st (Just client) [])
             peerRe <- newReadEnd peer
             recvMessage peerRe `shouldReturn`
                 Just (Known (RestartClientTo "work" []))

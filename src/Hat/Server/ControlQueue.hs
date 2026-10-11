@@ -1,13 +1,16 @@
 -- | Queueing onto a control-mode client's outbound stream: command-block
 -- lines, notifications, pane output, and the request to exit. Everything a
--- control client is sent passes through here; its writer thread (see
--- "Hat.Server.Control") is the only one that touches its socket.
+-- control client is sent passes through here, to be rendered for its
+-- socket by its writer thread (see "Hat.Server.Control").
 module Hat.Server.ControlQueue
     ( controlEmit
     , controlNotify
     , openBlock
     , closeBlock
     , controlOutput
+    , AgeVerdict (..)
+    , ageVerdict
+    , ageAt
     , requestExit
     , controlSend
     , outputWatermark
@@ -18,9 +21,11 @@ module Hat.Server.ControlQueue
 import Control.Concurrent.STM
 import Control.Monad (forM_, unless)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes)
+import Data.Foldable (toList)
+import Data.Maybe (catMaybes, listToMaybe)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.Sequence (Seq (..), (|>))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
@@ -58,16 +63,63 @@ closeBlock cs = do
 
 -- | Queue a pane's output bytes, read at monotonic millisecond @now@. Runs
 -- of the same pane coalesce into one item (keeping the older age) until it
--- reaches 'outputChunk'.
+-- reaches 'outputChunk'. Output the pane already has queued past its age
+-- limit takes no more: the pane is paused or the client made to exit
+-- instead (tmux's @control_check_age@ on new output), so a client that has
+-- stopped reading cannot pile output up forever.
 controlOutput :: ControlState -> PaneId -> Word64 -> ByteString -> STM ()
 controlOutput cs pid now bytes = do
     q <- readTVar cs.queue
-    writeTVar cs.queue $ case q of
-        rest :|> ControlOutput p t old
-            | p == pid, B.length old < outputChunk ->
-                rest :|> ControlOutput p t (old <> bytes)
-        _ -> q |> ControlOutput pid now bytes
-    modifyTVar' cs.outputBytes (+ B.length bytes)
+    fl <- readTVar cs.flags
+    let oldest = listToMaybe [ t | ControlOutput p t _ <- toList q, p == pid ]
+    case maybe InTime (ageVerdict fl . ageAt now) oldest of
+        PausePane -> do
+            pausePane cs pid
+            controlEmit cs ("%pause %" <> B8.pack (show (rawPane pid)))
+        TooFarBehind -> requestExit cs (Just "too far behind")
+        InTime -> do
+            writeTVar cs.queue $ case q of
+                rest :|> ControlOutput p t old
+                    | p == pid, B.length old < outputChunk ->
+                        rest :|> ControlOutput p t (old <> bytes)
+                _ -> q |> ControlOutput pid now bytes
+            modifyTVar' cs.outputBytes (+ B.length bytes)
+
+-- | What tmux's age limits make of pane output that has waited some
+-- milliseconds to be sent.
+data AgeVerdict
+    = InTime
+    | PausePane     -- ^ past @pause-after@: pause the pane
+    | TooFarBehind  -- ^ past 'maximumAge' with no @pause-after@: the client exits
+
+ageVerdict :: ControlFlags -> Word64 -> AgeVerdict
+ageVerdict fl age = case fl.pauseAfter of
+    Just limit | age >= limit -> PausePane
+    Just _ -> InTime
+    Nothing | age >= maximumAge -> TooFarBehind
+            | otherwise -> InTime
+
+-- | How long output first queued at @t@ has waited at @now@.
+ageAt :: Word64 -> Word64 -> Word64
+ageAt now t = if now > t then now - t else 0
+
+-- | tmux's @CONTROL_MAXIMUM_AGE@: how far behind (ms) a client without
+-- @pause-after@ may fall before it is made to exit.
+maximumAge :: Word64
+maximumAge = 300000
+
+-- | Mark a pane paused and discard its queued output.
+pausePane :: ControlState -> PaneId -> STM ()
+pausePane cs pid = do
+    modifyTVar' cs.panes (Map.insert pid PanePaused)
+    (dropped, kept) <- Seq.partition ofPane <$> readTVar cs.queue
+    writeTVar cs.queue kept
+    modifyTVar' cs.outputBytes
+        (subtract (sum [ B.length b | ControlOutput _ _ b <- toList dropped ]))
+  where
+    ofPane = \case
+        ControlOutput p _ _ -> p == pid
+        ControlLine _ -> False
 
 -- | The most raw output bytes one @%output@ line carries.
 outputChunk :: Int

@@ -6,6 +6,7 @@ import Control.Concurrent.STM
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.Foldable (toList)
+import Data.Map.Strict qualified as Map
 import Test.Hspec
 
 import Hat.Geometry
@@ -102,6 +103,28 @@ spec = do
             [ (p, t, b) | ControlOutput p t b <- q ]
                 `shouldBe` [(PaneId 1, 5, "abcd")]
             readTVarIO cs.outputBytes `shouldReturn` 4
+        it "makes a client exit once a pane's queued output is too old for more" $ do
+            cs <- newControlState
+            atomically $ do
+                controlOutput cs (PaneId 1) 0 "old"
+                controlOutput cs (PaneId 1) 300000 "new"
+            ex <- readTVarIO cs.exiting
+            case ex of
+                Exiting (Just "too far behind") -> pure ()
+                _ -> expectationFailure "not exiting as too far behind"
+            readTVarIO cs.outputBytes `shouldReturn` 0
+        it "pauses, under pause-after, a pane whose queued output is too old" $ do
+            cs <- newControlState
+            atomically $ do
+                modifyTVar' cs.flags (\fl -> fl { pauseAfter = Just 1000 })
+                controlOutput cs (PaneId 1) 0 "old"
+                controlOutput cs (PaneId 2) 0 "other"
+                controlOutput cs (PaneId 1) 1000 "new"
+            Map.lookup (PaneId 1) <$> readTVarIO cs.panes `shouldReturn` Just PanePaused
+            q <- toList <$> readTVarIO cs.queue
+            [ (p, b) | ControlOutput p _ b <- q ] `shouldBe` [(PaneId 2, "other")]
+            lines' cs `shouldReturn` [show ("%pause %1" :: String)]
+            readTVarIO cs.outputBytes `shouldReturn` 5
         it "turns a detach into an exit with no reason" $ do
             cs <- newControlState
             atomically (controlSend cs DetachOk)
