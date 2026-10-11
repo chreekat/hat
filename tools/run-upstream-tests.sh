@@ -26,7 +26,8 @@ else
     tmux_src=${HAT_TMUX_SRC:?usage: run-upstream-tests.sh /path/to/tmux-source [-j N] [tests...] (or enter the dev shell for $HAT_TMUX_SRC)}
 fi
 
-jobs=$(nproc 2>/dev/null || echo 4)
+cores=$(nproc 2>/dev/null || echo 4)
+jobs=$cores
 if [ "${1:-}" = "-j" ]; then
     jobs=$2
     shift 2
@@ -115,7 +116,12 @@ export -f run_one
 [ -n "${HAT_UPSTREAM_LOGS:-}" ] && mkdir -p "$HAT_UPSTREAM_LOGS"
 export regress hat_bin results HAT_UPSTREAM_LOGS
 
+# Many scripts synchronise on fixed sleeps, so their outcome depends on how
+# loaded the box is; the summary reports it to make a failure interpretable.
+loadavg() { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo '?'; }
+load_start=$(loadavg)
 printf '%s\n' $tests | xargs -P"$jobs" -I{} bash -c 'run_one "$@"' _ {}
+load_end=$(loadavg)
 
 pass=0; fail=0; xfail=0; xpass=0
 failed_names=""; xpassed_names=""
@@ -148,6 +154,7 @@ done < "$results"
 
 sort -k2 -rn "$outcomes"
 
+echo "jobs=$jobs cores=$cores load(1m) start=$load_start end=$load_end"
 echo "pass=$pass xfail=$xfail fail=$fail xpass=$xpass"
 [ -n "$failed_names" ] && echo "FAILED:$failed_names"
 [ -n "$xpassed_names" ] && echo "XPASSED (remove from xfail!):$xpassed_names"
