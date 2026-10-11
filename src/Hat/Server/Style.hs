@@ -45,6 +45,7 @@ parseColor t
     | Just n <- indexed "color" = Cell.Indexed n
     | Just rgb <- hexColor t = rgb
     | Just n <- List.lookup t namedColors = Cell.Indexed n
+    | Just n <- List.lookup t themeColors = Cell.Indexed n
     | otherwise = Cell.DefaultColor
   where
     indexed pre = do
@@ -52,6 +53,15 @@ parseColor t
         case TR.decimal rest of
             Right (n, "") | n >= (0 :: Int) && n <= 255 -> Just (fromIntegral n)
             _ -> Nothing
+
+-- | tmux's theme colours (@themelightgrey@, ...), as the terminal colour
+-- each stands for when no theme overrides it.
+themeColors :: [(Text, Word8)]
+themeColors =
+    [ ("themeblack", 0), ("themewhite", 7), ("themelightgrey", 7)
+    , ("themedarkgrey", 0), ("themegreen", 2), ("themeyellow", 3)
+    , ("themered", 1), ("themeblue", 4), ("themecyan", 6)
+    , ("thememagenta", 5) ]
 
 namedColors :: [(Text, Word8)]
 namedColors = zip names [0 ..] <> zip (map ("bright" <>) names) [8 ..]
