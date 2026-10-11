@@ -861,14 +861,24 @@ cmdClearHistory st mclient args = do
             Emu.clearScrollback pane.emulator
             [] <$ atomically (bumpDirty st)
 
--- | @resize-pane@ (@cmd-resize-pane.c@): @-Z@ toggles zoom; otherwise the
--- window unzooms and the pane is resized ('resizeSteps').
+-- | @resize-pane@ (@cmd-resize-pane.c@): @-T@ trims history, @-Z@ toggles
+-- zoom; otherwise the window unzooms and the pane is resized ('resizeSteps').
 cmdResizePane :: CommandImpl
 cmdResizePane st mclient args
     | Just e <- unknownFlag "resize-pane" "DLMRTUZ" flags = pure [RErr e]
     -- Without a mouse event to follow, tmux's -M does nothing.
     | "-M" `elem` flags = pure []
-    | "-T" `elem` flags = pure [RErr "resize-pane -T is not implemented"]
+    -- -T trims the pane's history below the cursor, unless a mode is open.
+    | "-T" `elem` flags = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (_, _, _, pane) -> do
+                inMode <- isJust <$> readTVarIO pane.mode
+                unless inMode $ do
+                    Emu.trimHistoryBelowCursor pane.emulator
+                    atomically (bumpDirty st)
+                pure []
     | "-Z" `elem` flags = do
         r <- zoomTarget st mclient (lookup "-t" opts)
         pure (either (\e -> [RErr e]) (const []) r)
