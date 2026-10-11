@@ -68,15 +68,13 @@ acceptLoop d st lsock = forever $ do
             atomically $ writeTVar st.acceptGate AcceptParked
             atomically $ readTVar st.acceptGate >>= check . (== AcceptOpen)
         Right (conn, _) -> do
-            -- The autostarting client has now reached us; the idle-exit may
-            -- consider draining (see 'waitIdle'). Counting the handler as
-            -- in-flight here, before its fork, is what lets us drop the old
-            -- fixed-delay grace period without racing that client — and, since
-            -- the count falls again when the handler ends, lets a client that
-            -- connects and dies before creating a session drain (bug 28).
-            atomically $ do
-                writeTVar st.served True
-                modifyTVar' st.activeConns (+ 1)
+            -- Counting the handler as in-flight here, before its fork, is what
+            -- lets us drop the old fixed-delay grace period without racing the
+            -- autostarting client — and, since the count falls again when the
+            -- handler ends, lets a client that connects and dies before
+            -- creating a session drain (bug 28). Whether it counts as 'served'
+            -- waits on its hello (see 'handleConn').
+            atomically $ modifyTVar' st.activeConns (+ 1)
             void . forkIO $
                 handleConn d st conn
                     `catch` (\(e :: SomeException) ->
@@ -88,10 +86,20 @@ acceptLoop d st lsock = forever $ do
     awaitClosing = atomically $
         readTVar st.acceptGate >>= check . (== AcceptClosing)
 
+helloOrigin :: Hello -> Autostart
+helloOrigin h = if h.autostarted then Autostarted else Joined
+
 handleConn :: Dispatch -> ServerState -> N.Socket -> IO ()
 handleConn d st conn = do
     re <- newReadEnd conn
     m <- recvMessage re
+    atomically $ do
+        phase <- readTVar st.startupPhase
+        let origin = case m of
+                Just (Known (ClientHello h)) -> Just (helloOrigin h)
+                _ -> Nothing
+        when (idleArming phase origin == ArmsIdleExit) $
+            writeTVar st.served True
     case m of
         Just (Known (ClientHello h)) -> case negotiate h.protoVersion of
             Right _ -> welcome d st re h
@@ -208,7 +216,7 @@ newClient st conn h = do
         , role = case h.intent of
             AttachIntent {} -> Attached
             ControlIntent   -> Control
-        , autostart = if h.autostarted then Autostarted else Joined
+        , autostart = helloOrigin h
         , sock = conn
         , wireLevel = min protocolVersion h.protoVersion
         , sendLock = sendLock

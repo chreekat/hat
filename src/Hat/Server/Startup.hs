@@ -6,6 +6,8 @@ module Hat.Server.Startup
     , StartupGate (..)
     , startupGate
     , awaitStartup
+    , IdleArming (..)
+    , idleArming
     ) where
 
 import Control.Concurrent.STM
@@ -70,3 +72,15 @@ awaitStartup st origin cmds = atomically $ do
     case startupGate phase origin cmds of
         Proceed -> pure ()
         Hold -> retry
+
+-- | Whether a new connection arms the idle-exit (see 'Hat.Server.waitIdle').
+data IdleArming = ArmsIdleExit | LeavesIdleExit
+    deriving (Eq, Show)
+
+-- | A client the config spawned mid-load (a nested @hat run@ in an
+-- @if-shell@) can come and go before the autostarting client is accepted, so
+-- it must not arm the idle-exit. The hello, absent when the connection never
+-- sent a valid one, tells the two apart.
+idleArming :: StartupPhase -> Maybe Autostart -> IdleArming
+idleArming LoadingConfig (Just Joined) = LeavesIdleExit
+idleArming _ _ = ArmsIdleExit

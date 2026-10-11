@@ -29,6 +29,7 @@ import Hat.Server
      defaultRestoreCommands, finallyReady, parseReloadArgs, persistDecision,
      phaseAfterConfig, rebuildReload, reloadSchemePush, replayPane,
      restoreRun, runCommands, shellLine, snapshotHistoryLimit, startupGate,
+     IdleArming (..), idleArming,
      uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (Layout (..))
@@ -81,6 +82,16 @@ spec = do
     -- waits for startup to land; everyone else — in particular a nested
     -- `hat run` spawned BY an if-shell condition in the config — is served
     -- immediately, or config load deadlocks on its own child.
+    describe "idleArming" $ do
+        it "a config-spawned client mid-load leaves the idle-exit unarmed (if-shell-nested.sh)" $
+            idleArming LoadingConfig (Just Joined) `shouldBe` LeavesIdleExit
+        it "the autostarting client arms it, even mid-load" $
+            idleArming LoadingConfig (Just Autostarted) `shouldBe` ArmsIdleExit
+        it "any client arms it once startup has landed" $
+            idleArming Ready (Just Joined) `shouldBe` ArmsIdleExit
+        it "a connection with no valid hello arms it, so it can drain (bug 28)" $
+            idleArming LoadingConfig Nothing `shouldBe` ArmsIdleExit
+
     describe "startupGate" $ do
         let cmds = [["new-window"]]
         it "serves everyone once startup is Ready" $ do

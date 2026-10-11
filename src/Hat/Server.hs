@@ -29,6 +29,7 @@ module Hat.Server
     , listingLines  -- ^ exported for the show-options listing test
     , finallyReady  -- ^ exported for the startup-gate test
     , startupGate, StartupGate (..)  -- ^ exported for the startup-gate test
+    , idleArming, IdleArming (..)    -- ^ exported for the idle-arming test
     , phaseAfterConfig  -- ^ exported for the startup-gate test
     , welcome  -- ^ exported for the handshake test
     , dispatch  -- ^ exported for the handshake test

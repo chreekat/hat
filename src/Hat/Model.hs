@@ -122,7 +122,8 @@ data ServerState = ServerState
                                 --   'Hat.Server.serverIdle'
     , activeConns :: TVar Int   -- ^ connection handlers currently running; see
                                 --   'waitIdle'.
-    , served      :: TVar Bool  -- ^ a client connection has been accepted.
+    , served      :: TVar Bool  -- ^ a client connection other than a
+                                --   config-spawned one has been accepted.
                                 --   See 'waitIdle'.
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
     , acceptGate  :: TVar AcceptGate    -- ^ see 'Hat.Server.Conn.acceptLoop'.
