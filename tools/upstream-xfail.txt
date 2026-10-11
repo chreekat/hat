@@ -110,14 +110,13 @@ input-raw-scroll.sh             # capture-pane -pR raw dump (DECSTBM/IND/RI/IL/D
 input-raw-sgr.sh                # capture-pane -pR raw SGR/colour/underline/hyperlink cells
 input-raw-unicode.sh            # capture-pane -pR wide/PADDING/combining cells
 input-raw-wrap.sh               # capture-pane -pR WRAPPED flag + cursor_x/y
-input-reflow-stress.sh          # capture-pane -pR/-pM + history_size + copy-mode -H + respawn-*
+input-reflow-stress.sh          # capture-pane -pR; -pNJ loses lines after resizing to 1-3 columns; outer client's status redraw marker
 input-replies.sh                # remain-on-exit + respawn-window (blocks before DSR/DA/DECRQM checks)
 input-requests.sh               # respawn-window + get-clipboard + OSC-4/OSC-52 request round-trips
 input-scroll.sh                 # display-message cursor_x/y + respawn-pane + detached window height
 input-unicode.sh                # capture-pane -pR/-F wide-char cells + display-message cursor
 
-# buffers: subsystem is a stub
-buffers.sh                      # no -F/-f, buffer_* formats, set-buffer -n, buffer-limit, load-buffer
+buffers.sh                      # buffer-limit option unimplemented (all else passes)
 
 pane-ops.sh                     # needs new-window -E/-I, respawn-pane -E, resize-pane -T, split -Z/-e/-s
 
