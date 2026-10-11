@@ -3,6 +3,7 @@
 module Hat.Server.CaptureSpec (spec) where
 
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 import Data.Vector qualified as V
 import Test.Hspec
 
@@ -11,6 +12,9 @@ import Hat.Model (newServerState)
 import Hat.Server
     (CaptureOpts (..), CaptureRow (..), Reply (..), captureBounds, captureText
     , cmdCapturePane)
+import Hat.Server.Command.CaptureRaw (flagLetters, rawDump)
+import Hat.Term.RawGrid qualified as Raw
+import Hat.Term.RawGrid (RawGrid (..), RawLine (..), RawWidth (..), RawColor (..), Underline (..), blankRawCell, noAttrs)
 import Hat.Term.Cell (Cell (..), Content (..), Color (..), Style (..), Width (..), defaultStyle, glyphCell)
 
 -- | A width-1 cell with default style.
@@ -27,11 +31,11 @@ row sx s = V.fromList (map c s <> replicate (sx - length s) (c ' '))
 
 -- | An unwrapped screen row (number 0) from an ASCII string.
 r0 :: Int -> String -> CaptureRow
-r0 sx s = CaptureRow { number = 0, wrapped = False, cells = row sx s }
+r0 sx s = CaptureRow { number = 0, wrapped = False, flags = "-", cells = row sx s }
 
 -- | A cell row with explicit number and wrap flag.
 crow :: Int -> Bool -> [Cell] -> CaptureRow
-crow n w cells = CaptureRow { number = n, wrapped = w, cells = V.fromList cells }
+crow n w cells = CaptureRow { number = n, wrapped = w, flags = "-", cells = V.fromList cells }
 
 wide :: V.Vector Cell
 wide = V.fromList
@@ -42,7 +46,8 @@ wide = V.fromList
 opts0 :: CaptureOpts
 opts0 = CaptureOpts
     { captJoin = False, captNoTrim = False, captUsed = False
-    , captSeq = False, captOctal = False, captNumber = False }
+    , captSeq = False, captOctal = False, captNumber = False
+    , captFlags = False }
 
 red, green, boldSt, boldRed, boldItalic :: Style
 red = defaultStyle { fg = Indexed 1 }
@@ -90,8 +95,13 @@ spec = do
 
         it "prefixes screen-relative line numbers with -L" $
             captureText opts0 { captNumber = True }
-                [ CaptureRow (-1) False (row 3 "hh"), r0 3 "hi" ]
+                [ CaptureRow (-1) False "-" (row 3 "hh"), r0 3 "hi" ]
                 `shouldBe` "-1 hh\n0 hi\n"
+
+        it "prefixes each line's flag letters with -F" $
+            captureText opts0 { captFlags = True }
+                [ (crow 0 True (map c "ab")) { flags = "WX" }, r0 3 "c" ]
+                `shouldBe` "WX ab\n- c\n"
 
         it "-T stops at the last used cell (visible with -N)" $
             captureText opts0 { captNoTrim = True, captUsed = True }
@@ -197,4 +207,67 @@ spec = do
                     rs <- cmdCapturePane st Nothing ["-p", f]
                     rs `shouldBe`
                         [RErr ("capture-pane: " <> f <> " is not implemented")]
-            mapM_ rejects ["-F", "-H", "-P", "-R"]
+            rejects "-P"
+
+    describe "rawDump (tmux capture-pane -R)" $ do
+        let rc ch = blankRawCell { Raw.text = [ch] }
+            line w cs' = RawLine { wrapped = w, prompt = False, cells = cs' }
+            grid ls = RawGrid
+                { cols = 2, rows = length ls, hsize = 0, hlimit = 0, lines = ls }
+            cellTail = " fg=default[8] bg=default[8] us=default[8] link=NONE linkid=NONE"
+
+        it "prints the header, line records and cell records byte for byte" $
+            rawDump (grid [line True [rc 'A', blankRawCell]]) `shouldBe` T.concat
+                [ "G 2x1 (0/0)\n"
+                , "\tL 0 (0) flags=WRAPPED[1] 1/1\n"
+                , "\t\tC 0,0 data=(1,1,A) flags=NONE[0] attr=NONE[0]", cellTail, "\n"
+                , "\t\tC 0,1 data=(1,1, ) flags=NONE[0] attr=NONE[0]", cellTail, "\n" ]
+
+        it "numbers history lines '-' and screen lines from 0" $
+            T.lines (rawDump (grid [line False [], line False []])
+                        { hsize = 1, hlimit = 5 })
+                `shouldBe`
+                [ "G 2x2 (1/5)", "\tL 0 (-) flags=NONE[0] 0/0"
+                , "\tL 1 (0) flags=NONE[0] 0/0" ]
+
+        it "spells a wide glyph, its padding, and the line's EXTENDED flag" $
+            T.lines (rawDump (grid [line False
+                    [ (rc '\12354') { Raw.width = RawWide }
+                    , blankRawCell { Raw.width = SpacerTail } ]]))
+                `shouldContain`
+                [ "\tL 0 (0) flags=EXTENDED[2] 2/2"
+                , "\t\tC 0,0 data=(2,3,\12354) flags=NONE[0] attr=NONE[0]" <> cellTail
+                , "\t\tC 0,1 data=(1,1,!) flags=PADDING[4] attr=NONE[0]" <> cellTail ]
+
+        it "encodes colors and attributes as tmux's grid does" $ do
+            let cell = (rc 'X')
+                    { Raw.fg = RawPalette 196, Raw.bg = RawPalette 4, Raw.us = RawPalette 45
+                    , Raw.attrs = noAttrs
+                        { Raw.bold = True, Raw.underline = Curly, Raw.overline = True } }
+            T.lines (rawDump (grid [line False [cell]])) `shouldContain`
+                [ "\t\tC 0,0 data=(1,1,X) flags=FG256[1]"
+                  <> " attr=BRIGHT,UNDERSCORE_3,OVERLINE[2401]"
+                  <> " fg=colour196[10000c4] bg=blue[4] us=colour45[100002d]"
+                  <> " link=NONE linkid=NONE" ]
+
+        it "marks a blank left by a colored erase CLEARED" $
+            T.lines (rawDump (grid [line False
+                    [blankRawCell { Raw.bgOnly = True, Raw.bg = RawRgb 1 2 3 }]]))
+                `shouldContain`
+                [ "\t\tC 0,0 data=(1,1, ) flags=CLEARED[40] attr=NONE[0]"
+                  <> " fg=default[8] bg=#010203[2010203] us=default[8]"
+                  <> " link=NONE linkid=NONE" ]
+
+        it "reports a hyperlink on the cell and the line" $ do
+            let out = rawDump (grid [line False [(rc 'L') { Raw.link = Just "https://x" }]])
+            T.lines out `shouldContain` ["\tL 0 (0) flags=EXTENDED,HYPERLINK[102] 1/1"]
+            T.isInfixOf "link=https://x linkid=NONE" out `shouldBe` True
+
+    describe "flagLetters (capture-pane -F)" $ do
+        let line w p cs' = RawLine { wrapped = w, prompt = p, cells = cs' }
+        it "is - for a plain line" $
+            flagLetters (line False False [blankRawCell]) `shouldBe` "-"
+        it "orders the letters as tmux does" $
+            flagLetters (line True True
+                [blankRawCell { Raw.text = "\12354", Raw.width = RawWide, Raw.link = Just "u" }])
+                `shouldBe` "HPWX"
