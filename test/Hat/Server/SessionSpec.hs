@@ -65,7 +65,9 @@ import Hat.Transport.Wire
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv (paneModeEnv, sessionFormatEnv)
-import Hat.Server.Resize (AreaClaim (..), paneSizeTargets, pickArea)
+import Hat.Server.ControlTypes (ControlState (..), newControlState)
+import Hat.Server.Resize
+    (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
 import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 
 -- A bare session with the given id inserted into an existing server.
@@ -1156,6 +1158,20 @@ spec = do
                 writeTVar other.lastSize Size { rows = 23, cols = 80 }
             targets <- atomically (paneSizeTargets st)
             map snd targets `shouldBe` [Size { rows = 24, cols = 80 }]
+
+        it "sizes a window to a control client's size for it, and only that window" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            w1 <- addWindow sess 1
+            plain <- addClient st sess.id (Size 24 80) 1
+            cs <- newControlState
+            atomically $ do
+                writeTVar cs.size (Just (Size 24 80))
+                writeTVar cs.windowSizes (Just (Map.singleton w0.id (Size 10 40)))
+                modifyTVar' st.clients (Map.insert plain.id plain { control = Just cs })
+            applySessionSize st sess.id
+            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
+                `shouldReturn` (Size 10 40, Size 24 80)
 
         it "takes the area of the session whose client last viewed the window" $
             pickArea
