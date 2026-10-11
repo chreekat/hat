@@ -77,6 +77,7 @@ import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
 import Network.Socket (Socket)
@@ -88,7 +89,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 7
+protocolVersion = 8
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -154,6 +155,9 @@ data ClientToServer
     | Resize Size
     | Command [[Text]]      -- ^ pre-tokenised commands, one inner list per @;@-separated command
     | Detach
+    | StdinData ByteString  -- ^ a chunk of the client's standard input,
+                            --   answering 'ReadStdin'
+    | StdinEnd              -- ^ the client's standard input is exhausted
     deriving (Eq, Show, Generic)
 
 data ServerToClient
@@ -174,6 +178,10 @@ data ServerToClient
         -- ^ 'RestartClient' naming the session to reattach to and the MRU
         --   session history to carry back (most-recent first; @[]@ from a
         --   pre-level-7 server)
+    | ReadStdin             -- ^ send your standard input as 'StdinData'
+                            --   chunks and a 'StdinEnd' (level 8 and up)
+    | WriteStdout ByteString  -- ^ bytes for the client's standard output,
+                              --   verbatim
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -211,6 +219,8 @@ class WireMessage a where
 --   Resize      = 2
 --   Command     = 3
 --   Detach      = 4
+--   StdinData   = 5
+--   StdinEnd    = 6
 instance WireMessage ClientToServer where
     encodeWire = \case
         ClientHello h -> encodeListLen 2 <> encodeWord 0 <> encodeHello h
@@ -218,12 +228,16 @@ instance WireMessage ClientToServer where
         Resize sz     -> encodeListLen 2 <> encodeWord 2 <> encode sz
         Command cmds  -> encodeListLen 2 <> encodeWord 3 <> encode cmds
         Detach        -> encodeListLen 1 <> encodeWord 4
+        StdinData bs  -> encodeListLen 2 <> encodeWord 5 <> encode bs
+        StdinEnd      -> encodeListLen 1 <> encodeWord 6
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . ClientHello <$> decodeHello)
         1 -> field len (Known . Input <$> decode)
         2 -> field len (Known . Resize <$> decode)
         3 -> field len (Known . Command <$> decode)
         4 -> nullary len (Known Detach)
+        5 -> field len (Known . StdinData <$> decode)
+        6 -> nullary len (Known StdinEnd)
         _ -> pure (UnknownTag tag)
 
 -- ServerToClient tag registry (append-only; never renumber or reuse):
@@ -240,6 +254,8 @@ instance WireMessage ClientToServer where
 --   ServerVersion = 10
 --   RestartClient = 11
 --   RestartClientTo = 12
+--   ReadStdin     = 13
+--   WriteStdout   = 14
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -256,6 +272,8 @@ instance WireMessage ServerToClient where
         RestartClient -> encodeListLen 1 <> encodeWord 11
         RestartClientTo t hist ->
             encodeListLen 3 <> encodeWord 12 <> encode t <> encode hist
+        ReadStdin     -> encodeListLen 1 <> encodeWord 13
+        WriteStdout bs -> encodeListLen 2 <> encodeWord 14 <> encode bs
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -275,6 +293,8 @@ instance WireMessage ServerToClient where
             3 -> Known <$> (RestartClientTo <$> decode <*> decode)
             _ -> pure (Malformed
                 ("RestartClientTo: expected 1-2 fields, got " <> show (len - 1)))
+        13 -> nullary len (Known ReadStdin)
+        14 -> field len (Known . WriteStdout <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -339,6 +359,8 @@ encodeServerMessageAt lvl = \case
     RestartClientTo t _ | lvl < 7 ->
         -- A level-6 peer knows the name-only form; drop the history.
         toStrictByteString $ encodeListLen 2 <> encodeWord 12 <> encode t
+    -- A pre-8 peer only prints text lines.
+    WriteStdout bs | lvl < 8 -> encodeMessage (Message (TE.decodeUtf8Lenient bs))
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

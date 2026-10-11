@@ -36,6 +36,7 @@ module Hat.Term.Emulator
     , cursorState
     , currentPen
     , modes
+    , bracketedPaste
     , modeReplayBytes
     , restoreBytes
     , restorePainted
@@ -485,6 +486,11 @@ modes e = withMVar e.lock $ \_ -> do
             , focusReport = foc /= 0
             , colorReport = cr
             }
+
+-- | Whether the app enabled bracketed paste (?2004).
+bracketedPaste :: Emulator -> IO Bool
+bracketedPaste e = withMVar e.lock $ \_ ->
+    withForeignPtr e.term $ \t -> (/= 0) <$> c_mode t 2004 0
 
 -- | Encode a cursor key per the terminal's DECCKM state: application cursor
 -- keys get @ESC O _@, normal mode @ESC [ _@.

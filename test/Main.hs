@@ -18,6 +18,7 @@ import Hat.InternSpec qualified
 import Hat.IntegrationSpec qualified
 import Hat.LogSpec qualified
 import Hat.PathSpec qualified
+import Hat.Model.PasteBuffersSpec qualified
 import Hat.Server.PersistSpec qualified
 import Hat.Server.FlashSpec qualified
 import Hat.Term.PtySpec qualified
@@ -68,6 +69,7 @@ main = hspec $ parallel $ do
     -- suite's heaviest.
     describe "integration" Hat.IntegrationSpec.spec
     describe "Hat.Path" Hat.PathSpec.spec
+    describe "Hat.Model.PasteBuffers" Hat.Model.PasteBuffersSpec.spec
     describe "Hat.Debug" Hat.DebugSpec.spec
     describe "Hat.Bench.Linear" Hat.Bench.LinearSpec.spec
     describe "Hat.Bench.PerfStat" Hat.Bench.PerfStatSpec.spec

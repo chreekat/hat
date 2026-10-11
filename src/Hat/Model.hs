@@ -14,6 +14,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
+    , StdinSource (..)
     , RowOrigin (..)
     , ChromeCache (..)
     , StatusCache (..)
@@ -73,14 +74,13 @@ import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket_, try)
 import Control.Monad (forM)
+import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
 import Data.Maybe (fromMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Sequence (Seq)
-import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -94,6 +94,7 @@ import System.Posix.Files qualified as PFiles
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
+import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( BorderIndicators, BorderLines, Keymap, Options, OptionsDelta, applyDelta
@@ -116,7 +117,6 @@ data ServerState = ServerState
     , nextWindow  :: TVar Int
     , nextPane    :: TVar Int
     , nextClient  :: TVar Int
-    , nextBuffer  :: TVar Int    -- ^ counter for auto-named paste buffers
     , dirty       :: TVar Int    -- ^ render generation; renderers wait on it
     , reconciled  :: TVar Int    -- ^ dirty generation reconcileLoop has resized
                                 --   panes through; see 'awaitReconciled'
@@ -154,8 +154,7 @@ data ServerState = ServerState
         -- ^ server-wide variables (@set-environment -g@, config @NAME=value@
         --   lines); see 'Hat.Server.sessionSpawnEnv' for how they reach panes.
     , keymap      :: TVar Keymap
-    , buffers     :: TVar (Seq (Text, Text))
-        -- ^ paste-buffer stack; front = most recently added (@buffer0 = head@).
+    , buffers     :: TVar PasteStore
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
     , markedPane  :: TVar (Maybe PaneId)  -- ^ the marked pane (@select-pane -m@)
@@ -567,13 +566,17 @@ data Client = Client
     , envImport :: TVar EnvImport  -- ^ set by @attach-session -E@
     , env       :: [(Text, Text)]
     , cwd       :: Text
+    , stdinSource :: StdinSource
     }
+
+-- | Where a command's @-@ path reads from: the issuing command client's
+-- standard input while its command batch runs, else nowhere.
+data StdinSource = NoStdin | StdinFrom (IO (Either Text ByteString))
 
 newServerState :: Keymap -> Logger -> FilePath -> Maybe FilePath -> IO ServerState
 newServerState defaultKeymap lg path storePath = ServerState
     <$> newTVarIO Map.empty
     <*> newTVarIO Map.empty
-    <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
     <*> newTVarIO 0
@@ -600,7 +603,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Nothing     -- resolvedGlobal
     <*> newTVarIO emptyEnviron
     <*> newTVarIO defaultKeymap
-    <*> newTVarIO Seq.empty
+    <*> newTVarIO emptyPasteStore
     <*> newTVarIO Map.empty
     <*> newTVarIO []
     <*> newTVarIO Nothing  -- markedPane

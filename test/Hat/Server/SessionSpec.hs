@@ -156,6 +156,7 @@ addClient st sid sz stamp = do
         <*> newTVarIO ImportEnv
         <*> pure []
         <*> pure ""
+        <*> pure NoStdin
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -195,6 +196,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO ImportEnv
         <*> pure clientEnv
         <*> pure ""
+        <*> pure NoStdin
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 

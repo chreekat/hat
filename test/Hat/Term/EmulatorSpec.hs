@@ -310,6 +310,12 @@ spec = do
         m2 <- modes e
         m2.focusReport `shouldBe` False
 
+    it "tracks bracketed paste (?2004)" $ do
+        e <- new80x24
+        bracketedPaste e `shouldReturn` False
+        _ <- feedStr e "\ESC[?2004h"
+        bracketedPaste e `shouldReturn` True
+
     it "tracks color-scheme reporting (?2031)" $ do
         e <- new80x24
         m0 <- modes e

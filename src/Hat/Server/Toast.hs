@@ -13,6 +13,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (forM_, void, when)
 import Data.Text (Text)
+import Data.Text.Encoding qualified as TE
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 
@@ -72,3 +73,4 @@ toastReplies :: ServerState -> Client -> [Reply] -> IO ()
 toastReplies st client replies = forM_ replies $ \case
     ROutput out -> showToast st client out
     RErr e -> showToast st client ("error: " <> e)
+    RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)

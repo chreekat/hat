@@ -194,8 +194,13 @@ hookArgSpec = \case
     "link-window" -> "st"
     "resize-window" -> "txy"
     "send-keys" -> "tN"
-    "set-buffer" -> "bn"
-    "save-buffer" -> "bt"
+    "set-buffer" -> "btn"
+    "delete-buffer" -> "b"
+    "show-buffer" -> "b"
+    "save-buffer" -> "b"
+    "load-buffer" -> "bt"
+    "paste-buffer" -> "bst"
+    "list-buffers" -> "FfO"
     "list-clients" -> "tF"
     "list-sessions" -> "F"
     "list-windows" -> "Ft"
@@ -314,6 +319,7 @@ commandSpecs =
     , (["set-buffer", "setb"], cmdSetBuffer)
     , (["list-buffers", "lsb"], cmdListBuffers)
     , (["delete-buffer", "deleteb"], cmdDeleteBuffer)
+    , (["load-buffer", "loadb"], cmdLoadBuffer)
     , (["save-buffer", "saveb"], cmdSaveBuffer)
     , (["paste-buffer", "pasteb"], cmdPasteBuffer)
     , (["pipe-pane", "pipep"], cmdPipePane)

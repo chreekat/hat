@@ -61,7 +61,8 @@ import Data.Functor.Identity (Identity)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Data.Sequence qualified as Seq
+import Data.Text.Encoding qualified as TE
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
@@ -80,6 +81,7 @@ import Data.Vector qualified as V
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
+import Hat.Model.PasteBuffers (defaultBufferLimit, pasteAdd)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -1090,11 +1092,11 @@ yankSelection st pane s = do
     mtext <- extractSelection g opts.modeKeys s
     forM_ mtext (pushBuffer st)
 
--- | Push a fresh, auto-named buffer onto the front of the buffer store.
+-- | Push a fresh, auto-named buffer onto the buffer store.
 pushBuffer :: ServerState -> Text -> IO ()
-pushBuffer st body = atomically $ do
-    n <- readTVar st.nextBuffer
-    writeTVar st.nextBuffer (n + 1)
-    let name = "buffer" <> T.pack (show n)
-    modifyTVar' st.buffers ((name, body) Seq.<|)
-    bumpDirty st
+pushBuffer st body = do
+    now <- floor <$> getPOSIXTime
+    atomically $ do
+        modifyTVar' st.buffers
+            (pasteAdd defaultBufferLimit "buffer" now (TE.encodeUtf8 body))
+        bumpDirty st

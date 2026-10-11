@@ -9,6 +9,7 @@ module Hat.Server.Command.Types
     , strtonum
     ) where
 
+import Data.ByteString (ByteString)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -16,8 +17,9 @@ import Data.Text.Read qualified as TR
 
 import Hat.Model (Client, ServerState)
 
--- | A single line of command output: normal text or an error.
-data Reply = ROutput Text | RErr Text
+-- | A single line of command output: normal text or an error; or raw
+-- bytes for the issuing command client's standard output.
+data Reply = ROutput Text | RErr Text | RData ByteString
     deriving (Eq, Show)
 
 -- | A command handler: the server, the issuing client (if any), and the
