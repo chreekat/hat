@@ -128,6 +128,16 @@ spec = do
                     geometry st "S:0" `shouldReturn` ["0,0 59x17", "0,18 59x6", "60,0 20x24"]
                     run st ["split-window", "-d", "-v", "-l", "x", "-t", p0]
                         `shouldReturn` [RErr "invalid tiled geometry invalid"]
+            it "-k keeps the pane once its program exits, -W waits for that" $
+                withServer $ \st -> do
+                    run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                    [out] <- run st ["split-window", "-d", "-k", "-W", "-P", "-F",
+                        "#{pane_id}", "-t", "S:0", "true"]
+                    pid <- case out of
+                        ROutput t -> pure t
+                        other -> fail (show other)
+                    run st ["display-message", "-p", "-t", pid, "#{pane_dead}"]
+                        `shouldReturn` [ROutput "1"]
             it "-E makes an empty pane, running nothing, and refuses a command" $
                 withServer $ \st -> do
                     run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []

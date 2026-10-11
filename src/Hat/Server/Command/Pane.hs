@@ -25,6 +25,7 @@ module Hat.Server.Command.Pane
 
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
+import Control.Exception (bracket_)
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -39,6 +40,7 @@ import Numeric (showOct)
 import Hat.Geometry
 import Hat.Model
 import Hat.Server.Command.Buffer (storeBuffer)
+import Hat.Server.Command.Option (SetDefault (..), cmdSet)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
 import Hat.Server.ArgNumber (stringPercentage)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
@@ -339,9 +341,6 @@ captureLinks pane copts altFlag copyFlag sflag eflag
 cmdSplitWindow :: CommandImpl
 cmdSplitWindow st mclient args
     | Just e <- unknownFlag "split-window" "bdEfhIkPvWZ" flags = pure [RErr e]
-    | f : _ <- [ f | f <- ["-B", "-S", "-R", "-s", "-m"], Just _ <- [lookup f opts] ]
-        <> [ f | f <- ["-k", "-W"], f `elem` flags ] =
-        pure [RErr ("split-window " <> f <> " is not implemented")]
     | Left e <- launch = pure [RErr e]
     | otherwise = do
         res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
@@ -360,6 +359,26 @@ cmdSplitWindow st mclient args
                         splitInto sess wix win target spec eff
   where
     (opts, flags, pos) = parseArgs "BceFlmpRsStT" args
+    -- The pane options the flags set (tmux's order); the first a
+    -- @set-option -p@ refuses is the command's error.
+    setPaneOptions pane = firstError
+        [ cmdSet DefaultWindow st mclient ["-p", "-t", paneTok pane, name, value]
+        | (name, value) <- paneOptionValues ]
+    paneTok pane = "%" <> tshow (rawPane pane.id)
+    paneOptionValues =
+        concat [ [("window-style", v), ("window-active-style", v)] | Just v <- [lookup "-s" opts] ]
+        <> [ ("pane-active-border-style", v) | Just v <- [lookup "-S" opts] ]
+        <> [ ("pane-border-style", v) | Just v <- [lookup "-R" opts] ]
+        <> [ ("pane-border-lines", v) | Just v <- [lookup "-B" opts] ]
+        <> [ ("remain-on-exit", "key") | "-k" `elem` flags || isJust (lookup "-m" opts) ]
+        <> [ ("remain-on-exit-format", v) | Just v <- [lookup "-m" opts] ]
+    firstError = \case
+        [] -> pure Nothing
+        act : rest -> do
+            replies <- act
+            case [ e | RErr e <- replies ] of
+                e : _ -> pure (Just e)
+                [] -> firstError rest
     -- The command client's standard input, written to the pane as if its
     -- program had printed it (tmux's @window_pane_start_input@); an
     -- attached client has none to give.
@@ -415,9 +434,11 @@ cmdSplitWindow st mclient args
                             writeTVar win.zoomed
                                 (if "-Z" `elem` flags then Just active' else Nothing)
                             True <$ bumpDirty st
-                if not placed
-                    then [RErr "no space for a new pane"] <$ hangupPane pane
-                    else do
+                optErr <- if placed then setPaneOptions pane else pure Nothing
+                if | not placed -> [RErr "no space for a new pane"] <$ hangupPane pane
+                   | Just e <- optErr ->
+                        [RErr e] <$ killPaneLocs st [(sess.id, win, pane)]
+                   | otherwise -> do
                         forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
                         startPaneReader st sess.id win pane
                         when ("-I" `elem` flags) $ feedStdin pane
@@ -431,7 +452,7 @@ cmdSplitWindow st mclient args
                             [ ("pane_command", PText spawned)
                             , ("created_empty", PInt (if kind == EmptyPane then 1 else 0))
                             , ("created_respawn", PInt 0) ]
-                        if "-P" `elem` flags
+                        printed <- if "-P" `elem` flags
                             then do
                                 let fmt = fromMaybe
                                         "#{session_name}:#{window_index}.#{pane_index}"
@@ -441,6 +462,20 @@ cmdSplitWindow st mclient args
                                 out <- expandFormat st env fmt
                                 pure [ROutput out]
                             else pure []
+                        when ("-W" `elem` flags) (awaitPaneEnd st pane)
+                        pure printed
+
+-- | Block until a pane's program ends (it dies, or the pane goes), as
+-- @split-window -W@ waits; outside the command batch, so reconciliation
+-- runs meanwhile.
+awaitPaneEnd :: ServerState -> Pane -> IO ()
+awaitPaneEnd st pane = bracket_
+    (atomically (modifyTVar' st.commandDepth (subtract 1)))
+    (atomically (modifyTVar' st.commandDepth (+ 1)))
+    (atomically $ do
+        gone <- readTVar pane.dead
+        exited <- readTVar pane.exited
+        check (gone || isJust exited))
 
 -- | The @-e VAR=value@ pairs of a spawning command, in order.
 envPairs :: [(Text, Text)] -> [(Text, Text)]
