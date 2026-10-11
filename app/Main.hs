@@ -243,6 +243,9 @@ control path mconfig cmds = do
                 Rejected e -> do
                     hPutStrLn stderr (T.unpack e)
                     exitFailure
+                ServerDied -> do
+                    hPutStrLn stderr "hat: server exited unexpectedly"
+                    exitFailure
                 _ -> pure ()
 
 -- | Connect, spawning the server first if none is running. The origin says
@@ -259,7 +262,7 @@ connectOrStart path mconfig = do
             -- 10s of headroom: the fresh server forks, sets up its socket
             -- dir/lock, and loads config before it starts listening, which
             -- can take a while under heavy load.
-            (, Autostarted) <$> waitForServer path mconfig server 100
+            (, Autostarted) <$> waitForServer path mconfig server 1_000
 
 -- Spawn the detached server via 'createProcess' rather than a manual
 -- 'forkProcess'/'executeFile': createProcess does the fork+exec entirely
@@ -299,5 +302,5 @@ waitForServer path mconfig server attempts
                 server' <- getProcessExitCode server >>= \case
                     Just _ -> startServer path mconfig
                     Nothing -> pure server
-                threadDelay 100_000
+                threadDelay 10_000
                 waitForServer path mconfig server' (attempts - 1)

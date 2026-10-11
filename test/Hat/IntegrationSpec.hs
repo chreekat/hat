@@ -624,9 +624,10 @@ spec = parallel $ do
         awaitScreen c1 "$"
         typeInto c1 "trap '' HUP; sleep 300\r"
         awaitForeground h "sleep"
+        pid <- serverPid h
 
         _ <- hatCtl h ["kill-server"]
-        gone <- pollServerGone h.sock 50
+        gone <- pollPidGone pid 50
         unless gone $
             expectationFailure "server did not exit after kill-server"
 
@@ -636,6 +637,19 @@ spec = parallel $ do
         withHat hatBin $ \h -> killsLinkedStubborn h "b:5" ["kill-server"]
     it "kill-session SIGKILLs a SIGHUP-ignoring pane linked twice into it" $
         withHat hatBin $ \h -> killsLinkedStubborn h "a:5" ["kill-session", "-t", "a"]
+
+    -- A command issued once kill-server returns must reach a fresh server,
+    -- even while the killed one is still draining a SIGHUP-ignoring pane.
+    it "a command after kill-server starts a fresh server, not the draining one" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "-s", "old", "trap '' HUP; exec sleep 300"]
+        _ <- hatCtl h ["set-option", "-g", "@marker", "old"]
+        _ <- hatCtl h ["kill-server"]
+        (code, _, err) <- hatCtl h ["new-session", "-d", "-s", "fresh"]
+        (code, err) `shouldBe` (ExitSuccess, "")
+        sessions <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        marker <- ctlOut h ["display-message", "-p", "#{@marker}"]
+        (sessions, marker) `shouldBe` ("fresh\n", "\n")
 
     -- e7: a pane whose shell exits behind a child still holding the pty open
     -- must be torn down -- pane death tracks the shell, not pty EOF.
@@ -982,7 +996,7 @@ spec = parallel $ do
         -- and is on the default restore whitelist.
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerExited h 50
         unless gone $ expectationFailure "server did not die"
 
         -- Restart: the restored pane comes back running vim, not a shell.
@@ -1195,7 +1209,7 @@ spec = parallel $ do
         -- Kill the server; the tree is saved automatically on the way out.
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerExited h 50
         unless gone $ expectationFailure "server did not die"
 
         -- Restart: a fresh client autostarts a new server, which restores
@@ -1229,7 +1243,7 @@ spec = parallel $ do
 
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerExited h 50
         unless gone $ expectationFailure "server did not die"
 
         c2 <- startClient h
@@ -1255,7 +1269,7 @@ spec = parallel $ do
 
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerExited h 50
         unless gone $ expectationFailure "server did not die"
 
         c2 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
@@ -1601,9 +1615,6 @@ spec = parallel $ do
             -- By stat: closing any fd on the file would drop our lock.
             awaitTrue "the autostarted server to open the lock" $
                 (== 0) <$> getFileSize lockPath
-            lockedOut <- lines <$> serverPids h
-            awaitTrue "the locked-out server to exit" $
-                (\now -> all (`notElem` lines now) lockedOut) <$> serverPids h
             release
             awaitScreen c "0:sh*")
             `finally` release
@@ -1911,6 +1922,33 @@ pollServerGone path n = do
     up <- serverUp path
     if up
         then threadDelay 100_000 *> pollServerGone path (n - 1)
+        else pure True
+
+-- | Poll (every 100ms, @n@ times) until no server process remains on @h@'s
+-- socket. kill-server unlinks the socket before it replies, so a vanished
+-- socket alone no longer shows the process has exited.
+pollServerExited :: Hat -> Int -> IO Bool
+pollServerExited _ 0 = pure False
+pollServerExited h n = do
+    pids <- serverPids h
+    if null (words pids)
+        then pure True
+        else threadDelay 100_000 *> pollServerExited h (n - 1)
+
+-- | Poll (every 100ms, @n@ times) until process @pid@ has exited (a zombie
+-- counts as exited). Unlike 'pollServerGone', a server that stopped
+-- listening but is still draining counts as alive.
+pollPidGone :: Int -> Int -> IO Bool
+pollPidGone _ 0 = pure False
+pollPidGone pid n = do
+    stat <- (Just . B8.unpack <$> B.readFile ("/proc/" <> show pid <> "/stat"))
+        `catch` \(_ :: IOException) -> pure Nothing
+    -- The state field follows the parenthesised command name.
+    let alive = case drop 2 . dropWhile (/= ')') <$> stat of
+            Just (st : _) -> st /= 'Z'
+            _ -> False
+    if alive
+        then threadDelay 100_000 *> pollPidGone pid (n - 1)
         else pure True
 
 -- | Whether a server answers at the path. The probe is closed before

@@ -9,6 +9,8 @@ module Hat.Model
     , Session (..)
     , Window (..)
     , Pane (..)
+    , OutputSync (..)
+    , noOutputSync
     , PaneStart (..)
     , PaneKind (..)
     , PaneExit (..)
@@ -269,7 +271,19 @@ data Pane = Pane
     , kind     :: PaneKind
     , inputOff :: TVar Bool
         -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
+    , outputSync :: TVar OutputSync
+        -- ^ requests that the reader catch up on pending output; see
+        -- 'Hat.Server.Pane.syncPanes'.
     }
+
+-- | Generations of a pane's output-sync requests.
+data OutputSync = OutputSync
+    { requested :: !Word64  -- ^ the latest request posted
+    , answered  :: !Word64  -- ^ the latest request the reader has served
+    }
+
+noOutputSync :: OutputSync
+noOutputSync = OutputSync { requested = 0, answered = 0 }
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart
@@ -513,7 +527,11 @@ data StartupPhase = LoadingConfig | Restoring | Ready
 -- | Whether the accept loop takes new connections. A reload closes the gate
 -- ('AcceptClosing'), the loop confirms ('AcceptParked'), and arrivals wait in
 -- the listen backlog; 'AcceptOpen' resumes. See 'Hat.Server.Conn.acceptLoop'.
-data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
+data AcceptGate
+    = AcceptOpen
+    | AcceptClosing
+    | AcceptParked
+    | AcceptRetiring  -- ^ the server no longer owns the socket path
     deriving (Eq, Show)
 
 -- | Whether pane readers may pump pty bytes into their emulators;

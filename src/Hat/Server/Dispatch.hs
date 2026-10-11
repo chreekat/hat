@@ -725,9 +725,12 @@ cmdIfShell st mclient args = do
 
 cmdKillServer :: CommandImpl
 cmdKillServer st mclient _ = do
-    -- Flag first: pane readers race us into closePane once the ptys go,
-    -- and the shutdown path must know this drain is a kill, not the last
-    -- window closing (which drops the store instead).
+    -- See Note [Retiring the socket].
+    removeFile st.sockPath `catch` \(_ :: IOException) -> pure ()
+    atomically $ writeTVar st.acceptGate AcceptRetiring
+    -- Flag before the hangups: pane readers race us into closePane once the
+    -- ptys go, and the shutdown path must know this drain is a kill, not the
+    -- last window closing (which drops the store instead).
     atomically $ writeTVar st.preserveStore True
     saveNow st  -- capture the tree before we tear it down
     sessions <- readTVarIO st.sessions

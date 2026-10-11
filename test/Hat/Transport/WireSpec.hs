@@ -388,6 +388,14 @@ spec = do
                 , frameOf (B.pack [0x81, 0x08])  -- ServerError tag, no field
                 ]
             reason `shouldSatisfy` isRejected
+        it "reports a connection reset before the greeting as ServerDied" $ do
+            (clientSock, serverSock) <- socketPair AF_UNIX Stream 0
+            (reason, _) <- concurrently
+                (runControl clientSock Joined [["list-sessions"]]
+                    <* close clientSock)
+                -- Closing with the hello still unread resets the connection.
+                (SBL.recv serverSock 1 >> close serverSock)
+            reason `shouldBe` ServerDied
 
 isMalformed :: Inbound a -> Bool
 isMalformed (Malformed _) = True

@@ -29,6 +29,8 @@ module Hat.Server.Pane
     , startPaneReader
     , pauseReaders
     , resumeReaders
+    , syncPanes
+    , syncAllPanes
     , propKindLabel
     , notifyColorScheme
     , oscColorReply
@@ -83,12 +85,13 @@ import Control.Exception (Exception, IOException, catch, finally, mask_)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set qualified as Set
 import Data.Vector qualified as V
+import Data.Word (Word64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -333,6 +336,7 @@ newPane pid pty emu sz dir pending start kind = do
     optionsVar <- newTVarIO emptyDelta
     exitedVar <- newTVarIO Nothing
     inputOffVar <- newTVarIO False
+    syncVar <- newTVarIO noOutputSync
     -- A new pane is titled with the host's name until its program sets one.
     host <- Posix.nodeName <$> Posix.getSystemID
     _ <- Emu.feed emu ("\ESC]2;" <> TE.encodeUtf8 (T.pack host) <> "\ESC\\")
@@ -353,6 +357,7 @@ newPane pid pty emu sz dir pending start kind = do
         , exited = exitedVar
         , kind = kind
         , inputOff = inputOffVar
+        , outputSync = syncVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -441,12 +446,13 @@ runPaneReader st pane = do
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
             \_ -> readLoop unmask
                     (atomically (awaitControlRoom st pane)
-                        >> Hat.Term.Pty.awaitOutput pane.pty)
-                    (Hat.Term.Pty.readPtyBuf pane.pty rbuf) pendingRef
+                        >> Hat.Term.Pty.awaitOutputOr pane.pty syncRequested)
+                    (Hat.Term.Pty.readPtyBuf pane.pty rbuf)
+                    (Hat.Term.Pty.readAvailBuf pane.pty rbuf) pendingRef
                 `catch` \ChildExited -> do
                     writeIORef pendingRef Nothing
-                    readLoop unmask (pure ())
-                        (Hat.Term.Pty.readAvailBuf pane.pty rbuf) pendingRef)
+                    let drainRd = Hat.Term.Pty.readAvailBuf pane.pty rbuf
+                    readLoop unmask (pure Nothing) drainRd drainRd pendingRef)
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
@@ -463,14 +469,41 @@ runPaneReader st pane = do
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
     -- it), then dropped. Enter is a bare CR, as a real keyboard sends.
-    -- @await@ waits for output without consuming it, and @rd@ is the read
-    -- step: blocking during the pane's life, a non-blocking drain once the
-    -- shell has exited (an empty result ends the loop either way).
-    readLoop unmask await rd pending = do
-        unmask await
-        (bs, events) <- feedChunk rd
+    -- @await@ waits for output without consuming it, or for a sync request
+    -- ('syncPanes'); @rd@ is the read step: blocking during the pane's life,
+    -- a non-blocking drain once the shell has exited (an empty result ends
+    -- the loop either way). @drainRd@ never blocks: it serves a sync.
+    readLoop
+        :: (forall a. IO a -> IO a) -> IO (Maybe Word64) -> IO B.ByteString
+        -> IO B.ByteString -> IORef (Maybe Text) -> IO ()
+    readLoop unmask await rd drainRd pending = do
+        woke <- unmask await
+        case woke of
+            Nothing -> do
+                (bs, events) <- feedChunk rd
+                unless (B8.null bs) $ do
+                    unmask (consume pending bs events)
+                    readLoop unmask await rd drainRd pending
+            Just req -> do
+                drain unmask drainRd pending syncDrainChunks
+                atomically $ modifyTVar' pane.outputSync $ \o ->
+                    o { answered = max o.answered req }
+                readLoop unmask await rd drainRd pending
+    syncRequested = do
+        o <- readTVar pane.outputSync
+        check (o.requested > o.answered)
+        pure o.requested
+    -- Everything the pty holds now, bounded so a pane that never stops
+    -- writing cannot hold a sync forever.
+    drain
+        :: (forall a. IO a -> IO a) -> IO B.ByteString -> IORef (Maybe Text)
+        -> Int -> IO ()
+    drain unmask drainRd pending n = when (n > 0) $ do
+        (bs, events) <- feedChunk drainRd
         unless (B8.null bs) $ do
-          unmask $ do
+            unmask (consume pending bs events)
+            drain unmask drainRd pending (n - 1)
+    consume pending bs events = do
             readIORef pending >>= mapM_ (\line -> do
                 Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
                 writeIORef pending Nothing)
@@ -538,7 +571,48 @@ runPaneReader st pane = do
                         { pane = rawPane pane.id
                         , payload = T.pack (show raw)
                         }
-          readLoop unmask await rd pending
+
+-- | Read chunks a reader drains to serve one sync; see 'readLoop'.
+syncDrainChunks :: Int
+syncDrainChunks = 16
+
+-- | Wait until every pane's reader has fed its emulator all the output the
+-- pane had written by the time of the call, so a command run next sees it
+-- (as tmux's single loop guarantees). A reader with nothing unread and no
+-- chunk in flight is already caught up; one that may not read now — parked
+-- for a reload, or held back by a control client's flow control — is not
+-- waited for, and a stalled one is given up on after a second.
+syncPanes :: ServerState -> [Pane] -> IO ()
+syncPanes st panes = do
+    posted <- fmap catMaybes . forM panes $ \pane -> do
+        unread <- Hat.Term.Pty.hasOutput pane.pty
+        atomically $ do
+            inFlight <- (> 0) <$> readTVar st.readsInFlight
+            reading <- isJust <$> readTVar pane.readerTid
+            flowing <- (== ReadersFlowing) <$> readTVar st.readGate
+            room <- (True <$ awaitControlRoom st pane) `orElse` pure False
+            if not ((unread || inFlight) && reading && flowing && room)
+                then pure Nothing
+                else do
+                    o <- readTVar pane.outputSync
+                    let req = o.requested + 1
+                    writeTVar pane.outputSync o { requested = req }
+                    pure (Just (pane, req))
+    expired <- registerDelay 1_000_000
+    atomically $ (readTVar expired >>= check) `orElse`
+        forM_ posted (\(pane, req) -> do
+            o <- readTVar pane.outputSync
+            gone <- isNothing <$> readTVar pane.readerTid
+            check (o.answered >= req || gone))
+
+-- | 'syncPanes' over every pane in the tree.
+syncAllPanes :: ServerState -> IO ()
+syncAllPanes st = do
+    panes <- atomically $ do
+        sessions <- Map.elems <$> readTVar st.sessions
+        wins <- concat <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
+        concat <$> mapM windowPanes wins
+    syncPanes st (List.nubBy (\a b -> a.id == b.id) panes)
 
 -- | Quiesce the pane readers for a reload capture: close the read gate,
 -- then wait out every chunk already in flight, so on return every pane byte
