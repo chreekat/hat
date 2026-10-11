@@ -18,8 +18,6 @@ module Hat.Server.Command.Window
     , cmdPrevWindow
     , cmdLastWindow
     , cmdActivityWindow
-    , jumpToActivity
-    , cycleWindow
     , cmdResizeWindow
     , cmdKillWindow
     , cmdRenameWindow
@@ -54,17 +52,19 @@ import Hat.Server.Hooks
     , sessionTarget )
 import Hat.Server.Layout (Rotation (..), layoutPanes, rotateLeaves)
 import Hat.Server.Winlink
-    ( attachWindow, detachWindow, dropSessionGroup, groupMembers, shuffleUp
+    ( Step (..), stepWindow, attachWindow, detachWindow, dropSessionGroup, groupMembers, shuffleUp
     , windowLinks )
 import Hat.Transport.Wire (ServerToClient (Exited))
-import Hat.Server.Locate (findTarget, findWindowIndexTarget, withTargetSession)
+import Hat.Server.Locate
+    (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
     , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
     , windowActivity )
 import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
-import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv, windowFormatEnv)
+import Hat.Server.FormatEnv
+    (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
 import Hat.Server.Target qualified as Target
 
 -- | The first index at or above @start@ not already taken by a window, so a
@@ -168,25 +168,28 @@ selectNamed nm named = case [ix | (ix, n) <- named, n == nm] of
     _    -> Left ("multiple windows named " <> nm)
 
 cmdNewWindow :: CommandImpl
-cmdNewWindow st mclient args = do
-    let (opts, flags, pos) = parseArgs "nct" args
-    res <- findWindowIndexTarget st mclient (lookup "-t" opts)
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, requested) -> do
-            reuse <- case (lookup "-n" opts, requested) of
-                (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
-                    ws <- readTVar sess.windows
-                    named <- mapM (\(ix, w) -> (,) ix <$> readTVar w.name)
-                        (Map.toList ws)
-                    pure (selectNamed nm named)
-                _ -> pure (Right Nothing)
-            case reuse of
-                Left e -> pure [RErr e]
-                Right (Just ix) -> do
-                    unless ("-d" `elem` flags) $ switchToWindow st sess ix
-                    pure []
-                Right Nothing -> createWindow st sess opts flags pos requested
+cmdNewWindow st mclient args
+    | Just e <- unknownFlag "new-window" "abdkPS" flags = pure [RErr e]
+    | otherwise = do
+        res <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, requested) -> do
+                reuse <- case (lookup "-n" opts, requested) of
+                    (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
+                        ws <- readTVar sess.windows
+                        named <- mapM (\(ix, w) -> (,) ix <$> readTVar w.name)
+                            (Map.toList ws)
+                        pure (selectNamed nm named)
+                    _ -> pure (Right Nothing)
+                case reuse of
+                    Left e -> pure [RErr e]
+                    Right (Just ix) -> do
+                        unless ("-d" `elem` flags) $ switchToWindow st sess ix
+                        pure []
+                    Right Nothing -> createWindow st sess opts flags pos requested
+  where
+    (opts, flags, pos) = parseArgs "nctF" args
 
 -- | The creating body of @new-window@: reject an unusable @-t@ before
 -- spawning, spawn the pane, then place it in one transaction — only after
@@ -226,7 +229,7 @@ createWindow st sess opts flags pos requested = do
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False
-            moccupant <- atomically $ do
+            (wix, moccupant) <- atomically $ do
                 ws <- readTVar sess.windows
                 cur <- readTVar sess.currentIx
                 hist <- readTVar sess.windowHist
@@ -252,10 +255,17 @@ createWindow st sess opts flags pos requested = do
                                            else recordVisit (remap cur) p.index scrubbed)
                         writeTVar sess.currentIx p.index
                 bumpDirty st
-                pure ((`Map.lookup` ws) =<< p.replaced)
+                let occupant = (`Map.lookup` ws) =<< p.replaced
+                -- A displaced window linked elsewhere survives there.
+                orphan <- case occupant of
+                    Just old -> windowLinks st old >>= \case
+                        [] -> pure (Just old)
+                        (holder, _) : _ -> Nothing <$ rehomePanes holder.id old
+                    Nothing -> pure Nothing
+                pure (p.index, orphan)
             forM_ moccupant $ \old -> do
-                ps <- readTVarIO old.panes
-                killPaneLocs st [(sess.id, old, p) | p <- Map.elems ps]
+                ps <- atomically (windowPanes old)
+                killPaneLocs st [(sess.id, old, p) | p <- ps]
             startPaneReader st sess.id win pane
             applySessionSize st sess.id
             -- Creation counts as activity for a monitored window.
@@ -264,7 +274,15 @@ createWindow st sess opts flags pos requested = do
             notifyWindow st "window-created" (Just sess.id) win []
             notifyWindow st "window-linked" (Just sess.id) win
                 [ ("session", PSessionRef sess.id sname) ]
-            pure []
+            if "-P" `elem` flags
+                then do
+                    pix <- paneIndexOf st win pane
+                    env <- paneFormatEnv st sess wix win pix pane
+                    out <- expandFormat st env $ fromMaybe
+                        "#{session_name}:#{window_index}.#{pane_index}"
+                        (lookup "-F" opts)
+                    pure [ROutput out]
+                else pure []
   where
     freeSlot ws = do
         sopts <- resolveForSession st sess
@@ -272,19 +290,56 @@ createWindow st sess opts flags pos requested = do
             { shifts = [], replaced = Nothing
             , index = nextFreeWindowIndex sopts.baseIndex ws }
 
+-- | @select-window@: select the target window; @-n@\/@-p@\/@-l@ step
+-- instead ('stepWindow'), and @-T@ on the current window toggles to the
+-- last one.
 cmdSelectWindow :: CommandImpl
-cmdSelectWindow st mclient args = do
-    let (opts, _, pos) = parseArgs "t" args
-        target = case (lookup "-t" opts, pos) of
-            (Just t, _) -> Just t
-            (Nothing, [t]) -> Just t
-            _ -> Nothing
-    res <- findTarget st mclient Target.FindWindow target
-    case res of
-        Left e -> pure [RErr e]
-        Right (sess, ix, _, _) -> do
-            switchToWindow st sess ix
-            pure []
+cmdSelectWindow st mclient args
+    | Just e <- unknownFlag "select-window" "lnpT" flags = pure [RErr e]
+    | "-n" `elem` flags = stepCommand StepNext
+    | "-p" `elem` flags = stepCommand StepPrevious
+    | "-l" `elem` flags = stepCommand StepLast
+    | otherwise = do
+        res <- findTarget st mclient Target.FindWindow target
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, ix, _, _) -> do
+                cur <- readTVarIO sess.currentIx
+                if "-T" `elem` flags && ix == cur
+                    then stepSession st sess False StepLast
+                    else [] <$ switchToWindow st sess ix
+  where
+    (opts, flags, pos) = parseArgs "t" args
+    target = case (lookup "-t" opts, pos) of
+        (Just t, _) -> Just t
+        (Nothing, [t]) -> Just t
+        _ -> Nothing
+    stepCommand step = do
+        res <- findTarget st mclient Target.FindWindow target
+        either (pure . pure . RErr)
+            (\(sess, _, _, _) -> stepSession st sess False step) res
+
+-- | Move the session's current window one 'Step', alerted windows only
+-- when @alerts@, failing with tmux's words when there is nowhere to go.
+stepSession :: ServerState -> Session -> Bool -> Step -> IO [Reply]
+stepSession st sess alerts step = do
+    mix <- atomically $ do
+        ws <- readTVar sess.windows
+        cur <- readTVar sess.currentIx
+        hist <- readTVar sess.windowHist
+        flagged <- if alerts
+            then Just . Set.fromList . map fst <$> filterM (alerted . snd)
+                (Map.toList ws)
+            else pure Nothing
+        pure (stepWindow step flagged (Map.keys ws) cur hist)
+    case mix of
+        Just ix -> [] <$ switchToWindow st sess ix
+        Nothing -> pure [RErr $ case step of
+            StepNext -> "no next window"
+            StepPrevious -> "no previous window"
+            StepLast -> "no last window"]
+  where
+    alerted win = or <$> mapM readTVar [win.bellFlag, win.activity, win.silenceFlag]
 
 switchTo :: ServerState -> Session -> Int -> STM ()
 switchTo st sess ix = void (switchToInfo st sess ix)
@@ -338,64 +393,39 @@ announceSwitch st sess (oldIx, mold, newIx, win) = do
          ] <> oldRef)
 
 cmdNextWindow, cmdPrevWindow, cmdLastWindow :: CommandImpl
-cmdNextWindow st mclient args
-    | "-a" `elem` flags = nextActivityWindow st mclient
-    | otherwise = cycleWindow st mclient 1
-  where (_, flags, _) = parseArgs "t" args
-cmdPrevWindow st mclient _ = cycleWindow st mclient (-1)
-cmdLastWindow st mclient _ =
-    withTargetSession st mclient Nothing $ \sess -> do
-        mix <- atomically (listToMaybe <$> readTVar sess.windowHist)
-        forM_ mix (switchToWindow st sess)
-        pure []
+cmdNextWindow = sessionStep "next-window" StepNext
+cmdPrevWindow = sessionStep "previous-window" StepPrevious
+cmdLastWindow = sessionStep "last-window" StepLast
 
--- | @next-window -a@: switch to the next window (cyclically) that has an
--- activity flag set.
-nextActivityWindow :: ServerState -> Maybe Client -> IO [Reply]
-nextActivityWindow st mclient = jumpToActivity st mclient WithoutLastFallback
+-- | The session-targeted step commands: @next-window@ and
+-- @previous-window@ (@-a@: alerted windows only) and @last-window@.
+sessionStep :: Text -> Step -> CommandImpl
+sessionStep name step st mclient args
+    | Just e <- unknownFlag name (if step == StepLast then "" else "a") flags =
+        pure [RErr e]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindSession (lookup "-t" opts)
+        either (pure . pure . RErr)
+            (\(sess, _, _, _) -> stepSession st sess ("-a" `elem` flags) step)
+            res
+  where
+    (opts, flags, _) = parseArgs "t" args
 
--- | The @<leader> a@ jump: prioritize a window carrying an activity flag,
--- degrading to @last-window@ when none does.
+-- | The @<leader> a@ jump: prioritize a window carrying an activity flag
+-- ('pickActivityTarget'), degrading to @last-window@ when none does.
 cmdActivityWindow :: CommandImpl
-cmdActivityWindow st mclient _ = jumpToActivity st mclient WithLastFallback
-
--- | Whether an activity jump degrades to @last-window@ when nothing is
--- flagged (@<leader> a@) or simply stays put (@next-window -a@).
-data ActivityFallback = WithLastFallback | WithoutLastFallback
-
--- | Shared body of the activity jumps: pick 'pickActivityTarget' over the
--- session's live activity flags and switch there.
-jumpToActivity :: ServerState -> Maybe Client -> ActivityFallback -> IO [Reply]
-jumpToActivity st mclient fallback =
+cmdActivityWindow st mclient _ =
     withTargetSession st mclient Nothing $ \sess -> do
         atomically $ do
             ws <- readTVar sess.windows
             cur <- readTVar sess.currentIx
-            mfallback <- case fallback of
-                WithLastFallback -> listToMaybe <$> readTVar sess.windowHist
-                WithoutLastFallback -> pure Nothing
+            mfallback <- listToMaybe <$> readTVar sess.windowHist
             flagged <- foldM (\acc (ix, win) -> do
                 a <- readTVar win.activity
                 pure (if a then Set.insert ix acc else acc))
                 Set.empty (Map.toList ws)
             forM_ (pickActivityTarget (Map.keys ws) cur flagged mfallback)
                 (switchTo st sess)
-        pure []
-
-cycleWindow :: ServerState -> Maybe Client -> Int -> IO [Reply]
-cycleWindow st mclient step =
-    withTargetSession st mclient Nothing $ \sess -> do
-        atomically $ do
-            ws <- readTVar sess.windows
-            cur <- readTVar sess.currentIx
-            let ixs = Map.keys ws
-            case ixs of
-                [] -> pure ()
-                _ -> do
-                    let n = length ixs
-                        curPos = fromMaybe 0 (List.elemIndex cur ixs)
-                        ix = ixs !! ((curPos + step + n) `mod` n)
-                    switchTo st sess ix
         pure []
 
 -- | @resize-window@: size a window by hand. Like tmux, any resize leaves the

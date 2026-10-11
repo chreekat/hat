@@ -4,7 +4,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Test.Hspec
 
-import Hat.Server.Winlink (reselect, shuffleUp)
+import Hat.Server.Winlink (Step (..), reselect, shuffleUp, stepWindow)
 
 spec :: Spec
 spec = do
@@ -27,3 +27,19 @@ spec = do
             shuffleUp 1 ws `shouldBe` [(2, 3), (1, 2)]
         it "moves nothing when the index is free" $
             shuffleUp 3 ws `shouldBe` []
+
+    describe "stepWindow" $ do
+        let ixs = [0, 2, 5]
+        it "next wraps from the highest window to the lowest" $
+            stepWindow StepNext Nothing ixs 5 [] `shouldBe` Just 0
+        it "previous wraps from the lowest window to the highest" $
+            stepWindow StepPrevious Nothing ixs 0 [] `shouldBe` Just 5
+        it "a lone window has no next window" $
+            stepWindow StepNext Nothing [3] 3 [] `shouldBe` Nothing
+        it "with alerts, skips to the next alerted window" $
+            stepWindow StepNext (Just (Set.fromList [0])) ixs 2 [] `shouldBe` Just 0
+        it "with alerts, fails when none is alerted" $
+            stepWindow StepPrevious (Just Set.empty) ixs 2 [] `shouldBe` Nothing
+        it "last returns to the head of the history, failing without one" $ do
+            stepWindow StepLast Nothing ixs 2 [5, 0] `shouldBe` Just 5
+            stepWindow StepLast Nothing ixs 2 [] `shouldBe` Nothing

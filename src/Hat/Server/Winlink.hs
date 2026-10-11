@@ -6,6 +6,8 @@
 -- valid however the maps change.
 module Hat.Server.Winlink
     ( reselect
+    , Step (..)
+    , stepWindow
     , shuffleUp
     , groupMembers
     , resyncGroup
@@ -40,6 +42,28 @@ reselect alive cur hist
   where
     ok i = Set.member i alive
     previous = maybe (Set.findMax alive) id (Set.lookupLT cur alive)
+
+-- | A relative window move: @next-window@, @previous-window@, or
+-- @last-window@.
+data Step = StepNext | StepPrevious | StepLast
+    deriving (Eq, Show)
+
+-- | The index a step selects from @cur@ among the session's window
+-- indices (tmux's @session_next@\/@session_previous@\/@session_last@),
+-- wrapping at the ends; with @alerted@, only windows carrying an alert
+-- qualify. 'Nothing' when the step finds no window other than the current
+-- one, which tmux reports as an error.
+stepWindow :: Step -> Maybe (Set Int) -> [Int] -> Int -> [Int] -> Maybe Int
+stepWindow step alerted ixs cur hist = case step of
+    StepLast -> pick (take 1 hist)
+    StepNext -> pick (pass after <> pass ixs)
+    StepPrevious -> pick (pass (reverse before) <> pass (reverse ixs))
+  where
+    (before, after) = (filter (< cur) ixs, filter (> cur) ixs)
+    pass = maybe (take 1) (\flagged -> take 1 . filter (`Set.member` flagged)) alerted
+    pick cands = case take 1 cands of
+        [ix] | ix /= cur -> Just ix
+        _ -> Nothing
 
 -- | tmux's @winlink_shuffle_up@: make room at @ix@ by moving the occupied
 -- run starting there up by one. The renumberings run highest source first
