@@ -31,6 +31,7 @@ seedServer = do
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO 0
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 

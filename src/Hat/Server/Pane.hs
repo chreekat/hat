@@ -77,7 +77,7 @@ import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Vector qualified as V
 import Data.Text (Text)
@@ -99,6 +99,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
@@ -799,7 +800,7 @@ closePane st pane = teardownPane st pane (void (reapPane st pane))
 -- caller already reaped.
 teardownPane :: ServerState -> Pane -> IO () -> IO ()
 teardownPane st pane reap = do
-    (mctx, names) <- atomically $ do
+    (mctx, names, before) <- atomically $ do
         mloc <- locatePane st pane.id
         names <- sessionNames st
         ctx <- traverse
@@ -807,7 +808,7 @@ teardownPane st pane reap = do
                 wname <- readTVar win.name
                 pure (sid, maybe "" fst (Map.lookup sid names), win, wname))
             mloc
-        pure (ctx, names)
+        (,,) ctx names <$> readTVar st.sessions
     (msid, r) <- atomically (detachPaneCurrent st pane)
     forM_ msid $ \sid -> when (r /= AlreadyDetached) $ applySessionSize st sid
     -- End-of-life hooks fire only when the reader's own teardown detached
@@ -833,7 +834,8 @@ teardownPane st pane reap = do
         (AlreadyDetached, _) -> pure ()
     reap
     case r of
-        Detached _ sf -> forM_ (emptiedBy sf) $ \gone -> broadcast st gone Exited
+        Detached _ sf -> sendClientsAway st
+            (mapMaybe (`Map.lookup` before) (emptiedBy sf))
         AlreadyDetached -> pure ()
 
 -- | The model half of a pane's teardown, in one atomic transaction: drop
@@ -960,7 +962,8 @@ data LifecycleNotify = NotifyLifecycle | QuietLifecycle
 killPaneLocsWith
     :: LifecycleNotify -> ServerState -> [(SessionId, Window, Pane)] -> IO ()
 killPaneLocsWith mode st locs = do
-    (results, names, snames, preActive) <- atomically $ do
+    (results, names, snames, preActive, before) <- atomically $ do
+        before <- readTVar st.sessions
         snames <- sessionNames st
         names <- forM locs $ \(sid, win, _) -> do
             wname <- readTVar win.name
@@ -968,7 +971,7 @@ killPaneLocsWith mode st locs = do
         pre <- forM locs $ \(_, win, _) ->
             (,) win.id <$> readTVar win.activeId
         rs <- detachPanes st locs
-        pure (rs, Map.fromList names, snames, Map.fromList pre)
+        pure (rs, Map.fromList names, snames, Map.fromList pre, before)
     forM_ (List.nub [sid | (sid, _, _) <- locs]) (applySessionSize st)
     let removedWindows = List.nubBy (\(s1, w1) (s2, w2) ->
                 s1 == s2 && w1.id == w2.id)
@@ -1003,7 +1006,7 @@ killPaneLocsWith mode st locs = do
                         , ("pane", PPaneRef newActive)
                         , ("old_pane", PPaneRef old)
                         , ("new_pane", PPaneRef newActive) ]
-    forM_ emptied $ \sid -> broadcast st sid Exited
+    sendClientsAway st (mapMaybe (`Map.lookup` before) emptied)
     forM_ locs $ \(_, _, pane) -> hangupPane pane
 
 -- | Where @<leader> a@ should jump. An activity-marked window takes
@@ -1242,6 +1245,7 @@ createSession st mname mrun environ dir sz = do
     optionsVar <- newTVarIO emptyDelta
     resolvedVar <- newTVarIO Nothing
     groupVar <- newTVarIO Nothing
+    activityVar <- newTVarIO =<< atomically (tickActivity st)
     let sess = Session
             { id = SessionId sid
             , createdAt = now
@@ -1256,6 +1260,7 @@ createSession st mname mrun environ dir sz = do
             , options = optionsVar
             , resolvedOptions = resolvedVar
             , group = groupVar
+            , activity = activityVar
             }
     atomically $ modifyTVar' st.sessions (Map.insert sess.id sess)
     startPaneReader st sess.id win pane
@@ -1291,6 +1296,7 @@ createGroupedSession st leader mname environ dir = do
         optionsVar <- newTVar emptyDelta
         resolvedVar <- newTVar Nothing
         groupVar <- newTVar (Just gname)
+        activityVar <- newTVar =<< tickActivity st
         let sess = Session
                 { id = SessionId sid
                 , createdAt = now
@@ -1305,6 +1311,7 @@ createGroupedSession st leader mname environ dir = do
                 , options = optionsVar
                 , resolvedOptions = resolvedVar
                 , group = groupVar
+                , activity = activityVar
                 }
         modifyTVar' st.sessions (Map.insert sess.id sess)
         bumpDirty st

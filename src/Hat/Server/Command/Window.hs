@@ -43,7 +43,7 @@ import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
-import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupDrops
@@ -53,7 +53,6 @@ import Hat.Server.Winlink
     ( Step (..), Renumbered (..), stepWindow, attachWindow, detachWindow, dropSessionGroup
     , groupMembers
     , renumberIfSet, renumberSession, repackSession, shuffleUp, windowLinks )
-import Hat.Transport.Wire (ServerToClient (Exited))
 import Hat.Server.Locate
     (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
@@ -665,9 +664,9 @@ closeSessions st gone = do
     info <- forM gone $ \s -> do
         sname <- readTVarIO s.name
         notify st "session-closed" noTarget [ ("session", PSessionRef s.id sname) ]
-        broadcast st s.id Exited
         (,,) s.id sname <$> readTVarIO s.group
     notifyGroupDrops st info
+    sendClientsAway st gone
 
 -- | @unlink-window [-k]@: drop one link of the window. Its last link
 -- outside the session group goes only under @-k@, destroying the window.

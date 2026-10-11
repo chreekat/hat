@@ -376,7 +376,7 @@ optionTable =
         { pattern = Just "[0-9]*x[0-9]*" }
     , notYet $ scalar "destroy-unattached" SessionScope
         (KChoice ["off", "on", "keep-last", "keep-group"]) "off"
-    , notYet $ scalar "detach-on-destroy" SessionScope
+    , live $ scalar "detach-on-destroy" SessionScope
         (KChoice ["off", "on", "no-detached", "previous", "next"]) "on"
     -- tmux defaults to 750.
     , live $ scalar "display-time" SessionScope (KNumber 0 intMax) "3000"

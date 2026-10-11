@@ -125,6 +125,7 @@ rebuildSession st done env mkPane csess = do
         optionsVar <- newTVarIO emptyDelta
         resolvedVar <- newTVarIO Nothing
         groupVar   <- newTVarIO csess.group
+        activityVar <- newTVarIO =<< atomically (tickActivity st)
         let sess = Session
                 { id = sid
                 , createdAt = fromMaybe now csess.createdAt
@@ -133,7 +134,8 @@ rebuildSession st done env mkPane csess = do
                 , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
                 , startCwd = cwdVar, options = optionsVar
-                , resolvedOptions = resolvedVar, group = groupVar }
+                , resolvedOptions = resolvedVar, group = groupVar
+                , activity = activityVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
             forM_ panes (startPaneReader st sid win)

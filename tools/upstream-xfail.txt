@@ -111,8 +111,8 @@ pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, re
 
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
-session-ops.sh                  # detach-on-destroy option + invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
-lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications + refresh-client -B
+session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
+lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} tree-mode) + control-mode %-notifications + refresh-client -B
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + floating panes

@@ -47,6 +47,7 @@ module Hat.Model
     , bumpDirty
     , withCommandBatch
     , markActive
+    , tickActivity
     , freshId
     , resolveGlobal
     , resolveForSession
@@ -74,7 +75,7 @@ import Control.Concurrent.Async (Async)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket_, try)
-import Control.Monad (forM)
+import Control.Monad (forM, forM_)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
@@ -208,6 +209,9 @@ data Session = Session
     , resolvedOptions :: TVar (Maybe ResolvedOpts)  -- ^ see 'memoResolve'
     , group    :: TVar (Maybe Text)
         -- ^ the name of the session group this session belongs to, if any
+    , activity :: TVar Int
+        -- ^ when a client last attached to or drove it, on the server's
+        --   activity clock (tmux's @activity_time@); see 'markActive'
     }
 
 data Window = Window
@@ -646,14 +650,23 @@ withCommandBatch st = bracket_
     (atomically (modifyTVar' st.commandDepth (subtract 1)))
 
 -- | Stamp a client as the most-recently-active on its session: advance the
--- server's activity clock and record the new value on the client, so
--- 'effectiveWindowSize' under @window-size latest@ sizes a
+-- server's activity clock and record the new value on the client and its
+-- session, so 'effectiveWindowSize' under @window-size latest@ sizes a
 -- window to whichever client most recently drove it.
 markActive :: ServerState -> Client -> STM ()
 markActive st client = do
+    n <- tickActivity st
+    writeTVar client.lastActive n
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    forM_ msess $ \sess -> writeTVar sess.activity n
+
+-- | Advance the server's activity clock, yielding the new stamp.
+tickActivity :: ServerState -> STM Int
+tickActivity st = do
     n <- (+ 1) <$> readTVar st.activityClock
     writeTVar st.activityClock n
-    writeTVar client.lastActive n
+    pure n
 
 -- | Resolve the effective options with no session or window in context: the
 -- server-wide chain (global-window, global-session, server, then the color

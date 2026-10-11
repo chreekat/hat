@@ -45,6 +45,8 @@ import Hat.Server
     , welcome, windowActivity
     , zoomTarget )
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
+import Hat.Server.ClientSession
+    ( DetachOnDestroy (..), SessionChoice (..), destroyDestination )
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
@@ -82,6 +84,7 @@ addSession st n = do
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO 0
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId n) sess)
     pure sess
 
@@ -102,6 +105,7 @@ seedSession start = do
         <*> newTVarIO emptyDelta
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
+        <*> newTVarIO 0
     atomically $ modifyTVar' st.sessions (Map.insert (SessionId 0) sess)
     pure (st, sess)
 
@@ -1134,6 +1138,46 @@ spec = do
             -- the shared window's pane survives, homed in the survivor
             readTVarIO p.dead `shouldReturn` False
             homeOf p `shouldReturn` Just (SessionId 1, w0.id)
+
+    describe "detach-on-destroy" $ do
+        let choice nm act att = SessionChoice
+                { session = nm, name = nm, activity = act, attached = att }
+            others = [choice "b" 5 True, choice "d" 2 False, choice "a" 5 False]
+        it "on detaches the clients" $
+            destroyDestination DestroyDetach "c" others `shouldBe` Nothing
+        it "off picks the most recently active session, ties by name" $
+            destroyDestination DestroySwitch "c" others `shouldBe` Just "a"
+        it "no-detached picks the most recently active unattached session" $ do
+            destroyDestination DestroyNoDetached "c" (take 2 others)
+                `shouldBe` Just "d"
+            destroyDestination DestroyNoDetached "c" (take 1 others)
+                `shouldBe` Nothing
+        it "previous and next step through the names, wrapping" $ do
+            destroyDestination DestroyPrevious "c" others `shouldBe` Just "b"
+            destroyDestination DestroyNext "c" others `shouldBe` Just "d"
+            destroyDestination DestroyPrevious "0" others `shouldBe` Just "d"
+            destroyDestination DestroyNext "e" others `shouldBe` Just "a"
+        it "previous and next with nothing left detach" $
+            destroyDestination DestroyNext "c" ([] :: [SessionChoice Text])
+                `shouldBe` Nothing
+        it "kill-session moves an attached client off the destroyed session" $ do
+            (st, sess) <- seedSession "/"   -- "work"
+            older <- addSession st 1
+            newer <- addSession st 2
+            -- a window shared with the survivors, so the kill reaps no pane
+            w0 <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' w0.panes (Map.insert p.id p)
+                modifyTVar' older.windows (Map.insert 0 w0)
+                modifyTVar' newer.windows (Map.insert 0 w0)
+                writeTVar older.activity 1
+                writeTVar newer.activity 2
+                writeTVar sess.options
+                    (singletonDelta "detach-on-destroy" (OVScalar "off"))
+            client <- addClient st sess.id (Size 24 80) 3
+            cmdKillSession st Nothing ["-t", "work"] `shouldReturn` []
+            readTVarIO client.session `shouldReturn` newer.id
 
     describe "session groups" $ do
         let grouped = do
