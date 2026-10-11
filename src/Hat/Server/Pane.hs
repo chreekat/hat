@@ -53,6 +53,7 @@ module Hat.Server.Pane
     , typeIntoPane
     , setScreenTitle
     , restorePaneState
+    , claimPane
     , detachPaneCurrent
     , closePane
     , detachPane
@@ -412,9 +413,8 @@ respawnPane st sid win old shellCmd how kind dir environ = do
         ProgramPane -> spawnPane st old.id sid shellCmd how dir environ sz
         EmptyPane -> emptyPane st old.id how dir sz
     swapped <- atomically $ do
-        gone <- readTVar old.dead
-        if gone then pure Nothing else do
-            writeTVar old.dead True
+        claimed <- claimPane old
+        if not claimed then pure Nothing else do
             writeTVar new.options =<< readTVar old.options
             writeTVar new.inputOff =<< readTVar old.inputOff
             modifyTVar' win.panes (Map.insert new.id new)
@@ -795,6 +795,14 @@ hangupPane pane = do
         Just tid -> killThread tid
         Nothing  -> Hat.Term.Pty.closePty pane.pty
 
+-- | Retire a pane, making the caller the one to hang it up; 'False' when it
+-- was already retired.
+claimPane :: Pane -> STM Bool
+claimPane pane = do
+    retired <- readTVar pane.dead
+    unless retired (writeTVar pane.dead True)
+    pure (not retired)
+
 -- | The reader saw EOF. A pane already retired from the tree — killed, or
 -- replaced by a respawn — is only reaped. Otherwise @remain-on-exit@
 -- decides: the pane is torn down ('closePane'), or it stays in the tree as a
@@ -977,9 +985,8 @@ teardownPane st pane reap = do
 -- process.
 detachPane :: ServerState -> Window -> Pane -> STM DetachResult
 detachPane st win pane = do
-    isDead <- readTVar pane.dead
-    if isDead then pure AlreadyDetached else do
-        writeTVar pane.dead True
+    claimed <- claimPane pane
+    if not claimed then pure AlreadyDetached else do
         modifyTVar' win.panes (Map.delete pane.id)
         lay <- readTVar win.layout
         mz <- readTVar win.zoomed
@@ -1134,7 +1141,8 @@ killPaneLocsWith mode st locs = do
                         , ("old_pane", PPaneRef old)
                         , ("new_pane", PPaneRef newActive) ]
     sendClientsAway st (mapMaybe (`Map.lookup` before) emptied)
-    forM_ locs $ \(_, _, pane) -> hangupPane pane
+    forM_ [ pane | ((_, _, pane), (_, Detached _ _)) <- zip locs results ]
+        hangupPane
 
 -- | Where @<leader> a@ should jump. An activity-marked window takes
 -- priority: pick the first one in the same cyclic scan @next-window -a@
