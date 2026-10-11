@@ -36,10 +36,10 @@ genLayout = do
         pl <- elements [Before, After]
         sp <- elements [SpanPane, SpanWindow]
         g <- genGeom
-        floater <- elements (layoutPanes lay)
+        spot <- elements (FloatLast : map FloatBefore (layoutPanes lay))
         frequency
             [ (6, pure (fromMaybe lay (splitPane (SplitSpec o sz pl sp) target (PaneId k) lay)))
-            , (1, pure (fromMaybe lay (floatPane (Just floater) (PaneId k) g lay)))
+            , (1, pure (fromMaybe lay (floatPane spot (PaneId k) g lay)))
             -- Floating a pane keeps at least one tiled: a window of only
             -- floating panes tiles nothing.
             , (1, pure $ if length (tiledPanes lay) > 1
@@ -220,7 +220,7 @@ spec = do
     describe "floating cells" $ do
         let one = fitLayout windowSize (leaf 0)
             geom = FloatGeom { width = 20, height = 6, left = 8, top = 3 }
-            withFloat = floatPane (Just (PaneId 0)) (PaneId 1) geom one
+            withFloat = floatPane FloatLast (PaneId 1) geom one
         it "float beside their target, out of the tiling" $ do
             fmap layoutPanes withFloat `shouldBe` Just [PaneId 0, PaneId 1]
             fmap tiledPanes withFloat `shouldBe` Just [PaneId 0]

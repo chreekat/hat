@@ -53,6 +53,7 @@ module Hat.Server.Layout
     , cellGeom
     , floatGeom
     , setFloatGeom
+    , FloatSpot (..)
     , floatPane
     , floatTiled
     , tileFloating
@@ -142,9 +143,9 @@ data Cell
 
 -- Note [Floating cells]
 -- ~~~~~~~~~~~~~~~~~~~~~
--- As in tmux, a floating pane keeps a cell in the layout tree, beside the
--- cell it was spawned from (or tiled at before @break-pane -W@), so tiling
--- it back reinserts it where it came from. Tiling skips it: offsets, sizes,
+-- As in tmux, a floating pane keeps a cell in the layout tree, so tiling it
+-- back reinserts it where its cell sits, and a tiled pane floated by
+-- @break-pane -W@ keeps its cell's place. Tiling skips it: offsets, sizes,
 -- borders and the space shared out among siblings consider only tiled
 -- leaves and nodes holding one ('tiledish'). A few of tmux's walks do not
 -- skip floating cells — the space a cell can give up ('spare'), the
@@ -152,9 +153,12 @@ data Cell
 -- so count a floating pane's size as tiled space, leaving a node's children
 -- no longer filling it; here they skip them too.
 --
--- The tree's leaf order is the pane index order for floating panes too,
--- where tmux appends a new floating pane to its pane list instead; the two
--- agree when the new pane's target is the window's last pane.
+-- The tree's leaf order is the pane index order, floating panes included.
+-- tmux keeps its pane list apart from the tree and appends a new floating
+-- pane to the list (or puts it before its target, with @-b@) while putting
+-- its cell beside its target; hat puts the cell where the list would put
+-- the pane ('FloatSpot'), so pane indices agree with tmux and a new
+-- floating pane tiled back lands at the tree's end, not beside its target.
 
 -- | tmux's @PANE_MINIMUM@: the smallest a pane may be along either axis.
 paneMinimum :: Int
@@ -657,20 +661,32 @@ setFloatGeom pid g lay = case pathTo pid lay of
     Just q | FloatCell _ <- (at q lay).cell -> modifyAt q (withGeom g) lay
     _ -> lay
 
--- | Add a floating pane's cell after @target@'s — or after the whole tree
--- with no target — wrapping a root cell in a top-bottom node first
--- (@layout_floating_pane@). 'Nothing' when the target is not in the tree.
-floatPane :: Maybe PaneId -> PaneId -> FloatGeom -> Layout -> Maybe Layout
-floatPane mtarget new g root = do
-    q <- maybe (Just []) (`pathTo` root) mtarget
-    let fresh = withGeom g (Layout 0 0 0 0 (FloatCell new))
-    pure $ case q of
-        [] -> root { cell = NodeCell TopBottom [root, fresh] }
-        _ -> modifyAt (init q) (\parent -> case parent.cell of
-                NodeCell t cs ->
-                    let (pre, post) = splitAt (last q + 1) cs
-                    in parent { cell = NodeCell t (pre <> [fresh] <> post) }
-                _ -> parent) root
+-- | Where a new floating pane's cell goes in the tree. See Note [Floating
+-- cells].
+data FloatSpot
+    = FloatLast            -- ^ after every other cell
+    | FloatBefore PaneId   -- ^ just before a pane's cell (@-b@)
+    deriving (Eq, Show)
+
+-- | Add a floating pane's cell, wrapping a lone root cell in a top-bottom
+-- node first (@layout_floating_pane@). 'Nothing' when the pane to go
+-- before is not in the tree.
+floatPane :: FloatSpot -> PaneId -> FloatGeom -> Layout -> Maybe Layout
+floatPane spot new g root = case spot of
+    FloatLast -> Just $ case root.cell of
+        NodeCell t cs -> root { cell = NodeCell t (cs <> [fresh]) }
+        _ -> root { cell = NodeCell TopBottom [root, fresh] }
+    FloatBefore target -> do
+        q <- pathTo target root
+        pure $ case q of
+            [] -> root { cell = NodeCell TopBottom [fresh, root] }
+            _ -> modifyAt (init q) (\parent -> case parent.cell of
+                    NodeCell t cs ->
+                        let (pre, post) = splitAt (last q) cs
+                        in parent { cell = NodeCell t (pre <> [fresh] <> post) }
+                    _ -> parent) root
+  where
+    fresh = withGeom g (Layout 0 0 0 0 (FloatCell new))
 
 -- | Take a tiled pane out of the tiling into a floating cell at @g@, its
 -- space going to its neighbour (@layout_remove_tile@, as @break-pane -W@

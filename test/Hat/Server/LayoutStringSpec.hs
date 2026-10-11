@@ -8,7 +8,7 @@ import Test.Hspec
 import Hat.Geometry (Size (..))
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout
-    ( FloatGeom (..), Layout (..), Orientation (..), Placement (..), SplitSpan (..)
+    ( FloatGeom (..), FloatSpot (..), Layout (..), Orientation (..), Placement (..), SplitSpan (..)
     , SplitSpec (..), fitLayout, floatGeom, floatPane, layoutPanes, singlePane
     , splitPane, tiledPanes )
 import Hat.Server.LayoutString
@@ -26,9 +26,9 @@ halves o = splitPane (SplitSpec o Nothing After SpanPane) (PaneId 0) (PaneId 1)
 
 -- | One pane with two floating panes beside it, %2 overhanging the top left.
 floated :: Maybe Layout
-floated = floatPane (Just (PaneId 0)) (PaneId 1) (FloatGeom 18 4 9 4)
+floated = floatPane FloatLast (PaneId 1) (FloatGeom 18 4 9 4)
     (fitLayout area (singlePane (PaneId 0)))
-    >>= floatPane (Just (PaneId 1)) (PaneId 2) (FloatGeom 10 3 (-2) (-1))
+    >>= floatPane FloatLast (PaneId 2) (FloatGeom 10 3 (-2) (-1))
 
 spec :: Spec
 spec = do
