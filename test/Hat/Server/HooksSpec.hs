@@ -290,7 +290,7 @@ fakeClient _ = do
     statusVar <- newIORef Nothing
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
-    colourVar <- newIORef ""
+    colourVar <- newIORef Nothing
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing

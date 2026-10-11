@@ -100,27 +100,29 @@ panesDeadline ms shownAt
     | otherwise = Just (shownAt + fromIntegral ms * 1000000)
 
 -- | The cells one pane's number paints, relative to the pane's top-left,
--- in tmux's layout: 5x5 block digits centered in the pane with the pane
--- size right-aligned underneath, or — when the pane cannot fit the
--- blocks — one centered text line of number and size. Never reaches
--- outside the @sx@ x @sy@ box.
-panesStamp :: Cell.Color -> Int -> Int -> Int -> [(Pos, Cell.Cell)]
-panesStamp colour n sx sy = filter inside stamp
+-- in tmux's layout (@window_panes_draw_number@): 5x5 block digits
+-- centered in the pane, or — when the pane cannot fit them — the number
+-- as one centered line of text; and the drawn @display-panes-format@
+-- (when the option is set) along the pane's top row, given as the cells
+-- it draws by column. Never reaches outside the @sx@ x @sy@ box.
+panesStamp
+    :: Cell.Color -> Int -> Maybe [(Int, Cell.Cell)] -> Int -> Int
+    -> [(Pos, Cell.Cell)]
+panesStamp colour n mformat sx sy
+    | sx < len = []
+    | otherwise = filter inside stamp
   where
     inside (p, _) = p.row >= 0 && p.row < sy && p.col >= 0 && p.col < sx
     buf = show n
-    lbuf = show sx <> "x" <> show sy
     len = length buf
-    llen = length lbuf
     bigWidth = 6 * len - 1
+    hasFormat = maybe False (const True) mformat
     stamp
-        | sx < bigWidth || sy < 5 = textAt (sy `div` 2) smallCol small
-        | otherwise = blocks <> label
-    -- small fallback: the number, plus the size when both fit
-    small
-        | sx >= len + llen + 1 = buf <> " " <> lbuf
-        | otherwise = buf
-    smallCol = (sx - length small) `div` 2
+        | sx < bigWidth || sy < (if hasFormat then 7 else 5) =
+            textAt (sy `div` 2) ((sx - len) `div` 2) buf
+                <> (if sy > 1 then formatRow else [])
+        | otherwise = blocks <> (if sy <= 6 then [] else formatRow)
+    formatRow = [ (Pos 0 c, cell) | (c, cell) <- maybe [] id mformat ]
     px0 = (sx - bigWidth) `div` 2
     py0 = (sy - 5) `div` 2
     blocks =
@@ -129,9 +131,6 @@ panesStamp colour n sx sy = filter inside stamp
         , (r, rowBits) <- zip [0 ..] (digitGlyph ch)
         , (c, set) <- zip [0 ..] rowBits
         , set ]
-    label
-        | sy <= 6 = []
-        | otherwise = textAt (py0 + 5) (px0 + 6 * len - 1 - llen) lbuf
     textAt r c0 s =
         [ (Pos r (c0 + i), glyph ch) | (i, ch) <- zip [0 ..] s ]
     glyph ch = Cell.glyphCell ch Cell.defaultStyle { Cell.fg = colour }

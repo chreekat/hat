@@ -142,6 +142,7 @@ library
         Hat.Server.Winlink
         Hat.Server.Overlay
         Hat.Server.Pane
+        Hat.Server.PaneColours
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt
@@ -150,11 +151,13 @@ library
         Hat.Server.Reload
         Hat.Server.Render
         Hat.Server.Resize
+        Hat.Server.Scene
         Hat.Server.Snapshot
         Hat.Server.Startup
         Hat.Server.Status
         Hat.Server.Style
         Hat.Server.Target
+        Hat.Server.Theme
         Hat.Server.Title
         Hat.Server.Toast
         Hat.Server.View
@@ -323,6 +326,8 @@ test-suite hat-test
         Hat.Server.PromptSpec
         Hat.Server.PromptHistorySpec
         Hat.Server.ReloadSpec
+        Hat.Server.SceneSpec
+        Hat.Server.ThemeSpec
         Hat.Server.SendSpec
         Hat.Server.StatusSpec
         Hat.Server.StyleSpec

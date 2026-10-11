@@ -7,6 +7,7 @@ module Hat.Server.Format.Colour
     , colourToText
     , colourToHex
     , colourToEscape
+    , colourParseX11
     ) where
 
 import Control.Applicative ((<|>))
@@ -62,6 +63,43 @@ colourToText = \case
 
 -- tmux's @colour_byname@ over a lowercased name: @grayN@\/@greyN@ is a
 -- 0-100 ramp, anything else an X11 name.
+-- | tmux's @colour_parseX11@: an X11 colour spec, as programs give one
+-- in OSC 10\/11\/12, as a packed @0xRRGGBB@.
+colourParseX11 :: Text -> Maybe Int
+colourParseX11 p
+    | T.length p == 12, Just [r, g, b] <- hexes "rgb:" "/" 2 = Just (join r g b)
+    | T.length p == 7, Just [r, g, b] <- hexes "#" "" 2 = Just (join r g b)
+    | Just [r, g, b] <- decimals = Just (join r g b)
+    | T.length p == 18, Just [r, g, b] <- hexes "rgb:" "/" 4 = Just (join16 r g b)
+    | T.length p == 13, Just [r, g, b] <- hexes "#" "" 4 = Just (join16 r g b)
+    | Just [c, m, y, k] <- fractions "cmyk:" 4 = cmyk c m y k
+    | Just [c, m, y] <- fractions "cmy:" 3 = cmyk c m y 0
+    | otherwise = colourByName (T.toLower (T.dropAround (== ' ') p))
+  where
+    join r g b = (r `mod` 256) * 65536 + (g `mod` 256) * 256 + b `mod` 256
+    join16 r g b = join (r `div` 256) (g `div` 256) (b `div` 256)
+    hexes pre sep n = do
+        rest <- T.stripPrefix pre p
+        let parts = if T.null sep then T.chunksOf n rest else T.splitOn sep rest
+        if length parts == 3 && all (\x -> T.length x == n && T.all isHexDigit x) parts
+            then Just (map (T.foldl' (\acc c -> acc * 16 + digitToInt c) 0) parts)
+            else Nothing
+    decimals = case T.splitOn "," p of
+        parts@[_, _, _] -> mapM (\x -> case TR.signed TR.decimal x of
+            Right (n, _) -> Just n
+            Left _ -> Nothing) parts
+        _ -> Nothing
+    fractions pre n = do
+        rest <- T.stripPrefix pre p
+        let parts = T.splitOn "/" rest
+        vs <- mapM (\x -> case TR.double x of
+            Right (v, _) -> Just v
+            Left _ -> Nothing) parts
+        if length vs == n && all (\v -> v >= 0 && v <= 1) vs then Just vs else Nothing
+    cmyk :: Double -> Double -> Double -> Double -> Maybe Int
+    cmyk c m y k = Just (join (channel c) (channel m) (channel y))
+      where channel v = truncate ((1 - v) * (1 - k) * 255)
+
 colourByName :: Text -> Maybe Int
 colourByName t
     | Just rest <- T.stripPrefix "gray" t <|> T.stripPrefix "grey" t =

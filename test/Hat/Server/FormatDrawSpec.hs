@@ -6,6 +6,7 @@ import Data.Vector qualified as V
 import Test.Hspec
 
 import Hat.Server.FormatDraw
+import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Cell qualified as Cell
 
 base :: Cell.Style
@@ -13,7 +14,7 @@ base = Cell.defaultStyle { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 2 }
 
 -- | Draw onto a row of @w@ blanks in the base style.
 draw :: Int -> Text -> V.Vector Cell.Cell
-draw w fmt = formatDraw base fmt (V.replicate w (Cell.glyphCell ' ' base))
+draw w fmt = formatDraw terminalTheme base fmt (V.replicate w (Cell.glyphCell ' ' base))
 
 rowText :: V.Vector Cell.Cell -> Text
 rowText = T.pack . map Cell.baseChar . V.toList
@@ -29,11 +30,11 @@ spec :: Spec
 spec = do
     describe "formatRanges" $ do
         it "tags each column with the range its text was drawn under" $
-            V.toList (formatRanges base "#[range=left]L#[norange] #[range=window|3]w3#[norange]#[align=right range=right]R" 6)
+            V.toList (formatRanges terminalTheme base "#[range=left]L#[norange] #[range=window|3]w3#[norange]#[align=right range=right]R" 6)
                 `shouldBe` [ RangeLeft, RangeNone, RangeWindow 3, RangeWindow 3
                            , RangeNone, RangeRight ]
         it "an unknown range kind leaves the range as it was" $
-            V.toList (formatRanges base "#[range=pane|%2]a#[range=bogus]b" 2)
+            V.toList (formatRanges terminalTheme base "#[range=pane|%2]a#[range=bogus]b" 2)
                 `shouldBe` [RangePane 2, RangePane 2]
 
     describe "formatDraw" $ do
@@ -79,6 +80,8 @@ spec = do
             rowText (draw 12 fmt) `shouldBe` "aaaaBBcccc  "
         it "draws after-list text beside a left list" $
             rowText (draw 8 "#[list=on align=left]abc#[nolist]Z") `shouldBe` "abcZ    "
+        it "draws acs text as its line-drawing glyphs, until noacs" $
+            rowText (draw 4 "#[acs]~q#[noacs]~q") `shouldBe` "\x00b7\x2500~q"
         it "draws wide characters across two cells" $ do
             let row = draw 3 "中a"
             V.length row `shouldBe` 3

@@ -17,6 +17,9 @@ module Hat.Server.Render
     , overlayGrid
     , applyBorders
     , tintInnerRing
+    , paneDefaults
+    , paintDefaults
+    , paintPalette
     , diffFrame
     , diffFrameKnown
     , fullRedraw
@@ -219,6 +222,36 @@ applyBorders frame borders = frame V.// updates
         , r < V.length frame
         , let row = frame V.! r
         ]
+
+-- | A pane's default foreground and background (tmux's
+-- @tty_default_colours@): the program's own (OSC 10, 11) under
+-- @window-style@ — or, for the active pane, under @window-active-style@
+-- when that leaves a colour.
+paneDefaults :: Bool -> (Color, Color) -> Style -> Style -> (Color, Color)
+paneDefaults active (pfg, pbg) ws was =
+    ( pick (over pfg was.fg) (over pfg ws.fg)
+    , pick (over pbg was.bg) (over pbg ws.bg) )
+  where
+    over c s = if s /= DefaultColor then s else c
+    pick a i = if active && a /= DefaultColor then a else i
+
+-- | Draw a pane's default-coloured cells in its default colours.
+paintDefaults :: (Color, Color) -> V.Vector (V.Vector Cell) -> V.Vector (V.Vector Cell)
+paintDefaults (dfg, dbg) = V.map (V.map paint)
+  where
+    paint c = c { style = c.style
+        { fg = if c.style.fg == DefaultColor then dfg else c.style.fg
+        , bg = if c.style.bg == DefaultColor then dbg else c.style.bg } }
+
+-- | Draw a pane's palette colours in the colours its palette gives them
+-- (tmux's @colour_palette_get@).
+paintPalette :: Map.Map Int Color -> V.Vector (V.Vector Cell) -> V.Vector (V.Vector Cell)
+paintPalette pal = V.map (V.map paint)
+  where
+    paint c = c { style = c.style { fg = sub c.style.fg, bg = sub c.style.bg } }
+    sub = \case
+        Indexed n | Just c <- Map.lookup (fromIntegral n) pal -> c
+        c -> c
 
 -- | Restyle the ring of cells just inside the rect, keeping their glyphs.
 tintInnerRing :: Style -> Frame -> Rect -> Frame

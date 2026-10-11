@@ -43,6 +43,7 @@ import Hat.Glob (globMatch)
 import Hat.Server.Format.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)
 import Hat.Server.FormatDraw (formatTrimLeft, formatTrimRight, formatWidth)
+import Hat.Server.Theme (Theme, terminalTheme)
 import Hat.TextWidth (textWidth)
 
 type FormatEnv = Map Text Text
@@ -60,6 +61,7 @@ data FormatCtx = FormatCtx
     , clients   :: [FormatEnv]  -- ^ attached clients
     , paneLines :: [Text]       -- ^ target pane's visible lines, for @C@
     , animate   :: Animation
+    , theme     :: Theme  -- ^ what theme colours draw as, for the client
     }
 
 -- | Whether @A@ animation frames expand: only in a status format (tmux's
@@ -80,6 +82,7 @@ formatCtx env shell zt = FormatCtx
     , clients = []
     , paneLines = []
     , animate = NoAnimate
+    , theme = terminalTheme
     }
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text

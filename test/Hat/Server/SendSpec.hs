@@ -43,7 +43,7 @@ mkClient = do
     statusV <- newIORef Nothing
     mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
-    colourV <- newIORef ""
+    colourV <- newIORef Nothing
     fullV   <- newTVarIO True
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing

@@ -131,6 +131,7 @@ import Hat.Server.Hooks
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
+import Hat.Server.PaneColours (oscColourReply, queryDefaultColour, queryPaletteColour)
 import Hat.Server.Style (applyStyle)
 import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Term.Cell qualified as Cell
@@ -386,6 +387,7 @@ newPane pid pty emu sz dir pending start kind = do
     -- A new pane is titled with the host's name until its program sets one.
     host <- Posix.nodeName <$> Posix.getSystemID
     _ <- Emu.setTitle emu (T.pack host)
+    alternateVar <- newTVarIO False
     pure Pane
         { id = pid
         , pty = pty
@@ -403,6 +405,7 @@ newPane pid pty emu sz dir pending start kind = do
         , exited = exitedVar
         , kind = kind
         , inputOff = inputOffVar
+        , onAlternate = alternateVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -510,6 +513,7 @@ runPaneReader st pane = do
             mopts <- paneOptionsNow st pane
             forM_ mopts (Emu.setHostPolicy pane.emulator . hostPolicyOf)
             events <- if B8.null bs then pure [] else Emu.feed pane.emulator bs
+            noteAlternate st pane
             pure (bs, events, mopts))
             `finally` atomically (modifyTVar' st.readsInFlight (subtract 1))
     -- @pending@ is a one-shot: a restored program's command line, typed into
@@ -542,10 +546,23 @@ runPaneReader st pane = do
                 -- the classic light-versus-dark probe; hat doesn't paint a
                 -- pane background, so answer with the canonical color for
                 -- the OS scheme it tracks (white-on-black when dark).
+                -- A pane whose style gives it its own colour answers with
+                -- that instead.
                 Emu.OscColorQuery target term -> do
-                    mscheme <- readTVarIO st.colorScheme
-                    forM_ mscheme $ \scheme ->
-                        Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
+                    own <- queryDefaultColour st pane target
+                    case own of
+                        Just rgb -> Hat.Term.Pty.writePty pane.pty $ oscColourReply
+                            (case target of
+                                Emu.Foreground -> "10"
+                                Emu.Background -> "11") rgb term
+                        Nothing -> do
+                            mscheme <- readTVarIO st.colorScheme
+                            forM_ mscheme $ \scheme ->
+                                Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
+                Emu.OscPaletteQuery n term -> do
+                    mrgb <- queryPaletteColour st pane n
+                    forM_ mrgb $ \rgb -> Hat.Term.Pty.writePty pane.pty
+                        (oscColourReply ("4;" <> T.pack (show n)) rgb term)
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
                 -- the session's attached terminals to raise with the OS.
@@ -1673,3 +1690,15 @@ sessionSpawnEnv st sess = atomically $ do
     g <- readTVar st.globalEnviron
     s <- readTVar sess.environ
     pure (environPairs (environMerge g s))
+
+-- | Track whether a pane's program is on the alternate screen, waking the
+-- renderer and the reconcile loop when it moves: the pane's scrollbar
+-- comes and goes with it ('Hat.Server.Resize.windowArrange').
+noteAlternate :: ServerState -> Pane -> IO ()
+noteAlternate st pane = do
+    alt <- Emu.onAlternateScreen pane.emulator
+    atomically $ do
+        was <- readTVar pane.onAlternate
+        when (was /= alt) $ do
+            writeTVar pane.onAlternate alt
+            bumpDirty st

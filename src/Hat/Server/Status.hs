@@ -17,7 +17,7 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 
 import Hat.Model.Options
-import Hat.Server.Format (FormatCtx, evaluateCtx, renderFormatCtx)
+import Hat.Server.Format (FormatCtx (..), evaluateCtx, renderFormatCtx)
 import Hat.Server.FormatDraw
     (DrawRange (..), colourValue, formatDraw, formatRanges, styleCell)
 import Hat.Term.Cell qualified as Cell
@@ -26,8 +26,8 @@ import Hat.Term.Cell qualified as Cell
 -- @options_string_to_style@ does.
 styleOption :: FormatCtx -> Text -> Options -> Cell.Style
 styleOption ctx name opts
-    | "#{" `T.isInfixOf` raw = styleCell (evaluateCtx ctx raw)
-    | otherwise = styleCell raw
+    | "#{" `T.isInfixOf` raw = styleCell ctx.theme (evaluateCtx ctx raw)
+    | otherwise = styleCell ctx.theme raw
   where
     raw = optionText name opts
 
@@ -39,7 +39,7 @@ statusBaseStyle ctx opts = sty
     , Cell.bg = over sty.bg (optionText "status-bg" opts) }
   where
     sty = styleOption ctx "status-style" opts
-    over c t = case colourValue t of
+    over c t = case colourValue ctx.theme t of
         Just (Just col) | col /= Cell.DefaultColor -> col
         _ -> c
 
@@ -62,12 +62,12 @@ statusRows ctx opts width = map row [0 .. opts.statusLines - 1]
         OVScalar _ -> Map.empty
     row i = case Map.lookup (KeyIndex (fromIntegral i)) formats of
         Nothing -> blank
-        Just f -> formatDraw gc (renderFormatCtx ctx f) blank
+        Just f -> formatDraw ctx.theme gc (renderFormatCtx ctx f) blank
 
 -- | The ranges across status line @i@ (tmux's @status_get_range@ reads
 -- them): where a click on each column lands.
 statusRanges :: FormatCtx -> Options -> Int -> Int -> V.Vector DrawRange
 statusRanges ctx opts width i = case optionValue "status-format" opts of
     OVArray m | Just f <- Map.lookup (KeyIndex (fromIntegral i)) m ->
-        formatRanges (statusBaseStyle ctx opts) (renderFormatCtx ctx f) width
+        formatRanges ctx.theme (statusBaseStyle ctx opts) (renderFormatCtx ctx f) width
     _ -> V.replicate width RangeNone

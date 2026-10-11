@@ -52,7 +52,7 @@ mouseViewFor st client ys = do
             sopts <- atomically (resolveForSession st sess)
             csize <- readTVarIO client.size
             eff <- readTVarIO sess.lastSize
-            (rects, _) <- atomically (windowArrange eff win)
+            (rects, _) <- atomically (windowArrange st eff win)
             ws <- readTVarIO sess.windows
             let (_, mStatus) = statusLayout sopts.statusPosition sopts.statusLines
                     (fromIntegral csize.rows)
@@ -111,14 +111,14 @@ mouseEventPane st ev = do
                     case Map.lookup pid ps of
                         Nothing -> pure Nothing
                         Just pane -> do
-                            box <- paneBoxOf sess win pid
+                            box <- paneBoxOf st sess win pid
                             pure (Just (sess, win, pane, box))
 
 -- | A visible pane's box in its window.
-paneBoxOf :: Session -> Window -> PaneId -> IO (Maybe PaneBox)
-paneBoxOf sess win pid = do
+paneBoxOf :: ServerState -> Session -> Window -> PaneId -> IO (Maybe PaneBox)
+paneBoxOf st sess win pid = do
     eff <- readTVarIO sess.lastSize
-    (rects, _) <- atomically (windowArrange eff win)
+    (rects, _) <- atomically (windowArrange st eff win)
     pure (boxOf pid <$> List.lookup pid rects)
 
 -- | The mouse event the client's key binding is acting on, if the event

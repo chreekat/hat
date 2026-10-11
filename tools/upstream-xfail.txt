@@ -20,19 +20,16 @@ cursor-test2.sh
 cursor-test4.sh
 floating-pane-geometry.sh       # floating panes (new-pane, move-pane -X/-Y/-P/-z, break-pane -W) unimplemented
 if-shell-error.sh
-osc-11colours.sh
 prompt-keys.sh
 prompt-mechanics.sh
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
-screen-redraw-cache.sh
+screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-floating.sh
 screen-redraw-indicators.sh
-screen-redraw-outside.sh
+screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
 screen-redraw-popups.sh
-screen-redraw-scrollbars.sh
-screen-redraw-tiled.sh
-screen-redraw-window-style.sh
+screen-redraw-scrollbars.sh     # floating panes (new-pane) + copy-mode -H (hide the position indicator)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
@@ -42,7 +39,6 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # (flake input tmux-src). Each reason names the unimplemented subsystem
 # the script hinges on.
 
-
 # hooks / set-hook / wait-for: gaps beyond the hook engine
 hooks-notify.sh                 # #{pane_in_mode} of the hook's pane in pane-mode-changed + title stack (CSI 22/23 t) + default-shell option + client-* hooks
 
@@ -51,9 +47,9 @@ choose-buffer.sh                # choose-buffer + mode-screen rendering unimplem
 choose-client.sh                # choose-client + list-clients unimplemented
 choose-tree.sh                  # needs list-clients + interactive mode-screen
 customize-mode.sh               # customize-mode unimplemented
-display-panes.sh                # display-panes mode + display-panes-format unimplemented
+display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
 modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
-mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes + display-panes-format
+mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
 # copy-mode advanced motions/options
@@ -72,7 +68,6 @@ menu-mouse.sh                   # display-menu
 new-pane-mouse.sh               # list-keys + new-pane -M drag
 
 # option engine breadth: flat scalar table, global-only read-back
-options-array.sh                # needs pane-colours (registered, not yet live)
 options-values.sh               # needs default-client-command (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that
@@ -88,11 +83,10 @@ input-raw-sgr.sh                # emulator: OSC 8 id= (linkid) not exposed
 input-raw-unicode.sh            # emulator: no grapheme clustering of RI pairs / VS16 (mode 2027 off)
 input-reflow-stress.sh          # -pNJ loses lines after resizing to 1-3 columns; outer client's status redraw marker
 input-replies.sh                # emulator replies: DA2, DECRQM IRM/columns/2031, DECRQSS cursor style, OSC 10/11/12/4 colour queries
-input-requests.sh               # OSC 4/OSC 52 requests not forwarded to the outer terminal (first: OSC 4;99;?)
+input-requests.sh               # OSC 4 queries are answered from the pane palette, not forwarded to the outer terminal; get-clipboard request/both (OSC 52 query forwarding) unimplemented
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 
-
-pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot cross the Text wire) + split-window -s (window-style option)
+pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
 
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)

@@ -19,6 +19,10 @@ module Hat.Server.Resize
     , pickArea
     , rectSize
     , windowArrange
+    , unzoomedArrange
+    , windowPaneStatus
+    , paneScrollbars
+    , scrollbarReserve
     , windowLayoutAt
     ) where
 
@@ -28,6 +32,7 @@ import Control.Monad (forM, forM_, when)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -38,6 +43,9 @@ import Hat.Model.Options
 import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.Scene
+    (PaneStatus (..), ScrollbarSide (..), ScrollbarStyle (..), scrollbarStyle, statusAdjust)
+import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
@@ -234,7 +242,7 @@ paneSizeTargets st = do
     areas <- windowAreas st
     fmap concat $ forM areas $ \(win, eff) -> do
         _ <- windowLayoutAt eff win
-        (rects, _) <- windowArrange eff win
+        (rects, _) <- windowArrange st eff win
         ps <- readTVar win.panes
         pure [ (p, rectSize rect)
              | (pidL, rect) <- rects
@@ -317,22 +325,98 @@ windowLayoutAt eff win = do
     let lay' = fitLayout eff lay
     if lay' == lay then pure lay else lay' <$ writeTVar win.layout lay'
 
--- | Pane rects and borders for a window, honoring zoom. Arranging is
--- pure in the window rect and the layout tree, so the last result is
--- kept until either input changes — renderers hit this every frame.
-windowArrange :: Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
-windowArrange eff win = do
+-- | Pane rects and borders for a window, honoring zoom and leaving room
+-- for the window's pane status line. Arranging is pure in the window rect
+-- and the layout tree, so the last result is kept until either input
+-- changes — renderers hit this every frame.
+windowArrange
+    :: ServerState -> Size -> Window -> STM ([(PaneId, Rect)], [(Pos, Char)])
+windowArrange st eff win = do
     mz <- readTVar win.zoomed
     lay <- readTVar win.layout
     ps <- readTVar win.panes
+    status <- windowPaneStatus st win
+    (side, bars) <- paneScrollbars st win
+    let adjust (rects, borders) =
+            ( [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
+                        (statusAdjust status (fromIntegral eff.rows) r))
+              | (p, r) <- rects ]
+            , borders )
     case mz of
-        Just zpid | Map.member zpid ps -> pure ([(zpid, sizeRect eff)], [])
+        Just zpid | Map.member zpid ps -> pure (adjust ([(zpid, sizeRect eff)], []))
+        _ -> adjust <$> cachedArrange eff win lay
+
+-- | Pane rects as 'windowArrange' would give them were the window not
+-- zoomed.
+unzoomedArrange :: ServerState -> Size -> Window -> STM [(PaneId, Rect)]
+unzoomedArrange st eff win = do
+    lay <- readTVar win.layout
+    status <- windowPaneStatus st win
+    (side, bars) <- paneScrollbars st win
+    (rects, _) <- cachedArrange eff win lay
+    pure [ (p, scrollbarReserve side (Map.findWithDefault 0 p bars)
+                    (statusAdjust status (fromIntegral eff.rows) r))
+         | (p, r) <- rects ]
+
+-- | 'arrange' through the window's cache of its last result.
+cachedArrange :: Size -> Window -> Layout -> STM ([(PaneId, Rect)], [(Pos, Char)])
+cachedArrange eff win lay = do
+    let rect = sizeRect eff
+    hit <- readTVar win.arrangeCache
+    case hit of
+        Just (k, res) | k == (rect, lay) -> pure res
         _ -> do
-            let rect = sizeRect eff
-            hit <- readTVar win.arrangeCache
-            case hit of
-                Just (k, res) | k == (rect, lay) -> pure res
-                _ -> do
-                    let res = arrange rect lay
-                    writeTVar win.arrangeCache (Just ((rect, lay), res))
-                    pure res
+            let res = arrange rect lay
+            writeTVar win.arrangeCache (Just ((rect, lay), res))
+            pure res
+
+-- | A window's @pane-border-status@.
+windowPaneStatus :: ServerState -> Window -> STM PaneStatus
+windowPaneStatus st win = do
+    v <- chainText [win.options, st.globalWindowOptions] "pane-border-status"
+    pure $ case v of
+        "top" -> PaneStatusTop
+        "bottom" -> PaneStatusBottom
+        _ -> PaneStatusOff
+
+-- | Which side a window's scrollbars take, and the width (padding
+-- included) of each pane's scrollbar beside it (tmux's
+-- @window_pane_scrollbar_reserve@): @pane-scrollbars on@ shows one for
+-- every pane not on its alternate screen.
+paneScrollbars :: ServerState -> Window -> STM (ScrollbarSide, Map.Map PaneId Int)
+paneScrollbars st win = do
+    mode <- chainText [win.options, st.globalWindowOptions] "pane-scrollbars"
+    pos <- chainText [win.options, st.globalWindowOptions] "pane-scrollbars-position"
+    let side = if pos == "left" then ScrollbarLeft else ScrollbarRight
+    if mode /= "on" then pure (side, Map.empty) else do
+        ps <- Map.elems <$> readTVar win.panes
+        bars <- fmap concat $ forM ps $ \p -> do
+            alt <- readTVar p.onAlternate
+            raw <- chainText [p.options, win.options, st.globalWindowOptions]
+                "pane-scrollbars-style"
+            let sb = scrollbarStyle terminalTheme raw
+            pure [ (p.id, sb.width + sb.pad) | not alt ]
+        pure (side, Map.fromList bars)
+
+-- | A pane's content once its scrollbar takes its columns (tmux's
+-- @layout_fix_panes@), leaving at least one.
+scrollbarReserve :: ScrollbarSide -> Int -> Rect -> Rect
+scrollbarReserve _ 0 r = r
+scrollbarReserve side w r
+    | sx - w < 1 = case side of
+        ScrollbarLeft -> r { startCol = r.endCol - 1 }
+        ScrollbarRight -> r { endCol = r.startCol + 1 }
+    | otherwise = case side of
+        ScrollbarLeft -> r { startCol = r.startCol + w }
+        ScrollbarRight -> r { endCol = r.endCol - w }
+  where
+    sx = r.endCol - r.startCol
+
+-- | An option's text in the nearest of a chain of tables, else its
+-- registry default.
+chainText :: [TVar OptionsDelta] -> Text -> STM Text
+chainText tables name = do
+    found <- mapM (fmap (lookupDelta name) . readTVar) tables
+    pure $ case [ v | Just v <- found ] of
+        (v : _) -> valueText v
+        [] -> maybe "" (valueText . (.defaultValue)) (lookupOptionDef name)

@@ -61,6 +61,8 @@ data Event
     | OscColorQuery OscColorTarget OscTerm
         -- ^ app asked a terminal color (OSC 10/11 @;?@); answer with the
         --   same terminator the query used
+    | OscPaletteQuery Int OscTerm
+        -- ^ app asked one palette entry (OSC 4 @;n;?@)
     | DesktopNotification B.ByteString
         -- ^ app raised a desktop notification (OSC 9 / OSC 777), captured
         --   verbatim to forward to the outer terminal

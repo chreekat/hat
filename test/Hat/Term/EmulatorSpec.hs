@@ -3,6 +3,7 @@ module Hat.Term.EmulatorSpec (spec) where
 import Control.Monad (forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -522,6 +523,13 @@ spec = do
         scr <- snapshot e
         rowText scr 0 `shouldBe` ""
 
+    it "surfaces an OSC 4 palette query as an event, stripped from display" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESC]4;12;?\a"
+        evs `shouldContain` [OscPaletteQuery 12 TermBel]
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` ""
+
     -- Bug 75f20c8a: an inner app's desktop notification (OSC 9 or OSC 777
     -- notify) must be surfaced verbatim so the server can forward it to the
     -- outer terminal, and never rendered onto the pane as text.
@@ -544,6 +552,38 @@ spec = do
         _ <- feedStr e "\ESC[?1l"          -- DECCKM off (normal)
         back <- encodeKey e CursorUp
         back `shouldBe` "\ESC[A"
+
+    describe "program colours" $ do
+        let fresh = newEmulator Size { rows = 3, cols = 5 } 1000
+        it "an OSC 12 cursor colour reads back until OSC 112 resets it" $ do
+            e <- fresh
+            appCursorColour e `shouldReturn` Nothing
+            _ <- feedStr e "\ESC]12;#ff8000\a"
+            appCursorColour e `shouldReturn` Just (255, 128, 0)
+            _ <- feedStr e "\ESC]112\a"
+            appCursorColour e `shouldReturn` Nothing
+        it "an OSC 10/11 colour is read as tmux reads X11 colour specs" $ do
+            let bgOf colour = do
+                    e <- fresh
+                    _ <- feedStr e ("\ESC]11;" <> colour <> "\a")
+                    snd <$> appDefaultColours e
+            bgOf "cmy:0.9373/0.6941/0.4549" `shouldReturn` Just (15, 78, 139)
+            bgOf "cmyk:0.88/0.44/0.00/0.45" `shouldReturn` Just (16, 78, 140)
+            bgOf "16,78,139" `shouldReturn` Just (16, 78, 139)
+            bgOf "#10004E008B00" `shouldReturn` Just (16, 78, 139)
+            bgOf "rgb:1000/4E00/8B00" `shouldReturn` Just (16, 78, 139)
+            bgOf "  DodgerBlue4 " `shouldReturn` Just (16, 78, 139)
+            bgOf "grey3" `shouldReturn` Just (8, 8, 8)
+            bgOf "nosuchcolour" `shouldReturn` Nothing
+        it "an OSC 4 change is a palette override" $ do
+            e <- fresh
+            _ <- feedStr e "\ESC]4;1;#010203\a"
+            paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
+        it "palette defaults are no override, and keep the program's" $ do
+            e <- fresh
+            _ <- feedStr e "\ESC]4;1;#010203\a"
+            setPaletteDefaults e (Map.singleton 5 (9, 9, 9))
+            paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
 
     describe "cursorPendingWrap" $ do
         it "is set once a glyph lands in the last column under autowrap" $ do

@@ -11,9 +11,11 @@ module Hat.Server.FormatDraw
     , DefaultType (..)
     , Width (..)
     , defaultDrawStyle
+    , themedDrawStyle
     , styleParse
     , styleCell
     , colourValue
+    , acsGlyph
       -- * Drawing
     , formatDraw
     , DrawRange (..)
@@ -36,7 +38,8 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Data.Vector qualified as V
 
-import Hat.Server.Format.Colour (Colour (..), colourFromText)
+import Hat.Server.Format.Colour (colourFromText)
+import Hat.Server.Theme (Theme, colourCell, terminalTheme, themeColour)
 import Hat.TextWidth (charWidth)
 import Hat.Term.Cell qualified as Cell
 
@@ -67,6 +70,9 @@ data DrawStyle = DrawStyle
     , ignore :: Bool
     , width :: Maybe Width
     , range :: DrawRange
+    , acs :: Bool  -- ^ text draws from the VT100 line-drawing set ('acsGlyph')
+    , theme :: Theme  -- ^ what its theme colours draw as
+    , pad :: Maybe Int  -- ^ @pad=@: a scrollbar's padding
     }
     deriving (Eq, Show)
 
@@ -88,13 +94,18 @@ defaultDrawStyle :: DrawStyle
 defaultDrawStyle = DrawStyle
     { cell = Cell.defaultStyle, fill = Nothing, align = AlignDefault
     , list = ListOff, defaultType = DefaultBase, ignore = False
-    , width = Nothing, range = RangeNone }
+    , width = Nothing, range = RangeNone, acs = False, theme = terminalTheme
+    , pad = Nothing }
+
+-- | The default style, drawing theme colours from a theme.
+themedDrawStyle :: Theme -> DrawStyle
+themedDrawStyle th = defaultDrawStyle { theme = th }
 
 -- | A style option's cell attributes (tmux's @style_apply@ over the default
 -- cell); an unparseable style is the default.
-styleCell :: Text -> Cell.Style
-styleCell t = maybe Cell.defaultStyle (.cell)
-    (styleParse Cell.defaultStyle defaultDrawStyle t)
+styleCell :: Theme -> Text -> Cell.Style
+styleCell th t = maybe Cell.defaultStyle (.cell)
+    (styleParse Cell.defaultStyle defaultDrawStyle { theme = th } t)
 
 -- | tmux's @style_parse@: fold a style string onto @sy@, where @default@ and
 -- a @default@ colour mean @base@'s. Any bad token rejects the whole string.
@@ -106,7 +117,7 @@ styleParse base sy0 =
     token tok0 sy
         | T.length tok0 > 255 = Nothing
         | otherwise = case T.toLower tok0 of
-            "default" -> Just sy { cell = base }
+            "default" -> Just sy { cell = base, acs = False }
             "ignore" -> Just sy { ignore = True }
             "noignore" -> Just sy { ignore = False }
             "push-default" -> Just sy { defaultType = DefaultPush }
@@ -115,7 +126,7 @@ styleParse base sy0 =
             "nolist" -> Just sy { list = ListOff }
             "norange" -> Just sy { range = RangeNone }
             "noalign" -> Just sy { align = AlignDefault }
-            "none" -> Just sy { cell = clearAttrs sy.cell }
+            "none" -> Just sy { cell = clearAttrs sy.cell, acs = False }
             tok
                 | Just v <- T.stripPrefix "list=" tok -> case v of
                     "on" -> Just sy { list = ListOn }
@@ -131,29 +142,32 @@ styleParse base sy0 =
                     "absolute-centre" -> Just sy { align = AlignAbsCentre }
                     _ -> Nothing
                 | Just v <- nonEmpty "fill=" tok -> do
-                    c <- colourValue v
+                    c <- colourValue sy.theme v
                     Just sy { fill = c }
                 | Just v <- nonEmpty "dim=" tok ->
                     sy <$ number 0 100 (fromMaybe v (T.stripSuffix "%" v))
                 | Just v <- nonEmpty "fg=" tok -> do
-                    c <- colourValue v
+                    c <- colourValue sy.theme v
                     Just sy { cell = sy.cell { Cell.fg = fromMaybe base.fg c } }
                 | Just v <- nonEmpty "bg=" tok -> do
-                    c <- colourValue v
+                    c <- colourValue sy.theme v
                     Just sy { cell = sy.cell { Cell.bg = fromMaybe base.bg c } }
-                | Just v <- nonEmpty "us=" tok -> sy <$ colourValue v
+                | Just v <- nonEmpty "us=" tok -> sy <$ colourValue sy.theme v
                 | T.length tok > 2, Just v <- T.stripPrefix "no" tok ->
                     if v == "link" || v == "attr"
                         then Just sy
-                        else (\f -> sy { cell = f False sy.cell }) <$> attrs v
+                        else (\f -> sy { cell = f False sy.cell
+                                        , acs = sy.acs && not (namesAcs v) }) <$> attrs v
                 | Just v <- nonEmpty "width=" tok -> case T.unsnoc v of
                     Just (n, '%') | not (T.null n) ->
                         (\w -> sy { width = Just (WidthPercent (fromInteger w)) }) <$> number 0 100 n
                     _ -> (\w -> sy { width = Just (WidthCells (fromInteger w)) })
                         <$> number 0 4294967295 v
-                | Just v <- nonEmpty "pad=" tok -> sy <$ number 0 4294967295 v
+                | Just v <- nonEmpty "pad=" tok ->
+                    (\n -> sy { pad = Just (fromInteger n) }) <$> number 0 4294967295 v
                 | "link=" `T.isPrefixOf` tok -> Just sy
-                | otherwise -> (\f -> sy { cell = f True sy.cell }) <$> attrs tok
+                | otherwise -> (\f -> sy { cell = f True sy.cell
+                                          , acs = sy.acs || namesAcs tok }) <$> attrs tok
     nonEmpty pre tok = case T.stripPrefix pre tok of
         Just v | not (T.null v) -> Just v
         _ -> Nothing
@@ -188,29 +202,15 @@ number lo hi v = case TR.signed TR.decimal v of
     _ -> Nothing
 
 -- | tmux's @colour_fromstring@ as a cell colour: 'Nothing' inside is
--- @default@ (the caller's base). Theme colours take their terminal colour,
--- tmux's @theme terminal@ choice.
-colourValue :: Text -> Maybe (Maybe Cell.Color)
-colourValue v = case List.lookup (T.toLower v) themeColours of
-    Just n -> Just (Just (Cell.Indexed n))
-    Nothing -> colourFromText v >>= \case
-        CDefault -> Just Nothing
-        CTerminal -> Just (Just Cell.DefaultColor)
-        CBase n
-            | n >= 90 -> Just (Just (Cell.Indexed (fromIntegral (n - 90 + 8))))
-            | otherwise -> Just (Just (Cell.Indexed (fromIntegral n)))
-        C256 n -> Just (Just (Cell.Indexed (fromIntegral n)))
-        CRGB rgb -> Just (Just (Cell.RGB (byte 16) (byte 8) (byte 0)))
-          where byte s = fromIntegral ((rgb `div` (2 ^ (s :: Int))) `mod` 256)
-  where
-    themeColours =
-        [ ("themeblack", 0), ("themewhite", 7), ("themelightgrey", 7)
-        , ("themedarkgrey", 0), ("themegreen", 2), ("themeyellow", 3)
-        , ("themered", 1), ("themeblue", 4), ("themecyan", 6)
-        , ("thememagenta", 5) ]
+-- @default@ (the caller's base). Theme colours take the theme's colour.
+colourValue :: Theme -> Text -> Maybe (Maybe Cell.Color)
+colourValue th v = case themeColour th v of
+    Just c -> Just (Just c)
+    Nothing -> colourCell <$> colourFromText v
 
 -- | tmux's @attributes_fromstring@ as a setter for the attributes hat's
--- cells carry; @hidden@, @overline@ and @acs@ are accepted but not drawn.
+-- cells carry; @hidden@ and @overline@ are accepted but not drawn, and
+-- @acs@ is the draw style's own ('namesAcs').
 attrs :: Text -> Maybe (Bool -> Cell.Style -> Cell.Style)
 attrs t
     | T.null t || edge (T.take 1 t) || edge (T.takeEnd 1 t) = Nothing
@@ -238,6 +238,10 @@ attrs t
         "overline" -> Just (\_ s -> s)
         _ -> Nothing
     underline on s = s { Cell.underline = on }
+
+-- | Whether an attribute list names @acs@.
+namesAcs :: Text -> Bool
+namesAcs = elem "acs" . T.split (`elem` (" ,|" :: String))
 
 clearAttrs :: Cell.Style -> Cell.Style
 clearAttrs s = s
@@ -275,27 +279,27 @@ type Tagged = (Cell.Cell, DrawRange)
 
 -- | tmux's @format_draw@: draw an expanded format over a row (the area,
 -- already holding whatever lies beneath), in @base@ style.
-formatDraw :: Cell.Style -> Text -> V.Vector Cell.Cell -> V.Vector Cell.Cell
-formatDraw base expanded area =
-    V.map fst (drawTagged base expanded (V.map (, RangeNone) area))
+formatDraw :: Theme -> Cell.Style -> Text -> V.Vector Cell.Cell -> V.Vector Cell.Cell
+formatDraw th base expanded area =
+    V.map fst (drawTagged th base expanded (V.map (, RangeNone) area))
 
 -- | The ranges @format_draw@ leaves across a row @width@ cells wide: the
 -- range each column's text was drawn under, as a mouse click there finds
 -- it.
-formatRanges :: Cell.Style -> Text -> Int -> V.Vector DrawRange
-formatRanges base expanded width =
-    V.map snd (drawTagged base expanded
+formatRanges :: Theme -> Cell.Style -> Text -> Int -> V.Vector DrawRange
+formatRanges th base expanded width =
+    V.map snd (drawTagged th base expanded
         (V.replicate width (Cell.glyphCell ' ' base, RangeNone)))
 
-drawTagged :: Cell.Style -> Text -> V.Vector Tagged -> V.Vector Tagged
-drawTagged base expanded area = case walk start (T.unpack expanded) of
+drawTagged :: Theme -> Cell.Style -> Text -> V.Vector Tagged -> V.Vector Tagged
+drawTagged th base expanded area = case walk start (T.unpack expanded) of
     Nothing -> area  -- an unterminated #[ draws nothing
     Just w -> arrange w (filled w)
   where
     available = V.length area
     start = Walk
         { sections = Map.empty, current = SLeft
-        , sy = defaultDrawStyle { cell = base }
+        , sy = defaultDrawStyle { cell = base, theme = th }
         , currentDefault = base, baseDefault = base
         , focusStart = Nothing, focusEnd = Nothing
         , listState = NoList, listAlign = AlignDefault
@@ -357,7 +361,7 @@ putChars cs w = w { sections = Map.alter (Just . add . fromMaybe Seq.empty)
   where
     sty = w.sy.cell
     r = w.sy.range
-    add sq = List.foldl' put sq cs
+    add sq = List.foldl' put sq (if w.sy.acs then map acsGlyph cs else cs)
     put sq c = case charWidth c of
         0 | c < ' ' || c == '\DEL' -> sq
           | otherwise -> attach c sq
@@ -664,3 +668,18 @@ formatTrimRight limit t
             Just (body, rest') -> "#[" <> body <> "]" <> go w rest'
         | otherwise = go w rest
 
+-- | A VT100 alternate-character-set character as the UTF-8 glyph tmux
+-- draws for it (@tty_acs_table@); anything else is itself.
+acsGlyph :: Char -> Char
+acsGlyph c = fromMaybe c (lookup c acsTable)
+  where
+    acsTable =
+        [ ('+', '\x2192'), (',', '\x2190'), ('-', '\x2191'), ('.', '\x2193')
+        , ('0', '\x25ae'), ('`', '\x25c6'), ('a', '\x2592'), ('b', '\x2409')
+        , ('c', '\x240c'), ('d', '\x240d'), ('e', '\x240a'), ('f', '\x00b0')
+        , ('g', '\x00b1'), ('h', '\x2424'), ('i', '\x240b'), ('j', '\x2518')
+        , ('k', '\x2510'), ('l', '\x250c'), ('m', '\x2514'), ('n', '\x253c')
+        , ('o', '\x23ba'), ('p', '\x23bb'), ('q', '\x2500'), ('r', '\x23bc')
+        , ('s', '\x23bd'), ('t', '\x251c'), ('u', '\x2524'), ('v', '\x2534')
+        , ('w', '\x252c'), ('x', '\x2502'), ('y', '\x2264'), ('z', '\x2265')
+        , ('{', '\x03c0'), ('|', '\x2260'), ('}', '\x00a3'), ('~', '\x00b7') ]

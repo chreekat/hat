@@ -10,6 +10,7 @@ import Data.Maybe (isJust)
 import Data.Vector qualified as V
 
 import Hat.Geometry (Rect (..), Size (..))
+import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options (emptyDelta)
 import Hat.Server.Flash (lingerDeadline, flashExpired)
@@ -36,9 +37,11 @@ spec = do
 
         it "a zoomed pane arranges alone: the zoomed pane's rect" $ do
             win <- splitWindow
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-flashspec.sock" Nothing
             atomically $ writeTVar win.zoomed (Just (PaneId 1))
             (rects, _) <- atomically $
-                windowArrange (Size { rows = 24, cols = 80 }) win
+                windowArrange st (Size { rows = 24, cols = 80 }) win
             flashTarget rects (PaneId 1) `shouldSatisfy` isJust
 
         it "an active pane missing from the layout: no highlight" $
@@ -117,6 +120,7 @@ flashStubPane pid = do
     optsV <- newTVarIO emptyDelta
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
+    alternateV <- newTVarIO False
     pure Pane
         { id = pid
         , pty = error "flashStubPane: pty never touched"
@@ -134,4 +138,5 @@ flashStubPane pid = do
         , exited = exitedV
         , kind = ProgramPane
         , inputOff = inputOffV
+        , onAlternate = alternateV
         }

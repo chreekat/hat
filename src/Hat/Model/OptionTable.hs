@@ -25,6 +25,7 @@ module Hat.Model.OptionTable
     , isLive
     , notYetError
     , refusing
+    , choicesOnly
       -- * Values
     , OptionValue (..)
     , ArrayKey (..)
@@ -456,28 +457,28 @@ optionTable =
     , notYet $ arrayOf "terminal-features" ServerScope KString ","
         [ "xterm*:clipboard:ccolour:cstyle:focus:title", "screen*:title"
         , "rxvt*:ignorefkeys" ]
-    , notYet $ scalar "theme" ServerScope
+    , live $ scalar "theme" ServerScope
         (KChoice ["detect", "terminal", "light", "dark"]) "detect"
-    , notYet $ themeColour "dark-theme-black" "gray5" "black"
-    , notYet $ themeColour "dark-theme-white" "gray90" "white"
-    , notYet $ themeColour "dark-theme-light-grey" "gray70" "white"
-    , notYet $ themeColour "dark-theme-dark-grey" "gray15" "black"
-    , notYet $ themeColour "dark-theme-green" "yellowgreen" "green"
-    , notYet $ themeColour "dark-theme-yellow" "darkgoldenrod" "yellow"
-    , notYet $ themeColour "dark-theme-red" "indianred" "red"
-    , notYet $ themeColour "dark-theme-blue" "skyblue3" "blue"
-    , notYet $ themeColour "dark-theme-cyan" "cadetblue" "cyan"
-    , notYet $ themeColour "dark-theme-magenta" "mediumpurple" "magenta"
-    , notYet $ themeColour "light-theme-black" "gray10" "black"
-    , notYet $ themeColour "light-theme-white" "gray95" "white"
-    , notYet $ themeColour "light-theme-light-grey" "gray80" "white"
-    , notYet $ themeColour "light-theme-dark-grey" "gray45" "black"
-    , notYet $ themeColour "light-theme-green" "seagreen" "green"
-    , notYet $ themeColour "light-theme-yellow" "darkgoldenrod" "yellow"
-    , notYet $ themeColour "light-theme-red" "indianred4" "red"
-    , notYet $ themeColour "light-theme-blue" "steelblue" "blue"
-    , notYet $ themeColour "light-theme-cyan" "darkcyan" "cyan"
-    , notYet $ themeColour "light-theme-magenta" "purple4" "magenta"
+    , live $ themeColour "dark-theme-black" "gray5" "black"
+    , live $ themeColour "dark-theme-white" "gray90" "white"
+    , live $ themeColour "dark-theme-light-grey" "gray70" "white"
+    , live $ themeColour "dark-theme-dark-grey" "gray15" "black"
+    , live $ themeColour "dark-theme-green" "yellowgreen" "green"
+    , live $ themeColour "dark-theme-yellow" "darkgoldenrod" "yellow"
+    , live $ themeColour "dark-theme-red" "indianred" "red"
+    , live $ themeColour "dark-theme-blue" "skyblue3" "blue"
+    , live $ themeColour "dark-theme-cyan" "cadetblue" "cyan"
+    , live $ themeColour "dark-theme-magenta" "mediumpurple" "magenta"
+    , live $ themeColour "light-theme-black" "gray10" "black"
+    , live $ themeColour "light-theme-white" "gray95" "white"
+    , live $ themeColour "light-theme-light-grey" "gray80" "white"
+    , live $ themeColour "light-theme-dark-grey" "gray45" "black"
+    , live $ themeColour "light-theme-green" "seagreen" "green"
+    , live $ themeColour "light-theme-yellow" "darkgoldenrod" "yellow"
+    , live $ themeColour "light-theme-red" "indianred4" "red"
+    , live $ themeColour "light-theme-blue" "steelblue" "blue"
+    , live $ themeColour "light-theme-cyan" "darkcyan" "cyan"
+    , live $ themeColour "light-theme-magenta" "purple4" "magenta"
     , live $ arrayOf "user-keys" ServerScope KString "," []
     , notYet $ scalar "variation-selector-always-wide" ServerScope KFlag "on"
 
@@ -580,11 +581,11 @@ optionTable =
     , notYet $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
     , notYet $ scalar "clock-mode-style" WindowScope
         (KChoice ["12", "24", "12-with-seconds", "24-with-seconds"]) "24"
-    , live $ scalar "display-panes-active-colour" WindowScope KColourString "red"
+    , live $ scalar "display-panes-active-colour" WindowScope KColourString "themered"
     , notYet $ scalar "display-panes-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
-    , live $ scalar "display-panes-colour" WindowScope KColourString "blue"
-    , notYet $ scalar "display-panes-format" WindowScope KString
+    , live $ scalar "display-panes-colour" WindowScope KColourString "themeblue"
+    , live $ scalar "display-panes-format" WindowScope KString
         "#[align=right]#{pane_unzoomed_width}x#{pane_unzoomed_height}"
     , live $ scalar "display-panes-time" WindowScope (KNumber 1 intMax) "1000"
     , notYet $ scalar "copy-mode-match-style" WindowScope KStyle
@@ -611,7 +612,7 @@ optionTable =
         "fg=themelightgrey,dim"
     , notYet $ scalar "copy-mode-line-numbers" WindowScope
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
-    , notYet $ scalar "fill-character" WindowScope KString
+    , live $ scalar "fill-character" WindowScope KString
         "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"
     , live $ scalar "main-pane-height" WindowScope KString "24"
     , live $ scalar "main-pane-width" WindowScope KString "80"
@@ -622,9 +623,13 @@ optionTable =
     , live $ scalar "monitor-silence" WindowScope (KNumber 0 intMax) "0"
     , live $ scalar "other-pane-height" WindowScope KString "0"
     , live $ scalar "other-pane-width" WindowScope KString "0"
-    , live $ scalar "pane-active-border-style" WindowPaneScope KStyle "fg=green"
+    , paneLocal $ live $ scalar "pane-active-border-style" WindowPaneScope KStyle
+        "fg=#{?pane_modal_flag,themeblue,\
+        \#{?pane_marked,thememagenta,\
+        \#{?synchronize-panes,themered,\
+        \#{?pane_in_mode,themeyellow,themegreen}}}}"
     , live $ scalar "pane-base-index" WindowScope (KNumber 0 ushrtMax) "0"
-    , notYet $ scalar "pane-border-format" WindowPaneScope KString
+    , paneLocal $ live $ scalar "pane-border-format" WindowPaneScope KString
         "#{?pane_active,#[reverse],}#{pane_index}#[default] \"#{pane_title}\"\
         \#{?#{mouse},#[align=right]\
         \#[range=control|7][#{?#{pane_floating_flag},t,f}]#[norange]\
@@ -632,20 +637,20 @@ optionTable =
         \#[range=control|9][x]#[norange],}"
     , live $ scalar "pane-border-indicators" WindowScope
         (KChoice ["off", "colour", "arrows", "both"]) "colour"
-    , choicesOnly ["single", "double", "heavy", "simple"] $ live $
-        scalar "pane-border-lines" WindowPaneScope
+    , live $ scalar "pane-border-lines" WindowPaneScope
             (KChoice ["single", "double", "heavy", "simple", "number", "spaces", "none"])
             "single"
-    , notYet $ scalar "pane-border-status" WindowPaneScope
+    , live $ scalar "pane-border-status" WindowPaneScope
         (KChoice ["off", "top", "bottom", "top-floating", "bottom-floating"]) "off"
-    , live $ scalar "pane-border-style" WindowPaneScope KStyle "default"
-    , notYet $ arrayOf "pane-colours" WindowPaneScope KColour " ," []
-    , notYet $ scalar "pane-scrollbars" WindowScope
+    , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle
+        "fg=themelightgrey"
+    , paneLocal $ live $ arrayOf "pane-colours" WindowPaneScope KColour " ," []
+    , choicesOnly ["off", "on"] $ live $ scalar "pane-scrollbars" WindowScope
         (KChoice ["off", "modal", "on", "auto-hide"]) "off"
     , notYet $ scalar "pane-scrollbars-timeout" WindowScope (KNumber 0 intMax) "500"
-    , notYet $ scalar "pane-scrollbars-style" WindowPaneScope KStyle
+    , paneLocal $ live $ scalar "pane-scrollbars-style" WindowPaneScope KStyle
         "bg=themedarkgrey,fg=themelightgrey,width=1,pad=0"
-    , notYet $ scalar "pane-scrollbars-position" WindowScope
+    , live $ scalar "pane-scrollbars-position" WindowScope
         (KChoice ["right", "left"]) "right"
     , notYet $ scalar "popup-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themewhite"
@@ -676,14 +681,16 @@ optionTable =
         \#{&&:#{window_format},#{window_active}}},themered,themeblue}"
     , notYet $ scalar "tree-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
-    , notYet $ scalar "window-active-style" WindowPaneScope KStyle "default"
+    , refusing (dimmed "window-active-style") $ paneLocal $ live $
+        scalar "window-active-style" WindowPaneScope KStyle "default"
     , live $ scalar "window-pane-current-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
     , live $ scalar "window-pane-status-format" WindowScope KString
         "#P:[#T]#{?pane_flags,#{pane_flags}, }"
     , live $ scalar "window-size" WindowScope
         (KChoice ["largest", "smallest", "manual", "latest"]) "latest"
-    , notYet $ scalar "window-style" WindowPaneScope KStyle "default"
+    , refusing (dimmed "window-style") $ paneLocal $ live $
+        scalar "window-style" WindowPaneScope KStyle "default"
     , live $ scalar "window-status-activity-style" WindowScope KStyle "reverse"
     , live $ scalar "window-status-bell-style" WindowScope KStyle "reverse"
     , live $ scalar "window-status-current-format" WindowScope KString
@@ -792,3 +799,8 @@ optionTable =
   where
     themeColour n rich basic = scalar n ServerScope KColourString
         ("#{?#{e|>=:#{client_colours},256}," <> rich <> "," <> basic <> "}")
+    -- A pane's colours are not yet dimmed (tmux's @dim=@).
+    dimmed n v
+        | any ("dim=" `T.isPrefixOf`) (T.split (`elem` (" ," :: String)) (T.toLower v)) =
+            Just (n <> ": dim= not yet supported by hat")
+        | otherwise = Nothing

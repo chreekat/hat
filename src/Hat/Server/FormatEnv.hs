@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , resolveShell
     , expandFormat
     , formatCtxFor
+    , clientTheme
     , reachableValues
     , WindowFlagState (..)
     , windowFlags
@@ -51,7 +52,10 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
-import Hat.Server.Resize (windowArea)
+import Hat.Server.Resize (unzoomedArrange, windowArea)
+import Hat.Server.FormatDraw (styleCell)
+import Hat.Server.Render (paneDefaults)
+import Hat.Server.Theme (Theme, clientColours, resolveTheme)
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
@@ -147,6 +151,8 @@ paneFormatEnv st sess wix win pix pane = do
         pure $ if zoomed == Just pane.id
             then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
             else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
+    unzoomed <- atomically (List.lookup pane.id <$> unzoomedArrange st area win)
+    (dfg, dbg) <- paneColourVars st sess win pane
     paneUser <- deltaFormats <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
@@ -197,7 +203,41 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        ] <> panePositionVars area geom) wenv
+        , ("pane_fg", dfg)
+        , ("pane_bg", dbg)
+        ]
+        <> concat [ [ ("pane_unzoomed_width", tshow (r.endCol - r.startCol))
+                    , ("pane_unzoomed_height", tshow (r.endRow - r.startRow)) ]
+                  | Just r <- [unzoomed] ] <> panePositionVars area geom) wenv
+
+-- | @pane_fg@ and @pane_bg@: the colours a pane's default-coloured cells
+-- draw in (see 'Hat.Server.Render.paneDefaults'), its styles read as
+-- written.
+paneColourVars :: ServerState -> Session -> Window -> Pane -> IO (Text, Text)
+paneColourVars st sess win pane = do
+    th <- clientTheme st
+    (popts, active) <- atomically $
+        (,) <$> resolveForPane st sess win pane <*> readTVar win.activeId
+    (pfg, pbg) <- Emu.appDefaultColours pane.emulator
+    let rgb = maybe Cell.DefaultColor (\(r, g, b) -> Cell.RGB r g b)
+        style n = styleCell th (optionText n popts)
+        (fg, bg) = paneDefaults (pane.id == active) (rgb pfg, rgb pbg)
+            (style "window-style") (style "window-active-style")
+    pure (colourName fg, colourName bg)
+
+-- | tmux's @colour_tostring@ for a cell colour.
+colourName :: Cell.Color -> Text
+colourName = \case
+    Cell.DefaultColor -> "default"
+    Cell.Indexed n
+        | n < 8 -> names !! fromIntegral n
+        | n < 16 -> "bright" <> names !! fromIntegral (n - 8)
+        | otherwise -> "colour" <> tshow n
+    Cell.RGB r g b -> T.pack ('#' : concatMap hex2 [r, g, b])
+  where
+    names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
+    hex2 w = [digit (w `div` 16), digit (w `mod` 16)]
+    digit d = "0123456789abcdef" !! fromIntegral d
 
 -- | A pane's position in its window (tmux's @pane_left@ … @pane_at_bottom@),
 -- from its cell: @(xoff, yoff, width, height)@.
@@ -456,13 +496,25 @@ formatCtxFor st env0 = do
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
+    th <- clientTheme st
     pure (formatCtx env job now)
-        { sessions = sessionItems
+        { theme = th
+        , sessions = sessionItems
         , windows = windowItems
         , panes = paneItems
         , clients = clientItems
         , paneLines = visibleLines
         }
+
+-- | The theme a hat client draws with (see 'resolveTheme'): every client
+-- shares the server's colour scheme and draws RGB colours.
+clientTheme :: ServerState -> IO Theme
+clientTheme st = do
+    opts <- readTVarIO st.options
+    scheme <- readTVarIO st.colorScheme
+    now <- getZonedTime
+    let ctx = formatCtx (Map.singleton "client_colours" clientColours) (const "") now
+    pure (resolveTheme (evaluateCtx ctx) opts scheme)
 
 -- | The formats plus every variable value satisfying @p@ that they name
 -- (as @{name}@ or @:name}@), transitively: what their @E:@ or @T:@
@@ -551,6 +603,7 @@ clientFormatVars c = do
     focused <- readTVarIO c.outerFocused
     pure
         [ ("client_name", "client" <> tshow (rawClient c.id))
+        , ("client_colours", clientColours)
         , ("client_control_mode", if isJust c.control then "1" else "0")
         , ("client_flags", T.intercalate "," $
             ["attached"] <> [ "focused" | focused ] <> controlFlags)

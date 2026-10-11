@@ -29,7 +29,7 @@ import Hat.Log (newLogger)
 import Hat.Client (nestsOwnServer)
 import Hat.Model
 import Hat.Model.Options
-    (Options (..), OptionValue (..)
+    (ArrayKey (..), Options (..), OptionValue (..)
     , defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
@@ -160,7 +160,7 @@ addClient st sid sz stamp = do
         <*> newIORef Nothing
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
-        <*> newIORef ""
+        <*> newIORef Nothing
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
@@ -202,7 +202,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef Nothing
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
-        <*> newIORef ""
+        <*> newIORef Nothing
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
@@ -233,6 +233,7 @@ stubPane n = do
     optsV <- newTVarIO emptyDelta
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
+    alternateV <- newTVarIO False
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -250,6 +251,7 @@ stubPane n = do
         , exited = exitedV
         , kind = ProgramPane
         , inputOff = inputOffV
+        , onAlternate = alternateV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -351,7 +353,9 @@ spec = do
         it "stamps [scroll/history] on the pane's top-right row" $ do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0
-            p <- stubPane 0
+            emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 100
+            p0 <- stubPane 0
+            let p = p0 { emulator = emu }
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
                 writeTVar p.mode (Just (copyModeAt 3))
@@ -363,6 +367,28 @@ spec = do
             frame <- readIORef client.lastFrame
             let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
             row0 `shouldSatisfy` T.isInfixOf "[0/3]"
+
+    describe "pane colours" $
+        it "window-style and pane-colours paint what a client sees of a pane" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            p0 <- stubPane 0
+            let p = p0 { emulator = emu }
+            _ <- Emu.feed emu "a\ESC[31mb"
+            atomically $ do
+                modifyTVar' win.panes (Map.insert p.id p)
+                writeTVar st.globalSessionOptions
+                    (singletonDelta "status" (OVScalar "off"))
+                writeTVar p.options
+                    (insertDelta "pane-colours" (OVArray (Map.singleton (KeyIndex 1) "colour100"))
+                        (singletonDelta "window-style" (OVScalar "bg=colour4")))
+            (client, _peer) <- wiredClient st Attached
+            renderOnce st client
+            frame <- readIORef client.lastFrame
+            map (.style) (take 2 (V.toList (frame V.! 0))) `shouldBe`
+                [ Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
+                , Cell.defaultStyle { Cell.fg = Cell.Indexed 100, Cell.bg = Cell.Indexed 4 } ]
 
     describe "clear-history" $
         it "empties the target pane's scrollback" $ do

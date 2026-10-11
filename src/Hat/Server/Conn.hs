@@ -227,7 +227,7 @@ newClient st conn h = do
     statusVar <- newIORef Nothing
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
-    cursorColourVar <- newIORef ""
+    cursorColourVar <- newIORef Nothing
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing

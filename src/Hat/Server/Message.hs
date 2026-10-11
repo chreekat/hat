@@ -49,7 +49,7 @@ messageArea opts width = case styleParse Cell.defaultStyle defaultDrawStyle raw 
 drawMessage
     :: FormatCtx -> Options -> Markup -> Text -> V.Vector Cell.Cell
     -> V.Vector Cell.Cell
-drawMessage ctx0 opts markup msg row = overArea ax aw row (formatDraw gc expanded)
+drawMessage ctx0 opts markup msg row = overArea ax aw row (formatDraw ctx.theme gc expanded)
   where
     text = case markup of
         MarkupStyled -> msg
@@ -86,11 +86,11 @@ drawPrompt ctx0 opts pv row = (drawn, cursorX)
         , ("prompt_flags", if pv.commandMode then "COMMANDMODE," else "")
         , ("prompt_type", "command")
         , ("command_prompt", if pv.commandMode then "1" else "0") ] ctx0
-    staticCell = case styleParse Cell.defaultStyle defaultDrawStyle
+    staticCell = case styleParse Cell.defaultStyle (themedDrawStyle ctx0.theme)
             (optionText styleName opts) of
         Just s -> s.cell
         Nothing -> Cell.defaultStyle
-    staticStyle = defaultDrawStyle { cell = staticCell }
+    staticStyle = (themedDrawStyle ctx0.theme) { cell = staticCell }
     sy = maybe staticStyle id $ styleParse Cell.defaultStyle staticStyle
         (evaluateCtx ctx1 (optionText styleName opts))
     gc = sy.cell
@@ -125,7 +125,7 @@ drawPrompt ctx0 opts pv row = (drawn, cursorX)
         | contentW == 0 = filled
         | otherwise =
             overArea inputX inputW
-                (overArea contentX labelW filled (formatDraw gc expanded))
+                (overArea contentX labelW filled (formatDraw ctx.theme gc expanded))
                 (const (V.fromList (inputCells gc offset inputW pv.input)))
 
 -- | The input's cells from column @offset@ for @width@ columns, control

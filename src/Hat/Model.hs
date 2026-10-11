@@ -106,7 +106,7 @@ import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( BorderIndicators, BorderLines, ModeKeys, Options, OptionsDelta, applyDelta
+    ( ModeKeys, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.ControlTypes (ControlState)
@@ -116,6 +116,7 @@ import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
+import Hat.Server.Scene (ChromeLook, Scene, SceneInput)
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -287,6 +288,9 @@ data Pane = Pane
     , kind     :: PaneKind
     , inputOff :: TVar Bool
         -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
+    , onAlternate :: TVar Bool
+        -- ^ whether the pane's program is on the alternate screen, as of
+        -- the last output its reader fed
     }
 
 -- | How a freshly-spawned pane chooses its process.
@@ -569,13 +573,14 @@ data AcceptGate = AcceptOpen | AcceptClosing | AcceptParked
 data ReadGate = ReadersFlowing | ReadersPaused
     deriving (Eq, Show)
 
--- | A client's styled border cells with the inputs that produced them;
--- the render thread's cache. See 'Hat.Server.View.renderOnce'.
+-- | A client's window scene and its drawn chrome, with the inputs that
+-- produced them; the render thread's cache. See
+-- 'Hat.Server.View.cachedChrome'.
 data ChromeCache = ChromeCache
-    { borders :: [(Pos, Char)]
-    , active  :: Maybe Rect
+    { input   :: SceneInput
+    , scene   :: Scene
+    , look    :: ChromeLook
     , rowOff  :: Int
-    , look    :: (BorderLines, BorderIndicators, Cell.Style, Cell.Style)
     , cells   :: [(Pos, Cell.Cell)]
     , chrome  :: Chrome
     }
@@ -630,7 +635,8 @@ data Client = Client
     , lastChrome :: IORef (Maybe ChromeCache)  -- render thread only
     , lastStatus :: IORef (Maybe StatusCache)  -- render thread only
     , lastCursor :: IORef (Pos, Bool)
-    , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
+    , lastCursorColour :: IORef (Maybe Emu.Rgb)
+        -- ^ OSC 12 in effect; render thread only
     , lastMouseMode :: IORef Int
         -- ^ the outer terminal's mouse tracking: 0 off, 1 clicks, 2 drags,
         --   3 all motion; render thread only

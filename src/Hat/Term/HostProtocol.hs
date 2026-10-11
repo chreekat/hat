@@ -45,6 +45,7 @@ module Hat.Term.HostProtocol
     , QuerySignal (..)
     , CsSignal (..)
     , nextQuery
+    , normaliseColourSets
     , honoredSignals
     , partitionPassthrough
     ) where
@@ -53,13 +54,46 @@ import Control.Applicative ((<|>))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.ByteString.Char8 qualified as BC
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word8)
 
+import Hat.Server.Format.Colour (colourParseX11)
+
 -- | Which color an OSC query asks about: OSC 10 (foreground) or 11
 -- (background).
+-- | Rewrite each OSC 10\/11\/12 colour a program sets to the colour tmux
+-- reads from its spec ('colourParseX11'), spelled @rgb:rr\/gg\/bb@; a spec
+-- tmux cannot read is dropped, as tmux ignores it. Queries pass untouched.
+normaliseColourSets :: ByteString -> ByteString
+normaliseColourSets bs = case B.breakSubstring "\ESC]1" bs of
+    (before, rest)
+        | B.null rest -> bs
+        | Just (code, afterCode) <- B.uncons (B.drop 3 rest)
+        , code `elem` [0x30, 0x31, 0x32]
+        , Just afterSemi <- B.stripPrefix ";" afterCode
+        , Just (spec, term, more) <- terminated afterSemi
+        , spec /= "?" ->
+            let colour = colourParseX11 (TE.decodeUtf8Lenient spec)
+                rewritten = case colour of
+                    Nothing -> ""
+                    Just c -> "\ESC]1" <> B.singleton code <> ";rgb:"
+                        <> hex2 (c `div` 65536) <> "/" <> hex2 (c `div` 256 `mod` 256)
+                        <> "/" <> hex2 (c `mod` 256) <> term
+            in before <> rewritten <> normaliseColourSets more
+        | otherwise -> before <> B.take 3 rest <> normaliseColourSets (B.drop 3 rest)
+  where
+    terminated r = case B.elemIndex 0x07 r of
+        Just i | noEsc (B.take i r) -> Just (B.take i r, "\a", B.drop (i + 1) r)
+        _ -> case B.breakSubstring "\ESC\\" r of
+            (spec, st) | not (B.null st), noEsc spec -> Just (spec, "\ESC\\", B.drop 2 st)
+            _ -> Nothing
+    noEsc = B.notElem 0x1b
+    hex2 n = BC.pack [digit (n `div` 16), digit (n `mod` 16)]
+    digit d = "0123456789abcdef" !! d
+
 data OscColorTarget = Foreground | Background
     deriving (Eq, Show)
 
@@ -365,6 +399,7 @@ partitionPassthrough = go
 data QuerySignal
     = SigColor CsSignal              -- ^ DEC mode 2031 subscribe/query
     | SigOsc OscColorTarget OscTerm  -- ^ OSC 10/11 color query
+    | SigPalette Int OscTerm         -- ^ OSC 4 query of one palette entry
     | SigNotify ByteString           -- ^ OSC 9/777 desktop notification, raw
                                      --   (whole sequence) to forward verbatim
 
@@ -390,7 +425,7 @@ nextQuery bs = go 0
         Just d ->
             let p = i + d
                 r = B.drop p bs
-            in case tryCsi r <|> tryOsc r <|> tryNotify r of
+            in case tryCsi r <|> tryOsc r <|> tryPalette r <|> tryNotify r of
                 Just (sig, more) -> Just (B.take p bs, sig, more)
                 Nothing -> go (p + 1)
     tryCsi r = do
@@ -407,6 +442,17 @@ nextQuery bs = go 0
             (TermBel,) <$> B.stripPrefix "\a" afterIntro
             <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterIntro
         pure (SigOsc target term, more)
+    tryPalette r = do
+        afterIntro <- B.stripPrefix "\ESC]4;" r
+        let (digits, rest) = B.span (\b -> b >= 0x30 && b <= 0x39) afterIntro
+        n <- case B.foldl' (\acc b -> acc * 10 + fromIntegral (b - 0x30)) (0 :: Int) digits of
+            v | not (B.null digits), B.length digits <= 3, v < 256 -> Just v
+            _ -> Nothing
+        afterQuery <- B.stripPrefix ";?" rest
+        (term, more) <-
+            (TermBel,) <$> B.stripPrefix "\a" afterQuery
+            <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterQuery
+        pure (SigPalette n term, more)
     tryNotify r = do
         afterParams <-
             (do a <- B.stripPrefix "\ESC]9;" r

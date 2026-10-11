@@ -43,7 +43,7 @@ mkClient sz lastFrame = do
     statusV <- newIORef Nothing
     mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
-    colourV <- newIORef ""
+    colourV <- newIORef Nothing
     fullV   <- newTVarIO False
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing

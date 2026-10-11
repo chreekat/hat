@@ -28,6 +28,7 @@ module Hat.Term.Ghostty
     , c_encode_key
     , c_key_modes
     , c_set
+    , c_get_into
     , WritePtyFn
     , BellFn
     , wrapWritePty
@@ -54,6 +55,12 @@ module Hat.Term.Ghostty
     , dataCursorVisible
     , dataActiveScreen
     , dataScrollbackRows
+    , dataColorCursor
+    , dataColorForeground
+    , dataColorBackground
+    , dataColorPalette
+    , dataColorPaletteDefault
+    , optColorPalette
     , optWritePty
     , optBell
     , screenAlternate
@@ -121,6 +128,10 @@ foreign import ccall unsafe "ghost_shim_key_modes"
     c_key_modes :: Ptr CTerm -> Ptr Word8 -> IO CInt
 foreign import ccall unsafe "ghostty_terminal_set"
     c_set :: Ptr CTerm -> CInt -> Ptr () -> IO CInt
+-- | @ghostty_terminal_get@ into a caller-supplied buffer, for data wider
+-- than 'c_get' reads (colours, the palette).
+foreign import ccall unsafe "ghostty_terminal_get"
+    c_get_into :: Ptr CTerm -> CInt -> Ptr () -> IO CInt
 
 -- libghostty invokes these synchronously inside 'ghost_shim_write'; the
 -- closures registered in 'Hat.Term.Emulator.newEmulator' capture the state
@@ -214,10 +225,24 @@ dataCursorVisible  = #{const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE}
 dataActiveScreen   = #{const GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN}
 dataScrollbackRows = #{const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS}
 
+-- Colour selectors for 'c_get_into': a @GhosttyColorRgb@ (three bytes) or
+-- a palette of 256 of them.
+dataColorCursor, dataColorForeground, dataColorBackground, dataColorPalette,
+    dataColorPaletteDefault :: CInt
+dataColorCursor = #{const GHOSTTY_TERMINAL_DATA_COLOR_CURSOR}
+dataColorForeground = #{const GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND}
+dataColorBackground = #{const GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND}
+dataColorPalette = #{const GHOSTTY_TERMINAL_DATA_COLOR_PALETTE}
+dataColorPaletteDefault = #{const GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT}
+
 -- GhosttyTerminalOption selectors for 'c_set'.
 optWritePty, optBell :: CInt
 optWritePty = #{const GHOSTTY_TERMINAL_OPT_WRITE_PTY}
 optBell     = #{const GHOSTTY_TERMINAL_OPT_BELL}
+
+-- | Sets the default 256-colour palette (OSC 4 overrides survive it).
+optColorPalette :: CInt
+optColorPalette = #{const GHOSTTY_TERMINAL_OPT_COLOR_PALETTE}
 
 -- | What 'c_get' 'dataActiveScreen' reports on the alternate screen.
 screenAlternate :: CLong
