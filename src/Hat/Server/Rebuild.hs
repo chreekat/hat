@@ -26,9 +26,10 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Environ (environFromPairs)
-import Hat.Server.Floating (noFloats)
+import Hat.Server.Floating (FloatState (..), Modal (..), noFloats)
 import Hat.Server.Layout
-import Hat.Server.LayoutString (capturedArea, layoutFromString)
+import Hat.Server.LayoutString (capturedArea, restoreLayout)
+import Hat.Server.Persist (ModalSnap (..))
 import Hat.Server.Pane (startPaneReader)
 
 -- | The session fields every capture format shares.
@@ -54,6 +55,7 @@ type CapturedWindow w p =
     , HasField "autoRename" w Bool
     , HasField "key" w (Maybe Int)
     , HasField "linkOf" w (Maybe Int)
+    , HasField "modal" w (Maybe ModalSnap)
     , HasField "panes" w [p]
     )
 
@@ -148,12 +150,19 @@ rebuildWindow st mkPane sz cwin = do
         paneMap = Map.fromList [(p.id, p) | p <- panes]
         -- Our own emitted string round-trips; the named layout is only a
         -- fallback for a corrupt string, and still contains every pane.
-        lay = either (const fallback) id (layoutFromString cwin.layout pids)
+        (lay, zorder) = either (const (fallback, [])) id (restoreLayout cwin.layout pids)
+        paneAt o = if o >= 0 && o < length pids then Just (pids !! o) else Nothing
+        modal = do
+            m <- cwin.modal
+            p <- paneAt m.pane
+            pure Modal { pane = p, returnTo = m.returnTo >>= paneAt, rezoom = m.rezoom }
         fallback = case pids of
             p : _ -> fromMaybe (singlePane p)
                 (namedLayout defaultNamedSizes sz EvenHorizontal pids)
             [] -> error "rebuildWindow: a captured window with no panes"
-        activePid = pids !! max 0 (min (length pids - 1) cwin.active)
+        -- A modal pane holds the window's focus however the capture
+        -- recorded it.
+        activePid = maybe (pids !! max 0 (min (length pids - 1) cwin.active)) (.pane) modal
         -- Map the MRU history's ordinals back to surviving pane ids, dropping
         -- the active pane and any out-of-range ordinal; keep order, drop dups.
         paneHistPids = List.nub
@@ -176,7 +185,7 @@ rebuildWindow st mkPane sz cwin = do
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing
-    floatsVar     <- newTVarIO noFloats
+    floatsVar     <- newTVarIO noFloats { zorder, modal }
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar

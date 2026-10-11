@@ -7,6 +7,7 @@ import Control.Exception (bracket)
 import Control.Concurrent (threadDelay)
 import Control.Monad (filterM, forM_, unless, void)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Posix.Unistd (getSystemID, nodeName)
@@ -17,6 +18,8 @@ import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
+import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
+import Hat.Server.Snapshot (captureSnapshot, restoreSnapshot)
 import Hat.Term.Pty qualified as Pty
 
 -- | A fresh server for one test; on exit every pane still alive is killed
@@ -199,6 +202,24 @@ spec = do
                 run st ["kill-pane", "-t", m] `shouldReturn` []
                 fmt st "S:0" "#{pane_id} #{window_modal_pane} #{window_zoomed_flag}"
                     `shouldReturn` ["%0  1"]
+
+        it "floating panes, their stacking and the modal pane survive a restore" $
+            withServer $ \st -> do
+                session st
+                a <- newFloat st ["-x", "10", "-y", "4", "-X", "-2", "-Y", "3"]
+                _ <- newFloat st ["-x", "12", "-y", "5"]
+                run st ["move-pane", "-t", a, "-P", "front"] `shouldReturn` []
+                run st ["new-pane", "-O", "-x", "20", "-y", "5", "sleep 30"] `shouldReturn` []
+                let probe s = fmap concat . mapM (\f -> fmap (map (<> ";"))
+                        (fmap (\o -> [ t | ROutput t <- o ])
+                            (run s ["list-panes", "-t", "S:0", "-F", f])))
+                    shape = [ "#{pane_floating_flag}#{pane_modal_flag} " <> box <> " #{pane_z}" ]
+                captured <- probe st shape
+                snap <- captureSnapshot st
+                withServer $ \st' -> do
+                    restoreSnapshot st' (fromMaybe snap (decodeSnapshotJson (encodeSnapshotJson snap)))
+                    probe st' shape `shouldReturn` captured
+                    fmt st' "S:0" "#{pane_modal_flag}" `shouldReturn` ["1"]
 
     describe "split-window" $ do
         it "sizes the new pane from -l, in cells or a percentage of the pane" $

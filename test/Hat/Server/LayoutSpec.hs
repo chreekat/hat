@@ -221,7 +221,7 @@ spec = do
         let one = fitLayout windowSize (leaf 0)
             geom = FloatGeom { width = 20, height = 6, left = 8, top = 3 }
             withFloat = floatPane FloatLast (PaneId 1) geom one
-        it "float beside their target, out of the tiling" $ do
+        it "float at the end of the tree, out of the tiling" $ do
             fmap layoutPanes withFloat `shouldBe` Just [PaneId 0, PaneId 1]
             fmap tiledPanes withFloat `shouldBe` Just [PaneId 0]
             fmap (fst . arrange (sizeRect windowSize)) withFloat
