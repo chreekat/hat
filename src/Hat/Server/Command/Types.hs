@@ -6,6 +6,7 @@ module Hat.Server.Command.Types
     , CommandImpl
     , Dispatch (..)
     , parseArgs
+    , unknownFlag
     , strtonum
     ) where
 
@@ -67,6 +68,18 @@ parseArgs spec = go [] []
     isNumber a = case TR.signed TR.decimal a of
         Right (_ :: Int, restT) -> T.null restT
         Left _ -> False
+
+-- | tmux's error for the first boolean flag of @name@ not among the
+-- @allowed@ letters, if any.
+unknownFlag :: Text -> [Char] -> [Text] -> Maybe Text
+unknownFlag name allowed flags =
+    case [f | f <- flags, maybe True (`notElem` allowed) (flagLetter f)] of
+        f : _ -> Just ("command " <> name <> ": unknown flag " <> f)
+        [] -> Nothing
+  where
+    flagLetter f = case T.unpack f of
+        ['-', c] -> Just c
+        _ -> Nothing
 
 -- | A bounded decimal argument, failing with OpenBSD @strtonum@'s words
 -- (\"invalid\", \"too small\", \"too large\") that tmux's errors embed.
