@@ -29,6 +29,7 @@ import Hat.Server.CaptureSpec qualified
 import Hat.Server.ClipboardSpec qualified
 import Hat.Server.ClockSpec qualified
 import Hat.Server.ColorSchemeSpec qualified
+import Hat.Server.CommandTypesSpec qualified
 import Hat.Server.ConfigSpec qualified
 import Hat.Server.ControlSpec qualified
 import Hat.Server.CopyModeSpec qualified
@@ -138,6 +139,7 @@ main = hspec $ parallel $ do
     describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
     describe "Hat.Glob" Hat.GlobSpec.spec
     describe "Hat.Server.ColorScheme" Hat.Server.ColorSchemeSpec.spec
+    describe "Hat.Server.Command.Types" Hat.Server.CommandTypesSpec.spec
     describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec

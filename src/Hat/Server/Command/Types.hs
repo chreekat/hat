@@ -11,7 +11,6 @@ module Hat.Server.Command.Types
     ) where
 
 import Data.ByteString (ByteString)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -62,9 +61,8 @@ parseArgs spec = go [] []
         Nothing -> ([], [], rest)
         Just (c, more)
             | c `elem` spec ->
-                let val = fromMaybe more (T.stripPrefix "=" more)
-                in case (T.null val, rest) of
-                    (False, _) -> ([(dash c, val)], [], rest)
+                case (T.null more, rest) of
+                    (False, _) -> ([(dash c, more)], [], rest)
                     (True, v : rest') -> ([(dash c, v)], [], rest')
                     (True, []) -> ([(dash c, "")], [], [])
             | otherwise ->

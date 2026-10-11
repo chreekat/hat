@@ -309,6 +309,7 @@ test-suite hat-test
         Hat.Server.ClipboardSpec
         Hat.Server.ClockSpec
         Hat.Server.ColorSchemeSpec
+        Hat.Server.CommandTypesSpec
         Hat.Server.ConfigSpec
         Hat.Server.ControlSpec
         Hat.Server.CopyModeSpec
