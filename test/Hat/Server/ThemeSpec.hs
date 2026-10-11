@@ -40,5 +40,11 @@ spec = do
         yellowOf (with [("dark-theme-yellow", "colour100")]) Nothing `shouldBe` Just (Cell.Indexed 100)
     it "a palette entry naming a theme colour leaves the slot default" $
         yellowOf (with [("dark-theme-yellow", "themered")]) Nothing `shouldBe` Just Cell.DefaultColor
+    it "colourRgb gives the xterm palette's RGB, none for default" $ do
+        colourRgb (Cell.Indexed 9) `shouldBe` Just (255, 0, 0)
+        colourRgb (Cell.Indexed 17) `shouldBe` Just (0, 0, 95)
+        colourRgb (Cell.Indexed 232) `shouldBe` Just (8, 8, 8)
+        colourRgb (Cell.RGB 1 2 3) `shouldBe` Just (1, 2, 3)
+        colourRgb Cell.DefaultColor `shouldBe` Nothing
     it "unknown slot names are not theme colours" $
         themeColour terminalTheme "themeorange" `shouldBe` Nothing

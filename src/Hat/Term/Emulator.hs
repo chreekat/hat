@@ -37,6 +37,10 @@ module Hat.Term.Emulator
     , currentPen
     , modes
     , onAlternateScreen
+    , Rgb
+    , appCursorColour
+    , paletteOverrides
+    , setPaletteDefaults
     , bracketedPaste
     , modeReplayBytes
     , restoreBytes
@@ -108,7 +112,18 @@ data Emulator = Emulator
         -- ^ last snapshot's rows, reused for rows the render state reports clean
     , snapBuf :: IORef SnapBuf
         -- ^ staging buffer for 'snapshot'; see 'withSnapBuf'
+    , palette :: IORef PaletteDefaults
     }
+
+-- | The terminal's own default palette, and the entries hat last laid
+-- over it. See 'setPaletteDefaults'.
+data PaletteDefaults = PaletteDefaults
+    { builtin :: Maybe ByteString  -- ^ 768 bytes, read before the first change
+    , applied :: Map Int Rgb
+    }
+
+-- | A colour's red, green and blue.
+type Rgb = (Word8, Word8, Word8)
 
 -- | Last snapshot's rows with their generation stamps ('rows' and 'gens'
 -- always the same length), and the counter the next snapshot stamps rebuilt
@@ -182,9 +197,10 @@ newEmulator sz limit = do
     gc <- newIORef GridCache { rows = V.empty, gens = V.empty, nextGen = 0 }
     sb0 <- mallocForeignPtrBytes 0
     sb <- newIORef SnapBuf { buf = sb0, cap = 0 }
+    pal <- newIORef PaletteDefaults { builtin = Nothing, applied = Map.empty }
     pure Emulator
         { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci
-        , render = rp, gridCache = gc, snapBuf = sb }
+        , render = rp, gridCache = gc, snapBuf = sb, palette = pal }
 
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, screen\/tmux ESC k titles, the
@@ -493,6 +509,46 @@ modes e = withMVar e.lock $ \_ -> do
 onAlternateScreen :: Emulator -> IO Bool
 onAlternateScreen e = withMVar e.lock $ \_ ->
     withForeignPtr e.term $ \t -> (== screenAlternate) <$> c_get t dataActiveScreen
+
+-- | The cursor colour the program set (OSC 12), if it set one.
+appCursorColour :: Emulator -> IO (Maybe Rgb)
+appCursorColour e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    allocaBytes 3 $ \p -> do
+        r <- c_get_into t dataColorCursor (castPtr p)
+        if r /= resSuccess then pure Nothing else Just <$> rgbAt p 0
+
+-- | The palette entries the program changed (OSC 4), by index.
+paletteOverrides :: Emulator -> IO (Map Int Rgb)
+paletteOverrides e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    allocaBytes 768 $ \eff -> allocaBytes 768 $ \dflt -> do
+        r1 <- c_get_into t dataColorPalette (castPtr eff)
+        r2 <- c_get_into t dataColorPaletteDefault (castPtr dflt)
+        if r1 /= resSuccess || r2 /= resSuccess then pure Map.empty else do
+            pairs <- mapM (\i -> (,,) i <$> rgbAt eff i <*> rgbAt dflt i) [0 .. 255]
+            pure (Map.fromList [ (i, c) | (i, c, d) <- pairs, c /= d ])
+
+-- | Lay @entries@ over the terminal's built-in palette as its defaults:
+-- what OSC 4 queries answer and an OSC 104 reset returns to. Programs'
+-- own OSC 4 changes survive it.
+setPaletteDefaults :: Emulator -> Map Int Rgb -> IO ()
+setPaletteDefaults e entries = withMVar e.lock $ \_ -> do
+    pd <- readIORef e.palette
+    unless (pd.applied == entries) $ withForeignPtr e.term $ \t -> do
+        base <- case pd.builtin of
+            Just b -> pure b
+            Nothing -> allocaBytes 768 $ \p -> do
+                _ <- c_get_into t dataColorPaletteDefault (castPtr p)
+                B.packCStringLen (castPtr p, 768)
+        let bytes = B.pack (concat
+                [ maybe (B.unpack (B.take 3 (B.drop (3 * i) base))) (\(r, g, b) -> [r, g, b])
+                    (Map.lookup i entries)
+                | i <- [0 .. 255] ])
+        BU.unsafeUseAsCString bytes $ \p -> () <$ c_set t optColorPalette (castPtr p)
+        writeIORef e.palette PaletteDefaults { builtin = Just base, applied = entries }
+
+rgbAt :: Ptr Word8 -> Int -> IO Rgb
+rgbAt p i = (,,) <$> peekByteOff p (3 * i) <*> peekByteOff p (3 * i + 1)
+    <*> peekByteOff p (3 * i + 2)
 
 -- | Whether the app enabled bracketed paste (?2004).
 bracketedPaste :: Emulator -> IO Bool

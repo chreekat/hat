@@ -3,6 +3,7 @@ module Hat.Term.EmulatorSpec (spec) where
 import Control.Monad (forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -544,6 +545,25 @@ spec = do
         _ <- feedStr e "\ESC[?1l"          -- DECCKM off (normal)
         back <- encodeKey e CursorUp
         back `shouldBe` "\ESC[A"
+
+    describe "program colours" $ do
+        let fresh = newEmulator Size { rows = 3, cols = 5 } 1000
+        it "an OSC 12 cursor colour reads back until OSC 112 resets it" $ do
+            e <- fresh
+            appCursorColour e `shouldReturn` Nothing
+            _ <- feedStr e "\ESC]12;#ff8000\a"
+            appCursorColour e `shouldReturn` Just (255, 128, 0)
+            _ <- feedStr e "\ESC]112\a"
+            appCursorColour e `shouldReturn` Nothing
+        it "an OSC 4 change is a palette override" $ do
+            e <- fresh
+            _ <- feedStr e "\ESC]4;1;#010203\a"
+            paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
+        it "palette defaults are no override, and keep the program's" $ do
+            e <- fresh
+            _ <- feedStr e "\ESC]4;1;#010203\a"
+            setPaletteDefaults e (Map.singleton 5 (9, 9, 9))
+            paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
 
     describe "cursorPendingWrap" $ do
         it "is set once a glyph lands in the last column under autowrap" $ do

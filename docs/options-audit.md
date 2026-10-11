@@ -78,6 +78,8 @@ spot-read of each suspect consumer.
 | `pane-scrollbars-style` | `scrollbarStyle` (Scene.hs): colours, `width=`, `pad=`; each pane's own value | implemented ✅ tested | pure (SceneSpec) |
 | `display-panes-format` | `panesStamp` (DisplayPanes.hs) via the overlay in `renderOnce` (View.hs): drawn on each pane's top row | implemented ✅ tested | pure (DisplayPanesSpec) |
 | `display-panes-colour` / `display-panes-active-colour` | `panesStamp` via `renderOnce` (View.hs): the window's values, theme colours resolved | implemented ✅ tested | pure (DisplayPanesSpec) |
+| `pane-colours` | `panePalette` → `paintPalette` (View.hs, Render.hs): each pane's own value under its program's OSC 4 colours; also the emulator's palette defaults (`setPaletteDefaults`) | implemented ✅ tested | pure (RenderSpec) + model (SessionSpec) |
+| `cursor-colour` | `cursorColourOf` via `renderOnce` (View.hs): the program's OSC 12 colour, else the active pane's value, theme colours resolved, sent as `rgb:` | implemented ✅ tested | pure (OptionEffectSpec) |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |

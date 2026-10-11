@@ -631,7 +631,8 @@ data Client = Client
     , lastChrome :: IORef (Maybe ChromeCache)  -- render thread only
     , lastStatus :: IORef (Maybe StatusCache)  -- render thread only
     , lastCursor :: IORef (Pos, Bool)
-    , lastCursorColour :: IORef Text  -- ^ OSC 12 in effect; render thread only
+    , lastCursorColour :: IORef (Maybe Emu.Rgb)
+        -- ^ OSC 12 in effect; render thread only
     , needsFull :: TVar Bool
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane

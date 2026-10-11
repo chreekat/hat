@@ -42,7 +42,7 @@ mkClient sz lastFrame = do
     chromeV <- newIORef Nothing
     statusV <- newIORef Nothing
     curV    <- newIORef (Pos 0 0, True)
-    colourV <- newIORef ""
+    colourV <- newIORef Nothing
     fullV   <- newTVarIO False
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing

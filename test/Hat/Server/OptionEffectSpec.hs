@@ -31,7 +31,8 @@ import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
 import Hat.Server.Resize (scrollbarReserve)
 import Hat.Server.Scene
-import Hat.Server.View (messageLine, statusLayout)
+import Hat.Server.Theme (terminalTheme)
+import Hat.Server.View (cursorColourOf, messageLine, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -141,6 +142,19 @@ spec = do
                 scrollbarReserve ScrollbarLeft 2 r `shouldBe` r { startCol = 12 }
             it "a pane too narrow keeps one column" $
                 scrollbarReserve ScrollbarLeft 12 r `shouldBe` r { startCol = 19 }
+
+        -- cursor-colour: the pane's own OSC 12 colour wins; else the
+        -- option, theme colours resolved, as RGB; empty or default resets.
+        describe "cursor-colour picks the outer cursor's colour" $ do
+            it "the option, as RGB" $
+                cursorColourOf terminalTheme Nothing "colour9" `shouldBe` Just (255, 0, 0)
+            it "the program's OSC 12 colour wins" $
+                cursorColourOf terminalTheme (Just (1, 2, 3)) "colour9" `shouldBe` Just (1, 2, 3)
+            it "empty or default resets" $
+                map (cursorColourOf terminalTheme Nothing) ["", "default"]
+                    `shouldBe` [Nothing, Nothing]
+            it "a theme colour takes the theme's" $
+                cursorColourOf terminalTheme Nothing "themered" `shouldBe` Just (128, 0, 0)
 
         -- message-line: the status line the prompt and messages take,
         -- clamped to the last line there is.

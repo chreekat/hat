@@ -220,7 +220,7 @@ newClient st conn h = do
     chromeVar <- newIORef Nothing
     statusVar <- newIORef Nothing
     cursorVar <- newIORef (Pos 0 0, True)
-    cursorColourVar <- newIORef ""
+    cursorColourVar <- newIORef Nothing
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing

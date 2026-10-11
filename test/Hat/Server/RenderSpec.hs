@@ -1,5 +1,6 @@
 module Hat.Server.RenderSpec (spec) where
 
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Test.Hspec
@@ -95,6 +96,15 @@ spec = do
             paneDefaults True ws was `shouldBe` (Indexed 2, Indexed 1)
         it "other panes take window-style" $
             paneDefaults False ws was `shouldBe` (Indexed 2, Indexed 4)
+        it "a pane palette recolours its palette entries" $ do
+            let cells = V.singleton (V.fromList
+                    [ glyphCell 'a' defaultStyle { fg = Indexed 1, bg = Indexed 2 }
+                    , glyphCell 'b' defaultStyle { fg = Indexed 3 } ])
+                palette = Map.fromList [(1, RGB 1 2 3), (2, Indexed 200)]
+            V.map (V.map (.style)) (paintPalette palette cells)
+                `shouldBe` V.singleton (V.fromList
+                    [ defaultStyle { fg = RGB 1 2 3, bg = Indexed 200 }
+                    , defaultStyle { fg = Indexed 3 } ])
         it "paints only the default colours of a pane's cells" $ do
             let cells = V.singleton (V.fromList
                     [ glyphCell 'a' defaultStyle

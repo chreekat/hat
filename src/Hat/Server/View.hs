@@ -9,12 +9,14 @@ module Hat.Server.View
     , flashTarget
     , statusLayout  -- ^ exported for the status-position effect test
     , messageLine  -- ^ exported for the message-line effect test
+    , cursorColourOf  -- ^ exported for the cursor-colour effect test
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, join, when)
 import Data.IORef
+import Data.Word (Word8)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
@@ -45,7 +47,7 @@ import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowPaneStatus)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Scene
-import Hat.Server.Theme (Theme)
+import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
@@ -168,7 +170,8 @@ renderOnce st client = do
                         ws <- paneStyleOption st th sess win pane popts "window-style"
                         was <- paneStyleOption st th sess win pane popts "window-active-style"
                         let dflt = paneDefaults (pidL == active) ws was
-                        pure [(pidL, (withPaneDefaults dflt pv, dflt))]
+                        palette <- panePalette th pane popts
+                        pure [(pidL, (withPaneColours dflt palette pv, dflt))]
             let paneViews = Map.fromList [ (p, pv) | (p, (pv, _)) <- painted ]
                 defaults = Map.fromList [ (p, d) | (p, (_, d)) <- painted ]
             prevFrame <- readIORef client.lastFrame
@@ -305,15 +308,19 @@ renderOnce st client = do
     -- pane in view no longer has one.
     colour <- case view of
         Just (sess, win, _, _, ps, active)
-            | Just pane <- Map.lookup active ps ->
-                (.cursorColour) <$> atomically (resolveForPane st sess win pane)
-        _ -> pure ""
+            | Just pane <- Map.lookup active ps -> do
+                th <- clientTheme st
+                app <- Emu.appCursorColour pane.emulator
+                popts <- atomically (resolveForPane st sess win pane)
+                pure (cursorColourOf th app (optionText "cursor-colour" popts))
+        _ -> pure Nothing
     oldColour <- readIORef client.lastCursorColour
     when (colour /= oldColour) $ do
         writeIORef client.lastCursorColour colour
-        send client $ Notify $ if T.null colour
-            then "\ESC]112\a"
-            else "\ESC]12;" <> TE.encodeUtf8 colour <> "\a"
+        send client $ Notify $ case colour of
+            Nothing -> "\ESC]112\a"
+            Just (r, g, b) -> TE.encodeUtf8 $ T.concat
+                [ "\ESC]12;rgb:", hex2 r, "/", hex2 g, "/", hex2 b, "\a" ]
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
 
@@ -325,6 +332,18 @@ drawnCells draw n =
   where
     hole = Cell.glyphCell '\0' Cell.defaultStyle
     untouched = V.replicate n hole
+
+-- | The colour a pane's cursor shows (tmux's @tty_update_cursor@): the
+-- program's own OSC 12 colour, else @cursor-colour@ ('Nothing' resets).
+cursorColourOf :: Theme -> Maybe Emu.Rgb -> Text -> Maybe Emu.Rgb
+cursorColourOf th app opt = case app of
+    Just c -> Just c
+    Nothing -> colourValue th opt >>= id >>= colourRgb
+
+hex2 :: Word8 -> Text
+hex2 w = T.pack [digit (w `div` 16), digit (w `mod` 16)]
+  where
+    digit d = "0123456789abcdef" !! fromIntegral d
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them
 -- owns them now.
@@ -525,12 +544,31 @@ paneStyleOption st th sess win pane popts name
   where
     raw = optionText name popts
 
--- | A pane's view drawn in its default colours. A pane with its own
--- colours gives up its row stamps: they do not cover the colours.
-withPaneDefaults :: (Cell.Color, Cell.Color) -> PaneView -> PaneView
-withPaneDefaults dflt pv
-    | dflt == (Cell.DefaultColor, Cell.DefaultColor) = pv
-    | otherwise = pv { cells = paintDefaults dflt pv.cells, rowGens = Nothing }
+-- | A pane's view drawn in its default colours and its palette. A pane
+-- with colours of its own gives up its row stamps: they do not cover the
+-- colours.
+withPaneColours
+    :: (Cell.Color, Cell.Color) -> Map.Map Int Cell.Color -> PaneView -> PaneView
+withPaneColours dflt palette pv
+    | dflt == (Cell.DefaultColor, Cell.DefaultColor), Map.null palette = pv
+    | otherwise = pv
+        { cells = paintPalette palette (paintDefaults dflt pv.cells), rowGens = Nothing }
+
+-- | A pane's palette (tmux's @colour_palette_get@): the colours its
+-- program set (OSC 4) over its @pane-colours@, which also become the
+-- terminal's palette defaults.
+panePalette :: Theme -> Pane -> Options -> IO (Map.Map Int Cell.Color)
+panePalette th pane popts = do
+    let configured = Map.fromList
+            [ (fromIntegral n, c)
+            | (KeyIndex n, v) <- case optionValue "pane-colours" popts of
+                OVArray m -> Map.toList m
+                OVScalar _ -> []
+            , n < 256
+            , Just (Just c) <- [colourValue th v] ]
+    Emu.setPaletteDefaults pane.emulator (Map.mapMaybe colourRgb configured)
+    program <- Emu.paletteOverrides pane.emulator
+    pure (Map.union (Map.map (\(r, g, b) -> Cell.RGB r g b) program) configured)
 
 -- | Where a pane's scrollbar slider sits in a scrollbar @height@ rows
 -- tall: over its history and screen, or its copy-mode viewport.

@@ -9,6 +9,7 @@ module Hat.Server.Theme
     , resolveTheme
     , themeColour
     , colourCell
+    , colourRgb
     , clientColours
     ) where
 
@@ -77,6 +78,28 @@ colourCell = \case
     C256 n -> Just (Cell.Indexed (fromIntegral n))
     CRGB rgb -> Just (Cell.RGB (byte 16) (byte 8) (byte 0))
       where byte s = fromIntegral ((rgb `div` (2 ^ (s :: Int))) `mod` 256)
+
+-- | A colour as RGB (tmux's @colour_force_rgb@), palette colours by the
+-- xterm palette; the default colour has none.
+colourRgb :: Cell.Color -> Maybe (Word8, Word8, Word8)
+colourRgb = \case
+    Cell.DefaultColor -> Nothing
+    Cell.RGB r g b -> Just (r, g, b)
+    Cell.Indexed n
+        | n < 16 -> Just (basic !! fromIntegral n)
+        | n < 232 ->
+            let i = fromIntegral n - 16
+            in Just (cube (i `div` 36), cube (i `div` 6 `mod` 6), cube (i `mod` 6))
+        | otherwise -> let v = 8 + 10 * (n - 232) in Just (v, v, v)
+  where
+    cube :: Int -> Word8
+    cube 0 = 0
+    cube k = fromIntegral (55 + 40 * k)
+    basic =
+        [ (0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0)
+        , (0, 0, 128), (128, 0, 128), (0, 128, 128), (192, 192, 192)
+        , (128, 128, 128), (255, 0, 0), (0, 255, 0), (255, 255, 0)
+        , (0, 0, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255) ]
 
 -- | @client_colours@ for a hat client: its terminal draws RGB colours
 -- directly (see "Hat.Client.Draw").
