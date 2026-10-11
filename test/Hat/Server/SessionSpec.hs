@@ -64,6 +64,7 @@ import Hat.Transport.Wire
 import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv (paneModeEnv, sessionFormatEnv)
+import Hat.Server.Resize (AreaClaim (..), paneSizeTargets, pickArea)
 import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 
 -- A bare session with the given id inserted into an existing server.
@@ -1117,6 +1118,26 @@ spec = do
             [] <- cmdKillSession st Nothing ["-t", "g"]
             Map.keys <$> readTVarIO sess.windows `shouldReturn` [0, 1]
             mapM (readTVarIO . (.dead)) ps `shouldReturn` [False, False]
+
+    describe "shared window sizing" $ do
+        it "lays a window linked into differently-sized sessions out once" $ do
+            (st, sess) <- seedSession "/"
+            other <- addSession st 1
+            win <- addWindow sess 0
+            pa <- stubPane 0
+            atomically $ do
+                modifyTVar' win.panes (Map.insert pa.id pa)
+                modifyTVar' other.windows (Map.insert 5 win)
+                writeTVar other.lastSize Size { rows = 23, cols = 80 }
+            targets <- atomically (paneSizeTargets st)
+            map snd targets `shouldBe` [Size { rows = 24, cols = 80 }]
+
+        it "takes the area of the session whose client last viewed the window" $
+            pickArea
+                [ (AreaClaim False (Just 9), Size 10 10)
+                , (AreaClaim True (Just 3), Size 20 20)
+                , (AreaClaim True Nothing, Size 30 30) ]
+                `shouldBe` Size 20 20
 
     describe "serverIdle" $ do
         let idle = IdleInputs
