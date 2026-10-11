@@ -178,6 +178,12 @@ spot-read of each suspect consumer.
   default format shows no time), because the emulator does not stamp lines
   with the time they scroll into the history as tmux's grid does.
 
+- **`copy-mode-selection-style`** lays its attributes over a selected cell
+  as `applyModeStyle` does, toggling `reverse` where tmux's
+  `screen_select_cell` adds it, so the default `mode-style` of `reverse`
+  still shows a selection over reverse-video text; and `noattr` is not
+  modelled (the style parser accepts and drops it).
+
 - **`pane-border-indicators`** `arrows` draws hat's triangles at each edge's
   midpoint, where tmux draws ACS arrows next to the pane's corner (a
   deliberate design choice; see `border-arrows.sh` in the xfail list).
