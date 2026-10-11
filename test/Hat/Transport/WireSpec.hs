@@ -202,6 +202,12 @@ spec = do
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []))
               , "8200880465787465726d9f8261416142ff830018181850642f746d708101f480" )
+            , ( "ClientHello (attach intent)"
+              , encodeMessage (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
+                        (AttachIntent [["new"]]) False []))
+              , "8200880465787465726d9f8261416142ff830018181850642f746d70\
+                \82009f9f636e6577fffff480" )
             , ( "Input", encodeMessage (Input "hi"), "8201426869" )
             , ( "Resize", encodeMessage (Resize (Size 24 80)), "8202830018181850" )
             , ( "Command"
