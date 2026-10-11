@@ -13,8 +13,12 @@ module Hat.Server.Command.Option
     , Display (..)
     , ValuePresence (..)
     , renderShowLine
+    , SetCommand (..)
+    , ShowCommand (..)
     , cmdSet
     , cmdShow
+    , runSet
+    , runShow
     , cmdSetEnvironment
     , cmdShowEnvironment
     , refreshGlobalOptions
@@ -24,6 +28,7 @@ module Hat.Server.Command.Option
 
 import Control.Concurrent.STM
 import Control.Monad (forM, forM_, when)
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
@@ -36,7 +41,8 @@ import Hat.Server.Environ
 import Hat.Server.Format (FormatEnv, quoteArgsT)
 import Hat.Server.FormatEnv (paneEnvById, paneFormatEnv)
 import Hat.Server.HookTypes (HookAmbient (..), HookEntry (..), HookScope (..))
-import Hat.Server.Hooks (ambientFor, hookEntriesAt)
+import Hat.Server.HookMonitor (monitorsAt)
+import Hat.Server.Hooks (ambientFor, hookEntriesAt, writeHookArray)
 import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPaneScoped, targetSession )
@@ -262,12 +268,25 @@ setOption mode opts spelled value = do
         WriteValue v -> applyEntry n v opts
         _ -> opts
 
+-- | Which command is setting: @set-option@\/@set-window-option@, or
+-- @set-hook@ (where a @\@user@ name binds a user hook rather than a user
+-- option).
+data SetCommand = SetOptionCommand SetDefault | SetHookCommand
+    deriving (Eq, Show)
+
 cmdSet :: SetDefault -> CommandImpl
-cmdSet sd st mclient args = do
+cmdSet sd = runSet (SetOptionCommand sd)
+
+-- | tmux's @cmd_set_option_exec@, shared by @set-option@ and @set-hook@.
+runSet :: SetCommand -> CommandImpl
+runSet cmd st mclient args = do
     let (opts, flags, pos) = parseArgs "t" args
         has f = f `elem` flags
         mtarget = lookup "-t" opts
         quiet = if has "-q" then Quiet else Loud
+        sd = case cmd of
+            SetOptionCommand d -> d
+            SetHookCommand -> DefaultSession
         req = SetRequest
             { mode = if has "-a" then Append else Assign
             , unsetting = if has "-u" || has "-U" then UnsetValue else SetValue
@@ -275,11 +294,12 @@ cmdSet sd st mclient args = do
             , quietness = quiet }
         orQuiet e = pure [RErr e | quiet == Loud]
     case pos of
-        [] -> pure [RErr "usage: set-option [-aFgopqsuUw] [-t target] option [value]"]
+        [] -> pure [RErr "missing argument"]
         (spelled : rest) -> case matchOptionName spelled of
             Left (MatchError e) -> orQuiet e
             Right (n, mkey) -> do
                 let mdef = lookupOptionDef n
+                    plan own eff = planSet mdef req spelled mkey own eff
                 mvalue <- case rest of
                     [] -> pure Nothing
                     _ | has "-F" -> do
@@ -288,21 +308,55 @@ cmdSet sd st mclient args = do
                       | otherwise -> pure (Just (T.unwords rest))
                 case mapM_ requireLive mdef of
                     Left e -> pure [RErr e]
-                    Right ()
-                        | Just d <- mdef, d.role == HookOption ->
-                            pure [RErr (n <> ": set hooks with set-hook")]
-                        | otherwise -> do
-                            esc <- scopeFor st mclient mtarget sd flags mdef
-                            case esc of
-                                Left e -> orQuiet e
-                                Right sc -> case requirePaneValues sc mdef of
-                                    Left e -> pure [RErr e]
-                                    Right () -> do
-                                        when (has "-U") $
-                                            clearPaneCopies st mclient mtarget sc n mkey
-                                        writeOption st sc n
-                                            (\own eff -> planSet mdef req spelled
-                                                mkey own eff mvalue)
+                    Right () -> do
+                        esc <- scopeFor st mclient mtarget sd flags mdef
+                        case (esc, storeRole cmd mdef) of
+                            (Left e, _) -> orQuiet e
+                            (Right sc, HookOption) -> case hookScopeOf sc of
+                                Nothing -> pure [RErr (noSuchTarget "session" mtarget)]
+                                Just hs -> writeHook st hs n mdef
+                                    (\own -> plan own own mvalue)
+                            (Right sc, PlainOption) -> case requirePaneValues sc mdef of
+                                Left e -> pure [RErr e]
+                                Right () -> do
+                                    when (has "-U") $
+                                        clearPaneCopies st mclient mtarget sc n mkey
+                                    writeOption st sc n
+                                        (\own eff -> plan own eff mvalue)
+
+-- | Which store a name addresses: the hook store for a hook row or a
+-- @\@user@ name given to @set-hook@, else the option tables.
+storeRole :: SetCommand -> Maybe OptionDef -> OptionRole
+storeRole cmd = \case
+    Just d -> d.role
+    Nothing | cmd == SetHookCommand -> HookOption
+            | otherwise -> PlainOption
+
+-- | Decide and write one hook's commands at a hook scope. A hook row's value
+-- is its command array; a user hook's is its one command.
+writeHook
+    :: ServerState -> HookScope -> Text -> Maybe OptionDef
+    -> (Maybe OptionValue -> Either Text SetAction) -> IO [Reply]
+writeHook st hs n mdef decide = do
+    entries <- hookEntriesAt st hs
+    let own = hookEntryValue mdef hs (Map.lookup n entries)
+    case decide own of
+        Left e -> pure [RErr e]
+        Right LeaveValue -> pure []
+        Right RemoveValue -> [] <$ writeHookArray st hs n Map.empty
+        Right (WriteValue (OVArray m)) -> [] <$ writeHookArray st hs n m
+        Right (WriteValue (OVScalar t)) ->
+            [] <$ writeHookArray st hs n (Map.singleton (KeyIndex 0) t)
+
+-- | A hook binding as an option value: a hook row's array (empty when unbound
+-- at the global scope, which tmux keeps every hook in), or a user hook's
+-- command.
+hookEntryValue :: Maybe OptionDef -> HookScope -> Maybe HookEntry -> Maybe OptionValue
+hookEntryValue mdef hs me = case (mdef, me) of
+    (Just _, Just e) -> Just (OVArray e.commands)
+    (Just _, Nothing) | hs == HookGlobal -> Just (OVArray Map.empty)
+    (Nothing, Just e) -> Just (OVScalar (T.concat (Map.elems e.commands)))
+    _ -> Nothing
 
 -- | Decide and write one option's entry atomically, refreshing the cached
 -- global resolution; a changed @history-limit@ reaches open panes.
@@ -438,11 +492,12 @@ data ValuePresence = HasValue | NoValue
 -- @SHOW_OPTIONS_TEMPLATE@ (and a @-F@ template) reads.
 data ShowLine = ShowLine
     { option :: Text
-    , definition :: Maybe OptionDef  -- ^ 'Nothing' for a @\@user@ option
+    , definition :: Maybe OptionDef  -- ^ 'Nothing' for a @\@user@ option or hook
     , key :: Maybe ArrayKey
     , value :: Text
     , inheritance :: Inheritance
     , presence :: ValuePresence
+    , extraFormats :: FormatEnv  -- ^ further formats a @-F@ template reads
     }
 
 -- | tmux's default @show-options@ template: string values are quoted as
@@ -467,7 +522,7 @@ isString l = case (.kind) <$> l.definition of
 
 -- | The @option_*@ formats a @show -F@ template reads for one line.
 showLineFormats :: Display -> ShowLine -> FormatEnv
-showLineFormats display l = Map.fromList
+showLineFormats display l = Map.union l.extraFormats $ Map.fromList
     [ ("option_name", l.option)
     , ("option_value", l.value)
     , ("option_value_only", bit (display == ValueOnly))
@@ -486,9 +541,9 @@ showLineFormats display l = Map.fromList
 -- | tmux's @cmd_show_options_print@: an array without a key yields one line
 -- per entry, or a valueless line when empty.
 optionLines
-    :: Text -> Maybe OptionDef -> Maybe ArrayKey -> Inheritance
+    :: Text -> Maybe OptionDef -> Maybe ArrayKey -> Inheritance -> FormatEnv
     -> OptionValue -> [ShowLine]
-optionLines n md mkey inh v = case (v, mkey) of
+optionLines n md mkey inh extra v = case (v, mkey) of
     (OVArray m, Just k) -> [line (Just k) (Map.findWithDefault "" k m) HasValue]
     (OVArray m, Nothing)
         | Map.null m -> [line Nothing "" NoValue]
@@ -497,7 +552,7 @@ optionLines n md mkey inh v = case (v, mkey) of
   where
     line k t p = ShowLine
         { option = n, definition = md, key = k, value = t
-        , inheritance = inh, presence = p }
+        , inheritance = inh, presence = p, extraFormats = extra }
 
 -- | Render lines through the default template (where @-v@ drops a
 -- valueless line) or a @-F@ one.
@@ -513,9 +568,19 @@ renderLines st mclient mtarget display mfmt ls = case mfmt of
         forM ls $ \l ->
             ROutput <$> expandFormat st (Map.union (showLineFormats display l) base) fmt
 
+-- | Which command is showing: @show-options@ lists options (hooks too under
+-- @-H@); @show-hooks@ lists only hooks, user hooks included.
+data ShowCommand = ShowOptionsCommand | ShowHooksCommand
+    deriving (Eq, Show)
+
 -- | @show-options@: one option, or (with no name) the table's listing.
 cmdShow :: CommandImpl
-cmdShow st mclient args = do
+cmdShow = runShow ShowOptionsCommand
+
+-- | tmux's @cmd_show_options_exec@, shared by @show-options@ and
+-- @show-hooks@.
+runShow :: ShowCommand -> CommandImpl
+runShow cmd st mclient args = do
     let (opts, flags, pos) = parseArgs "tF" args
         has f = f `elem` flags
         mtarget = lookup "-t" opts
@@ -523,18 +588,26 @@ cmdShow st mclient args = do
         display = if has "-v" then ValueOnly else NameAndValue
         quiet = has "-q"
         orQuiet e = pure [RErr e | not quiet]
+        listing = case cmd of
+            ShowHooksCommand -> HooksOnly
+            ShowOptionsCommand | has "-H" -> OptionsAndHooks
+                               | otherwise -> OptionsOnly
     case pos of
         [] -> do
             esc <- scopeFromFlags st mclient mtarget DefaultSession flags
             case esc of
                 Left e -> orQuiet e
                 Right sc -> do
-                    ls <- showListing st sc (has "-A") (has "-H")
+                    ls <- showListing st sc (if has "-A" then WithParents else OwnOnly) listing
                     renderLines st mclient mtarget display mfmt ls
         [spelled] -> case matchOptionName spelled of
             Left (MatchError e) -> orQuiet e
             Right (n, mkey) -> do
                 let mdef = lookupOptionDef n
+                    role = case (mdef, cmd) of
+                        (Just d, _) -> d.role
+                        (Nothing, ShowHooksCommand) -> HookOption
+                        (Nothing, ShowOptionsCommand) -> PlainOption
                 case mapM_ requireLive mdef of
                     Left e -> pure [RErr e]
                     Right () -> do
@@ -542,16 +615,16 @@ cmdShow st mclient args = do
                         case esc of
                             Left e -> orQuiet e
                             Right sc -> do
-                                found <- lookupShown st sc mdef n (has "-A")
+                                found <- lookupShown st sc role mdef n (if has "-A" then WithParents else OwnOnly)
                                 case found of
-                                    Just (v, inh) -> renderLines st mclient mtarget
-                                        display mfmt
-                                        (optionLines n mdef mkey
-                                            (emptyArrayOwn mkey v inh) v)
+                                    Just (v, inh, extra) ->
+                                        renderLines st mclient mtarget display mfmt
+                                            (optionLines n mdef mkey
+                                                (emptyArrayOwn mkey v inh) extra v)
                                     Nothing
                                         | isJust mdef -> pure []
                                         | otherwise -> orQuiet ("invalid option: " <> spelled)
-        _ -> pure [RErr "usage: show-options [-AgHpqsvw] [-F format] [-t target] [option]"]
+        _ -> pure [RErr "too many arguments"]
   where
     -- A named empty array never shows the inherited marker.
     emptyArrayOwn mkey v inh = case (mkey, v) of
@@ -559,34 +632,88 @@ cmdShow st mclient args = do
         _ -> inh
 
 -- | One option's value at a table — its own, or with @-A@ the inherited
--- one — and whether it was inherited.
+-- one — whether it was inherited, and the hook formats of a hook's value.
 lookupShown
-    :: ServerState -> Scope -> Maybe OptionDef -> Text -> Bool
-    -> IO (Maybe (OptionValue, Inheritance))
-lookupShown st sc mdef n withParents = case mdef of
-    Just d | d.role == HookOption -> do
-        own <- hookValue st sc n
-        pure ((\v -> (v, OwnValue)) <$> own)
-    _ -> atomically $ do
+    :: ServerState -> Scope -> OptionRole -> Maybe OptionDef -> Text -> Inheriting
+    -> IO (Maybe (OptionValue, Inheritance, FormatEnv))
+lookupShown st sc role mdef n inheriting = case role of
+    HookOption -> case hookScopeOf sc of
+        Nothing -> pure Nothing
+        Just hs -> hookShown st hs mdef n
+    PlainOption -> atomically $ do
         own <- ownValue st sc n
         case own of
-            Just v -> pure (Just (v, OwnValue))
+            Just v -> pure (Just (v, OwnValue, Map.empty))
             Nothing
-                | withParents -> fmap (\v -> (v, InheritedValue)) <$> inheritedValue st sc n
+                | inheriting == WithParents ->
+                    fmap (\v -> (v, InheritedValue, Map.empty)) <$> inheritedValue st sc n
                 | otherwise -> pure Nothing
 
--- | A hook's commands at a table, as the array tmux keeps them in. The
--- global tables hold every hook, so there an unbound one is an empty array.
-hookValue :: ServerState -> Scope -> Text -> IO (Maybe OptionValue)
-hookValue st sc n = case hookScopeOf sc of
-    Nothing -> pure Nothing
-    Just hs -> do
-        entries <- hookEntriesAt st hs
-        pure $ case (Map.lookup n entries, hs) of
-            (Just e, _) -> Just (OVArray (Map.fromList
-                (zip (map KeyIndex [0 ..]) e.commands)))
-            (Nothing, HookGlobal) -> Just (OVArray Map.empty)
-            _ -> Nothing
+-- | A hook binding as shown: its value with @hook_fire_*@ formats; a user
+-- monitor with no command bound shows an empty command.
+hookShown
+    :: ServerState -> HookScope -> Maybe OptionDef -> Text
+    -> IO (Maybe (OptionValue, Inheritance, FormatEnv))
+hookShown st hs mdef n = do
+    me <- Map.lookup n <$> hookEntriesAt st hs
+    monitored <- any ((== n) . fst) <$> monitorsAt st hs
+    let fired e = Map.fromList $
+            ("hook_fire_count", T.pack (show e.fireCount))
+            : [ ("hook_fire_time", T.pack (show (floor t :: Integer)))
+              | Just t <- [e.fireTime] ]
+        found = case hookEntryValue mdef hs me of
+            Just v -> Just (v, OwnValue, maybe Map.empty fired me)
+            Nothing
+                | isNothing mdef, monitored -> Just (OVScalar "", OwnValue, Map.empty)
+                | otherwise -> Nothing
+    pure found
+
+-- | @show -A@: whether a table's own values are joined by inherited ones.
+data Inheriting = OwnOnly | WithParents
+    deriving (Eq, Show)
+
+-- | What a no-name listing includes.
+data Listing = OptionsOnly | OptionsAndHooks | HooksOnly
+    deriving (Eq, Show)
+
+-- | tmux's @cmd_show_options_all@: the table's @\@user@ entries (user
+-- options and, when hooks list, user hooks) in name order, then every
+-- registered row that lists there, in registry order — own values, plus
+-- inherited ones under @-A@. Rows hat does not implement are left out.
+showListing :: ServerState -> Scope -> Inheriting -> Listing -> IO [ShowLine]
+showListing st sc inheriting listing = do
+    own <- readTVarIO (deltaVar st sc)
+    let userOptions =
+            [ (n, (v, OwnValue, Map.empty))
+            | listing /= HooksOnly
+            , (n, v) <- deltaEntries own, "@" `T.isPrefixOf` n ]
+    userHooks <- case hookScopeOf sc of
+        Just hs | listing /= OptionsOnly, userHooksListAt sc -> do
+            entries <- hookEntriesAt st hs
+            monitors <- map fst <$> monitorsAt st hs
+            let names = List.nub (List.sort
+                    (filter ("@" `T.isPrefixOf`) (Map.keys entries) <> monitors))
+            concat <$> forM names (\n ->
+                maybe [] (\s -> [(n, s)]) <$> hookShown st hs Nothing n)
+        _ -> pure []
+    let users = concat
+            [ optionLines n Nothing Nothing inh extra v
+            | (n, (v, inh, extra)) <- List.sortOn fst (userOptions <> userHooks) ]
+    rows <- forM (filter shown optionTable) $ \d -> do
+        found <- lookupShown st sc d.role (Just d) d.name inheriting
+        pure $ case found of
+            Just (v, inh, extra) -> optionLines d.name (Just d) Nothing inh extra v
+            Nothing -> []
+    pure (users <> concat rows)
+  where
+    shown d = isLive d && listsAt sc d.scope && case listing of
+        OptionsOnly -> d.role == PlainOption
+        OptionsAndHooks -> True
+        HooksOnly -> d.role == HookOption
+    -- tmux keeps global user hooks with the global session options.
+    userHooksListAt = \case
+        GlobalWindowTable -> False
+        _ -> True
 
 hookScopeOf :: Scope -> Maybe HookScope
 hookScopeOf = \case
@@ -596,26 +723,6 @@ hookScopeOf = \case
     SessionTable s -> Just (HookSession s.id)
     WindowTable w -> Just (HookWindow w.id)
     PaneTable p -> Just (HookPane p.id)
-
--- | tmux's @cmd_show_options_all@: the table's @\@user@ options, then every
--- registered option that lists there, in registry order — own values, plus
--- inherited ones under @-A@; hooks only under @-H@. Options hat does not
--- implement are left out.
-showListing :: ServerState -> Scope -> Bool -> Bool -> IO [ShowLine]
-showListing st sc withParents withHooks = do
-    own <- readTVarIO (deltaVar st sc)
-    let users = concat
-            [ optionLines n Nothing Nothing OwnValue v
-            | (n, v) <- deltaEntries own, "@" `T.isPrefixOf` n ]
-    rows <- forM (filter shown optionTable) $ \d -> do
-        found <- lookupShown st sc (Just d) d.name withParents
-        pure $ case found of
-            Just (v, inh) -> optionLines d.name (Just d) Nothing inh v
-            Nothing -> []
-    pure (users <> concat rows)
-  where
-    shown d = isLive d && listsAt sc d.scope
-        && (withHooks || d.role == PlainOption)
 
 -- | The environment store a command's flags address: the global scope under
 -- @-g@, else the target session's. Like tmux, @-g@ ignores any @-t@.

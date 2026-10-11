@@ -104,6 +104,17 @@ spec = do
         it "passes an implemented choice" $
             supportedValue (def "status") "off" `shouldBe` Right ()
 
+    describe "commands" $ do
+        it "accepts a command that parses" $
+            setScalar "default-client-command" "new-session" (Just "new-window")
+                `shouldBe` Right "new-window"
+        it "rejects a command that does not parse" $
+            setScalar "default-client-command" "new-session" (Just "if -x {")
+                `shouldBe` Left "syntax error"
+        it "parses each hook command" $
+            setArrayKey (def "alert-bell") Assign Map.empty (KeyIndex 0) "if -x {"
+                `shouldBe` Left "syntax error"
+
     describe "arrays" $ do
         let ue = def "update-environment"
         it "splits a whole-array assignment on the separator" $

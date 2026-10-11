@@ -17,6 +17,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
+import Hat.Command.Parser (parseCommandLine)
 import Hat.Model.OptionTable
 import Hat.Server.Format.Colour (colourFromText, colourToText)
 import Hat.Server.Keys (Key (..), parseKeyName)
@@ -50,7 +51,7 @@ parseScalar d mode own current mvalue = case (d.kind, mvalue) of
     (KNumber lo hi, Just v) -> T.pack . show <$> strtonum lo hi v
     (KKey, Just v) -> keyValue v
     (KColour, Just v) -> colourValue v
-    (KCommand, Just v) -> Right v
+    (KCommand, Just v) -> commandValue v
   where
     appended sep v = case (mode, own) of
         (Append, Just old) -> old <> sep <> v
@@ -124,7 +125,15 @@ supportedValue d v = case d.gate of
 arrayEntry :: OptionDef -> Text -> Either Text Text
 arrayEntry d v = case d.kind of
     KColour -> colourValue v
+    KCommand -> commandValue v
     _ -> Right v
+
+-- | A command option's value must parse as a command list; tmux reports
+-- any malformed one as a syntax error.
+commandValue :: Text -> Either Text Text
+commandValue v = case parseCommandLine v of
+    Right _ -> Right v
+    Left _ -> Left "syntax error"
 
 -- | tmux's @options_array_assign@: split on the option's separator
 -- characters (skipping empty pieces) and place each piece at the first free
@@ -141,11 +150,7 @@ assignArray d current v
     place acc piece = do
         m <- acc
         entry <- arrayEntry d piece
-        pure (Map.insert (firstFree m) entry m)
-    firstFree m = head' [ KeyIndex i | i <- [0 ..], not (Map.member (KeyIndex i) m) ]
-    head' = \case
-        (k : _) -> k
-        [] -> KeyIndex 0
+        pure (Map.insert (firstFreeIndex m) entry m)
 
 -- | tmux's @options_array_set@ for one key: replace it, or with 'Append'
 -- extend a string entry that already exists.

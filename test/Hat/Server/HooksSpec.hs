@@ -119,16 +119,21 @@ spec = describe "hooks engine" $ do
         rs <- cmdSetHook st Nothing ["-E", "window-renamed"]
         rs `shouldBe` [RErr "event name must start with @"]
 
-    it "show-hooks lists array items and user hooks" $ do
+    it "show-hooks lists user hooks, then every hook (bound ones per item)" $ do
         st <- newState
         setHook st HookGlobal "session-created" False "set -g @a 1"
         setHook st HookGlobal "session-created" True "set -g @b 2"
         setHook st HookGlobal "@user-hook" False "lsk"
         rs <- cmdShowHooks st Nothing ["-g"]
-        rs `shouldBe`
-            [ ROutput "@user-hook lsk"
-            , ROutput "session-created[0] set -g @a 1"
+        take 1 rs `shouldBe` [ROutput "@user-hook lsk"]
+        filter (`elem` rs)
+            [ ROutput "session-created[0] set -g @a 1"
             , ROutput "session-created[1] set -g @b 2"
+            , ROutput "session-closed"
+            ] `shouldBe`
+            [ ROutput "session-created[0] set -g @a 1"
+            , ROutput "session-created[1] set -g @b 2"
+            , ROutput "session-closed"
             ]
 
     it "a user event runs a same-named registered hook" $ do

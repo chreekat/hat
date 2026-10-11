@@ -17,6 +17,7 @@ module Hat.Server.Hooks
     , fireUserEvent
     , eventPayloadLines
     , setHook
+    , writeHookArray
     , unsetHook
     , registerEvent
     , isRegisteredEvent
@@ -37,13 +38,14 @@ import Control.Monad (forM_, when)
 import Data.List qualified as List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 
 import Hat.Model
-import Hat.Model.Options (hookNames)
+import Hat.Model.Options (ArrayKey, firstFreeIndex, hookNames)
 import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.HookTypes
 import Hat.Server.Locate (locatePane)
@@ -147,19 +149,29 @@ validSetHookName st name
 validEventName :: ServerState -> Text -> IO Bool
 validEventName = validSetHookName
 
--- | Bind (or, with append, extend) a hook at a scope. A user @\@hook@ set
--- through @set-hook@ also becomes a fireable event.
+-- | Bind (or, with append, extend at the next free index) a hook at a
+-- scope. A user @\@hook@ also becomes a fireable event.
 setHook :: ServerState -> HookScope -> Text -> Bool -> Text -> IO ()
 setHook st scope name append cmd = do
-    when ("@" `T.isPrefixOf` name) (registerEvent st name)
+    entries <- hookEntriesAt st scope
+    let old = if append
+            then maybe Map.empty (.commands) (Map.lookup name entries)
+            else Map.empty
+    writeHookArray st scope name (Map.insert (firstFreeIndex old) cmd old)
+
+-- | Replace a hook's commands at a scope, keeping its fire bookkeeping; an
+-- empty array unbinds it. A user @\@hook@ also becomes a fireable event.
+writeHookArray :: ServerState -> HookScope -> Text -> Map ArrayKey Text -> IO ()
+writeHookArray st scope name cmds = do
+    when ("@" `T.isPrefixOf` name && not (Map.null cmds)) (registerEvent st name)
     atomically $ modifyTVar' st.hooks.table $
-        Map.insertWith merge scope (Map.singleton name fresh)
+        Map.alter (Just . Map.alter place name . fromMaybe Map.empty) scope
   where
-    fresh = HookEntry { commands = [cmd], fireCount = 0, fireTime = Nothing }
-    merge _ old = Map.alter place name old
-    place = \case
-        Just e | append -> Just e { commands = e.commands <> [cmd] }
-        _ -> Just fresh
+    place old
+        | Map.null cmds = Nothing
+        | otherwise = Just $ case old of
+            Just e -> e { commands = cmds }
+            Nothing -> HookEntry { commands = cmds, fireCount = 0, fireTime = Nothing }
 
 unsetHook :: ServerState -> HookScope -> Text -> IO ()
 unsetHook st scope name = atomically $ modifyTVar' st.hooks.table $
@@ -270,7 +282,7 @@ takeEntry st sc name now = do
                     , fireTime = Just now }
             writeTVar st.hooks.table
                 (Map.adjust (Map.insert name bumped) sc tbl)
-            pure (Just e.commands)
+            pure (Just (Map.elems e.commands))
 
 ambientOf :: NotifyTarget -> Map Text Text -> HookAmbient
 ambientOf tgt formats = HookAmbient

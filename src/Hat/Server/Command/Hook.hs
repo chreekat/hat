@@ -14,7 +14,7 @@ import Data.Text qualified as T
 import Data.Time.Clock.POSIX (POSIXTime)
 
 import Hat.Model
-import Hat.Model.Options (quoteIfNeeded)
+import Hat.Server.Command.Option (SetCommand (..), ShowCommand (..), runSet, runShow)
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.HookMonitor
     (addMonitor, monitorTargetText, monitorsAt, parseMonitorSpec, removeMonitor)
@@ -56,6 +56,9 @@ hookScopeOf st mclient flags mtarget
         msess <- targetSession st mclient mtarget
         pure $ maybe (Left "no such session") (Right . HookSession . (.id)) msess
 
+-- | @set-hook@: @-B@ monitors, @-E@ user events and @-R@ immediate runs are
+-- its own; binding and unbinding go through the option machinery, since
+-- hooks are array options ('runSet').
 cmdSetHook :: CommandImpl
 cmdSetHook st mclient args = do
     let (opts, flags, pos) = parseArgs "tB" args
@@ -66,24 +69,7 @@ cmdSetHook st mclient args = do
         (_, _, [name]) | "-R" `elem` flags -> do
             tgt <- resolveHookTarget st mclient mtarget
             [] <$ runHookNow st name tgt
-        (_, _, [name]) | "-u" `elem` flags -> withValidName st name $ do
-            escope <- hookScopeOf st mclient flags mtarget
-            case escope of
-                Left e -> pure [RErr e]
-                Right scope -> [] <$ unsetHook st scope name
-        (_, _, [name, cmd]) -> withValidName st name $ do
-            escope <- hookScopeOf st mclient flags mtarget
-            case escope of
-                Left e -> pure [RErr e]
-                Right scope ->
-                    [] <$ setHook st scope name ("-a" `elem` flags) cmd
-        (_, _, [_]) -> pure [RErr "set-hook: empty value"]
-        _ -> pure [RErr "usage: set-hook [-agpRuw] [-t target] hook [command]"]
-
-withValidName :: ServerState -> Text -> IO [Reply] -> IO [Reply]
-withValidName st name act = do
-    ok <- validSetHookName st name
-    if ok then act else pure [RErr ("invalid option: " <> name)]
+        _ -> runSet SetHookCommand st mclient args
 
 -- | @set-hook -B@: register (or with @-u@ remove) a format monitor; a
 -- command argument also binds the hook the monitor fires at this scope.
@@ -138,6 +124,8 @@ fireEventCmd st mclient mtarget name
                 Nothing -> payload
         [] <$ fireUserEvent st name tgt withClient
 
+-- | @show-hooks@: @-B@ lists monitors; otherwise hooks show as the array
+-- options they are ('runShow').
 cmdShowHooks :: CommandImpl
 cmdShowHooks st mclient args = do
     let (opts, flags, pos) = parseArgs "tF" args
@@ -154,20 +142,7 @@ cmdShowHooks st mclient args = do
                             [name] -> [ m | m@(n, _) <- mons0, n == name ]
                             _ -> mons0
                     concat <$> mapM (printMonitor st mclient mtarget mfmt) mons
-        else do
-            escope <- hookScopeOf st mclient flags mtarget
-            case escope of
-                Left e -> pure [RErr e]
-                Right scope -> do
-                    entries <- hookEntriesAt st scope
-                    case pos of
-                        [name] -> case Map.lookup name entries of
-                            Nothing -> pure []
-                            Just e -> printEntry st mclient mtarget mfmt name e
-                        [] -> fmap concat . mapM
-                            (\(n, e) -> printEntry st mclient mtarget mfmt n e)
-                            $ Map.toAscList entries
-                        _ -> pure [RErr "usage: show-hooks [-Bgpw] [-F format] [-t target] [hook]"]
+        else runShow ShowHooksCommand st mclient args
 
 -- A monitor prints as its spec (@name:target:format@), or through @-F@
 -- with the monitor formats.
@@ -196,45 +171,6 @@ printMonitor st mclient mtarget mfmt (name, mon) = do
                          | Just t <- [mtime] ]) base
             out <- expandFormat st env fmt
             pure [ROutput out]
-
--- One line per bound command: user hooks print bare (@name value@), built-in
--- hooks print each array item (@name[i] command@); @-F@ substitutes the
--- caller's template with the per-hook formats.
-printEntry
-    :: ServerState -> Maybe Client -> Maybe Text -> Maybe Text -> Text
-    -> HookEntry -> IO [Reply]
-printEntry st mclient mtarget mfmt name e = case mfmt of
-    Nothing -> pure (map ROutput defaultLines)
-    Just fmt -> do
-        msess <- targetSession st mclient mtarget
-        base <- maybe (pure Map.empty) (sessionFormatEnv st) msess
-        mapM (\perItem -> ROutput <$>
-                expandFormat st (Map.union perItem base) fmt)
-            (perItemEnvs name e)
-  where
-    defaultLines
-        | "@" `T.isPrefixOf` name =
-            [ name <> " " <> quoteIfNeeded cmd | cmd <- e.commands ]
-        | otherwise =
-            [ name <> "[" <> tshow i <> "] " <> cmd
-            | (i, cmd) <- zip [0 :: Int ..] e.commands ]
-
--- The formats @show-hooks -F@ exposes, one map per array item.
-perItemEnvs :: Text -> HookEntry -> [Map.Map Text Text]
-perItemEnvs name e =
-    [ Map.fromList $
-        [ ("option_name", name)
-        , ("option_value", cmd)
-        , ("option_is_hook", "1")
-        , ("option_is_user", if "@" `T.isPrefixOf` name then "1" else "0")
-        , ("option_is_array", if userHook then "0" else "1")
-        , ("option_array_key", if userHook then "" else tshow i)
-        , ("option_has_array_key", if userHook then "0" else "1")
-        , ("hook_fire_count", tshow e.fireCount)
-        ] <> [ ("hook_fire_time", epochText t) | Just t <- [e.fireTime] ]
-    | (i, cmd) <- zip [0 :: Int ..] e.commands ]
-  where
-    userHook = "@" `T.isPrefixOf` name
 
 epochText :: POSIXTime -> Text
 epochText t = tshow (floor t :: Integer)

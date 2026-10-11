@@ -27,6 +27,7 @@ import Data.Text (Text)
 import Data.Time.Clock.POSIX (POSIXTime)
 
 import Hat.Model.Ids
+import Hat.Model.OptionTable (ArrayKey)
 
 -- | Where a hook binding lives. Lookup order on notify is session, global,
 -- pane, window — see 'Hat.Server.Hooks.notify'.
@@ -37,10 +38,10 @@ data HookScope
     | HookPane PaneId
     deriving (Eq, Ord, Show)
 
--- | One bound hook: its command strings (one per array item) and fire
--- bookkeeping for @show-hooks -F@.
+-- | One bound hook: its command strings (one per array item, by key) and
+-- fire bookkeeping for @show-hooks -F@.
 data HookEntry = HookEntry
-    { commands :: [Text]
+    { commands :: Map ArrayKey Text
     , fireCount :: Int
     , fireTime :: Maybe POSIXTime
     }

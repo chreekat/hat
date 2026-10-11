@@ -247,7 +247,8 @@ spec = do
     describe "show-options lines" $ do
         let line n v = ShowLine
                 { option = n, definition = lookupOptionDef n, key = Nothing
-                , value = v, inheritance = OwnValue, presence = HasValue }
+                , value = v, inheritance = OwnValue, presence = HasValue
+                , extraFormats = Map.empty }
         it "quotes string values as command arguments" $ do
             renderShowLine NameAndValue (line "@words" "two words")
                 `shouldBe` "@words \"two words\""

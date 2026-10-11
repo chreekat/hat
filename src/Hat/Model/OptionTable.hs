@@ -28,6 +28,7 @@ module Hat.Model.OptionTable
     , OptionValue (..)
     , ArrayKey (..)
     , parseArrayKey
+    , firstFreeIndex
     , arrayKeyText
     , valueText
       -- * Names
@@ -126,6 +127,11 @@ parseArrayKey t
         Right (n, "") | n <= uintMax -> Just (KeyIndex n)
         _ -> Nothing
     | otherwise = Just (KeyName t)
+
+-- | The lowest index an array leaves unused, where tmux places an appended
+-- entry.
+firstFreeIndex :: Map ArrayKey a -> ArrayKey
+firstFreeIndex m = KeyIndex (until (\i -> not (Map.member (KeyIndex i) m)) (+ 1) 0)
 
 arrayKeyText :: ArrayKey -> Text
 arrayKeyText = \case
