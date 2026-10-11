@@ -126,7 +126,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Alerts (AlertKind (..), AlertWhere (..), alertApplies, deliverAlert)
-import Hat.Server.ClientIO (broadcastAs, send)
+import Hat.Server.ClientIO (broadcastAs, sendAs)
 import Hat.Server.Outbound (Delivery (..))
 import Hat.Server.Clipboard (appClipboard, paneViewers)
 import Hat.Server.ClientSession (sendClientsAway)
@@ -658,7 +658,8 @@ runPaneReader st pane = do
                             cs <- atomically $ if reach == "all"
                                 then paneHolders st pane
                                 else paneViewers st pane
-                            forM_ cs $ \c -> send c (Notify raw)
+                            -- See Note [Falling behind]
+                            forM_ cs $ \c -> sendAs Expendable c (Notify raw)
 
 -- | The pane options that shape how its output is taken.
 hostPolicyOf :: Options -> Emu.HostPolicy

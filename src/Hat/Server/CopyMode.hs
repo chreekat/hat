@@ -113,6 +113,7 @@ import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Clipboard (pushBufferBytes, setSelection)
+import Hat.Server.Outbound (Delivery (InOrder))
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -1399,7 +1400,7 @@ handlers = Map.fromList
         g <- paneGrid pane
         mtext <- extractSelection g opts.modeKeys s
         forM_ mtext $ \body -> do
-            setSelection sst pane (TE.encodeUtf8 body)
+            setSelection InOrder sst pane (TE.encodeUtf8 body)
             forM_ (pipeCommand global cmd) $ \c -> runPipeCommand (T.unpack c) body
             pushBuffer sst body
         pure . Right $
@@ -1661,7 +1662,7 @@ yankSelection st pane s = do
     g <- paneGrid pane
     mtext <- extractSelection g opts.modeKeys s
     forM_ mtext $ \body -> do
-        setSelection st pane (TE.encodeUtf8 body)
+        setSelection InOrder st pane (TE.encodeUtf8 body)
         pushBuffer st body
 
 -- | Push a fresh, auto-named buffer onto the buffer store.

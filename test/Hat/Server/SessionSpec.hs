@@ -1,10 +1,11 @@
 module Hat.Server.SessionSpec (spec) where
 
 import Control.Concurrent.Async (withAsync)
-import Hat.Server.ClientIO (withClientWriter)
-import Hat.Server.Outbound (newOutbound)
+import Hat.Server.ClientIO (send, withClientWriter)
+import Hat.Server.Outbound (backlog, newOutbound)
 import Control.Concurrent.STM
 import Control.Exception (finally)
+import Data.ByteString qualified as B
 import Data.IORef (newIORef, readIORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -384,13 +385,21 @@ spec = do
             let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
             row0 `shouldSatisfy` T.isInfixOf "[0/3]"
 
-    describe "alert delivery (visual-bell)" $
+    describe "alert delivery (visual-bell)" $ do
         it "shows a message instead of the bell under visual-bell on" $ do
             (st, sess) <- seedSession "/"
             (client, _peer) <- wiredClient st Attached
             let opts = applyDelta (singletonDelta "visual-bell" (OVScalar "on")) defaultOptions
             deliverAlert st sess opts BellAlert 1
             fmap (.text) <$> readTVarIO client.toast `shouldReturn` Just "Bell in window 1"
+        it "rings no bell for a client that has fallen behind" $ do
+            (st, sess) <- seedSession "/"
+            (client, _peer) <- wiredClient st Attached
+            -- past an 80x24 client's high water, with no writer to drain it
+            send client (Notify (B.replicate 20000 0))
+            behind <- atomically (backlog client.outbound)
+            deliverAlert st sess defaultOptions BellAlert 1
+            atomically (backlog client.outbound) `shouldReturn` behind
 
     describe "pane colours" $
         it "window-style and pane-colours paint what a client sees of a pane" $ do

@@ -83,12 +83,19 @@ broadcastAs delivery st sid msg = do
 --   catching up needs no full redraw. (tmux writes a pane's changes through
 --   to its clients' ttys as they happen, so it must discard a blocked tty's
 --   output and redraw it once the tty drains.)
--- * What other threads send it -- a pane's bells and desktop notifications
---   -- is 'Expendable': dropped while it is behind, as tmux drops a blocked
---   tty's output. Its title and cursor colour keep only the newest value
---   queued.
+-- * What a pane's program sends it unasked -- bells (an alert's included),
+--   desktop notifications, @allow-passthrough@ payloads -- is 'Expendable':
+--   dropped while it is behind, as tmux drops a blocked tty's output.
+-- * A setting of its terminal of which only the current value matters -- the
+--   title, the cursor's colour and shape, the clipboard a program sets with
+--   OSC 52 -- is 'Superseding' in its own 'Slot': a stale value still queued
+--   gives way, the newest is never dropped. (tmux drops these with the rest
+--   and re-sends the current state once the tty drains.)
 -- * Replies and lifecycle messages go in order whatever the backlog: the
---   client asked for them, or they end it.
+--   client asked for them, or they end it. So do the outer terminal's mouse
+--   tracking, which decides what input comes back and must change in step
+--   with the frames showing why, and a copy the user made, which must reach
+--   the outer clipboard even when a newer copy follows it.
 -- * A connection's teardown waits for its writer to finish, as tmux keeps an
 --   exiting client until it has read everything. A restart cannot wait
 --   that long -- every pane is paused until it re-execs -- so it gives each

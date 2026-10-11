@@ -338,6 +338,7 @@ renderOnce st client = do
     oldColour <- readIORef client.lastCursorColour
     when (colour /= oldColour) $ do
         writeIORef client.lastCursorColour colour
+        -- See Note [Falling behind]
         sendAs (Superseding CursorColourSlot) client $ Notify $ case colour of
             Nothing -> "\ESC]112\a"
             Just (r, g, b) -> TE.encodeUtf8 $ T.concat
@@ -346,7 +347,8 @@ renderOnce st client = do
     oldShape <- readIORef client.lastCursorShape
     when (shape /= oldShape) $ do
         writeIORef client.lastCursorShape shape
-        send client (Notify (decscusr shape))
+        -- See Note [Falling behind]
+        sendAs (Superseding CursorShapeSlot) client (Notify (decscusr shape))
     syncMouseMode st client (fmap (\(sess, win, _, _, ps, active) -> (sess, win, ps, active)) view)
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
@@ -407,6 +409,7 @@ syncMouseMode st client view = do
     old <- readIORef client.lastMouseMode
     when (want /= old) $ do
         writeIORef client.lastMouseMode want
+        -- See Note [Falling behind]
         send client (Notify (Mouse.mouseModeBytes want))
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them

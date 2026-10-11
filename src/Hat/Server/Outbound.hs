@@ -36,7 +36,7 @@ data Delivery
 
 -- | A setting of the client's terminal, of which only the newest value
 -- matters.
-data Slot = TitleSlot | CursorColourSlot
+data Slot = TitleSlot | CursorColourSlot | CursorShapeSlot | ClipboardSlot
     deriving (Eq, Show)
 
 data Item = Item
