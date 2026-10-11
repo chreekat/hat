@@ -23,19 +23,20 @@ module Hat.Server.Locate
     , locatePane
     , siblingPane
     , findTargetClient
+    , setCurrentPane
     ) where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.STM
-import Control.Monad (forM)
+import Control.Monad (forM, forM_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
-import Data.IORef (readIORef)
+import Data.IORef (modifyIORef', readIORef)
 
 import Hat.Model
 import Hat.Model.Options
@@ -437,3 +438,15 @@ findTargetClient st mclient msid mname = atomically $ do
   where
     terminal c = c.role == Attached && isNothing c.control
     clientName c = "client" <> tshow (rawClient c.id)
+
+-- | A command made a pane the one the commands after it act on (tmux's
+-- @cmd_find_from_winlink_pane@ on the queue's current state). Without a
+-- state of its own, the issuing client's current pane already follows
+-- what the command changed; only a state set apart from it — a menu's, or
+-- a mouse binding's — needs moving.
+setCurrentPane :: Maybe Client -> SessionId -> WindowId -> PaneId -> IO ()
+setCurrentPane mclient sid wid pid = forM_ mclient $ \c ->
+    modifyIORef' c.keyState $ \ks ->
+        if isJust ks.commandState || isJust ks.mouseEvent
+            then ks { commandState = Just (sid, wid, pid) }
+            else ks

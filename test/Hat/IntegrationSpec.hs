@@ -790,6 +790,17 @@ spec = parallel $ do
             pure (out == "alpha\n")
         awaitWith "the menu to close" (fmap (not . T.isInfixOf "Alpha (a)") . screenText) c
 
+    it "runs a menu item's later commands on the pane an earlier one made" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["display-menu", "Split", "s", "split-window; set -gF @cur '##{pane_id}'"]
+        awaitScreen c "Split (s)"
+        typeInto c "s"
+        awaitTrue "the new pane to be current" $ do
+            (_, out, _) <- hatCtl h ["show", "-gv", "@cur"]
+            pure (out == "%1\n")
+
     it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
         withHat hatBin $ \h -> do
         let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]

@@ -58,7 +58,7 @@ format-render-contexts.sh       # status-interval option + choose-tree/customize
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
 # mouse: commands its bindings and tests reach
-new-pane-mouse.sh               # display-menu (the MouseDown3Empty menu)
+new-pane-mouse.sh               # list-keys unimplemented (the rest passes)
 
 # option engine breadth: flat scalar table, global-only read-back
 options-values.sh               # needs default-client-command (not yet live)

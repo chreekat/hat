@@ -54,7 +54,7 @@ import Hat.Model.Options (Options (..), optionText, quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
-import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf)
+import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf, setCurrentPane)
 import Hat.Server.Mouse (ClickOutside (..), Drag (..))
 import Hat.Server.MouseIO
     (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag, startNewPaneDrag)
@@ -545,6 +545,8 @@ spawnInWindow entry st mclient args
                         [RErr e] <$ killPaneLocs st [(sess.id, win, pane)]
                    | otherwise -> do
                         forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
+                        when ("-d" `notElem` flags) $
+                            setCurrentPane mclient sess.id win.id pane.id
                         startPaneReader st sess.id win pane
                         when ("-I" `elem` flags) $ feedStdin pane
                         when ("-M" `elem` flags) $ do
@@ -691,7 +693,13 @@ cmdSelectPane st mclient args
                             | "-e" `elem` flags -> [] <$ setInputOff st wp False
                             | "-d" `elem` flags -> [] <$ setInputOff st wp True
                             | Just t <- lookup "-T" opts -> [] <$ setPaneTitle st sess win wp t
-                            | otherwise -> [] <$ activate st sess win wp ("-Z" `elem` flags)
+                            | otherwise -> do
+                                before <- readTVarIO win.activeId
+                                activate st sess win wp ("-Z" `elem` flags)
+                                after <- readTVarIO win.activeId
+                                when (after == wp.id && before /= wp.id) $
+                                    setCurrentPane mclient sess.id win.id wp.id
+                                pure []
   where
     (opts, flags, _) = parseArgs "PtT" args
     direction

@@ -733,7 +733,7 @@ runInputs d st client keys = do
                 withCommandBatch st $ forM_ cmds $ \argv ->
                     toastReplies st client =<< d.runArgv st (Just client) argv
                 after <- readIORef client.keyState
-                pure after { mouseEvent = Nothing }
+                pure after { mouseEvent = Nothing, commandState = Nothing }
     st0 <- readIORef client.keyState
     loop st0 keys
   where
