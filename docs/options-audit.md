@@ -60,6 +60,8 @@ spot-read of each suspect consumer.
 | `history-limit` | emulator scrollback cap (Server.hs) | implemented ✅ tested | integration |
 | `default-terminal` | `$TERM` for new panes (Server.hs) | implemented ✅ tested | integration |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
+| `wrap-search` | `findMatch` (CopyMode.hs): a search past the last match starts over from the other end only when on | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-command` | `pipeCommand` (CopyMode.hs): what `copy-pipe` runs when given no command | implemented ✅ tested | pure (CopyModeSpec) |
 | `status-left` | `#{T:status-left}` in `status-format[0]` (`statusRows`, Status.hs) | implemented ✅ tested | pure (StatusSpec) |
 | `status-left-length` | `#{=/…:status-left}` in `status-format[0]` | implemented ✅ tested | rendered (FormatSpec) |
 | `status-right` | `#{T:status-right}` in `status-format[0]` (`statusRows`, Status.hs) | implemented ✅ tested | pure (StatusSpec) |
@@ -84,11 +86,19 @@ spot-read of each suspect consumer.
 | `message-line` | `messageLine` (View.hs) | implemented ✅ tested | pure |
 | `message-command-style` | `drawPrompt` in vi command mode (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
 | `status-keys` | `editPrompt` (Prompt.hs), fixed when `command-prompt` opens | implemented ✅ tested | pure (PromptSpec) |
+| `prompt-cursor-colour` / `prompt-cursor-style` / `prompt-command-cursor-colour` / `prompt-command-cursor-style` | fixed into `PromptKeys` when `command-prompt` opens (`promptCursor`, Interact.hs); `promptCursorOf` in `renderOnce` (View.hs) sends the colour (OSC 12/112) and the shape (DECSCUSR) while the prompt is open, the command-mode ones in vi command mode | implemented ✅ tested | pure (OptionEffectSpec) |
 | `pane-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): each pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
 | `pane-active-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): the active pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
 | `pane-border-status` | `statusAdjust` in `windowArrange` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-tiled` |
 | `pane-border-format` | `withStatusLines` (View.hs) over `statusBase` (Scene.hs) | implemented ✅ tested | regress `screen-redraw-tiled` |
-| `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
+| `mode-style` | through the copy-mode styles that default to `#{E:mode-style}` | implemented ✅ tested | pure |
+| `copy-mode-selection-style` | `copyView` (CopyMode.hs) via `copyLook` (View.hs): the selection, laid over each cell; formats expanded in the pane | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-match-style` / `copy-mode-current-match-style` | `copyView`: the last search's matches on screen, the one under the cursor (before it, for an emacs forward search) as current, until a command clears them (`clearsMarks`) | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-mark-style` | `copyView`: the `set-mark`/`jump-to-mark` mark's line, inverted at the mark | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-current-line-style` | `copyView`: the cursor's line; `default` leaves it alone | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-line-numbers` | `copyView` (numbers beside the text, which moves over), `copyModeFormats` (`copy_position` from the top under absolute numbering), `textColumn` for the mouse; `line-numbers-on`/`-off`/`-toggle`; hidden when a mouse key opens copy mode | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-line-number-style` / `copy-mode-current-line-number-style` | `copyView`: the numbers, the cursor's line's in the latter | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-position-format` / `copy-mode-position-style` | `copyView` via `copyLook`: expanded in the pane, drawn with `formatDraw` over the first row's text unless `copy-mode -H` or `toggle-position` hides it; each pane's own value | implemented ✅ tested | pure (CopyModeSpec) + model (SessionSpec) |
 | `window-style` / `window-active-style` | `paneDefaults`/`paintDefaults` (Render.hs) via `paneStyleOption` (View.hs): each pane's own value, formats expanded in the pane, and the answer to an OSC 10/11 query when set (`queryDefaultColour`, PaneColours.hs); `dim=` refused | implemented ✅ tested | pure (RenderSpec) + regress `screen-redraw-window-style` |
 | `pane-scrollbars` | `paneScrollbars` → `scrollbarReserve` in `windowArrange` (Resize.hs), `buildScene`/`sceneChrome` (Scene.hs): `off` and `on` (hidden on the alternate screen); `modal` and `auto-hide` refused | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) + regress `screen-redraw-scrollbars` scenes |
 | `pane-scrollbars-position` | `scrollbarReserve` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (OptionEffectSpec) |
@@ -99,6 +109,7 @@ spot-read of each suspect consumer.
 | `cursor-colour` | `cursorColourOf` via `renderOnce` (View.hs): the program's OSC 12 colour, else the active pane's value, theme colours resolved, sent as `rgb:` | implemented ✅ tested | pure (OptionEffectSpec) |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
+| `clock-mode-colour` / `clock-mode-style` | `clockCells`/`clockText` (Clock.hs) via `clockView` (View.hs): the `clock-mode` screen, each pane's window's values, theme colours resolved | implemented ✅ tested | pure (ClockSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
@@ -109,11 +120,14 @@ spot-read of each suspect consumer.
 | `default-shell` | `paneShell`/`paneProgram` (Pane.hs) for every spawn; `checkValue` (Command/Option.hs) refuses an unsuitable shell; seeded from `$SHELL` at start (`seedDefaultShell`) | implemented ✅ tested | pure |
 | `default-command` | `shellStart` (Pane.hs) at new-session, new-window, split-window | implemented ✅ tested | pure |
 | `default-size` | `defaultSizeOf` (Resize.hs): detached `new-session`, `resize-window -A`/`-a` | implemented ✅ tested | integration |
+| `bell-action` / `activity-action` / `silence-action` | `alertApplies` (Alerts.hs) in `bellAlerts`/`activityAlert` (Pane.hs) and `silenceSweep` (HookMonitor.hs): whether a window's alert fires its hook and reaches the session's clients | implemented ✅ tested | pure (AlertsSpec) + regress `alerts` |
+| `visual-bell` / `visual-activity` / `visual-silence` | `alertNotice` via `deliverAlert` (Alerts.hs): each client of the session hears the bell, sees "… in window N", or both | implemented ✅ tested | pure (AlertsSpec) + model (SessionSpec) |
 | `monitor-activity` | activity-flag gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename` | auto-rename gate (Server.hs) | implemented ✅ tested | integration |
 | `automatic-rename-format` | `autoName`→`renderFormat` (Server.hs) | implemented ✅ tested | rendered (FormatSpec) |
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
+| `prompt-history-limit` | `pushHistory` (Prompt.hs) on each submitted line, `restoreHistory` (PromptHistory.hs) as the `history-file` loads: the newest entries of each type are kept | implemented ✅ tested | pure (PromptSpec, PromptHistorySpec) |
 | `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
@@ -160,6 +174,16 @@ spot-read of each suspect consumer.
   Styles decoded into `Options` record fields (`mode-style`) still draw
   theme colours as the terminal default.
 
+- **`copy-mode-position-format`**: `#{top_line_time}` is always 0 (so the
+  default format shows no time), because the emulator does not stamp lines
+  with the time they scroll into the history as tmux's grid does.
+
+- **`copy-mode-selection-style`** lays its attributes over a selected cell
+  as `applyModeStyle` does, toggling `reverse` where tmux's
+  `screen_select_cell` adds it, so the default `mode-style` of `reverse`
+  still shows a selection over reverse-video text; and `noattr` is not
+  modelled (the style parser accepts and drops it).
+
 - **`pane-border-indicators`** `arrows` draws hat's triangles at each edge's
   midpoint, where tmux draws ACS arrows next to the pane's corner (a
   deliberate design choice; see `border-arrows.sh` in the xfail list).
@@ -184,10 +208,8 @@ spot-read of each suspect consumer.
   login-ness differs. `respawn-pane` re-reads `default-shell` where tmux
   reuses the pane's original shell.
 
-- **`history-file`** loads every entry, where tmux keeps the newest
-  `prompt-history-limit` (default 100) of each type; hat's prompt history has
-  no limit yet. Hat has no search prompt, so a file's `search:` entries are
-  only carried through to the next save. Entries are text: a byte that is
+- **`history-file`**: hat has no search prompt, so a file's `search:`
+  entries are only carried through to the next save. Entries are text: a byte that is
   not UTF-8 in a tmux-written entry is rewritten as U+FFFD.
 
 ## The effect-test sweep

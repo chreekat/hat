@@ -44,6 +44,7 @@ mkClient = do
     mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef Nothing
+    shapeVar <- newIORef CursorDefault
     fullV   <- newTVarIO True
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing
@@ -62,7 +63,7 @@ mkClient = do
             , lastChrome = chromeV
             , lastStatus = statusV
             , lastMouseMode = mouseModeVar
-            , lastCursorColour = colourV
+            , lastCursorColour = colourV, lastCursorShape = shapeVar
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV

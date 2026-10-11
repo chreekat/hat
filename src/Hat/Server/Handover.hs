@@ -284,6 +284,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     exitedVar <- newTVarIO (paneExitOf <$> rp.death)
     inputOffVar <- newTVarIO False
     alternateVar <- newTVarIO rp.screen.altScreen
+    clockVar <- newTVarIO NoClock
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
@@ -294,7 +295,7 @@ adoptPane st histLimit pid (psnap, rp) = do
                 StartCommand t -> ShellCommand t
                 StartArgv argv -> ExecArgv argv
             , exited = exitedVar, kind = psnap.kind, inputOff = inputOffVar
-            , onAlternate = alternateVar }
+            , onAlternate = alternateVar, clock = clockVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the
     -- pre-reload scheme until the OS scheme next changes (bug f3).

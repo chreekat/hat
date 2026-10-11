@@ -27,6 +27,16 @@ module Hat.Model
     , AcceptGate (..)
     , ReadGate (..)
     , CopyModeState (..)
+    , copyModeAt
+    , Recentre (..)
+    , SelAnchor (..)
+    , PaneClock (..)
+    , clockOnTop
+    , paneClockOnTop
+    , PromptCursor (..)
+    , CursorShape (..)
+    , LineNumbers (..)
+    , MarkShown (..)
     , FrozenGrid (..)
     , PaneMode (..)
     , SearchDirection (..)
@@ -59,6 +69,7 @@ module Hat.Model
     , resolveForSession
     , resolveForWindow
     , resolveForPane
+    , paneOptionsNow
     , sessionClients
     , currentWindow
     , activePane
@@ -85,7 +96,7 @@ import Control.Monad (forM, forM_)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isNothing, mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -291,7 +302,25 @@ data Pane = Pane
     , onAlternate :: TVar Bool
         -- ^ whether the pane's program is on the alternate screen, as of
         -- the last output its reader fed
+    , clock :: TVar PaneClock
     }
+
+-- | A pane's clock mode, and whether it was entered over its copy mode or
+-- under it (tmux keeps a pane's modes as a stack, the top one shown).
+data PaneClock = NoClock | ClockOnTop | ClockUnderCopy
+    deriving (Eq, Show)
+
+-- | Whether clock mode is the pane's top mode: the one shown, and given
+-- the keys.
+clockOnTop :: PaneClock -> Maybe PaneMode -> Bool
+clockOnTop c copy = case c of
+    ClockOnTop -> True
+    ClockUnderCopy -> isNothing copy
+    NoClock -> False
+
+-- | 'clockOnTop' for a pane now.
+paneClockOnTop :: Pane -> STM Bool
+paneClockOnTop pane = clockOnTop <$> readTVar pane.clock <*> readTVar pane.mode
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart
@@ -357,7 +386,62 @@ data CopyModeState = CopyModeState
         -- ^ @copy-mode -e@: scrolling down to the bottom leaves the mode
     , hidePosition  :: !Bool
         -- ^ @copy-mode -H@: no position indicator
+    , pinnedEnd     :: !(Maybe (Int, Int))
+        -- ^ the selection's far end once it stops following the cursor
+        -- (tmux's @CURSORDRAG_NONE@); 'Nothing' while the cursor is that end
+    , anchorAt      :: !SelAnchor
+    , recentre      :: !(Maybe (Int, Recentre))
+        -- ^ the row @recentre-top-bottom@ last moved and where it goes next
+    , lineNumbers   :: !LineNumbers
+    , mark          :: !(Int, Int)
+        -- ^ the @set-mark@ position, absolute; the entry cursor until set
+    , markShown     :: !MarkShown
+    , searchMarks   :: !(Maybe SearchDirection)
+        -- ^ while the last search's matches are highlighted, the way it ran
     }
+    deriving (Eq, Show)
+
+-- | A fresh copy mode over the given key table, its cursor at an absolute
+-- @(row, col)@ and nothing selected.
+copyModeAt :: Text -> Int -> Int -> CopyModeState
+copyModeAt table row col = CopyModeState
+    { cursorRow = row
+    , cursorCol = col
+    , selection = Nothing
+    , keyTable = table
+    , viewportOffY = 0
+    , numPrefix = Nothing
+    , pendingSearch = Nothing
+    , lastSearch = Nothing
+    , lastQuery = Nothing
+    , scrollExit = False
+    , hidePosition = False
+    , pinnedEnd = Nothing
+    , anchorAt = AnchorAtStart
+    , recentre = Nothing
+    , lineNumbers = LinesFromOption
+    , mark = (row, col)
+    , markShown = MarkHidden
+    , searchMarks = Nothing
+    }
+
+-- | Whether copy mode numbers its lines (tmux's @line_numbers@): not at
+-- all, as @copy-mode-line-numbers@ says, or as it says but at least
+-- @default@.
+data LineNumbers = LinesHidden | LinesFromOption | LinesForced
+    deriving (Eq, Show)
+
+-- | Whether copy mode draws its mark in @copy-mode-mark-style@.
+data MarkShown = MarkHidden | MarkShown
+    deriving (Eq, Show)
+
+-- | Which of tmux's two selection ends (@selx@ where it began, @endselx@)
+-- the anchor is; @other-end@ swaps them.
+data SelAnchor = AnchorAtStart | AnchorAtEnd
+    deriving (Eq, Show)
+
+-- | Where @recentre-top-bottom@ puts the cursor's line next.
+data Recentre = RecentreMiddle | RecentreTop | RecentreBottom
     deriving (Eq, Show)
 
 -- | A pane's active copy mode: a frozen snapshot of the pane's grid
@@ -460,8 +544,29 @@ data Flash
 data PromptKeys = PromptKeys
     { statusKeys :: !ModeKeys
     , wordSeparators :: !Text
+    , insertCursor :: !PromptCursor   -- ^ @prompt-cursor-colour@ and @-style@
+    , commandCursor :: !PromptCursor  -- ^ @prompt-command-cursor-*@, vi command mode
     }
     deriving (Eq, Show)
+
+-- | How the terminal's cursor looks while it sits in a prompt.
+data PromptCursor = PromptCursor
+    { colour :: !Text  -- ^ a colour option's value; empty for the terminal's own
+    , shape :: !CursorShape
+    }
+    deriving (Eq, Show)
+
+-- | A cursor shape as DECSCUSR sets it: @cursor-style@'s choices, in its
+-- order, which is DECSCUSR's numbering.
+data CursorShape
+    = CursorDefault
+    | CursorBlinkingBlock
+    | CursorBlock
+    | CursorBlinkingUnderline
+    | CursorUnderline
+    | CursorBlinkingBar
+    | CursorBar
+    deriving (Eq, Show, Enum, Bounded)
 
 -- | A vi-keys prompt's mode (tmux's @PROMPT_COMMANDMODE@); an emacs-keys
 -- prompt is always inserting.
@@ -637,6 +742,8 @@ data Client = Client
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef (Maybe Emu.Rgb)
         -- ^ OSC 12 in effect; render thread only
+    , lastCursorShape :: IORef CursorShape
+        -- ^ DECSCUSR in effect; render thread only
     , lastMouseMode :: IORef Int
         -- ^ the outer terminal's mouse tracking: 0 off, 1 clicks, 2 drags,
         --   3 all motion; render thread only
@@ -802,6 +909,17 @@ resolveForPane st sess win pane = do
     p <- readTVar pane.options
     rest <- resolveForWindow st sess win
     pure (applyDelta p rest)
+
+-- | A pane's options as of now, from its current home; 'Nothing' for a pane
+-- not yet homed.
+paneOptionsNow :: ServerState -> Pane -> IO (Maybe Options)
+paneOptionsNow st pane = atomically $ do
+    mhome <- readTVar pane.home  -- See Note [Pane home]
+    sessions <- readTVar st.sessions
+    case mhome of
+        Just (sid, win) | Just sess <- Map.lookup sid sessions ->
+            Just <$> resolveForPane st sess win pane
+        _ -> pure Nothing
 
 freshId :: TVar Int -> STM Int
 freshId counter = do

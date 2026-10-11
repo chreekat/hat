@@ -53,6 +53,7 @@ import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
 import Hat.Server.Resize (unzoomedArrange, windowArea)
+import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Render (paneDefaults)
 import Hat.Server.Theme (Theme, clientColours, resolveTheme)
@@ -361,7 +362,7 @@ sessionFormatEnv st sess = do
             dir <- paneCurrentPath pane
             title <- Emu.title pane.emulator
             cmd <- paneCommandName pane
-            modeEnv <- paneModeEnv pane
+            modeEnv <- paneModeEnv st pane
             pid <- panePid pane
             pure $ [ ("pane_current_path", T.pack dir)
                    , ("pane_current_command", cmd)
@@ -422,21 +423,19 @@ sessionAlerts sess = do
              [ tshow ix <> T.pack cs | (ix, cs) <- alerted ]) ]
 
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
--- plus @copy_cursor_{x,y,line}@ while in mode.
-paneModeEnv :: Pane -> IO [(Text, Text)]
-paneModeEnv pane = do
-    mmode <- readTVarIO pane.mode
+-- plus the copy-mode variables while in mode.
+paneModeEnv :: ServerState -> Pane -> IO [(Text, Text)]
+paneModeEnv st pane = do
+    (mmode, clockTop) <- atomically $ (,) <$> readTVar pane.mode <*> paneClockOnTop pane
     case mmode of
+        _ | clockTop -> pure [("pane_in_mode", "1"), ("pane_mode", "clock-mode")]
         Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
         Just pm -> do
-            let s = pm.copyState
-                top = pm.frozen.fgHsize - s.viewportOffY
-            pure [ ("pane_in_mode", "1")
-                 , ("pane_mode", "copy-mode")
-                 , ("copy_cursor_x", tshow s.cursorCol)
-                 , ("copy_cursor_y", tshow (s.cursorRow - top))
-                 , ("copy_cursor_line", tshow s.cursorRow)
-                 ]
+            global <- readTVarIO st.options
+            opts <- maybe global id <$> paneOptionsNow st pane
+            let numbering = CopyMode.lineNumberModeOf (optionText "copy-mode-line-numbers" opts)
+            pure $ [ ("pane_in_mode", "1"), ("pane_mode", "copy-mode") ]
+                <> CopyMode.copyModeFormats global.wordSeparators numbering pm
 
 -- Resolve #(cmd) through a 15-second cache; refreshes happen in the
 -- background so the status line never blocks on a slow script.

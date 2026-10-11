@@ -12,6 +12,7 @@ import Control.Monad (unless)
 import Data.Text qualified as T
 
 import Hat.Model
+import Hat.Model.Options (optionNumber)
 import Hat.Server.Command.Types (Dispatch (..))
 import Hat.Server.Keys (Key)
 import Hat.Server.Picker qualified as Picker
@@ -72,8 +73,9 @@ handlePromptInput d st client pr0 keys = do
                 writeTVar client.prompt Nothing
                 -- Templated prompts (rename-window, …) keep the : history
                 -- clean; only bare command lines are remembered.
-                unless templated $
-                    modifyTVar' st.cmdHistory (Prompt.pushHistory line)
+                unless templated $ do
+                    limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
+                    modifyTVar' st.cmdHistory (Prompt.pushHistory limit line)
                 bumpDirty st
             -- A blank submission cancels: never rename a window to "".
             unless (T.null (T.strip line)) $ do

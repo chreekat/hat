@@ -228,6 +228,7 @@ newClient st conn h = do
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef Nothing
+    cursorShapeVar <- newIORef CursorDefault
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing
@@ -264,6 +265,7 @@ newClient st conn h = do
         , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
         , lastCursorColour = cursorColourVar
+        , lastCursorShape = cursorShapeVar
         , needsFull = fullVar
         , toast = toastVar
         , flash = flashVar
@@ -636,7 +638,11 @@ runInputs d st client keys = do
         -- under a mouse event.
         routed kst mpane k0 mev rest = do
             modeTable <- case mpane of
-                Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
+                Just pane -> atomically $ do
+                    top <- paneClockOnTop pane
+                    -- clock mode has no key table of its own
+                    if top then pure Nothing
+                        else fmap (.copyState.keyTable) <$> readTVar pane.mode
                 Nothing -> pure Nothing
             k <- reencodeKey (keyEncoding opts) (fmap (.emulator) mpane) k0
             -- The outer terminal's ?1004 focus reports track whether the
@@ -669,12 +675,17 @@ runInputs d st client keys = do
                         deliverKeys d st client [ key | Left key <- rest ]
         act mpane k0 mev kst = \case
             Passthrough _
-                | Just ev <- mev -> kst <$ sendMouse st ev
+                | Just ev <- mev -> kst <$ do
+                    spent <- if "MouseMove" `T.isInfixOf` k0.name then pure False
+                        else maybe (pure False) (clockModeKey st) mpane
+                    unless spent (sendMouse st ev)
                 | otherwise -> kst <$ forM_ mpane (\pane -> do
-                    dismissed <- if k0.name `elem` ["FocusIn", "FocusOut"]
+                    spent <- if k0.name `elem` ["FocusIn", "FocusOut"]
                         then pure False
-                        else dismissDeadPane st pane
-                    unless dismissed $ typeKeyIntoPane st pane k0)
+                        else clockModeKey st pane >>= \case
+                            True -> pure True
+                            False -> dismissDeadPane st pane
+                    unless spent $ typeKeyIntoPane st pane k0)
             Paste -> kst <$ forM_ mpane (\pane -> do
                 inMode <- isJust <$> readTVarIO pane.mode
                 -- The brackets reach only an app that asked for them

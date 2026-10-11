@@ -11,11 +11,15 @@ module Hat.Server.View
     , messageLine  -- ^ exported for the message-line effect test
     , statusRangesFor
     , cursorColourOf  -- ^ exported for the cursor-colour effect test
+    , promptCursorOf
+    , decscusr
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, join, when)
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.IORef
 import Data.Word (Word8)
 import Data.List qualified as List
@@ -25,6 +29,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.LocalTime (getZonedTime, zonedTimeToLocalTime)
 import Data.Vector qualified as V
 
 import Hat.Geometry
@@ -32,6 +37,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (flashStyle, previewLabelStyle)
+import Hat.Server.Clock qualified as Clock
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.DisplayPanes qualified as DisplayPanes
@@ -46,7 +52,7 @@ import Hat.Server.FormatEnv
      windowFormatEnv, windowOwnEnv)
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowPaneStatus)
-import Hat.Server.Locate (paneIndexOf)
+import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme, colourRgb)
@@ -308,10 +314,14 @@ renderOnce st client = do
     -- @cursor-colour@: mirror the viewed active pane's resolved colour onto
     -- the outer terminal's cursor (OSC 12), resetting it (OSC 112) when the
     -- pane in view no longer has one.
-    colour <- case view of
-        Just (sess, win, _, _, ps, active)
+    -- While a prompt is open the cursor is the prompt's, as its options were
+    -- when it opened.
+    th <- clientTheme st
+    inPrompt <- fmap promptCursorOf <$> readTVarIO client.prompt
+    colour <- case (inPrompt, view) of
+        (Just pc, _) -> pure (colourValue th pc.colour >>= id >>= colourRgb)
+        (Nothing, Just (sess, win, _, _, ps, active))
             | Just pane <- Map.lookup active ps -> do
-                th <- clientTheme st
                 app <- Emu.appCursorColour pane.emulator
                 popts <- atomically (resolveForPane st sess win pane)
                 pure (cursorColourOf th app (optionText "cursor-colour" popts))
@@ -323,6 +333,11 @@ renderOnce st client = do
             Nothing -> "\ESC]112\a"
             Just (r, g, b) -> TE.encodeUtf8 $ T.concat
                 [ "\ESC]12;rgb:", hex2 r, "/", hex2 g, "/", hex2 b, "\a" ]
+    let shape = maybe CursorDefault (.shape) inPrompt
+    oldShape <- readIORef client.lastCursorShape
+    when (shape /= oldShape) $ do
+        writeIORef client.lastCursorShape shape
+        send client (Notify (decscusr shape))
     syncMouseMode st client (fmap (\(sess, win, _, _, ps, active) -> (sess, win, ps, active)) view)
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
@@ -343,6 +358,16 @@ cursorColourOf :: Theme -> Maybe Emu.Rgb -> Text -> Maybe Emu.Rgb
 cursorColourOf th app opt = case app of
     Just c -> Just c
     Nothing -> colourValue th opt >>= id >>= colourRgb
+
+-- | The cursor of an open prompt: its command-mode one in vi command mode.
+promptCursorOf :: PromptState -> PromptCursor
+promptCursorOf pr = case pr.promptMode of
+    PromptCommand -> pr.promptKeys.commandCursor
+    PromptInsert -> pr.promptKeys.insertCursor
+
+-- | The DECSCUSR sequence setting a cursor shape.
+decscusr :: CursorShape -> B.ByteString
+decscusr shape = "\ESC[" <> B8.pack (show (fromEnum shape)) <> " q"
 
 hex2 :: Word8 -> Text
 hex2 w = T.pack [digit (w `div` 16), digit (w `mod` 16)]
@@ -715,8 +740,12 @@ data PaneView = PaneView
 
 paneView :: ServerState -> Pane -> IO PaneView
 paneView st pane = do
-    mmode <- readTVarIO pane.mode
+    (mmode, clockTop) <- atomically $ (,) <$> readTVar pane.mode <*> paneClockOnTop pane
     case mmode of
+        _ | clockTop -> do
+            cells <- clockView st pane
+            pure PaneView
+                { cells, rowGens = Nothing, cursor = Nothing, cursorVisible = False }
         Nothing -> do
             (scr, gens) <- Emu.snapshotWithGens pane.emulator
             pure PaneView
@@ -726,57 +755,84 @@ paneView st pane = do
                 , cursorVisible = scr.cursorVisible
                 }
         Just pm -> do
-            opts <- readTVarIO st.options
-            let s = pm.copyState
-                fg = pm.frozen
-                hsize = fg.fgHsize
-                top = hsize - s.viewportOffY
-                rows = [ viewportRow fg (top + i) | i <- [0 .. fg.fgSy - 1] ]
-                overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
-                    (V.fromList rows)
-                label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
-                (cur, vis) = case CopyMode.copyCursorPos top fg.fgSy s of
-                    Just p -> (Just p, True)
-                    Nothing -> (Nothing, False)
+            look <- copyLook st pane
+            let (cells, cur) = CopyMode.copyView look pm
             pure PaneView
-                { cells = if s.hidePosition then overlaid
-                    else stampTopRight label copyIndicatorStyle overlaid
+                { cells
                 , rowGens = Nothing
                 , cursor = cur
-                , cursorVisible = vis
+                , cursorVisible = isJust cur
                 }
-  where
-    viewportRow fg a =
-        let row = fromMaybe V.empty (fg.fgRows V.!? a)
-        in V.generate fg.fgSx (\c -> fromMaybe Cell.blankCell (row V.!? c))
+
+-- | Clock mode's screen for a pane, in its options' colour and style.
+clockView :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
+clockView st pane = do
+    th <- clientTheme st
+    global <- readTVarIO st.options
+    opts <- maybe global id <$> paneOptionsNow st pane
+    size <- readTVarIO pane.size
+    now <- zonedTimeToLocalTime <$> getZonedTime
+    let colour = fromMaybe Cell.DefaultColor
+            (join (colourValue th (optionText "clock-mode-colour" opts)))
+    pure (Clock.clockCells colour (Clock.clockStyleOf (optionText "clock-mode-style" opts)) size now)
+
+-- | How copy mode draws in a pane: its options' styles and position format,
+-- formats expanded in the pane's context as tmux's @window_copy_write_line@
+-- does.
+copyLook :: ServerState -> Pane -> IO CopyMode.CopyLook
+copyLook st pane = do
+    th <- clientTheme st
+    global <- readTVarIO st.options
+    mhome <- atomically $ do
+        cached <- readTVar pane.home  -- See Note [Pane home]
+        home <- maybe (locatePane st pane.id) (pure . Just) cached
+        sessions <- readTVar st.sessions
+        case home of
+            Just (sid, win) | Just sess <- Map.lookup sid sessions -> do
+                popts <- resolveForPane st sess win pane
+                wix <- readTVar sess.currentIx
+                pure (Just (sess, win, popts, wix))
+            _ -> pure Nothing
+    (opts, expand) <- case mhome of
+        Nothing -> pure (global, pure)
+        Just (sess, win, popts, wix) -> do
+            pix <- paneIndexOf st win pane
+            env <- paneFormatEnv st sess wix win pix pane
+            pure (popts, expandFormat st env)
+    let raw name = optionText name opts
+        style name
+            | "#{" `T.isInfixOf` raw name = styleCell th <$> expand (raw name)
+            | otherwise = pure (styleCell th (raw name))
+    selection <- style "copy-mode-selection-style"
+    match <- style "copy-mode-match-style"
+    current <- style "copy-mode-current-match-style"
+    markSty <- style "copy-mode-mark-style"
+    line <- style "copy-mode-current-line-style"
+    number <- style "copy-mode-line-number-style"
+    currentNumber <- style "copy-mode-current-line-number-style"
+    positionSty <- style "copy-mode-position-style"
+    position <- expand (raw "copy-mode-position-format")
+    mmode <- readTVarIO pane.mode
+    pure CopyMode.CopyLook
+        { keys = opts.modeKeys
+        , numbers = CopyMode.lineNumberModeOf (raw "copy-mode-line-numbers")
+        , selectionStyle = selection
+        , matchStyle = match
+        , currentMatchStyle = current
+        , markStyle = markSty
+        , currentLineStyle =
+            if raw "copy-mode-current-line-style" == "default" then Nothing else Just line
+        , lineNumberStyle = number
+        , currentLineNumberStyle = currentNumber
+        , drawPosition = \area ->
+            if T.null position then area else formatDraw th positionSty position area
+        , searchPattern = mmode >>= CopyMode.lastPattern . (.copyState)
+        }
 
 -- | The cells a pane contributes, discarding the cursor: for previews and
 -- the chooser, which draw no cursor.
 paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
 paneViewCells st pane = (.cells) <$> paneView st pane
-
--- | tmux's copy-mode position indicator: black on yellow, like the
--- default @mode-style@.
-copyIndicatorStyle :: Cell.Style
-copyIndicatorStyle = Cell.defaultStyle
-    { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
-
--- | Overlay a label onto the top-right corner of a grid (e.g. the
--- @[scroll/history]@ copy-mode indicator), clipped to the first row.
-stampTopRight
-    :: Text -> Cell.Style
-    -> V.Vector (V.Vector Cell.Cell) -> V.Vector (V.Vector Cell.Cell)
-stampTopRight label sty grid
-    | V.null grid = grid
-    | otherwise = grid V.// [(0, row0 V.// updates)]
-  where
-    row0 = grid V.! 0
-    w = V.length row0
-    start = max 0 (w - T.length label)
-    updates =
-        [ (start + i, cell c)
-        | (i, c) <- zip [0 ..] (T.unpack label), start + i < w ]
-    cell c = Cell.glyphCell c sty
 
 -- | Place a pane's local cursor into screen coordinates, or hide it when the
 -- pane has none (a copy viewport scrolled past the cursor).

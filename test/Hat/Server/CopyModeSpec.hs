@@ -14,8 +14,11 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..), FrozenGrid (..)
+    , copyModeAt, PaneMode (..), LineNumbers (..), MarkShown (..)
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
-import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
+import Hat.Model.OptionTable (OptionValue (..))
+import Hat.Model.Options
+    (ModeKeys (..), Options (..), applyDelta, defaultOptions, singletonDelta)
 import Hat.Server (defaultKeymap)
 import Hat.Server.Keys (Binding (..))
 import Hat.Server.CopyMode
@@ -56,18 +59,7 @@ data Sim = Sim { sState :: CopyModeState, sBufs :: [Text] }
 
 start :: Sim
 start = Sim
-    { sState = CopyModeState
-        { cursorRow = 0
-        , cursorCol = 0
-        , selection = Nothing
-        , keyTable = "copy-mode"
-        , viewportOffY = 0
-        , numPrefix = Nothing
-        , pendingSearch = Nothing
-        , lastSearch = Nothing
-        , lastQuery = Nothing
-        , scrollExit = False, hidePosition = False
-        }
+    { sState = copyModeAt "copy-mode" 0 0
     , sBufs = []
     }
 
@@ -361,6 +353,224 @@ spec = do
             runIdentity (extractSelection grid KeysVi s)
                 `shouldBe` Just "line\n    \nothe"
 
+    describe "a stopped selection (stop-selection, scrolling while selecting)" $ do
+        let selecting = (start.sState)
+                { cursorRow = 2, cursorCol = 0, selection = Just ((0, 0), SelChar) }
+            stopped = runIdentity (stopSelection grid selecting)
+            yank = runIdentity . extractSelection grid KeysEmacs
+        it "stop-selection leaves the far end where the cursor was" $ do
+            let moved = runIdentity (cursorVertical 2 grid stopped)
+            yank moved `shouldBe` yank selecting
+        it "other-end picks the stopped end back up with the cursor" $ do
+            let s = otherEnd stopped
+            (s.cursorRow, s.cursorCol) `shouldBe` (2, 0)
+            yank (runIdentity (cursorVertical 1 grid s))
+                `shouldBe` Just "A line of words\n        Indented line\nAnother line...\n"
+        it "a second other-end swaps the cursor to the anchor" $ do
+            let s = otherEnd (otherEnd stopped)
+            (s.cursorRow, s.cursorCol) `shouldBe` (0, 0)
+            s.selection `shouldBe` Just ((2, 0), SelChar)
+        it "stopping a line selection keeps its whole lines" $ do
+            let lines' = selecting { selection = Just ((0, 3), SelLine), cursorCol = 4 }
+                s = runIdentity (stopSelection grid lines')
+            yank (runIdentity (cursorVertical 2 grid s)) `shouldBe` yank lines'
+        it "clear-selection forgets the stopped end" $
+            (clearSelection stopped).pinnedEnd `shouldBe` Nothing
+        it "scroll-up with a selection only moves the view" $ do
+            let sel = (copyModeAt "copy-mode" 25 0)
+                    { selection = Just ((22, 0), SelChar) }
+                s = runIdentity (scrollUpCmd KeysEmacs scrollGrid sel)
+            s.viewportOffY `shouldBe` 1
+            selectionEnd s `shouldBe` (25, 0)
+
+    describe "scroll-up and scroll-down move the view a line" $ do
+        -- scrollGrid: 20 history lines over a 10-row screen.
+        let at row voY = (copyModeAt "copy-mode" row 0) { viewportOffY = voY }
+            screenRow s = s.cursorRow - (20 - s.viewportOffY)
+            down keys = runIdentity . scrollLine keys 1 scrollGrid
+            up keys = runIdentity . scrollLine keys (-1) scrollGrid
+        it "keeps the cursor's screen row under emacs keys" $ do
+            let s = down KeysEmacs (at 3 20)
+            (s.viewportOffY, s.cursorRow, screenRow s) `shouldBe` (19, 4, 3)
+        it "keeps the cursor on its line under vi keys" $ do
+            let s = down KeysVi (at 3 20)
+            (s.viewportOffY, s.cursorRow) `shouldBe` (19, 3)
+            (up KeysVi (at 3 19)).cursorRow `shouldBe` 3
+        it "carries the cursor along at the screen's edge under vi keys" $ do
+            (down KeysVi (at 0 20)).cursorRow `shouldBe` 1
+            (up KeysVi (at 10 19)).cursorRow `shouldBe` 9
+
+    describe "scrolling the cursor's line (scroll-top/middle/bottom, recentre)" $ do
+        -- scrollGrid: 20 history lines over a 10-row screen.
+        let at row voY = (copyModeAt "copy-mode" row 0) { viewportOffY = voY }
+            screenRow s = s.cursorRow - (20 - s.viewportOffY)
+        it "scroll-top puts the cursor's line on the first row" $ do
+            let s = scrollCursorTo 0 scrollGrid (at 12 10)
+            (s.cursorRow, screenRow s) `shouldBe` (12, 0)
+        it "scroll-bottom puts it on the last row" $ do
+            let s = scrollCursorTo 9 scrollGrid (at 15 10)
+            (s.cursorRow, screenRow s) `shouldBe` (15, 9)
+        it "does nothing when the history cannot scroll that far" $
+            (scrollCursorTo 0 scrollGrid (at 29 0)).viewportOffY `shouldBe` 0
+        it "recentre cycles middle, top, bottom on the same line" $ do
+            let r1 = recentreTopBottom scrollGrid (at 15 10)
+                r2 = recentreTopBottom scrollGrid r1
+                r3 = recentreTopBottom scrollGrid r2
+            map screenRow [r1, r2, r3] `shouldBe` [4, 0, 9]
+        it "recentre starts over at the middle on another line" $ do
+            let r1 = recentreTopBottom scrollGrid (at 15 10)
+                moved = r1 { cursorRow = 16 }
+            screenRow (recentreTopBottom scrollGrid moved) `shouldBe` 4
+
+    describe "copy-mode formats" $ do
+        -- Two history lines above a two-row screen.
+        let rows = ["one two", "three", "four five", "six"]
+            frozen = FrozenGrid
+                { fgHsize = 2, fgSy = 2, fgSx = 10
+                , fgRows = V.fromList
+                    [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
+                    | r <- rows ] }
+            varsUnder n st = Map.fromList (copyModeFormats " " n PaneMode { frozen = frozen, copyState = st })
+            vars = varsUnder NumbersOff
+            at = copyModeAt "copy-mode" 2 5
+            look k st = Map.lookup k (vars st)
+        it "places the cursor on the screen and reads its line and word" $ do
+            let st = (at { viewportOffY = 1 })
+            map (`look` st) ["copy_cursor_x", "copy_cursor_y", "copy_cursor_line", "copy_cursor_word", "scroll_position"]
+                `shouldBe` map Just ["5", "1", "four five", "five", "1"]
+        it "counts the position from the bottom of the history" $
+            map (`look` at { viewportOffY = 2 }) ["copy_position", "copy_position_limit"]
+                `shouldBe` [Just "2", Just "2"]
+        it "has no selection to report until one is begun" $ do
+            map (`look` at) ["selection_present", "selection_active", "selection_start_x"]
+                `shouldBe` [Just "0", Just "0", Nothing]
+        it "reports a selection's ends, and whether the cursor still drives it" $ do
+            let st = at { selection = Just ((1, 2), SelChar) }
+                stopped = runIdentity (stopSelection (frozenGrid frozen) st)
+            map (`look` st) ["selection_start_x", "selection_start_y", "selection_end_x", "selection_end_y", "selection_present", "selection_active"]
+                `shouldBe` map Just ["2", "1", "5", "2", "1", "1"]
+            look "selection_active" stopped `shouldBe` Just "0"
+        it "keeps tmux's start and end through other-end" $ do
+            let swapped = otherEnd at { selection = Just ((1, 2), SelChar) }
+            map (`look` swapped) ["selection_start_y", "selection_end_y"]
+                `shouldBe` [Just "1", Just "2"]
+        it "counts the position from the top under absolute line numbers" $ do
+            let v = varsUnder NumbersAbsolute (at { viewportOffY = 2 })
+            map (`Map.lookup` v) ["copy_position", "copy_position_limit", "copy_line_numbers"]
+                `shouldBe` map Just ["1", "4", "1"]
+        it "reports the highlighted search and its matches" $ do
+            let searched = at { lastQuery = Just ("o", Forward, SearchText), searchMarks = Just Forward }
+            map (`look` searched) ["search_present", "search_count"]
+                `shouldBe` [Just "1", Just "3"]
+            look "search_present" at `shouldBe` Just "0"
+        it "a selection begun and not yet moved is not present" $
+            look "selection_present" (at { selection = Just ((2, 5), SelChar) }) `shouldBe` Just "0"
+
+    describe "copy-pipe's command" $ do
+        let withCopyCommand c = applyDelta (singletonDelta "copy-command" (OVScalar c)) defaultOptions
+        it "is the one given" $
+            pipeCommand (withCopyCommand "xsel") "cat" `shouldBe` Just "cat"
+        it "falls back to copy-command" $
+            pipeCommand (withCopyCommand "xsel -i") "" `shouldBe` Just "xsel -i"
+        it "runs nothing when both are empty" $
+            pipeCommand defaultOptions "" `shouldBe` Nothing
+
+    describe "drawing copy mode (copyView)" $ do
+        let rows = ["alpha beta", "gamma alpha", "delta"]
+            frozen = FrozenGrid
+                { fgHsize = 0, fgSy = 3, fgSx = 12
+                , fgRows = V.fromList
+                    [ V.fromList [ glyphCell c defaultStyle | c <- take 12 (T.unpack r <> repeat ' ') ]
+                    | r <- rows ] }
+            fgOf n = defaultStyle { fg = Indexed n }
+            look = CopyLook
+                { keys = KeysVi, numbers = NumbersOff
+                , selectionStyle = fgOf 1, matchStyle = fgOf 2
+                , currentMatchStyle = fgOf 3
+                , markStyle = defaultStyle { fg = Indexed 4, bg = Indexed 5 }
+                , currentLineStyle = Nothing
+                , lineNumberStyle = fgOf 7, currentLineNumberStyle = fgOf 8
+                , drawPosition = \area -> area V.// [(0, glyphCell 'P' (fgOf 9))]
+                , searchPattern = Nothing }
+            view l st = copyView l PaneMode { frozen = frozen, copyState = st }
+            at r c = (copyModeAt "copy-mode-vi" r c) { hidePosition = True }
+            text l st r = T.pack [ baseChar' cell | cell <- V.toList (fst (view l st) V.! r) ]
+            baseChar' cell = case cell.content of
+                Glyph c _ _ -> c
+                _ -> '?'
+            styleAt l st r c = (fst (view l st) V.! r V.! c).style
+        it "draws the selection in copy-mode-selection-style" $ do
+            let st = (at 0 2) { selection = Just ((0, 0), SelChar) }
+            map (styleAt look st 0) [0, 2, 3] `shouldBe` [fgOf 1, fgOf 1, defaultStyle]
+        it "draws the position format over the first row unless hidden" $ do
+            text look (at 1 0) { hidePosition = False } 0 `shouldBe` "Plpha beta  "
+            text look (at 1 0) 0 `shouldBe` "alpha beta  "
+        it "numbers the lines beside the text, which moves over" $ do
+            let numbered = look { numbers = NumbersAbsolute }
+            map (text numbered (at 1 0)) [0, 1] `shouldBe` ["  1 alpha be", "  2 gamma al"]
+            snd (view numbered (at 1 3)) `shouldBe` Just Pos { row = 1, col = 7 }
+            map (\r -> styleAt numbered (at 1 0) r 0) [0, 1] `shouldBe` [fgOf 7, fgOf 8]
+        it "counts relative and hybrid numbers from the cursor's line" $ do
+            map (text look { numbers = NumbersRelative } (at 1 0)) [0, 1, 2]
+                `shouldBe` ["  1 alpha be", "  0 gamma al", "  1 delta   "]
+            text look { numbers = NumbersHybrid } (at 1 0) 1 `shouldBe` "  2 gamma al"
+        it "shows no numbers once copy mode hides them" $
+            text look { numbers = NumbersAbsolute } (at 1 0) { lineNumbers = LinesHidden } 0
+                `shouldBe` "alpha beta  "
+        it "marks a cursor past the numbered text's width with $" $
+            text look { numbers = NumbersAbsolute } (at 1 9) 1 `shouldBe` "  2 gamma a$"
+        it "draws the cursor's line in copy-mode-current-line-style" $ do
+            let lined = look { currentLineStyle = Just defaultStyle { bg = Indexed 6 } }
+            styleAt lined (at 1 0) 1 4 `shouldBe` defaultStyle { bg = Indexed 6 }
+            styleAt lined (at 1 0) 0 4 `shouldBe` defaultStyle
+        it "draws a shown mark's line in copy-mode-mark-style, inverted at the mark" $ do
+            let marked = (at 0 0) { mark = (2, 1), markShown = MarkShown }
+            styleAt look marked 2 0 `shouldBe` defaultStyle { fg = Indexed 4, bg = Indexed 5 }
+            styleAt look marked 2 1 `shouldBe` defaultStyle { fg = Indexed 5, bg = Indexed 4 }
+            styleAt look (at 0 0) { mark = (2, 1) } 2 0 `shouldBe` defaultStyle
+        it "highlights the search's matches, the one under the cursor as current" $ do
+            let searched = look { searchPattern = Just (either (error . T.unpack) id (compilePattern SearchText "alpha")) }
+                st = (at 1 6) { searchMarks = Just Forward }
+            styleAt searched st 0 0 `shouldBe` fgOf 2
+            styleAt searched st 1 8 `shouldBe` fgOf 3
+            styleAt searched st { searchMarks = Nothing } 0 0 `shouldBe` defaultStyle
+        it "under emacs keys a forward search's current match is the one before the cursor" $ do
+            let searched = look { keys = KeysEmacs, searchPattern = Just (either (error . T.unpack) id (compilePattern SearchText "alpha")) }
+            styleAt searched (at 0 5) { searchMarks = Just Forward } 0 0 `shouldBe` fgOf 3
+
+    describe "copy mode's mark, line numbers and search highlighting" $ do
+        it "set-mark shows the mark at the cursor" $
+            let s = setMark (copyModeAt "copy-mode" 4 2)
+            in (s.mark, s.markShown) `shouldBe` ((4, 2), MarkShown)
+        it "jump-to-mark trades the cursor and the mark" $ do
+            let s = jumpToMark scrollGrid ((copyModeAt "copy-mode" 25 1) { mark = (3, 0) })
+            ((s.cursorRow, s.cursorCol), s.mark, s.viewportOffY) `shouldBe` ((3, 0), (25, 1), 17)
+        it "line-numbers-on forces numbers the option leaves off" $ do
+            (setLineNumbers ForceNumbers NumbersOff True (copyModeAt "copy-mode" 0 0)).lineNumbers
+                `shouldBe` LinesForced
+            (setLineNumbers ForceNumbers NumbersRelative True (copyModeAt "copy-mode" 0 0)).lineNumbers
+                `shouldBe` LinesFromOption
+            effectiveNumbers NumbersOff LinesForced `shouldBe` NumbersDefault
+        it "motions keep the search highlighted under vi keys, not emacs" $ do
+            clearsMarks KeysVi "cursor-down" `shouldBe` False
+            clearsMarks KeysEmacs "cursor-down" `shouldBe` True
+            clearsMarks KeysVi "begin-selection" `shouldBe` True
+            clearsMarks KeysEmacs "search-again" `shouldBe` False
+        it "an emacs forward search leaves the cursor past the match" $ do
+            let p = either (error . T.unpack) id (compilePattern SearchText "line")
+                s = runIdentity (searchStep grid KeysEmacs WrapAround Forward p (start.sState))
+            ((s.cursorRow, s.cursorCol), s.searchMarks) `shouldBe` ((0, 6), Just Forward)
+        it "a vi search leaves the cursor on the match" $ do
+            let p = either (error . T.unpack) id (compilePattern SearchText "line")
+                s = runIdentity (searchStep grid KeysVi WrapAround Forward p (start.sState))
+            (s.cursorRow, s.cursorCol) `shouldBe` (0, 2)
+        it "the next emacs search can start under the cursor" $ do
+            let p = either (error . T.unpack) id (compilePattern SearchText "ab")
+                g = listGrid 10 ["abab"]
+                s = runIdentity (searchStep g KeysEmacs WrapAround Forward p
+                        (start.sState) { cursorCol = 2 })
+            s.cursorCol `shouldBe` 4
+
     describe "char search (f/F/t/T)" $ do
         -- Row 0 is "A line of words"; 'o' is at columns 7 and 11.
         let row0 col = (start.sState) { cursorRow = 0, cursorCol = col }
@@ -383,8 +593,9 @@ spec = do
         -- "line" occurs at (0,2), (1,17) and (2,8) in the shared grid.
         let from r c = (start.sState) { cursorRow = r, cursorCol = c }
             pat kind q = either (error . T.unpack) id (compilePattern kind q)
-            find dir p st =
-                runIdentity (findMatch grid dir p (st.cursorRow, st.cursorCol))
+            findW wrap dir p st =
+                runIdentity (findMatch grid wrap dir p (st.cursorRow, st.cursorCol))
+            find = findW WrapAround
             regex = pat SearchRegex
         it "/ finds the next match" $
             find Forward (regex "line") (from 0 0) `shouldBe` Just (0, 2)
@@ -396,6 +607,10 @@ spec = do
             find Backward (regex "line") (from 2 8) `shouldBe` Just (1, 17)
         it "backward search wraps to the last match" $
             find Backward (regex "line") (from 0 2) `shouldBe` Just (2, 8)
+        it "with wrap-search off, a forward search stops at the last match" $
+            findW StopAtEnd Forward (regex "line") (from 2 8) `shouldBe` Nothing
+        it "with wrap-search off, a backward search stops at the first match" $
+            findW StopAtEnd Backward (regex "line") (from 0 2) `shouldBe` Nothing
         it "no match returns Nothing" $
             find Forward (regex "zzz") (from 0 0) `shouldBe` Nothing
         -- tmux >= 3.1: / and ? take a regex; -text variants are literal.
@@ -481,13 +696,8 @@ spec = do
             -- flipped on.
             dfltMode = defaultOptions.modeStyle
             revAt g r c = (g V.! r V.! c).style == defaultStyle { reverse = True }
-            sel row col anchor keys = CopyModeState
-                { cursorRow = row, cursorCol = col
-                , selection = Just (anchor, SelChar)
-                , keyTable = keys, viewportOffY = 0, numPrefix = Nothing
-                , pendingSearch = Nothing, lastSearch = Nothing
-                , lastQuery = Nothing
-                , scrollExit = False, hidePosition = False }
+            sel row col anchor keys =
+                (copyModeAt keys row col) { selection = Just (anchor, SelChar) }
             board = gridOf ["abcde", "fghij", "klmno"]
 
         it "reverse-videos a one-line span through the cursor cell (vi)" $ do
@@ -542,12 +752,7 @@ spec = do
                 [ defaultStyle, themed, themed, themed, defaultStyle ]
 
     describe "copy cursor placement" $ do
-        let st row = CopyModeState
-                { cursorRow = row, cursorCol = 2, selection = Nothing
-                , keyTable = "copy-mode-vi", viewportOffY = 0, numPrefix = Nothing
-                , pendingSearch = Nothing, lastSearch = Nothing
-                , lastQuery = Nothing
-                , scrollExit = False, hidePosition = False }
+        let st row = copyModeAt "copy-mode-vi" row 2
         it "maps an absolute cursor row into the viewport" $
             copyCursorPos 5 10 (st 7) `shouldBe` Just Pos { row = 2, col = 2 }
         it "is Nothing above the viewport" $
@@ -556,12 +761,7 @@ spec = do
             copyCursorPos 5 3 (st 12) `shouldBe` Nothing
 
     describe "viewport scrolling (scrollToCursor)" $ do
-        let st row voY = CopyModeState
-                { cursorRow = row, cursorCol = 0, selection = Nothing
-                , keyTable = "copy-mode-vi", viewportOffY = voY, numPrefix = Nothing
-                , pendingSearch = Nothing, lastSearch = Nothing
-                , lastQuery = Nothing
-                , scrollExit = False, hidePosition = False }
+        let st row voY = (copyModeAt "copy-mode-vi" row 0) { viewportOffY = voY }
         it "keeps a visible cursor's viewport unchanged" $
             (scrollToCursor 5 10 (st 7 0)).viewportOffY `shouldBe` 0
         it "scrolls up to reveal a cursor in scrollback" $

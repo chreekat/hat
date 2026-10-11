@@ -291,6 +291,7 @@ fakeClient _ = do
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     colourVar <- newIORef Nothing
+    shapeVar <- newIORef CursorDefault
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing
@@ -319,7 +320,7 @@ fakeClient _ = do
         , lastStatus = statusVar
         , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
-        , lastCursorColour = colourVar
+        , lastCursorColour = colourVar, lastCursorShape = shapeVar
         , needsFull = fullVar
         , toast = toastVar
         , flash = flashVar
