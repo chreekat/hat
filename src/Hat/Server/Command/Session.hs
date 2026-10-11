@@ -26,6 +26,8 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
+import Hat.Server.Command.Pane (noteActiveChange)
+import Hat.Server.Command.Window (switchToWindow)
 import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
@@ -497,6 +499,21 @@ cmdSwitchClient st mclient args = do
                 case mapMaybe (`Map.lookup` sessions) hist of
                     []         -> pure [RErr "no last session"]
                     (sess : _) -> switchClientTo st client sess >> pure []
+            -- A target naming a window or pane also makes it current there.
+            | Just t <- lookup "-t" opts, T.any (`elem` (":.%" :: String)) t || t == "=" -> do
+                res <- findTarget st mclient Target.FindPane (Just t)
+                case res of
+                    Left e -> pure [RErr e]
+                    Right (sess, ix, win, pane) -> do
+                        noteActiveChange st win $ atomically $ do
+                            active <- readTVar win.activeId
+                            when (active /= pane.id) $ do
+                                modifyTVar' win.paneHist (recordVisit active pane.id)
+                                writeTVar win.activeId pane.id
+                                bumpDirty st
+                        switchToWindow st sess ix
+                        switchClientTo st client sess
+                        pure []
             | otherwise ->
                 withTargetSession st mclient (lookup "-t" opts) $ \sess ->
                     switchClientTo st client sess >> pure []

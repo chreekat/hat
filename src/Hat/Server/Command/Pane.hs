@@ -20,6 +20,7 @@ module Hat.Server.Command.Pane
     , cmdResizePane
     , nextZoom
     , zoomTarget
+    , noteActiveChange
     ) where
 
 import Control.Concurrent.STM

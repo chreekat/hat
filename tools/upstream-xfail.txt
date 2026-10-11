@@ -8,7 +8,6 @@ capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also ne
 check-names.sh                  # allow-rename/allow-set-title behavior + UTF-8 name validation + OSC-2 sanitizing + buffer -F listing
 combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
 control-client-sanity.sh        # layouts are binary trees: tmux splits a pane into a sibling cell and gives a killed pane's space to its neighbour; swap-pane across windows
-control-client-size.sh          # per-window control client sizes (refresh-client -C @id:WxH)
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
 # tabs to spaces in the grid, so a copied tab-indented line comes back
 # as spaces where upstream keeps a literal \t. Needs emulator-level tab
@@ -37,7 +36,6 @@ screen-redraw-scrollbars.sh
 screen-redraw-status.sh
 screen-redraw-tiled.sh
 screen-redraw-window-style.sh
-session-group-resize.sh         # control mode (-C new, refresh-client -C) + per-window sizes (hat sizes a group's shared windows per session)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
