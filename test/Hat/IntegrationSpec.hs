@@ -1464,9 +1464,11 @@ spec = parallel $ do
         _ <- hatCtl h
             [ "set", "-g", "remain-on-exit", "failed", ";", "new", "-d", ";"
             , "new-window", "-d", "true", ";", "new-window", "-d", "exit 1" ]
+        -- By status, not window index: once true's window closes, the
+        -- next new-window may reuse its index.
         awaitTrue "only the failed pane to remain" $
-            (== "0 0\n2 1\n") <$> ctlOut h
-                ["list-panes", "-a", "-F", "#{window_index} #{pane_dead}"]
+            (== ["0 ", "1 1"]) . List.sort . lines <$> ctlOut h
+                ["list-panes", "-a", "-F", "#{pane_dead} #{pane_dead_status}"]
 
     it "respawn-pane reruns a dead pane's command, and needs -k when live" $
         withHat hatBin $ \h -> do
