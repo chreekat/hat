@@ -548,11 +548,11 @@ optionTable =
     , live $ scalar "status-style" SessionScope KStyle "bg=themegreen,fg=themeblack"
     , live $ scalar "pane-status-current-style" WindowScope KStyle "underscore"
     , live $ scalar "pane-status-style" WindowScope KStyle "default"
-    , notYet $ scalar "prompt-cursor-colour" SessionScope KColourString ""
-    , notYet $ scalar "prompt-command-cursor-colour" SessionScope KColourString ""
-    , notYet $ scalar "prompt-cursor-style" SessionScope
+    , live $ scalar "prompt-cursor-colour" SessionScope KColourString ""
+    , live $ scalar "prompt-command-cursor-colour" SessionScope KColourString ""
+    , live $ scalar "prompt-cursor-style" SessionScope
         (KChoice cursorStyles) "default"
-    , notYet $ scalar "prompt-command-cursor-style" SessionScope
+    , live $ scalar "prompt-command-cursor-style" SessionScope
         (KChoice cursorStyles) "default"
     , live $ scalar "session-status-current-style" WindowScope KStyle
         "underscore"

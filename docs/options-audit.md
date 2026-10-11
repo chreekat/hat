@@ -86,6 +86,7 @@ spot-read of each suspect consumer.
 | `message-line` | `messageLine` (View.hs) | implemented ✅ tested | pure |
 | `message-command-style` | `drawPrompt` in vi command mode (Message.hs) | implemented ✅ tested | pure (MessageSpec) |
 | `status-keys` | `editPrompt` (Prompt.hs), fixed when `command-prompt` opens | implemented ✅ tested | pure (PromptSpec) |
+| `prompt-cursor-colour` / `prompt-cursor-style` / `prompt-command-cursor-colour` / `prompt-command-cursor-style` | fixed into `PromptKeys` when `command-prompt` opens (`promptCursor`, Interact.hs); `promptCursorOf` in `renderOnce` (View.hs) sends the colour (OSC 12/112) and the shape (DECSCUSR) while the prompt is open, the command-mode ones in vi command mode | implemented ✅ tested | pure (OptionEffectSpec) |
 | `pane-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): each pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
 | `pane-active-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): the active pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
 | `pane-border-status` | `statusAdjust` in `windowArrange` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-tiled` |

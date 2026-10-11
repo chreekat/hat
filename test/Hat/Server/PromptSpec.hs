@@ -189,7 +189,7 @@ spec = do
 
     describe "status-keys vi" $ do
         let viPrompt = emptyPrompt
-                { promptKeys = PromptKeys
+                { promptKeys = emptyPrompt.promptKeys
                     { statusKeys = KeysVi, wordSeparators = "-" } }
             -- Each chunk is its own keystroke batch, so a lone ESC is Escape.
             typeVi chunks = foldl step (Editing viPrompt) chunks

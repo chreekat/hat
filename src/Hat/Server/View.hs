@@ -11,11 +11,15 @@ module Hat.Server.View
     , messageLine  -- ^ exported for the message-line effect test
     , statusRangesFor
     , cursorColourOf  -- ^ exported for the cursor-colour effect test
+    , promptCursorOf
+    , decscusr
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (foldM, forM, join, when)
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as B8
 import Data.IORef
 import Data.Word (Word8)
 import Data.List qualified as List
@@ -308,10 +312,14 @@ renderOnce st client = do
     -- @cursor-colour@: mirror the viewed active pane's resolved colour onto
     -- the outer terminal's cursor (OSC 12), resetting it (OSC 112) when the
     -- pane in view no longer has one.
-    colour <- case view of
-        Just (sess, win, _, _, ps, active)
+    -- While a prompt is open the cursor is the prompt's, as its options were
+    -- when it opened.
+    th <- clientTheme st
+    inPrompt <- fmap promptCursorOf <$> readTVarIO client.prompt
+    colour <- case (inPrompt, view) of
+        (Just pc, _) -> pure (colourValue th pc.colour >>= id >>= colourRgb)
+        (Nothing, Just (sess, win, _, _, ps, active))
             | Just pane <- Map.lookup active ps -> do
-                th <- clientTheme st
                 app <- Emu.appCursorColour pane.emulator
                 popts <- atomically (resolveForPane st sess win pane)
                 pure (cursorColourOf th app (optionText "cursor-colour" popts))
@@ -323,6 +331,11 @@ renderOnce st client = do
             Nothing -> "\ESC]112\a"
             Just (r, g, b) -> TE.encodeUtf8 $ T.concat
                 [ "\ESC]12;rgb:", hex2 r, "/", hex2 g, "/", hex2 b, "\a" ]
+    let shape = maybe CursorDefault (.shape) inPrompt
+    oldShape <- readIORef client.lastCursorShape
+    when (shape /= oldShape) $ do
+        writeIORef client.lastCursorShape shape
+        send client (Notify (decscusr shape))
     syncMouseMode st client (fmap (\(sess, win, _, _, ps, active) -> (sess, win, ps, active)) view)
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
@@ -343,6 +356,16 @@ cursorColourOf :: Theme -> Maybe Emu.Rgb -> Text -> Maybe Emu.Rgb
 cursorColourOf th app opt = case app of
     Just c -> Just c
     Nothing -> colourValue th opt >>= id >>= colourRgb
+
+-- | The cursor of an open prompt: its command-mode one in vi command mode.
+promptCursorOf :: PromptState -> PromptCursor
+promptCursorOf pr = case pr.promptMode of
+    PromptCommand -> pr.promptKeys.commandCursor
+    PromptInsert -> pr.promptKeys.insertCursor
+
+-- | The DECSCUSR sequence setting a cursor shape.
+decscusr :: CursorShape -> B.ByteString
+decscusr shape = "\ESC[" <> B8.pack (show (fromEnum shape)) <> " q"
 
 hex2 :: Word8 -> Text
 hex2 w = T.pack [digit (w `div` 16), digit (w `mod` 16)]

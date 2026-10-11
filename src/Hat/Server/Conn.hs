@@ -228,6 +228,7 @@ newClient st conn h = do
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef Nothing
+    cursorShapeVar <- newIORef CursorDefault
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing
@@ -264,6 +265,7 @@ newClient st conn h = do
         , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
         , lastCursorColour = cursorColourVar
+        , lastCursorShape = cursorShapeVar
         , needsFull = fullVar
         , toast = toastVar
         , flash = flashVar

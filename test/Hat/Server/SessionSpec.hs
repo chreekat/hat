@@ -162,6 +162,7 @@ addClient st sid sz stamp = do
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
+        <*> newIORef CursorDefault
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
@@ -204,6 +205,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef Nothing
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
+        <*> newIORef CursorDefault
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing

@@ -30,6 +30,8 @@ module Hat.Model
     , copyModeAt
     , Recentre (..)
     , SelAnchor (..)
+    , PromptCursor (..)
+    , CursorShape (..)
     , LineNumbers (..)
     , MarkShown (..)
     , FrozenGrid (..)
@@ -521,8 +523,29 @@ data Flash
 data PromptKeys = PromptKeys
     { statusKeys :: !ModeKeys
     , wordSeparators :: !Text
+    , insertCursor :: !PromptCursor   -- ^ @prompt-cursor-colour@ and @-style@
+    , commandCursor :: !PromptCursor  -- ^ @prompt-command-cursor-*@, vi command mode
     }
     deriving (Eq, Show)
+
+-- | How the terminal's cursor looks while it sits in a prompt.
+data PromptCursor = PromptCursor
+    { colour :: !Text  -- ^ a colour option's value; empty for the terminal's own
+    , shape :: !CursorShape
+    }
+    deriving (Eq, Show)
+
+-- | A cursor shape as DECSCUSR sets it: @cursor-style@'s choices, in its
+-- order, which is DECSCUSR's numbering.
+data CursorShape
+    = CursorDefault
+    | CursorBlinkingBlock
+    | CursorBlock
+    | CursorBlinkingUnderline
+    | CursorUnderline
+    | CursorBlinkingBar
+    | CursorBar
+    deriving (Eq, Show, Enum, Bounded)
 
 -- | A vi-keys prompt's mode (tmux's @PROMPT_COMMANDMODE@); an emacs-keys
 -- prompt is always inserting.
@@ -698,6 +721,8 @@ data Client = Client
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef (Maybe Emu.Rgb)
         -- ^ OSC 12 in effect; render thread only
+    , lastCursorShape :: IORef CursorShape
+        -- ^ DECSCUSR in effect; render thread only
     , lastMouseMode :: IORef Int
         -- ^ the outer terminal's mouse tracking: 0 off, 1 clicks, 2 drags,
         --   3 all motion; render thread only

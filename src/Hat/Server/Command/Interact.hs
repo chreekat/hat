@@ -6,6 +6,7 @@ module Hat.Server.Command.Interact
     , cmdSendPrefix
     , cmdCopyMode
     , cmdCommandPrompt
+    , promptCursor
     , cmdChooseTree
     , cmdChooseWindow
     , cmdDisplayPanes
@@ -199,12 +200,27 @@ cmdCommandPrompt st mclient args = do
         let keys = PromptKeys
                 { statusKeys = if optionText "status-keys" copts == "vi"
                     then KeysVi else KeysEmacs
-                , wordSeparators = copts.wordSeparators }
+                , wordSeparators = copts.wordSeparators
+                , insertCursor = promptCursor "prompt-cursor" copts
+                , commandCursor = promptCursor "prompt-command-cursor" copts }
         atomically $ do
             writeTVar client.prompt $ Just
                 (Prompt.promptFor pfx initial tmpl) { promptKeys = keys }
             bumpDirty st
     pure []
+
+-- | A prompt's cursor from its @…-colour@ and @…-style@ options.
+promptCursor :: Text -> Options -> PromptCursor
+promptCursor prefix opts = PromptCursor
+    { colour = optionText (prefix <> "-colour") opts
+    , shape = case lookup (optionText (prefix <> "-style") opts) shapes of
+        Just s -> s
+        Nothing -> CursorDefault }
+  where
+    shapes = zip
+        [ "default", "blinking-block", "block", "blinking-underline"
+        , "underline", "blinking-bar", "bar" ]
+        [minBound ..]
 
 -- | The format environment of a client's current window, for expanding a
 -- @command-prompt -I@ initial string. Empty if the client has no window.

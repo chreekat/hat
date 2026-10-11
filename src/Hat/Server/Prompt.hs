@@ -16,7 +16,8 @@ import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as T
 
-import Hat.Model (PromptKeys (..), PromptMode (..), PromptState (..))
+import Hat.Model
+    (CursorShape (..), PromptCursor (..), PromptKeys (..), PromptMode (..), PromptState (..))
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.Keys (Key (..))
 
@@ -39,7 +40,9 @@ emptyPrompt = PromptState
     , killed = ""
     , promptKeys = PromptKeys
         { statusKeys = KeysEmacs
-        , wordSeparators = defaultOptions.wordSeparators }
+        , wordSeparators = defaultOptions.wordSeparators
+        , insertCursor = PromptCursor "" CursorDefault
+        , commandCursor = PromptCursor "" CursorDefault }
     , promptMode = PromptInsert
     }
 
