@@ -15,7 +15,7 @@ import Test.Hspec
 
 import Hat.Command.Parser (parseConfig)
 import Hat.Model.Options
-    ( Options (..), defaultOptions
+    ( Options (..), WindowSizeMode (..), defaultOptions
     , OptionName (..), OptionValue (..), ScopeClass (..)
     , emptyDelta, singletonDelta, deleteDelta, mergeDeltas, resolveOptions
     , optionScopeClass, validateScope, resolveOptionName
@@ -73,6 +73,24 @@ spec = do
             fmap (.statusLines)
                 (setOption Assign defaultOptions "status" "on")
                 `shouldBe` Right 1
+
+        it "parses window-size's four choices and rejects others" $ do
+            fmap (.windowSize)
+                (setOption Assign defaultOptions "window-size" "manual")
+                `shouldBe` Right SizeManual
+            fmap (.windowSize)
+                (setOption Assign defaultOptions "window-size" "largest")
+                `shouldBe` Right SizeLargest
+            setOption Assign defaultOptions "window-size" "biggest"
+                `shouldBe`
+                    Left "window-size: largest, smallest, manual, or latest"
+
+        it "admits default-size by tmux's [0-9]*x[0-9]* pattern" $ do
+            fmap (.defaultSize)
+                (setOption Assign defaultOptions "default-size" "100x30")
+                `shouldBe` Right "100x30"
+            setOption Assign defaultOptions "default-size" "x30"
+                `shouldBe` Left "value is invalid: x30"
 
         it "rejects a multi-line status bar loudly (unsupported)" $
             setOption Assign defaultOptions "status" "3"

@@ -20,6 +20,7 @@ module Hat.Server.Command.Option
 
 import Control.Concurrent.STM
 import Control.Monad (forM_, when)
+import Data.Char (isDigit)
 import Data.List qualified as List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -40,6 +41,7 @@ import Hat.Server.Hooks (ambientFor)
 import Hat.Server.Locate
     ( currentResolved, findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPaneScoped, targetSession )
+import Hat.Server.Resize (applySessionSize)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Style (parseColor, parseStyle)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
@@ -175,8 +177,8 @@ setFormatEnv st mclient mtarget = do
 
 
 -- | Insert a resolved entry into its scope's overlay, refresh the cached
--- global resolution ('ServerState.options'), and push a changed
--- @history-limit@ into each session's open panes.
+-- global resolution ('ServerState.options'), push a changed
+-- @history-limit@ into each session's open panes, and re-derive sizes.
 writeScoped
     :: ServerState -> TVar OptionsDelta -> OptionName -> OptionValue
     -> IO [Reply]
@@ -186,6 +188,7 @@ writeScoped st deltaVar n v = do
         refreshGlobalOptions st
         bumpDirty st
     when (n == OptHistoryLimit) (applyHistoryLimit st)
+    resizeAllSessions st
     pure []
 
 -- | @set -u@: drop a scope's own entry so the parent scopes (or the compiled
@@ -197,6 +200,7 @@ unsetScoped st deltaVar n = do
         refreshGlobalOptions st
         bumpDirty st
     when (n == OptHistoryLimit) (applyHistoryLimit st)
+    resizeAllSessions st
 
 -- | @set -U@ on a window scope: additionally clear each pane's own copy, so
 -- every pane in the window (or everywhere, under @-g@) falls back to
@@ -243,6 +247,13 @@ scopeTargetVar st mclient mtarget = \case
         pure (orNoSuch "pane" ((.options) <$> mpane))
   where
     orNoSuch kind = maybe (Left (noSuchTarget kind mtarget)) Right
+
+-- | Re-derive every session's size after any option change, as tmux's
+-- @options_push_changes@ does: @window-size@, @status@ and the rest all feed
+-- 'applySessionSize', and which of them changed is not worth tracking.
+resizeAllSessions :: ServerState -> IO ()
+resizeAllSessions st =
+    mapM_ (applySessionSize st) . Map.keys =<< readTVarIO st.sessions
 
 -- | Recompute the cached global option resolution. Runs in the same
 -- transaction as every global-scope delta write so the cache never drifts.
@@ -674,6 +685,18 @@ scalarOptionEntry mode opts name value = case name of
     "display-panes-active-colour" -> withColour OptDisplayPanesActiveColour
     "focus-events" -> withOnOff OptFocusEvents
     "aggressive-resize" -> withOnOff OptAggressiveResize
+    "window-size" -> case value of
+        "largest" -> Right (OptWindowSize, OVWindowSize SizeLargest)
+        "smallest" -> Right (OptWindowSize, OVWindowSize SizeSmallest)
+        "manual" -> Right (OptWindowSize, OVWindowSize SizeManual)
+        "latest" -> Right (OptWindowSize, OVWindowSize SizeLatest)
+        _ -> Left "window-size: largest, smallest, manual, or latest"
+    -- tmux's fnmatch pattern @[0-9]*x[0-9]*@: a digit, anything, an @x@, a
+    -- digit, anything. Matching values that do not then scan as @WxH@ are
+    -- accepted and fall back to 80x24 where read, as in tmux.
+    "default-size"
+        | defaultSizePattern value -> Right (OptDefaultSize, OVText value)
+        | otherwise -> Left ("value is invalid: " <> value)
     "monitor-activity" -> withOnOff OptMonitorActivity
     "monitor-bell" -> withOnOff OptMonitorBell
     "monitor-silence" -> withInt OptMonitorSilence
@@ -707,6 +730,11 @@ scalarOptionEntry mode opts name value = case name of
         | T.null value || value == "default"
             || parseColor value /= Cell.DefaultColor = Right (n, OVText value)
         | otherwise = Left ("bad colour: " <> value)
+    defaultSizePattern v = case T.uncons v of
+        Just (d, rest) | isDigit d ->
+            let cs = T.unpack rest
+            in any (\(x, n) -> x == 'x' && isDigit n) (zip cs (drop 1 cs))
+        _ -> False
     withAppend old = case mode of
         Append -> old <> value
         Assign -> value

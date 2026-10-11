@@ -13,6 +13,7 @@ import Test.QuickCheck
 
 import Hat.Geometry
 import Hat.Model.Ids
+import Hat.Model.Options (WindowSizeMode (..))
 import Hat.Server.Layout
 
 -- Random split trees over distinct pane ids, bounded depth.
@@ -368,44 +369,55 @@ spec = do
             [r.endCol - r.startCol | (_, r) <- rects]
                 `shouldSatisfy` all (>= 1)
 
-    describe "effectiveWindowSize (aggressive-resize)" $ do
+    describe "effectiveWindowSize (window-size)" $ do
         let big = Size { rows = 50, cols = 200 }
             small = Size { rows = 24, cols = 80 }
             fallback = Size { rows = 30, cols = 100 }
-        it "shrinks to the smallest client without aggressive resize" $
-            effectiveWindowSize SmallestClient fallback [(1, big), (2, small)]
+        it "smallest shrinks to the smallest client" $
+            effectiveWindowSize SizeSmallest fallback [(1, big), (2, small)]
                 `shouldBe` small
-        it "intersects each dimension independently" $
-            effectiveWindowSize SmallestClient fallback
+        it "smallest intersects each dimension independently" $
+            effectiveWindowSize SizeSmallest fallback
                 [ (1, Size { rows = 24, cols = 200 })
                 , (2, Size { rows = 50, cols = 80 }) ]
                 `shouldBe` Size { rows = 24, cols = 80 }
-        it "follows the most-recently-active client when aggressive" $
+        it "largest covers each dimension's biggest client" $
+            effectiveWindowSize SizeLargest fallback
+                [ (1, Size { rows = 24, cols = 200 })
+                , (2, Size { rows = 50, cols = 80 }) ]
+                `shouldBe` Size { rows = 50, cols = 200 }
+        it "latest follows the most-recently-active client" $
             -- stamp 2 (big) is newer than stamp 1 (small): take big and let
-            -- the smaller client clip. Hence "aggressive".
-            effectiveWindowSize ActiveClient fallback [(1, small), (2, big)]
+            -- the smaller client clip.
+            effectiveWindowSize SizeLatest fallback [(1, small), (2, big)]
                 `shouldBe` big
-        it "follows the active client even when it is the smaller one" $
-            effectiveWindowSize ActiveClient fallback [(2, big), (5, small)]
+        it "latest follows the active client even when it is the smaller one" $
+            effectiveWindowSize SizeLatest fallback [(2, big), (5, small)]
                 `shouldBe` small
-        it "keeps the fallback size when no client is attached" $ do
-            effectiveWindowSize SmallestClient fallback [] `shouldBe` fallback
-            effectiveWindowSize ActiveClient fallback [] `shouldBe` fallback
+        it "manual ignores every client" $
+            effectiveWindowSize SizeManual fallback [(1, big), (2, small)]
+                `shouldBe` fallback
+        it "keeps the fallback size when no client is attached" $
+            forM_ [SizeSmallest, SizeLargest, SizeLatest, SizeManual] $ \m ->
+                effectiveWindowSize m fallback [] `shouldBe` fallback
 
     describe "sessionWindowArea (status-line carve)" $ do
         let fallback = Size { rows = 3, cols = 10 }
             client = Size { rows = 24, cols = 80 }
         it "gives a detached session its full size (no status line drawn)" $
-            sessionWindowArea 1 SmallestClient fallback [] `shouldBe` fallback
+            sessionWindowArea 1 SizeSmallest fallback [] `shouldBe` fallback
         it "carves one status row from an attached client's viewport" $
-            sessionWindowArea 1 SmallestClient fallback [(1, client)]
+            sessionWindowArea 1 SizeSmallest fallback [(1, client)]
                 `shouldBe` Size { rows = 23, cols = 80 }
         it "carves nothing when status is off, even attached" $
-            sessionWindowArea 0 SmallestClient fallback [(1, client)]
+            sessionWindowArea 0 SizeSmallest fallback [(1, client)]
                 `shouldBe` client
         it "carves the full status height for a multi-line bar" $
-            sessionWindowArea 3 SmallestClient fallback [(1, client)]
+            sessionWindowArea 3 SizeSmallest fallback [(1, client)]
                 `shouldBe` Size { rows = 21, cols = 80 }
+        it "never carves a manual size, attached or not" $
+            sessionWindowArea 1 SizeManual fallback [(1, client)]
+                `shouldBe` fallback
         it "never carves below a single row" $
-            sessionWindowArea 1 ActiveClient fallback [(1, Size { rows = 1, cols = 5 })]
+            sessionWindowArea 1 SizeLatest fallback [(1, Size { rows = 1, cols = 5 })]
                 `shouldBe` Size { rows = 1, cols = 5 }

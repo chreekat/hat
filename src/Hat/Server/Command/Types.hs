@@ -6,6 +6,7 @@ module Hat.Server.Command.Types
     , CommandImpl
     , Dispatch (..)
     , parseArgs
+    , strtonum
     ) where
 
 import Data.Maybe (fromMaybe)
@@ -66,3 +67,13 @@ parseArgs spec = go [] []
     isNumber a = case TR.signed TR.decimal a of
         Right (_ :: Int, restT) -> T.null restT
         Left _ -> False
+
+-- | A bounded decimal argument, failing with OpenBSD @strtonum@'s words
+-- (\"invalid\", \"too small\", \"too large\") that tmux's errors embed.
+strtonum :: Int -> Int -> Text -> Either Text Int
+strtonum lo hi t = case TR.signed TR.decimal t of
+    Right (n, rest) | T.null rest ->
+        if n < toInteger lo then Left "too small"
+        else if n > toInteger hi then Left "too large"
+        else Right (fromInteger n)
+    _ -> Left "invalid"

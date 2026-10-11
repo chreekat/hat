@@ -45,6 +45,7 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.Pane (paneCommandName)
+import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
@@ -107,6 +108,9 @@ paneFormatEnv st sess wix win pix pane = do
         , ("pane_active", if pane.id == active then "1" else "0")
         , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
         , ("cursor_y", tshow scr.cursor.row)
+        , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
+              Cell.Glyph c cs _ -> T.pack (c : cs)
+              Cell.Continuation -> "")
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)

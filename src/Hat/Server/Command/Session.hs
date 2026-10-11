@@ -20,14 +20,13 @@ import Control.Monad (forM, forM_, unless, when)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text qualified as T
-import Data.Text.Read qualified as TR
 import System.Environment (getEnvironment)
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (broadcast)
 import Hat.Server.Hooks (PayloadItem (..), noTarget, notify, sessionTarget)
@@ -35,7 +34,7 @@ import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSess
 import Hat.Server.Pane
     ( LifecycleNotify (..), createSession, killPaneLocsWith, rehomePanes
     , windowHolders )
-import Hat.Server.Resize (applySessionSize)
+import Hat.Server.Resize (applySessionSize, defaultSizeOf)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
 import Hat.Transport.Wire (ServerToClient (Exited))
@@ -60,54 +59,72 @@ cmdNewSession st mclient args
     if dup
         then pure [RErr ("duplicate session: " <> fromMaybe "" mname)]
         else do
-            (environ, dir, baseSz) <- case mclient of
+            (environ, dir, mclientSz) <- case mclient of
                 Just c -> do
                     csz <- readTVarIO c.size
-                    pure (c.env, T.unpack c.cwd, csz)
+                    pure (c.env, T.unpack c.cwd, Just csz)
                 Nothing -> do
                     -- Config-loaded or otherwise clientless: inherit the
                     -- server process env so shells find PATH, SHELL, etc.
                     procEnv <- getEnvironment
                     pure ( [(T.pack k, T.pack v) | (k, v) <- procEnv]
                          , "/"
-                         , Size { rows = 24, cols = 80 } )
+                         , Nothing )
+            gopts <- atomically (resolveGlobal st)
             let dir' = maybe dir T.unpack (lookup "-c" opts)
-                parseInt t = case TR.decimal t of
-                    Right (n, rest) | T.null rest -> Just n
-                    _ -> Nothing
-                sz = baseSz
-                    { cols = fromMaybe baseSz.cols (parseInt =<< lookup "-x" opts)
-                    , rows = fromMaybe baseSz.rows (parseInt =<< lookup "-y" opts)
-                    }
-            sess <- createSession st mname mrun environ dir' sz
-            atomically $ do
-                forM_ (lookup "-n" opts) $ \wname -> do
-                    ws <- readTVar sess.windows
-                    forM_ (Map.elems ws) $ \w -> do
-                        writeTVar w.name wname
-                        writeTVar w.autoRename False
-            unless ("-d" `elem` flags) $
-                forM_ mclient $ \client -> switchClientTo st client sess
-            if "-P" `elem` flags
-                then do
-                    mctx <- atomically $ do
-                        mwin <- currentWindow sess
-                        case mwin of
-                            Nothing -> pure Nothing
-                            Just win -> do
-                                cur <- readTVar sess.currentIx
-                                mpane <- activePane win
-                                pure ((,,) cur win <$> mpane)
-                    case mctx of
-                        Nothing -> pure []
-                        Just (wix, win, pane) -> do
-                            let fmt = fromMaybe "#{session_name}:"
-                                    (lookup "-F" opts)
-                            pix <- paneIndexOf st win pane
-                            env <- paneFormatEnv st sess wix win pix pane
-                            out <- expandFormat st env fmt
-                            pure [ROutput out]
-                else pure []
+                detached = "-d" `elem` flags
+                -- @-x -@ / @-y -@ take the creating client's own dimension.
+                dimension flag name fromClient fallback =
+                    case lookup flag opts of
+                        Nothing -> Right Nothing
+                        Just "-" -> Right (Just
+                            (maybe fallback fromClient mclientSz))
+                        Just t -> either (Left . ((name <> " ") <>))
+                            (Right . Just . fromIntegral)
+                            (strtonum 1 65535 t)
+                baseSz = case mclientSz of
+                    Just csz | not detached -> csz
+                    _ -> defaultSizeOf gopts
+            case (,) <$> dimension "-x" "width" (.cols) 80
+                     <*> dimension "-y" "height" (.rows) 24 of
+              Left e -> pure [RErr e]
+              Right (mx, my) -> do
+                let sz = baseSz
+                        { cols = fromMaybe baseSz.cols mx
+                        , rows = fromMaybe baseSz.rows my }
+                sess <- createSession st mname mrun environ dir' sz
+                -- An explicit size becomes the session's default-size.
+                when (isJust mx || isJust my) $ atomically $
+                    modifyTVar' sess.options $ insertDelta OptDefaultSize $
+                        OVText (T.pack (show sz.cols <> "x" <> show sz.rows))
+                atomically $ do
+                    forM_ (lookup "-n" opts) $ \wname -> do
+                        ws <- readTVar sess.windows
+                        forM_ (Map.elems ws) $ \w -> do
+                            writeTVar w.name wname
+                            writeTVar w.autoRename False
+                unless ("-d" `elem` flags) $
+                    forM_ mclient $ \client -> switchClientTo st client sess
+                if "-P" `elem` flags
+                    then do
+                        mctx <- atomically $ do
+                            mwin <- currentWindow sess
+                            case mwin of
+                                Nothing -> pure Nothing
+                                Just win -> do
+                                    cur <- readTVar sess.currentIx
+                                    mpane <- activePane win
+                                    pure ((,,) cur win <$> mpane)
+                        case mctx of
+                            Nothing -> pure []
+                            Just (wix, win, pane) -> do
+                                let fmt = fromMaybe "#{session_name}:"
+                                        (lookup "-F" opts)
+                                pix <- paneIndexOf st win pane
+                                env <- paneFormatEnv st sess wix win pix pane
+                                out <- expandFormat st env fmt
+                                pure [ROutput out]
+                    else pure []
 
 switchClientTo :: ServerState -> Client -> Session -> IO ()
 switchClientTo st client sess = do

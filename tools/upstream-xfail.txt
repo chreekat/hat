@@ -14,16 +14,12 @@ control-client-size.sh
 # as spaces where upstream keeps a literal \t. Needs emulator-level tab
 # tracking; out of M8 scope.
 copy-mode-test-emacs.sh
-# copy-mode-test-vi: blocked on the `window-size` option, which hat does
-# not implement and now rejects loudly. The test runs `set -g window-size
-# manual` during setup, so it exits before reaching the copy-mode motions
-# it means to check. Unblock by implementing window-size (manual/largest/
-# smallest/latest) plus `new -x/-y`.
-copy-mode-test-vi.sh
-cursor-test1.sh                 # window-size manual (see copy-mode-test-vi note)
-cursor-test2.sh                 # window-size manual
-cursor-test3.sh                 # window-size manual
-cursor-test4.sh                 # window-size manual
+# cursor-test1/2/4: resize-window reflow. libghostty keeps the reflowed text
+# top-anchored and drops blank rows below the cursor; tmux keeps the cursor's
+# row and pushes the overflow into history (and pulls it back on growth).
+cursor-test1.sh
+cursor-test2.sh
+cursor-test4.sh
 decrqm-sync.sh                  # remain-on-exit
 floating-pane-geometry.sh
 if-shell-error.sh
@@ -73,12 +69,12 @@ mode-mutation.sh                # needs client attach tracking + choose-client/c
 
 # copy-mode advanced motions/options
 copy-mode-redraw.sh             # needs status + copy-mode-position-format/line-numbers + mode redraw
-copy-mode-scroll-exit.sh        # needs window-size + copy-mode -e + send-keys -N + selection/scroll formats
-copy-mode-selection-scroll.sh   # needs window-size + copy-mode scroll/selection subcommands + mouse wheel
+copy-mode-scroll-exit.sh        # needs copy-mode -e + send-keys -N + selection/scroll formats (#{selection_present})
+copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/selection subcommands + mouse wheel
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
-format-animation.sh             # #{A/n:...} animation modifier + window-size
+format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
 format-modifiers.sh             # new-pane floating panes (P/z order) + -C control-mode attach (L loop)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
@@ -124,6 +120,6 @@ pipe-pane.sh                    # pipe-pane works but the test needs remain-on-e
 lifecycle-deferred.sh           # needs detach-on-destroy + control-mode %-notifications
 
 # screen redraw / theme
-screen-redraw-fill-character.sh # needs fill-character + window-size manual + status off + floating panes
-screen-redraw-menus.sh          # needs display-menu window menus + menu styles + window-size
+screen-redraw-fill-character.sh # needs fill-character + floating panes
+screen-redraw-menus.sh          # needs display-menu window menus + menu styles
 theme-report.sh                 # needs respawn-window + window-style + remain-on-exit + nested attach
