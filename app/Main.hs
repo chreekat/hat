@@ -258,7 +258,7 @@ connectOrStart path mconfig = do
             -- 10s of headroom: the fresh server forks, sets up its socket
             -- dir/lock, and loads config before it starts listening, which
             -- can take a while under heavy load.
-            (, Autostarted) <$> waitForServer path 100
+            (, Autostarted) <$> waitForServer path 1_000
 
 -- Spawn the detached server via 'createProcess' rather than a manual
 -- 'forkProcess'/'executeFile': createProcess does the fork+exec entirely
@@ -293,5 +293,5 @@ waitForServer path attempts
         case msock of
             Just sock -> pure sock
             Nothing -> do
-                threadDelay 100_000
+                threadDelay 10_000
                 waitForServer path (attempts - 1)
