@@ -160,6 +160,7 @@ addClient st sid sz stamp = do
         <*> pure []
         <*> pure ""
         <*> pure NoStdin
+        <*> pure Nothing
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -200,6 +201,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure clientEnv
         <*> pure ""
         <*> pure NoStdin
+        <*> pure Nothing
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 

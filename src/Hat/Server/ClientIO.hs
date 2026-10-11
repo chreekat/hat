@@ -2,6 +2,7 @@
 -- every broadcast and render frame passes through.
 module Hat.Server.ClientIO
     ( send
+    , sendDirect
     , broadcast
     ) where
 
@@ -12,15 +13,26 @@ import Control.Exception
 import Control.Monad (forM_, when)
 
 import Hat.Model
+import Hat.Server.ControlQueue (controlSend)
 import Hat.Transport.Wire (ServerToClient, sendMessageAt)
 
--- | Every server-initiated message except the Welcome/ServerError handshake
+-- | Send one message to a client; a control client gets its control-mode
+-- meaning instead (see 'controlSend').
+send :: Client -> ServerToClient -> IO ()
+send client msg = case client.control of
+    -- A control client's socket belongs to its writer thread.
+    Just cs -> atomically (controlSend cs msg)
+    Nothing -> sendDirect client msg
+
+-- | 'send' without the control-client detour: a control client's writer
+-- thread uses it for the protocol bytes themselves.
+-- Every server-initiated message except the Welcome/ServerError handshake
 -- (sent raw on the socket) goes through here — both broadcasts and a
 -- client's own render frames. Dropping anything before the client is
 -- 'ready' guarantees Welcome is the first byte it sees, even when it is
 -- attaching to an already-busy (e.g. restored) session.
-send :: Client -> ServerToClient -> IO ()
-send client msg = do
+sendDirect :: Client -> ServerToClient -> IO ()
+sendDirect client msg = do
     isReady <- readTVarIO client.ready
     when isReady $
         withMVar client.sendLock

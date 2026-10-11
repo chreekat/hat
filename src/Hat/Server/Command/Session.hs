@@ -16,9 +16,9 @@ module Hat.Server.Command.Session
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (filterM, forM, forM_, unless, when)
+import Control.Monad (filterM, forM, forM_, guard, unless, when)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text qualified as T
 import System.Environment (getEnvironment)
 
@@ -32,7 +32,7 @@ import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (broadcast, send)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
-    ( PayloadItem (..), noTarget, notify, notifyGroupChange, sessionTarget )
+    ( PayloadItem (..), clientNameOf, noTarget, notify, notifyGroupChange, sessionTarget )
 import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
@@ -114,7 +114,8 @@ cmdNewSession st mclient args
     clientContext = case mclient of
         Just c -> do
             csz <- readTVarIO c.size
-            pure (c.env, T.unpack c.cwd, Just csz)
+            -- A control client's size never shapes a session it creates.
+            pure (c.env, T.unpack c.cwd, csz <$ guard (isNothing c.control))
         Nothing -> do
             -- Config-loaded or otherwise clientless: inherit the server
             -- process env so shells find PATH, SHELL, etc.
@@ -206,6 +207,11 @@ switchClientTo st client sess = do
         bumpDirty st
     applySessionSize st old
     applySessionSize st sess.id
+    when (old /= sess.id) $ do
+        sname <- readTVarIO sess.name
+        notify st "client-session-changed" (sessionTarget sess.id)
+            [ ("client", PClientRef (clientNameOf (Just client)))
+            , ("session", PSessionRef sess.id sname) ]
 
 -- @-c@ re-anchors the session's default working directory for new
 -- windows, so it is useful (and valid) even without a client to attach.

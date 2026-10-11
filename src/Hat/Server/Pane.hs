@@ -84,6 +84,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import GHC.Clock (getMonotonicTimeNSec)
 import Data.Char (isAlphaNum)
 import System.Environment (getEnvironment)
 import System.IO (Handle, hFlush)
@@ -99,6 +100,7 @@ import Hat.Log
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (broadcast)
+import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
 import Hat.Server.Environ (environFromPairs, environMerge, environPairs)
 import Hat.Server.Keys
@@ -378,7 +380,9 @@ runPaneReader st pane = do
         -- the 'finally' cleanup, so a late async 'ChildExited' can never land in
         -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
-            \_ -> readLoop unmask (Hat.Term.Pty.awaitOutput pane.pty)
+            \_ -> readLoop unmask
+                    (atomically (awaitControlRoom st pane)
+                        >> Hat.Term.Pty.awaitOutput pane.pty)
                     (Hat.Term.Pty.readPtyBuf pane.pty rbuf) pendingRef
                 `catch` \ChildExited -> do
                     writeIORef pendingRef Nothing
@@ -412,6 +416,8 @@ runPaneReader st pane = do
                 Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
                 writeIORef pending Nothing)
             forwardToPipe pane bs
+            now <- (`div` 1000000) <$> getMonotonicTimeNSec
+            atomically (forwardToControl st pane now bs)
             mhome <- readTVarIO pane.home  -- See Note [Pane home]
             forM_ events $ \case
                 Emu.Output out -> Hat.Term.Pty.writePty pane.pty out

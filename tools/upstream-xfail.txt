@@ -7,8 +7,8 @@ border-arrows.sh                # wontfix: hat deliberately draws triangle indic
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
 check-names.sh                  # allow-rename/allow-set-title behavior + UTF-8 name validation + OSC-2 sanitizing + buffer -F listing
 combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
-control-client-sanity.sh
-control-client-size.sh
+control-client-sanity.sh        # layouts are binary trees: tmux splits a pane into a sibling cell and gives a killed pane's space to its neighbour; swap-pane across windows
+control-client-size.sh          # per-window control client sizes (refresh-client -C @id:WxH)
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
 # tabs to spaces in the grid, so a copied tab-indented line comes back
 # as spaces where upstream keeps a literal \t. Needs emulator-level tab
@@ -48,9 +48,6 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # the script hinges on.
 
 # control mode (-C): whole subsystem unimplemented
-control-client-exit.sh          # no %-notification / exit handshake
-control-client-wait-exit.sh     # no wait-exit / %exit lifecycle
-control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-changed
 control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine

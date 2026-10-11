@@ -35,6 +35,9 @@ data Dispatch = Dispatch
     { runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
     , runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
     , runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
+    , unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
+        -- ^ the error for a command whose name resolves to nothing, which
+        --   tmux reports when parsing, before anything runs
     }
 
 -- getopt-style flag parser: @spec@ lists the letters that take a

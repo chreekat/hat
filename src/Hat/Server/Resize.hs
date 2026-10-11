@@ -6,6 +6,7 @@ module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
     , clientWindowArea
+    , clientClaim
     , defaultSizeOf
     , clampWindowSize
     , reconcileLoop
@@ -24,7 +25,7 @@ import Control.Exception (IOException, handle)
 import Control.Monad (forM, forM_, when)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -32,6 +33,7 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Term.Emulator qualified as Emu
@@ -54,12 +56,11 @@ applySessionSize st sid = atomically $ do
     msess <- Map.lookup sid <$> readTVar st.sessions
     forM_ msess $ \sess -> do
         cs <- sessionClients st sid
-        stamps <- mapM (\c -> (,) <$> readTVar c.lastActive
-                                   <*> readTVar c.size) cs
         lastSz <- readTVar sess.lastSize
         mwin <- currentWindow sess
         opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
-        let eff = sessionWindowArea opts.statusLines (resizeModeOf opts) lastSz stamps
+        claims <- catMaybes <$> mapM (clientClaim opts.statusLines) cs
+        let eff = sessionWindowArea (resizeModeOf opts) lastSz claims
         writeTVar sess.lastSize eff
         forM_ cs $ \c -> writeTVar c.needsFull True
         bumpDirty st
@@ -71,11 +72,29 @@ applySessionSize st sid = atomically $ do
 clientWindowArea :: ServerState -> Session -> WindowSizeMode -> STM Size
 clientWindowArea st sess mode = do
     cs <- sessionClients st sess.id
-    stamps <- mapM (\c -> (,) <$> readTVar c.lastActive <*> readTVar c.size) cs
     mwin <- currentWindow sess
     opts <- maybe (resolveForSession st sess) (resolveForWindow st sess) mwin
+    claims <- catMaybes <$> mapM (clientClaim opts.statusLines) cs
     pure (clampWindowSize
-        (sessionWindowArea opts.statusLines mode (defaultSizeOf opts) stamps))
+        (sessionWindowArea mode (defaultSizeOf opts) claims))
+
+-- | What a client offers toward its session's window size: its activity
+-- stamp, its size, and the status rows it draws (@statusLines@). A control
+-- client draws no status line and offers nothing until @refresh-client -C@
+-- sizes it (or one of its windows); its size is 80x24 until then.
+clientClaim :: Int -> Client -> STM (Maybe (Int, Size, Int))
+clientClaim statusLines c = do
+    stamp <- readTVar c.lastActive
+    case c.control of
+        Nothing -> do
+            sz <- readTVar c.size
+            pure (Just (stamp, sz, statusLines))
+        Just cs -> do
+            msz <- readTVar cs.size
+            mwins <- readTVar cs.windowSizes
+            pure $ case (msz, mwins) of
+                (Nothing, Nothing) -> Nothing
+                _ -> Just (stamp, fromMaybe Size { rows = 24, cols = 80 } msz, 0)
 
 -- | @default-size@ read as tmux's @sscanf("%ux%u")@ does: leading digits, an
 -- @x@, digits, anything after ignored; anything else is 80x24.

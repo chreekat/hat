@@ -28,7 +28,7 @@ data Cli = Cli
     { socketName :: String
     , socketPathOverride :: Maybe FilePath
     , configFile :: Maybe FilePath
-    , controlMode :: Bool
+    , controlMode :: Maybe ControlFlavour  -- ^ @-C@ once, or @-CC@
     , command :: [String]
     }
 
@@ -92,13 +92,14 @@ parseCli = go Cli
     { socketName = "default"
     , socketPathOverride = Nothing
     , configFile = Nothing
-    , controlMode = False
+    , controlMode = Nothing
     , command = []
     }
   where
     go cli = \case
         [] -> cli
-        ("-C" : rest) -> go cli { controlMode = True } rest
+        ("-C" : rest) -> go cli { controlMode = Just (moreControl cli) } rest
+        ("-CC" : rest) -> go cli { controlMode = Just ControlDcs } rest
         ("-L" : name : rest) -> go cli { socketName = name } rest
         ("-S" : path : rest) -> go cli { socketPathOverride = Just path } rest
         ("-f" : path : rest) -> go cli { configFile = Just path } rest
@@ -108,6 +109,7 @@ parseCli = go Cli
                 go cli { socketPathOverride = Just v } rest
             | Just v <- attached "-f" arg -> go cli { configFile = Just v } rest
         rest -> cli { command = rest }
+    moreControl cli = maybe ControlLines (const ControlDcs) cli.controlMode
     attached flag arg = case splitAt 2 arg of
         (pre, v) | pre == flag && not (null v) -> Just v
         _ -> Nothing
@@ -117,15 +119,10 @@ clientMain cli = do
     path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
     let (hist, cmdArgs) = takeReattachHist cli.command
         cmds = parseArgv cmdArgs
-    if cli.controlMode
-        then case cmds of
-            ((verb : _) : _)
-                | verb `elem` ["attach-session", "attach"] ->
-                    attachControl path cli.configFile cmds
-            _ -> do
-                hPutStrLn stderr "hat: -C supports only attach"
-                exitFailure
-        else case cmdArgs of
+    case cli.controlMode of
+        Just flavour -> controlMode path cli.configFile flavour
+            (if null cmds then [["new-session"]] else cmds)
+        Nothing -> case cmdArgs of
             [] -> attach path cli.configFile [] hist
             ["attach"] -> attach path cli.configFile [] hist
             ["attach-session"] -> attach path cli.configFile [] hist
@@ -144,18 +141,22 @@ takeReattachHist = go ([], [])
         (a : rest) -> go (hist, keep <> [a]) rest
         [] -> (hist, keep)
 
--- | @-C attach@: a scripted attached client with no terminal; stdin EOF
--- detaches. See 'Hat.Client.runClientControl'.
-attachControl :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
-attachControl path mconfig setup = do
+-- | @-C@: tmux control mode, started by the given command (a bare @-C@
+-- starts a new session, as plain @hat@ does). See 'Hat.Client.runControlMode'.
+controlMode :: FilePath -> Maybe FilePath -> ControlFlavour -> [[T.Text]] -> IO ()
+controlMode path mconfig flavour setup = do
     (sock, origin) <- connectOrStart path mconfig
-    reason <- runClientControl sock origin setup
-    case reason of
-        Rejected e -> do
+    r <- runControlMode sock origin flavour setup
+    case r of
+        Right 0 -> pure ()
+        Right n -> exitWith (ExitFailure n)
+        Left (Rejected e) -> do
             hPutStrLn stderr ("hat: " <> T.unpack e)
             exitWith (ExitFailure 1)
-        ServerDied -> exitWith (ExitFailure 1)
-        _ -> pure ()
+        Left ServerDied -> do
+            hPutStrLn stderr "hat: server exited unexpectedly"
+            exitWith (ExitFailure 1)
+        Left _ -> exitWith (ExitFailure 1)
 
 -- | Whether a command line grabs this terminal to render, or runs and exits.
 data TerminalMode

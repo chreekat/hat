@@ -320,6 +320,7 @@ fakeClient _ = do
         , env = []
         , cwd = "/"
         , stdinSource = NoStdin
+        , control = Nothing
         }
 
 -- Wait (bounded) until a channel waiter registers.
