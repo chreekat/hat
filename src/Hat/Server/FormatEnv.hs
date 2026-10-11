@@ -127,6 +127,7 @@ paneFormatEnv st sess wix win pix pane = do
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
     title <- Emu.title pane.emulator
+    modeEnv <- paneModeEnv pane
     -- A signal is reported by number, as tmux does where libc has no
     -- @sys_signame@ (glibc).
     let deadVars = case mexit of
@@ -157,7 +158,7 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        ] <> panePositionVars area geom) wenv
+        ] <> modeEnv <> panePositionVars area geom) wenv
 
 -- | A pane's position in its window (tmux's @pane_left@ … @pane_at_bottom@),
 -- from its cell: @(xoff, yoff, width, height)@.

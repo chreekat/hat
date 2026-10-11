@@ -46,7 +46,7 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # #{pane_in_mode} of the hook's pane in pane-mode-changed + title stack (CSI 22/23 t) + default-shell option + client-* hooks
+hooks-notify.sh                 # title stack (CSI 22/23 t) + default-shell option + client-* hooks
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
 choose-buffer.sh                # choose-buffer + mode-screen rendering unimplemented
