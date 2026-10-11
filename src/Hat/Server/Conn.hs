@@ -435,14 +435,38 @@ deliversKey opts paneFocusReport k
 handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
+    owner <- keyOwner client
+    case owner of
+        KeyTables -> handleKeys d st client bs
+        _ -> deliverKeys d st client (tokenizeKeys bs)
+
+-- | What a client's keystrokes go to: an open overlay, else its key tables.
+data KeyOwner
+    = PanesOverlay DisplayPanesState
+    | PickerOverlay PickerState
+    | PromptOverlay PromptState
+    | KeyTables
+
+keyOwner :: Client -> IO KeyOwner
+keyOwner client = do
     mpanes <- readTVarIO client.displayPanes
     mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
-    case (mpanes, mpicker, mprompt) of
-        (Just dp, _, _) -> handlePanesInput d st client dp (tokenizeKeys bs)
-        (_, Just pk, _) -> handlePickerInput d st client pk (tokenizeKeys bs)
-        (_, _, Just pr) -> handlePromptInput d st client pr bs
-        _               -> handleKeys d st client bs
+    pure $ case (mpanes, mpicker, mprompt) of
+        (Just dp, _, _) -> PanesOverlay dp
+        (_, Just pk, _) -> PickerOverlay pk
+        (_, _, Just pr) -> PromptOverlay pr
+        _               -> KeyTables
+
+-- | Hand each key to whatever owns the keyboard once the keys before it
+-- have run.
+deliverKeys :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
+deliverKeys _ _ _ [] = pure ()
+deliverKeys d st client keys = keyOwner client >>= \case
+    PanesOverlay dp -> handlePanesInput d st client dp keys
+    PickerOverlay pk -> deliverKeys d st client =<< handlePickerInput d st client pk keys
+    PromptOverlay pr -> deliverKeys d st client =<< handlePromptInput d st client pr keys
+    KeyTables -> runKeys d st client keys
 
 -- | Keys while the @display-panes@ overlay shows: each key is decided by
 -- 'panesKeyAction'; once the overlay closes, the rest of the chunk flows
@@ -456,13 +480,13 @@ handlePanesInput d st client dp = go
         PanesSelect num -> do
             dismissPanes st client
             selectPaneNumber d st client dp.template num
-            runKeys d st client ks
+            deliverKeys d st client ks
         PanesDismiss -> do
             dismissPanes st client
-            runKeys d st client ks
+            deliverKeys d st client ks
         PanesDismissForward -> do
             dismissPanes st client
-            runKeys d st client (k : ks)
+            deliverKeys d st client (k : ks)
         PanesForward -> do
             runKeys d st client [k]
             go ks
@@ -512,7 +536,7 @@ flushHeldEscape :: Dispatch -> ServerState -> Client -> IO ()
 flushHeldEscape d st client = do
     held <- readIORef client.escState
     writeIORef client.escState NoEscPending
-    runKeys d st client (flushEscape held)
+    deliverKeys d st client (flushEscape held)
 
 -- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
 -- its copy-mode table before each. A key that enters or leaves copy mode
@@ -569,7 +593,12 @@ runKeys d st client keys = do
                             after <- fmap (fmap (.id)) (clientActivePane st client)
                             disarmFlash st client (after /= fmap (.id) mpane)
                         _ -> pure ()
-                    loop kst' rest
+                    -- A key that opened an overlay hands it the rest.
+                    keyOwner client >>= \case
+                        KeyTables -> loop kst' rest
+                        _ -> do
+                            writeIORef client.keyState kst'
+                            deliverKeys d st client rest
     st0 <- readIORef client.keyState
     loop st0 keys
   where
