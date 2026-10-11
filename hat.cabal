@@ -139,6 +139,7 @@ library
         Hat.Server.Winlink
         Hat.Server.Overlay
         Hat.Server.Pane
+        Hat.Server.PaneColours
         Hat.Server.Persist
         Hat.Server.Picker
         Hat.Server.Prompt

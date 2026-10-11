@@ -124,6 +124,7 @@ import Hat.Server.Hooks
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById)
 import Hat.Server.Locate (locatePane)
+import Hat.Server.PaneColours (oscColourReply, queryDefaultColour, queryPaletteColour)
 import Hat.Server.Style (applyStyle)
 import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Term.Cell qualified as Cell
@@ -534,10 +535,23 @@ runPaneReader st pane = do
                 -- the classic light-versus-dark probe; hat doesn't paint a
                 -- pane background, so answer with the canonical color for
                 -- the OS scheme it tracks (white-on-black when dark).
+                -- A pane whose style gives it its own colour answers with
+                -- that instead.
                 Emu.OscColorQuery target term -> do
-                    mscheme <- readTVarIO st.colorScheme
-                    forM_ mscheme $ \scheme ->
-                        Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
+                    own <- queryDefaultColour st pane target
+                    case own of
+                        Just rgb -> Hat.Term.Pty.writePty pane.pty $ oscColourReply
+                            (case target of
+                                Emu.Foreground -> "10"
+                                Emu.Background -> "11") rgb term
+                        Nothing -> do
+                            mscheme <- readTVarIO st.colorScheme
+                            forM_ mscheme $ \scheme ->
+                                Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
+                Emu.OscPaletteQuery n term -> do
+                    mrgb <- queryPaletteColour st pane n
+                    forM_ mrgb $ \rgb -> Hat.Term.Pty.writePty pane.pty
+                        (oscColourReply ("4;" <> T.pack (show n)) rgb term)
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
                 -- the session's attached terminals to raise with the OS.

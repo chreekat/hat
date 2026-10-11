@@ -278,6 +278,7 @@ applySignal e sig = case sig of
         <$ modifyIORef' e.state (\s -> s { colorSub = False })
     SigColor CsQuery   -> pure [ColorSchemeQuery]
     SigOsc target term -> pure [OscColorQuery target term]
+    SigPalette n term  -> pure [OscPaletteQuery n term]
     SigNotify raw      -> pure [DesktopNotification raw]
 
 -- | libghostty swallows an OSC 0\/2 title and stores it rather than exposing a

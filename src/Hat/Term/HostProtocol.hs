@@ -198,6 +198,7 @@ partitionPassthrough = go
 data QuerySignal
     = SigColor CsSignal              -- ^ DEC mode 2031 subscribe/query
     | SigOsc OscColorTarget OscTerm  -- ^ OSC 10/11 color query
+    | SigPalette Int OscTerm         -- ^ OSC 4 query of one palette entry
     | SigNotify ByteString           -- ^ OSC 9/777 desktop notification, raw
                                      --   (whole sequence) to forward verbatim
 
@@ -223,7 +224,7 @@ nextQuery bs = go 0
         Just d ->
             let p = i + d
                 r = B.drop p bs
-            in case tryCsi r <|> tryOsc r <|> tryNotify r of
+            in case tryCsi r <|> tryOsc r <|> tryPalette r <|> tryNotify r of
                 Just (sig, more) -> Just (B.take p bs, sig, more)
                 Nothing -> go (p + 1)
     tryCsi r = do
@@ -240,6 +241,17 @@ nextQuery bs = go 0
             (TermBel,) <$> B.stripPrefix "\a" afterIntro
             <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterIntro
         pure (SigOsc target term, more)
+    tryPalette r = do
+        afterIntro <- B.stripPrefix "\ESC]4;" r
+        let (digits, rest) = B.span (\b -> b >= 0x30 && b <= 0x39) afterIntro
+        n <- case B.foldl' (\acc b -> acc * 10 + fromIntegral (b - 0x30)) (0 :: Int) digits of
+            v | not (B.null digits), B.length digits <= 3, v < 256 -> Just v
+            _ -> Nothing
+        afterQuery <- B.stripPrefix ";?" rest
+        (term, more) <-
+            (TermBel,) <$> B.stripPrefix "\a" afterQuery
+            <|> (TermSt,) <$> B.stripPrefix "\ESC\\" afterQuery
+        pure (SigPalette n term, more)
     tryNotify r = do
         afterParams <-
             (do a <- B.stripPrefix "\ESC]9;" r

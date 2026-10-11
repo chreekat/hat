@@ -523,6 +523,13 @@ spec = do
         scr <- snapshot e
         rowText scr 0 `shouldBe` ""
 
+    it "surfaces an OSC 4 palette query as an event, stripped from display" $ do
+        e <- new80x24
+        evs <- feedStr e "\ESC]4;12;?\a"
+        evs `shouldContain` [OscPaletteQuery 12 TermBel]
+        scr <- snapshot e
+        rowText scr 0 `shouldBe` ""
+
     -- Bug 75f20c8a: an inner app's desktop notification (OSC 9 or OSC 777
     -- notify) must be surfaced verbatim so the server can forward it to the
     -- outer terminal, and never rendered onto the pane as text.

@@ -46,6 +46,7 @@ import Hat.Server.FormatEnv
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowPaneStatus)
 import Hat.Server.Locate (paneIndexOf)
+import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
@@ -167,9 +168,7 @@ renderOnce st client = do
                     Just pane -> do
                         pv <- paneView st pane
                         popts <- atomically (resolveForPane st sess win pane)
-                        ws <- paneStyleOption st th sess win pane popts "window-style"
-                        was <- paneStyleOption st th sess win pane popts "window-active-style"
-                        let dflt = paneDefaults (pidL == active) ws was
+                        dflt <- paneDefaultColours st th sess win pane popts
                         palette <- panePalette th pane popts
                         pure [(pidL, (withPaneColours dflt palette pv, dflt))]
             let paneViews = Map.fromList [ (p, pv) | (p, (pv, _)) <- painted ]
@@ -529,21 +528,6 @@ cachedChrome st th client sess win eff sceneArea rects defaults active rowOff = 
         SceneStatus {} -> True
         _ -> False
 
--- | A pane's style option, its formats expanded in the pane's context
--- first (tmux's @style_add@ with the pane's format tree).
-paneStyleOption
-    :: ServerState -> Theme -> Session -> Window -> Pane -> Options -> Text
-    -> IO Cell.Style
-paneStyleOption st th sess win pane popts name
-    | "#{" `T.isInfixOf` raw = do
-        wix <- atomically (readTVar sess.currentIx)
-        pix <- paneIndexOf st win pane
-        env <- paneFormatEnv st sess wix win pix pane
-        styleCell th <$> expandFormat st env raw
-    | otherwise = pure (styleCell th raw)
-  where
-    raw = optionText name popts
-
 -- | A pane's view drawn in its default colours and its palette. A pane
 -- with colours of its own gives up its row stamps: they do not cover the
 -- colours.
@@ -553,22 +537,6 @@ withPaneColours dflt palette pv
     | dflt == (Cell.DefaultColor, Cell.DefaultColor), Map.null palette = pv
     | otherwise = pv
         { cells = paintPalette palette (paintDefaults dflt pv.cells), rowGens = Nothing }
-
--- | A pane's palette (tmux's @colour_palette_get@): the colours its
--- program set (OSC 4) over its @pane-colours@, which also become the
--- terminal's palette defaults.
-panePalette :: Theme -> Pane -> Options -> IO (Map.Map Int Cell.Color)
-panePalette th pane popts = do
-    let configured = Map.fromList
-            [ (fromIntegral n, c)
-            | (KeyIndex n, v) <- case optionValue "pane-colours" popts of
-                OVArray m -> Map.toList m
-                OVScalar _ -> []
-            , n < 256
-            , Just (Just c) <- [colourValue th v] ]
-    Emu.setPaletteDefaults pane.emulator (Map.mapMaybe colourRgb configured)
-    program <- Emu.paletteOverrides pane.emulator
-    pure (Map.union (Map.map (\(r, g, b) -> Cell.RGB r g b) program) configured)
 
 -- | Where a pane's scrollbar slider sits in a scrollbar @height@ rows
 -- tall: over its history and screen, or its copy-mode viewport.
