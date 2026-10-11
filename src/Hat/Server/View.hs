@@ -46,7 +46,7 @@ import Hat.Server.FormatEnv
      windowFormatEnv, windowOwnEnv)
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowPaneStatus)
-import Hat.Server.Locate (paneIndexOf)
+import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme, colourRgb)
@@ -726,57 +726,72 @@ paneView st pane = do
                 , cursorVisible = scr.cursorVisible
                 }
         Just pm -> do
-            opts <- readTVarIO st.options
-            let s = pm.copyState
-                fg = pm.frozen
-                hsize = fg.fgHsize
-                top = hsize - s.viewportOffY
-                rows = [ viewportRow fg (top + i) | i <- [0 .. fg.fgSy - 1] ]
-                overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
-                    (V.fromList rows)
-                label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
-                (cur, vis) = case CopyMode.copyCursorPos top fg.fgSy s of
-                    Just p -> (Just p, True)
-                    Nothing -> (Nothing, False)
+            look <- copyLook st pane
+            let (cells, cur) = CopyMode.copyView look pm
             pure PaneView
-                { cells = if s.hidePosition then overlaid
-                    else stampTopRight label copyIndicatorStyle overlaid
+                { cells
                 , rowGens = Nothing
                 , cursor = cur
-                , cursorVisible = vis
+                , cursorVisible = isJust cur
                 }
-  where
-    viewportRow fg a =
-        let row = fromMaybe V.empty (fg.fgRows V.!? a)
-        in V.generate fg.fgSx (\c -> fromMaybe Cell.blankCell (row V.!? c))
+
+-- | How copy mode draws in a pane: its options' styles and position format,
+-- formats expanded in the pane's context as tmux's @window_copy_write_line@
+-- does.
+copyLook :: ServerState -> Pane -> IO CopyMode.CopyLook
+copyLook st pane = do
+    th <- clientTheme st
+    global <- readTVarIO st.options
+    mhome <- atomically $ do
+        cached <- readTVar pane.home  -- See Note [Pane home]
+        home <- maybe (locatePane st pane.id) (pure . Just) cached
+        sessions <- readTVar st.sessions
+        case home of
+            Just (sid, win) | Just sess <- Map.lookup sid sessions -> do
+                popts <- resolveForPane st sess win pane
+                wix <- readTVar sess.currentIx
+                pure (Just (sess, win, popts, wix))
+            _ -> pure Nothing
+    (opts, expand) <- case mhome of
+        Nothing -> pure (global, pure)
+        Just (sess, win, popts, wix) -> do
+            pix <- paneIndexOf st win pane
+            env <- paneFormatEnv st sess wix win pix pane
+            pure (popts, expandFormat st env)
+    let raw name = optionText name opts
+        style name
+            | "#{" `T.isInfixOf` raw name = styleCell th <$> expand (raw name)
+            | otherwise = pure (styleCell th (raw name))
+    selection <- style "copy-mode-selection-style"
+    match <- style "copy-mode-match-style"
+    current <- style "copy-mode-current-match-style"
+    markSty <- style "copy-mode-mark-style"
+    line <- style "copy-mode-current-line-style"
+    number <- style "copy-mode-line-number-style"
+    currentNumber <- style "copy-mode-current-line-number-style"
+    positionSty <- style "copy-mode-position-style"
+    position <- expand (raw "copy-mode-position-format")
+    mmode <- readTVarIO pane.mode
+    pure CopyMode.CopyLook
+        { keys = opts.modeKeys
+        , numbers = CopyMode.lineNumberModeOf (raw "copy-mode-line-numbers")
+        , selectionStyle = selection
+        , matchStyle = match
+        , currentMatchStyle = current
+        , markStyle = markSty
+        , currentLineStyle =
+            if raw "copy-mode-current-line-style" == "default" then Nothing else Just line
+        , lineNumberStyle = number
+        , currentLineNumberStyle = currentNumber
+        , drawPosition = \area ->
+            if T.null position then area else formatDraw th positionSty position area
+        , searchPattern = mmode >>= CopyMode.lastPattern . (.copyState)
+        }
 
 -- | The cells a pane contributes, discarding the cursor: for previews and
 -- the chooser, which draw no cursor.
 paneViewCells :: ServerState -> Pane -> IO (V.Vector (V.Vector Cell.Cell))
 paneViewCells st pane = (.cells) <$> paneView st pane
-
--- | tmux's copy-mode position indicator: black on yellow, like the
--- default @mode-style@.
-copyIndicatorStyle :: Cell.Style
-copyIndicatorStyle = Cell.defaultStyle
-    { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
-
--- | Overlay a label onto the top-right corner of a grid (e.g. the
--- @[scroll/history]@ copy-mode indicator), clipped to the first row.
-stampTopRight
-    :: Text -> Cell.Style
-    -> V.Vector (V.Vector Cell.Cell) -> V.Vector (V.Vector Cell.Cell)
-stampTopRight label sty grid
-    | V.null grid = grid
-    | otherwise = grid V.// [(0, row0 V.// updates)]
-  where
-    row0 = grid V.! 0
-    w = V.length row0
-    start = max 0 (w - T.length label)
-    updates =
-        [ (start + i, cell c)
-        | (i, c) <- zip [0 ..] (T.unpack label), start + i < w ]
-    cell c = Cell.glyphCell c sty
 
 -- | Place a pane's local cursor into screen coordinates, or hide it when the
 -- pane has none (a copy viewport scrolled past the cursor).

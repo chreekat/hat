@@ -14,7 +14,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..), FrozenGrid (..)
-    , copyModeAt, PaneMode (..)
+    , copyModeAt, PaneMode (..), LineNumbers (..), MarkShown (..)
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.OptionTable (OptionValue (..))
 import Hat.Model.Options
@@ -379,9 +379,26 @@ spec = do
         it "scroll-up with a selection only moves the view" $ do
             let sel = (copyModeAt "copy-mode" 25 0)
                     { selection = Just ((22, 0), SelChar) }
-                s = runIdentity (scrollUpCmd scrollGrid sel)
+                s = runIdentity (scrollUpCmd KeysEmacs scrollGrid sel)
             s.viewportOffY `shouldBe` 1
             selectionEnd s `shouldBe` (25, 0)
+
+    describe "scroll-up and scroll-down move the view a line" $ do
+        -- scrollGrid: 20 history lines over a 10-row screen.
+        let at row voY = (copyModeAt "copy-mode" row 0) { viewportOffY = voY }
+            screenRow s = s.cursorRow - (20 - s.viewportOffY)
+            down keys = runIdentity . scrollLine keys 1 scrollGrid
+            up keys = runIdentity . scrollLine keys (-1) scrollGrid
+        it "keeps the cursor's screen row under emacs keys" $ do
+            let s = down KeysEmacs (at 3 20)
+            (s.viewportOffY, s.cursorRow, screenRow s) `shouldBe` (19, 4, 3)
+        it "keeps the cursor on its line under vi keys" $ do
+            let s = down KeysVi (at 3 20)
+            (s.viewportOffY, s.cursorRow) `shouldBe` (19, 3)
+            (up KeysVi (at 3 19)).cursorRow `shouldBe` 3
+        it "carries the cursor along at the screen's edge under vi keys" $ do
+            (down KeysVi (at 0 20)).cursorRow `shouldBe` 1
+            (up KeysVi (at 10 19)).cursorRow `shouldBe` 9
 
     describe "scrolling the cursor's line (scroll-top/middle/bottom, recentre)" $ do
         -- scrollGrid: 20 history lines over a 10-row screen.
@@ -413,7 +430,8 @@ spec = do
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
                     | r <- rows ] }
-            vars st = Map.fromList (copyModeFormats " " PaneMode { frozen = frozen, copyState = st })
+            varsUnder n st = Map.fromList (copyModeFormats " " n PaneMode { frozen = frozen, copyState = st })
+            vars = varsUnder NumbersOff
             at = copyModeAt "copy-mode" 2 5
             look k st = Map.lookup k (vars st)
         it "places the cursor on the screen and reads its line and word" $ do
@@ -436,6 +454,15 @@ spec = do
             let swapped = otherEnd at { selection = Just ((1, 2), SelChar) }
             map (`look` swapped) ["selection_start_y", "selection_end_y"]
                 `shouldBe` [Just "1", Just "2"]
+        it "counts the position from the top under absolute line numbers" $ do
+            let v = varsUnder NumbersAbsolute (at { viewportOffY = 2 })
+            map (`Map.lookup` v) ["copy_position", "copy_position_limit", "copy_line_numbers"]
+                `shouldBe` map Just ["1", "4", "1"]
+        it "reports the highlighted search and its matches" $ do
+            let searched = at { lastQuery = Just ("o", Forward, SearchText), searchMarks = Just Forward }
+            map (`look` searched) ["search_present", "search_count"]
+                `shouldBe` [Just "1", Just "3"]
+            look "search_present" at `shouldBe` Just "0"
         it "a selection begun and not yet moved is not present" $
             look "selection_present" (at { selection = Just ((2, 5), SelChar) }) `shouldBe` Just "0"
 
@@ -447,6 +474,102 @@ spec = do
             pipeCommand (withCopyCommand "xsel -i") "" `shouldBe` Just "xsel -i"
         it "runs nothing when both are empty" $
             pipeCommand defaultOptions "" `shouldBe` Nothing
+
+    describe "drawing copy mode (copyView)" $ do
+        let rows = ["alpha beta", "gamma alpha", "delta"]
+            frozen = FrozenGrid
+                { fgHsize = 0, fgSy = 3, fgSx = 12
+                , fgRows = V.fromList
+                    [ V.fromList [ glyphCell c defaultStyle | c <- take 12 (T.unpack r <> repeat ' ') ]
+                    | r <- rows ] }
+            fgOf n = defaultStyle { fg = Indexed n }
+            look = CopyLook
+                { keys = KeysVi, numbers = NumbersOff
+                , selectionStyle = fgOf 1, matchStyle = fgOf 2
+                , currentMatchStyle = fgOf 3
+                , markStyle = defaultStyle { fg = Indexed 4, bg = Indexed 5 }
+                , currentLineStyle = Nothing
+                , lineNumberStyle = fgOf 7, currentLineNumberStyle = fgOf 8
+                , drawPosition = \area -> area V.// [(0, glyphCell 'P' (fgOf 9))]
+                , searchPattern = Nothing }
+            view l st = copyView l PaneMode { frozen = frozen, copyState = st }
+            at r c = (copyModeAt "copy-mode-vi" r c) { hidePosition = True }
+            text l st r = T.pack [ baseChar' cell | cell <- V.toList (fst (view l st) V.! r) ]
+            baseChar' cell = case cell.content of
+                Glyph c _ _ -> c
+                _ -> '?'
+            styleAt l st r c = (fst (view l st) V.! r V.! c).style
+        it "draws the selection in copy-mode-selection-style" $ do
+            let st = (at 0 2) { selection = Just ((0, 0), SelChar) }
+            map (styleAt look st 0) [0, 2, 3] `shouldBe` [fgOf 1, fgOf 1, defaultStyle]
+        it "draws the position format over the first row unless hidden" $ do
+            text look (at 1 0) { hidePosition = False } 0 `shouldBe` "Plpha beta  "
+            text look (at 1 0) 0 `shouldBe` "alpha beta  "
+        it "numbers the lines beside the text, which moves over" $ do
+            let numbered = look { numbers = NumbersAbsolute }
+            map (text numbered (at 1 0)) [0, 1] `shouldBe` ["  1 alpha be", "  2 gamma al"]
+            snd (view numbered (at 1 3)) `shouldBe` Just Pos { row = 1, col = 7 }
+            map (\r -> styleAt numbered (at 1 0) r 0) [0, 1] `shouldBe` [fgOf 7, fgOf 8]
+        it "counts relative and hybrid numbers from the cursor's line" $ do
+            map (text look { numbers = NumbersRelative } (at 1 0)) [0, 1, 2]
+                `shouldBe` ["  1 alpha be", "  0 gamma al", "  1 delta   "]
+            text look { numbers = NumbersHybrid } (at 1 0) 1 `shouldBe` "  2 gamma al"
+        it "shows no numbers once copy mode hides them" $
+            text look { numbers = NumbersAbsolute } (at 1 0) { lineNumbers = LinesHidden } 0
+                `shouldBe` "alpha beta  "
+        it "marks a cursor past the numbered text's width with $" $
+            text look { numbers = NumbersAbsolute } (at 1 9) 1 `shouldBe` "  2 gamma a$"
+        it "draws the cursor's line in copy-mode-current-line-style" $ do
+            let lined = look { currentLineStyle = Just defaultStyle { bg = Indexed 6 } }
+            styleAt lined (at 1 0) 1 4 `shouldBe` defaultStyle { bg = Indexed 6 }
+            styleAt lined (at 1 0) 0 4 `shouldBe` defaultStyle
+        it "draws a shown mark's line in copy-mode-mark-style, inverted at the mark" $ do
+            let marked = (at 0 0) { mark = (2, 1), markShown = MarkShown }
+            styleAt look marked 2 0 `shouldBe` defaultStyle { fg = Indexed 4, bg = Indexed 5 }
+            styleAt look marked 2 1 `shouldBe` defaultStyle { fg = Indexed 5, bg = Indexed 4 }
+            styleAt look (at 0 0) { mark = (2, 1) } 2 0 `shouldBe` defaultStyle
+        it "highlights the search's matches, the one under the cursor as current" $ do
+            let searched = look { searchPattern = Just (either (error . T.unpack) id (compilePattern SearchText "alpha")) }
+                st = (at 1 6) { searchMarks = Just Forward }
+            styleAt searched st 0 0 `shouldBe` fgOf 2
+            styleAt searched st 1 8 `shouldBe` fgOf 3
+            styleAt searched st { searchMarks = Nothing } 0 0 `shouldBe` defaultStyle
+        it "under emacs keys a forward search's current match is the one before the cursor" $ do
+            let searched = look { keys = KeysEmacs, searchPattern = Just (either (error . T.unpack) id (compilePattern SearchText "alpha")) }
+            styleAt searched (at 0 5) { searchMarks = Just Forward } 0 0 `shouldBe` fgOf 3
+
+    describe "copy mode's mark, line numbers and search highlighting" $ do
+        it "set-mark shows the mark at the cursor" $
+            let s = setMark (copyModeAt "copy-mode" 4 2)
+            in (s.mark, s.markShown) `shouldBe` ((4, 2), MarkShown)
+        it "jump-to-mark trades the cursor and the mark" $ do
+            let s = jumpToMark scrollGrid ((copyModeAt "copy-mode" 25 1) { mark = (3, 0) })
+            ((s.cursorRow, s.cursorCol), s.mark, s.viewportOffY) `shouldBe` ((3, 0), (25, 1), 17)
+        it "line-numbers-on forces numbers the option leaves off" $ do
+            (setLineNumbers ForceNumbers NumbersOff True (copyModeAt "copy-mode" 0 0)).lineNumbers
+                `shouldBe` LinesForced
+            (setLineNumbers ForceNumbers NumbersRelative True (copyModeAt "copy-mode" 0 0)).lineNumbers
+                `shouldBe` LinesFromOption
+            effectiveNumbers NumbersOff LinesForced `shouldBe` NumbersDefault
+        it "motions keep the search highlighted under vi keys, not emacs" $ do
+            clearsMarks KeysVi "cursor-down" `shouldBe` False
+            clearsMarks KeysEmacs "cursor-down" `shouldBe` True
+            clearsMarks KeysVi "begin-selection" `shouldBe` True
+            clearsMarks KeysEmacs "search-again" `shouldBe` False
+        it "an emacs forward search leaves the cursor past the match" $ do
+            let p = either (error . T.unpack) id (compilePattern SearchText "line")
+                s = runIdentity (searchStep grid KeysEmacs WrapAround Forward p (start.sState))
+            ((s.cursorRow, s.cursorCol), s.searchMarks) `shouldBe` ((0, 6), Just Forward)
+        it "a vi search leaves the cursor on the match" $ do
+            let p = either (error . T.unpack) id (compilePattern SearchText "line")
+                s = runIdentity (searchStep grid KeysVi WrapAround Forward p (start.sState))
+            (s.cursorRow, s.cursorCol) `shouldBe` (0, 2)
+        it "the next emacs search can start under the cursor" $ do
+            let p = either (error . T.unpack) id (compilePattern SearchText "ab")
+                g = listGrid 10 ["abab"]
+                s = runIdentity (searchStep g KeysEmacs WrapAround Forward p
+                        (start.sState) { cursorCol = 2 })
+            s.cursorCol `shouldBe` 4
 
     describe "char search (f/F/t/T)" $ do
         -- Row 0 is "A line of words"; 'o' is at columns 7 and 11.

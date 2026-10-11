@@ -588,29 +588,29 @@ optionTable =
     , live $ scalar "display-panes-format" WindowScope KString
         "#[align=right]#{pane_unzoomed_width}x#{pane_unzoomed_height}"
     , live $ scalar "display-panes-time" WindowScope (KNumber 1 intMax) "1000"
-    , notYet $ scalar "copy-mode-match-style" WindowScope KStyle
+    , live $ scalar "copy-mode-match-style" WindowScope KStyle
         "bg=themecyan,fg=themeblack"
-    , notYet $ scalar "copy-mode-current-match-style" WindowScope KStyle
+    , live $ scalar "copy-mode-current-match-style" WindowScope KStyle
         "bg=thememagenta,fg=themeblack"
-    , notYet $ scalar "copy-mode-mark-style" WindowScope KStyle
+    , live $ scalar "copy-mode-mark-style" WindowScope KStyle
         "bg=themeyellow,fg=themeblack"
-    , notYet $ scalar "copy-mode-position-format" WindowPaneScope KString
+    , paneLocal $ live $ scalar "copy-mode-position-format" WindowPaneScope KString
         "#[align=right]#{t/p:top_line_time}\
         \#{?#{e|>:#{top_line_time},0}, ,}\
         \[#{copy_position}/#{copy_position_limit}]\
         \#{?search_timed_out, (timed out),\
         \#{?search_count, (#{search_count}\
         \#{?search_count_partial,+,} results),}}"
-    , notYet $ scalar "copy-mode-position-style" WindowScope KStyle
+    , live $ scalar "copy-mode-position-style" WindowScope KStyle
         "#{E:mode-style}"
-    , notYet $ scalar "copy-mode-selection-style" WindowScope KStyle
+    , live $ scalar "copy-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
-    , notYet $ scalar "copy-mode-current-line-number-style" WindowScope KStyle
+    , live $ scalar "copy-mode-current-line-number-style" WindowScope KStyle
         "fg=themeyellow"
-    , notYet $ scalar "copy-mode-current-line-style" WindowScope KStyle "default"
-    , notYet $ scalar "copy-mode-line-number-style" WindowScope KStyle
+    , live $ scalar "copy-mode-current-line-style" WindowScope KStyle "default"
+    , live $ scalar "copy-mode-line-number-style" WindowScope KStyle
         "fg=themelightgrey,dim"
-    , notYet $ scalar "copy-mode-line-numbers" WindowScope
+    , live $ scalar "copy-mode-line-numbers" WindowScope
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
     , live $ scalar "fill-character" WindowScope KString
         "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"

@@ -344,7 +344,8 @@ spec = do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0
             emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 100
-            p0 <- stubPane 0
+            -- the position format expands in the pane's context, which reads its pty
+            (p0, release) <- adoptedPane 0
             let p = p0 { emulator = emu }
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
@@ -353,7 +354,7 @@ spec = do
                 writeTVar st.globalSessionOptions
                     (singletonDelta "status" (OVScalar "off"))
             (client, _peer) <- wiredClient st Attached
-            renderOnce st client
+            renderOnce st client `finally` release
             frame <- readIORef client.lastFrame
             let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
             row0 `shouldSatisfy` T.isInfixOf "[0/3]"

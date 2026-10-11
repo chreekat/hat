@@ -11,6 +11,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Hat.Model
+import Hat.Model.Options (ModeKeys (..), Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
@@ -38,7 +39,11 @@ runCopyModeCommand st pane name cmdArgs = do
                             | name `elem` ["copy-selection", "copy-selection-no-clear", "copy-pipe"] = 1
                             | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
                     result <- applyN h (state { numPrefix = Nothing }) count
-                    case result of
+                    keys <- maybe KeysEmacs (.modeKeys) <$> paneOptionsNow st pane
+                    let unmarked s
+                            | CopyMode.clearsMarks keys name = s { searchMarks = Nothing }
+                            | otherwise = s
+                    case fmap (fmap unmarked) result of
                         -- A failed command leaves the mode untouched.
                         Left err -> pure [RErr err]
                         Right r -> do

@@ -27,7 +27,7 @@ import Data.Vector qualified as V
 
 import Hat.Geometry
 import Hat.Model
-import Hat.Model.Options (Options (..))
+import Hat.Model.Options (Options (..), optionText)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatDraw qualified as FD
 import Hat.Server.Hooks (notifyWindow)
@@ -143,10 +143,10 @@ startDrag c dr = modifyIORef' c.keyState (\k -> k { drag = Just dr })
 startSelectionDrag :: ServerState -> Client -> MouseEvent -> IO ()
 startSelectionDrag st client ev = do
     mp <- mouseEventPane st ev
-    forM_ mp $ \(_, _, pane, mbox) -> forM_ mbox $ \box ->
+    forM_ mp $ \(sess, win, pane, mbox) -> forM_ mbox $ \box ->
         forM_ (mouseAt True ev box) $ \(px, py) -> do
             atomically $ do
-                modifyTVar' pane.mode (fmap (CopyMode.startDragSelection px py))
+                onText st sess win pane px $ \x -> CopyMode.startDragSelection x py
                 bumpDirty st
             startDrag client (DragSelection pane.id)
             mouseDragUpdate st (DragSelection pane.id) ev
@@ -156,9 +156,9 @@ startSelectionDrag st client ev = do
 moveCopyCursor :: ServerState -> MouseEvent -> IO ()
 moveCopyCursor st ev = unless (wheel ev.input.b) $ do
     mp <- mouseEventPane st ev
-    forM_ mp $ \(_, _, pane, mbox) -> forM_ mbox $ \box ->
+    forM_ mp $ \(sess, win, pane, mbox) -> forM_ mbox $ \box ->
         forM_ (mouseAt False ev box) $ \(px, py) -> atomically $
-            modifyTVar' pane.mode (fmap (CopyMode.cursorToScreen px py))
+            onText st sess win pane px $ \x -> CopyMode.cursorToScreen x py
 
 -- | A drag in progress moves on (tmux's @mouse_drag_update@).
 mouseDragUpdate :: ServerState -> Drag -> MouseEvent -> IO ()
@@ -166,10 +166,20 @@ mouseDragUpdate st dr ev = case dr of
     DragBorder -> resizeBorderTo st ev
     DragSelection pid -> do
         mp <- mouseEventPane st ev { onPane = Just pid }
-        forM_ mp $ \(_, _, pane, mbox) -> forM_ mbox $ \box ->
+        forM_ mp $ \(sess, win, pane, mbox) -> forM_ mbox $ \box ->
             forM_ (mouseAt False ev box) $ \(px, py) -> atomically $ do
-                modifyTVar' pane.mode (fmap (CopyMode.dragSelectionTo px py))
+                onText st sess win pane px $ \x -> CopyMode.dragSelectionTo x py
                 bumpDirty st
+
+-- | Apply a copy-mode change at a pane column, as the text column it shows
+-- beside any line numbers.
+onText
+    :: ServerState -> Session -> Window -> Pane -> Int
+    -> (Int -> PaneMode -> PaneMode) -> STM ()
+onText st sess win pane px f = do
+    opts <- resolveForPane st sess win pane
+    let numbering = CopyMode.lineNumberModeOf (optionText "copy-mode-line-numbers" opts)
+    modifyTVar' pane.mode $ fmap $ \pm -> f (CopyMode.textColumn numbering pm px) pm
 
 -- | tmux's @cmd_resize_pane_mouse_resize_tiled@: the borders next to where
 -- the drag was move to where it is now.

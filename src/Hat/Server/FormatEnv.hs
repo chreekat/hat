@@ -430,9 +430,11 @@ paneModeEnv st pane = do
     case mmode of
         Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
         Just pm -> do
-            opts <- readTVarIO st.options
+            global <- readTVarIO st.options
+            opts <- maybe global id <$> paneOptionsNow st pane
+            let numbering = CopyMode.lineNumberModeOf (optionText "copy-mode-line-numbers" opts)
             pure $ [ ("pane_in_mode", "1"), ("pane_mode", "copy-mode") ]
-                <> CopyMode.copyModeFormats opts.wordSeparators pm
+                <> CopyMode.copyModeFormats global.wordSeparators numbering pm
 
 -- Resolve #(cmd) through a 15-second cache; refreshes happen in the
 -- background so the status line never blocks on a slow script.

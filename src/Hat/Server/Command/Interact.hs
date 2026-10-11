@@ -114,7 +114,8 @@ cmdCopyMode st mclient args = do
         quit = "-q" `elem` flags
         mouse = "-M" `elem` flags
     -- -M: the pane under the mouse event being acted on, if there is one.
-    mev <- if mouse then clientMouseEvent mclient else pure Nothing
+    keyMouse <- clientMouseEvent mclient
+    let mev = if mouse then keyMouse else Nothing
     res <- case mev of
         Just ev -> maybe (Left "no mouse target") (\(s, w, p, _) -> Right (s, 0 :: Int, w, p))
             <$> mouseEventPane st ev
@@ -127,11 +128,13 @@ cmdCopyMode st mclient args = do
             | not quit -> do
                 was <- isJust <$> readTVarIO pane.mode
                 unless was (enterCopyMode pane)
-                -- The flags apply whether or not the mode was already open.
+                -- The flags apply whether or not the mode was already open;
+                -- a mouse key opens it without line numbers.
                 atomically $ modifyTVar' pane.mode $ fmap $ \pm -> pm
                     { copyState = pm.copyState
                         { scrollExit = pm.copyState.scrollExit || "-e" `elem` flags
-                        , hidePosition = pm.copyState.hidePosition || "-H" `elem` flags } }
+                        , hidePosition = pm.copyState.hidePosition || "-H" `elem` flags
+                        , lineNumbers = if isJust keyMouse then LinesHidden else LinesFromOption } }
                 when ("-u" `elem` flags) $
                     void (runCopyModeCommand st pane "page-up" [])
                 forM_ ((,) <$> mclient <*> mev) $ \(client, ev) ->

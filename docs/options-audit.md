@@ -90,7 +90,14 @@ spot-read of each suspect consumer.
 | `pane-active-border-style` | `sceneChrome` (Scene.hs) via `chromeInputs` (View.hs): the active pane's own value | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) |
 | `pane-border-status` | `statusAdjust` in `windowArrange` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-tiled` |
 | `pane-border-format` | `withStatusLines` (View.hs) over `statusBase` (Scene.hs) | implemented ✅ tested | regress `screen-redraw-tiled` |
-| `mode-style` | `CopyMode.overlaySelection` (View.hs:364) | implemented ✅ tested | pure |
+| `mode-style` | through the copy-mode styles that default to `#{E:mode-style}` | implemented ✅ tested | pure |
+| `copy-mode-selection-style` | `copyView` (CopyMode.hs) via `copyLook` (View.hs): the selection, laid over each cell; formats expanded in the pane | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-match-style` / `copy-mode-current-match-style` | `copyView`: the last search's matches on screen, the one under the cursor (before it, for an emacs forward search) as current, until a command clears them (`clearsMarks`) | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-mark-style` | `copyView`: the `set-mark`/`jump-to-mark` mark's line, inverted at the mark | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-current-line-style` | `copyView`: the cursor's line; `default` leaves it alone | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-line-numbers` | `copyView` (numbers beside the text, which moves over), `copyModeFormats` (`copy_position` from the top under absolute numbering), `textColumn` for the mouse; `line-numbers-on`/`-off`/`-toggle`; hidden when a mouse key opens copy mode | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-line-number-style` / `copy-mode-current-line-number-style` | `copyView`: the numbers, the cursor's line's in the latter | implemented ✅ tested | pure (CopyModeSpec) |
+| `copy-mode-position-format` / `copy-mode-position-style` | `copyView` via `copyLook`: expanded in the pane, drawn with `formatDraw` over the first row's text unless `copy-mode -H` or `toggle-position` hides it; each pane's own value | implemented ✅ tested | pure (CopyModeSpec) + model (SessionSpec) |
 | `window-style` / `window-active-style` | `paneDefaults`/`paintDefaults` (Render.hs) via `paneStyleOption` (View.hs): each pane's own value, formats expanded in the pane, and the answer to an OSC 10/11 query when set (`queryDefaultColour`, PaneColours.hs); `dim=` refused | implemented ✅ tested | pure (RenderSpec) + regress `screen-redraw-window-style` |
 | `pane-scrollbars` | `paneScrollbars` → `scrollbarReserve` in `windowArrange` (Resize.hs), `buildScene`/`sceneChrome` (Scene.hs): `off` and `on` (hidden on the alternate screen); `modal` and `auto-hide` refused | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) + regress `screen-redraw-scrollbars` scenes |
 | `pane-scrollbars-position` | `scrollbarReserve` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (OptionEffectSpec) |
@@ -162,6 +169,10 @@ spot-read of each suspect consumer.
   `client_colours` is always 16777216 and the palettes' rich colours apply.
   Styles decoded into `Options` record fields (`mode-style`) still draw
   theme colours as the terminal default.
+
+- **`copy-mode-position-format`**: `#{top_line_time}` is always 0 (so the
+  default format shows no time), because the emulator does not stamp lines
+  with the time they scroll into the history as tmux's grid does.
 
 - **`pane-border-indicators`** `arrows` draws hat's triangles at each edge's
   midpoint, where tmux draws ACS arrows next to the pane's corner (a

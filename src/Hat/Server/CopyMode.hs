@@ -45,17 +45,34 @@ module Hat.Server.CopyMode
     , clearSelection
     , stopSelection
     , scrollUpCmd
+    , scrollLine
     , scrollCursorTo
     , recentreTopBottom
+    , setMark
+    , clearsMarks
+    , jumpToMark
+    , ForceNumbers (..)
+    , setLineNumbers
     , charSearch
     , SearchPattern
     , compilePattern
     , findMatch
+    , searchStep
     , SearchWrap (..)
     , extractSelection
     , yankSelection
     , overlaySelection
     , copyCursorPos
+    , CopyLook (..)
+    , LineNumberMode (..)
+    , lineNumberModeOf
+    , effectiveNumbers
+    , lineNumberWidth
+    , cursorUnoffset
+    , textColumn
+    , copyView
+    , matchSpans
+    , lastPattern
     , copyModeFormats
     , startDragSelection
     , dragSelectionTo
@@ -72,9 +89,10 @@ import Control.Monad (forM, forM_, void)
 import Data.Array ((!))
 import Data.Char (isSpace, toLower)
 import Data.Functor.Identity (Identity, runIdentity)
+import Data.List qualified as List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text.Encoding qualified as TE
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -687,6 +705,33 @@ findMatch g wrap dir p (row, col) = do
             [] -> Nothing
         StopAtEnd -> Nothing
 
+-- | One string search from the cursor: on a match the cursor lands on it
+-- — just past it for a forward search under emacs keys, as tmux leaves it
+-- — and the matches are highlighted; with none the cursor stays.
+searchStep
+    :: Monad m
+    => Grid m -> ModeKeys -> SearchWrap -> SearchDirection -> SearchPattern
+    -> CopyModeState -> m CopyModeState
+searchStep g keys wrap dir p st = do
+    m <- findMatch g wrap dir p from
+    case m of
+        Nothing -> pure st
+        Just (r, c) -> do
+            spans <- matchSpans p <$> rowText g r
+            let len = maybe 0 snd (List.find ((== c) . fst) spans)
+                (r', c') = case (keys, dir) of
+                    (KeysEmacs, Forward)
+                        | c + len < g.gSx -> (r, c + len)
+                        | r < gBottom g -> (r + 1, 0)
+                        | otherwise -> (r, g.gSx - 1)
+                    _ -> (r, c)
+            pure st { cursorRow = r', cursorCol = c', searchMarks = Just dir }
+  where
+    -- an emacs cursor rests past its match, so the next may start under it
+    from = case (keys, dir) of
+        (KeysEmacs, Forward) -> (st.cursorRow, st.cursorCol - 1)
+        _ -> (st.cursorRow, st.cursorCol)
+
 -- | Whether a grid row has no non-blank content.
 blankRow :: Monad m => Grid m -> Int -> m Bool
 blankRow g r = (== 0) <$> g.gLineLen r
@@ -851,6 +896,218 @@ applyModeStyle ms s = s
     pick Cell.DefaultColor old = old
     pick new              _   = new
 
+-- | @copy-mode-line-numbers@: what each line's number counts.
+data LineNumberMode
+    = NumbersOff
+    | NumbersDefault   -- ^ lines from the bottom of the history
+    | NumbersAbsolute  -- ^ lines from the top of the history, from 1
+    | NumbersRelative  -- ^ lines from the cursor's
+    | NumbersHybrid    -- ^ relative, but absolute on the cursor's line
+    deriving (Eq, Show)
+
+lineNumberModeOf :: Text -> LineNumberMode
+lineNumberModeOf = \case
+    "default" -> NumbersDefault
+    "absolute" -> NumbersAbsolute
+    "relative" -> NumbersRelative
+    "hybrid" -> NumbersHybrid
+    _ -> NumbersOff
+
+-- | tmux's @window_copy_line_number_mode@: the numbering a copy mode shows
+-- under its option's value.
+effectiveNumbers :: LineNumberMode -> LineNumbers -> LineNumberMode
+effectiveNumbers opt = \case
+    LinesHidden -> NumbersOff
+    LinesForced | opt == NumbersOff -> NumbersDefault
+    _ -> opt
+
+-- | tmux's @window_copy_line_number_width@: the columns the numbers take,
+-- a separating space included.
+lineNumberWidth :: LineNumberMode -> FrozenGrid -> Int
+lineNumberWidth NumbersOff _ = 0
+lineNumberWidth _ fg = max 3 (length (show (fg.fgHsize + fg.fgSy + 1))) + 1
+
+-- | The columns left for a line's text beside numbers @width@ wide.
+contentWidth :: Int -> Int -> Int
+contentWidth width sx
+    | width >= sx = 1
+    | otherwise = sx - width
+
+-- | tmux's @window_copy_cursor_offset@: the screen column of text column
+-- @cx@.
+cursorOffset :: Int -> Int -> Int -> Int
+cursorOffset width sx cx
+    | width == 0 = cx
+    | cx >= contentWidth width sx = sx - 1
+    | otherwise = width + cx
+
+-- | tmux's @window_copy_cursor_unoffset@: the text column at screen column
+-- @vx@.
+cursorUnoffset :: Int -> Int -> Int -> Int
+cursorUnoffset width sx vx
+    | width == 0 = vx
+    | vx < width = 0
+    | otherwise = min (vx - width) (contentWidth width sx - 1)
+
+-- | The text column shown at pane column @px@ under the line numbering.
+textColumn :: LineNumberMode -> PaneMode -> Int -> Int
+textColumn numbering pm = cursorUnoffset width pm.frozen.fgSx
+  where
+    width = lineNumberWidth (effectiveNumbers numbering pm.copyState.lineNumbers) pm.frozen
+
+-- | What drawing copy mode takes from its pane's options, resolved.
+data CopyLook = CopyLook
+    { keys :: ModeKeys
+    , numbers :: LineNumberMode  -- ^ @copy-mode-line-numbers@
+    , selectionStyle :: Cell.Style
+    , matchStyle :: Cell.Style
+    , currentMatchStyle :: Cell.Style
+    , markStyle :: Cell.Style
+    , currentLineStyle :: Maybe Cell.Style
+        -- ^ 'Nothing' for @default@, which leaves the line alone
+    , lineNumberStyle :: Cell.Style
+    , currentLineNumberStyle :: Cell.Style
+    , drawPosition :: V.Vector Cell.Cell -> V.Vector Cell.Cell
+        -- ^ @copy-mode-position-format@, drawn over the first row's text
+    , searchPattern :: Maybe SearchPattern  -- ^ the last search's
+    }
+
+-- | tmux's @window_copy_write_line@ over every row, with the selection on
+-- top as the terminal draws it: the cells copy mode shows and where its
+-- cursor sits ('Nothing' when scrolled off).
+copyView :: CopyLook -> PaneMode -> (V.Vector (V.Vector Cell.Cell), Maybe Pos)
+copyView look pm = (V.generate sy screenRow, cursor)
+  where
+    fg = pm.frozen
+    st = pm.copyState
+    sx = fg.fgSx
+    sy = fg.fgSy
+    top = fg.fgHsize - st.viewportOffY
+    cy = st.cursorRow - top
+    mode = effectiveNumbers look.numbers st.lineNumbers
+    width = lineNumberWidth mode fg
+    textSx = if width == 0 then sx else contentWidth width sx
+    cursor = (\p -> p { col = cursorOffset width sx p.col }) <$> copyCursorPos top sy st
+    screenRow py = V.imap (selected py) (V.fromList (take sx (V.toList (written py))))
+    written py =
+        let body = numberCells py <> textCells py
+            withPos
+                | py == 0, sy > 1, not st.hidePosition =
+                    V.take width body
+                        <> look.drawPosition (V.slice width (min textSx (V.length body - width)) body)
+                        <> V.drop (width + textSx) body
+                | otherwise = body
+        in if py == cy && st.cursorCol >= textSx
+            then withPos V.// [(cursorOffset width sx st.cursorCol, Cell.glyphCell '$' Cell.defaultStyle)]
+            else withPos
+    numberCells py
+        | width == 0 = V.empty
+        | otherwise =
+            let n = lineNumber py
+                label = T.justifyRight (width - 1) ' ' (T.pack (show n)) <> " "
+                sty = if py == cy then look.currentLineNumberStyle else look.lineNumberStyle
+            in V.fromList [ Cell.glyphCell c sty | c <- take width (T.unpack label) ]
+    lineNumber py = case mode of
+        NumbersDefault -> abs (st.viewportOffY - py)
+        NumbersAbsolute -> top + py + 1
+        NumbersHybrid | py == cy -> top + py + 1
+        _ -> abs (py - cy)
+    textCells py =
+        let fy = top + py
+            src = fromMaybe V.empty (fg.fgRows V.!? fy)
+            cellAt fx = case src V.!? fx of
+                Nothing -> Cell.blankCell
+                Just c
+                    | Cell.cellWidth c == 2, fx + 2 > textSx -> Cell.blankCell
+                    | otherwise -> c { Cell.style = styleAt fy fx c.style }
+        in V.generate textSx cellAt
+    selected py c cell
+        | c >= width, cellSelected look.keys st textSx (top + py) (c - width) =
+            cell { Cell.style = applyModeStyle look.selectionStyle cell.style }
+        | otherwise = cell
+    -- tmux's window_copy_update_style
+    styleAt fy fx = withMatch fy fx . withMark fy fx . withLine fy
+    withLine fy s = case look.currentLineStyle of
+        Just ls | fy == st.cursorRow -> s
+            { Cell.fg = pickColour ls.fg s.fg, Cell.bg = pickColour ls.bg s.bg }
+            `orAttrs` ls
+        _ -> s
+    inverted fy fx = st.markShown == MarkShown && (fy, fx) == st.mark
+    withMark fy fx s
+        | st.markShown == MarkShown, fy == fst st.mark = paint (inverted fy fx) look.markStyle s
+        | otherwise = s
+    withMatch fy fx s = case matchAt (fy, fx) of
+        Nothing -> s
+        Just m -> paint (inverted fy fx)
+            (if Just m == currentMatch then look.currentMatchStyle else look.matchStyle) s
+    matches = case (st.searchMarks, look.searchPattern) of
+        (Just _, Just p) -> visibleMatches p (frozenGrid fg) top sy
+        _ -> Map.empty
+    matchAt (r, c) = Map.lookup r matches >>= \spans ->
+        listToMaybe [ m | (a, b, m) <- spans, c >= a, c < b ]
+    currentMatch = case st.searchMarks of
+        Just Forward | look.keys == KeysEmacs, (st.cursorRow, st.cursorCol) /= (top, 0) ->
+            matchAt (if st.cursorCol == 0 then (st.cursorRow - 1, sx - 1)
+                     else (st.cursorRow, st.cursorCol - 1))
+        _ -> matchAt (st.cursorRow, st.cursorCol)
+
+-- | A style's colours and attributes in place of a cell's, the colours
+-- swapped when @inverse@ (tmux's mark and match highlighting).
+paint :: Bool -> Cell.Style -> Cell.Style -> Cell.Style
+paint inverse hl s = (withAttrsOf hl s)
+    { Cell.fg = if inverse then hl.bg else hl.fg
+    , Cell.bg = if inverse then hl.fg else hl.bg }
+
+withAttrsOf :: Cell.Style -> Cell.Style -> Cell.Style
+withAttrsOf a s = s
+    { Cell.bold = a.bold, Cell.underline = a.underline, Cell.italic = a.italic
+    , Cell.reverse = a.reverse, Cell.strike = a.strike, Cell.blink = a.blink
+    , Cell.faint = a.faint }
+
+orAttrs :: Cell.Style -> Cell.Style -> Cell.Style
+orAttrs s a = s
+    { Cell.bold = s.bold || a.bold, Cell.underline = s.underline || a.underline
+    , Cell.italic = s.italic || a.italic, Cell.reverse = s.reverse || a.reverse
+    , Cell.strike = s.strike || a.strike, Cell.blink = s.blink || a.blink
+    , Cell.faint = s.faint || a.faint }
+
+pickColour :: Cell.Color -> Cell.Color -> Cell.Color
+pickColour Cell.DefaultColor old = old
+pickColour new _ = new
+
+-- | The matches on the @sy@ rows from @top@, as tmux's
+-- @window_copy_search_marks@ marks them: per row, each match's start, end
+-- (exclusive) and identity.
+visibleMatches
+    :: SearchPattern -> Grid Identity -> Int -> Int -> Map Int [(Int, Int, Int)]
+visibleMatches p g top sy = Map.fromList (zip rows (numbered 0 spansByRow))
+  where
+    rows = [top .. top + sy - 1]
+    spansByRow = [ matchSpans p (runIdentity (rowText g r)) | r <- rows ]
+    numbered _ [] = []
+    numbered n (spans : more) =
+        [ (a, a + len, n + i) | (i, (a, len)) <- zip [0 ..] spans ]
+            : numbered (n + length spans) more
+
+-- | Each match of the pattern in a row's text, left to right and not
+-- overlapping: its start column and length.
+matchSpans :: SearchPattern -> Text -> [(Int, Int)]
+matchSpans (PatRegex re) = filter ((> 0) . snd) . map (! 0) . matchAll re
+matchSpans (PatText qcase query) = go 0 . canon
+  where
+    canon = case qcase of
+        MatchCase  -> id
+        IgnoreCase -> T.map toLower
+    len = T.length query
+    go off txt
+        | T.null query = []
+        | otherwise = case T.breakOn query txt of
+            (pre, rest)
+                | T.null rest -> []
+                | otherwise ->
+                    let i = off + T.length pre
+                    in (i, len) : go (i + len) (T.drop (T.length pre + len) txt)
+
 -- | Where the copy cursor sits within a viewport of @sy@ rows whose top
 -- line is absolute row @topRow@; 'Nothing' when it is scrolled off.
 copyCursorPos :: Int -> Int -> CopyModeState -> Maybe Pos
@@ -862,12 +1119,17 @@ copyCursorPos topRow sy st =
 
 -- | tmux's @window_copy_formats@: the copy-mode variables of a pane in the
 -- mode, words split by the given separators.
-copyModeFormats :: Text -> PaneMode -> [(Text, Text)]
-copyModeFormats seps pm =
+copyModeFormats :: Text -> LineNumberMode -> PaneMode -> [(Text, Text)]
+copyModeFormats seps numbering pm =
     [ ("scroll_position", tshow s.viewportOffY)
-    , ("copy_position", tshow s.viewportOffY)
-    , ("copy_position_limit", tshow hsize)
+    -- lines carry no time they entered the history: tmux's value for those
+    , ("top_line_time", "0")
+    , ("copy_position", tshow position)
+    , ("copy_position_limit", tshow limit)
+    , ("copy_line_numbers", flag (mode /= NumbersOff))
     , ("rectangle_toggle", flag (fmap snd s.selection == Just SelRect))
+    , ("search_present", flag (isJust s.searchMarks))
+    , ("search_timed_out", "0")
     , ("copy_cursor_x", tshow s.cursorCol)
     , ("copy_cursor_y", tshow (s.cursorRow - top))
     , ("copy_cursor_line", runIdentity (gridLine g s.cursorRow))
@@ -876,7 +1138,7 @@ copyModeFormats seps pm =
         Just SelLine -> "line"
         Just SelWord -> "word"
         _ -> "char")
-    ] <> case s.selection of
+    ] <> searchCount <> case s.selection of
         Nothing -> [("selection_active", "0"), ("selection_present", "0")]
         Just (anchor, _) ->
             let far = selectionEnd s
@@ -896,6 +1158,23 @@ copyModeFormats seps pm =
     hsize = pm.frozen.fgHsize
     top = hsize - s.viewportOffY
     flag b = if b then "1" else "0"
+    mode = effectiveNumbers numbering s.lineNumbers
+    (position, limit)
+        | mode `elem` [NumbersAbsolute, NumbersRelative, NumbersHybrid] =
+            (top + 1, hsize + pm.frozen.fgSy)
+        | otherwise = (s.viewportOffY, hsize)
+    searchCount = case (s.searchMarks, lastPattern s) of
+        (Just _, Just p) ->
+            [ ("search_count", tshow (sum
+                [ length (matchSpans p (runIdentity (rowText g r))) | r <- [0 .. gBottom g] ]))
+            , ("search_count_partial", "0") ]
+        _ -> []
+
+-- | The last string search's compiled pattern.
+lastPattern :: CopyModeState -> Maybe SearchPattern
+lastPattern s = case s.lastQuery of
+    Just (query, _, kind) | Right p <- compilePattern kind query -> Just p
+    _ -> Nothing
 
 -- | Adjust @viewportOffY@ (lines scrolled up from the live screen) so the
 -- copy cursor stays visible in an @sy@-row viewport over a grid with
@@ -972,6 +1251,12 @@ handlers = Map.fromList
     , ("scroll-middle",     gridH (\g -> pure . scrollCursorTo ((g.gSy - 1) `div` 2) g))
     , ("scroll-bottom",     gridH (\g -> pure . scrollCursorTo (g.gSy - 1) g))
     , ("recentre-top-bottom", gridH (\g -> pure . recentreTopBottom g))
+    , ("set-mark",          pureH setMark)
+    , ("jump-to-mark",      gridH (\g -> pure . jumpToMark g))
+    , ("toggle-position",   pureH (\s -> s { hidePosition = not s.hidePosition }))
+    , ("line-numbers-on",   numbersH (const True) ForceNumbers)
+    , ("line-numbers-off",  numbersH (const False) KeepNumbers)
+    , ("line-numbers-toggle", numbersH (== NumbersOff) ForceNumbers)
     , ("next-word",         motionH (\_ seps -> mNextWord seps))
     , ("next-word-end",     motionH (\_ seps -> mNextWordEnd seps))
     , ("previous-word",     motionH (\_ seps -> mPreviousWord seps))
@@ -1022,7 +1307,10 @@ handlers = Map.fromList
         \sst p s _ -> yankSelection sst p s >> pure (Right Nothing))
     , ("copy-pipe",            pipeH False)
     , ("copy-pipe-and-cancel", pipeH True)
-    , ("scroll-up",            gridH scrollUpCmd)
+    , ("scroll-up",            \sst pane st _ -> do
+        keys <- (.modeKeys) <$> paneOpts sst pane
+        g <- paneGrid pane
+        Right . Just <$> scrollUpCmd keys g st)
     , ("scroll-down",          scrollDownH)
     , ("select-word",          selectWordH)
     ]
@@ -1030,7 +1318,7 @@ handlers = Map.fromList
     -- tmux's scroll-down: at the bottom, copy-mode -e exits (unless
     -- selecting); with a selection only the view moves; otherwise the
     -- cursor goes down a line, exiting at the bottom under -e.
-    scrollDownH _ pane st _ = do
+    scrollDownH sst pane st _ = do
         g <- paneGrid pane
         let exitHere s = s.scrollExit && s.viewportOffY == 0 && isNothing s.selection
         if st.viewportOffY == 0
@@ -1038,9 +1326,9 @@ handlers = Map.fromList
             else case st.selection of
                 Just _ -> Right . Just <$> scrollDown 1 g (pinSelection st)
                 Nothing -> do
-                    st' <- cursorVertical 1 g st
-                    let st'' = scrollToCursor g.gHsize g.gSy st'
-                    pure (Right (if exitHere st'' then Nothing else Just st''))
+                    keys <- (.modeKeys) <$> paneOpts sst pane
+                    st' <- scrollLine keys 1 g st
+                    pure (Right (if exitHere st' then Nothing else Just st'))
     -- tmux's select-word: the word under the cursor, selected.
     selectWordH sst pane st _ = do
         opts <- paneOpts sst pane
@@ -1053,6 +1341,11 @@ handlers = Map.fromList
             { selection = Just ((start.cursorRow, start.cursorCol), SelChar)
             , pinnedEnd = Nothing, anchorAt = AnchorAtStart }))
     pureH f _ _ s _ = pure (Right (Just (f s)))
+    -- @wanted@ decides from the numbering shown now whether to show it
+    numbersH wanted force sst pane s _ = do
+        opt <- lineNumberModeOf . optionText "copy-mode-line-numbers" <$> paneOpts sst pane
+        let enabled = wanted (effectiveNumbers opt s.lineNumbers)
+        pure (Right (Just (setLineNumbers force opt enabled s)))
     motionH mk sst pane st _ = do
         opts <- paneOpts sst pane
         g <- paneGrid pane
@@ -1096,9 +1389,7 @@ handlers = Map.fromList
             g <- paneGrid pane
             opts <- paneOpts sst pane
             let wrap = if optionFlag "wrap-search" opts then WrapAround else StopAtEnd
-            m <- findMatch g wrap dir p (st.cursorRow, st.cursorCol)
-            pure . Right . Just $ maybe st
-                (\(r, c) -> st { cursorRow = r, cursorCol = c }) m
+            Right . Just <$> searchStep g opts.modeKeys wrap dir p st
     -- copy-pipe [-flags] <shell command>: yank the selection into a
     -- buffer AND feed it to @sh -c <command>@ on stdin.
     pipeH cancelAfter sst pane s args = do
@@ -1164,11 +1455,27 @@ withDevNullSink = bracket (openFile "/dev/null" WriteMode) hClose
 
 -- | tmux's scroll-up: nothing at the top; with a selection only the view
 -- moves, the selection staying put; otherwise the cursor goes up a line.
-scrollUpCmd :: Monad m => Grid m -> CopyModeState -> m CopyModeState
-scrollUpCmd g st
+scrollUpCmd :: Monad m => ModeKeys -> Grid m -> CopyModeState -> m CopyModeState
+scrollUpCmd keys g st
     | st.viewportOffY >= g.gHsize = pure st
     | Just _ <- st.selection = scrollUp 1 g (pinSelection st)
-    | otherwise = cursorVertical (-1) g st
+    | otherwise = scrollLine keys (-1) g st
+
+-- | tmux's @window_copy_cursor_down@\/@_up@ scrolling only: the view moves
+-- a line down the history (@d = 1@) or up it (@-1@). The cursor keeps its
+-- screen row, but under vi keys it keeps its line while that stays on
+-- screen.
+scrollLine :: Monad m => ModeKeys -> Int -> Grid m -> CopyModeState -> m CopyModeState
+scrollLine keys d g st = do
+    let cy = st.cursorRow - viewportTop g st
+        cy' = case keys of
+            KeysVi | d > 0, cy > 0 -> cy - 1
+                   | d < 0, cy < g.gSy - 1 -> cy + 1
+            _ -> cy
+        voY = max 0 (min g.gHsize (st.viewportOffY - d))
+        row' = g.gHsize - voY + cy'
+    col' <- vertCol g row' st
+    pure st { viewportOffY = voY, cursorRow = row', cursorCol = col' }
 
 -- | tmux's @window_copy_cmd_scroll_to@: scroll so the cursor's line sits on
 -- screen row @to@, keeping the cursor on that line; nothing when the history
@@ -1266,6 +1573,58 @@ otherEnd s = case (s.selection, s.pinnedEnd) of
         , anchorAt = case s.anchorAt of
             AnchorAtStart -> AnchorAtEnd
             AnchorAtEnd -> AnchorAtStart }
+
+-- | Whether running the @-X@ command @name@ ends the search highlighting,
+-- per tmux's command table: never for a search or the commands that leave
+-- the view alone, only under emacs keys for the motions.
+clearsMarks :: ModeKeys -> Text -> Bool
+clearsMarks keys name
+    | "search-" `T.isPrefixOf` name = False
+    | name `elem` neverClear = False
+    | name `elem` emacsOnlyClear = keys == KeysEmacs
+    | otherwise = True
+  where
+    neverClear =
+        [ "copy-pipe-no-clear", "copy-selection-no-clear", "line-numbers-on"
+        , "line-numbers-off", "line-numbers-toggle", "pipe-no-clear"
+        , "refresh-on", "refresh-off", "refresh-toggle", "toggle-position" ]
+    emacsOnlyClear =
+        [ "bottom-line", "cursor-down", "cursor-left", "cursor-right", "cursor-up"
+        , "cursor-centre-vertical", "cursor-centre-horizontal", "end-of-line"
+        , "goto-line", "halfpage-down", "halfpage-up", "history-bottom"
+        , "history-top", "jump-again", "jump-backward", "jump-forward"
+        , "jump-reverse", "jump-to-backward", "jump-to-forward", "middle-line"
+        , "next-paragraph", "next-space", "next-space-end", "next-word"
+        , "next-word-end", "other-end", "page-down", "page-up"
+        , "previous-paragraph", "previous-space", "previous-word"
+        , "scroll-down", "scroll-to-mouse", "scroll-up", "start-of-line"
+        , "top-line" ]
+
+-- | @set-mark@: the mark to the cursor, shown.
+setMark :: CopyModeState -> CopyModeState
+setMark s = s { mark = (s.cursorRow, s.cursorCol), markShown = MarkShown }
+
+-- | @jump-to-mark@: the cursor and the mark trade places, the view going
+-- to the history's top screen or the bottom as tmux puts it.
+jumpToMark :: Grid m -> CopyModeState -> CopyModeState
+jumpToMark g s = s
+    { cursorRow = mr, cursorCol = mc
+    , viewportOffY = if mr < g.gHsize then g.gHsize - mr else 0
+    , mark = (s.cursorRow, s.cursorCol), markShown = MarkShown }
+  where
+    (mr, mc) = s.mark
+
+-- | Whether turning line numbers on shows them even when the option is off.
+data ForceNumbers = ForceNumbers | KeepNumbers
+
+-- | tmux's @window_copy_set_line_numbers1@.
+setLineNumbers :: ForceNumbers -> LineNumberMode -> Bool -> CopyModeState -> CopyModeState
+setLineNumbers force opt enabled s = s { lineNumbers = state }
+  where
+    state
+        | not enabled = LinesHidden
+        | ForceNumbers <- force, opt == NumbersOff = LinesForced
+        | otherwise = LinesFromOption
 
 -- | The selection's far end: where it was stopped, else the cursor.
 selectionEnd :: CopyModeState -> (Int, Int)

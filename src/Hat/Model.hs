@@ -30,6 +30,8 @@ module Hat.Model
     , copyModeAt
     , Recentre (..)
     , SelAnchor (..)
+    , LineNumbers (..)
+    , MarkShown (..)
     , FrozenGrid (..)
     , PaneMode (..)
     , SearchDirection (..)
@@ -367,6 +369,12 @@ data CopyModeState = CopyModeState
     , anchorAt      :: !SelAnchor
     , recentre      :: !(Maybe (Int, Recentre))
         -- ^ the row @recentre-top-bottom@ last moved and where it goes next
+    , lineNumbers   :: !LineNumbers
+    , mark          :: !(Int, Int)
+        -- ^ the @set-mark@ position, absolute; the entry cursor until set
+    , markShown     :: !MarkShown
+    , searchMarks   :: !(Maybe SearchDirection)
+        -- ^ while the last search's matches are highlighted, the way it ran
     }
     deriving (Eq, Show)
 
@@ -388,7 +396,21 @@ copyModeAt table row col = CopyModeState
     , pinnedEnd = Nothing
     , anchorAt = AnchorAtStart
     , recentre = Nothing
+    , lineNumbers = LinesFromOption
+    , mark = (row, col)
+    , markShown = MarkHidden
+    , searchMarks = Nothing
     }
+
+-- | Whether copy mode numbers its lines (tmux's @line_numbers@): not at
+-- all, as @copy-mode-line-numbers@ says, or as it says but at least
+-- @default@.
+data LineNumbers = LinesHidden | LinesFromOption | LinesForced
+    deriving (Eq, Show)
+
+-- | Whether copy mode draws its mark in @copy-mode-mark-style@.
+data MarkShown = MarkHidden | MarkShown
+    deriving (Eq, Show)
 
 -- | Which of tmux's two selection ends (@selx@ where it began, @endselx@)
 -- the anchor is; @other-end@ swaps them.
