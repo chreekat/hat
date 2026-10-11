@@ -258,8 +258,12 @@ sessionFormatEnv st sess = do
         Just pane -> do
             dir <- paneCurrentPath pane
             title <- Emu.title pane.emulator
+            cmd <- paneCommandName pane
             modeEnv <- paneModeEnv pane
             pure $ [ ("pane_current_path", T.pack dir)
+                   , ("pane_current_command", cmd)
+                   , ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
+                   , ("pane_active", "1")
                    , ("pane_title", title)
                    , ("pane_id", "%" <> tshow (rawPane pane.id))
                    ] <> modeEnv
