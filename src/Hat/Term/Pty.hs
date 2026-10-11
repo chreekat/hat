@@ -13,7 +13,7 @@ module Hat.Term.Pty
     , readAvail
     , ReadBuf
     , newReadBuf
-    , readPtyBuf
+    , awaitReadable
     , readAvailBuf
     , writePty
     , resize
@@ -33,7 +33,7 @@ module Hat.Term.Pty
     , ProcessStatus (..)
     ) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadWaitRead)
 import Control.Concurrent.MVar
 import Control.Exception (IOException, catch, try)
 import Control.Monad (unless, when)
@@ -206,7 +206,7 @@ readAvail pty = do
         Left (_ :: IOException) -> B.empty
         Right bs -> bs
 
--- | A reader's staging buffer for 'readPtyBuf': each chunk allocates only
+-- | A reader's staging buffer for 'readAvailBuf': each chunk allocates only
 -- its own bytes, not a fresh maximum-size block.
 newtype ReadBuf = ReadBuf (ForeignPtr Word8)
 
@@ -216,9 +216,12 @@ readBufSize = 65536
 newReadBuf :: IO ReadBuf
 newReadBuf = ReadBuf <$> mallocForeignPtrBytes readBufSize
 
--- | 'readPty' through a reusable staging buffer.
-readPtyBuf :: PtyHandle -> ReadBuf -> IO ByteString
-readPtyBuf pty = bufRead (hGetBufSome pty.handle)
+-- | Block until the master has bytes to read (or has hung up). Waiting apart
+-- from reading lets a reader take async exceptions only here, where none
+-- of the pty's bytes are in flight; 'readAvailBuf' then reads.
+awaitReadable :: PtyHandle -> IO ()
+awaitReadable pty = whenOpen pty () $
+    threadWaitRead pty.master `catch` \(_ :: IOException) -> pure ()
 
 -- | 'readAvail' through a reusable staging buffer.
 readAvailBuf :: PtyHandle -> ReadBuf -> IO ByteString

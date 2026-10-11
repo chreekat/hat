@@ -69,7 +69,8 @@ import Control.Concurrent
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Exception (Exception, IOException, catch, finally)
+import Control.Exception
+    (Exception, IOException, catch, finally, uninterruptibleMask_)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -365,11 +366,13 @@ runPaneReader st pane = do
     -- reader is scheduled still finds it counted and 'waitIdle' waits for
     -- its reap. Decremented once the reader (and its 'reapPane') is done.
     atomically $ modifyTVar' st.livePanes (+ 1)
-    -- Masked for the thread's whole life bar the read itself: once the tid
-    -- is published, a 'hangupPane' kill must always reach the cleanup, and
-    -- any async exception (a kill, 'ChildExited', 'PauseReading') can land
-    -- only in the blocked read — a chunk already read is always fully fed
-    -- before the exception takes the loop.
+    -- Masked for the thread's whole life bar the wait for input: once the
+    -- tid is published, a 'hangupPane' kill must always reach the cleanup,
+    -- and any async exception (a kill, 'ChildExited', 'PauseReading') lands
+    -- only in that wait or in a blocked write out. A chunk's read and its
+    -- feed run uninterruptibly, so a read chunk always reaches the emulator:
+    -- the read never blocks (it follows the wait), and the feed waits only
+    -- briefly on the emulator's lock.
     void $ forkIOWithUnmask $ \unmask -> do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
@@ -385,13 +388,11 @@ runPaneReader st pane = do
         -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
         (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
             \_ -> parkable
-                (readLoop (unmask (Hat.Term.Pty.readPtyBuf pane.pty rbuf))
-                    pendingRef)
+                (readLoop (unmask (Hat.Term.Pty.awaitReadable pane.pty))
+                    rbuf pendingRef)
                 `catch` \ChildExited -> do
                     writeIORef pendingRef Nothing
-                    parkable (readLoop
-                        (unmask (Hat.Term.Pty.readAvailBuf pane.pty rbuf))
-                        pendingRef))
+                    parkable (readLoop (pure ()) rbuf pendingRef))
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
@@ -402,17 +403,21 @@ runPaneReader st pane = do
         parkable body
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
-    -- it), then dropped. Enter is a bare CR, as a real keyboard sends. @rd@ is
-    -- the read step: blocking during the pane's life, a non-blocking drain
-    -- once the shell has exited (an empty result ends the loop either way).
-    readLoop rd pending = do
-        bs <- rd
+    -- it), then dropped. Enter is a bare CR, as a real keyboard sends.
+    -- @awaitInput@ waits during the pane's life and not at all while
+    -- draining once the shell has exited; an empty read ends the loop
+    -- either way.
+    readLoop awaitInput rbuf pending = do
+        awaitInput
+        (bs, events) <- uninterruptibleMask_ $ do
+            bs <- Hat.Term.Pty.readAvailBuf pane.pty rbuf
+            if B8.null bs then pure (bs, [])
+                else (bs,) <$> Emu.feed pane.emulator bs
         unless (B8.null bs) $ do
             readIORef pending >>= mapM_ (\line -> do
                 Hat.Term.Pty.writePty pane.pty (TE.encodeUtf8 (line <> "\r"))
                 writeIORef pending Nothing)
             forwardToPipe pane bs
-            events <- Emu.feed pane.emulator bs
             mhome <- readTVarIO pane.home  -- See Note [Pane home]
             forM_ events $ \case
                 Emu.Output out -> Hat.Term.Pty.writePty pane.pty out
@@ -474,7 +479,7 @@ runPaneReader st pane = do
                         { pane = rawPane pane.id
                         , payload = T.pack (show raw)
                         }
-            readLoop rd pending
+            readLoop awaitInput rbuf pending
 
 -- | Quiesce the pane readers for a reload capture: close the read gate,
 -- then interrupt each reader out of its read. 'throwTo' returns only once
