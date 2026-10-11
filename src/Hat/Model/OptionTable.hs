@@ -312,8 +312,8 @@ optionTable =
     , notYet $ scalar "editor" ServerScope KString "/usr/bin/vi"
     -- tmux defaults to 10; hat's native escape handling needs no wait.
     , live $ scalar "escape-time" ServerScope (KNumber 0 intMax) "0"
-    , notYet $ scalar "exit-empty" ServerScope KFlag "on"
-    , notYet $ scalar "exit-unattached" ServerScope KFlag "off"
+    , live $ scalar "exit-empty" ServerScope KFlag "on"
+    , live $ scalar "exit-unattached" ServerScope KFlag "off"
     , notYet $ scalar "extended-keys" ServerScope
         (KChoice ["off", "on", "always"]) "off"
     , notYet $ scalar "extended-keys-format" ServerScope

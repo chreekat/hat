@@ -32,7 +32,8 @@ import Hat.Model.Options
     (Options (..), OptionValue (..)
     , defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
 import Hat.Server
-    ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..), serverIdle
+    ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
+    , IdleVerdict (..), serverIdle
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
@@ -1186,27 +1187,38 @@ spec = do
     describe "serverIdle" $ do
         let idle = IdleInputs
                 { idleActiveConns = 0, idleServed = True, idlePhase = Ready
-                , idleSessions = 0, idleClients = 0, idlePanes = 0 }
+                , idleSessions = 0, idleClients = 0, idlePanes = 0
+                , idleExitEmpty = True, idleExitUnattached = False
+                , idleShutdown = Serving }
         it "is idle once served, drained, and every pane reaped" $
-            serverIdle idle `shouldBe` True
+            serverIdle idle `shouldBe` ExitNow
         it "stays busy while a pane is still being reaped" $
             -- bug 98: a drained server must outlive its children's reap, so a
             -- SIGHUP-ignoring child is SIGKILLed rather than orphaned on exit.
-            serverIdle (idle { idlePanes = 1 }) `shouldBe` False
+            serverIdle (idle { idlePanes = 1 }) `shouldBe` StayUp
         it "stays busy until it has served a client" $
-            serverIdle (idle { idleServed = False }) `shouldBe` False
+            serverIdle (idle { idleServed = False }) `shouldBe` StayUp
         it "stays busy while a connection is still being handled" $
             -- the in-flight connection may yet create the first session.
-            serverIdle (idle { idleActiveConns = 1 }) `shouldBe` False
+            serverIdle (idle { idleActiveConns = 1 }) `shouldBe` StayUp
         it "exits after a connection came and went without a session (28)" $
             -- served, no handler left, nothing created: don't strand it.
-            serverIdle idle `shouldBe` True
+            serverIdle idle `shouldBe` ExitNow
         it "stays busy until startup lands at Ready" $ do
-            serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` False
-            serverIdle (idle { idlePhase = Restoring }) `shouldBe` False
+            serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` StayUp
+            serverIdle (idle { idlePhase = Restoring }) `shouldBe` StayUp
         it "stays busy while any session or client remains" $ do
-            serverIdle (idle { idleSessions = 1 }) `shouldBe` False
-            serverIdle (idle { idleClients = 1 }) `shouldBe` False
+            serverIdle (idle { idleSessions = 1 }) `shouldBe` StayUp
+            serverIdle (idle { idleClients = 1 }) `shouldBe` StayUp
+        it "stays up empty under exit-empty off, until killed" $ do
+            let keep = idle { idleExitEmpty = False }
+            serverIdle keep `shouldBe` StayUp
+            serverIdle (keep { idleShutdown = ShuttingDown }) `shouldBe` ExitNow
+        it "tears its sessions down once unattached under exit-unattached" $ do
+            let lone = idle { idleExitUnattached = True, idleSessions = 1 }
+            serverIdle lone `shouldBe` TearDown
+            serverIdle (lone { idleActiveConns = 1 }) `shouldBe` StayUp
+            serverIdle (lone { idlePhase = Restoring }) `shouldBe` StayUp
 
     describe "awaitReconciled" $ do
         let freshState = do

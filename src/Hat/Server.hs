@@ -62,6 +62,7 @@ module Hat.Server
     , SessionFate (..)
     , serverIdle  -- ^ exported for the idle-predicate test
     , IdleInputs (..)
+    , IdleVerdict (..)
     , markBell  -- ^ exported for the current-window bell test
     , markActivity  -- ^ exported for the outer-focus activity test
     , windowActivity  -- ^ exported for the output repaint gating test
@@ -324,7 +325,17 @@ data IdleInputs = IdleInputs
     , idleSessions    :: Int
     , idleClients     :: Int
     , idlePanes       :: Int
+    , idleExitEmpty   :: Bool  -- ^ @exit-empty@
+    , idleExitUnattached :: Bool  -- ^ @exit-unattached@
+    , idleShutdown    :: Shutdown
     }
+
+-- | What 'serverIdle' tells the server to do.
+data IdleVerdict
+    = StayUp
+    | TearDown  -- ^ end the sessions it still holds ('shutDownServer')
+    | ExitNow
+    deriving (Eq, Show)
 
 -- | Whether the server may exit: it has served at least one connection,
 -- startup has fully landed at 'Ready', and no connection handler, session,
@@ -336,26 +347,45 @@ data IdleInputs = IdleInputs
 -- keeps a drained server alive until every child it spawned has been reaped —
 -- since 'cmdKillPane' detaches a pane from the model before its child is
 -- reaped, an empty session map no longer implies the children are gone, and
--- exiting first would orphan a SIGHUP-ignoring child mid-'reapPane'. See
+-- exiting first would orphan a SIGHUP-ignoring child mid-'reapPane'.
+--
+-- tmux's @server_loop@ options bend this: under @exit-unattached@ a server
+-- left with sessions but no connection tears them down first, and under
+-- @exit-empty@ off an emptied server stays up until @kill-server@. See
 -- 'waitIdle'.
-serverIdle :: IdleInputs -> Bool
-serverIdle i =
-    i.idleServed && i.idlePhase == Ready && i.idleActiveConns == 0
-        && i.idleSessions == 0 && i.idleClients == 0 && i.idlePanes == 0
+serverIdle :: IdleInputs -> IdleVerdict
+serverIdle i
+    | not (i.idleServed && i.idlePhase == Ready && i.idleActiveConns == 0) =
+        StayUp
+    | i.idleSessions > 0 =
+        if i.idleExitUnattached then TearDown else StayUp
+    | i.idleClients > 0 || i.idlePanes > 0 = StayUp
+    | i.idleExitEmpty || i.idleShutdown == ShuttingDown = ExitNow
+    | otherwise = StayUp
 
 -- Exit once every session is gone, every attached client has drained and
 -- disconnected (so nobody's final Exited message is cut off), and every
 -- pane's child has been reaped (so a drain never orphans one). See 'serverIdle'.
 waitIdle :: ServerState -> IO ()
-waitIdle st = atomically $ do
-    inputs <- IdleInputs
-        <$> readTVar st.activeConns
-        <*> readTVar st.served
-        <*> readTVar st.startupPhase
-        <*> (Map.size <$> readTVar st.sessions)
-        <*> (Map.size <$> readTVar st.clients)
-        <*> readTVar st.livePanes
-    check (serverIdle inputs)
+waitIdle st = do
+    verdict <- atomically $ do
+        opts <- readTVar st.options
+        inputs <- IdleInputs
+            <$> readTVar st.activeConns
+            <*> readTVar st.served
+            <*> readTVar st.startupPhase
+            <*> (Map.size <$> readTVar st.sessions)
+            <*> (Map.size <$> readTVar st.clients)
+            <*> readTVar st.livePanes
+            <*> pure (optionFlag "exit-empty" opts)
+            <*> pure (optionFlag "exit-unattached" opts)
+            <*> readTVar st.shutdown
+        case serverIdle inputs of
+            StayUp -> retry
+            v -> pure v
+    case verdict of
+        TearDown -> shutDownServer st >> waitIdle st
+        _ -> pure ()
 
 
 

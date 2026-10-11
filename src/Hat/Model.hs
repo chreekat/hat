@@ -20,6 +20,7 @@ module Hat.Model
     , StatusCache (..)
     , EnvImport (..)
     , StartupPhase (..)
+    , Shutdown (..)
     , AcceptGate (..)
     , ReadGate (..)
     , CopyModeState (..)
@@ -142,6 +143,7 @@ data ServerState = ServerState
         --   survive shutdown. Set by @kill-server@; off across a natural
         --   drain. See 'runServer' (keep vs drop at drain) and
         --   'persistDecision' (the pin against mirror writes).
+    , shutdown :: TVar Shutdown  -- ^ see 'Hat.Server.serverIdle'
     , colorScheme :: TVar (Maybe ColorScheme)
         -- ^ the desktop's light/dark preference, when a watcher could
         --   determine it ('Nothing' outside a desktop session). Drives
@@ -500,6 +502,11 @@ data EnvImport = ImportEnv | SkipEnvImport
 data StartupPhase = LoadingConfig | Restoring | Ready
     deriving (Eq, Show)
 
+-- | Whether the server was asked to end (@kill-server@), whatever its
+-- @exit-empty@ says.
+data Shutdown = Serving | ShuttingDown
+    deriving (Eq, Show)
+
 -- | Whether the accept loop takes new connections. A reload closes the gate
 -- ('AcceptClosing'), the loop confirms ('AcceptParked'), and arrivals wait in
 -- the listen backlog; 'AcceptOpen' resumes. See 'Hat.Server.Conn.acceptLoop'.
@@ -602,6 +609,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO ReadersFlowing
     <*> newTVarIO 0      -- readsInFlight
     <*> newTVarIO False  -- preserveStore
+    <*> newTVarIO Serving
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
     <*> newTVarIO emptyDelta  -- serverOptions
