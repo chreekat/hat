@@ -97,6 +97,8 @@ data Grid m = Grid
     , gChar     :: Int -> Int -> m Char
         -- ^ character at (row, col); @' '@ for blank / out of bounds
     , gLineLen  :: Int -> m Int      -- ^ trimmed content length of a row
+    , gPadding  :: Int -> Int -> m Bool
+        -- ^ is (row, col) the padding column behind a wide character?
     , gWrapped  :: Int -> m Bool     -- ^ is the row a wrapped continuation?
     }
 
@@ -121,6 +123,7 @@ listGrid sx rows = Grid
         (row : _) -> T.length (T.dropWhileEnd (== ' ') (T.take sx row))
         [] -> 0
     , gWrapped = \_ -> pure False
+    , gPadding = \_ _ -> pure False
     }
 
 -- | Capture a pane's absolute grid — every scrollback line, then the
@@ -143,8 +146,9 @@ freezeGrid e = do
         }
 
 -- | A read-only 'Grid' over a frozen snapshot. Blank / out-of-bounds
--- cells read as spaces; line length trims trailing blanks; rows never
--- wrap in this model.
+-- cells read as spaces; line length trims trailing blanks (a wide
+-- character's padding column is content, as in tmux's
+-- @grid_line_length@); rows never wrap in this model.
 frozenGrid :: Monad m => FrozenGrid -> Grid m
 frozenGrid fg = Grid
     { gHsize = fg.fgHsize
@@ -155,13 +159,16 @@ frozenGrid fg = Grid
         let cs = rowAt row
             lastFilled = V.ifoldr keep (-1) cs
             keep i c acc
+                | isPadding c = max acc i
                 | isSpace (Cell.baseChar c) = acc
                 | otherwise = max acc i
         in pure (min fg.fgSx (lastFilled + 1))
     , gWrapped = \_ -> pure False
+    , gPadding = \row col -> pure (maybe False isPadding (rowAt row V.!? col))
     }
   where
     rowAt row = fromMaybe V.empty (fg.fgRows V.!? row)
+    isPadding c = c.content == Cell.Continuation
 
 -- ---------------------------------------------------------------------
 -- Character classes (tmux WHITESPACE is "\t ")
@@ -253,34 +260,63 @@ data ColumnBound = AllColumns | ContentColumns
 data PastEnd = OneMore | Inclusive
     deriving (Eq, Show)
 
--- | @grid_reader_cursor_right@ with (wrap, all, onemore) flags.
+-- | @grid_reader_cursor_right@ with (wrap, all, onemore) flags. A step
+-- never comes to rest on a wide character's padding column.
 cursorRight :: Monad m => Grid m -> Wrap -> ColumnBound -> PastEnd -> Rdr -> m Rdr
 cursorRight g wrap columnBound pastEnd s = do
     px <- case columnBound of
         AllColumns -> pure g.gSx
         ContentColumns -> case pastEnd of
             OneMore -> g.gLineLen s.rr
-            Inclusive -> do
-                l <- g.gLineLen s.rr
-                pure (if l /= 0 then l - 1 else 0)
+            Inclusive -> lineLimit g s.rr
     if wrap == Wrap && s.rc >= px && s.rr < gBottom g
         then pure s { rc = 0, rr = s.rr + 1 }
         else if s.rc < px
-            then pure s { rc = s.rc + 1 }
+            then do
+                let skip c
+                        | c < px = do
+                            pad <- g.gPadding s.rr c
+                            if pad then skip (c + 1) else pure c
+                        | otherwise = pure c
+                c' <- skip (s.rc + 1)
+                pure s { rc = c' }
             else pure s
 
--- | @grid_reader_cursor_left@.
+-- | @grid_line_limit@: the last column of a row's content, stepping back
+-- off a wide character's padding.
+lineLimit :: Monad m => Grid m -> Int -> m Int
+lineLimit g row = do
+    len <- g.gLineLen row
+    if len == 0 then pure 0 else offPadding (len - 1)
+  where
+    offPadding c
+        | c > 0 = do
+            pad <- g.gPadding row c
+            if pad then offPadding (c - 1) else pure c
+        | otherwise = pure c
+
+-- | @grid_reader_cursor_left@: first back off any padding column, then step
+-- left — or, at column 0, onto the end of the previous line when @wrap@ (or
+-- that line wrapped).
 cursorLeft :: Monad m => Grid m -> Bool -> Rdr -> m Rdr
-cursorLeft g wrap s
-    | s.rc == 0 && s.rr > 0 = do
-        w <- g.gWrapped (s.rr - 1)
-        if wrap || w
-            then do
-                l <- g.gLineLen (s.rr - 1)
-                pure s { rr = s.rr - 1, rc = l }
-            else pure s
-    | s.rc > 0 = pure s { rc = s.rc - 1 }
-    | otherwise = pure s
+cursorLeft g wrap s0 = do
+    c0 <- offPadding s0.rc
+    let s = s0 { rc = c0 }
+    if s.rc == 0 && s.rr > 0
+        then do
+            w <- g.gWrapped (s.rr - 1)
+            if wrap || w
+                then do
+                    l <- g.gLineLen (s.rr - 1)
+                    pure s { rr = s.rr - 1, rc = l }
+                else pure s
+        else if s.rc > 0 then pure s { rc = s.rc - 1 } else pure s
+  where
+    offPadding c
+        | c > 0 = do
+            pad <- g.gPadding s0.rr c
+            if pad then offPadding (c - 1) else pure c
+        | otherwise = pure c
 
 -- | @grid_reader_cursor_next_word@.
 nextWord :: Monad m => Grid m -> Text -> Rdr -> m Rdr
@@ -401,15 +437,17 @@ mPreviousWord :: Monad m => Text -> Motion m
 mPreviousWord seps g keys _ =
     previousWord g seps BackStep (if keys == KeysEmacs then StopAtEol else CrossEol)
 
--- | Move one cell left, staying on the line (or onto the previous line
--- when it wrapped).
+-- | Move one cell left, onto the end of the previous line from column 0.
 mCursorLeft :: Monad m => Motion m
-mCursorLeft g _ _ = cursorLeft g False
+mCursorLeft g _ _ = cursorLeft g True
 
--- | Move one cell right, allowing one column past the last character
--- (@onemore@) as copy mode does.
+-- | Move one cell right, onto the next line past the right bound. Emacs
+-- keys may rest one column past the last character (@onemore@); vi keys
+-- stop on it.
 mCursorRight :: Monad m => ColumnBound -> Motion m
-mCursorRight bound g _ _ = cursorRight g NoWrap bound OneMore
+mCursorRight bound g keys _ = cursorRight g Wrap bound $ case keys of
+    KeysVi -> Inclusive
+    KeysEmacs -> OneMore
 
 -- | The column bound the live selection grants: a rectangular selection
 -- frees the cursor to the full grid width, so a block can cover a
@@ -832,7 +870,10 @@ paneGrid pane = do
     emptyFrozen = FrozenGrid
         { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty }
 
--- | Run a reader motion against a pane grid, updating the cursor.
+-- | Run a reader motion against a pane grid, updating the cursor. Outside a
+-- rectangle selection the cursor lands no further right than the line
+-- allows — the last character under vi keys, one past it under emacs —
+-- as tmux's @window_copy_update_cursor@ clamps every motion.
 runMotion
     :: Monad m
     => Grid m -> ModeKeys -> Text -> Motion m -> CopyModeState
@@ -840,7 +881,14 @@ runMotion
 runMotion g keys seps motion st = do
     s0 <- startRdr g st.cursorRow st.cursorCol
     s1 <- motion g keys seps s0
-    pure st { cursorRow = s1.rr, cursorCol = s1.rc }
+    col <- case st.selection of
+        Just (_, SelRect) -> pure s1.rc
+        _ -> do
+            maxx <- case keys of
+                KeysVi -> lineLimit g s1.rr
+                KeysEmacs -> g.gLineLen s1.rr
+            pure (min maxx s1.rc)
+    pure st { cursorRow = s1.rr, cursorCol = col }
 
 -- ---------------------------------------------------------------------
 -- Handler table
