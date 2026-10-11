@@ -194,6 +194,11 @@ popupKeyInput st client p k = do
                         then do
                             on <- Emu.bracketedPaste p.screen
                             pure (if on then Just k.raw else Nothing)
+                    -- A focus report reaches only a program that asked for them.
+                    else if k.name `elem` ["FocusIn", "FocusOut"]
+                        then do
+                            ms <- Emu.modes p.screen
+                            pure (if ms.focusReport then Just k.raw else Nothing)
                         else keyBytesFor (keyEncoding o) (optionText "backspace" o) p.screen k
                 forM_ mbytes (Pty.writePty p.jobPty)
             PopupMouseToJob pos -> forM_ mreport $ \(m, lb) -> do
