@@ -18,7 +18,7 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-floating-pane-geometry.sh       # floating panes (new-pane, move-pane -X/-Y/-P/-z, break-pane -W) unimplemented
+floating-pane-geometry.sh       # needs pane-border-lines as a pane option with the value none (new-pane -B none, set -w pane-border-lines none)
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh
@@ -66,7 +66,6 @@ copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/sele
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
-format-modifiers.sh             # new-pane floating panes (P/z order)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 

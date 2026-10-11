@@ -43,6 +43,7 @@ import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format (FormatCtx (..), FormatEnv, formatCtx, renderFormatCtx)
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
+import Hat.Server.Floating (FloatState (..), modalPane, paneZ)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
@@ -64,6 +65,7 @@ windowFormatEnv st sess ix win = do
         <*> readTVar win.bellFlag <*> readTVar win.activity
         <*> readTVar win.autoRename <*> readTVar win.zoomed
     sil <- readTVarIO win.silenceFlag
+    fs <- readTVarIO win.floats
     ps <- readTVarIO win.panes
     (links, linkNames) <- atomically $ do
         links <- map fst <$> windowLinks st win
@@ -74,6 +76,7 @@ windowFormatEnv st sess ix win = do
             , flagBell = bell
             , flagActivity = act
             , flagSilence = sil
+            , flagModal = isJust fs.modal
             , flagZoomed = isJust zoom
             }
     winUser <- deltaUserVars <$> readTVarIO win.options
@@ -91,6 +94,7 @@ windowFormatEnv st sess ix win = do
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))
         , ("window_zoomed_flag", if isJust zoom then "1" else "0")
+        , ("window_modal_pane", maybe "" (\p -> "%" <> tshow (rawPane p)) (modalPane fs))
         , ("window_bell_flag", if bell then "1" else "0")
         , ("window_activity_flag", if act then "1" else "0")
         , ("window_silence_flag", if sil then "1" else "0")
@@ -117,12 +121,28 @@ paneFormatEnv st sess wix win pix pane = do
     active <- readTVarIO win.activeId
     sz <- readTVarIO pane.size
     area <- atomically (windowArea st win)
-    geom <- atomically $ do
+    (geom, floatVars) <- atomically $ do
         zoomed <- readTVar win.zoomed
         lay <- fitLayout area <$> readTVar win.layout
-        pure $ if zoomed == Just pane.id
-            then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
-            else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
+        fs <- readTVar win.floats
+        hist <- readTVar win.paneHist
+        -- tmux's zoom swaps the whole tree for the zoomed pane alone, so
+        -- nothing floats while a window is zoomed.
+        let floating = isNothing zoomed && isFloating pane.id lay
+            modal = modalPane fs == Just pane.id
+            letters = T.concat
+                [ if pane.id == active then "*" else ""
+                , if listToMaybe hist == Just pane.id then "-" else ""
+                , if zoomed == Just pane.id then "Z" else ""
+                , if floating then "F" else ""
+                , if modal then "O" else "" ]
+        pure ( if zoomed == Just pane.id
+                then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
+                else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
+             , [ ("pane_floating_flag", if floating then "1" else "0")
+               , ("pane_modal_flag", if modal then "1" else "0")
+               , ("pane_z", tshow (paneZ fs lay pane.id))
+               , ("pane_flags", letters) ] )
     paneUser <- deltaUserVars <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
@@ -157,7 +177,7 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        ] <> panePositionVars area geom) wenv
+        ] <> floatVars <> panePositionVars area geom) wenv
 
 -- | A pane's position in its window (tmux's @pane_left@ … @pane_at_bottom@),
 -- from its cell: @(xoff, yoff, width, height)@.
@@ -167,6 +187,8 @@ panePositionVars area = \case
     Just (x, y, w, h) ->
         [ ("pane_left", tshow x)
         , ("pane_top", tshow y)
+        , ("pane_x", tshow x)
+        , ("pane_y", tshow y)
         , ("pane_right", tshow (x + w - 1))
         , ("pane_bottom", tshow (y + h - 1))
         , ("pane_at_left", flag (x == 0))
@@ -419,12 +441,14 @@ data WindowFlagState = WindowFlagState
     , flagBell     :: Bool
     , flagActivity :: Bool
     , flagSilence  :: Bool
+    , flagModal    :: Bool  -- ^ the window has a modal pane
     , flagZoomed   :: Bool
     }
 
 -- | Render the window-status flags in tmux's order: current (@*@) or
 -- last (@-@), then bell (@!@), activity (@#@) and silence (@~@), and
--- finally zoom (@Z@) when the window has a pane zoomed to fill it.
+-- a modal pane (@O@), and finally zoom (@Z@) when the window has a pane
+-- zoomed to fill it.
 windowFlags :: WindowFlagState -> Text
 windowFlags s = T.concat
     [ if s.flagCurrent then "*"
@@ -432,6 +456,7 @@ windowFlags s = T.concat
     , if s.flagBell then "!" else ""
     , if s.flagActivity then "#" else ""
     , if s.flagSilence then "~" else ""
+    , if s.flagModal then "O" else ""
     , if s.flagZoomed then "Z" else ""
     ]
 

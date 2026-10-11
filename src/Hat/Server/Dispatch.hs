@@ -213,6 +213,7 @@ hookArgSpec = \case
     "attach-session" -> "tc"
     "new-window" -> "nct"
     "split-window" -> "BceFlmpRsStT"
+    "new-pane" -> "BceFlmpRsStTxXyY"
     "join-pane" -> "lpst"
     "move-pane" -> "lPstXYz"
     "break-pane" -> "FnstxXyY"
@@ -341,6 +342,7 @@ commandSpecs =
     , (["swap-window", "swapw"], cmdSwapWindow)
     , (["rotate-window", "rotatew"], cmdRotateWindow)
     , (["split-window", "splitw"], cmdSplitWindow)
+    , (["new-pane", "newp"], cmdNewPane)
     , (["select-pane", "selectp"], cmdSelectPane)
     , (["kill-pane", "killp"], cmdKillPane)
     , (["respawn-pane", "respawnp"], cmdRespawnPane)

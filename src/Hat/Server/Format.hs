@@ -20,6 +20,7 @@ import Data.Array qualified as A
 import Data.ByteString qualified as BS
 import Data.Char (chr, digitToInt, isAlpha, isAlphaNum, isAscii, isDigit, isPrint, isSpace)
 import Data.List qualified as List
+import Data.Ord (Down (..))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
@@ -679,9 +680,15 @@ sortLoop lk order rev items = (if rev then reverse else id) sorted
         (LWindows, OrderName) -> byText "window_name"
         (LWindows, _) -> byNum "window_index"
         (LPanes, OrderIndex) -> byNum "pane_index"
+        -- tmux reverses the comparison, so panes at one depth keep their
+        -- order either way.
+        (LPanes, OrderZ)
+            | rev -> reverse (List.sortOn (Down . zOf) items)
+            | otherwise -> List.sortOn zOf items
         (LPanes, _) -> byNum "pane_id"
         (LClients, OrderName) -> byText "client_name"
         (LClients, _) -> items
+    zOf it = numOf (Map.findWithDefault "" "pane_z" it)
     byText k = List.sortOn (\it -> Map.findWithDefault "" k it) items
     byNum k = List.sortOn (\it -> numOf (Map.findWithDefault "" k it)) items
     numOf t = fromMaybe (0 :: Int) $ do

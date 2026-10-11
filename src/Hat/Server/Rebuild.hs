@@ -26,6 +26,7 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Environ (environFromPairs)
+import Hat.Server.Floating (noFloats)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (capturedArea, layoutFromString)
 import Hat.Server.Pane (startPaneReader)
@@ -175,6 +176,7 @@ rebuildWindow st mkPane sz cwin = do
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing
+    floatsVar     <- newTVarIO noFloats
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
@@ -183,5 +185,5 @@ rebuildWindow st mkPane sz cwin = do
             , activity = activityVar, zoomed = zoomVar
             , silenceFlag = silenceVar, activityAt = activityAtVar
             , autoRename = autoRenameVar, options = optionsVar
-            , arrangeCache = arrangeVar }
+            , arrangeCache = arrangeVar, floats = floatsVar }
     pure (win, panes)

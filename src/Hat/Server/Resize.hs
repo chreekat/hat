@@ -232,8 +232,17 @@ paneSizeTargets st = do
         _ <- windowLayoutAt eff win
         (rects, _) <- windowArrange eff win
         ps <- readTVar win.panes
-        pure [ (p, rectSize rect)
-             | (pidL, rect) <- rects
+        lay <- readTVar win.layout
+        zoom <- readTVar win.zoomed
+        -- A floating pane is sized by its own box; a zoom hides it, leaving
+        -- it at that size.
+        let floating = case zoom of
+                Just _ -> []
+                Nothing -> [ (pid, Size { rows = fromIntegral (max 1 c.sy)
+                                        , cols = fromIntegral (max 1 c.sx) })
+                           | (pid, c) <- floatingCells lay ]
+        pure [ (p, sz)
+             | (pidL, sz) <- [ (pidL, rectSize rect) | (pidL, rect) <- rects ] <> floating
              , Just p <- [Map.lookup pidL ps]
              ]
 

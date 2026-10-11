@@ -116,6 +116,7 @@ library
         Hat.Server.DisplayPanes
         Hat.Server.Environ
         Hat.Server.Flash
+        Hat.Server.Floating
         Hat.Server.Format
         Hat.Server.Format.Colour
         Hat.Server.Format.Fuzzy

@@ -116,6 +116,90 @@ spec = do
                 landed <- timeout 5_000_000 (untilM shown)
                 landed `shouldBe` Just ()
 
+    describe "floating panes" $ do
+        let fmt st tgt f = do
+                out <- run st ["display-message", "-p", "-t", tgt, f]
+                pure [ t | ROutput t <- out ]
+            box = "#{e|+:#{e|-:#{pane_right},#{pane_left}},1}x\
+                \#{e|+:#{e|-:#{pane_bottom},#{pane_top}},1}@#{pane_left},#{pane_top}"
+            newFloat st extra = do
+                out <- run st (["new-pane", "-dPF", "#{pane_id}"] <> extra <> ["sleep 30"])
+                case out of
+                    [ROutput t] -> pure t
+                    other -> fail (show other)
+            session st = run st ["new-session", "-d", "-s", "S", "-x", "80", "-y", "24", "sleep 30"]
+                `shouldReturn` []
+        it "new-pane places the box -x/-y/-X/-Y name, its border included" $
+            withServer $ \st -> do
+                session st
+                f <- newFloat st ["-x", "20", "-y", "6", "-X", "8", "-Y", "3"]
+                fmt st f (box <> " #{pane_floating_flag}") `shouldReturn` ["18x4@9,4 1"]
+                run st ["new-pane", "-d", "-x", "0", "sleep 30"]
+                    `shouldReturn` [RErr "invalid width"]
+        it "without a position, cascades from the last floating pane" $
+            withServer $ \st -> do
+                session st
+                a <- newFloat st []
+                b <- newFloat st []
+                fmt st a box `shouldReturn` ["40x6@4,2"]
+                fmt st b box `shouldReturn` ["40x6@8,4"]
+        it "stacks new panes in front; move-pane -P and -z restack them" $
+            withServer $ \st -> do
+                session st
+                a <- newFloat st ["-x", "10", "-y", "4"]
+                b <- newFloat st ["-x", "10", "-y", "4"]
+                let order = fmt st "S:0" "#{P/z:#{pane_id}}"
+                order `shouldReturn` [b <> a <> "%0"]
+                run st ["move-pane", "-t", a, "-P", "front"] `shouldReturn` []
+                order `shouldReturn` [a <> b <> "%0"]
+                run st ["move-pane", "-t", a, "-z", "5"] `shouldReturn` []
+                order `shouldReturn` [b <> a <> "%0"]
+                run st ["move-pane", "-t", "%0", "-P", "front"]
+                    `shouldReturn` [RErr "pane is not floating"]
+        it "move-pane -X/-Y and resize-pane -x/-y count the border" $
+            withServer $ \st -> do
+                session st
+                f <- newFloat st ["-x", "20", "-y", "6", "-X", "8", "-Y", "3"]
+                run st ["move-pane", "-t", f, "-X", "5", "-Y", "25%"] `shouldReturn` []
+                run st ["resize-pane", "-t", f, "-x", "30", "-y", "10"] `shouldReturn` []
+                fmt st f box `shouldReturn` ["28x8@6,7"]
+                run st ["move-pane", "-t", f, "-P", "bottom-right"] `shouldReturn` []
+                fmt st f box `shouldReturn` ["28x8@51,15"]
+        it "break-pane -W floats a tiled pane; joining it to itself tiles it back" $
+            withServer $ \st -> do
+                session st
+                run st ["split-window", "-d", "-h", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [p0, p1] <- paneIds st "S:0"
+                run st ["break-pane", "-W", "-s", p1, "-x", "12", "-y", "5", "-X", "1", "-Y", "1"]
+                    `shouldReturn` []
+                fmt st p1 (box <> " #{pane_floating_flag}") `shouldReturn` ["10x3@2,2 1"]
+                fmt st p0 box `shouldReturn` ["80x24@0,0"]
+                run st ["break-pane", "-W", "-s", p1] `shouldReturn` [RErr "pane is already floating"]
+                run st ["join-pane", "-s", p1, "-t", p1] `shouldReturn` []
+                -- The pane tiled back takes the larger half (layout_insert_tile).
+                geometry st "S:0" `shouldReturn` ["0,0 39x24", "40,0 40x24"]
+        it "a modal pane holds the window's focus until it closes" $
+            withServer $ \st -> do
+                session st
+                run st ["split-window", "-d", "-t", "%0", "sleep 30"] `shouldReturn` []
+                run st ["resize-pane", "-Z", "-t", "%0"] `shouldReturn` []
+                [out] <- run st ["new-pane", "-OPF", "#{pane_id}", "-x", "20", "-y", "5", "sleep 30"]
+                m <- case out of
+                    ROutput t -> pure t
+                    other -> fail (show other)
+                fmt st "S:0" "#{pane_id} #{window_modal_pane} #{window_flags} #{window_zoomed_flag}"
+                    `shouldReturn` [m <> " " <> m <> " *O 0"]
+                run st ["new-pane", "-O", "sleep 30"]
+                    `shouldReturn` [RErr "window already has a modal pane"]
+                run st ["new-pane", "-O", "-L", "sleep 30"]
+                    `shouldReturn` [RErr "modal pane must be floating"]
+                run st ["break-pane", "-s", m] `shouldReturn` [RErr "pane is modal"]
+                run st ["select-pane", "-t", "%0"] `shouldReturn` []
+                fmt st "S:0" "#{pane_id}" `shouldReturn` [m]
+                run st ["kill-pane", "-t", m] `shouldReturn` []
+                fmt st "S:0" "#{pane_id} #{window_modal_pane} #{window_zoomed_flag}"
+                    `shouldReturn` ["%0  1"]
+
     describe "split-window" $ do
         it "sizes the new pane from -l, in cells or a percentage of the pane" $
             withServer $ \st -> do

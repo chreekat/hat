@@ -38,7 +38,7 @@ import Hat.Server.Hooks
 import Hat.Server.Locate (findTarget, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
-    , windowHolders )
+    , switchActive, windowHolders )
 import Hat.Server.Resize (applySessionSize, defaultSizeOf)
 import Hat.Server.FormatEnv (clientFormatVars, expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -505,11 +505,8 @@ cmdSwitchClient st mclient args = do
                     Left e -> pure [RErr e]
                     Right (sess, ix, win, pane) -> do
                         noteActiveChange st win $ atomically $ do
-                            active <- readTVar win.activeId
-                            when (active /= pane.id) $ do
-                                modifyTVar' win.paneHist (recordVisit active pane.id)
-                                writeTVar win.activeId pane.id
-                                bumpDirty st
+                            switched <- switchActive win pane.id
+                            when switched (bumpDirty st)
                         switchToWindow st sess ix
                         switchClientTo st client sess
                         pure []

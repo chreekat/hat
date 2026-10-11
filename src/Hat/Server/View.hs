@@ -37,6 +37,7 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (send)
 import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
+import Hat.Server.Floating (modalPane)
 import Hat.Server.Format (formatReadsTree)
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatEnv
@@ -660,12 +661,14 @@ gatherStatus st sess = do
             <$> readTVar win.name <*> readTVar win.bellFlag
             <*> readTVar win.activity <*> readTVar win.silenceFlag
             <*> readTVar win.zoomed
+        fs <- readTVarIO win.floats
         let flags = windowFlags WindowFlagState
                 { flagCurrent = ix == cur
                 , flagLast = Just ix == mlast
                 , flagBell = bell
                 , flagActivity = act
                 , flagSilence = sil
+                , flagModal = isJust (modalPane fs)
                 , flagZoomed = isJust zoom
                 }
         pure ( ix, wname, flags
