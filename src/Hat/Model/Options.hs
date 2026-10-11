@@ -34,6 +34,9 @@ module Hat.Model.Options
     , optionFlag
     , optionNumber
     , optionArray
+      -- * As format variables
+    , optionFormats
+    , deltaFormats
       -- * Odds and ends
     , lookupCommandAlias
     , quoteIfNeeded
@@ -364,6 +367,29 @@ optionArray :: Text -> Options -> [Text]
 optionArray n o = case optionValue n o of
     OVArray m -> Map.elems m
     OVScalar t -> [t]
+
+-- | Every live option and user option as a format variable (tmux's
+-- @format_find@ reads options before any other variable): flags as @1@\/@0@,
+-- arrays as their entries joined by spaces.
+optionFormats :: Options -> Map Text Text
+optionFormats o = Map.union o.user $ Map.fromList
+    [ (d.name, formatText d.name v)
+    | d <- optionTable, isLive d, d.role == PlainOption
+    , Just v <- [Map.lookup d.name o.values] ]
+
+-- | One scope's own entries as format variables, rendered as 'optionFormats'
+-- renders them.
+deltaFormats :: OptionsDelta -> Map Text Text
+deltaFormats d = Map.fromList
+    [ (n, formatText n v)
+    | (n, v) <- deltaEntries d
+    , "@" `T.isPrefixOf` n || maybe False isLive (lookupOptionDef n) ]
+
+-- | tmux's numeric @options_to_string@.
+formatText :: Text -> OptionValue -> Text
+formatText n v = case ((.kind) <$> lookupOptionDef n, v) of
+    (Just KFlag, OVScalar t) -> if t == "on" then "1" else "0"
+    _ -> valueText v
 
 -- | The command a name aliases, if any: the first @name=command@ entry in
 -- key order, as tmux's @cmd_get_alias@ resolves it. See

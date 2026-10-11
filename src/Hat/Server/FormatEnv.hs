@@ -67,7 +67,7 @@ windowFormatEnv st sess ix win = do
             , flagSilence = sil
             , flagZoomed = isJust zoom
             }
-    winUser <- deltaUserVars <$> readTVarIO win.options
+    winUser <- deltaFormats <$> readTVarIO win.options
     pure $ Map.union winUser $ Map.union (Map.fromList
         [ ("window_index", tshow ix)
         , ("window_id", "@" <> tshow (rawWindow win.id))
@@ -96,7 +96,7 @@ paneFormatEnv st sess wix win pix pane = do
     hsize <- Emu.scrollbackLength pane.emulator
     active <- readTVarIO win.activeId
     sz <- readTVarIO pane.size
-    paneUser <- deltaUserVars <$> readTVarIO pane.options
+    paneUser <- deltaFormats <$> readTVarIO pane.options
     pure $ Map.union paneUser $ Map.union (Map.fromList
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
@@ -218,12 +218,11 @@ sessionFormatEnv st sess = do
                    , ("pane_id", "%" <> tshow (rawPane pane.id))
                    ] <> modeEnv
     sz <- readTVarIO sess.lastSize
-    -- @-options are readable as #{@foo}, so if-shell theme conditionals
-    -- (@#{@pane-theme}@) resolve.
-    userOpts <- (.user) <$> readTVarIO st.options
-    localUser <- deltaUserVars <$> readTVarIO sess.options
+    -- Options are readable as #{status-left}, #{@foo}, … so if-shell theme
+    -- conditionals (@#{@pane-theme}@) resolve.
+    sessOpts <- optionFormats <$> atomically (resolveForSession st sess)
     msch <- readTVarIO st.colorScheme
-    pure . Map.union localUser . Map.union userOpts . Map.fromList $
+    pure . Map.union sessOpts . Map.fromList $
         [ ("session_name", sname)
         , ("session_id", "$" <> tshow (rawSession sess.id))
         , ("session_attached", tshow nclients)
@@ -429,9 +428,4 @@ idNum pre key env = do
     case TR.decimal rest of
         Right (n, "") -> Just n
         _ -> Nothing
-
--- @-prefixed user options set at one scope, as format variables.
-deltaUserVars :: OptionsDelta -> Map.Map Text Text
-deltaUserVars d = Map.fromList
-    [ (nm, valueText v) | (nm, v) <- deltaEntries d, "@" `T.isPrefixOf` nm ]
 

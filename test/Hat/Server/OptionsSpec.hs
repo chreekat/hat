@@ -244,6 +244,24 @@ spec = do
             optionArray "update-environment" defaultOptions
                 `shouldBe` defaultOptions.updateEnvironment
 
+    describe "options as format variables" $ do
+        it "exposes live options, flags as 1/0 and arrays space-joined" $ do
+            let fmts = optionFormats
+                    (resolveOptions [singletonDelta "@x" (OVScalar "y")])
+            Map.lookup "focus-events" fmts `shouldBe` Just "0"
+            Map.lookup "status-left" fmts `shouldBe` Just "[#{session_name}] "
+            Map.lookup "command-alias" fmts
+                `shouldBe` Just "split-pane=split-window splitp=split-window"
+            Map.lookup "@x" fmts `shouldBe` Just "y"
+        it "leaves out options hat does not implement" $
+            Map.member "synchronize-panes" (optionFormats defaultOptions)
+                `shouldBe` False
+        it "renders one scope's own entries the same way" $
+            deltaFormats (mergeDeltas
+                [ singletonDelta "monitor-bell" (OVScalar "off")
+                , singletonDelta "@u" (OVScalar "v") ])
+                `shouldBe` Map.fromList [("@u", "v"), ("monitor-bell", "0")]
+
     describe "show-options lines" $ do
         let line n v = ShowLine
                 { option = n, definition = lookupOptionDef n, key = Nothing
