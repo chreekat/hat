@@ -865,10 +865,10 @@ scrollToCursor hsize sy st =
 -- this while a mode is active).
 paneGrid :: Pane -> IO (Grid IO)
 paneGrid pane = do
-    mmode <- readTVarIO pane.mode
+    mmode <- atomically (topMode pane)
     pure $ case mmode of
-        Just pm -> frozenGrid pm.frozen
-        Nothing -> frozenGrid emptyFrozen
+        Just (CopyMode pm) -> frozenGrid pm.frozen
+        _ -> frozenGrid emptyFrozen
   where
     emptyFrozen = FrozenGrid
         { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty }

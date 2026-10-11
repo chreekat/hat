@@ -215,7 +215,7 @@ stubPane :: Int -> IO Pane
 stubPane n = do
     sizeV <- newTVarIO (Size { rows = 24, cols = 80 })
     deadV <- newTVarIO False
-    modeV <- newTVarIO Nothing
+    modeV <- newTVarIO []
     pipeV <- newTVarIO Nothing
     tidV  <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
@@ -229,7 +229,7 @@ stubPane n = do
         , size = sizeV
         , dead = deadV
         , startCwd = "/"
-        , mode = modeV
+        , modes = modeV
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV
@@ -257,22 +257,24 @@ adoptedPane n = do
 
 -- An open copy mode over a blank frozen 24x80 grid with @hsize@ scrollback
 -- lines, viewing the bottom.
-copyModeAt :: Int -> PaneMode
-copyModeAt hsize = PaneMode
-    { frozen = FrozenGrid
-        { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
-    , copyState = CopyModeState
-        { cursorRow = hsize
-        , cursorCol = 0
-        , selection = Nothing
-        , keyTable = "copy-mode"
-        , viewportOffY = 0
-        , numPrefix = Nothing
-        , pendingSearch = Nothing
-        , lastSearch = Nothing
-        , lastQuery = Nothing
+copyModeAt :: Int -> [ModeEntry]
+copyModeAt hsize = [ModeEntry { mode = CopyMode copyData, onExit = KeepPane }]
+  where
+    copyData = CopyModeData
+        { frozen = FrozenGrid
+            { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
+        , copyState = CopyModeState
+            { cursorRow = hsize
+            , cursorCol = 0
+            , selection = Nothing
+            , keyTable = "copy-mode"
+            , viewportOffY = 0
+            , numPrefix = Nothing
+            , pendingSearch = Nothing
+            , lastSearch = Nothing
+            , lastQuery = Nothing
+            }
         }
-    }
 
 spec :: Spec
 spec = do
@@ -330,7 +332,7 @@ spec = do
             env0 <- paneModeEnv p
             lookup "pane_in_mode" env0 `shouldBe` Just "0"
             lookup "pane_mode" env0 `shouldBe` Just ""
-            atomically $ writeTVar p.mode (Just (copyModeAt 3))
+            atomically $ writeTVar p.modes (copyModeAt 3)
             env1 <- paneModeEnv p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
@@ -342,7 +344,7 @@ spec = do
             p <- stubPane 0
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
-                writeTVar p.mode (Just (copyModeAt 3))
+                writeTVar p.modes (copyModeAt 3)
                 -- status off: statusCells would touch the stub pane
                 modifyTVar' st.options $ \o -> o { statusLines = 0 }
             (client, _peer) <- wiredClient st Attached

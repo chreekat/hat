@@ -110,7 +110,7 @@ flashStubPane :: PaneId -> IO Pane
 flashStubPane pid = do
     sizeV <- newTVarIO (Size { rows = 24, cols = 80 })
     deadV <- newTVarIO False
-    modeV <- newTVarIO Nothing
+    modeV <- newTVarIO []
     pipeV <- newTVarIO Nothing
     tidV <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
@@ -124,7 +124,7 @@ flashStubPane pid = do
         , size = sizeV
         , dead = deadV
         , startCwd = "/"
-        , mode = modeV
+        , modes = modeV
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV

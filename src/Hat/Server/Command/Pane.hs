@@ -262,9 +262,9 @@ capturePane pane copts altFlag quiet copyFlag sflag eflag
             then Left "capture-pane: -a is not implemented"
             else if quiet then Right "" else Left "no alternate screen"
     | otherwise = do
-        mmode <- if copyFlag then readTVarIO pane.mode else pure Nothing
+        mmode <- if copyFlag then atomically (topMode pane) else pure Nothing
         case mmode of
-            Just pm
+            Just (CopyMode pm)
                 | copts.captJoin ->
                     pure (Left "capture-pane: -J with -M is not implemented")
                 | copts.captFlags ->
@@ -276,7 +276,7 @@ capturePane pane copts altFlag quiet copyFlag sflag eflag
                         [ CaptureRow (i - fg.fgHsize) False ""
                             (fromMaybe V.empty (fg.fgRows V.!? i))
                         | i <- [top .. bottom] ]
-            Nothing -> do
+            _ -> do
                 scr <- Emu.snapshot pane.emulator
                 hsize <- Emu.scrollbackLength pane.emulator
                 rawLines <- if copts.captFlags
@@ -310,7 +310,7 @@ captureLinks
 captureLinks pane copts altFlag copyFlag sflag eflag
     | altFlag = pure (Left "capture-pane: -H with -a is not implemented")
     | otherwise = do
-        mmode <- if copyFlag then readTVarIO pane.mode else pure Nothing
+        mmode <- if copyFlag then atomically (topMode pane) else pure Nothing
         case mmode of
             Just _ -> pure (Left "capture-pane: -H with -M is not implemented")
             Nothing -> Right . linksText copts <$> Emu.rawGrid pane.emulator
@@ -922,7 +922,7 @@ cmdResizePane st mclient args
         case res of
             Left e -> pure [RErr e]
             Right (_, _, _, pane) -> do
-                inMode <- isJust <$> readTVarIO pane.mode
+                inMode <- not . null <$> readTVarIO pane.modes
                 unless inMode $ do
                     Emu.trimHistoryBelowCursor pane.emulator
                     atomically (bumpDirty st)

@@ -774,16 +774,31 @@ cmdSendKeys st mclient args = do
                         [] -> pure []
                     -- -H: each argument is one hex byte.
                     | hexBytes -> case mapM hexByte pos of
-                        Just bytes ->
-                            [] <$ typeIntoPane pane (B.pack bytes)
+                        Just bytes -> concat <$> mapM (injectKey pane)
+                            [ k | b <- bytes, k <- tokenizeKeys (B.singleton b) ]
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise -> [] <$ typeIntoPane pane
-                        (B.concat (map (argBytes literal) pos))
+                    | otherwise -> concat <$> mapM (injectKey pane)
+                        (concatMap (argKeys literal) pos)
   where
     argBytes True a = TE.encodeUtf8 a
     argBytes False a = case parseKeyName a of
         Just k -> k.raw
         Nothing -> TE.encodeUtf8 a
+    -- A named key is one key; anything else (and every -l argument) is
+    -- its characters, one key each.
+    argKeys lit a
+        | not lit, Just k <- parseKeyName a = [k]
+        | otherwise = tokenizeKeys (TE.encodeUtf8 a)
+    -- tmux's cmd_send_keys_inject_key: a pane in copy mode runs the key's
+    -- binding in its mode table against the pane; any other pane takes the
+    -- key's bytes.
+    injectKey pane key = atomically (topMode pane) >>= \case
+        Just (CopyMode cm) -> do
+            km <- readTVarIO st.keymap
+            case Map.lookup key.name =<< Map.lookup cm.copyState.keyTable km of
+                Nothing -> pure []
+                Just cmds -> withDispatchTarget st pane.id (runCommands st mclient cmds)
+        _ -> [] <$ typeIntoPane pane key.raw
     hexByte t = case TR.hexadecimal t of
         Right (n, rest) | T.null rest, n >= 0, n <= 255 ->
             Just (fromIntegral (n :: Int))

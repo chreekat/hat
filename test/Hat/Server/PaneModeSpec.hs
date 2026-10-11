@@ -14,6 +14,7 @@ import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
+import Hat.Server.Keymap (defaultKeymap)
 import Hat.Term.Pty qualified as Pty
 
 -- | A fresh server for one test; on exit every pane still alive is killed
@@ -23,7 +24,7 @@ withServer = bracket open close
   where
     open = do
         lg <- newLogger "/dev/null"
-        st <- newServerState Map.empty lg "/tmp/hat-panemodespec.sock" Nothing
+        st <- newServerState defaultKeymap lg "/tmp/hat-panemodespec.sock" Nothing
         installHooks st
         pure st
     close st = do
@@ -56,3 +57,37 @@ spec = do
                     `shouldReturn` [ROutput "1 copy-mode"]
                 display st "S:1.0" "#{pane_in_mode}"
                     `shouldReturn` [ROutput "0"]
+
+    describe "-k" $ do
+        it "kills the pane when its copy mode exits" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "cat"] `shouldReturn` []
+                [a, b] <- paneIds st "S:0"
+                run st ["copy-mode", "-k", "-t", b] `shouldReturn` []
+                run st ["send-keys", "-t", b, "-X", "cancel"] `shouldReturn` []
+                paneIds st "S:0" `shouldReturn` [a]
+        it "leaves the pane alone without -k" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "cat"] `shouldReturn` []
+                [a, b] <- paneIds st "S:0"
+                run st ["copy-mode", "-t", b] `shouldReturn` []
+                run st ["send-keys", "-t", b, "-X", "cancel"] `shouldReturn` []
+                display st b "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+                paneIds st "S:0" `shouldReturn` [a, b]
+
+    describe "send-keys" $
+        it "runs a key through the copy-mode table of a pane in copy mode" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["set-option", "-g", "mode-keys", "vi"] `shouldReturn` []
+                run st ["copy-mode", "-t", "S:0.0"] `shouldReturn` []
+                run st ["send-keys", "-t", "S:0.0", "q"] `shouldReturn` []
+                display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+
+-- | A window's pane ids, in pane-index order.
+paneIds :: ServerState -> Text -> IO [Text]
+paneIds st tgt = do
+    out <- run st ["list-panes", "-t", tgt, "-F", "#{pane_id}"]
+    pure [ t | ROutput t <- out ]

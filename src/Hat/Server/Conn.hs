@@ -509,7 +509,9 @@ runKeys d st client keys = do
             searchFed <- maybe (pure False) (feedPendingSearch k0) mpane
             if searchFed then loop kst rest else do
               modeTable <- case mpane of
-                Just pane -> fmap (fmap (.copyState.keyTable)) (readTVarIO pane.mode)
+                Just pane -> atomically (topMode pane) >>= \case
+                    Just (CopyMode cm) -> pure (Just cm.copyState.keyTable)
+                    _ -> pure Nothing
                 Nothing -> pure Nothing
               k <- reencodeKey (fmap (.emulator) mpane) k0
               -- The outer terminal's ?1004 focus reports track whether the
@@ -563,9 +565,9 @@ runKeys d st client keys = do
     -- else (Escape, Enter, an arrow) cancels it. Returns whether it was
     -- consumed here.
     feedPendingSearch key pane = do
-        mmode <- readTVarIO pane.mode
+        mmode <- atomically (topMode pane)
         case mmode of
-            Just s | Just _ <- s.copyState.pendingSearch -> do
+            Just (CopyMode s) | Just _ <- s.copyState.pendingSearch -> do
                 -- Neither command can fail, so the replies are empty.
                 void $ if T.length key.name == 1
                     then runCopyModeCommand st pane "apply-search" [key.name]

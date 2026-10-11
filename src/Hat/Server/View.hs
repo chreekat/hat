@@ -507,36 +507,39 @@ data PaneView = PaneView
 
 paneView :: ServerState -> Pane -> IO PaneView
 paneView st pane = do
-    mmode <- readTVarIO pane.mode
+    mmode <- atomically (topMode pane)
     case mmode of
-        Nothing -> do
-            (scr, gens) <- Emu.snapshotWithGens pane.emulator
-            pure PaneView
-                { cells = scr.cells
-                , rowGens = Just gens
-                , cursor = Just scr.cursor
-                , cursorVisible = scr.cursorVisible
-                }
-        Just pm -> do
-            opts <- readTVarIO st.options
-            let s = pm.copyState
-                fg = pm.frozen
-                hsize = fg.fgHsize
-                top = hsize - s.viewportOffY
-                rows = [ viewportRow fg (top + i) | i <- [0 .. fg.fgSy - 1] ]
-                overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
-                    (V.fromList rows)
-                label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
-                (cur, vis) = case CopyMode.copyCursorPos top fg.fgSy s of
-                    Just p -> (Just p, True)
-                    Nothing -> (Nothing, False)
-            pure PaneView
-                { cells = stampTopRight label copyIndicatorStyle overlaid
-                , rowGens = Nothing
-                , cursor = cur
-                , cursorVisible = vis
-                }
+        Nothing -> live
+        Just (TreeMode _) -> live
+        Just (CopyMode pm) -> copyView pm
   where
+    live = do
+        (scr, gens) <- Emu.snapshotWithGens pane.emulator
+        pure PaneView
+            { cells = scr.cells
+            , rowGens = Just gens
+            , cursor = Just scr.cursor
+            , cursorVisible = scr.cursorVisible
+            }
+    copyView pm = do
+        opts <- readTVarIO st.options
+        let s = pm.copyState
+            fg = pm.frozen
+            hsize = fg.fgHsize
+            top = hsize - s.viewportOffY
+            rows = [ viewportRow fg (top + i) | i <- [0 .. fg.fgSy - 1] ]
+            overlaid = CopyMode.overlaySelection opts.modeStyle opts.modeKeys top s
+                (V.fromList rows)
+            label = "[" <> tshow s.viewportOffY <> "/" <> tshow hsize <> "]"
+            (cur, vis) = case CopyMode.copyCursorPos top fg.fgSy s of
+                Just p -> (Just p, True)
+                Nothing -> (Nothing, False)
+        pure PaneView
+            { cells = stampTopRight label copyIndicatorStyle overlaid
+            , rowGens = Nothing
+            , cursor = cur
+            , cursorVisible = vis
+            }
     viewportRow fg a =
         let row = fromMaybe V.empty (fg.fgRows V.!? a)
         in V.generate fg.fgSx (\c -> fromMaybe Cell.blankCell (row V.!? c))

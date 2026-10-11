@@ -26,6 +26,25 @@ module Hat.Model
     , CopyModeState (..)
     , FrozenGrid (..)
     , PaneMode (..)
+    , CopyModeData (..)
+    , ModeEntry (..)
+    , ModeExit (..)
+    , topMode
+    , modeName
+    , TreeState (..)
+    , TreeKind (..)
+    , TreeOrigin (..)
+    , TreeTag (..)
+    , TreeSort (..)
+    , SortOrder (..)
+    , PreviewSize (..)
+    , PreviewView (..)
+    , GroupView (..)
+    , KillConfirm (..)
+    , ModeZoom (..)
+    , TreePrompt (..)
+    , TreePromptUse (..)
+    , PromptEntry (..)
     , SearchDirection (..)
     , SearchKind (..)
     , flipDirection
@@ -78,7 +97,7 @@ import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -190,6 +209,9 @@ data ServerState = ServerState
     , hooks :: HooksState
         -- ^ hook bindings, monitors, and wait-for channels; see
         --   'Hat.Server.Hooks'.
+    , dispatchTargets :: TVar (Map ThreadId PaneId)
+        -- ^ per thread, the pane a key binding runs against; see
+        --   'Hat.Server.Locate.withDispatchTarget'.
     }
 
 data Session = Session
@@ -242,10 +264,9 @@ data Pane = Pane
     , dead     :: TVar Bool
     , startCwd :: FilePath
     , options  :: TVar OptionsDelta  -- ^ pane-scoped set-option; see 'resolveForPane'
-    , mode     :: TVar (Maybe PaneMode)
-        -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
-        -- its own cursor/selection over a frozen snapshot of the pane's
-        -- scrollback + screen.
+    , modes    :: TVar [ModeEntry]
+        -- ^ the pane's mode stack, innermost (the one shown and fed keys)
+        -- first; empty = normal shell input. See "Hat.Server.PaneMode".
     , pipe     :: TVar (Maybe PipeHandle)
         -- ^ an active @pipe-pane@ subprocess, if any.
     , readerTid :: TVar (Maybe ThreadId)
@@ -330,11 +351,153 @@ data CopyModeState = CopyModeState
     }
     deriving (Eq, Show)
 
+-- | A mode a pane can be in (tmux's @window_mode@): what it draws over the
+-- pane's screen and how it takes keys.
+data PaneMode
+    = CopyMode !CopyModeData
+    | TreeMode !TreeState
+    deriving (Eq, Show)
+
+-- | The mode's name as @#{pane_mode}@ and the mode hooks report it.
+modeName :: PaneMode -> Text
+modeName = \case
+    CopyMode _ -> "copy-mode"
+    TreeMode t -> case t.kind of
+        SessionTree -> "tree-mode"
+        BufferList -> "buffer-mode"
+        ClientList -> "client-mode"
+
+-- | One entry of a pane's mode stack.
+data ModeEntry = ModeEntry
+    { mode   :: !PaneMode
+    , onExit :: !ModeExit
+    }
+    deriving (Eq, Show)
+
+-- | What leaving a mode does to its pane: @-k@ on the mode-entering
+-- commands kills it.
+data ModeExit = KeepPane | KillPane
+    deriving (Eq, Show)
+
+-- | The mode a pane shows and feeds keys to, if any.
+topMode :: Pane -> STM (Maybe PaneMode)
+topMode pane = fmap (.mode) . listToMaybe <$> readTVar pane.modes
+
+-- | A mode-tree screen (tmux's @mode-tree.c@ with one of its list
+-- providers): the browsing state over a list rebuilt from the live server
+-- on every draw and key, so items vanish and appear as the tree changes.
+-- See "Hat.Server.ModeTree" and "Hat.Server.TreeMode".
+data TreeState = TreeState
+    { kind       :: !TreeKind
+    , origin     :: !TreeOrigin
+    , format     :: !Text          -- ^ @-F@: each item's text
+    , keyFormat  :: !(Maybe Text)  -- ^ @-K@; 'Nothing' = tmux's default keys
+    , command    :: !Text          -- ^ the template Enter runs, @%%@ = the item
+    , filter     :: !(Maybe Text)  -- ^ @-f@ or the @f@ prompt
+    , sort       :: !TreeSort
+    , preview    :: !PreviewSize
+    , view       :: !PreviewView
+    , expanded   :: !(Map TreeTag Bool)
+        -- ^ per item, once it has been seen; an unseen item expands
+    , tagged     :: ![TreeTag]
+    , current    :: !(Maybe TreeTag)  -- ^ the selected item
+    , currentIx  :: !Int              -- ^ its line, kept when it vanishes
+    , offset     :: !Int              -- ^ the first line on screen
+    , prompt     :: !(Maybe TreePrompt)
+    , search     :: !(Maybe Text)
+    , hidePane   :: !(Maybe PaneId)   -- ^ @-h@: the pane left out of the list
+    , groups     :: !GroupView
+    , confirm    :: !KillConfirm
+    , zoom       :: !ModeZoom
+    , showHelp   :: !Bool             -- ^ the key help is drawn over the list
+    }
+    deriving (Eq, Show)
+
+-- | Which list a tree mode browses.
+data TreeKind
+    = SessionTree  -- ^ @tree-mode@: sessions, windows, panes (choose-tree)
+    | BufferList   -- ^ @buffer-mode@: paste buffers (choose-buffer)
+    | ClientList   -- ^ @client-mode@: attached clients (choose-client)
+    deriving (Eq, Show)
+
+-- | The target a tree mode was entered with (tmux keeps it as a
+-- @cmd_find_state@).
+data TreeOrigin = TreeOrigin
+    { fromSession :: !SessionId
+    , fromWinlink :: !Int
+    , fromPane    :: !PaneId
+    }
+    deriving (Eq, Show)
+
+-- | A tree item's identity across rebuilds.
+data TreeTag
+    = TagSession !SessionId
+    | TagWinlink !SessionId !Int
+    | TagPane !PaneId
+    | TagBuffer !Int     -- ^ the buffer's order stamp, stable across renames
+    | TagClient !ClientId
+    deriving (Eq, Ord, Show)
+
+-- | The list's sort (@-O@, @-r@, the @O@ and @r@ keys).
+data TreeSort = TreeSort
+    { order    :: !SortOrder
+    , reversed :: !Bool
+    }
+    deriving (Eq, Show)
+
+-- | tmux's @sort_order@.
+data SortOrder
+    = SortActivity | SortCreation | SortIndex | SortModifier | SortName
+    | SortNatural | SortSize | SortZ
+    deriving (Eq, Show)
+
+-- | How much of the screen the preview below the list takes (@-N@, @v@).
+data PreviewSize = PreviewOff | PreviewNormal | PreviewBig
+    deriving (Eq, Show)
+
+-- | What the preview shows: the item's screens, or its details (@i@).
+data PreviewView = ViewPreview | ViewInfo
+    deriving (Eq, Show)
+
+-- | @-G@: whether grouped sessions are each listed, or squashed to one.
+data GroupView = SquashGroups | ShowAllGroups
+    deriving (Eq, Show)
+
+-- | @-y@: whether the kill keys ask first.
+data KillConfirm = AskBeforeKill | KillWithoutAsking
+    deriving (Eq, Show)
+
+-- | @-Z@: whether the mode zoomed its pane on entry, and so unzooms it on
+-- exit.
+data ModeZoom = ModeZoomed | ModeLeftZoom
+    deriving (Eq, Show)
+
+-- | A prompt drawn on the mode's own screen.
+data TreePrompt = TreePrompt
+    { edit  :: !PromptState
+    , use   :: !TreePromptUse
+    , entry :: !PromptEntry
+    }
+    deriving (Eq, Show)
+
+-- | What a tree mode's prompt answers.
+data TreePromptUse
+    = PromptFilter      -- ^ @f@: the new filter
+    | PromptSearch      -- ^ @/@: a search term
+    | PromptKill        -- ^ @x@: confirm killing the selected item
+    | PromptKillTagged  -- ^ @X@: confirm killing the tagged items
+    | PromptCommand     -- ^ @:@: a command for each tagged item
+    deriving (Eq, Show)
+
+-- | Whether a prompt takes a line, or answers on its first key.
+data PromptEntry = PromptLine | PromptSingleKey
+    deriving (Eq, Show)
+
 -- | A pane's active copy mode: a frozen snapshot of the pane's grid
 -- captured on entry, plus the navigation state ('CopyModeState') that
 -- browses it. The snapshot never changes while the mode is open, so
 -- program output produced during copy mode stays invisible until exit.
-data PaneMode = PaneMode
+data CopyModeData = CopyModeData
     { frozen    :: !FrozenGrid
     , copyState :: !CopyModeState
     }
@@ -633,6 +796,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Nothing  -- serverConfig
     <*> newMonitorRegistry
     <*> newHooksState
+    <*> newTVarIO Map.empty  -- dispatchTargets
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

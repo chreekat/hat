@@ -324,10 +324,11 @@ sessionFormatEnv st sess = do
 -- plus @copy_cursor_{x,y,line}@ while in mode.
 paneModeEnv :: Pane -> IO [(Text, Text)]
 paneModeEnv pane = do
-    mmode <- readTVarIO pane.mode
+    mmode <- atomically (topMode pane)
     case mmode of
         Nothing -> pure [("pane_in_mode", "0"), ("pane_mode", "")]
-        Just pm -> do
+        Just m@(TreeMode _) -> pure [("pane_in_mode", "1"), ("pane_mode", modeName m)]
+        Just (CopyMode pm) -> do
             let s = pm.copyState
                 top = pm.frozen.fgHsize - s.viewportOffY
             pure [ ("pane_in_mode", "1")

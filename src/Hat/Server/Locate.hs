@@ -22,11 +22,13 @@ module Hat.Server.Locate
     , noSuchTarget
     , locatePane
     , siblingPane
+    , withDispatchTarget
     ) where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.STM
+import Control.Exception (finally)
 import Control.Monad (forM)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -63,6 +65,7 @@ clientActivePane st client = atomically $ do
 targetSession :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Session)
 targetSession st mclient mtarget = do
     mambSid <- ambientSession st mclient
+    mdispatchSid <- fmap (\(sid, _, _) -> sid) <$> dispatchLoc st
     atomically $ do
       sessions <- readTVar st.sessions
       case mtarget of
@@ -75,6 +78,8 @@ targetSession st mclient mtarget = do
                     || ("$" <> tshow (rawSession sess.id)) == stripped
                     then Just sess else Nothing
             pure (foldr (\m acc -> maybe acc Just m) Nothing found)
+        Nothing | Just sid <- mdispatchSid, Just sess <- Map.lookup sid sessions ->
+            pure (Just sess)
         Nothing -> case mclient of
             Just client -> do
                 sid <- readTVar client.session
@@ -85,25 +90,32 @@ targetSession st mclient mtarget = do
                 Just sess -> pure (Just sess)
                 Nothing -> pure (snd <$> Map.lookupMax sessions)
 
--- | The hook context's target session, for clientless resolution: a hook
--- command with no client and no -t acts on the event's session.
+-- | The target a command with no client view of its own falls back to: a
+-- dispatched key binding's pane ('withDispatchTarget'), whatever the
+-- client; else, for a clientless hook command, the event's session.
 ambientSession :: ServerState -> Maybe Client -> IO (Maybe SessionId)
-ambientSession st = \case
-    Just _ -> pure Nothing
-    Nothing -> do
-        tid <- myThreadId
-        mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
-        pure (mamb >>= (.targetSession))
+ambientSession st mclient = do
+    dispatched <- dispatchLoc st
+    case (dispatched, mclient) of
+        (Just (sid, _, _), _) -> pure (Just sid)
+        (Nothing, Just _) -> pure Nothing
+        (Nothing, Nothing) -> do
+            tid <- myThreadId
+            mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+            pure (mamb >>= (.targetSession))
 
--- | Like 'ambientSession', for the event's window and pane.
+-- | Like 'ambientSession', for the window and pane.
 ambientWindowPane
     :: ServerState -> Maybe Client -> IO (Maybe WindowId, Maybe PaneId)
-ambientWindowPane st = \case
-    Just _ -> pure (Nothing, Nothing)
-    Nothing -> do
-        tid <- myThreadId
-        mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
-        pure (mamb >>= (.targetWindow), mamb >>= (.targetPane))
+ambientWindowPane st mclient = do
+    dispatched <- dispatchLoc st
+    case (dispatched, mclient) of
+        (Just (_, wid, pid), _) -> pure (Just wid, Just pid)
+        (Nothing, Just _) -> pure (Nothing, Nothing)
+        (Nothing, Nothing) -> do
+            tid <- myThreadId
+            mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
+            pure (mamb >>= (.targetWindow), mamb >>= (.targetPane))
 
 -- | Snapshot the server tree for the pure cmd-find core
 -- ('Hat.Server.Target.resolveTarget'). The current state is the client's
@@ -143,6 +155,7 @@ targetWorld st mclient = do
     msid <- traverse (\c -> readTVarIO c.session) mclient
     mambS <- ambientSession st mclient
     (mambW, mambP) <- ambientWindowPane st mclient
+    dispatched <- dispatchLoc st
     let entryById i = List.find (\se -> se.sessionId == i) entries
         -- A clientless hook command's current state is its event's target.
         ambientEntries = maybe entries
@@ -165,7 +178,8 @@ targetWorld st mclient = do
         , paneBase = pbase
         , marked = Target.paneFound entries =<< mmarked
         , clientCurrent = clientCur
-        , current = clientCur <|> tmuxPaneCur <|> ambientCur <|> bestCur
+        , current = (dispatched *> ambientCur)
+            <|> clientCur <|> tmuxPaneCur <|> ambientCur <|> bestCur
         }
   where
     parseDec t = case TR.decimal t of
@@ -266,7 +280,10 @@ targetPane st mclient mtok = case parsePaneTarget mtok of
 -- session.
 currentWindowOf :: ServerState -> Maybe Client -> IO (Maybe Window)
 currentWindowOf st mclient = do
-    mv <- atomically (maybe (pure Nothing) (clientView st) mclient)
+    dispatched <- dispatchLoc st
+    mv <- case dispatched of
+        Just _ -> pure Nothing
+        Nothing -> atomically (maybe (pure Nothing) (clientView st) mclient)
     case mv of
         Just (_, win) -> pure (Just win)
         Nothing -> do
@@ -379,3 +396,28 @@ siblingPane _ win step = atomically $ do
             let pid = order !! ((i + step + length order) `mod` length order)
             in Map.lookup pid ps
         _ -> Nothing
+
+-- | Run commands as a key binding dispatched at a pane (tmux's
+-- @key_bindings_dispatch@ target): commands with no target act on that
+-- pane, its window and session, ahead of any client's own view.
+withDispatchTarget :: ServerState -> PaneId -> IO a -> IO a
+withDispatchTarget st pid act = do
+    tid <- myThreadId
+    old <- atomically $ do
+        m <- readTVar st.dispatchTargets
+        writeTVar st.dispatchTargets (Map.insert tid pid m)
+        pure (Map.lookup tid m)
+    act `finally` atomically
+        (modifyTVar' st.dispatchTargets (Map.alter (const old) tid))
+
+-- | Where the running thread's dispatch target pane lives, if it has one
+-- and the pane still does.
+dispatchLoc :: ServerState -> IO (Maybe (SessionId, WindowId, PaneId))
+dispatchLoc st = do
+    tid <- myThreadId
+    atomically $ do
+        mpid <- Map.lookup tid <$> readTVar st.dispatchTargets
+        case mpid of
+            Nothing -> pure Nothing
+            Just pid -> fmap (\(sid, win) -> (sid, win.id, pid))
+                <$> locatePane st pid

@@ -321,7 +321,7 @@ newPane
 newPane pid pty emu sz dir pending start kind = do
     sizeVar <- newTVarIO sz
     deadVar <- newTVarIO False
-    modeVar <- newTVarIO Nothing
+    modeVar <- newTVarIO []
     pipeVar <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
     homeVar <- newTVarIO Nothing
@@ -338,7 +338,7 @@ newPane pid pty emu sz dir pending start kind = do
         , size = sizeVar
         , dead = deadVar
         , startCwd = dir
-        , mode = modeVar
+        , modes = modeVar
         , options = optionsVar
         , pipe = pipeVar
         , readerTid = readerVar

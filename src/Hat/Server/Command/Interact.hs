@@ -30,10 +30,10 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
-import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientActivePane, clientView, findTarget)
 import Hat.Server.Pane (typeIntoPane)
+import Hat.Server.PaneMode (resetPaneModeAll, setPaneMode)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
@@ -105,54 +105,36 @@ cmdDisplayPanes st mclient args = do
 cmdCopyMode :: CommandImpl
 cmdCopyMode st mclient args = do
     let (opts, flags, _) = parseArgs "st" args
-        quit = "-q" `elem` flags
     res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
     case res of
         Left _ -> pure []
         Right (_, _, _, pane)
-            | quit -> do
-                was <- atomically $ do
-                    old <- readTVar pane.mode
-                    writeTVar pane.mode Nothing
-                    bumpDirty st
-                    pure old
-                forM_ was $ \_ -> do
-                    notifyPane st "pane-mode-changed" pane []
-                    notifyPane st "pane-mode-exited" pane
-                        [ ("mode_entered", PInt 0)
-                        , ("current_mode", PText "")
-                        , ("previous_mode", PText "copy-mode") ]
-                pure []
+            | "-q" `elem` flags -> [] <$ resetPaneModeAll st pane
             | otherwise -> do
-                scr <- Emu.snapshot pane.emulator
-                frozen <- CopyMode.freezeGrid pane.emulator
-                srvOpts <- readTVarIO st.options
-                let table = case srvOpts.modeKeys of
-                        KeysVi -> "copy-mode-vi"
-                        KeysEmacs -> "copy-mode"
-                    startRow = frozen.fgHsize + scr.cursor.row
-                    startCol = scr.cursor.col
-                    state = CopyModeState
-                        { cursorRow = startRow
-                        , cursorCol = startCol
-                        , selection = Nothing
-                        , keyTable = table
-                        , viewportOffY = 0
-                        , numPrefix = Nothing
-                        , pendingSearch = Nothing
-                        , lastSearch = Nothing
-                        , lastQuery = Nothing
-                        }
-                atomically $ do
-                    writeTVar pane.mode (Just PaneMode
-                        { frozen = frozen, copyState = state })
-                    bumpDirty st
-                notifyPane st "pane-mode-changed" pane []
-                notifyPane st "pane-mode-entered" pane
-                    [ ("mode_entered", PInt 1)
-                    , ("current_mode", PText "copy-mode")
-                    , ("previous_mode", PText "") ]
-                pure []
+                let exit = if "-k" `elem` flags then KillPane else KeepPane
+                [] <$ setPaneMode st pane "copy-mode" (startCopyMode pane) exit
+  where
+    startCopyMode pane = do
+        scr <- Emu.snapshot pane.emulator
+        frozen <- CopyMode.freezeGrid pane.emulator
+        srvOpts <- readTVarIO st.options
+        let table = case srvOpts.modeKeys of
+                KeysVi -> "copy-mode-vi"
+                KeysEmacs -> "copy-mode"
+        pure $ CopyMode CopyModeData
+            { frozen = frozen
+            , copyState = CopyModeState
+                { cursorRow = frozen.fgHsize + scr.cursor.row
+                , cursorCol = scr.cursor.col
+                , selection = Nothing
+                , keyTable = table
+                , viewportOffY = 0
+                , numPrefix = Nothing
+                , pendingSearch = Nothing
+                , lastSearch = Nothing
+                , lastQuery = Nothing
+                }
+            }
 
 -- | Open the interactive command prompt on the invoking client.
 -- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line

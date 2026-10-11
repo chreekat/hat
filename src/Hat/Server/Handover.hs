@@ -273,7 +273,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
     sizeVar   <- newTVarIO esz
     deadVar   <- newTVarIO False
-    modeVar   <- newTVarIO Nothing
+    modeVar   <- newTVarIO []
     pipeVar   <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
     homeVar   <- newTVarIO Nothing
@@ -282,7 +282,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     inputOffVar <- newTVarIO False
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
-            , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
+            , dead = deadVar, startCwd = T.unpack psnap.cwd, modes = modeVar
             , options = optionsVar, home = homeVar
             , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing
             , start = case rp.start of
