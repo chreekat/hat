@@ -23,7 +23,7 @@ module Hat.Server.Command.Pane
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Monad (filterM, forM, forM_, unless, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
@@ -38,13 +38,14 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Server.Command.Buffer (storeBuffer)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, unknownFlag)
+import Hat.Server.Format (truthy)
 import Hat.Server.Layout
 import Hat.Model.Options (quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
     ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
-import Hat.Server.Locate (findTarget, locatePane, paneIndexOf, siblingPane, targetPane, withCurrentWindow)
+import Hat.Server.Locate (findTarget, paneIndexOf, siblingPane, targetPane, withCurrentWindow)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, respawnPane
@@ -540,13 +541,30 @@ cmdLastPane st mclient _ =
 -- | Kill the target pane: detach it from the model first so the reflow is
 -- synchronous with the command, then reap the child behind ('killPaneLocs').
 cmdKillPane :: CommandImpl
-cmdKillPane st mclient args = do
-    let (opts, _, _) = parseArgs "t" args
-    mpane <- targetPane st mclient (lookup "-t" opts)
-    forM_ mpane $ \pane -> do
-        mloc <- atomically (locatePane st pane.id)
-        forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
-    pure []
+cmdKillPane st mclient args
+    | Just e <- unknownFlag "kill-pane" "a" flags = pure [RErr e]
+    | Just _ <- lookup "-f" opts, "-a" `notElem` flags =
+        pure [RErr "-f only valid with -a"]
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        case res of
+            Left e -> pure [RErr e]
+            Right (sess, wix, win, pane)
+                | "-a" `elem` flags -> do
+                    atomically (writeTVar win.zoomed Nothing)
+                    others <- filter ((/= pane.id) . (.id))
+                        <$> atomically (windowPanes win)
+                    doomed <- filterM (passes sess wix win) others
+                    [] <$ killPaneLocs st [ (sess.id, win, p) | p <- doomed ]
+                | otherwise -> [] <$ killPaneLocs st [(sess.id, win, pane)]
+  where
+    (opts, flags, _) = parseArgs "ft" args
+    passes sess wix win p = case lookup "-f" opts of
+        Nothing -> pure True
+        Just f -> do
+            pix <- paneIndexOf st win p
+            env <- paneFormatEnv st sess wix win pix p
+            truthy <$> expandFormat st env f
 
 -- | @respawn-pane [-k] [-c dir] [-e VAR=value] [-t pane] [command ...]@:
 -- run a new process in a dead pane, or with @-k@ in a live one.

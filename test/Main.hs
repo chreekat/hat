@@ -39,6 +39,7 @@ import Hat.Server.MruSpec qualified
 import Hat.Server.WinlinkSpec qualified
 import Hat.Server.OptionEffectSpec qualified
 import Hat.Server.OptionsSpec qualified
+import Hat.Server.PaneCommandSpec qualified
 import Hat.Server.PickerSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.ReloadSpec qualified
@@ -97,6 +98,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Mru" Hat.Server.MruSpec.spec
     describe "Hat.Server.Winlink" Hat.Server.WinlinkSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
+    describe "Hat.Server.PaneCommand" Hat.Server.PaneCommandSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Buffer" Hat.Server.BufferSpec.spec

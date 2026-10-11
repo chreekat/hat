@@ -295,6 +295,7 @@ test-suite hat-test
         Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionsSpec
+        Hat.Server.PaneCommandSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec
         Hat.Server.ReloadSpec
