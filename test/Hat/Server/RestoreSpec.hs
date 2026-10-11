@@ -15,7 +15,7 @@ import System.Process (createProcess, getPid, proc, terminateProcess, waitForPro
 import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
 
-import Hat.Geometry (Rect (..), Size (..))
+import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
     (PaneId (..), ServerState (..), Session (..), StartupPhase (..), Window (..),
@@ -35,8 +35,9 @@ import Hat.Server
      IdleArming (..), idleArming,
      renameRestored, uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
-import Hat.Server.Layout (Layout (..))
+import Hat.Server.Layout (fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
     (HotPane (..), HotSession (..), HotWindow (..), ReloadModes (..),
@@ -277,16 +278,14 @@ spec = do
         it "rebuilds a reloaded session at its captured window area" $
             withAdoptablePane $ \(m, sleeper) -> do
             st <- testState
-            let lay = emitLayout
-                    Rect { startRow = 0, endRow = 30, startCol = 0, endCol = 100 }
-                    (Leaf (PaneId 0))
+            let lay = emitLayout (fitLayout Size { rows = 30, cols = 100 } (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = fromIntegral sleeper
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
-                    { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                 rw = HotWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, panes = [(psnap, rp)] }
@@ -306,16 +305,14 @@ spec = do
         it "shares a linked window and a group's window map, adopting each pane once" $
             withAdoptablePane $ \(m, sleeper) -> do
             st <- testState
-            let lay = emitLayout
-                    Rect { startRow = 0, endRow = 24, startCol = 0, endCol = 80 }
-                    (Leaf (PaneId 0))
+            let lay = emitLayout (fitLayout Size { rows = 24, cols = 80 } (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = fromIntegral sleeper
                     , modes = ReloadModes False False 0 False 0
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
-                    { cwd = "/tmp", command = Nothing, shellSpawned = False }
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
                 win wix k l ps = HotWindow
                     { ix = wix, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = k, linkOf = l

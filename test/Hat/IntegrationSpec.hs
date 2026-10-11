@@ -38,15 +38,15 @@ import Data.Vector qualified as V
 import Network.Socket qualified as N
 
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
-import Data.Ratio ((%))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import Hat.Geometry
 import Hat.Model.Ids (PaneId (..))
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
 import Hat.Server.Persist qualified as Persist
 import Hat.Term.Pty (setWinsize)
-import Hat.TestSupport (bashPath)
-import Hat.Server.Layout (Layout (..), Orientation (..), sizeRect)
+import Hat.TestSupport (bashPath, nodeOf)
+import Hat.Server.Layout (Orientation (..), fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
 import Hat.Term.Cell (Cell (..), Style (..))
@@ -859,10 +859,10 @@ spec = parallel $ do
         withHatPersist hatBin $ \h -> do
         -- Seed the store the server reads on startup: two windows, the
         -- second split into two panes.
-        let rect = sizeRect (Size { rows = 24, cols = 80 })
-            lay1 = emitLayout rect (Leaf (PaneId 0))
-            lay2 = emitLayout rect
-                (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
+        let area = Size { rows = 24, cols = 80 }
+            lay1 = emitLayout (fitLayout area (singlePane (PaneId 0)))
+            lay2 = emitLayout (fitLayout area
+                (nodeOf LeftRight [singlePane (PaneId 0), singlePane (PaneId 1)]))
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
@@ -874,12 +874,12 @@ spec = parallel $ do
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }
-                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -897,8 +897,7 @@ spec = parallel $ do
     -- A restored tree comes back at its captured area, not 24x80 (bug 4b).
     it "restores the saved tree at its captured area before any client attaches" $
         withHatPersist hatBin $ \h -> do
-        let rect = sizeRect (Size { rows = 30, cols = 100 })
-            lay = emitLayout rect (Leaf (PaneId 0))
+        let lay = emitLayout (fitLayout (Size { rows = 30, cols = 100 }) (singlePane (PaneId 0)))
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
@@ -911,7 +910,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -925,8 +924,7 @@ spec = parallel $ do
     it "forgets the saved tree when the last window exits (pristine restart)" $
         withHatPersist hatBin $ \h -> do
         -- Seed a saved tree so the autostarted server restores it.
-        let rect = sizeRect (Size { rows = 24, cols = 80 })
-            lay = emitLayout rect (Leaf (PaneId 0))
+        let lay = emitLayout (fitLayout (Size { rows = 24, cols = 80 }) (singlePane (PaneId 0)))
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
@@ -939,7 +937,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1004,8 +1002,7 @@ spec = parallel $ do
     it "lists snapshot generations and restores one by id" $
         withHatPersist hatBin $ \h -> do
         -- Seed a saved tree, as a previous run's kill-server would have.
-        let rect = sizeRect (Size { rows = 24, cols = 80 })
-            lay = emitLayout rect (Leaf (PaneId 0))
+        let lay = emitLayout (fitLayout (Size { rows = 24, cols = 80 }) (singlePane (PaneId 0)))
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
@@ -1018,7 +1015,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False }] }
+                                , key = Nothing, linkOf = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap

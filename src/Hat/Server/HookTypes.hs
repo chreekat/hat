@@ -4,6 +4,9 @@
 -- 'Hat.Model.ServerState' can hold it without a module cycle.
 module Hat.Server.HookTypes
     ( HookScope (..)
+    , NotifyTarget (..)
+    , PayloadItem (..)
+    , EventSink
     , HookEntry (..)
     , MonitorTarget (..)
     , MonitorKey (..)
@@ -28,6 +31,30 @@ import Data.Time.Clock.POSIX (POSIXTime)
 
 import Hat.Model.Ids
 import Hat.Model.OptionTable (ArrayKey)
+
+-- | The object an event happened to, as the scope-chain lookup and the
+-- hook commands' ambient context see it.
+data NotifyTarget = NotifyTarget
+    { session :: Maybe SessionId
+    , window :: Maybe WindowId
+    , pane :: Maybe PaneId
+    }
+    deriving (Eq, Show)
+
+-- | One event payload entry. Refs print in tmux's id syntax; session and
+-- window refs also expose a @_name@ variant to hook formats.
+data PayloadItem
+    = PText Text
+    | PInt Int
+    | PSessionRef SessionId Text
+    | PWindowRef WindowId Text
+    | PPaneRef PaneId
+    | PClientRef Text
+    deriving (Eq, Show)
+
+-- | A listener every built-in event is delivered to (tmux's event sinks),
+-- whether or not hooks run for it.
+type EventSink = Text -> NotifyTarget -> [(Text, PayloadItem)] -> IO ()
 
 -- | Where a hook binding lives. Lookup order on notify is session, global,
 -- pane, window — see 'Hat.Server.Hooks.notify'.
@@ -125,6 +152,9 @@ data HooksState = HooksState
     , knownCommands :: TVar (Set Text)
         -- ^ canonical command names, for validating @after-*@ hook names;
         -- wired alongside 'runner'
+    , sink :: TVar EventSink
+        -- ^ the control-mode notifier; wired at server startup (see
+        --   'Hat.Server.Control.controlSink')
     }
 
 newHooksState :: IO HooksState
@@ -138,3 +168,4 @@ newHooksState = HooksState
     <*> newTVarIO (const (pure ()))
     <*> newTVarIO (\_ t -> pure t)
     <*> newTVarIO Set.empty
+    <*> newTVarIO (\_ _ _ -> pure ())

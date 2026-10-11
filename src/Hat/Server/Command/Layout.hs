@@ -1,179 +1,348 @@
--- | The layout commands: @break-pane@\/@join-pane@ (moving a pane between
--- windows) and the named-layout commands (@select-layout@, @next-layout@,
--- @previous-layout@) that rearrange a window's panes.
+{-# LANGUAGE MultiWayIf #-}
+
+-- | The layout commands: @break-pane@\/@join-pane@\/@move-pane@ (moving a
+-- pane between windows) and @select-layout@\/@next-layout@\/
+-- @previous-layout@ (rearranging a window's panes).
 module Hat.Server.Command.Layout
     ( cmdBreakPane
     , cmdJoinPane
+    , cmdMovePane
     , cmdSelectLayout
     , cmdNextLayout
     , cmdPreviousLayout
-    , parseLayoutName
-    , mainPaneRatio
+    , namedSizesOf
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (unless)
+import Control.Monad (forM_, unless, when)
 import Data.Map.Strict qualified as Map
-import Data.Ratio ((%))
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
+import Data.Text qualified as T
 
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
-import Hat.Server.Command.Window (nextFreeWindowIndex)
+import Hat.Server.ArgNumber (stringPercentage, strtonum)
+import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, unknownFlag)
+import Hat.Server.Command.Window
+    ( SourceLink (..), applyShifts, closeSessions, linkWindow, nextFreeWindowIndex
+    , switchToWindow )
+import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
+import Hat.Server.Hooks (PayloadItem (..), notifyPane, notifyWindow)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
-import Hat.Server.Locate (targetPane, withCurrentWindow)
+import Hat.Server.Locate (findTarget, findWindowIndexTarget, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Pane (removePaneFromTree, wrapPaneInWindow)
-import Hat.Server.Resize (applySessionSize)
+import Hat.Server.Pane (rehomePanes, removePaneFromTree, wrapPaneInWindow)
+import Hat.Server.Resize (applySessionSize, windowArea, windowLayoutAt)
+import Hat.Server.Target qualified as Target
+import Hat.Server.Winlink (attachWindow, shuffleUp)
 
--- | @break-pane [-d] [-t]@: move the active pane into a new window of
--- its own. No-op when it is the window's only pane.
+-- | @break-pane@ (@cmd-break-pane.c@): move the source pane (@-s@, default
+-- the current one) into a new window at the @-t@ index — after (@-a@) or
+-- before (@-b@) the target window, shuffling later windows up — named by
+-- @-n@. A window's only pane moves its whole window instead. The new window
+-- is selected unless @-d@; @-P@ prints where the pane went (@-F@).
 cmdBreakPane :: CommandImpl
-cmdBreakPane st mclient args = do
-    let (_, flags, _) = parseArgs "t" args
-    withCurrentWindow st mclient $ \sess win -> do
-        mactive <- atomically (activePane win)
-        ps <- readTVarIO win.panes
-        case mactive of
-            Just pane | Map.size ps > 1 -> do
-                win2 <- wrapPaneInWindow st pane
-                srvOpts <- readTVarIO st.options
-                atomically $ do
-                    removePaneFromTree st pane.id
-                    ws <- readTVar sess.windows
-                    let ix = nextFreeWindowIndex srvOpts.baseIndex ws
-                    modifyTVar' sess.windows (Map.insert ix win2)
-                    writeTVar pane.home (Just (sess.id, win2))
-                        -- See Note [Pane home]
-                    unless ("-d" `elem` flags) $ do
-                        cur <- readTVar sess.currentIx
-                        modifyTVar' sess.windowHist (recordVisit cur ix)
-                        writeTVar sess.currentIx ix
-                    bumpDirty st
-                applySessionSize st sess.id
-                pure []
-            _ -> pure [RErr "can't break with only one pane"]
-
--- | @join-pane [-h|-v] [-b] -s src [-t dst]@: move the @src@ pane into
--- the destination window (default: the current one), splitting its
--- active pane. Backs the config's @choose-window 'join-pane -?s "%%"'@.
-cmdJoinPane :: CommandImpl
-cmdJoinPane st mclient args = do
-    let (opts, flags, _) = parseArgs "st" args
-        orient | "-h" `elem` flags = LeftRight
-               | otherwise = TopBottom
-        placement = if "-b" `elem` flags then Before else After
-    msrc <- targetPane st mclient (lookup "-s" opts)
-    withCurrentWindow st mclient $ \sess dstWin -> do
-        dstPanes <- readTVarIO dstWin.panes
-        case msrc of
-            Just src | not (Map.member src.id dstPanes) -> do
-                atomically $ do
-                    dstActive <- readTVar dstWin.activeId
-                    removePaneFromTree st src.id
-                    modifyTVar' dstWin.panes (Map.insert src.id src)
-                    writeTVar src.home (Just (sess.id, dstWin))
-                        -- See Note [Pane home]
-                    modifyTVar' dstWin.layout
-                        (splitLeaf dstActive orient placement src.id)
-                    modifyTVar' dstWin.paneHist (recordVisit dstActive src.id)
-                    writeTVar dstWin.activeId src.id
-                    writeTVar dstWin.zoomed Nothing
-                    bumpDirty st
-                applySessionSize st sess.id
-                pure []
-            _ -> pure [RErr "no source pane"]
-
--- | @select-layout <name>@: rearrange the current window's panes into a
--- named layout (@main-vertical@, @even-horizontal@, @tiled@, …). The
--- @main-*@ layouts size their main pane from @main-pane-width@/@-height@.
-cmdSelectLayout :: CommandImpl
-cmdSelectLayout st mclient args = do
-    let (_, _, pos) = parseArgs "t" args
-    case pos of
-        (nameT : _) -> case parseLayoutName nameT of
-            Just lname -> applyNamedLayout st mclient lname
-            Nothing -> applyLayoutString st mclient nameT
-        [] -> pure [RErr "usage: select-layout name"]
-
--- | Reshape the current window to a saved tmux layout string, mapping
--- its geometry onto the window's panes in order (resurrect's restore).
-applyLayoutString :: ServerState -> Maybe Client -> Text -> IO [Reply]
-applyLayoutString st mclient str =
-    withCurrentWindow st mclient $ \sess win -> do
-        ok <- atomically $ do
-            pids <- layoutPanes <$> readTVar win.layout
-            case layoutFromString str pids of
-                Just lay -> do
-                    writeTVar win.layout lay
-                    writeTVar win.layoutName Nothing
-                    writeTVar win.zoomed Nothing
-                    bumpDirty st
-                    pure True
-                Nothing -> pure False
-        if ok
-            then applySessionSize st sess.id >> pure []
-            else pure [RErr ("invalid layout: " <> str)]
-
-parseLayoutName :: Text -> Maybe LayoutName
-parseLayoutName = \case
-    "main-vertical"   -> Just MainVertical
-    "main-horizontal" -> Just MainHorizontal
-    "even-horizontal" -> Just EvenHorizontal
-    "even-vertical"   -> Just EvenVertical
-    "tiled"           -> Just Tiled
-    _                 -> Nothing
-
-applyNamedLayout :: ServerState -> Maybe Client -> LayoutName -> IO [Reply]
-applyNamedLayout st mclient lname =
-    withCurrentWindow st mclient $ \sess win ->
-        arrangeNamed st sess win lname >> pure []
-
--- | The split ratio a named layout gives its main pane. @main-pane-width@ and
--- @main-pane-height@ are absolute cell counts (tmux semantics); expressed here
--- as a fraction of the window along the layout's axis, clamped so both the main
--- pane and the rest keep room. Non-main layouts split evenly.
-mainPaneRatio :: LayoutName -> Options -> Size -> Rational
-mainPaneRatio lname opts area = case lname of
-    MainVertical   -> ratioOf opts.mainPaneWidth area.cols
-    MainHorizontal -> ratioOf opts.mainPaneHeight area.rows
-    _              -> 1 % 2
+cmdBreakPane st mclient args
+    | Just e <- unknownFlag "break-pane" "abdPW" flags = pure [RErr e]
+    | "-W" `elem` flags = pure [RErr "break-pane -W (floating panes) is not implemented"]
+    | f : _ <- [ f | f <- ["-x", "-X", "-y", "-Y"], isJust (lookup f opts) ] =
+        pure [RErr ("break-pane " <> f <> " (floating panes) is not implemented")]
+    | otherwise = do
+        srcRes <- findTarget st mclient Target.FindPane (lookup "-s" opts)
+        dstRes <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        case (srcRes, dstRes) of
+            (Left e, _) -> pure [RErr e]
+            (_, Left e) -> pure [RErr e]
+            (Right (ssess, swix, swin, pane), Right (dst, mix)) -> do
+                atomically $ writeTVar swin.zoomed Nothing
+                npanes <- Map.size <$> readTVarIO swin.panes
+                if npanes == 1
+                    then breakWholeWindow ssess swix swin pane dst
+                    else breakOut ssess swix swin pane dst mix
   where
-    clampR r = max (1 % 10) (min (9 % 10) r) :: Rational
-    ratioOf num den = clampR (toInteger num % max 1 (toInteger den))
+    (opts, flags, _) = parseArgs "FnstxXyY" args
+    detached = "-d" `elem` flags
+    shuffle = if
+        | "-b" `elem` flags -> Just 0
+        | "-a" `elem` flags -> Just 1
+        | otherwise -> Nothing
+    -- tmux relinks a lone pane's window rather than rebuilding it.
+    breakWholeWindow ssess swix swin pane dst = do
+        let srcTok = "$" <> tshow (rawSession ssess.id) <> ":" <> tshow swix
+            dstTok = fromMaybe "" (lookup "-t" opts)
+            linkFlags = filter (`elem` ["-a", "-b", "-d"]) flags
+            linkOpts = [("-s", srcTok)] <> [ ("-t", dstTok) | isJust (lookup "-t" opts) ]
+        replies <- linkWindow DropSource st mclient linkOpts linkFlags
+        case [ e | RErr e <- replies ] of
+            e : _ -> pure [RErr e]
+            [] -> do
+                forM_ (lookup "-n" opts) $ \nm -> atomically $ do
+                    writeTVar swin.name nm
+                    writeTVar swin.autoRename False
+                links <- atomically $ do
+                    ws <- readTVar dst.windows
+                    pure [ ix | (ix, w) <- Map.toList ws, w.id == swin.id ]
+                case links of
+                    nix : _ -> do
+                        movedNotice pane (swin, swix) (swin, nix)
+                        printed dst nix swin pane
+                    [] -> pure []
+    breakOut ssess swix swin pane dst mix = do
+        sopts <- atomically (resolveForSession st dst)
+        ws0 <- readTVarIO dst.windows
+        cur <- readTVarIO dst.currentIx
+        let anchor = case mix of
+                Just i | Map.member i ws0 -> i
+                _ -> cur
+            (shifts, requested) = case shuffle of
+                Just off -> let ix = anchor + off in (shuffleUp ix ws0, Just ix)
+                Nothing -> ([], mix)
+            ws1 = applyShifts shifts ws0
+        case requested of
+            Just ix | Map.member ix ws1 -> pure [RErr ("index in use: " <> tshow ix)]
+            _ -> do
+                win2 <- wrapPaneInWindow st pane
+                forM_ (lookup "-n" opts) $ \nm -> atomically $ do
+                    writeTVar win2.name nm
+                    writeTVar win2.autoRename False
+                (ix, emptied) <- atomically $ do
+                    let remap i = fromMaybe i (lookup i shifts)
+                    modifyTVar' dst.windows (applyShifts shifts)
+                    modifyTVar' dst.currentIx remap
+                    modifyTVar' dst.windowHist (map remap)
+                    emptied <- removePaneFromTree st pane.id
+                    ws <- readTVar dst.windows
+                    let ix = fromMaybe (nextFreeWindowIndex sopts.baseIndex ws) requested
+                    _ <- attachWindow st dst ix win2
+                    rehomePanes dst.id win2  -- See Note [Pane home]
+                    bumpDirty st
+                    pure (ix, emptied)
+                closeSessions st emptied
+                unless detached (switchToWindow st dst ix)
+                notifyWindow st "window-layout-changed" (Just ssess.id) swin []
+                movedNotice pane (swin, swix) (win2, ix)
+                applySessionSize st ssess.id
+                applySessionSize st dst.id
+                printed dst ix win2 pane
+    printed dst ix win pane
+        | "-P" `elem` flags = do
+            let fmt = fromMaybe "#{session_name}:#{window_index}.#{pane_index}"
+                    (lookup "-F" opts)
+            pix <- paneIndexOf st win pane
+            env <- paneFormatEnv st dst ix win pix pane
+            (\o -> [ROutput o]) <$> expandFormat st env fmt
+        | otherwise = pure []
+    movedNotice pane (ow, oix) (nw, nix) = do
+        own <- readTVarIO ow.name
+        nwn <- readTVarIO nw.name
+        paneMoved st pane (ow, own, oix) (nw, nwn, nix)
 
--- | Rearrange one window into a named layout, sizing the @main-*@ pane
--- from @main-pane-width@/@-height@, and remember the name so
--- @next-layout@ can cycle onward from it.
-arrangeNamed :: ServerState -> Session -> Window -> LayoutName -> IO ()
-arrangeNamed st sess win lname = do
-    eff <- readTVarIO sess.lastSize
-    opts <- readTVarIO st.options
-    let mainRatio = mainPaneRatio lname opts (eff)
-    atomically $ do
-        pids <- layoutPanes <$> readTVar win.layout
-        unless (null pids) $ do
-            writeTVar win.layout (namedLayout lname mainRatio pids)
-            writeTVar win.layoutName (Just lname)
-            writeTVar win.zoomed Nothing
-            bumpDirty st
-    applySessionSize st sess.id
+-- | tmux's @window_fire_pane_moved@.
+paneMoved :: ServerState -> Pane -> (Window, Text, Int) -> (Window, Text, Int) -> IO ()
+paneMoved st pane (ow, own, oix) (nw, nwn, nix) = notifyPane st "pane-moved" pane
+    [ ("window", PWindowRef nw.id nwn)
+    , ("old_window", PWindowRef ow.id own)
+    , ("new_window", PWindowRef nw.id nwn)
+    , ("old_window_index", PInt oix)
+    , ("window_index", PInt nix)
+    , ("new_window_index", PInt nix) ]
 
--- | @next-layout@ (default @<prefix> Space@): rearrange the current
--- window into the next of tmux's five named layouts, cycling from the
--- last one applied. @previous-layout@ walks the cycle the other way.
+-- | @join-pane@ (@cmd-join-pane.c@): move the source pane (@-s@, else the
+-- marked pane, else the current one) into the target pane's window, split
+-- off the target like @split-window@ (@-h@\/@-v@, @-b@, @-f@, @-l@\/@-p@).
+-- An emptied source window is destroyed. Unless @-d@, the moved pane
+-- becomes active and its window current.
+cmdJoinPane :: CommandImpl
+cmdJoinPane st mclient args
+    | Just e <- unknownFlag "join-pane" "bdfhv" flags = pure [RErr e]
+    | otherwise = do
+        dstRes <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        srcTok <- maybe (markedTarget st) (pure . Just) (lookup "-s" opts)
+        srcRes <- findTarget st mclient Target.FindPane srcTok
+        case (dstRes, srcRes) of
+            (Left e, _) -> pure [RErr e]
+            (_, Left e) -> pure [RErr e]
+            (Right dst, Right src) -> joinPane st dst src opts flags
+  where
+    (opts, flags, _) = parseArgs "lpst" args
+
+-- | @move-pane@: on this tmux branch it repositions a /floating/ pane, and
+-- hat has none, so every pane it can target is refused as tmux refuses a
+-- tiled one. @-M@ without a mouse event does nothing.
+cmdMovePane :: CommandImpl
+cmdMovePane st mclient args
+    | Just e <- unknownFlag "move-pane" "bdDfhLMRUv" flags = pure [RErr e]
+    | "-M" `elem` flags = pure []
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        pure $ case res of
+            Left e -> [RErr e]
+            Right _ -> [RErr "pane is not floating"]
+  where
+    (opts, flags, _) = parseArgs "lPstXYz" args
+
+joinPane
+    :: ServerState -> (Session, Int, Window, Pane) -> (Session, Int, Window, Pane)
+    -> [(Text, Text)] -> [Text] -> IO [Reply]
+joinPane st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) opts flags = do
+    atomically $ writeTVar dwin.zoomed Nothing >> writeTVar swin.zoomed Nothing
+    if spane.id == dpane.id
+        then pure [RErr "source and target panes must be different"]
+        else do
+            eff <- atomically (windowArea st dwin)
+            lay <- atomically (windowLayoutAt eff dwin)
+            let expand t = sessionFormatEnv st dsess >>= \env -> expandFormat st env t
+            let orient = if "-h" `elem` flags then LeftRight else TopBottom
+                spanning = if "-f" `elem` flags then SpanWindow else SpanPane
+                whole = case spanning of
+                    SpanWindow -> eff
+                    SpanPane -> maybe eff layoutArea (paneCell dpane.id lay)
+                cur = case orient of
+                    LeftRight -> fromIntegral whole.cols
+                    TopBottom -> fromIntegral whole.rows
+            msize <- case (lookup "-l" opts, lookup "-p" opts) of
+                (Just l, _) -> do
+                    v <- case T.stripSuffix "%" l of
+                        Just body -> (<> "%") <$> expand body
+                        Nothing -> expand l
+                    pure (Just <$> stringPercentage 0 maxBound cur v)
+                (Nothing, Just p) -> do
+                    v <- expand p
+                    pure (Just . (\n -> cur * n `div` 100) <$> strtonum 0 100 v)
+                _ -> pure (Right Nothing)
+            case msize of
+                Left e -> pure [RErr ("size or position invalid tiled geometry " <> e)]
+                Right size -> do
+                    let spec = SplitSpec
+                            { orient = orient, size = size
+                            , placement = if "-b" `elem` flags then Before else After
+                            , span = spanning }
+                        -- The new cell is cut before the source's old one
+                        -- closes, so it is planned under a stand-in id.
+                        placeholder = PaneId (-1)
+                    r <- atomically $ do
+                        dlay <- windowLayoutAt eff dwin
+                        case splitPane spec dpane.id placeholder dlay of
+                            Nothing -> pure (Left "size or position no space for a new pane")
+                            Just dlay' -> do
+                                writeTVar dwin.layout dlay'
+                                emptied <- removePaneFromTree st spane.id
+                                modifyTVar' dwin.layout
+                                    (swapLeaves placeholder spane.id)
+                                modifyTVar' dwin.panes (Map.insert spane.id spane)
+                                writeTVar spane.home (Just (dsess.id, dwin))  -- See Note [Pane home]
+                                unless ("-d" `elem` flags) $ do
+                                    a <- readTVar dwin.activeId
+                                    when (a /= spane.id) $ do
+                                        modifyTVar' dwin.paneHist (recordVisit a spane.id)
+                                        writeTVar dwin.activeId spane.id
+                                bumpDirty st
+                                pure (Right emptied)
+                    case r of
+                        Left e -> pure [RErr e]
+                        Right emptied -> do
+                            closeSessions st emptied
+                            unless ("-d" `elem` flags) (switchToWindow st dsess dwix)
+                            own <- readTVarIO swin.name
+                            nwn <- readTVarIO dwin.name
+                            paneMoved st spane (swin, own, swix) (dwin, nwn, dwix)
+                            alive <- not . Map.null <$> readTVarIO swin.panes
+                            when (alive && swin.id /= dwin.id) $
+                                notifyWindow st "window-layout-changed" (Just ssess.id) swin []
+                            notifyWindow st "window-layout-changed" (Just dsess.id) dwin []
+                            applySessionSize st ssess.id
+                            applySessionSize st dsess.id
+                            pure []
+
+-- | @select-layout@ (@cmd-select-layout.c@): apply a named layout (a unique
+-- prefix will do), the last one applied when none is named, or a layout
+-- string; @-n@\/@-p@ step through the named layouts like @next-layout@\/
+-- @previous-layout@ and @-E@ spreads the target pane's siblings evenly.
+cmdSelectLayout :: CommandImpl
+cmdSelectLayout st mclient args
+    | Just e <- unknownFlag "select-layout" "Enop" flags = pure [RErr e]
+    | "-o" `elem` flags = pure [RErr "select-layout -o is not implemented"]
+    | otherwise = withLayoutTarget st mclient (lookup "-t" opts) $ \sess win pane -> if
+        | "-n" `elem` flags -> stepLayout st sess win nextLayoutName
+        | "-p" `elem` flags -> stepLayout st sess win previousLayoutName
+        | "-E" `elem` flags -> relayout st sess win (pure . Right . spreadOut pane.id)
+        | otherwise -> case pos of
+            [] -> do
+                mlast <- readTVarIO win.layoutName
+                maybe (pure []) (applyNamed st sess win) mlast
+            name : _ -> case lookupLayoutName name of
+                Just n -> applyNamed st sess win n
+                Nothing -> do
+                    pids <- atomically (map (.id) <$> windowPanes win)
+                    relayout st sess win $ \_ -> pure $ case layoutFromString name pids of
+                        Left cause -> Left (cause <> ": " <> name)
+                        Right lay -> Right lay
+  where
+    (opts, flags, pos) = parseArgs "t" args
+
 cmdNextLayout :: CommandImpl
-cmdNextLayout = cycleLayout nextLayoutName
+cmdNextLayout = cycleLayout "next-layout" nextLayoutName
 
 cmdPreviousLayout :: CommandImpl
-cmdPreviousLayout = cycleLayout previousLayoutName
+cmdPreviousLayout = cycleLayout "previous-layout" previousLayoutName
 
-cycleLayout :: (Maybe LayoutName -> LayoutName) -> CommandImpl
-cycleLayout step st mclient _ =
-    withCurrentWindow st mclient $ \sess win -> do
-        cur <- readTVarIO win.layoutName
-        arrangeNamed st sess win (step cur)
-        pure []
+cycleLayout :: Text -> (Maybe LayoutName -> LayoutName) -> CommandImpl
+cycleLayout name step st mclient args
+    | Just e <- unknownFlag name "" flags = pure [RErr e]
+    | otherwise = withLayoutTarget st mclient (lookup "-t" opts) $ \sess win _ ->
+        stepLayout st sess win step
+  where
+    (opts, flags, _) = parseArgs "t" args
+
+withLayoutTarget
+    :: ServerState -> Maybe Client -> Maybe Text
+    -> (Session -> Window -> Pane -> IO [Reply]) -> IO [Reply]
+withLayoutTarget st mclient mtarget body = do
+    res <- findTarget st mclient Target.FindPane mtarget
+    case res of
+        Left e -> pure [RErr e]
+        Right (sess, _, win, pane) -> do
+            atomically $ writeTVar win.zoomed Nothing
+            body sess win pane
+
+stepLayout :: ServerState -> Session -> Window -> (Maybe LayoutName -> LayoutName) -> IO [Reply]
+stepLayout st sess win step = do
+    cur <- readTVarIO win.layoutName
+    applyNamed st sess win (step cur)
+
+-- | Arrange a window into a named layout and remember it, so @next-layout@
+-- cycles onward from it and a bare @select-layout@ reapplies it.
+applyNamed :: ServerState -> Session -> Window -> LayoutName -> IO [Reply]
+applyNamed st sess win name = do
+    eff <- atomically (windowArea st win)
+    sizes <- namedSizesOf <$> atomically (resolveForWindow st sess win)
+    atomically $ writeTVar win.layoutName (Just name)
+    relayout st sess win $ \lay -> pure . Right $
+        fromMaybe lay (namedLayout sizes eff name (layoutPanes lay))
+
+-- | The named layouts' sizing options. @other-pane-width@\/@-height@ and
+-- @tiled-layout-max-columns@ are not hat options yet, so they keep tmux's
+-- defaults.
+namedSizesOf :: Options -> NamedSizes
+namedSizesOf opts = defaultNamedSizes
+    { mainWidth = tshow opts.mainPaneWidth
+    , mainHeight = tshow opts.mainPaneHeight }
+
+-- | Replace a window's layout (fitted to its area first) and announce it.
+relayout
+    :: ServerState -> Session -> Window -> (Layout -> IO (Either Text Layout))
+    -> IO [Reply]
+relayout st sess win change = do
+    eff <- atomically (windowArea st win)
+    lay <- atomically (windowLayoutAt eff win)
+    r <- change lay
+    case r of
+        Left e -> pure [RErr e]
+        Right lay' -> do
+            atomically $ writeTVar win.layout lay' >> bumpDirty st
+            applySessionSize st sess.id
+            notifyWindow st "window-layout-changed" (Just sess.id) win []
+            pure []

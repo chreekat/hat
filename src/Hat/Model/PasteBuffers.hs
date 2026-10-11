@@ -13,6 +13,8 @@ module Hat.Model.PasteBuffers
     , pasteSet
     , pasteRename
     , pasteFree
+    , BufferChange (..)
+    , pasteChanges
     , cleanBufferName
     , pasteSample
     , pasteVisSafe
@@ -139,6 +141,18 @@ pasteRename old new s
 
 pasteFree :: Text -> PasteStore -> PasteStore
 pasteFree n s = s { byName = Map.delete n s.byName }
+
+-- | How a buffer changed between two stores: tmux's paste-buffer events.
+data BufferChange = BufferDeleted | BufferChanged
+    deriving (Eq, Show)
+
+-- | The buffers a store update deleted, then those it added or replaced,
+-- each in name order.
+pasteChanges :: PasteStore -> PasteStore -> [(BufferChange, Text)]
+pasteChanges old new =
+    [ (BufferDeleted, n) | n <- Map.keys (Map.difference old.byName new.byName) ]
+    <> [ (BufferChanged, n)
+       | (n, pb) <- Map.toList new.byName, Map.lookup n old.byName /= Just pb ]
 
 -- | tmux's @clean_name@: a name must be printable UTF-8; backslashes are
 -- escaped.

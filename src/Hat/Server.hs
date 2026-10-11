@@ -69,7 +69,7 @@ module Hat.Server
     , noteOuterFocus  -- ^ exported for the focus-in-clears test
     , attentionSeen  -- ^ exported for the outer-focus gating test
     , deliversKey  -- ^ exported for the focus-event gating test
-    , mainPaneRatio  -- ^ exported for the main-pane-size test
+    , namedSizesOf  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
     , escTiming  -- ^ exported for the escape-time effect test
     , toastDeadline  -- ^ exported for the display-time effect test
@@ -353,7 +353,7 @@ data IdleInputs = IdleInputs
 data IdleVerdict
     = StayUp
     | TearDown  -- ^ end the sessions it still holds ('shutDownServer')
-    | ExitNow
+    | ExitServer
     deriving (Eq, Show)
 
 -- | Whether the server may exit: it has served at least one connection,
@@ -379,7 +379,7 @@ serverIdle i
     | i.idleSessions > 0 =
         if i.idleExitUnattached then TearDown else StayUp
     | i.idleClients > 0 || i.idlePanes > 0 = StayUp
-    | i.idleExitEmpty || i.idleShutdown == ShuttingDown = ExitNow
+    | i.idleExitEmpty || i.idleShutdown == ShuttingDown = ExitServer
     | otherwise = StayUp
 
 -- Exit once every session is gone, every attached client has drained and

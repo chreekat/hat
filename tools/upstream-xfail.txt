@@ -7,8 +7,6 @@ border-arrows.sh                # wontfix: hat deliberately draws triangle indic
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
 check-names.sh                  # allow-rename/allow-set-title behavior + UTF-8 name validation + OSC-2 sanitizing + buffer -F listing
 combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
-control-client-sanity.sh
-control-client-size.sh
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
 # tabs to spaces in the grid, so a copied tab-indented line comes back
 # as spaces where upstream keeps a literal \t. Needs emulator-level tab
@@ -20,7 +18,7 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-floating-pane-geometry.sh
+floating-pane-geometry.sh       # floating panes (new-pane, move-pane -X/-Y/-P/-z, break-pane -W) unimplemented
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh
@@ -37,7 +35,6 @@ screen-redraw-scrollbars.sh
 screen-redraw-status.sh
 screen-redraw-tiled.sh
 screen-redraw-window-style.sh
-session-group-resize.sh         # control mode (-C new, refresh-client -C) + per-window sizes (hat sizes a group's shared windows per session)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
@@ -47,14 +44,9 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # (flake input tmux-src). Each reason names the unimplemented subsystem
 # the script hinges on.
 
-# control mode (-C): whole subsystem unimplemented
-control-client-exit.sh          # no %-notification / exit handshake
-control-client-wait-exit.sh     # no wait-exit / %exit lifecycle
-control-notify-events.sh        # no %window-renamed/%layout-change/%sessions-changed
-control-subscriptions.sh        # no refresh-client -B / %subscription-changed
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # needs pane-mode-changed + title stack + respawn-pane + pane-moved + resize-pane -x/-y + client-* hooks + control mode
+hooks-notify.sh                 # #{pane_in_mode} of the hook's pane in pane-mode-changed + title stack (CSI 22/23 t) + default-shell option + client-* hooks
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
 choose-buffer.sh                # choose-buffer + mode-screen rendering unimplemented
@@ -63,7 +55,7 @@ choose-tree.sh                  # needs list-clients + interactive mode-screen
 customize-mode.sh               # customize-mode unimplemented
 display-panes.sh                # display-panes mode + display-panes-format unimplemented
 modal-pane.sh                   # modal/floating panes (pane_modal_flag, new-pane -O) unimplemented
-mode-kill.sh                    # mode -k (kill-pane-on-exit) flag unimplemented
+mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes + display-panes-format
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
 # copy-mode advanced motions/options
@@ -74,7 +66,7 @@ copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/sele
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
-format-modifiers.sh             # new-pane floating panes (P/z order) + -C control-mode attach (L loop)
+format-modifiers.sh             # new-pane floating panes (P/z order)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
@@ -107,12 +99,12 @@ input-requests.sh               # OSC 4/OSC 52 requests not forwarded to the out
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 
 
-pane-ops.sh                     # split-window -l/-Z/-e/-s, new-window -E/-I, resize-pane -T, respawn -E (empty panes)
+pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot cross the Text wire) + split-window -s (window-style option)
 
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
 session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
-lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} tree-mode) + control-mode %-notifications + refresh-client -B
+lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
 screen-redraw-fill-character.sh # needs fill-character + floating panes

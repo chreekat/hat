@@ -13,7 +13,8 @@ import Hat.Geometry (Rect (..), Size (..))
 import Hat.Model
 import Hat.Model.Options (emptyDelta)
 import Hat.Server.Flash (lingerDeadline, flashExpired)
-import Hat.Server.Layout (Layout (..), Orientation (..))
+import Hat.Server.Layout (Orientation (..), singlePane)
+import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame, tintInnerRing)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.View (flashTarget)
@@ -85,7 +86,7 @@ splitWindow :: IO Window
 splitWindow = do
     win <- Window (WindowId 0)
         <$> newTVarIO "w"
-        <*> newTVarIO (Split LeftRight (1 / 2) (Leaf (PaneId 1)) (Leaf (PaneId 2)))
+        <*> newTVarIO (nodeOf LeftRight [singlePane (PaneId 1), singlePane (PaneId 2)])
         <*> newTVarIO Nothing
         <*> newTVarIO Map.empty
         <*> newTVarIO (PaneId 1)
@@ -115,6 +116,7 @@ flashStubPane pid = do
     homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
     exitedV <- newTVarIO Nothing
+    inputOffV <- newTVarIO False
     pure Pane
         { id = pid
         , pty = error "flashStubPane: pty never touched"
@@ -130,4 +132,6 @@ flashStubPane pid = do
         , pendingInput = Nothing
         , start = FreshShell
         , exited = exitedV
+        , kind = ProgramPane
+        , inputOff = inputOffV
         }

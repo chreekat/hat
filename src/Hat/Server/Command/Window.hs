@@ -26,6 +26,9 @@ module Hat.Server.Command.Window
     , cmdRotateWindow
     , closeSessions
     , switchTo
+    , switchToWindow
+    , SourceLink (..)
+    , linkWindow
     ) where
 
 import Control.Concurrent.STM
@@ -57,8 +60,9 @@ import Hat.Server.Locate
     (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
 import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
-    ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, newWindowWithPane
-    , paneShell, shellStart, pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
+    ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, launchOf, newWindowWithPane
+    , paneShell, pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
+    , withDefaultCommand
     , windowActivity )
 import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
 import Hat.Server.FormatEnv
@@ -143,7 +147,8 @@ selectNamed nm named = case [ix | (ix, n) <- named, n == nm] of
 
 cmdNewWindow :: CommandImpl
 cmdNewWindow st mclient args
-    | Just e <- unknownFlag "new-window" "abdkPS" flags = pure [RErr e]
+    | Just e <- unknownFlag "new-window" "abdEkPS" flags = pure [RErr e]
+    | Left e <- launchOf ("-E" `elem` flags) pos = pure [RErr e]
     | otherwise = do
         res <- findWindowIndexTarget st mclient (lookup "-t" opts)
         case res of
@@ -191,17 +196,16 @@ createWindow st sess opts flags pos requested = do
             environ <- sessionSpawnEnv st sess
             sopts <- atomically (resolveForSession st sess)
             shellCmd <- paneShell sopts
-            let mrun = case pos of
-                    [] -> Nothing
-                    ws -> Just (T.unwords ws)
+            let (how, kind) = either (const (FreshShell, ProgramPane)) id
+                    (launchOf ("-E" `elem` flags) pos)
             dir <- case lookup "-c" opts of
                 Nothing -> readTVarIO sess.startCwd
                 Just d -> do
                     env <- sessionFormatEnv st sess
                     T.unpack <$> expandFormat st env d
             (win, pane) <- newWindowWithPane st sess.id shellCmd
-                (shellStart (optionText "default-command" sopts) mrun) dir
-                environ eff
+                (withDefaultCommand (optionText "default-command" sopts) how) kind
+                dir environ eff
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False

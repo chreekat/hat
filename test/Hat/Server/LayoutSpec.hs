@@ -2,10 +2,10 @@
 
 module Hat.Server.LayoutSpec (spec) where
 
-import Control.Monad (forM_)
+import Control.Monad (foldM, forM_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Ratio ((%))
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Test.Hspec
@@ -16,23 +16,26 @@ import Hat.Geometry
 import Hat.Model.Ids
 import Hat.Model.Options (WindowSizeMode (..))
 import Hat.Server.Layout
+import Hat.TestSupport (nodeOf)
 
--- Random split trees over distinct pane ids, bounded depth.
-genLayout :: Int -> Gen Layout
-genLayout depth = go depth 0 >>= pure . fst
+-- Random layouts grown the way commands grow them: split after split of
+-- random panes, any orientation, size, side and span, at a random window
+-- size (a split with no room is skipped).
+genLayout :: Gen Layout
+genLayout = do
+    w <- chooseInt (1, 60)
+    h <- chooseInt (1, 30)
+    n <- chooseInt (0, 8)
+    let start = fitLayout (Size (fromIntegral h) (fromIntegral w)) (singlePane (PaneId 0))
+    foldM grow start [1 .. n]
   where
-    go :: Int -> Int -> Gen (Layout, Int)
-    go d next
-        | d <= 0 = pure (Leaf (PaneId next), next + 1)
-        | otherwise = frequency
-            [ (1, pure (Leaf (PaneId next), next + 1))
-            , (2, do
-                o <- elements [LeftRight, TopBottom]
-                r <- choose (0.2, 0.8 :: Double)
-                (a, n1) <- go (d - 1) next
-                (b, n2) <- go (d - 1) n1
-                pure (Split o (toRational r) a b, n2))
-            ]
+    grow lay k = do
+        target <- elements (layoutPanes lay)
+        o <- elements [LeftRight, TopBottom]
+        sz <- oneof [pure Nothing, Just <$> chooseInt (0, 40)]
+        pl <- elements [Before, After]
+        sp <- elements [SpanPane, SpanWindow]
+        pure (fromMaybe lay (splitPane (SplitSpec o sz pl sp) target (PaneId k) lay))
 
 -- Shrink toward 'PaneNext' so a failing 'PanePrev' case also reports as
 -- 'PaneNext' if that simpler case reproduces it.
@@ -43,6 +46,9 @@ instance Arbitrary PaneCycle where
 
 windowRect :: Rect
 windowRect = Rect { startRow = 0, endRow = 40, startCol = 0, endCol = 120 }
+
+windowSize :: Size
+windowSize = Size { rows = 40, cols = 120 }
 
 -- Any small rect, degenerate sizes included: a tree starved of space
 -- must still tile, never spilling a cell outside the window.
@@ -58,10 +64,34 @@ cellsOf :: Rect -> [(Int, Int)]
 cellsOf r = [(row, col) | row <- [r.startRow .. r.endRow - 1]
                         , col <- [r.startCol .. r.endCol - 1]]
 
+leaf :: Int -> Layout
+leaf = singlePane . PaneId
+
+-- A pane's cell size as (width, height).
+cellOf :: Int -> Layout -> Maybe (Int, Int)
+cellOf n lay = (\c -> (c.sx, c.sy)) <$> paneCell (PaneId n) lay
+
+split1
+    :: Orientation -> Maybe Int -> Placement -> SplitSpan -> Int -> Int -> Layout
+    -> Maybe Layout
+split1 o sz pl sp target new = splitPane (SplitSpec o sz pl sp) (PaneId target) (PaneId new)
+
+-- Every node's children exactly fill it, their offsets laid out in order.
+consistent :: Layout -> Bool
+consistent l = case l.cell of
+    LeafCell _ -> True
+    NodeCell o cs -> all consistent cs && case o of
+        LeftRight -> all (\c -> c.sy == l.sy && c.yoff == l.yoff) cs
+            && sum [ c.sx + 1 | c <- cs ] - 1 == l.sx
+            && and (zipWith (\a b -> b.xoff == a.xoff + a.sx + 1) cs (drop 1 cs))
+        TopBottom -> all (\c -> c.sx == l.sx && c.xoff == l.xoff) cs
+            && sum [ c.sy + 1 | c <- cs ] - 1 == l.sy
+            && and (zipWith (\a b -> b.yoff == a.yoff + a.sy + 1) cs (drop 1 cs))
+
 spec :: Spec
 spec = do
     prop "panes and borders tile the window exactly, at any size" $
-        forAll ((,) <$> genLayout 3 <*> genTileRect) $ \(lay, rect) ->
+        forAll ((,) <$> genLayout <*> genTileRect) $ \(lay, rect) ->
             let (rects, borders) = arrange rect lay
                 paneCells = concatMap (cellsOf . snd) rects
                 borderCells = [(p.row, p.col) | (p, _) <- borders]
@@ -70,98 +100,120 @@ spec = do
             in length allCells === Set.size cellSet  -- no cell covered twice
                 .&&. cellSet === Set.fromList (cellsOf rect)
 
+    prop "splits, closes and resizes keep every node exactly filled" $
+        forAll genLayout $ \lay ->
+            let ps = layoutPanes lay
+                closed = mapMaybe (`removePane` lay) ps
+                resized = [ resizePane p o d lay
+                          | p <- ps, o <- [LeftRight, TopBottom], d <- [-3, 5] ]
+            in conjoin (map (property . consistent) (lay : closed <> resized))
+
+    prop "fitting to the layout's own size changes nothing" $
+        forAll genLayout $ \lay -> fitLayout (layoutArea lay) lay === lay
+
     -- A split of an already-empty rect once fabricated a one-row child
     -- outside the window.
     it "keeps a space-starved nested split inside the window" $ do
         let rect = Rect { startRow = 0, endRow = 2, startCol = 0, endCol = 4 }
-            lay = Split TopBottom (1 % 2) (Leaf (PaneId 1))
-                (Split TopBottom (1 % 2) (Leaf (PaneId 2)) (Leaf (PaneId 3)))
+            lay = nodeOf TopBottom [leaf 1, nodeOf TopBottom [leaf 2, leaf 3]]
             inside r = r.startRow >= 0 && r.endRow <= 2
                 && r.startCol >= 0 && r.endCol <= 4
         all (inside . snd) (fst (arrange rect lay)) `shouldBe` True
 
     describe "border junctions" $ do
         let smallRect = Rect { startRow = 0, endRow = 5, startCol = 0, endCol = 5 }
-            a = PaneId 0; b = PaneId 1; c = PaneId 2; d = PaneId 3
             glyphAt r co lay =
                 List.lookup (Pos { row = r, col = co }) (snd (arrange smallRect lay))
 
         it "joins a divider ending against a perpendicular one with a tee" $
             -- A vertical divider in the top half meets the full-width
             -- horizontal divider from above: ┴ (up + left + right).
-            glyphAt 2 2
-                (Split TopBottom (1 % 2)
-                    (Split LeftRight (1 % 2) (Leaf a) (Leaf b))
-                    (Leaf c))
+            glyphAt 2 2 (nodeOf TopBottom [nodeOf LeftRight [leaf 0, leaf 1], leaf 2])
                 `shouldBe` Just '\x2534'
 
         it "joins two dividers crossing with a full cross" $
             -- Both halves split at the same row, straddling the central
             -- vertical divider: ┼ (all four arms).
             glyphAt 2 2
-                (Split LeftRight (1 % 2)
-                    (Split TopBottom (1 % 2) (Leaf a) (Leaf b))
-                    (Split TopBottom (1 % 2) (Leaf c) (Leaf d)))
+                (nodeOf LeftRight
+                    [nodeOf TopBottom [leaf 0, leaf 1], nodeOf TopBottom [leaf 2, leaf 3]])
                 `shouldBe` Just '\x253c'
 
-    prop "splitting adds exactly the new pane" $
-        forAll (genLayout 3) $ \lay ->
-            let pids = layoutPanes lay
-                newPid = PaneId 999
-            in case pids of
+    describe "splitPane" $ do
+        let one = fitLayout Size { rows = 24, cols = 80 } (leaf 0)
+        it "halves a pane, the extra cell going to the first" $
+            (split1 LeftRight Nothing After SpanPane 0 1 one >>= cellOf 0)
+                `shouldBe` Just (40, 24)
+        it "gives the new pane the requested size, the rest less the border to the old" $ do
+            let lay = split1 LeftRight (Just 20) After SpanPane 0 1 one
+            (lay >>= cellOf 1) `shouldBe` Just (20, 24)
+            (lay >>= cellOf 0) `shouldBe` Just (59, 24)
+        it "puts the new pane first under Before" $
+            fmap layoutPanes (split1 TopBottom Nothing Before SpanPane 0 1 one)
+                `shouldBe` Just [PaneId 1, PaneId 0]
+        it "under SpanWindow spans the whole window, the rest shrinking proportionally" $ do
+            -- tmux pane-ops: 80x24 split -h -l 20, then -v -l 25% of the
+            -- left pane, then a full-height 10-column pane before them all.
+            let lay = split1 LeftRight (Just 20) After SpanPane 0 1 one
+                    >>= split1 TopBottom (Just 6) After SpanPane 0 2
+                    >>= split1 LeftRight (Just 10) Before SpanWindow 0 3
+            (lay >>= cellOf 3) `shouldBe` Just (10, 24)
+            (lay >>= cellOf 0) `shouldBe` Just (50, 17)
+            (lay >>= cellOf 2) `shouldBe` Just (50, 6)
+            fmap layoutPanes lay `shouldBe` Just (map PaneId [3, 0, 2, 1])
+        it "refuses a pane too small to hold two" $
+            split1 LeftRight Nothing After SpanPane 0 1
+                (fitLayout Size { rows = 24, cols = 2 } (leaf 0))
+                `shouldBe` Nothing
+        prop "adds exactly the new pane" $
+            forAll genLayout $ \lay -> case layoutPanes lay of
                 [] -> property Discard
-                (target : _) ->
-                    let lay' = splitLeaf target LeftRight After newPid lay
-                    in Set.fromList (layoutPanes lay')
-                        === Set.insert newPid (Set.fromList pids)
+                target : _ -> case splitPane (SplitSpec LeftRight Nothing After SpanPane)
+                        target (PaneId 999) lay of
+                    Nothing -> property Discard
+                    Just lay' -> Set.fromList (layoutPanes lay')
+                        === Set.insert (PaneId 999) (Set.fromList (layoutPanes lay))
 
-    prop "removing a split pane restores the original pane set" $
-        forAll (genLayout 3) $ \lay ->
-            let pids = layoutPanes lay
-                target = last pids
-                newPid = PaneId 999
-                lay' = splitLeaf target TopBottom Before newPid lay
-            in fmap (Set.fromList . layoutPanes) (removeLeaf newPid lay')
-                === Just (Set.fromList pids)
-
-    prop "removing the only pane empties the layout" $ \n ->
-        removeLeaf (PaneId n) (Leaf (PaneId n)) === Nothing
-
-    describe "splitFull" $ do
-        it "makes the new pane a full-height sibling of the whole tree" $ do
-            -- Two stacked panes; a full -h split adds a full-height column
-            -- on the right, so its rect spans the entire window height.
-            let stacked = Split TopBottom 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
-                lay' = splitFull LeftRight After (PaneId 9) stacked
-                (rects, _) = arrange windowRect lay'
-            case List.lookup (PaneId 9) rects of
-                Nothing -> expectationFailure "new pane has no rect"
-                Just r -> (r.startRow, r.endRow) `shouldBe` (0, 40)
-        it "adds exactly the new pane to the set" $
-            forAll (genLayout 3) $ \lay ->
-                Set.fromList (layoutPanes (splitFull TopBottom Before (PaneId 999) lay))
-                    === Set.insert (PaneId 999) (Set.fromList (layoutPanes lay))
+    describe "removePane" $ do
+        let three = fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1, leaf 2])
+            widths ns l = mapMaybe (\n -> fst <$> cellOf n l) ns
+        it "gives a pane's space to its next sibling" $
+            fmap (widths [1, 2]) (removePane (PaneId 0) three)
+                `shouldBe` Just (case widths [0, 1, 2] three of
+                    [a, b, c] -> [a + 1 + b, c]
+                    other -> other)
+        it "gives a last pane's space to its previous sibling" $
+            fmap (widths [0, 1]) (removePane (PaneId 2) three)
+                `shouldBe` Just (case widths [0, 1, 2] three of
+                    [a, b, c] -> [a, b + 1 + c]
+                    other -> other)
+        prop "removing a split-off pane restores the original pane set" $
+            forAll genLayout $ \lay -> case splitPane
+                    (SplitSpec TopBottom Nothing Before SpanPane)
+                    (last (layoutPanes lay)) (PaneId 999) lay of
+                Nothing -> property Discard
+                Just lay' -> fmap (Set.fromList . layoutPanes) (removePane (PaneId 999) lay')
+                    === Just (Set.fromList (layoutPanes lay))
+        prop "removing the only pane empties the layout" $ \n ->
+            removePane (PaneId n) (singlePane (PaneId n)) === Nothing
 
     describe "swapLeaves" $ do
-        it "exchanges two panes' positions" $ do
-            let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
-            swapLeaves (PaneId 0) (PaneId 1) two
-                `shouldBe` Split LeftRight 0.5 (Leaf (PaneId 1)) (Leaf (PaneId 0))
-        it "preserves the pane set and is its own inverse" $
-            forAll (genLayout 3) $ \lay -> case layoutPanes lay of
-                (a : b : _) ->
-                    swapLeaves a b (swapLeaves a b lay) === lay
+        it "exchanges two panes' positions" $
+            layoutPanes (swapLeaves (PaneId 0) (PaneId 1) (nodeOf LeftRight [leaf 0, leaf 1]))
+                `shouldBe` [PaneId 1, PaneId 0]
+        it "is its own inverse" $
+            forAll genLayout $ \lay -> case layoutPanes lay of
+                (a : b : _) -> swapLeaves a b (swapLeaves a b lay) === lay
                 _ -> property Discard
 
     describe "paneOrder" $
         it "numbers panes in layout order, not creation order" $ do
-            let lay = Split LeftRight 0.5 (Leaf (PaneId 7)) (Leaf (PaneId 3))
+            let lay = nodeOf LeftRight [leaf 7, leaf 3]
                 ps = Map.fromList [(PaneId 3, ()), (PaneId 7, ())]
             paneOrder lay ps `shouldBe` [PaneId 7, PaneId 3]
 
     describe "rotateLeaves" $ do
-        let three = Split LeftRight 0.5 (Leaf (PaneId 0))
-                (Split TopBottom 0.5 (Leaf (PaneId 1)) (Leaf (PaneId 2)))
+        let three = nodeOf LeftRight [leaf 0, nodeOf TopBottom [leaf 1, leaf 2]]
         it "-U moves each pane to the previous position" $
             layoutPanes (rotateLeaves RotateUp three)
                 `shouldBe` map PaneId [1, 2, 0]
@@ -169,29 +221,64 @@ spec = do
             layoutPanes (rotateLeaves RotateDown three)
                 `shouldBe` map PaneId [2, 0, 1]
         it "keeps the shape, and -D undoes -U" $
-            forAll (genLayout 3) $ \lay ->
+            forAll genLayout $ \lay ->
                 rotateLeaves RotateDown (rotateLeaves RotateUp lay) === lay
+
+    describe "resizePane" $ do
+        let two = fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1])
+            column = fitLayout windowSize (nodeOf TopBottom [leaf 0, leaf 1])
+            width n l = fst <$> cellOf n l
+            height n l = snd <$> cellOf n l
+        it "moves the shared border right from either side of it" $ do
+            width 0 (resizePane (PaneId 0) LeftRight 10 two) `shouldBe` Just 70
+            width 0 (resizePane (PaneId 1) LeftRight 10 two) `shouldBe` Just 70
+        it "moves the shared border left from either side of it" $ do
+            width 0 (resizePane (PaneId 0) LeftRight (-10) two) `shouldBe` Just 50
+            width 0 (resizePane (PaneId 1) LeftRight (-10) two) `shouldBe` Just 50
+        it "moves the shared border down and up" $ do
+            height 0 (resizePane (PaneId 1) TopBottom 10 column) `shouldBe` Just 30
+            height 0 (resizePane (PaneId 0) TopBottom (-10) column) `shouldBe` Just 10
+        it "takes the space from the nearest sibling that has some" $ do
+            -- A | B | C with B at its minimum: growing A shrinks C.
+            let abc = fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1, leaf 2])
+                squeezed = resizePaneTo (PaneId 1) LeftRight 1 abc
+                grown = resizePane (PaneId 0) LeftRight 5 squeezed
+            width 1 grown `shouldBe` Just 1
+            fmap (+ 5) (width 0 squeezed) `shouldBe` width 0 grown
+            fmap (subtract 5) (width 2 squeezed) `shouldBe` width 2 grown
+        it "keeps every pane at least one cell wide" $ do
+            let lay = iterate (resizePane (PaneId 0) LeftRight 30) two !! 10
+            map (`width` lay) [0, 1] `shouldSatisfy` all (maybe False (>= 1))
+        it "resizes to an absolute size, a last pane through its left border" $ do
+            width 1 (resizePaneTo (PaneId 1) LeftRight 20 two) `shouldBe` Just 20
+            width 0 (resizePaneTo (PaneId 0) LeftRight 20 two) `shouldBe` Just 20
+
+    describe "fitLayout" $
+        it "never shrinks a pane below one cell, overhanging the window instead" $
+            layoutArea (fitLayout Size { rows = 1, cols = 1 }
+                (fitLayout windowSize (nodeOf LeftRight [leaf 0, leaf 1, leaf 2])))
+                `shouldBe` Size { rows = 1, cols = 5 }
 
     describe "namedLayout" $ do
         let pids4 = map PaneId [0, 1, 2, 3]
-        it "main-vertical gives the main pane the requested width share" $ do
-            -- window 120 wide; main share 90 -> main pane ~90 cols on the left
-            -- (one column goes to the border between it and the stack).
-            let lay = namedLayout MainVertical (90 % 120) pids4
-                (rects, _) = arrange windowRect lay
-            case List.lookup (PaneId 0) rects of
-                Just r -> do
-                    r.startCol `shouldBe` 0
-                    r.endCol `shouldSatisfy` (\c -> c >= 88 && c <= 90)
-                Nothing -> expectationFailure "main pane missing"
-        it "preserves the full pane set for every layout" $
-            [ Set.fromList (layoutPanes (namedLayout n (1 % 2) pids4))
-            | n <- [EvenHorizontal, EvenVertical, MainVertical, MainHorizontal, Tiled] ]
-                `shouldSatisfy` all (== Set.fromList pids4)
-        it "even-horizontal splits four panes into equal columns" $ do
-            let (rects, _) = arrange windowRect (namedLayout EvenHorizontal (1 % 2) pids4)
-                widths = [ r.endCol - r.startCol | (_, r) <- rects ]
-            maximum widths - minimum widths `shouldSatisfy` (<= 1)
+            cells name = do
+                lay <- namedLayout defaultNamedSizes windowSize name pids4
+                traverse (`cellOf` lay) [0, 1, 2, 3]
+        it "even-horizontal shares the width, the remainder going first" $
+            cells EvenHorizontal `shouldBe` Just [(30, 40), (29, 40), (29, 40), (29, 40)]
+        it "main-vertical gives the main pane main-pane-width columns" $
+            cells MainVertical `shouldBe` Just [(80, 40), (39, 13), (39, 13), (39, 12)]
+        it "main-horizontal-mirrored puts the others above the main pane" $
+            fmap layoutPanes (namedLayout defaultNamedSizes windowSize MainHorizontalMirrored pids4)
+                `shouldBe` Just (map PaneId [1, 2, 3, 0])
+        it "tiled makes a grid, the last row and column taking the slack" $
+            cells Tiled `shouldBe` Just [(59, 19), (60, 19), (59, 20), (60, 20)]
+        it "leaves a lone pane alone" $
+            namedLayout defaultNamedSizes windowSize Tiled [PaneId 0] `shouldBe` Nothing
+        it "is found by a unique prefix" $ do
+            lookupLayoutName "even-h" `shouldBe` Just EvenHorizontal
+            lookupLayoutName "main-v" `shouldBe` Nothing
+            lookupLayoutName "main-vertical" `shouldBe` Just MainVertical
 
     describe "nextLayoutName/previousLayoutName" $ do
         -- tmux's layout cycle pinned from every point in both directions:
@@ -200,9 +287,11 @@ spec = do
             [ (Nothing, EvenHorizontal, Tiled)
             , (Just EvenHorizontal, EvenVertical, Tiled)
             , (Just EvenVertical, MainHorizontal, EvenHorizontal)
-            , (Just MainHorizontal, MainVertical, EvenVertical)
-            , (Just MainVertical, Tiled, MainHorizontal)
-            , (Just Tiled, EvenHorizontal, MainVertical)
+            , (Just MainHorizontal, MainHorizontalMirrored, EvenVertical)
+            , (Just MainHorizontalMirrored, MainVertical, MainHorizontal)
+            , (Just MainVertical, MainVerticalMirrored, MainHorizontalMirrored)
+            , (Just MainVerticalMirrored, Tiled, MainVertical)
+            , (Just Tiled, EvenHorizontal, MainVerticalMirrored)
             ] $ \(from, next, previous) ->
             it (show from <> ": next " <> show next
                     <> ", previous " <> show previous) $ do
@@ -277,9 +366,8 @@ spec = do
         -- +-------+-------+
         -- |   2   |   3   |
         -- +-------+-------+
-        let quad = Split TopBottom 0.5
-                (Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1)))
-                (Split LeftRight 0.5 (Leaf (PaneId 2)) (Leaf (PaneId 3)))
+        let quad = nodeOf TopBottom
+                [nodeOf LeftRight [leaf 0, leaf 1], nodeOf LeftRight [leaf 2, leaf 3]]
             (rects, _) = arrange windowRect quad
         -- Adjacent panes in each direction; at an edge, wrap to the far
         -- side of the same row or column.
@@ -308,11 +396,8 @@ spec = do
         -- +---+---+---+
         -- Bug 3b: a wrap crosses the whole window, so every column stays
         -- reachable by repeating the same direction.
-        let columns = Split LeftRight (1 % 3)
-                (Leaf (PaneId 0))
-                (Split LeftRight 0.5
-                    (Leaf (PaneId 1))
-                    (Split TopBottom 0.5 (Leaf (PaneId 2)) (Leaf (PaneId 3))))
+        let columns = nodeOf LeftRight
+                [leaf 0, nodeOf LeftRight [leaf 1, nodeOf TopBottom [leaf 2, leaf 3]]]
             (colRects, _) = arrange windowRect columns
         it "wraps past a middle column to the far column" $
             neighbor colRects (PaneId 0) DirLeft `shouldBe` Just (PaneId 2)
@@ -322,72 +407,10 @@ spec = do
     describe "directionalTarget" $ do
         -- Resolving against the full layout (not a zoom-collapsed one) is
         -- what lets prefix+hjkl move away from a zoomed pane. See bug 5.
-        let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
+        let two = nodeOf LeftRight [leaf 0, leaf 1]
             sz = Size { rows = 24, cols = 80 }
         it "moves to the neighbor computed from the full split layout" $
             directionalTarget sz two (PaneId 0) DirRight `shouldBe` Just (PaneId 1)
-
-    describe "resizeSplit" $ do
-        let two = Split LeftRight 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
-            column = Split TopBottom 0.5 (Leaf (PaneId 0)) (Leaf (PaneId 1))
-            paneRect pid lay = List.lookup pid (fst (arrange windowRect lay))
-            widthOf pid lay = fmap (\r -> r.endCol - r.startCol) (paneRect pid lay)
-            heightOf pid lay = fmap (\r -> r.endRow - r.startRow) (paneRect pid lay)
-        it "moves the divider right from either side of it" $ do
-            widthOf (PaneId 0) (resizeSplit (PaneId 0) DirRight 10 windowRect two)
-                `shouldBe` Just 70
-            widthOf (PaneId 0) (resizeSplit (PaneId 1) DirRight 10 windowRect two)
-                `shouldBe` Just 70
-        it "moves the divider left from either side of it" $ do
-            widthOf (PaneId 0) (resizeSplit (PaneId 0) DirLeft 10 windowRect two)
-                `shouldBe` Just 50
-            widthOf (PaneId 0) (resizeSplit (PaneId 1) DirLeft 10 windowRect two)
-                `shouldBe` Just 50
-        it "moves the divider down from either side of it" $ do
-            heightOf (PaneId 0) (resizeSplit (PaneId 0) DirDown 10 windowRect column)
-                `shouldBe` Just 30
-            heightOf (PaneId 0) (resizeSplit (PaneId 1) DirDown 10 windowRect column)
-                `shouldBe` Just 30
-        it "moves the divider up from either side of it" $ do
-            heightOf (PaneId 0) (resizeSplit (PaneId 0) DirUp 10 windowRect column)
-                `shouldBe` Just 10
-            heightOf (PaneId 0) (resizeSplit (PaneId 1) DirUp 10 windowRect column)
-                `shouldBe` Just 10
-        it "moves the pane's own right border, not a divider inside its subtree" $ do
-            -- L | M | R, with L|M nested inside the outer split.
-            let nested = Split LeftRight (1 % 2)
-                    (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
-                    (Leaf (PaneId 2))
-                lay' = resizeSplit (PaneId 1) DirRight 10 windowRect nested
-            case lay' of
-                Split LeftRight outer (Split LeftRight _ _ _) (Leaf _) ->
-                    outer `shouldBe` (1 % 2 + 10 % 119)
-                _ -> expectationFailure "resize reshaped the tree"
-            fmap (.startCol) (paneRect (PaneId 2) lay') `shouldBe` Just 71
-            map (`widthOf` lay') [PaneId 0, PaneId 1, PaneId 2]
-                `shouldBe` [Just 30, Just 39, Just 49]
-        -- Bug a1: a resize moves one border. Ratios are relative, so a naive
-        -- outer-split change rescales the dividers nested inside it.
-        it "leaves the dividers inside the neighbouring subtree where they were" $ do
-            -- A | B | C, with A|B nested inside the outer split.
-            let nested = Split LeftRight (1 % 2)
-                    (Split LeftRight (1 % 2) (Leaf (PaneId 0)) (Leaf (PaneId 1)))
-                    (Leaf (PaneId 2))
-                grown = resizeSplit (PaneId 2) DirLeft 10 windowRect nested
-                shrunk = resizeSplit (PaneId 2) DirRight 10 windowRect nested
-            map (`widthOf` nested) [PaneId 0, PaneId 1, PaneId 2]
-                `shouldBe` [Just 30, Just 29, Just 59]
-            -- C grows leftward: only its neighbour B pays for it.
-            map (`widthOf` grown) [PaneId 0, PaneId 1, PaneId 2]
-                `shouldBe` [Just 30, Just 19, Just 69]
-            -- C shrinks: only B takes the space back.
-            map (`widthOf` shrunk) [PaneId 0, PaneId 1, PaneId 2]
-                `shouldBe` [Just 30, Just 39, Just 49]
-        it "keeps every pane at least one cell wide" $ do
-            let lay' = iterate (resizeSplit (PaneId 0) DirRight 30 windowRect) two !! 10
-                (rects, _) = arrange windowRect lay'
-            [r.endCol - r.startCol | (_, r) <- rects]
-                `shouldSatisfy` all (>= 1)
 
     describe "effectiveWindowSize (window-size)" $ do
         let big = Size { rows = 50, cols = 200 }
@@ -425,19 +448,19 @@ spec = do
         let fallback = Size { rows = 3, cols = 10 }
             client = Size { rows = 24, cols = 80 }
         it "gives a detached session its full size (no status line drawn)" $
-            sessionWindowArea 1 SizeSmallest fallback [] `shouldBe` fallback
+            sessionWindowArea SizeSmallest fallback [] `shouldBe` fallback
         it "carves one status row from an attached client's viewport" $
-            sessionWindowArea 1 SizeSmallest fallback [(1, client)]
+            sessionWindowArea SizeSmallest fallback [(1, client, 1)]
                 `shouldBe` Size { rows = 23, cols = 80 }
         it "carves nothing when status is off, even attached" $
-            sessionWindowArea 0 SizeSmallest fallback [(1, client)]
+            sessionWindowArea SizeSmallest fallback [(1, client, 0)]
                 `shouldBe` client
         it "carves the full status height for a multi-line bar" $
-            sessionWindowArea 3 SizeSmallest fallback [(1, client)]
+            sessionWindowArea SizeSmallest fallback [(1, client, 3)]
                 `shouldBe` Size { rows = 21, cols = 80 }
         it "never carves a manual size, attached or not" $
-            sessionWindowArea 1 SizeManual fallback [(1, client)]
+            sessionWindowArea SizeManual fallback [(1, client, 1)]
                 `shouldBe` fallback
         it "never carves below a single row" $
-            sessionWindowArea 1 SizeLatest fallback [(1, Size { rows = 1, cols = 5 })]
+            sessionWindowArea SizeLatest fallback [(1, Size { rows = 1, cols = 5 }, 1)]
                 `shouldBe` Size { rows = 1, cols = 5 }

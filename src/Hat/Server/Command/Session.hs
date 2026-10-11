@@ -19,9 +19,9 @@ module Hat.Server.Command.Session
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (filterM, forM, forM_, unless, when)
+import Control.Monad (filterM, forM, forM_, guard, unless, when)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Environment (getEnvironment)
@@ -29,6 +29,9 @@ import System.Environment (getEnvironment)
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.Mru (recordVisit)
+import Hat.Server.Command.Pane (noteActiveChange)
+import Hat.Server.Command.Window (switchToWindow)
 import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
@@ -42,7 +45,7 @@ import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , windowHolders )
 import Hat.Server.Resize (defaultSizeOf)
-import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv (clientFormatVars, expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Winlink (groupMembers)
 import Hat.Transport.Wire (ServerToClient (DetachOk))
@@ -119,7 +122,8 @@ cmdNewSession st mclient args
     clientContext = case mclient of
         Just c -> do
             csz <- readTVarIO c.size
-            pure (c.env, T.unpack c.cwd, Just csz)
+            -- A control client's size never shapes a session it creates.
+            pure (c.env, T.unpack c.cwd, csz <$ guard (isNothing c.control))
         Nothing -> do
             -- Config-loaded or otherwise clientless: inherit the server
             -- process env so shells find PATH, SHELL, etc.
@@ -429,10 +433,9 @@ cmdListClients st mclient args = do
                         , maybe True (== sid) msid -> do
                             senv <- sessionFormatEnv st sess
                             sname <- readTVarIO sess.name
+                            cvars <- clientFormatVars c
                             let env = Map.union (Map.fromList
-                                    [ ("client_session", sname)
-                                    , ("client_name", "client"
-                                        <> tshow (rawClient c.id)) ]) senv
+                                    (("client_session", sname) : cvars)) senv
                             out <- expandFormat st env $ fromMaybe
                                 "#{session_name}" (lookup "-F" opts)
                             pure [ROutput out]
@@ -535,6 +538,21 @@ cmdSwitchClient st mclient args = do
                 case mapMaybe (`Map.lookup` sessions) hist of
                     []         -> pure [RErr "no last session"]
                     (sess : _) -> attachClient st client sess >> pure []
+            -- A target naming a window or pane also makes it current there.
+            | Just t <- lookup "-t" opts, T.any (`elem` (":.%" :: String)) t || t == "=" -> do
+                res <- findTarget st mclient Target.FindPane (Just t)
+                case res of
+                    Left e -> pure [RErr e]
+                    Right (sess, ix, win, pane) -> do
+                        noteActiveChange st win $ atomically $ do
+                            active <- readTVar win.activeId
+                            when (active /= pane.id) $ do
+                                modifyTVar' win.paneHist (recordVisit active pane.id)
+                                writeTVar win.activeId pane.id
+                                bumpDirty st
+                        switchToWindow st sess ix
+                        attachClient st client sess
+                        pure []
             | otherwise ->
                 withTargetSession st mclient (lookup "-t" opts) $ \sess ->
                     attachClient st client sess >> pure []

@@ -87,10 +87,12 @@ library
         Hat.Model.Ids
         Hat.Model.OptionTable
         Hat.Model.Options
+        Hat.Model.PaneKind
         Hat.Model.PasteBuffers
         Hat.Path
         Hat.PtrEq
         Hat.Server
+        Hat.Server.ArgNumber
         Hat.Server.ClientIO
         Hat.Server.ClientSession
         Hat.Server.ColorScheme
@@ -108,6 +110,9 @@ library
         Hat.Server.Command.Wait
         Hat.Server.Command.Window
         Hat.Server.Conn
+        Hat.Server.Control
+        Hat.Server.ControlQueue
+        Hat.Server.ControlTypes
         Hat.Server.CopyMode
         Hat.Server.Dispatch
         Hat.Server.DisplayPanes
@@ -286,6 +291,7 @@ test-suite hat-test
         Hat.Server.CaptureSpec
         Hat.Server.ColorSchemeSpec
         Hat.Server.ConfigSpec
+        Hat.Server.ControlSpec
         Hat.Server.CopyModeSpec
         Hat.Server.DisplayPanesSpec
         Hat.Server.EnvironSpec
@@ -301,6 +307,7 @@ test-suite hat-test
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionParseSpec
         Hat.Server.OptionsSpec
+        Hat.Server.PaneCommandSpec
         Hat.Server.PaneReaderSpec
         Hat.Server.PickerSpec
         Hat.Server.PromptSpec

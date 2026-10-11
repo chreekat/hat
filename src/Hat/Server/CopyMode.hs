@@ -82,6 +82,7 @@ import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
 import Hat.Model.PasteBuffers (pasteAdd)
+import Hat.Server.Hooks (notifyPasteChanges)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
@@ -1096,7 +1097,11 @@ yankSelection st pane s = do
 pushBuffer :: ServerState -> Text -> IO ()
 pushBuffer st body = do
     now <- floor <$> getPOSIXTime
-    atomically $ do
+    (old, new) <- atomically $ do
         limit <- optionNumber "buffer-limit" <$> readTVar st.options
-        modifyTVar' st.buffers (pasteAdd limit "buffer" now (TE.encodeUtf8 body))
+        old <- readTVar st.buffers
+        let new = pasteAdd limit "buffer" now (TE.encodeUtf8 body) old
+        writeTVar st.buffers new
         bumpDirty st
+        pure (old, new)
+    notifyPasteChanges st old new

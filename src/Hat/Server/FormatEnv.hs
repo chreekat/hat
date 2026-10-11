@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , expandFormat
     , WindowFlagState (..)
     , windowFlags
+    , clientFormatVars
     ) where
 
 import Control.Concurrent (forkIO, myThreadId)
@@ -23,7 +24,7 @@ import Control.Monad (filterM, forM, forM_, void, when)
 import Data.IORef
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -45,6 +46,9 @@ import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Locate (locatePane, paneIndexOf)
+import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
+import Hat.Server.Resize (windowArea)
+import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -53,7 +57,7 @@ import Hat.Term.Pty qualified
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = do
     base <- sessionFormatEnv st sess
-    eff <- readTVarIO sess.lastSize
+    eff <- atomically (windowArea st win)
     (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
         <$> readTVar win.name <*> readTVar win.layout
         <*> readTVar sess.currentIx <*> (listToMaybe <$> readTVar sess.windowHist)
@@ -77,7 +81,12 @@ windowFormatEnv st sess ix win = do
         [ ("window_index", tshow ix)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
-        , ("window_layout", emitLayout (sizeRect (eff)) lay)
+        , ("window_width", tshow eff.cols)
+        , ("window_height", tshow eff.rows)
+        , ("window_layout", emitLayout (fitLayout eff lay))
+        , ("window_visible_layout", emitLayout
+            (fitLayout eff (maybe lay singlePane zoom)))
+        , ("window_raw_flags", flags)
         , ("window_active", if ix == cur then "1" else "0")
         , ("window_flags", flags)
         , ("window_panes", tshow (Map.size ps))
@@ -107,8 +116,17 @@ paneFormatEnv st sess wix win pix pane = do
     pendingWrap <- Emu.cursorPendingWrap pane.emulator
     active <- readTVarIO win.activeId
     sz <- readTVarIO pane.size
+    area <- atomically (windowArea st win)
+    geom <- atomically $ do
+        zoomed <- readTVar win.zoomed
+        lay <- fitLayout area <$> readTVar win.layout
+        pure $ if zoomed == Just pane.id
+            then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
+            else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
     paneUser <- deltaFormats <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
+    (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
+    title <- Emu.title pane.emulator
     -- A signal is reported by number, as tmux does where libc has no
     -- @sys_signame@ (glibc).
     let deadVars = case mexit of
@@ -118,13 +136,19 @@ paneFormatEnv st sess wix win pix pane = do
                 , ("pane_dead_time", tshow (floor e.diedAt :: Integer)) ]
                 <> [ ("pane_dead_status", tshow n) | Just n <- [e.status] ]
                 <> [ ("pane_dead_signal", tshow n) | Just n <- [e.signal] ]
-    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <>
+    -- Only a pane with its program still running has a pid (tmux: an open fd).
+    let pidVars = [ ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
+                  | pane.kind == ProgramPane, isNothing mexit ]
+    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <> pidVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
-        , ("pane_pid", tshow (Hat.Term.Pty.pid pane.pty))
         , ("pane_current_path", T.pack dir)
         , ("pane_current_command", cmd)
         , ("pane_active", if pane.id == active then "1" else "0")
+        , ("pane_marked", if marked == Just pane.id then "1" else "0")
+        , ("pane_marked_set", if isJust marked then "1" else "0")
+        , ("pane_input_off", if inputOff then "1" else "0")
+        , ("pane_title", title)
         , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
         , ("cursor_y", tshow scr.cursor.row)
         , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
@@ -133,7 +157,25 @@ paneFormatEnv st sess wix win pix pane = do
         , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        ]) wenv
+        ] <> panePositionVars area geom) wenv
+
+-- | A pane's position in its window (tmux's @pane_left@ … @pane_at_bottom@),
+-- from its cell: @(xoff, yoff, width, height)@.
+panePositionVars :: Size -> Maybe (Int, Int, Int, Int) -> [(Text, Text)]
+panePositionVars area = \case
+    Nothing -> []
+    Just (x, y, w, h) ->
+        [ ("pane_left", tshow x)
+        , ("pane_top", tshow y)
+        , ("pane_right", tshow (x + w - 1))
+        , ("pane_bottom", tshow (y + h - 1))
+        , ("pane_at_left", flag (x == 0))
+        , ("pane_at_top", flag (y == 0))
+        , ("pane_at_right", flag (x + w == fromIntegral area.cols))
+        , ("pane_at_bottom", flag (y + h == fromIntegral area.rows))
+        ]
+  where
+    flag b = if b then "1" else "0"
 
 -- | 'paneFormatEnv' for a pane named only by id: locate its window and
 -- session first.
@@ -424,8 +466,27 @@ loopPaneEnvs st env = do
 loopClientEnvs :: ServerState -> IO [FormatEnv]
 loopClientEnvs st = do
     cs <- Map.elems <$> readTVarIO st.clients
-    pure [ Map.fromList [("client_name", "client" <> tshow (rawClient c.id))]
-         | c <- cs, c.role == Attached ]
+    mapM (fmap Map.fromList . clientFormatVars) [ c | c <- cs, c.role == Attached ]
+
+-- | A client's own format variables.
+clientFormatVars :: Client -> IO [(Text, Text)]
+clientFormatVars c = do
+    controlFlags <- case c.control of
+        Nothing -> pure []
+        Just cs -> do
+            fl <- readTVarIO cs.flags
+            pure $ ["control-mode"]
+                <> [ "no-output" | fl.output == NoOutput ]
+                <> [ "wait-exit" | fl.exitWait == AwaitEmptyLine ]
+                <> [ "pause-after=" <> tshow (age `div` 1000)
+                   | Just age <- [fl.pauseAfter] ]
+    focused <- readTVarIO c.outerFocused
+    pure
+        [ ("client_name", "client" <> tshow (rawClient c.id))
+        , ("client_control_mode", if isJust c.control then "1" else "0")
+        , ("client_flags", T.intercalate "," $
+            ["attached"] <> [ "focused" | focused ] <> controlFlags)
+        ]
 
 -- The target pane's visible lines, for the C search modifier.
 targetPaneLines :: ServerState -> FormatEnv -> IO [Text]

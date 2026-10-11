@@ -6,6 +6,8 @@ module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
     , clientWindowArea
+    , clientClaim
+    , windowArea
     , defaultSizeOf
     , clampWindowSize
     , reconcileLoop
@@ -17,6 +19,7 @@ module Hat.Server.Resize
     , pickArea
     , rectSize
     , windowArrange
+    , windowLayoutAt
     ) where
 
 import Control.Concurrent.STM
@@ -24,7 +27,7 @@ import Control.Exception (IOException, handle)
 import Control.Monad (forM, forM_, when)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
@@ -32,6 +35,7 @@ import Hat.Geometry
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
+import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Term.Emulator qualified as Emu
@@ -58,12 +62,7 @@ applySessionSize st sid = atomically $ do
     msess <- Map.lookup sid <$> readTVar st.sessions
     forM_ msess $ \sess -> do
         cs <- sessionClients st sid
-        stamps <- mapM (\c -> (,) <$> readTVar c.lastActive
-                                   <*> readTVar c.size) cs
-        lastSz <- readTVar sess.lastSize
-        mwin <- currentWindow sess
-        opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
-        let eff = sessionWindowArea opts.statusLines (resizeModeOf opts) lastSz stamps
+        eff <- sessionArea st sess Nothing
         writeTVar sess.lastSize eff
         forM_ cs $ \c -> writeTVar c.needsFull True
         bumpDirty st
@@ -75,11 +74,55 @@ applySessionSize st sid = atomically $ do
 clientWindowArea :: ServerState -> Session -> WindowSizeMode -> STM Size
 clientWindowArea st sess mode = do
     cs <- sessionClients st sess.id
-    stamps <- mapM (\c -> (,) <$> readTVar c.lastActive <*> readTVar c.size) cs
     mwin <- currentWindow sess
     opts <- maybe (resolveForSession st sess) (resolveForWindow st sess) mwin
+    claims <- catMaybes <$> mapM (clientClaim opts.statusLines Nothing) cs
     pure (clampWindowSize
-        (sessionWindowArea opts.statusLines mode (defaultSizeOf opts) stamps))
+        (sessionWindowArea mode (defaultSizeOf opts) claims))
+
+-- | The area a session's clients size its windows to (@window-size@), or
+-- for one window, with control clients' sizes for that window standing in
+-- for their own. Without clients it keeps its last size.
+sessionArea :: ServerState -> Session -> Maybe WindowId -> STM Size
+sessionArea st sess mwid = do
+    cs <- sessionClients st sess.id
+    lastSz <- readTVar sess.lastSize
+    mwin <- currentWindow sess
+    opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
+    claims <- catMaybes <$> mapM (clientClaim opts.statusLines mwid) cs
+    pure (sessionWindowArea (resizeModeOf opts) lastSz claims)
+
+-- | What a client offers toward a session's window size: its activity
+-- stamp, its size, and the status rows it draws (@statusLines@). A control
+-- client draws no status line and offers nothing until @refresh-client -C@
+-- sizes it (or one of its windows); its size is 80x24 until then, and its
+-- size for the given window, if it set one, replaces it.
+clientClaim :: Int -> Maybe WindowId -> Client -> STM (Maybe (Int, Size, Int))
+clientClaim statusLines mwid c = do
+    stamp <- readTVar c.lastActive
+    case c.control of
+        Nothing -> do
+            sz <- readTVar c.size
+            pure (Just (stamp, sz, statusLines))
+        Just cs -> do
+            msz <- readTVar cs.size
+            mwins <- readTVar cs.windowSizes
+            let own = mwid >>= \wid -> mwins >>= Map.lookup wid
+            pure $ case (msz, mwins) of
+                (Nothing, Nothing) -> Nothing
+                _ -> Just (stamp, fromMaybe (fromMaybe defaultControl msz) own, 0)
+  where
+    defaultControl = Size { rows = 24, cols = 80 }
+
+-- | Every control client's own size for a window, among the clients of
+-- the given sessions.
+windowOverrides :: ServerState -> [Session] -> WindowId -> STM [Size]
+windowOverrides st sessions wid = fmap concat . forM sessions $ \sess -> do
+    cs <- sessionClients st sess.id
+    fmap concat . forM cs $ \c -> case c.control of
+        Nothing -> pure []
+        Just ctl -> maybe [] (maybe [] pure . Map.lookup wid)
+            <$> readTVar ctl.windowSizes
 
 -- | @default-size@ read as tmux's @sscanf("%ux%u")@ does: leading digits, an
 -- @x@, digits, anything after ignored; anything else is 80x24.
@@ -190,6 +233,7 @@ paneSizeTargets :: ServerState -> STM [(Pane, Size)]
 paneSizeTargets st = do
     areas <- windowAreas st
     fmap concat $ forM areas $ \(win, eff) -> do
+        _ <- windowLayoutAt eff win
         (rects, _) <- windowArrange eff win
         ps <- readTVar win.panes
         pure [ (p, rectSize rect)
@@ -197,24 +241,41 @@ paneSizeTargets st = do
              , Just p <- [Map.lookup pidL ps]
              ]
 
--- | Every window once, with the window area its panes are laid out at:
--- that of the session holding it that 'pickArea' prefers.
+-- | Every window once, with the window area its panes are laid out at.
 windowAreas :: ServerState -> STM [(Window, Size)]
 windowAreas st = do
     sessions <- Map.elems <$> readTVar st.sessions
-    holdings <- forM sessions $ \sess -> do
-        eff <- readTVar sess.lastSize
-        cur <- readTVar sess.currentIx
+    wins <- Map.elems . Map.fromList . concatMap (map (\w -> (w.id, w)))
+        <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
+    forM wins $ \win -> (,) win <$> windowArea st win
+
+-- | The area a window's panes are laid out at: that of the session holding
+-- it that 'pickArea' prefers, reworked for any control client's size for
+-- this window, which it never exceeds (tmux's per-window client sizes).
+windowArea :: ServerState -> Window -> STM Size
+windowArea st win = do
+    sessions <- Map.elems <$> readTVar st.sessions
+    holdings <- fmap concat . forM sessions $ \sess -> do
         ws <- Map.toList <$> readTVar sess.windows
+        cur <- readTVar sess.currentIx
         cs <- sessionClients st sess.id
         stamps <- mapM (\c -> readTVar c.lastActive) cs
         let latest = if null stamps then Nothing else Just (maximum stamps)
-        pure [ (win, AreaClaim (ix == cur) latest, eff) | (ix, win) <- ws ]
-    let claims = Map.fromListWith (flip (<>))
-            [ (win.id, [(claim, eff)]) | (win, claim, eff) <- concat holdings ]
-        wins = Map.fromList [ (win.id, win) | (win, _, _) <- concat holdings ]
-    pure [ (win, pickArea cs)
-         | (wid, cs) <- Map.toList claims, Just win <- [Map.lookup wid wins] ]
+        pure [ (AreaClaim (ix == cur) latest, sess)
+             | (ix, w) <- ws, w.id == win.id ]
+    case pickHolder holdings of
+        Nothing -> pure Size { rows = 24, cols = 80 }
+        Just sess -> do
+            overrides <- windowOverrides st (map snd holdings) win.id
+            if null overrides
+                then readTVar sess.lastSize
+                else do
+                    sz <- sessionArea st sess (Just win.id)
+                    pure (foldl clampTo sz overrides)
+  where
+    clampTo sz o = Size
+        { rows = if o.rows /= 0 then min sz.rows o.rows else sz.rows
+        , cols = if o.cols /= 0 then min sz.cols o.cols else sz.cols }
 
 -- | How strongly a session holding a window claims to size it: whether
 -- the window is its current one, and when its clients were last active.
@@ -230,9 +291,13 @@ data AreaClaim = AreaClaim
 -- viewed it, else whose client was most recently active, else the first
 -- holder's.
 pickArea :: [(AreaClaim, Size)] -> Size
-pickArea = \case
-    [] -> Size { rows = 24, cols = 80 }
-    first : rest -> snd (foldl stronger first rest)
+pickArea = fromMaybe Size { rows = 24, cols = 80 } . pickHolder
+
+-- | The strongest claimant, by 'pickArea''s order.
+pickHolder :: [(AreaClaim, a)] -> Maybe a
+pickHolder = \case
+    [] -> Nothing
+    first : rest -> Just (snd (foldl stronger first rest))
   where
     stronger a b = if rank (fst b) > rank (fst a) then b else a
     rank c = (c.viewing && isJust c.active, c.active)
@@ -242,6 +307,15 @@ rectSize r = Size
     { rows = fromIntegral (max 1 (r.endRow - r.startRow))
     , cols = fromIntegral (max 1 (r.endCol - r.startCol))
     }
+
+-- | A window's layout resized to the area it is laid out at, kept as its
+-- layout from now on: tmux resizes a window's layout in place, so a later
+-- split or resize builds on the cells the panes really have.
+windowLayoutAt :: Size -> Window -> STM Layout
+windowLayoutAt eff win = do
+    lay <- readTVar win.layout
+    let lay' = fitLayout eff lay
+    if lay' == lay then pure lay else lay' <$ writeTVar win.layout lay'
 
 -- | Pane rects and borders for a window, honoring zoom. Arranging is
 -- pure in the window rect and the layout tree, so the last result is

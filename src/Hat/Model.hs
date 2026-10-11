@@ -10,6 +10,7 @@ module Hat.Model
     , Window (..)
     , Pane (..)
     , PaneStart (..)
+    , PaneKind (..)
     , PaneExit (..)
     , PipeHandle (..)
     , Client (..)
@@ -97,12 +98,14 @@ import System.Posix.Files qualified as PFiles
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
+import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( BorderIndicators, BorderLines, Keymap, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
+import Hat.Server.ControlTypes (ControlState)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
 import Hat.Server.Keys (EscPending, PrefixState)
@@ -277,6 +280,9 @@ data Pane = Pane
     , exited   :: TVar (Maybe PaneExit)
         -- ^ 'Just' for a dead pane: its program ended and @remain-on-exit@
         -- kept it; see 'Hat.Server.Pane.paneEof'.
+    , kind     :: PaneKind
+    , inputOff :: TVar Bool
+        -- ^ @select-pane -d@: keys typed or sent to the pane are dropped.
     }
 
 -- | How a freshly-spawned pane chooses its process.
@@ -597,6 +603,9 @@ data Client = Client
     , env       :: [(Text, Text)]
     , cwd       :: Text
     , stdinSource :: StdinSource
+    , control   :: Maybe ControlState
+        -- ^ a tmux control-mode client's protocol state; 'Nothing' for
+        --   every other client. See "Hat.Server.Control".
     }
 
 -- | Where a command's @-@ path reads from: the issuing command client's

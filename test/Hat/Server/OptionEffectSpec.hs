@@ -10,7 +10,6 @@ import Test.Hspec
 
 import Control.Concurrent.STM (readTVarIO)
 import Data.Map.Strict qualified as Map
-import Data.Ratio ((%))
 import Data.Text qualified as T
 import Data.Vector qualified as V
 
@@ -22,14 +21,15 @@ import Hat.Model.Options
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
     , optionText )
 import Hat.Server
-    ( Reply (..), deliversKey, escTiming, mainPaneRatio, resizeModeOf
+    ( Reply (..), deliversKey, escTiming, namedSizesOf, resizeModeOf
     , runCommands, toastDeadline, toastExpired )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
 import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
-import Hat.Server.Layout (LayoutName (..))
+import Hat.Model.Ids (PaneId (..))
+import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
 import Hat.Server.View
     ( assembleStatusRow, borderCells, mapGlyph, statusLayout
     , windowEntryFormat, windowEntryStyle )
@@ -63,20 +63,17 @@ spec = do
                 toast.deadline `shouldBe` Nothing
                 toastExpired (shownAt + ms 3600000) toast `shouldBe` False
 
-        -- main-pane-width/-height: an absolute cell count, realised as that
-        -- many cells out of the window along the layout's axis.
+        -- main-pane-width/-height: an absolute cell count for the main pane.
         describe "main-pane-width/-height give the main pane an absolute cell count" $ do
-            let area = Size { rows = 50, cols = 200 }
-            it "main-vertical: main-pane-width cells is that fraction of the cols" $
-                mainPaneRatio MainVertical
-                    (defaultOptions { mainPaneWidth = 100 }) area `shouldBe` 1 % 2
-            it "a wider main-pane-width takes proportionally more (absolute cells)" $
-                mainPaneRatio MainVertical
-                    (defaultOptions { mainPaneWidth = 160 }) area `shouldBe` 4 % 5
-            it "main-horizontal: main-pane-height cells is that fraction of the rows" $
-                mainPaneRatio MainHorizontal
-                    (defaultOptions { mainPaneHeight = 10 })
-                    (Size { rows = 40, cols = 200 }) `shouldBe` 1 % 4
+            let pids = map PaneId [0, 1, 2]
+                mainCell opts area name =
+                    namedLayout (namedSizesOf opts) area name pids >>= paneCell (PaneId 0)
+            it "main-vertical: main-pane-width cells wide" $
+                fmap (.sx) (mainCell (defaultOptions { mainPaneWidth = 100 })
+                    Size { rows = 50, cols = 200 } MainVertical) `shouldBe` Just 100
+            it "main-horizontal: main-pane-height cells tall" $
+                fmap (.sy) (mainCell (defaultOptions { mainPaneHeight = 10 })
+                    Size { rows = 40, cols = 200 } MainHorizontal) `shouldBe` Just 10
 
         -- pane-border-lines picks the box-drawing glyph set the borders draw.
         describe "pane-border-lines maps the border glyph set" $ do

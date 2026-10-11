@@ -14,7 +14,7 @@ import Data.Text (Text)
 
 import Hat.Geometry
 import Hat.Model
-import Hat.Server.Layout (layoutPanes, sizeRect)
+import Hat.Server.Layout (fitLayout, layoutPanes)
 import Hat.Server.LayoutString (emitLayout)
 
 -- | One window's structure read as a single consistent unit. Its layout,
@@ -45,7 +45,7 @@ windowStruct eff (wix, w) = do
         lastOrds = mapMaybe (`List.elemIndex` order) hist
     pure WindowStruct
         { wsIx = wix, wsName = nm
-        , wsLayout = emitLayout (sizeRect (eff)) lay
+        , wsLayout = emitLayout (fitLayout eff lay)
         , wsActive = activeOrd, wsLastActive = lastOrds
         , wsAutoRename = auto
         , wsPanes = mapMaybe (`Map.lookup` paneMap) order }

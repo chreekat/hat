@@ -65,10 +65,13 @@ import Hat.Transport.Wire
     ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
     , sendMessage )
-import Hat.Server.Layout (Layout (..), Orientation (LeftRight))
+import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
+import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv (paneModeEnv, sessionFormatEnv)
-import Hat.Server.Resize (AreaClaim (..), paneSizeTargets, pickArea)
+import Hat.Server.ControlTypes (ControlState (..), newControlState)
+import Hat.Server.Resize
+    (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
 import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 
 -- A bare session with the given id inserted into an existing server.
@@ -118,7 +121,7 @@ addWindow :: Session -> Int -> IO Window
 addWindow sess n = do
     win <- Window (WindowId n)
         <$> newTVarIO "w"
-        <*> newTVarIO (Leaf (PaneId n))
+        <*> newTVarIO (singlePane (PaneId n))
         <*> newTVarIO Nothing
         <*> newTVarIO Map.empty
         <*> newTVarIO (PaneId n)
@@ -167,6 +170,7 @@ addClient st sid sz stamp = do
         <*> pure []
         <*> pure ""
         <*> pure NoStdin
+        <*> pure Nothing
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -207,6 +211,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure clientEnv
         <*> pure ""
         <*> pure NoStdin
+        <*> pure Nothing
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 
@@ -223,6 +228,7 @@ stubPane n = do
     homeV <- newTVarIO Nothing
     optsV <- newTVarIO emptyDelta
     exitedV <- newTVarIO Nothing
+    inputOffV <- newTVarIO False
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -238,6 +244,8 @@ stubPane n = do
         , pendingInput = Nothing
         , start = FreshShell
         , exited = exitedV
+        , kind = ProgramPane
+        , inputOff = inputOffV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -869,13 +877,13 @@ spec = do
         it "leaves a solo pane unzoomed and the screen untouched (bug 9)" $ do
             (st, win) <- windowWithPanes [0]
             gen <- readTVarIO st.dirty
-            zoomTarget st Nothing Nothing
+            Right () <- zoomTarget st Nothing Nothing
             readTVarIO win.zoomed `shouldReturn` Nothing
             readTVarIO st.dirty `shouldReturn` gen
 
         it "zooms the active pane when the window has siblings" $ do
             (st, win) <- windowWithPanes [0, 1]
-            zoomTarget st Nothing Nothing
+            Right () <- zoomTarget st Nothing Nothing
             readTVarIO win.zoomed `shouldReturn` Just (PaneId 0)
 
     describe "detachPane" $ do
@@ -890,7 +898,7 @@ spec = do
                 pb <- stubPane 2
                 atomically $ do
                     writeTVar win.layout
-                        (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                        (nodeOf LeftRight [singlePane pa.id, singlePane pb.id])
                     writeTVar win.panes
                         (Map.fromList [(pa.id, pa), (pb.id, pb)])
                     writeTVar win.activeId pa.id
@@ -900,7 +908,7 @@ spec = do
             (st, _, win, pa, pb) <- twoPaneWindow
             r <- atomically (detachPane st win pa)
             r `shouldBe` Detached WindowSurvives SessionSurvives
-            readTVarIO win.layout `shouldReturn` Leaf pb.id
+            layoutPanes <$> readTVarIO win.layout `shouldReturn` [pb.id]
             (Map.member pa.id <$> readTVarIO win.panes) `shouldReturn` False
             readTVarIO win.activeId `shouldReturn` pb.id
 
@@ -919,7 +927,7 @@ spec = do
             _   <- addWindow sess 1     -- another window survives
             pa <- stubPane 1
             atomically $ do
-                writeTVar win.layout (Leaf pa.id)
+                writeTVar win.layout (singlePane pa.id)
                 writeTVar win.panes (Map.singleton pa.id pa)
             r <- atomically (detachPane st win pa)
             r `shouldBe` Detached WindowRemoved SessionSurvives
@@ -930,7 +938,7 @@ spec = do
             win <- addWindow sess 0
             pa <- stubPane 1
             atomically $ do
-                writeTVar win.layout (Leaf pa.id)
+                writeTVar win.layout (singlePane pa.id)
                 writeTVar win.panes (Map.singleton pa.id pa)
             r <- atomically (detachPane st win pa)
             r `shouldBe` Detached WindowRemoved (SessionsEmptied [SessionId 0])
@@ -944,7 +952,7 @@ spec = do
             _ <- addWindow sess 1
             pa <- stubPane 1
             atomically $ do
-                writeTVar win.layout (Leaf pa.id)
+                writeTVar win.layout (singlePane pa.id)
                 writeTVar win.panes (Map.singleton pa.id pa)
                 modifyTVar' other.windows (Map.insert 4 win)
             r <- atomically (detachPane st win pa)
@@ -960,7 +968,7 @@ spec = do
             w2 <- addWindow sess 2
             pa <- stubPane 2
             atomically $ do
-                writeTVar w2.layout (Leaf pa.id)
+                writeTVar w2.layout (singlePane pa.id)
                 writeTVar w2.panes (Map.singleton pa.id pa)
                 writeTVar sess.currentIx 2
                 writeTVar sess.windowHist [1, 0]  -- visited 0, then 1, then 2
@@ -974,8 +982,8 @@ spec = do
             [pa, pb, pc] <- mapM stubPane [1, 2, 3]
             atomically $ do
                 writeTVar win.layout
-                    (Split LeftRight 0.5 (Leaf pa.id)
-                        (Split LeftRight 0.5 (Leaf pb.id) (Leaf pc.id)))
+                    (nodeOf LeftRight [singlePane pa.id,
+                        nodeOf LeftRight [singlePane pb.id, singlePane pc.id]])
                 writeTVar win.panes
                     (Map.fromList [(p.id, p) | p <- [pa, pb, pc]])
                 writeTVar win.activeId pc.id
@@ -1000,7 +1008,7 @@ spec = do
             pa <- paneIn w0 1
             pb <- paneIn w0 2
             atomically $ writeTVar w0.layout
-                (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                (nodeOf LeftRight [singlePane pa.id, singlePane pb.id])
             results <- atomically $ detachPanes st
                 [(SessionId 0, w0, pa), (SessionId 0, w0, pb)]
             [ sid | (_, Detached _ (SessionsEmptied sids)) <- results, sid <- sids ]
@@ -1015,8 +1023,8 @@ spec = do
             pa <- paneIn w0 1
             pb <- paneIn w1 2
             atomically $ do
-                writeTVar w0.layout (Leaf pa.id)
-                writeTVar w1.layout (Leaf pb.id)
+                writeTVar w0.layout (singlePane pa.id)
+                writeTVar w1.layout (singlePane pb.id)
             results <- atomically $ detachPanes st
                 [(SessionId 0, w0, pa), (SessionId 0, w1, pb)]
             [ sid | (_, Detached _ (SessionsEmptied sids)) <- results, sid <- sids ]
@@ -1036,16 +1044,16 @@ spec = do
             pb <- stubPane 2
             atomically $ do
                 writeTVar w0.layout
-                    (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                    (nodeOf LeftRight [singlePane pa.id, singlePane pb.id])
                 writeTVar w0.panes (Map.fromList [(pa.id, pa), (pb.id, pb)])
                 writeTVar w0.activeId pa.id
             -- Break pa out into its own window, as cmdBreakPane does: drop it
             -- from w0 first (the new window is not in the tree yet), then place
             -- it in w1. pa now lives only in w1.
-            atomically (removePaneFromTree st pa.id)
+            [] <- atomically (removePaneFromTree st pa.id)
             w1 <- addWindow sess 1
             atomically $ do
-                writeTVar w1.layout (Leaf pa.id)
+                writeTVar w1.layout (singlePane pa.id)
                 writeTVar w1.panes (Map.singleton pa.id pa)
                 writeTVar w1.activeId pa.id
             (msid, r) <- atomically (detachPaneCurrent st pa)
@@ -1065,7 +1073,7 @@ spec = do
             pb <- stubPane 2
             atomically $ do
                 writeTVar w0.layout
-                    (Split LeftRight 0.5 (Leaf pa.id) (Leaf pb.id))
+                    (nodeOf LeftRight [singlePane pa.id, singlePane pb.id])
                 writeTVar w0.panes (Map.fromList [(pa.id, pa), (pb.id, pb)])
                 writeTVar w0.activeId pa.id
             flip finally release $ do
@@ -1073,9 +1081,9 @@ spec = do
                 ws <- readTVarIO sess.windows
                 Map.keys ws `shouldBe` [0, 1]
                 Just w1 <- pure (Map.lookup 1 ws)
-                readTVarIO w1.layout `shouldReturn` Leaf pa.id
+                layoutPanes <$> readTVarIO w1.layout `shouldReturn` [pa.id]
                 (Map.keys <$> readTVarIO w1.panes) `shouldReturn` [pa.id]
-                readTVarIO w0.layout `shouldReturn` Leaf pb.id
+                layoutPanes <$> readTVarIO w0.layout `shouldReturn` [pb.id]
                 readTVarIO w0.activeId `shouldReturn` pb.id
                 readTVarIO sess.currentIx `shouldReturn` 1
                 homeOf pa `shouldReturn` Just (SessionId 0, w1.id)
@@ -1093,8 +1101,7 @@ spec = do
             [] <- cmdJoinPane st Nothing ["-h", "-s", "%1"]
             (Map.member 1 <$> readTVarIO sess.windows) `shouldReturn` False
             (Map.keys <$> readTVarIO w0.panes) `shouldReturn` [pa.id, pc.id]
-            readTVarIO w0.layout `shouldReturn`
-                Split LeftRight 0.5 (Leaf pa.id) (Leaf pc.id)
+            layoutPanes <$> readTVarIO w0.layout `shouldReturn` [pa.id, pc.id]
             readTVarIO w0.activeId `shouldReturn` pc.id
             homeOf pc `shouldReturn` Just (SessionId 0, w0.id)
 
@@ -1262,6 +1269,20 @@ spec = do
             targets <- atomically (paneSizeTargets st)
             map snd targets `shouldBe` [Size { rows = 24, cols = 80 }]
 
+        it "sizes a window to a control client's size for it, and only that window" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            w1 <- addWindow sess 1
+            plain <- addClient st sess.id (Size 24 80) 1
+            cs <- newControlState
+            atomically $ do
+                writeTVar cs.size (Just (Size 24 80))
+                writeTVar cs.windowSizes (Just (Map.singleton w0.id (Size 10 40)))
+                modifyTVar' st.clients (Map.insert plain.id plain { control = Just cs })
+            applySessionSize st sess.id
+            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
+                `shouldReturn` (Size 10 40, Size 24 80)
+
         it "takes the area of the session whose client last viewed the window" $
             pickArea
                 [ (AreaClaim False (Just 9), Size 10 10)
@@ -1276,7 +1297,7 @@ spec = do
                 , idleExitEmpty = True, idleExitUnattached = False
                 , idleShutdown = Serving }
         it "is idle once served, drained, and every pane reaped" $
-            serverIdle idle `shouldBe` ExitNow
+            serverIdle idle `shouldBe` ExitServer
         it "stays busy while a pane is still being reaped" $
             -- bug 98: a drained server must outlive its children's reap, so a
             -- SIGHUP-ignoring child is SIGKILLed rather than orphaned on exit.
@@ -1288,7 +1309,7 @@ spec = do
             serverIdle (idle { idleActiveConns = 1 }) `shouldBe` StayUp
         it "exits after a connection came and went without a session (28)" $
             -- served, no handler left, nothing created: don't strand it.
-            serverIdle idle `shouldBe` ExitNow
+            serverIdle idle `shouldBe` ExitServer
         it "stays busy until startup lands at Ready" $ do
             serverIdle (idle { idlePhase = LoadingConfig }) `shouldBe` StayUp
             serverIdle (idle { idlePhase = Restoring }) `shouldBe` StayUp
@@ -1298,7 +1319,7 @@ spec = do
         it "stays up empty under exit-empty off, until killed" $ do
             let keep = idle { idleExitEmpty = False }
             serverIdle keep `shouldBe` StayUp
-            serverIdle (keep { idleShutdown = ShuttingDown }) `shouldBe` ExitNow
+            serverIdle (keep { idleShutdown = ShuttingDown }) `shouldBe` ExitServer
         it "tears its sessions down once unattached under exit-unattached" $ do
             let lone = idle { idleExitUnattached = True, idleSessions = 1 }
             serverIdle lone `shouldBe` TearDown

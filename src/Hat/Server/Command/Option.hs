@@ -17,6 +17,8 @@ module Hat.Server.Command.Option
     , ShowCommand (..)
     , cmdSet
     , cmdShow
+    , setPaneOption
+    , paneOptionText
     , runSet
     , runShow
     , cmdSetEnvironment
@@ -330,6 +332,34 @@ runSet cmd st mclient args = do
                                             writeOption st sc n
                                                 (\own eff -> planSet mdef req' spelled
                                                     mkey own eff mvalue')
+
+-- | Assign a registered option on one pane, as a command whose flags set pane
+-- options does (tmux's @options_set_string@ on @wp->options@): the value is
+-- checked as @set-option -p@ checks it, and an option hat does not implement
+-- is refused.
+setPaneOption :: ServerState -> Pane -> Text -> Text -> IO (Either Text ())
+setPaneOption st pane n value = case lookupOptionDef n of
+    Nothing -> pure (Left ("invalid option: " <> n))
+    Just d -> case requireLive d >> requirePaneValues sc (Just d) of
+        Left e -> pure (Left e)
+        Right () -> do
+            rs <- writeOption st sc n $ \own eff ->
+                planSet (Just d) req n Nothing own eff (Just value)
+            pure (maybe (Right ()) Left (listToMaybe [ e | RErr e <- rs ]))
+  where
+    sc = PaneTable pane
+    req = SetRequest Assign SetValue OverwriteAny Loud
+
+-- | A registered option's value in effect at a pane, refused for an option
+-- hat does not implement.
+paneOptionText
+    :: ServerState -> Session -> Window -> Pane -> Text -> IO (Either Text Text)
+paneOptionText st sess win pane n = case lookupOptionDef n of
+    Nothing -> pure (Left ("invalid option: " <> n))
+    Just d -> case requireLive d of
+        Left e -> pure (Left e)
+        Right () ->
+            Right . optionText n <$> atomically (resolveForPane st sess win pane)
 
 -- | tmux's @options_from_string_check@ for what the registry's kinds cannot
 -- say: a @default-shell@ must name a 'suitableShell'. A checked append

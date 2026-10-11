@@ -13,6 +13,16 @@ import Hat.Model.PasteBuffers
 
 spec :: Spec
 spec = do
+    describe "pasteChanges" $ do
+        it "reports evictions as deleted, then the new buffer as changed" $
+            pasteChanges (adds ["a", "b"]) (pasteAdd 2 "buffer" 0 "c" (adds ["a", "b"]))
+                `shouldBe` [(BufferDeleted, "buffer0"), (BufferChanged, "buffer2")]
+        it "reports a rename as the old name deleted and the new one changed" $
+            pasteChanges (adds ["a"])
+                (fromRight (adds []) (pasteRename "buffer0" "kept" (adds ["a"])))
+                `shouldBe` [(BufferDeleted, "buffer0"), (BufferChanged, "kept")]
+        it "reports nothing when nothing changed" $
+            pasteChanges (adds ["a"]) (adds ["a"]) `shouldBe` []
     describe "pasteAdd" $ do
         it "names buffers bufferN, most recent first" $ do
             let s = adds ["one", "two"]

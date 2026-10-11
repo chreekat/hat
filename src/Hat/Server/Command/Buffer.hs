@@ -37,12 +37,12 @@ import Hat.Model.Options (optionNumber)
 import Hat.Model.PasteBuffers
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Format (FormatEnv)
+import Hat.Server.Hooks (notifyPasteChanges)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
 import Hat.Server.Locate (findTarget, paneIndexOf, targetPane)
-import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe)
+import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe, typeIntoPane)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Emulator qualified as Emu
-import Hat.Term.Pty qualified
 
 -- | @set-buffer [-aw] [-b name] [-n new-name] [-t client] [data]@ and
 -- @delete-buffer [-b name]@ (tmux's @cmd-set-buffer.c@): without @-b@,
@@ -269,7 +269,7 @@ cmdPasteBuffer st mclient args = withFlags "paste-buffer" "dprS" flags $ do
                     let wrap b
                             | bracket = "\ESC[200~" <> b <> "\ESC[201~"
                             | otherwise = b
-                    Hat.Term.Pty.writePty pane.pty (wrap (pasteBytes pb.body))
+                    typeIntoPane pane (wrap (pasteBytes pb.body))
                     when (has "-d") $ modifyStore_ st (pasteFree pb.name)
                     pure []
   where
@@ -329,15 +329,19 @@ modifyStore st f = modifyStoreLimited st (const f)
 -- | 'modifyStore' for an update that may evict, given @buffer-limit@.
 modifyStoreLimited
     :: ServerState -> (Int -> PasteStore -> Either Text PasteStore) -> IO [Reply]
-modifyStoreLimited st f = atomically $ do
-    limit <- optionNumber "buffer-limit" <$> readTVar st.options
-    s <- readTVar st.buffers
-    case f limit s of
+modifyStoreLimited st f = do
+    r <- atomically $ do
+        limit <- optionNumber "buffer-limit" <$> readTVar st.options
+        s <- readTVar st.buffers
+        case f limit s of
+            Left e -> pure (Left e)
+            Right s' -> do
+                writeTVar st.buffers s'
+                bumpDirty st
+                pure (Right (s, s'))
+    case r of
         Left e -> pure [RErr e]
-        Right s' -> do
-            writeTVar st.buffers s'
-            bumpDirty st
-            pure []
+        Right (old, new) -> [] <$ notifyPasteChanges st old new
 
 modifyStore_ :: ServerState -> (PasteStore -> PasteStore) -> IO ()
 modifyStore_ st f = () <$ modifyStore st (Right . f)

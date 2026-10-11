@@ -42,6 +42,7 @@ module Hat.Transport.Wire
     , dialectFloor
     , negotiate
     , Intent (..)
+    , ExitWait (..)
     , Autostart (..)
     , Hello (..)
     , ClientToServer (..)
@@ -89,7 +90,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 8
+protocolVersion = 9
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -121,9 +122,39 @@ deriving anyclass instance Serialise Pos
 -- @attach-session -t@ typed at a shell. An empty list attaches to the
 -- existing (or a freshly created) session, the plain @hat@/@hat attach@
 -- behaviour.
-data Intent = AttachIntent [[Text]] | ControlIntent
-    deriving (Eq, Show, Generic)
-    deriving anyclass (Serialise)
+--
+-- 'ControlModeIntent' is tmux's control mode (@hat -C@): a client that
+-- attaches without a terminal, sends command lines as 'Input', and reads
+-- the textual protocol back as 'WriteStdout' until a 'ControlExit'. Its
+-- commands are the session-establishing command line (e.g. @attach@).
+data Intent = AttachIntent [[Text]] | ControlIntent | ControlModeIntent [[Text]]
+    deriving (Eq, Show)
+
+-- Intent tag registry (append-only; never renumber or reuse):
+--   AttachIntent      = 0
+--   ControlIntent     = 1
+--   ControlModeIntent = 2
+-- The first two mirror the Generic encoding they shipped with, byte for
+-- byte; an older server fails to decode a newer tag, so it rejects the
+-- hello rather than misreading it.
+instance Serialise Intent where
+    encode = \case
+        AttachIntent cmds -> encodeListLen 2 <> encodeWord 0 <> encode cmds
+        ControlIntent -> encodeListLen 1 <> encodeWord 1
+        ControlModeIntent cmds -> encodeListLen 2 <> encodeWord 2 <> encode cmds
+    decode = do
+        len <- decodeListLen
+        tag <- decodeWord
+        case (tag, len) of
+            (0, 2) -> AttachIntent <$> decode
+            (1, 1) -> pure ControlIntent
+            (2, 2) -> ControlModeIntent <$> decode
+            _ -> fail ("unknown intent " <> show tag <> "/" <> show len)
+
+-- | Whether a control-mode client, having printed @%exit@, lingers until its
+-- input sends an empty line or closes (@refresh-client -f wait-exit@).
+data ExitWait = ExitNow | AwaitEmptyLine
+    deriving (Eq, Show)
 
 -- | Whether this invocation spawned the server it is talking to, or found
 -- one already running. See 'Hat.Server.startupGate'.
@@ -182,6 +213,10 @@ data ServerToClient
                             --   chunks and a 'StdinEnd' (level 8 and up)
     | WriteStdout ByteString  -- ^ bytes for the client's standard output,
                               --   verbatim
+    | ControlExit (Maybe Text) ExitWait Int
+        -- ^ a control-mode client is done: print @%exit@ with the reason
+        --   (if any), linger per 'ExitWait', and exit with the status
+        --   (level 9 and up)
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -256,6 +291,7 @@ instance WireMessage ClientToServer where
 --   RestartClientTo = 12
 --   ReadStdin     = 13
 --   WriteStdout   = 14
+--   ControlExit   = 15
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -274,6 +310,12 @@ instance WireMessage ServerToClient where
             encodeListLen 3 <> encodeWord 12 <> encode t <> encode hist
         ReadStdin     -> encodeListLen 1 <> encodeWord 13
         WriteStdout bs -> encodeListLen 2 <> encodeWord 14 <> encode bs
+        ControlExit reason wait status ->
+            encodeListLen 4 <> encodeWord 15 <> encode reason
+                <> encodeWord (case wait of
+                    ExitNow -> 0
+                    AwaitEmptyLine -> 1)
+                <> encode status
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -295,6 +337,17 @@ instance WireMessage ServerToClient where
                 ("RestartClientTo: expected 1-2 fields, got " <> show (len - 1)))
         13 -> nullary len (Known ReadStdin)
         14 -> field len (Known . WriteStdout <$> decode)
+        15 -> case len of
+            4 -> do
+                reason <- decode
+                waitTag <- decodeWord
+                status <- decode
+                pure $ case waitTag of
+                    0 -> Known (ControlExit reason ExitNow status)
+                    1 -> Known (ControlExit reason AwaitEmptyLine status)
+                    w -> Malformed ("ControlExit: unknown wait " <> show w)
+            _ -> pure (Malformed
+                ("ControlExit: expected 3 fields, got " <> show (len - 1)))
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -361,6 +414,9 @@ encodeServerMessageAt lvl = \case
         toStrictByteString $ encodeListLen 2 <> encodeWord 12 <> encode t
     -- A pre-8 peer only prints text lines.
     WriteStdout bs | lvl < 8 -> encodeMessage (Message (TE.decodeUtf8Lenient bs))
+    -- Only a control-mode client (level 9 and up) is ever sent this; an
+    -- older peer would only know its session ended.
+    ControlExit {} | lvl < 9 -> encodeMessage Exited
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

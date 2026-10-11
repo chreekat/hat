@@ -4,8 +4,10 @@ module Hat.Client
     ( ExitReason (..)
     , Autostart (..)  -- ^ re-exported for 'Main.connectOrStart'
     , runClient
-    , runClientControl
     , runControl
+    , ControlFlavour (..)
+    , runControlMode
+    , awaitEmptyLine
     , nestsOwnServer
     ) where
 
@@ -144,6 +146,7 @@ shuttle sock re = do
                 -- stdout are its terminal.
                 ReadStdin -> receiver
                 WriteStdout _ -> receiver
+                ControlExit {} -> pure SessionEnded
     stdinReader outbox = forever $ do
         bs <- B.hGetSome stdin 4096
         if B.null bs
@@ -153,46 +156,85 @@ shuttle sock re = do
         msg <- atomically (readTQueue outbox)
         sendMessage sock msg
 
--- | A control-mode attach (@hat -C attach@): a real attached client with
--- no terminal — frames are discarded, and stdin's EOF is the detach. Just
--- enough of tmux's control mode for scripts that need a scripted attached
--- client.
-runClientControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
-runClientControl sock origin setup = do
+-- | How a control-mode client talks to its terminal: plain lines (@-C@),
+-- or wrapped in tmux's DCS for a terminal that drives it (@-CC@).
+data ControlFlavour = ControlLines | ControlDcs
+    deriving (Eq, Show)
+
+-- | tmux control mode (@hat -C@): forward standard input to the server as
+-- command lines and copy the protocol it sends to standard output, until
+-- the server's farewell; then print @%exit@ and, if asked, linger for an
+-- empty input line. Returns the exit status the server gave.
+runControlMode
+    :: Socket -> Autostart -> ControlFlavour -> [[Text]] -> IO (Either ExitReason Int)
+runControlMode sock origin flavour setup = do
     re <- newReadEnd sock
-    sendMessage sock =<< hello protocolVersion origin (AttachIntent setup) []
+    sendMessage sock =<< hello protocolVersion origin (ControlModeIntent setup) []
     greeting <- recvMessage re
     case greeting of
         Just (Known (Welcome _)) -> do
-            r <- race (receiver re `catch` \(_ :: SomeException) -> pure ServerDied)
-                      stdinUntilEof
-            pure (either id id r)
-        Just (Known (ServerError e)) -> pure (Rejected e)
-        Just (Known _) -> pure (Rejected "unexpected greeting")
-        Just (UnknownTag _) -> pure (Rejected versionMismatch)
-        Just (Malformed _) -> pure (Rejected versionMismatch)
-        Nothing -> pure ServerDied
+            hSetBinaryMode stdin True
+            hSetBinaryMode stdout True
+            hSetBuffering stdout (BlockBuffering Nothing)
+            withControlTty flavour $ do
+                r <- race (receiver re) pumpStdin
+                case r of
+                    Left (Just (reason, wait, status)) -> do
+                        B8.putStr (exitLine reason)
+                        hFlush stdout
+                        case wait of
+                            AwaitEmptyLine -> awaitEmptyLine stdin
+                            ExitNow -> pure ()
+                        pure (Right status)
+                    _ -> pure (Left ServerDied)
+        Just (Known (ServerError e)) -> pure (Left (Rejected e))
+        Just (Known _) -> pure (Left (Rejected "unexpected greeting"))
+        Just (UnknownTag _) -> pure (Left (Rejected versionMismatch))
+        Just (Malformed _) -> pure (Left (Rejected versionMismatch))
+        Nothing -> pure (Left ServerDied)
   where
-    receiver re = do
-        m <- recvMessage re
-        case m of
-            Nothing -> pure ServerDied
-            Just (Malformed _) -> pure ServerDied
-            Just (UnknownTag _) -> receiver re
-            Just (Known msg) -> case msg of
-                DetachOk -> pure Detached
-                Exited -> pure SessionEnded
-                RestartClient -> pure Detached
-                RestartClientTo _ _ -> pure Detached
-                ServerError e -> pure (Rejected e)
-                _ -> receiver re
-    stdinUntilEof = do
+    receiver re = recvMessage re >>= \case
+        Just (Known (WriteStdout bs)) -> do
+            B.hPut stdout bs
+            hFlush stdout
+            receiver re
+        Just (Known (ControlExit reason wait status)) ->
+            pure (Just (reason, wait, status))
+        Just (Known _) -> receiver re
+        Just (UnknownTag _) -> receiver re
+        Just (Malformed _) -> pure Nothing
+        Nothing -> pure Nothing
+    -- The end of input is the end of commands; the server decides when
+    -- the farewell comes, so the pump then just waits for it.
+    pumpStdin = do
         bs <- B.hGetSome stdin 4096
         if B.null bs
-            then Detached <$ sendMessage sock Detach <* awaitClose
-            else stdinUntilEof
-    -- After Detach, wait for the receiver to see DetachOk (race ends there).
-    awaitClose = forever (threadDelay 1_000_000)
+            then sendMessage sock Detach >> forever (threadDelay maxBound)
+            else sendMessage sock (Input bs) >> pumpStdin
+    exitLine reason = "%exit" <> maybe "" ((" " <>) . TE.encodeUtf8) reason <> "\n"
+
+-- | Bracket a control-mode session's terminal: @-CC@ opens tmux's DCS
+-- (@\\eP1000p@) before and closes it (@\\e\\\\@) after.
+withControlTty :: ControlFlavour -> IO a -> IO a
+withControlTty flavour act = case flavour of
+    ControlLines -> act
+    ControlDcs -> do
+        B.hPut stdout "\ESCP1000p" >> hFlush stdout
+        r <- act
+        B.hPut stdout "\ESC\\" >> hFlush stdout
+        pure r
+
+-- | Read input until an empty line or its end — lines already read count,
+-- however many arrived together.
+awaitEmptyLine :: Handle -> IO ()
+awaitEmptyLine h = go B.empty
+  where
+    go buf = case B8.elemIndex '\n' buf of
+        Just 0 -> pure ()
+        Just i -> go (B.drop (i + 1) buf)
+        Nothing -> do
+            chunk <- B.hGetSome h 4096
+            if B.null chunk then pure () else go (buf <> chunk)
 
 -- | Answer 'ReadStdin': stream standard input to the server until EOF. An
 -- unreadable stdin ends the stream where it failed.

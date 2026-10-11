@@ -137,9 +137,11 @@ Almost no logic lives there. **(inferred.)**
 - **No tmux protocol compatibility.** We own both ends. Inventing our
   own typed protocol is much cheaper than reverse-engineering theirs,
   and tmux's `tmux-protocol.h` is not stable across versions anyway.
-- **Control mode (`hat -C`) is partial.** It exists for scripted command
-  delivery, not as the full iTerm2-style protocol; tmux's control-client
-  regress scripts are still in the xfail list. Listed P3 in FEATURES.md.
+- **Control mode (`hat -C`) speaks tmux's text protocol** — reply blocks,
+  notifications, `%output` with flow control, `%exit` — because that
+  protocol *is* the interface its users (iTerm2, scripts) program against.
+  The client process only relays lines; the server owns the protocol
+  (`Hat.Server.Control`). Listed P3 in FEATURES.md.
 
 ## Concurrency model
 
