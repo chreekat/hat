@@ -29,7 +29,7 @@ screen-redraw-bidi.sh
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-floating.sh
 screen-redraw-indicators.sh
-screen-redraw-outside.sh
+screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
 screen-redraw-window-style.sh

@@ -82,6 +82,19 @@ spec = do
                                _ -> Nothing
                          | y <- [0 .. 3] ]
             owners `shouldBe` map (Just . PaneId) [0, 0, 0, 1]
+    describe "fillCell" $ do
+        let border = Cell.defaultStyle { Cell.fg = Cell.Indexed 7, Cell.bold = True }
+        it "draws the expanded fill-character over the border style" $ do
+            let c = fillCell border "#[fg=colour3]#[acs]~"
+            Cell.baseChar c `shouldBe` '\x00b7'
+            c.style `shouldBe` border { Cell.fg = Cell.Indexed 3 }
+        it "keeps the border colours a fill leaves default" $ do
+            let c = fillCell border "#[bg=colour4]x"
+            (Cell.baseChar c, c.style) `shouldBe` ('x', border { Cell.bg = Cell.Indexed 4 })
+        it "an empty fill is a blank" $
+            Cell.baseChar (fillCell border "") `shouldBe` ' '
+        it "a fill too wide for its cell is a blank" $
+            Cell.baseChar (fillCell border "中") `shouldBe` ' '
     describe "borderGlyph" $ do
         it "number draws the owner's index" $
             borderGlyph BorderNumber (Just 13) CellUD `shouldBe` '3'

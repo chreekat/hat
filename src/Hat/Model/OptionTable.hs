@@ -613,7 +613,7 @@ optionTable =
         "fg=themelightgrey,dim"
     , notYet $ scalar "copy-mode-line-numbers" WindowScope
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
-    , notYet $ scalar "fill-character" WindowScope KString
+    , live $ scalar "fill-character" WindowScope KString
         "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"
     , live $ scalar "main-pane-height" WindowScope KString "24"
     , live $ scalar "main-pane-width" WindowScope KString "80"

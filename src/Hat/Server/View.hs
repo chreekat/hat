@@ -40,7 +40,7 @@ import Hat.Server.FormatDraw (formatDraw, styleCell)
 import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, expandFormat, formatCtxFor,
      paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
-     windowOwnEnv)
+     windowFormatEnv, windowOwnEnv)
 import Hat.Server.Layout (Cell (..), Layout (..), paneOrder)
 import Hat.Server.Resize (windowArrange, windowPaneStatus)
 import Hat.Server.Scene
@@ -445,6 +445,7 @@ cachedChrome st client sess win eff sceneArea rects active rowOff = do
             Just cc | cc.input == input -> cc.scene
             _ -> buildScene input
     look <- withStatusLines st sess win input.paneStatus scene panes look0
+        >>= withFills st sess win scene
     case mcc of
         Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
             pure cc.chrome
@@ -513,6 +514,28 @@ chromeInputs st sess win eff sceneArea rects active = do
                 then maybe Map.empty edgeArrows (List.lookup active rects)
                 else Map.empty }
     pure (input, look, panes)
+
+-- | The window's @fill-character@ cells, when the scene has room for them.
+withFills :: ServerState -> Session -> Window -> Scene -> ChromeLook -> IO ChromeLook
+withFills st sess win scene look
+    | not (V.any (V.any isFill) scene) = pure look
+    | otherwise = do
+        (wix, wopts) <- atomically $
+            (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
+        env <- windowFormatEnv st sess wix win
+        let fill inside = fillCell look.windowStyle <$> expandFormat st
+                (Map.insert "is_inside" (flag inside)
+                    (Map.insert "is_outside" (flag (not inside)) env))
+                (optionText "fill-character" wopts)
+            flag b = if b then "1" else "0"
+        fillInside <- fill True
+        fillOutside <- fill False
+        pure look { fillInside, fillOutside }
+  where
+    isFill = \case
+        SceneOutside -> True
+        SceneEmpty -> True
+        _ -> False
 
 -- | Draw each pane's @pane-border-format@ over the border its status line
 -- replaces (tmux's @window_make_pane_status@).
