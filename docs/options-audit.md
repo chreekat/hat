@@ -19,6 +19,10 @@ pure function takes the value, tested prefix-style in `OptionEffectSpec`;
 `integration` = exercised end-to-end in `IntegrationSpec`; `rendered` = a format
 string the FormatSpec-verified `renderFormat` expands.
 
+Which options exist and which hat implements is not tracked here: that is
+the registry's gate (`live`/`notYet` rows in `src/Hat/Model/OptionTable.hs`),
+which `set`/`show` enforce. This catalog covers the live rows.
+
 ## Method
 
 Each `Options` field (`src/Hat/Model/Options.hs`) was traced to its read-sites
@@ -65,6 +69,7 @@ spot-read of each suspect consumer.
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-width` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
 | `main-pane-height` | `mainPaneRatio` (Server.hs) | implemented ✅ tested | pure |
+| `xterm-keys` | none — tmux keeps it only for compatibility, with no effect | implemented (by design) | — |
 
 ## Defects (the backlog)
 
@@ -98,7 +103,7 @@ spot-read of each suspect consumer.
   by `mainPaneRatio` effect tests. Two small divergences remain as follow-ups,
   not silent no-ops: the main pane is clamped to 10–90% of the window (tmux
   clamps only to leave the other panes room), and a `%`-suffixed percentage
-  value isn't parsed.
+  value is refused at `set` (the row's `refusing` gate) rather than parsed.
 
 ## The effect-test sweep
 

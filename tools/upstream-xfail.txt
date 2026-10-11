@@ -89,9 +89,9 @@ menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click 
 new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
 
 # option engine breadth: flat scalar table, global-only read-back
-options-array.sh                # array options (option[key], -a append, ordering) unmodeled
-options-values.sh               # most option names fail-loud + no typed value-validation table
-show-options-output.sh          # needs status-format + string array keys + hook-aware show -g/-H filtering
+options-array.sh                # needs status-format, user-keys, pane-colours (registered, not yet live)
+options-values.sh               # needs status-keys, status-bg, default-shell, default-client-command (not yet live)
+show-options-output.sh          # needs status-format (not yet live)
 
 # capture-pane's grid dump (-p/-N/-e/-L/-S/-E) is implemented; the raw cell
 # dump (-pR) and the -J/-F wrapped-line flags are not. The grid-path scripts
