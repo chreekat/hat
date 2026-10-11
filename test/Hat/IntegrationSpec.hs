@@ -2,6 +2,10 @@
 module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.Async (Async, async, cancel, link)
+import Control.Concurrent.STM
+    (TVar, atomically, modifyTVar', newTVarIO, readTVar, readTVarIO, retry,
+     writeTVar)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception
     (IOException, SomeException, bracket, catch, evaluate, finally, throwIO,
@@ -114,7 +118,7 @@ withHatOn hatBin persistOn sockRel action = do
 -- leaves.
 rethrowWithLog :: Hat -> HUnitFailure -> IO a
 rethrowWithLog h (HUnitFailure loc reason) = do
-    events <- readFile (h.home </> "server.log")
+    events <- (readFile (h.home </> "server.log") >>= \s -> s <$ evaluate (length s))
         `catch` \(_ :: SomeException) -> pure "(no server log)"
     -- From the last reload when there is one (the epoch failures hide in),
     -- middle elided; plain tail otherwise. Poll chatter is dropped.
@@ -157,7 +161,7 @@ teardown h = do
     -- never by the collector mid-test (a finalized master hangs up its
     -- still-attached client).
     ds <- readIORef h.keep
-    forM_ ds $ \d -> hClose d.pty.master
+    forM_ ds $ \d -> cancel d.pump >> hClose d.pty.master
         `catch` \(_ :: SomeException) -> pure ()
     removeDirectoryRecursive h.home
         `catch` \(_ :: SomeException) -> pure ()
@@ -249,7 +253,15 @@ data Driver = Driver
     { pty :: Client
     , transcript :: IORef B8.ByteString
     , screen :: Emu.Emulator
+    , fed :: TVar PtyFeed
+    , pump :: Async ()  -- ^ see 'pumpPty'
     }
+
+-- | How far a driver's pump has read its pty.
+data PtyFeed
+    = Feeding Int  -- ^ chunks ingested so far
+    | PtyClosed    -- ^ the client side hung up; nothing more will come
+    deriving Eq
 
 -- The hat binary driven as a black box: a plain child process wired to a
 -- test-owned pty. No controlling-terminal setup or in-process fork — just
@@ -286,6 +298,9 @@ startClientEnv h extraEnv extra = do
     hSetBuffering masterH NoBuffering
     setTerminalAttributes slaveFd cooked Immediately
     slaveH <- fdToHandle slaveFd
+    -- A Handle of its own, so the pump's blocked read never holds the lock
+    -- 'typeInto' writes through.
+    readH <- fdToHandle =<< PIO.dup masterFd
     (_, _, _, ph) <-
         P.createProcess (P.proc h.bin (["-S", h.sock] <> extra))
             { P.std_in  = P.UseHandle slaveH
@@ -310,21 +325,37 @@ startClientEnv h extraEnv extra = do
             }
     t <- newIORef ""
     emu <- Emu.newEmulator size 1000
+    fedV <- newTVarIO (Feeding 0)
+    pumpA <- async (pumpPty readH t emu fedV)
+    link pumpA
     let d = Driver
             { pty = Client { master = masterH, proch = ph }
             , transcript = t
             , screen = emu
+            , fed = fedV
+            , pump = pumpA
             }
     d <$ modifyIORef' h.keep (d :)
 
--- Blocking read of available bytes; empty means the pty closed (the hat
--- client exited and the slave went away — Linux reports EIO at pty EOF).
-readPty :: Client -> IO B8.ByteString
-readPty c = do
-    r <- try (B.hGetSome c.master 65536)
-    pure $ case r of
-        Left (_ :: IOException) -> B.empty
-        Right bs -> bs
+-- | Drain the client's pty for as long as it is open, as a real terminal
+-- does, into the transcript and the screen model.
+pumpPty :: Handle -> IORef B8.ByteString -> Emu.Emulator -> TVar PtyFeed -> IO ()
+pumpPty readH t emu fedV = loop `finally` hClose readH
+  where
+    loop = do
+        -- Linux reports EIO at pty EOF, once the client and its slave are gone.
+        r <- try (B.hGetSome readH 65536)
+        case r of
+            Right chunk | not (B8.null chunk) -> do
+                modifyIORef' t (<> chunk)
+                _ <- Emu.feed emu chunk
+                atomically $ modifyTVar' fedV $ \case
+                    Feeding n -> Feeding (n + 1)
+                    PtyClosed -> PtyClosed
+                loop
+            Right _ -> closed
+            Left (_ :: IOException) -> closed
+    closed = atomically (writeTVar fedV PtyClosed)
 
 writePty :: Client -> B8.ByteString -> IO ()
 writePty c bs = B.hPut c.master bs `catch` \(_ :: IOException) -> pure ()
@@ -333,18 +364,12 @@ writePty c bs = B.hPut c.master bs `catch` \(_ :: IOException) -> pure ()
 waitExit :: Client -> IO ProcessStatus
 waitExit c = Exited <$> P.waitForProcess c.proch
 
-ingest :: Driver -> B8.ByteString -> IO ()
-ingest d chunk = do
-    modifyIORef' d.transcript (<> chunk)
-    _ <- Emu.feed d.screen chunk
-    pure ()
-
 screenText :: Driver -> IO T.Text
 screenText d = do
     scr <- Emu.snapshot d.screen
     pure $ T.unlines [Emu.screenRowText scr r | r <- [0 .. 23]]
 
--- Read until the given check passes; fail after 10s.
+-- Recheck as the pty delivers until the given check passes; fail after 10s.
 awaitWith :: String -> (Driver -> IO Bool) -> Driver -> IO ()
 awaitWith what check d = do
     r <- timeout 10_000_000 go
@@ -357,16 +382,15 @@ awaitWith what check d = do
                 <> "\nscreen:\n" <> T.unpack scr
   where
     go = do
+        seen <- readTVarIO d.fed
         ok <- check d
-        if ok
-            then pure ()
-            else do
-                chunk <- readPty d.pty
-                when (B8.null chunk) $ do
-                    t <- readIORef d.transcript
-                    expectationFailure $ "pty closed while waiting for " <> what
-                        <> "\ntranscript: " <> show t
-                ingest d chunk
+        unless ok $ case seen of
+            PtyClosed -> do
+                t <- readIORef d.transcript
+                expectationFailure $ "pty closed while waiting for " <> what
+                    <> "\ntranscript: " <> show t
+            Feeding _ -> do
+                atomically $ readTVar d.fed >>= \now -> when (now == seen) retry
                 go
 
 -- The shared body of the restart-keeps-client tests: the pane pid pins the
@@ -411,13 +435,12 @@ awaitScreen d needle = awaitWith (show needle) check d
   where
     check drv = T.isInfixOf needle <$> screenText drv
 
--- The command prompt replaces the status line, so the current window's
--- status marker (e.g. "0:sh*") disappearing is a reliable "the prompt is
--- open" signal — unlike the bare ':', which the status line also shows.
-awaitPromptOpen :: Driver -> T.Text -> IO ()
-awaitPromptOpen d marker = awaitWith "command prompt to open" check d
-  where
-    check drv = not . T.isInfixOf marker <$> screenText drv
+-- The command prompt replaces the status line: the bottom row is its bare
+-- ":", which no status line draws alone.
+awaitPromptOpen :: Driver -> IO ()
+awaitPromptOpen = awaitWith "command prompt to open" $ \d -> do
+    scr <- Emu.snapshot d.screen
+    pure (T.strip (Emu.screenRowText scr 23) == ":")
 
 -- | Poll a server-side observable to a bounded deadline (the pty-less
 -- sibling of 'awaitWith').
@@ -432,17 +455,11 @@ awaitTrue what check = do
 
 awaitExit :: Driver -> IO ProcessStatus
 awaitExit d = do
-    r <- timeout 10_000_000 drainAndWait
+    r <- timeout 10_000_000 $ do
+        atomically $ readTVar d.fed >>= \f -> unless (f == PtyClosed) retry
+        waitExit d.pty
     maybe (expectationFailure "timed out waiting for exit"
             >> waitExit d.pty) pure r
-  where
-    drainAndWait = do
-        chunk <- readPty d.pty
-        if B8.null chunk
-            then waitExit d.pty
-            else do
-                ingest d chunk
-                drainAndWait
 
 typeInto :: Driver -> B8.ByteString -> IO ()
 typeInto d = writePty d.pty
@@ -1763,7 +1780,7 @@ spec = parallel $ do
         awaitScreen c "[0]"                -- attached to the first session (named "0")
         -- Switch this client to a new session; the first becomes its alternate.
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "new-session -s work\r"
         awaitScreen c "[work]"
         -- Reload in place (deterministic binary path) and reattach.
@@ -1775,7 +1792,7 @@ spec = parallel $ do
         -- switch-client -l must return to the first session — the alternate
         -- survived the reload.
         typeInto c2 "\x02:"
-        awaitPromptOpen c2 "0:sh*"
+        awaitPromptOpen c2
         typeInto c2 "switch-client -l\r"
         awaitScreen c2 "[0]"
 
@@ -1806,7 +1823,9 @@ spec = parallel $ do
         typeInto c (B8.pack ("i=0; while [ ! -e " <> h.home <> "/stop-ticks ]; \
             \do i=$((i+1)); echo TICK-$i-END; sleep 0.01; done; \
             \echo done-ticks-$((40+2))\r"))
-        awaitScreen c "TICK-3-END"
+        -- The screen scrolls as it ticks: any visible tick past the third.
+        awaitWith "the ticker to pass tick 3"
+            (fmap (any (>= 3) . tickNumbers) . screenText) c
         _ <- hatCtl h ["restart-server", h.bin]
         _ <- awaitExit c
         c2 <- startClient h
@@ -1814,11 +1833,7 @@ spec = parallel $ do
         -- The sentinel is FIFO-last through the pane, so its render proves
         -- every tick the kernel buffered across the exec has flowed through.
         awaitScreen c2 "done-ticks-42"
-        out <- ctlOut h ["capture-pane", "-p", "-S", "-"]
-        let ticks = [ n | w <- T.words (T.pack out)
-                        , Just num <- [T.stripPrefix "TICK-" w
-                                        >>= T.stripSuffix "-END"]
-                        , Just n <- [readMaybe (T.unpack num) :: Maybe Int] ]
+        ticks <- tickNumbers . T.pack <$> ctlOut h ["capture-pane", "-p", "-S", "-"]
         case ticks of
             [] -> expectationFailure "no ticks captured"
             first : _ -> ticks `shouldBe` [first .. last ticks]
@@ -1837,11 +1852,11 @@ spec = parallel $ do
         c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
         awaitScreen c "[0]"
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "new-session -s a\r"
         awaitScreen c "[a]"
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "new-session -s b\r"
         awaitScreen c "[b]"
         _ <- hatCtl h ["restart", h.bin]
@@ -1852,7 +1867,7 @@ spec = parallel $ do
         awaitScreen c "[b]"
         _ <- hatCtl h ["kill-session", "-t", "a"]
         typeInto c "\x02:"
-        awaitPromptOpen c "0:sh*"
+        awaitPromptOpen c
         typeInto c "switch-client -l\r"
         awaitScreen c "[0]"
 
@@ -1895,6 +1910,13 @@ spec = parallel $ do
         -- the shell is still live: it runs our input as if nothing happened.
         typeInto c "echo survived-bad-reload\r"
         awaitScreen c "survived-bad-reload"
+
+-- The @n@ of each @TICK-n-END@ word, in order.
+tickNumbers :: T.Text -> [Int]
+tickNumbers txt =
+    [ n | w <- T.words txt
+        , Just num <- [T.stripPrefix "TICK-" w >>= T.stripSuffix "-END"]
+        , Just n <- [readMaybe (T.unpack num)] ]
 
 -- A kill reaps a SIGHUP-ignoring pane whose window a:1 is also linked at
 -- @dst@.

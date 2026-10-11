@@ -793,7 +793,7 @@ cmdSendKeys st mclient args = do
         -- An open chooser owns send-keys: they drive its navigation/search
         -- (this is how the config's @… \; send-keys /@ enters search).
         (Just pk, Just client) | not modeCmd -> do
-            handlePickerInput dispatch st client pk
+            _ <- handlePickerInput dispatch st client pk
                 (concatMap (tokenizeKeys . argBytes literal) pos)
             pure []
         -- -M passes the mouse event being acted on to the pane under it,
