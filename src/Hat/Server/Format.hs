@@ -7,6 +7,7 @@
 module Hat.Server.Format
     ( FormatEnv
     , FormatCtx (..)
+    , Animation (..)
     , formatCtx
     , evaluate
     , evaluateCtx
@@ -58,7 +59,13 @@ data FormatCtx = FormatCtx
     , panes     :: [FormatEnv]  -- ^ target window's panes, creation order
     , clients   :: [FormatEnv]  -- ^ attached clients
     , paneLines :: [Text]       -- ^ target pane's visible lines, for @C@
+    , animate   :: Animation
     }
+
+-- | Whether @A@ animation frames expand: only in a status format (tmux's
+-- @FORMAT_STATUS@).
+data Animation = Animate | NoAnimate
+    deriving (Eq, Show)
 
 -- | A context with no loop or search data.
 formatCtx :: FormatEnv -> (Text -> Text) -> ZonedTime -> FormatCtx
@@ -72,6 +79,7 @@ formatCtx env shell zt = FormatCtx
     , panes = []
     , clients = []
     , paneLines = []
+    , animate = NoAnimate
     }
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
@@ -317,6 +325,7 @@ data ModState = ModState
     , sortR :: Bool
     , repeatF :: Bool
     , clientQ :: Bool
+    , cycleCount :: Maybe Int  -- ^ @A@: periods per animation frame
     , unimpl :: Maybe Text
     }
 
@@ -328,7 +337,7 @@ emptyModState = ModState
     , baseF = False, dirF = False, lenF = False, widF = False
     , timeM = Nothing, quoteM = Nothing, expandF = False, expandTimeF = False
     , nameK = Nothing, loopK = Nothing, sortO = OrderList, sortR = False
-    , repeatF = False, clientQ = False, unimpl = Nothing
+    , repeatF = False, clientQ = False, cycleCount = Nothing, unimpl = Nothing
     }
 
 collectMods :: [Mod] -> ModState
@@ -357,7 +366,9 @@ collectMods = List.foldl' step emptyModState
         "p" -> case m.margs of
             (a1 : _) -> st { padW = numDefault (-10000) 10000 0 a1 }
             [] -> st
-        "A" -> st { unimpl = Just "A" }
+        "A" -> st { cycleCount = Just (case m.margs of
+            (a1 : _) -> numDefault 1 100 1 a1
+            [] -> 1) }
         "O" -> st { unimpl = Just "O" }
         "V" -> st { unimpl = Just "V" }
         "w" -> st { widF = True }
@@ -457,6 +468,7 @@ replaceKey ctx depth key = postOps <$> value
         | ms.clientQ = Just ""  -- no per-client termcap/feature model
         | Just nm <- ms.unimpl =
             Just ("<format modifier '" <> nm <> "' unimplemented>")
+        | Just periods <- ms.cycleCount = Just (cycleVal periods)
         | ms.literalF = Just (unescape copy)
         | ms.charF = Just charVal
         | Just cm <- ms.colourM = Just (colourVal cm)
@@ -496,6 +508,16 @@ replaceKey ctx depth key = postOps <$> value
                | otherwise = v5
         in v6
     applySub acc (p0, w0, icase) = regexSub icase (exp1 p0) (exp1 w0) acc
+
+    -- format_cycle: the frame for now, each lasting @periods@ x 100ms.
+    cycleVal periods
+        | ctx.animate == NoAnimate || T.null copy = ""
+        | otherwise =
+            let frames = T.splitOn "," copy
+                millis = floor (ctx.now * 1000) :: Integer
+                ix = (millis `div` (fromIntegral periods * 100))
+                    `mod` fromIntegral (length frames)
+            in frames !! fromIntegral ix
 
     charVal = case numFull 32 126 (exp1 copy) of
         Just n -> T.singleton (chr n)

@@ -63,10 +63,24 @@ renderLoop :: Int -> ServerState -> Client -> IO ()
 renderLoop period st client = loop (-1)
   where
     loop lastGen = do
-        gen <- atomically (awaitRenderable st client lastGen)
+        animated <- maybe False (.animated) <$> readIORef client.lastStatus
+        gen <- if animated
+            then awaitOrFrame lastGen
+            else atomically (awaitRenderable st client lastGen)
         renderOnce st client
         threadDelay period
         loop gen
+    -- An animated status line repaints at least every animation period
+    -- (tmux's cycle timer), dirty or not.
+    awaitOrFrame lastGen = do
+        timer <- registerDelay animationPeriod
+        atomically $ awaitRenderable st client lastGen
+            `orElse` (lastGen <$ (readTVar timer >>= check))
+
+-- | How often an animated (@#{A:…}@) status line advances, in
+-- microseconds: tmux's @FORMAT_CYCLE_PERIOD@.
+animationPeriod :: Int
+animationPeriod = 100000
 
 -- | The dirty generation 'renderLoop' paints next: newer than the one last
 -- painted (or a forced full redraw via @needsFull@), but only once
@@ -635,10 +649,11 @@ statusRowsCached st client sess sopts width = do
     shells <- readTVarIO st.shellCache
     sec <- floor <$> getPOSIXTime
     mc <- readIORef client.lastStatus
-    let plain = case mc of
-            Just c | samePtr c.opts sopts -> c.plain
-            _ -> not $ any (formatReadsLoops ["S", "P", "L", "N", "C"])
-                (optionArray "status-format" sopts <> Map.elems env)
+    let usesAny toks = any (formatReadsLoops toks)
+            (optionArray "status-format" sopts <> Map.elems env)
+        (plain, animated) = case mc of
+            Just c | samePtr c.opts sopts -> (c.plain, c.animated)
+            _ -> (not (usesAny ["S", "P", "L", "N", "C", "A"]), usesAny ["A"])
     case mc of
         Just c | isNothing mamb, plain
                , samePtr c.opts sopts, samePtr c.shells shells
@@ -649,7 +664,7 @@ statusRowsCached st client sess sopts width = do
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
                     { opts = sopts, shells, second = sec, width
-                    , env, wins, plain, rowCells = rows }
+                    , env, wins, plain, animated, rowCells = rows }
             pure rows
 
 -- | Everything the status rows' expansion consumes beyond the options,
@@ -669,7 +684,8 @@ renderStatus
     -> Int -> IO [V.Vector Cell.Cell]
 renderStatus st sopts env wins width = do
     ctx <- formatCtxFor st env (optionArray "status-format" sopts)
-    let rows = statusRows ctx { F.windows = wins } sopts width
+    let rows = statusRows ctx { F.windows = wins, F.animate = F.Animate }
+            sopts width
     pure $! foldr seq rows rows
 
 -- | The status line (0-based) the prompt and messages take: @message-line@,

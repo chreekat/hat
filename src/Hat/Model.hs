@@ -558,7 +558,8 @@ data StatusCache = StatusCache
     , width   :: !Int
     , env     :: !(Map Text Text)
     , wins    :: ![Map Text Text]  -- ^ each window's own format variables
-    , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@; see 'Hat.Server.Format.formatReadsLoops'
+    , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
+    , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
     , rowCells :: ![V.Vector Cell.Cell]
     }
 

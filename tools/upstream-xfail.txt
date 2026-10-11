@@ -72,7 +72,6 @@ copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/sele
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
-format-animation.sh             # #{A/n:...} animation modifier + status-format[n]
 format-modifiers.sh             # new-pane floating panes (P/z order) + -C control-mode attach (L loop)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars

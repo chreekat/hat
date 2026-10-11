@@ -481,4 +481,20 @@ spec = do
             `shouldBe` "[charlie] alpha bravo "
 
     it "fails loudly on unimplemented modifiers" $
-        eval "#{A/2:a,b}" `shouldSatisfy` T.isInfixOf "unimplemented"
+        eval "#{O:x}" `shouldSatisfy` T.isInfixOf "unimplemented"
+
+    describe "the A animation modifier" $ do
+        let at dt = evaluateCtx ctx
+                { animate = Animate, now = fromIntegral testNow + dt }
+        it "is empty outside a status format" $
+            eval "#{A:a,b}" `shouldBe` ""
+        it "steps through its frames every 100ms" $ do
+            at 0 "#{A:a,b}" `shouldBe` "a"
+            at 0.15 "#{A:a,b}" `shouldBe` "b"
+        it "holds each frame for n periods with A/n" $ do
+            at 0.15 "#{A/2:a,b}" `shouldBe` "a"
+            at 0.25 "#{A/2:a,b}" `shouldBe` "b"
+        it "treats a bad count as 1 and empty frames as empty" $ do
+            at 0.15 "#{A/0:a,b}" `shouldBe` "b"
+            at 0.15 "#{A/x:a,b}" `shouldBe` "b"
+            at 0 "#{A:}" `shouldBe` ""
