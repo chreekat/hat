@@ -130,6 +130,41 @@ spec = do
         it "reads utf-8 sequences as single keys" $
             map (.name) (tokenizeKeys "\xc3\xa9") `shouldBe` ["é"]
 
+        it "reads the keypad in application mode" $
+            map (.name) (tokenizeKeys (B.concat
+                [ "\ESCO" <> B8.singleton c | c <- "Mjkmnopqrstuvwxy" ]))
+                `shouldBe` [ "KPEnter", "KP*", "KP+", "KP-", "KP.", "KP/", "KP0"
+                           , "KP1", "KP2", "KP3", "KP4", "KP5", "KP6", "KP7", "KP8"
+                           , "KP9" ]
+
+        it "reads rxvt's modified arrows" $
+            map (.name) (tokenizeKeys "\ESCOa\ESCOb\ESCOc\ESCOd\ESC[a\ESC[b\ESC[c\ESC[d")
+                `shouldBe` [ "C-Up", "C-Down", "C-Right", "C-Left"
+                           , "S-Up", "S-Down", "S-Right", "S-Left" ]
+
+        it "reads rxvt's modified function keys" $ do
+            map (.name) (tokenizeKeys
+                "\ESC[25~\ESC[26~\ESC[28~\ESC[29~\ESC[31~\ESC[32~\ESC[33~\ESC[34~\ESC[23$\ESC[24$")
+                `shouldBe` [ "S-F3", "S-F4", "S-F5", "S-F6", "S-F7", "S-F8", "S-F9"
+                           , "S-F10", "S-F11", "S-F12" ]
+            map (.name) (tokenizeKeys "\ESC[11^\ESC[17^\ESC[24^\ESC[11@\ESC[21@\ESC[24@")
+                `shouldBe` ["C-F1", "C-F6", "C-F12", "C-S-F1", "C-S-F10", "C-S-F12"]
+
+        it "reads C-S-Tab" $
+            map (.name) (tokenizeKeys "\ESC[1;5Z") `shouldBe` ["C-S-Tab"]
+
+        it "names an escaped key in tmux's C-M-S- order" $
+            map (.name) (tokenizeKeys "\ESC\x01\ESC\x7f\ESC\ESCOM\ESC\ESC[a")
+                `shouldBe` ["C-M-a", "M-BSpace", "M-KPEnter", "M-S-Up"]
+
+        it "reads an escaped Escape as M-Escape" $
+            map (.name) (tokenizeKeys "\ESC\ESC") `shouldBe` ["M-Escape"]
+
+        it "reads a sequence cut short as its first byte escaped, then the rest" $ do
+            map (.name) (tokenizeKeys "\ESC[") `shouldBe` ["M-["]
+            map (.name) (tokenizeKeys "\ESCO") `shouldBe` ["M-O"]
+            map (.name) (tokenizeKeys "\ESC[1;") `shouldBe` ["M-[", "1", ";"]
+
     -- bug 64: an outer terminal spells a combo with no legacy byte as an
     -- extended-key sequence. Both spellings must land on the same canonical
     -- name as the raw-byte twin, and neither may carry its own bytes into a
@@ -210,11 +245,20 @@ spec = do
             feedKeys EscBuffered [] NoEscPending "a\ESC"
                 `shouldBe` EscTokens
                     { escKeys = [Key { name = "a", raw = "a" }]
-                    , escPending = EscPending }
+                    , escPending = EscPending "\ESC" }
+
+        it "EscBuffered: a sequence cut short is held whole" $ do
+            let held = feedKeys EscBuffered [] NoEscPending "\ESC[1;"
+            held.escPending `shouldBe` EscPending "\ESC[1;"
+            map (.name) (feedKeys EscBuffered [] held.escPending "5A").escKeys
+                `shouldBe` ["C-Up"]
+            map (.name) (flushEscape held.escPending) `shouldBe` ["M-[", "1", ";"]
+            map (.name) (flushEscape (feedKeys EscBuffered [] NoEscPending "\ESC\ESC").escPending)
+                `shouldBe` ["M-Escape"]
 
         it "EscBuffered: a held ESC coalesces with a following [A into Up" $ do
             let held = feedKeys EscBuffered [] NoEscPending "\ESC"
-            held.escPending `shouldBe` EscPending
+            held.escPending `shouldBe` EscPending "\ESC"
             map (.name) (feedKeys EscBuffered [] held.escPending "[A").escKeys
                 `shouldBe` ["Up"]
 
@@ -229,7 +273,7 @@ spec = do
                     { escKeys = tokenizeKeys "ab", escPending = NoEscPending }
 
         it "flushEscape emits the held ESC as Escape on timeout" $
-            map (.name) (flushEscape EscPending) `shouldBe` ["Escape"]
+            map (.name) (flushEscape (EscPending "\ESC")) `shouldBe` ["Escape"]
 
         it "flushEscape emits nothing when no ESC is held" $
             flushEscape NoEscPending `shouldBe` []

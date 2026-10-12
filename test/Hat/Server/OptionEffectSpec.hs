@@ -24,12 +24,12 @@ import Hat.Model.Options
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
     , optionText )
 import Hat.Server
-    ( Reply (..), deliversKey, escTiming, namedSizesOf, resizeModeOf
+    ( Reply (..), deliversKey, escWait, namedSizesOf, resizeModeOf
     , runCommands, toastDeadline, toastExpired )
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
-import Hat.Server.Keys (EscTiming (..), Key (..))
+import Hat.Server.Keys (Key (..))
 import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
@@ -238,14 +238,13 @@ spec = do
                 environFind "ABSENT" (environUpdate ["ABSENT"] clientEnv sessEnv)
                     `shouldBe` Just (EnvEntry Nothing EnvVisible)
 
-        -- escape-time: 0 handles a lone trailing ESC at once; non-zero holds
-        -- it for coalescing (the coalescing itself is KeysSpec's).
-        describe "escape-time picks the lone-ESC timing mode" $ do
-            it "0 (default): immediate" $
-                escTiming defaultOptions `shouldBe` EscImmediate
-            it "non-zero: buffered for coalescing" $
-                escTiming (defaultOptions { escapeTime = 500 })
-                    `shouldBe` EscBuffered
+        -- escape-time: how long a held sequence waits for the rest of it
+        -- (the coalescing itself is KeysSpec's).
+        describe "escape-time sets the wait for a held sequence" $ do
+            it "0 (default) still waits a millisecond, as tmux does" $
+                escWait defaultOptions `shouldBe` 1
+            it "non-zero: that many milliseconds" $
+                escWait (defaultOptions { escapeTime = 500 }) `shouldBe` 500
 
         -- command-alias: a matching entry re-routes dispatch to its
         -- expansion, with the invocation's own arguments appended.

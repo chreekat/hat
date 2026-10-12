@@ -11,7 +11,7 @@ module Hat.Server.Conn
     , ensureSession
     , pickAttachSession
     , deliversKey
-    , escTiming
+    , escWait
     , keyContext
     , reencodeKey
     , handleInput  -- ^ exported for the display-panes key tests
@@ -391,7 +391,7 @@ inputLoop d st re client = loop
         now <- monotonicMs
         opts <- clientOptions st client
         let escWake = case held of
-                EscPending -> [(opts.escapeTime, flushHeldEscape d st client)]
+                EscPending _ -> [(escWait opts, flushHeldEscape d st client)]
                 NoEscPending -> []
             repeatWake = case ks.repeating of
                 Just r -> [(max 0 (r.expires - now), expireKeyRepeat st client)]
@@ -498,10 +498,7 @@ deliversKey opts paneFocusReport k
 handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
-    owner <- keyOwner st client
-    case owner of
-        KeyTables -> handleKeys d st client bs
-        _ -> deliverKeys d st client (tokenizeKeys bs)
+    handleKeys d st client bs
 
 -- | What a client's keystrokes go to: an open overlay, else its key tables.
 data KeyOwner
@@ -585,16 +582,10 @@ selectPaneNumber d st client template num = do
                 =<< d.runCommandText st (Just client)
                     (T.replace "%%" target template)
 
--- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
--- its copy-mode table before each. A key that enters or leaves copy mode
--- therefore changes how the very next key in the same input chunk is
--- routed, so @prefix [@ followed immediately by motions never leaks the
--- motions to the shell (and vice versa on exit).
--- escape-time coalescing: 0 forwards a lone trailing ESC as Escape at once
--- ('EscImmediate'); a non-zero value holds it ('EscBuffered') for 'inputLoop'
--- to coalesce with the next chunk or flush on timeout.
-escTiming :: Options -> EscTiming
-escTiming opts = if opts.escapeTime <= 0 then EscImmediate else EscBuffered
+-- | How long, in ms, input held for @escape-time@ waits for the rest of its
+-- sequence: tmux waits a millisecond even at 0.
+escWait :: Options -> Int
+escWait opts = max 1 opts.escapeTime
 
 -- | How a key arriving at @now@ (ms) is routed, from the client's session
 -- options and its active pane's mode table.
@@ -615,20 +606,20 @@ keyContext opts modeTable now = KeyContext
 monotonicMs :: IO Int
 monotonicMs = fromIntegral . (`div` 1000000) <$> getMonotonicTimeNSec
 
--- | Tokenize a chunk under the client's escape-time, coalescing any ESC held
--- from the previous chunk, then route the resulting keys. A fresh lone
--- trailing ESC is left in 'escState' for 'inputLoop' to resolve.
+-- | Tokenize a chunk, completing any sequence held from the previous chunk,
+-- then hand the resulting keys to whatever owns the keyboard. A sequence the
+-- chunk ends in is left in 'escState' for 'inputLoop' to resolve.
 handleKeys :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleKeys d st client bs = do
     opts <- clientOptions st client
     held <- readIORef client.escState
     let users = userKeys opts.userKeys
-        toks = feedKeys (escTiming opts) users held bs
+        toks = feedKeys EscBuffered users held bs
     writeIORef client.escState toks.escPending
-    runKeys d st client toks.escKeys
+    deliverKeys d st client toks.escKeys
 
--- | The escape-time timer fired: forward the held lone ESC as Escape and clear
--- the buffer. A no-op if the ESC was already coalesced by an arriving chunk.
+-- | The escape-time timer fired: resolve the held bytes and clear the
+-- buffer. A no-op if an arriving chunk already completed them.
 flushHeldEscape :: Dispatch -> ServerState -> Client -> IO ()
 flushHeldEscape d st client = do
     held <- readIORef client.escState

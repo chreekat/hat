@@ -71,7 +71,7 @@ module Hat.Server
     , deliversKey  -- ^ exported for the focus-event gating test
     , namedSizesOf  -- ^ exported for the main-pane-size test
     , resizeModeOf  -- ^ exported for the aggressive-resize effect test
-    , escTiming  -- ^ exported for the escape-time effect test
+    , escWait  -- ^ exported for the escape-time effect test
     , toastDeadline  -- ^ exported for the display-time effect test
     , toastExpired   -- ^ exported for the display-time effect test
     , sessionSpawnEnv  -- ^ exported for the spawn-env merge test

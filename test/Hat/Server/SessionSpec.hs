@@ -1856,6 +1856,17 @@ spec = do
                 `shouldReturn` "\ESCOP"
             ((.raw) <$> reencodeKey offEnc Nothing (Key "F4" "\ESC[14~"))
                 `shouldReturn` "\ESCOS"
+        it "spells the keypad as the pane's keypad mode asks" $ do
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            let kpEnter = Key "KPEnter" "\ESCOM"
+            ((.raw) <$> reencodeKey offEnc (Just emu) kpEnter) `shouldReturn` "\n"
+            _ <- Emu.feed emu "\ESC="
+            ((.raw) <$> reencodeKey offEnc (Just emu) kpEnter) `shouldReturn` "\ESCOM"
+        it "normalizes rxvt's modified keys to the xterm forms" $ do
+            ((.raw) <$> reencodeKey offEnc Nothing (Key "C-Up" "\ESCOa"))
+                `shouldReturn` "\ESC[1;5A"
+            ((.raw) <$> reencodeKey offEnc Nothing (Key "S-F3" "\ESC[25~"))
+                `shouldReturn` "\ESC[1;2R"
         it "leaves an unrecognized sequence's raw bytes alone" $
             -- bug fad
             ((.raw) <$> reencodeKey offEnc Nothing (Key "Unknown" "\ESC[97~"))

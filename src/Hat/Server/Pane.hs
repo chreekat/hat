@@ -1088,7 +1088,7 @@ reencodeKey kenc memu key = case arrowOf key.name of
         pure key { raw = enc }
     _ | Just app <- Map.lookup key.name keypadAppBytes, Just emu <- memu -> do
         on <- Emu.keypadMode emu
-        pure $ if on then key { raw = app } else key
+        pure $ if on then key { raw = app } else canonical
       | Just (code, mods) <- extendedKeyCode key.name
       , Just emu <- memu -> modified emu code mods
       -- Mode 2 spells Shift-Tab as an extended S-Tab, as tmux does.

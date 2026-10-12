@@ -115,9 +115,11 @@ keypadKeys =
 keypadAppBytes :: Map Text ByteString
 keypadAppBytes = Map.fromList [ (nm, app) | (nm, _, app) <- keypadKeys ]
 
--- | 'namedKeys' as a map, for the per-keystroke forwarding lookup.
+-- | The bytes each named key sends, the modified special keys' too, as a
+-- map for the per-keystroke forwarding lookup.
 namedKeyBytes :: Map Text ByteString
-namedKeyBytes = Map.fromList namedKeys
+namedKeyBytes = Map.fromList
+    (namedKeys ++ [ (nm, "\ESC" <> pat) | (pat, nm) <- modifiedCsiNames ])
 
 -- CSI tilde codes for F5-F12 (tmux-256color kf5..kf12).
 fkeyTildes :: [(ByteString, Text)]
@@ -150,9 +152,28 @@ csiNames =
     , ("[11~", "F1"), ("[12~", "F2"), ("[13~", "F3"), ("[14~", "F4")
     , ("[I", "FocusIn"), ("[O", "FocusOut")
     , ("[200~", "PasteStart"), ("[201~", "PasteEnd")
+    , ("[1;5Z", "C-S-Tab"), ("O[", "Escape")
     ]
     ++ [ ("[" <> code <> "~", nm) | (code, nm) <- fkeyTildes ]
+    ++ [ (B.drop 1 app, nm) | (nm, _, app) <- keypadKeys ]
+    ++ rxvtNames
     ++ modifiedCsiNames
+
+-- The modified arrows and function keys rxvt sends (tmux's raw key table).
+-- Its shifted F1 and F2 share F11 and F12's codes, which name those.
+rxvtNames :: [(ByteString, Text)]
+rxvtNames =
+    [ ("Oa", "C-Up"), ("Ob", "C-Down"), ("Oc", "C-Right"), ("Od", "C-Left")
+    , ("[a", "S-Up"), ("[b", "S-Down"), ("[c", "S-Right"), ("[d", "S-Left")
+    , ("[23$", "S-F11"), ("[24$", "S-F12") ]
+    ++ [ ("[" <> code <> "~", "S-" <> nm)
+       | (code, nm) <- zip ["25", "26", "28", "29", "31", "32", "33", "34"]
+            [ "F" <> T.pack (show n) | n <- [3 :: Int .. 10] ] ]
+    ++ [ ("[" <> code <> B8.singleton fin, mods <> nm)
+       | (fin, mods) <- [('^', "C-"), ('@', "C-S-")]
+       , (code, nm) <- zip
+            ["11", "12", "13", "14", "15", "17", "18", "19", "20", "21", "23", "24"]
+            [ "F" <> T.pack (show n) | n <- [1 :: Int .. 12] ] ]
 
 -- Special keys with an xterm modifier parameter (@CSI 1;p F@ and
 -- @CSI n;p ~@), named with tmux's canonical @C-M-S-@ prefix order.
@@ -178,8 +199,9 @@ modifiedCsiNames =
 data EscTiming = EscImmediate | EscBuffered
     deriving (Eq, Show)
 
--- | A lone trailing ESC held awaiting the escape-time window. See 'feedKeys'.
-data EscPending = NoEscPending | EscPending
+-- | A lone trailing ESC, or an escape sequence cut short, held awaiting the
+-- escape-time window: its bytes. See 'feedKeys'.
+data EscPending = NoEscPending | EscPending ByteString
     deriving (Eq, Show)
 
 -- | Result of 'feedKeys': the keys to act on now, plus any trailing lone ESC
@@ -200,7 +222,7 @@ data EscTokens = EscTokens
 feedKeys :: EscTiming -> UserKeys -> EscPending -> ByteString -> EscTokens
 feedKeys timing users pending bs =
     let full = case pending of
-            EscPending   -> "\ESC" <> bs
+            EscPending held -> held <> bs
             NoEscPending -> bs
         (keys, pending') = tokenize timing users full
     in EscTokens { escKeys = keys, escPending = pending' }
@@ -240,9 +262,11 @@ backspaceBytes name = case parseKeyName name of
     Just k | B.length k.raw == 1 -> Just k.raw
     _ -> Nothing
 
--- | The escape-time timer fired with an ESC still held: it is the Escape key.
+-- | The escape-time timer fired with bytes still held: no more of them is
+-- coming, so a lone ESC is the Escape key and a sequence cut short is its
+-- first byte escaped, then the rest.
 flushEscape :: EscPending -> [Key]
-flushEscape EscPending   = [mkKey "Escape" "\ESC"]
+flushEscape (EscPending held) = fst (tokenize EscImmediate [] held)
 flushEscape NoEscPending = []
 
 tokenizeKeys :: ByteString -> [Key]
@@ -279,16 +303,14 @@ tokenize timing users = go
     escape rest = case B.uncons rest of
         -- Chunk ends right after ESC: Escape now (escape-time 0), or held for
         -- the next chunk / a timeout flush (escape-time > 0).
-        Nothing -> case timing of
-            EscImmediate -> ([mkKey "Escape" "\ESC"], NoEscPending)
-            EscBuffered  -> ([], EscPending)
+        Nothing -> held [mkKey "Escape" "\ESC"]
         Just (b2, rest2)
             | b2 == 0x1b ->
                 -- ESC ESC ...: meta variant of whatever follows
                 case escape rest2 of
-                    (k : ks, p) | k.name /= "Escape" ->
-                        (mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks, p)
-                    (ks, p) -> (mkKey "Escape" "\ESC" : ks, p)
+                    (k : ks, p) -> (meta k : ks, p)
+                    ([], EscPending h) -> ([], EscPending ("\ESC" <> h))
+                    ([], NoEscPending) -> ([mkKey "Escape" "\ESC"], NoEscPending)
             -- A legacy mouse report: ESC [ M and three raw bytes.
             | "[M" `B.isPrefixOf` rest, B.length rest >= 5 ->
                 cons (mkKey "Mouse" ("\ESC" <> B.take 5 rest)) (go (B.drop 5 rest))
@@ -296,15 +318,44 @@ tokenize timing users = go
                 case matchCsi rest of
                     Just (nm, len) ->
                         cons (mkKey nm ("\ESC" <> B.take len rest)) (go (B.drop len rest))
-                    Nothing ->
-                        -- Swallow the sequence whole so garbage doesn't leak
-                        -- keys: an extended-key form becomes its canonical
-                        -- key, anything else an unnamed 'Unknown'.
-                        let (seqBytes, rest') = spanCsi rest
-                        in cons (extendedOrUnknown seqBytes) (go rest')
+                    Nothing
+                        | cutShort rest ->
+                            held (meta (mkKey (T.singleton (toEnum (fromIntegral b2)))
+                                (B.singleton b2)) : fst (go rest2))
+                        | otherwise ->
+                            -- Swallow the sequence whole so garbage doesn't
+                            -- leak keys: an extended-key form becomes its
+                            -- canonical key, anything else an unnamed
+                            -- 'Unknown'.
+                            let (seqBytes, rest') = spanCsi rest
+                            in cons (extendedOrUnknown seqBytes) (go rest')
             | otherwise -> case go (B.cons b2 rest2) of
-                (k : ks, p) -> (mkKey ("M-" <> k.name) ("\ESC" <> k.raw) : ks, p)
+                (k : ks, p) -> (meta k : ks, p)
                 ([], p) -> ([mkKey "Escape" "\ESC"], p)
+      where
+        -- What the ESC and everything after it are when no more bytes are
+        -- coming; held whole when more may.
+        held now = case timing of
+            EscImmediate -> (now, NoEscPending)
+            EscBuffered  -> ([], EscPending ("\ESC" <> rest))
+
+    -- A key with ESC before it: its Meta form, named in tmux's C-M-S-
+    -- order.
+    meta k = mkKey name ("\ESC" <> k.raw)
+      where
+        name
+            | "M-" `T.isPrefixOf` k.name || "C-M-" `T.isPrefixOf` k.name = k.name
+            | Just r <- T.stripPrefix "C-" k.name = "C-M-" <> r
+            | otherwise = "M-" <> k.name
+
+    -- An SS3 or CSI the bytes end before its final byte, or a legacy mouse
+    -- report before its three bytes.
+    cutShort rest = case B.uncons rest of
+        Just (0x4f, r) -> B.null r
+        Just (0x5b, r)
+            | "M" `B.isPrefixOf` r -> B.length r < 4
+            | otherwise -> B.all (\b -> b < 0x40 || b > 0x7e) r
+        _ -> False
 
     matchCsi rest =
         let candidates =
