@@ -46,7 +46,6 @@ mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choo
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
 # copy-mode advanced motions/options
-copy-mode-redraw.sh             # a centre-aligned copy-mode-position-format indicator is not drawn
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)

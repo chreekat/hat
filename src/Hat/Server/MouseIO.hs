@@ -323,7 +323,8 @@ mouseFormatVars st client ev = do
                     scr <- Emu.snapshot pane.emulator
                     pure (CopyMode.frozenGrid FrozenGrid
                         { fgHsize = 0, fgSy = V.length scr.cells
-                        , fgSx = fromIntegral scr.size.cols, fgRows = scr.cells }, y)
+                        , fgSx = fromIntegral scr.size.cols, fgRows = scr.cells
+                        , fgWrapped = V.empty }, y)
             word <- CopyMode.gridWord seps g row x
             line <- CopyMode.gridLine g row
             link <- case mmode of

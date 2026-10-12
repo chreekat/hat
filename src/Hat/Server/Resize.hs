@@ -46,6 +46,7 @@ import Hat.Server.Layout
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Floating (stacking)
 import Hat.Server.Menu (refitMenu)
+import Hat.Server.CopyMode (resizeCopyMode)
 import Hat.Server.Scene
     ( FloatingPane (..), PaneStatus (..), ScrollbarSide (..), ScrollbarStyle (..), scrollbarStyle
     , statusAdjust )
@@ -231,6 +232,7 @@ reconcilePaneSizes st = do
                 Hat.Term.Pty.resize pane.pty sz
                 atomically $ do
                     writeTVar pane.size sz
+                    modifyTVar' pane.mode (fmap (resizeCopyMode sz))
                     bumpDirty st
                 notifyPane st "pane-resized" pane
                     [ ("old_width", PInt (fromIntegral old.cols))

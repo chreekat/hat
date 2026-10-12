@@ -509,6 +509,9 @@ data FrozenGrid = FrozenGrid
     , fgSy    :: !Int
     , fgSx    :: !Int
     , fgRows  :: !(V.Vector (V.Vector Cell.Cell))
+    , fgWrapped :: !(V.Vector Bool)
+        -- ^ whether each row soft-wraps onto the next; a row past its end
+        --   does not
     }
     deriving (Eq, Show)
 

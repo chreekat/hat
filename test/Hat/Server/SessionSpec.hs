@@ -301,7 +301,7 @@ adoptedPane n = do
 blankCopyMode :: Int -> PaneMode
 blankCopyMode hsize = PaneMode
     { frozen = FrozenGrid
-        { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
+        { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty, fgWrapped = V.empty }
     , copyState = copyModeAt "copy-mode" hsize 0
     }
 

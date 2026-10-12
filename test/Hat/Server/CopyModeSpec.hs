@@ -226,7 +226,7 @@ spec = do
             row1 = V.fromList (map narrow "xyz" <> replicate 17 (narrow ' '))
             wide = frozenGrid FrozenGrid
                 { fgHsize = 0, fgSy = 2, fgSx = 20
-                , fgRows = V.fromList [row0, row1] }
+                , fgRows = V.fromList [row0, row1], fgWrapped = V.empty }
             at col row = start.sState { cursorRow = row, cursorCol = col }
             go m s = runIdentity (runMotion wide KeysVi viSeparators m s)
             pos s = (s.cursorCol, s.cursorRow)
@@ -422,6 +422,57 @@ spec = do
                 moved = r1 { cursorRow = 16 }
             screenRow (recentreTopBottom scrollGrid moved) `shouldBe` 4
 
+    describe "a resize in copy mode" $ do
+        -- Rows as text, a trailing '+' marking a row that wraps.
+        let gridOf w sy hs rows = FrozenGrid
+                { fgHsize = hs, fgSy = sy, fgSx = w
+                , fgRows = V.fromList [ rowOf w (filter (/= '+') r) | r <- rows ]
+                , fgWrapped = V.fromList [ "+" `T.isSuffixOf` T.pack r | r <- rows ] }
+            rowOf w r = V.fromList (cellsOf r <> replicate (w - widthOf r) (glyphCell ' ' defaultStyle))
+            cellsOf = concatMap $ \c -> if c == '日'
+                then [ Cell { content = Glyph c [] Wide, style = defaultStyle }
+                     , Cell { content = Continuation, style = defaultStyle } ]
+                else [glyphCell c defaultStyle]
+            widthOf = sum . map (\c -> if c == '日' then 2 else 1)
+            textOf fg = [ T.stripEnd (T.pack [ baseChar c | c <- V.toList r, c.content /= Continuation ])
+                          <> (if w then "+" else "")
+                        | (r, w) <- zip (V.toList fg.fgRows)
+                            (V.toList fg.fgWrapped <> repeat False) ]
+            baseChar c = case c.content of
+                Glyph ch _ _ -> ch
+                Continuation -> ' '
+            resized sz fg st = resizeCopyMode sz PaneMode { frozen = fg, copyState = st }
+            cursorAt r c = (copyModeAt "copy-mode" r c)
+        it "rewraps the lines at the new width" $ do
+            let pm = resized (Size { rows = 3, cols = 3 })
+                    (gridOf 4 3 0 ["abcd+", "ef", "xy"]) (cursorAt 1 1)
+            textOf pm.frozen `shouldBe` ["abc+", "def", "xy"]
+            (pm.frozen.fgHsize, pm.frozen.fgSy, pm.frozen.fgSx) `shouldBe` (0, 3, 3)
+        it "joins wrapped rows again as it widens, padding the screen" $ do
+            let pm = resized (Size { rows = 3, cols = 6 })
+                    (gridOf 3 3 0 ["abc+", "de", "x"]) (cursorAt 1 1)
+            textOf pm.frozen `shouldBe` ["abcde", "x", ""]
+        it "moves a wide character that does not fit to the next row" $
+            textOf (resized (Size { rows = 3, cols = 2 }) (gridOf 4 3 0 ["a日b", "", ""]) (cursorAt 0 0)).frozen
+                `shouldBe` ["a+", "日+", "b", "", ""]
+        it "keeps the cursor on its character, scrolled to it in the history" $ do
+            let onF = resized (Size { rows = 2, cols = 3 })
+                    (gridOf 4 2 1 ["abcd+", "ef", "xy"]) (cursorAt 1 1)
+                onB = resized (Size { rows = 2, cols = 3 })
+                    (gridOf 4 2 1 ["abcd+", "ef", "xy"]) (cursorAt 0 1)
+            (onF.copyState.cursorRow, onF.copyState.cursorCol, onF.copyState.viewportOffY)
+                `shouldBe` (1, 2, 0)
+            onB.frozen.fgHsize `shouldBe` 1
+            (onB.copyState.cursorRow, onB.copyState.cursorCol, onB.copyState.viewportOffY)
+                `shouldBe` (0, 1, 1)
+        it "a new height alone moves rows between the screen and the history" $ do
+            let pm = resized (Size { rows = 2, cols = 4 })
+                    (gridOf 4 3 0 ["ab", "cd", "ef"]) (cursorAt 2 1)
+            textOf pm.frozen `shouldBe` ["ab", "cd", "ef"]
+            pm.frozen.fgHsize `shouldBe` 1
+            (pm.copyState.cursorRow, pm.copyState.cursorCol, pm.copyState.viewportOffY)
+                `shouldBe` (2, 1, 0)
+
     describe "copy-mode formats" $ do
         -- Two history lines above a two-row screen.
         let rows = ["one two", "three", "four five", "six"]
@@ -429,7 +480,7 @@ spec = do
                 { fgHsize = 2, fgSy = 2, fgSx = 10
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
-                    | r <- rows ] }
+                    | r <- rows ], fgWrapped = V.empty }
             varsUnder n st = Map.fromList (copyModeFormats " " n PaneMode { frozen = frozen, copyState = st })
             vars = varsUnder NumbersOff
             at = copyModeAt "copy-mode" 2 5
@@ -489,7 +540,7 @@ spec = do
                 { fgHsize = 0, fgSy = 3, fgSx = 12
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 12 (T.unpack r <> repeat ' ') ]
-                    | r <- rows ] }
+                    | r <- rows ], fgWrapped = V.empty }
             fgOf n = defaultStyle { fg = Indexed n }
             look = CopyLook
                 { keys = KeysVi, numbers = NumbersOff
