@@ -31,7 +31,6 @@ module Hat.Server.FormatEnv
     , clientTheme
     , WindowFlagState (..)
     , windowFlags
-    , reachableValues
     , clientFormatVars
     ) where
 
@@ -742,21 +741,6 @@ clientTheme st = do
     now <- getZonedTime
     let ctx = formatCtx (Map.singleton "client_colours" clientColours) (const "") now
     pure (resolveTheme (evaluateCtx ctx) opts scheme)
-
--- | The formats plus every variable value satisfying @p@ that they name
--- (as @{name}@ or @:name}@), transitively: what their @E:@ or @T:@
--- expansions can reach.
-reachableValues :: (Text -> Bool) -> FormatEnv -> [Text] -> [Text]
-reachableValues p env = go Set.empty
-  where
-    wanted = Map.filter p env
-    names k t = ("{" <> k <> "}") `T.isInfixOf` t || (":" <> k <> "}") `T.isInfixOf` t
-    go _ [] = []
-    go seen (t : ts) =
-        let named = [ k | k <- Map.keys wanted, not (Set.member k seen)
-                        , names k t ]
-            seen' = foldr Set.insert seen named
-        in t : go seen' (ts <> [ v | k <- named, Just v <- [Map.lookup k wanted] ])
 
 -- | The conditions that produce a window's @#{window_flags}@ string.
 data WindowFlagState = WindowFlagState

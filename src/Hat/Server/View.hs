@@ -17,6 +17,7 @@ module Hat.Server.View
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
+import Control.Exception (evaluate)
 import Control.Monad (foldM, forM, join, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -50,9 +51,9 @@ import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
-    (FormatScope (..), FormatTarget (..), WindowFlagState (..),
-     activeClientCounts, clientTheme, expandAt, formatCtxFor, frameMemo, keepMemo,
-     memoExpand, reachableValues, sessionFormatEnv, windowFlags, windowOwnEnv)
+    (FormatScope (..), FormatTarget (..), Wanted (..), WindowFlagState (..),
+     activeClientCounts, clientTheme, demanding, expandAt, formatCtxFor, frameMemo, keepMemo,
+     memoExpand, sessionFormatEnv, sessionVars, windowFlags, windowOwnEnv)
 import Hat.Server.Floating (FloatState (..))
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
@@ -69,7 +70,8 @@ import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
 import Hat.Server.Popup (PopupState (..), popupCursor, popupGrid)
 import Hat.Server.Mouse qualified as Mouse
 import Hat.Server.FormatDraw (DrawRange)
-import Hat.Server.Status (statusFormats, statusRanges, statusRows)
+import Hat.Server.Status
+    (StatusTexts (..), drawStatus, statusFormats, statusRanges, statusRows, statusTexts)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -1004,7 +1006,9 @@ statusCells st sess width = do
 -- | 'statusCells' through the client's render-side cache: the rows are
 -- re-expanded only when something their expansion consumes changed —
 -- including the clock, at second granularity, which also bounds how stale
--- a window variable outside the cheap per-window key can go. Bypassed
+-- a window variable outside the cheap per-window key can go. The cache
+-- is checked against just the session variables the expansion can read,
+-- built fresh; only a miss reads the windows' full variables. Bypassed
 -- inside a hook's ambient context, and for formats that read the live tree
 -- beyond the window list ('formatReadsLoops'), where the inputs cannot be
 -- enumerated.
@@ -1014,43 +1018,58 @@ statusRowsCached
 statusRowsCached st client sess sopts width = do
     tid <- myThreadId
     mamb <- Map.lookup tid <$> readTVarIO st.hooks.ambient
-    (env, wins) <- gatherStatus st sess
+    wins <- statusWindows st sess
     let winKeys = map fst wins
     shells <- readTVarIO st.shellCache
     sec <- floor <$> getPOSIXTime
     mc <- readIORef client.lastStatus
-    let usesAny toks = any (formatReadsLoops toks) $
-            reachableValues (formatReadsLoops toks) env (statusFormats sopts)
-        (plain, animated) = case mc of
-            Just c | samePtr c.opts sopts -> (c.plain, c.animated)
-            _ -> (not (usesAny ["S", "P", "L", "N", "C", "A"]), usesAny ["A"])
-    case mc of
-        Just c | isNothing mamb, plain
+    hit <- case mc of
+        Just c | isNothing mamb, c.plain
                , samePtr c.opts sopts, samePtr c.shells shells
-               , c.second == sec, c.width == width
-               , c.env == env, c.wins == winKeys -> pure c.rowCells
-        _ -> do
+               , c.second == sec, c.width == width, c.wins == winKeys -> do
+            vars <- sessionVars st sess (OnlyVars c.names)
+            pure (if vars == c.vars then Just c.rowCells else Nothing)
+        _ -> pure Nothing
+    case hit of
+        Just rows -> pure rows
+        Nothing -> do
             winEnvs <- mapM snd wins
-            rows <- renderStatus st sopts env winEnvs width
+            let formats = optionText "status-style" sopts : statusFormats sopts
+                    <> [ v | e <- winEnvs, v <- Map.elems e, "#" `T.isInfixOf` v ]
+            (names, vars, texts) <- demanding st (sessionVars st sess) formats $ \ctx -> do
+                let texts = statusTexts
+                        ctx { F.windows = winEnvs, F.animate = F.Animate } sopts
+                _ <- evaluate texts.style
+                mapM_ (mapM_ evaluate) texts.lines
+                pure texts
+            th <- clientTheme st
+            let rows = drawStatus th sopts texts width
+                reached = formats <> [ v | v <- Map.elems vars, "#" `T.isInfixOf` v ]
+                readsAny toks = any (formatReadsLoops toks) reached
+                plain = not (readsAny ["S", "P", "L", "N", "C", "A"])
+                animated = readsAny ["A"]
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
                     { opts = sopts, shells, second = sec, width
-                    , env, wins = winKeys, plain, animated, rowCells = rows }
-            pure rows
+                    , names, vars, wins = winKeys, plain, animated, rowCells = rows }
+            pure $! foldr seq rows rows
 
 -- | Everything the status rows' expansion consumes beyond the options,
--- read fresh: the session's format environment and, for each window (the
--- @W:@ loop's items), a cheap key and the action reading its full format
--- variables.
+-- read fresh: the session's format environment and its windows' (see
+-- 'statusWindows').
 gatherStatus
     :: ServerState -> Session
     -> IO (Map.Map Text Text, [(WindowKey, IO (Map.Map Text Text))])
-gatherStatus st sess = do
-    env <- sessionFormatEnv st sess
+gatherStatus st sess = (,) <$> sessionFormatEnv st sess <*> statusWindows st sess
+
+-- | For each of a session's windows (the @W:@ loop's items), a cheap key
+-- and the action reading its full format variables.
+statusWindows :: ServerState -> Session -> IO [(WindowKey, IO (Map.Map Text Text))]
+statusWindows st sess = do
     (ws, cur, mlast, counts) <- atomically $ (,,,)
         <$> (Map.toAscList <$> readTVar sess.windows) <*> readTVar sess.currentIx
         <*> (listToMaybe <$> readTVar sess.windowHist) <*> activeClientCounts st
-    wins <- forM ws $ \(ix, win) -> do
+    forM ws $ \(ix, win) -> do
         key <- atomically $ do
             (wname, bell, act, sil, zoom, wopts) <- (,,,,,)
                 <$> readTVar win.name <*> readTVar win.bellFlag
@@ -1066,7 +1085,6 @@ gatherStatus st sess = do
                 , viewers = Map.findWithDefault 0 win.id counts
                 , options = wopts }
         pure (key, windowOwnEnv st sess ix win)
-    pure (env, wins)
 
 -- | Expand and draw the status rows from gathered inputs; see
 -- 'statusCells'.

@@ -744,7 +744,8 @@ data StatusCache = StatusCache
     , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
     , second  :: !Int                        -- ^ POSIX second of the render
     , width   :: !Int
-    , env     :: !(Map Text Text)
+    , names   :: !(Set Text)  -- ^ every session variable the expansion can read
+    , vars    :: !(Map Text Text)  -- ^ those variables' values
     , wins    :: ![WindowKey]
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
     , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
