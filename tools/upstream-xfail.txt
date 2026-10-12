@@ -5,7 +5,7 @@
 am-terminal.sh                  # terminal-overrides option unimplemented
 border-arrows.sh                # wontfix: hat deliberately draws triangle indicators, not tmux's ACS arrows
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
-check-names.sh                  # allow-rename/allow-set-title behavior + UTF-8 name validation + OSC-2 sanitizing + buffer -F listing
+check-names.sh                  # invalid UTF-8 in argv is lossily decoded before the server can reject it (wire carries Text); OSC 2 titles not cleaned as untrusted (#( to _(, invalid UTF-8 kept); ESC k sets pane_title, not the window name
 combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
 # tabs to spaces in the grid, so a copied tab-indented line comes back
