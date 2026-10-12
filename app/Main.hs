@@ -19,7 +19,7 @@ import Hat.Command.Parser (parseArgv)
 import Hat.Debug (prepareDebugSocket)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
-import Hat.Transport.Socket (connectTo, defaultSocketPath)
+import Hat.Transport.Socket (ConnectFailure (..), connectTo, defaultSocketPath)
 
 #ifdef GHC_DEBUG
 import GHC.Debug.Stub qualified
@@ -213,13 +213,14 @@ control path mconfig cmds = do
             (w : _) -> w `elem` starters
             [] -> False
     msock <- if any starts cmds
-        then Just <$> connectOrStart path mconfig
+        then Right <$> connectOrStart path mconfig
         else fmap (, Joined) <$> connectTo path
     case msock of
-        Nothing -> do
+        Left NoServer -> do
             hPutStrLn stderr "hat: no server running"
             exitFailure
-        Just (sock, origin) -> do
+        Left (ConnectFailed why) -> unreachable path why
+        Right (sock, origin) -> do
             reason <- runControl sock origin cmds
             case reason of
                 -- Bare, like tmux: scripts match on the exact error text
@@ -240,13 +241,20 @@ connectOrStart :: FilePath -> Maybe FilePath -> IO (Socket, Autostart)
 connectOrStart path mconfig = do
     msock <- connectTo path
     case msock of
-        Just sock -> pure (sock, Joined)
-        Nothing -> do
+        Right sock -> pure (sock, Joined)
+        Left (ConnectFailed why) -> unreachable path why
+        Left NoServer -> do
             server <- startServer path mconfig
             -- 10s of headroom: the fresh server forks, sets up its socket
             -- dir/lock, and loads config before it starts listening, which
             -- can take a while under heavy load.
             (, Autostarted) <$> waitForServer path mconfig server 1_000
+
+-- | tmux's error for a socket path that cannot be connected to at all.
+unreachable :: FilePath -> String -> IO a
+unreachable path why = do
+    hPutStrLn stderr ("error connecting to " <> path <> " (" <> why <> ")")
+    exitFailure
 
 -- Spawn the detached server via 'createProcess' rather than a manual
 -- 'forkProcess'/'executeFile': createProcess does the fork+exec entirely
@@ -281,8 +289,9 @@ waitForServer path mconfig server attempts
     | otherwise = do
         msock <- connectTo path
         case msock of
-            Just sock -> pure sock
-            Nothing -> do
+            Right sock -> pure sock
+            Left (ConnectFailed why) -> unreachable path why
+            Left NoServer -> do
                 server' <- getProcessExitCode server >>= \case
                     Just _ -> startServer path mconfig
                     Nothing -> pure server

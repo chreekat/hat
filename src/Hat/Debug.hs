@@ -5,7 +5,6 @@
 module Hat.Debug
     ( debugSocketDir
     , debugSocketPath
-    , fitsSocketAddr
     , prepareDebugSocket
     , boundSocketInodes
     , fdSocketInode
@@ -25,7 +24,7 @@ import System.Posix.IO (closeFd)
 import System.Posix.Types (Fd (..))
 import Text.Read (readMaybe)
 
-import Hat.Path (hatPath, render, (</:>))
+import Hat.Path (fitsSocketAddr, hatPath, render, (</:>))
 
 -- | The directory ghc-debug-stub creates its sockets in and ghc-debug-brick
 -- scans for debuggees, under the given XDG data directory. Mirrors the stub's
@@ -42,12 +41,6 @@ debugSocketPath xdgData sock =
     render (hatPath (debugSocketDir xdgData) </:> ("hat-" <> name))
   where
     name = takeFileName (render (hatPath sock))
-
--- | Whether a path fits a @sockaddr_un@ (@sun_path@ is 108 bytes including the
--- terminator). ghc-debug-stub aborts the process on a longer one, so the caller
--- must check before handing it over.
-fitsSocketAddr :: FilePath -> Bool
-fitsSocketAddr p = length p < 108
 
 -- | Point this process's debug socket at 'debugSocketPath' and close any debug
 -- socket inherited from an earlier image, returning the pinned path — or

@@ -10,6 +10,7 @@ module Hat.Path
     , expandTildeWith
     , expandTilde
     , findHome
+    , fitsSocketAddr
     ) where
 
 import Control.Exception (try)
@@ -73,6 +74,19 @@ findHome = lookupEnv "HOME" >>= \case
     Just h | not (null h) -> pure (Just h)
     _ -> either (const Nothing :: IOError -> Maybe FilePath) (Just . homeDirectory)
         <$> try (getUserEntryForID =<< getRealUserID)
+
+-- | Whether a path fits a @sockaddr_un@: @sun_path@ is 108 bytes, terminator
+-- included. Counts the bytes GHC's file-system encoding gives the path (UTF-8,
+-- each lone-surrogate escape standing for the one byte it round-trips).
+fitsSocketAddr :: FilePath -> Bool
+fitsSocketAddr p = sum (map encodedBytes p) < 108
+  where
+    encodedBytes c
+        | c >= '\xdc80' && c <= '\xdcff' = 1
+        | c < '\x80' = 1
+        | c < '\x800' = 2
+        | c < '\x10000' = 3
+        | otherwise = 4 :: Int
 
 -- | The username a leading @~user@/@~user\/rest@ names, or @Nothing@ for a
 -- bare @~@, a @~\/rest@, or any non-tilde path.

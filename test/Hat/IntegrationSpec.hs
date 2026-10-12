@@ -1997,6 +1997,12 @@ spec = parallel $ do
         ctlOut h ["list-panes", "-F", "#{pane_pid}"] `shouldReturn` pidBefore
         N.close unread.sock
 
+    it "fails at once, as tmux does, on a socket path too long for an address" $
+        withHat hatBin $ \h -> do
+        let long = h.home </> replicate 120 'x'
+        timeout 5_000_000 (hatCtl h ["-S", long, "new-session", "-d"]) `shouldReturn`
+            Just (ExitFailure 1, "", "error connecting to " <> long <> " (File name too long)\n")
+
     it "logs a connection that closes before its hello as such, not as a crash" $
         withHat hatBin $ \h -> do
         _ <- ctlOut h ["new-session", "-d"]
@@ -2030,7 +2036,7 @@ awaitAlertStorm h = awaitTrue "the alert storm to finish" $
 -- has stopped draining (XOFF, a stopped process, a stalled link).
 attachUnread :: Hat -> IO W.ReadEnd
 attachUnread h = do
-    sock <- maybe (fail "attachUnread: no server") pure =<< connectTo h.sock
+    sock <- either (const (fail "attachUnread: no server")) pure =<< connectTo h.sock
     W.sendMessage sock $ W.ClientHello W.Hello
         { protoVersion = W.protocolVersion, term = "xterm", env = []
         , size = Size { rows = 24, cols = 80 }, cwd = T.pack h.home
@@ -2112,5 +2118,5 @@ pollPidGone pid n = do
 -- server out of its idle exit.
 serverUp :: FilePath -> IO Bool
 serverUp path = connectTo path >>= \case
-    Nothing -> pure False
-    Just sock -> True <$ N.close sock
+    Left _ -> pure False
+    Right sock -> True <$ N.close sock

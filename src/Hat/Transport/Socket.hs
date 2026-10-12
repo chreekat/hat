@@ -5,11 +5,14 @@ module Hat.Transport.Socket
     , defaultSocketPath
     , ensureSocketDir
     , listenOn
+    , ConnectFailure (..)
     , connectTo
     ) where
 
-import Control.Exception (bracketOnError, try, SomeException)
+import Control.Exception (bracketOnError, try)
 import Control.Monad (when)
+import Foreign.C.Error (Errno (..), eCONNREFUSED, eNAMETOOLONG, eNOENT, errnoToIOError)
+import GHC.IO.Exception (IOException (..))
 import Network.Socket qualified as N
 import System.Directory
     (createDirectoryIfMissing, doesPathExist, removeFile)
@@ -19,7 +22,7 @@ import System.Posix.Files (setFileMode)
 import System.Posix.Types (CUid)
 import System.Posix.User (getRealUserID)
 
-import Hat.Path (render, hatPath, (</:>))
+import Hat.Path (fitsSocketAddr, render, hatPath, (</:>))
 
 -- | Directory holding hat sockets: @$TMUX_TMPDIR/hat-$UID@, or
 -- @/tmp/hat-$UID@ when the variable is unset.
@@ -59,13 +62,28 @@ listenOn path = do
         N.listen sock 16
         pure sock
 
--- | Nothing if there is no live server at the path.
-connectTo :: FilePath -> IO (Maybe N.Socket)
-connectTo path = do
-    r <- try $
-        bracketOnError (N.socket N.AF_UNIX N.Stream 0) N.close $ \sock -> do
-            N.connect sock (N.SockAddrUnix path)
-            pure sock
-    pure $ case r of
-        Left (_ :: SomeException) -> Nothing
-        Right sock -> Just sock
+-- | Why 'connectTo' found no server to talk to.
+data ConnectFailure
+    = NoServer              -- ^ nothing listens at the path
+    | ConnectFailed String  -- ^ the path cannot be reached at all; the @strerror@ text
+    deriving (Eq, Show)
+
+-- | Connect to the server at the path. Only a refused or missing socket is
+-- 'NoServer' (what a client may autostart past), as in tmux's
+-- @client_connect@; a path longer than an address holds fails before trying.
+connectTo :: FilePath -> IO (Either ConnectFailure N.Socket)
+connectTo path
+    | not (fitsSocketAddr path) = pure (Left (ConnectFailed (strerror eNAMETOOLONG)))
+    | otherwise = do
+        r <- try $
+            bracketOnError (N.socket N.AF_UNIX N.Stream 0) N.close $ \sock -> do
+                N.connect sock (N.SockAddrUnix path)
+                pure sock
+        pure $ case r of
+            Left (e :: IOException)
+                | fmap Errno e.ioe_errno `elem` map Just [eCONNREFUSED, eNOENT] ->
+                    Left NoServer
+                | otherwise -> Left (ConnectFailed e.ioe_description)
+            Right sock -> Right sock
+  where
+    strerror errno = (errnoToIOError "" errno Nothing Nothing).ioe_description
