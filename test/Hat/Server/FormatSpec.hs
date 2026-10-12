@@ -520,11 +520,25 @@ spec = do
             case got of
                 Left (UndemandedVar n) -> n `shouldBe` "session_name"
                 Right out -> expectationFailure ("expanded to " <> show out)
+    describe "formatClock" $
+        prop "alike at two times, alike expansions" $
+            \f (Positive da) (Positive db) ->
+                let fmt = renderFmt f
+                    at d = ctx { vars = namingEnv, now = fromIntegral (testNow + d) }
+                    texts = fmt : [ v | v <- Map.elems namingEnv
+                                      , "#" `T.isInfixOf` v || "%" `T.isInfixOf` v ]
+                    clockAt d = formatClock utc (fromIntegral (testNow + d)) texts
+                    a = da `mod` 7200 :: Integer
+                    b = a + db `mod` 90
+                    alike = clockAt a == clockAt b
+                in withMaxSuccess 2000 $ counterexample (T.unpack fmt) $ cover 10 alike "alike" $
+                    not alike .||. renderFormatCtx (at a) fmt === renderFormatCtx (at b) fmt
   where
     -- The spec's variables, and some whose values are formats.
     namingEnv = Map.union env $ Map.fromList
         [ ("@fmt", "#{session_name}:#{?window_flags,#W,}")
-        , ("@deep", "[#{E:@fmt}]") ]
+        , ("@deep", "[#{E:@fmt}]")
+        , ("@clock", "%M") ]
     reached ns =
         let more = foldMap formatNames
                 [ v | v <- Map.elems (Map.restrictKeys namingEnv ns), "#" `T.isInfixOf` v ]
@@ -572,14 +586,15 @@ instance Arbitrary Fmt where
           where
             sub = go (n `div` 3)
         leaf = oneof
-            [ Lit <$> elements ["", "x", " ", "1", "[", "]"]
+            [ Lit <$> elements ["", "x", " ", "1", "[", "]", "%H:%M", "%S", "%", "%%"]
             , Key <$> name
             , Short <$> elements "DFHIPSTWh"
-            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/"] <*> name
+            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/", "t", "t/r"] <*> name
             ]
         name = elements
             [ "session_name", "session_id", "window_name", "window_flags", "window_index"
-            , "empty", "zero", "@s", "@fmt", "@deep", "@rec", "nope", "pane_index" ]
+            , "empty", "zero", "@s", "@fmt", "@deep", "@rec", "nope", "pane_index"
+            , "@clock", "@ts", "@age30" ]
     shrink = \case
         Lit _ -> []
         Key _ -> [Lit "x"]

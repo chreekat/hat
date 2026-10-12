@@ -19,6 +19,7 @@ module Hat.Server.Format
     , formatReadsLoops
     , formatNames
     , formatVolatile
+    , formatClock
     , truthy
     ) where
 
@@ -495,6 +496,19 @@ formatVolatile fmt values =
     expanded = fmt : filter ("#" `T.isInfixOf`) values
     readsMore t = formatReadsLoops ["S", "W", "P", "L", "N", "C", "A", "t"] t
         || "#(" `T.isInfixOf` t || T.any (== '%') t
+
+-- | What expanding these texts (formats, and the values they can expand)
+-- reads of the clock at a time: their strftime sequences rendered then,
+-- so two times that answer alike expand them alike. The whole second when
+-- they read it more finely than they show: a time modifier (@t@), or a
+-- @%@ an expansion could complete into a sequence.
+formatClock :: TimeZone -> POSIXTime -> [Text] -> Text
+formatClock zone now texts
+    | any finer texts = tshow secs
+    | otherwise = T.intercalate "\0" [ strftimeAt zone secs t | t <- texts, "%" `T.isInfixOf` t ]
+  where
+    secs = floor now :: Integer
+    finer t = formatReadsLoops ["t"] t || "%#" `T.isInfixOf` t
 
 -- | The variable names an expansion of the text looks up itself, by key,
 -- condition or shorthand; the values it expands in turn (@E:@, @T:@) name

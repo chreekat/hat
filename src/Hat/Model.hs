@@ -24,7 +24,6 @@ module Hat.Model
     , ThemeCache (..)
     , ExpansionKey (..)
     , KeptExpansion (..)
-    , WindowKey (..)
     , EnvImport (..)
     , StartupPhase (..)
     , Shutdown (..)
@@ -726,18 +725,6 @@ data ChromeCache = ChromeCache
     , chrome  :: Chrome
     }
 
--- | What a window's status entry usually changes with, cheap to read each
--- frame: the status cache's per-window key. See
--- 'Hat.Server.View.statusRowsCached'.
-data WindowKey = WindowKey
-    { index   :: !Int
-    , name    :: !Text
-    , flags   :: !Text  -- ^ @#{window_flags}@
-    , viewers :: !Int   -- ^ @#{window_active_clients}@
-    , options :: !OptionsDelta
-    }
-    deriving (Eq)
-
 -- | A client's rendered status rows with everything their expansion
 -- consumed; the render thread's cache. See
 -- 'Hat.Server.View.statusRowsCached'.
@@ -746,11 +733,12 @@ data WindowKey = WindowKey
 data StatusCache = StatusCache
     { opts    :: !Options                    -- ^ matched by object identity
     , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
-    , second  :: !Int                        -- ^ POSIX second of the render
+    , clockTexts :: ![Text]  -- ^ the texts whose strftime sequences the expansion reads
+    , clock   :: !Text  -- ^ what it read of the clock; see 'Hat.Server.Format.formatClock'
     , width   :: !Int
-    , names   :: !(Set Text)  -- ^ every session variable the expansion can read
-    , vars    :: !(Map Text Text)  -- ^ those variables' values
-    , wins    :: ![WindowKey]
+    , names   :: !(Set Text)  -- ^ every variable the expansion can read
+    , vars    :: !(Map Text Text)  -- ^ the session's values of those variables
+    , wins    :: ![Map Text Text]  -- ^ each window's own values of them, in index order
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
     , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
     , rowCells :: ![V.Vector Cell.Cell]
