@@ -192,15 +192,16 @@ renderOnce st client = do
                         popts <- atomically (resolveForPane st sess win pane)
                         dflt <- paneDefaultColours st expand th sess win pane popts
                         palette <- panePalette th pane popts
-                        pure [(pidL, (withPaneColours dflt palette pv, dflt))]
-            let paneViews = Map.fromList [ (p, pv) | (p, (pv, _)) <- painted ]
-                defaults = Map.fromList [ (p, d) | (p, (_, d)) <- painted ]
+                        pure [(pidL, (withPaneColours dflt palette pv, dflt, popts))]
+            let paneViews = Map.fromList [ (p, pv) | (p, (pv, _, _)) <- painted ]
+                defaults = Map.fromList [ (p, d) | (p, (_, d, _)) <- painted ]
+                paneOpts = Map.fromList [ (p, o) | (p, (_, _, o)) <- painted ]
             prevFrame <- readIORef client.lastFrame
             prevOrigins <- readIORef client.lastOrigins
             let sceneArea = csize
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
             chrome <- cachedChrome st expand th client sess win eff sceneArea rects floats
-                defaults active rowOff
+                defaults paneOpts active rowOff
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect shown
                                 , cells = V.map (V.drop skip.col) (V.drop skip.row pv.cells)
@@ -622,15 +623,15 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 -- and every row's chrome provenance stays matchable.
 cachedChrome
     :: ServerState -> Expand -> Theme -> Client -> Session -> Window -> Size -> Size
-    -> [(PaneId, Rect)] -> [FloatingPane] -> Map.Map PaneId (Cell.Color, Cell.Color) -> PaneId
-    -> Int -> IO Chrome
-cachedChrome st expand th client sess win eff sceneArea rects floats defaults active rowOff = do
+    -> [(PaneId, Rect)] -> [FloatingPane] -> Map.Map PaneId (Cell.Color, Cell.Color)
+    -> Map.Map PaneId Options -> PaneId -> Int -> IO Chrome
+cachedChrome st expand th client sess win eff sceneArea rects floats defaults paneOpts active rowOff = do
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
     windowStyle <- expand.style th . optionText "pane-border-style"
         =<< atomically (resolveForWindow st sess win)
     (input, look2, panes) <- atomically
-        (chromeInputs st windowStyle sess win eff sceneArea rects floats active mmenu)
+        (chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active mmenu)
     bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
         \(cp, _) -> do
             let height = maybe 0 (\r -> r.endRow - r.startRow) (List.lookup cp.pane.id rects)
@@ -704,9 +705,9 @@ data ChromePane = ChromePane
 -- pane status line is drawn.
 chromeInputs
     :: ServerState -> Cell.Style -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
-    -> [FloatingPane] -> PaneId -> Maybe WindowMenu
+    -> [FloatingPane] -> Map.Map PaneId Options -> PaneId -> Maybe WindowMenu
     -> STM (SceneInput, ChromeLook, [ChromePane])
-chromeInputs st windowStyle sess win eff sceneArea rects floats active mmenu = do
+chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active mmenu = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
     (side, bars) <- paneScrollbars st win
@@ -720,7 +721,8 @@ chromeInputs st windowStyle sess win eff sceneArea rects floats active mmenu = d
     panes <- fmap concat $ forM rects $ \(pid, _) -> case Map.lookup pid ps of
         Nothing -> pure []
         Just pane -> do
-            popts <- resolveForPane st sess win pane
+            -- The frame resolved its panes' options as it painted them.
+            popts <- maybe (resolveForPane st sess win pane) pure (Map.lookup pid paneOpts)
             pure [ ChromePane
                 { pane, options = popts
                 , number = wopts.paneBaseIndex + fromMaybe 0 (List.elemIndex pid order) } ]
