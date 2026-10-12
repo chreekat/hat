@@ -28,6 +28,11 @@ spec = do
             clipboardAction on "c;SGVsbG8=" `shouldBe` ClipboardSet "Hello"
         it "a query is answered from the buffers under get-clipboard buffer" $
             clipboardAction on "c;?" `shouldBe` ClipboardAnswer 'c'
+        it "a query is asked of a terminal under get-clipboard request or both" $ do
+            clipboardAction (with [("set-clipboard", "on"), ("get-clipboard", "request")]) "c;?"
+                `shouldBe` ClipboardAsk
+            clipboardAction (with [("set-clipboard", "on"), ("get-clipboard", "both")]) "c;?"
+                `shouldBe` ClipboardAsk
         it "get-clipboard off leaves a query unanswered" $
             clipboardAction (with [("set-clipboard", "on"), ("get-clipboard", "off")]) "c;?"
                 `shouldBe` ClipboardIgnored

@@ -272,6 +272,15 @@ spec = do
                 `shouldBe` EscTokens
                     { escKeys = tokenizeKeys "ab", escPending = NoEscPending }
 
+        it "a terminal's reply to a forwarded query is one token, held until whole" $ do
+            let held = feedKeys EscBuffered [] NoEscPending "a\ESC]52;c;SG"
+                whole = feedKeys EscBuffered [] held.escPending "k=\ab"
+            map (.name) held.escKeys `shouldBe` ["a"]
+            map isTerminalReply whole.escKeys `shouldBe` [True, False]
+            map (.raw) whole.escKeys `shouldBe` ["\ESC]52;c;SGk=\a", "b"]
+            map (.name) (flushEscape held.escPending)
+                `shouldBe` ["M-]", "5", "2", ";", "c", ";", "S", "G"]
+
         it "flushEscape emits the held ESC as Escape on timeout" $
             map (.name) (flushEscape (EscPending "\ESC")) `shouldBe` ["Escape"]
 

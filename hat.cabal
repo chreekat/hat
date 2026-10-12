@@ -77,6 +77,7 @@ library
         Hat.Client.Draw
         Hat.Command.Parser
         Hat.Client.Tty
+        Hat.Base64
         Hat.Colour
         Hat.Colour.X11
         Hat.Debug
@@ -138,6 +139,8 @@ library
         Hat.Server.HookMonitor
         Hat.Server.HookTypes
         Hat.Server.Hooks
+        Hat.Server.InputRequests
+        Hat.Server.InputRequestsIO
         Hat.Server.Keymap
         Hat.Server.Keys
         Hat.Server.Menu
@@ -332,6 +335,7 @@ test-suite hat-test
         Hat.Server.FormatSpec
         Hat.Server.FormatDrawSpec
         Hat.Server.HooksSpec
+        Hat.Server.InputRequestsSpec
         Hat.Server.KeysSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec

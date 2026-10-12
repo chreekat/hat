@@ -96,7 +96,7 @@ module Hat.Server.Pane
 import Control.Concurrent
     (forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar)
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Exception (Exception, IOException, catch, finally, mask_)
@@ -135,6 +135,8 @@ import Hat.Server.Alerts (AlertKind (..), AlertWhere (..), alertApplies, deliver
 import Hat.Server.ClientIO (broadcastAs, sendAs)
 import Hat.Server.Outbound (Delivery (..))
 import Hat.Server.Clipboard (appClipboard, paneViewers)
+import Hat.Server.InputRequests (Asked (..))
+import Hat.Server.InputRequestsIO (askTerminal, forgetPaneRequests, paneHolders, paneReply)
 import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.ControlQueue (awaitControlRoom, forwardToControl)
 import Hat.Server.ColorScheme (ColorScheme (..), schemeReport)
@@ -426,6 +428,7 @@ newPane pid pty emu sz dir pending start kind = do
     alternateVar <- newTVarIO False
     clockVar <- newTVarIO NoClock
     viewVar <- newTVarIO Nothing
+    replyVar <- newMVar ()
     pure Pane
         { id = pid
         , pty = pty
@@ -447,6 +450,7 @@ newPane pid pty emu sz dir pending start kind = do
         , outputSync = syncVar
         , clock = clockVar
         , viewBacking = viewVar
+        , replyLock = replyVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -467,6 +471,7 @@ respawnPane st sid win old shellCmd how kind dir environ = do
     swapped <- atomically $ do
         claimed <- claimPane old
         if not claimed then pure Nothing else do
+            forgetPaneRequests st old
             writeOwn new.options =<< readOwn old.options
             writeTVar new.inputOff =<< readTVar old.inputOff
             modifyTVar' win.panes (Map.insert new.id new)
@@ -606,7 +611,7 @@ runPaneReader st pane = do
             atomically (forwardToControl st pane now bs)
             mhome <- readTVarIO pane.home  -- See Note [Pane home]
             forM_ events $ \case
-                Emu.Output out -> Hat.Term.Pty.writePty pane.pty out
+                Emu.Output out -> paneReply st pane out
                 -- The app asked the current light/dark scheme (CSI ? 996 n);
                 -- answer from the OS scheme the server already tracks.
                 Emu.ColorSchemeQuery -> do
@@ -621,21 +626,24 @@ runPaneReader st pane = do
                 Emu.OscColorQuery target term -> do
                     own <- queryDefaultColour st pane target
                     case own of
-                        Just rgb -> Hat.Term.Pty.writePty pane.pty $ oscColourReply
+                        Just rgb -> paneReply st pane $ oscColourReply
                             (case target of
                                 Emu.Foreground -> "10"
                                 Emu.Background -> "11") rgb term
                         Nothing -> do
                             mscheme <- readTVarIO st.colorScheme
                             forM_ mscheme $ \scheme ->
-                                Hat.Term.Pty.writePty pane.pty (oscColorReply target term scheme)
+                                paneReply st pane (oscColorReply target term scheme)
+                -- An entry the pane leaves unset is the terminal's to say.
                 Emu.OscPaletteQuery n term -> do
                     mrgb <- queryPaletteColour st pane n
-                    forM_ mrgb $ \rgb -> Hat.Term.Pty.writePty pane.pty
-                        (oscColourReply ("4;" <> T.pack (show n)) rgb term)
+                    case mrgb of
+                        Just rgb -> paneReply st pane
+                            (oscColourReply ("4;" <> T.pack (show n)) rgb term)
+                        Nothing -> askTerminal st pane (AskPalette n) term
                 Emu.OscCursorColourQuery term -> do
                     mrgb <- queryCursorColour st pane
-                    forM_ mrgb $ \rgb -> Hat.Term.Pty.writePty pane.pty
+                    forM_ mrgb $ \rgb -> paneReply st pane
                         (oscColourReply "12" rgb term)
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
@@ -696,22 +704,6 @@ hostPolicyOf o = Emu.defaultHostPolicy
     { Emu.allowAltScreen = optionFlag "alternate-screen" o
     , Emu.scrollOnClear = optionFlag "scroll-on-clear" o
     }
-
--- | The clients whose session holds @pane@'s window, current or not.
-paneHolders :: ServerState -> Pane -> STM [Client]
-paneHolders st pane = do
-    mhome <- readTVar pane.home  -- See Note [Pane home]
-    case mhome of
-        Nothing -> pure []
-        Just (_, win) -> do
-            cs <- Map.elems <$> readTVar st.clients
-            sessions <- readTVar st.sessions
-            flip filterM cs $ \c -> do
-                sid <- readTVar c.session
-                case Map.lookup sid sessions of
-                    Nothing -> pure False
-                    Just sess -> any (\w -> w.id == win.id) . Map.elems
-                        <$> readTVar sess.windows
 
 -- | An app renamed its window (@ESC k@, under @allow-rename@; tmux's
 -- @input_exit_rename@): a name pins the window's name; an empty one hands

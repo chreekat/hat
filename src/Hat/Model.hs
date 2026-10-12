@@ -105,7 +105,7 @@ module Hat.Model
     , module Hat.Model.OwnOptions
     ) where
 
-import Control.Concurrent (ThreadId)
+import Control.Concurrent (MVar, ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket, bracket_, try)
@@ -145,6 +145,7 @@ import Hat.Server.ControlTypes (ControlState)
 import Hat.Server.Outbound (Outbound)
 import Hat.Server.HookTypes (HooksState, newHooksState)
 import Hat.Server.Environ (Environ, emptyEnviron)
+import Hat.Server.InputRequests (InputRequests, noRequests)
 import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.Server.Floating (FloatState)
@@ -253,6 +254,9 @@ data ServerState = ServerState
     , commandSources :: TVar (Map ThreadId [(FilePath, Int)])
         -- ^ the file and line of each command a thread is running from a
         --   file, innermost first; see 'Hat.Server.Dispatch.loadCommandFile'
+    , inputRequests :: TVar InputRequests
+        -- ^ panes' queries forwarded to clients' terminals; see
+        --   "Hat.Server.InputRequestsIO"
     }
 
 data Session = Session
@@ -353,6 +357,9 @@ data Pane = Pane
     , viewBacking :: TVar (Maybe Emu.Emulator)
         -- ^ the screen view mode's text is written to, while the pane is
         --   in view mode; see 'Hat.Server.ViewMode.viewModeAdd'
+    , replyLock :: MVar ()
+        -- ^ held from deciding a reply to the program to writing it; see
+        --   'Hat.Server.InputRequestsIO.paneReply'
     }
 
 -- | Generations of a pane's output-sync requests.
@@ -968,6 +975,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> getPOSIXTime
     <*> newTVarIO []
     <*> newTVarIO Map.empty
+    <*> newTVarIO noRequests
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

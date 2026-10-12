@@ -38,6 +38,7 @@ import Hat.Server.EnvironSpec qualified
 import Hat.Server.FlagsSpec qualified
 import Hat.Server.FormatSpec qualified
 import Hat.Server.HooksSpec qualified
+import Hat.Server.InputRequestsSpec qualified
 import Hat.Server.KeysSpec qualified
 import Hat.Server.LayoutSpec qualified
 import Hat.Server.LayoutStringSpec qualified
@@ -157,6 +158,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.send" Hat.Server.SendSpec.spec
     describe "Hat.Server.Format" Hat.Server.FormatSpec.spec
     describe "Hat.Server.Hooks" Hat.Server.HooksSpec.spec
+    describe "Hat.Server.InputRequests" Hat.Server.InputRequestsSpec.spec
     describe "Hat.Server.Control" Hat.Server.ControlSpec.spec
     describe "Hat.Server.Flags" Hat.Server.FlagsSpec.spec
     describe "Hat.Server.Flash" Hat.Server.FlashSpec.spec

@@ -4,6 +4,7 @@ module Hat.Server.FlashSpec (spec) where
 
 import Test.Hspec
 
+import Control.Concurrent (newMVar)
 import Control.Concurrent.STM
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
@@ -127,6 +128,7 @@ flashStubPane pid = do
     syncV <- newTVarIO noOutputSync
     clockV <- newTVarIO NoClock
     viewV <- newTVarIO Nothing
+    replyV <- newMVar ()
     pure Pane
         { id = pid
         , pty = error "flashStubPane: pty never touched"
@@ -148,4 +150,5 @@ flashStubPane pid = do
         , outputSync = syncV
         , clock = clockV
         , viewBacking = viewV
+        , replyLock = replyV
         }

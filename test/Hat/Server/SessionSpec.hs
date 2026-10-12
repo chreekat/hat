@@ -3,6 +3,7 @@ module Hat.Server.SessionSpec (spec) where
 import Control.Concurrent.Async (wait, withAsync)
 import Hat.Server.ClientIO (send, withClientWriter)
 import Hat.Server.Outbound (backlog, newOutbound)
+import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
 import Control.Exception (finally)
 import Data.ByteString qualified as B
@@ -17,9 +18,10 @@ import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
     , socketPair, touchSocket )
 import System.Mem (performGC)
-import System.Posix.IO (closeFd)
+import System.Posix.IO (closeFd, fdRead)
 import System.Posix.Process (getProcessID)
 import System.Posix.Terminal (openPseudoTerminal)
+import System.Posix.Terminal qualified as Termios
 import Test.Hspec
 
 import Data.Set qualified as Set
@@ -79,6 +81,10 @@ import Hat.Transport.Wire
 import Hat.Server.Floating (noFloats)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.PaneColours (queryPaletteColour)
+import Hat.Server.InputRequests (Asked (..))
+import Hat.Model.PasteBuffers (PasteBuffer (..), pasteTop)
+import Hat.Server.InputRequestsIO (askTerminal, paneReply)
+import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
@@ -270,6 +276,7 @@ stubPane n = do
     syncV <- newTVarIO noOutputSync
     clockV <- newTVarIO NoClock
     viewV <- newTVarIO Nothing
+    replyV <- newMVar ()
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -291,6 +298,7 @@ stubPane n = do
         , outputSync = syncV
         , clock = clockV
         , viewBacking = viewV
+        , replyLock = replyV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -640,8 +648,37 @@ spec = do
             runArgv st Nothing ["command-prompt", "-t", "nosuch", "x"]
                 `shouldReturn` [RErr "can't find client: nosuch"]
 
-    describe "a pane's palette query" $
-        it "is answered from an entry it set, else by an attached terminal" $ do
+    describe "a pane's queries of the terminal (tmux's input requests)" $ do
+        -- A pane whose program reads its replies on a raw pty, homed in a
+        -- window of the session, and an attached client of that session.
+        let asking = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+                (master, slave) <- openPseudoTerminal
+                attrs <- Termios.getTerminalAttributes slave
+                Termios.setTerminalAttributes slave
+                    (foldl Termios.withoutMode attrs
+                        [Termios.ProcessInput, Termios.EnableEcho, Termios.MapCRtoLF])
+                    Termios.Immediately
+                ptyH <- Pty.adopt master =<< getProcessID
+                p0 <- stubPane 0
+                let p = p0 { emulator = emu, pty = ptyH }
+                atomically $ do
+                    modifyTVar' win.panes (Map.insert p.id p)
+                    writeTVar p.home (Just (sess.id, win))
+                (client, peer) <- wiredClient st Attached
+                peerRe <- newReadEnd peer
+                -- What the program reads back, once @n@ bytes have come.
+                let programReads n = timeout 5_000_000 (readExactly slave n)
+                pure (st, p, client, peerRe, programReads, closeFd slave)
+            readExactly fd n
+                | n <= 0 = pure B.empty
+                | otherwise = do
+                    threadWaitRead fd
+                    (got, _) <- fdRead fd (fromIntegral n)
+                    (B8.pack got <>) <$> readExactly fd (n - length got)
+        it "answers a palette entry the pane sets from it" $ do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0
             emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
@@ -651,10 +688,36 @@ spec = do
                 modifyTVar' win.panes (Map.insert p.id p)
                 writeTVar p.home (Just (sess.id, win))
             _ <- Emu.feed emu "\ESC]4;2;rgb:01/02/03\a"
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
             queryPaletteColour st p 2 `shouldReturn` Just (1, 2, 3)
             queryPaletteColour st p 1 `shouldReturn` Nothing
-            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
-            queryPaletteColour st p 1 `shouldReturn` Just (128, 0, 0)
+        it "asks an attached terminal for an unset palette entry and passes on its reply" $ do
+            (st, p, client, peerRe, programReads, release) <- asking
+            withClientWriter client (askTerminal st p (AskPalette 99) TermSt)
+            recvMessage peerRe `shouldReturn` Just (Known (Notify "\ESC]4;99;?\ESC\\"))
+            handleInput dispatch st client "\ESC]4;99;rgb:0101/0202/0303\ESC\\"
+            programReads 27 `shouldReturn` Just "\ESC]4;99;rgb:0101/0202/0303\ESC\\"
+            release
+        it "holds the pane's other replies until the terminal's answer, in order" $ do
+            (st, p, client, peerRe, programReads, release) <- asking
+            runArgv st Nothing ["set", "-s", "get-clipboard", "request"] `shouldReturn` []
+            withClientWriter client (askTerminal st p AskClipboard TermBel)
+            recvMessage peerRe `shouldReturn` Just (Known (Notify "\ESC]52;;?\a"))
+            paneReply st p "\ESC[0n"
+            handleInput dispatch st client "\ESC]52;c;SGk=\ESC\\"
+            programReads 16 `shouldReturn` Just "\ESC]52;c;SGk=\a\ESC[0n"
+            paneReply st p "\ESC[1n"
+            programReads 4 `shouldReturn` Just "\ESC[1n"
+            release
+        it "makes the terminal's clipboard a buffer under get-clipboard both" $ do
+            (st, p, client, peerRe, programReads, release) <- asking
+            runArgv st Nothing ["set", "-s", "get-clipboard", "both"] `shouldReturn` []
+            withClientWriter client (askTerminal st p AskClipboard TermSt)
+            _ <- recvMessage peerRe :: IO (Maybe (Inbound ServerToClient))
+            handleInput dispatch st client "\ESC]52;;SGk=\a"
+            programReads 12 `shouldReturn` Just "\ESC]52;;SGk=\ESC\\"
+            fmap (.body) . pasteTop <$> readTVarIO st.buffers `shouldReturn` Just "Hi"
+            release
     describe "a respawned pane" $
         it "draws its new screen, not the old one's rows" $ do
             (st, sess) <- seedSession "/"

@@ -13,7 +13,7 @@ module Hat.Server.Handover
     ) where
 
 import Control.Concurrent
-    (getNumCapabilities, setNumCapabilities)
+    (getNumCapabilities, newMVar, setNumCapabilities)
 import GHC.Conc (getNumProcessors)
 import Control.Concurrent.Async (async, mapConcurrently, waitCatch)
 import Control.Concurrent.STM
@@ -290,6 +290,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     syncVar <- newTVarIO noOutputSync
     clockVar <- newTVarIO NoClock
     viewVar <- newTVarIO Nothing
+    replyVar <- newMVar ()
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
             , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
@@ -301,7 +302,7 @@ adoptPane st histLimit pid (psnap, rp) = do
                 StartArgv argv -> ExecArgv argv
             , exited = exitedVar, kind = psnap.kind, inputOff = inputOffVar
             , onAlternate = alternateVar, outputSync = syncVar, clock = clockVar
-            , viewBacking = viewVar }
+            , viewBacking = viewVar, replyLock = replyVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the
     -- pre-reload scheme until the OS scheme next changes (bug f3).

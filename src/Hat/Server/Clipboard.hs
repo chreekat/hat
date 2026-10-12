@@ -16,21 +16,22 @@ module Hat.Server.Clipboard
 
 import Control.Concurrent.STM
 import Control.Monad (filterM, forM_, when)
-import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Map.Strict qualified as Map
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Data.Word (Word8)
 
+import Hat.Base64 (base64Decode, base64Encode)
 import Hat.Model
 import Hat.Model.Options (Options, optionNumber, optionText)
 import Hat.Model.PasteBuffers (PasteBuffer (..), pasteAdd, pasteTop)
 
 import Hat.Server.ClientIO (sendAs)
 import Hat.Server.Hooks (notifyPane, notifyPasteChanges)
+import Hat.Server.InputRequests (Asked (..))
+import Hat.Server.InputRequestsIO (askTerminal)
 import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Term.Pty qualified
@@ -75,11 +76,13 @@ data ClipboardAction
     | ClipboardSet ByteString     -- ^ a new buffer, and the outer clipboard
     | ClipboardAnswer Char        -- ^ reply with the newest buffer, for this
                                   --   selection letter (NUL for none)
+    | ClipboardAsk                -- ^ ask a client's terminal for its clipboard
     deriving (Eq, Show)
 
 -- | Decide an OSC 52's parameter text (after @52;@): only @set-clipboard on@
 -- lets an app touch the clipboard; a @?@ query is answered from the newest
--- buffer under @get-clipboard buffer@.
+-- buffer under @get-clipboard buffer@, and asked of a terminal under
+-- @request@ or @both@.
 clipboardAction :: Options -> ByteString -> ClipboardAction
 clipboardAction o param
     | optionText "set-clipboard" o /= "on" = ClipboardIgnored
@@ -92,9 +95,10 @@ clipboardAction o param
                     [] -> '\NUL'
             in if B.null payload then ClipboardIgnored
                 else if payload == "?"
-                    then if optionText "get-clipboard" o == "buffer"
-                        then ClipboardAnswer clip
-                        else ClipboardIgnored
+                    then case optionText "get-clipboard" o of
+                        "buffer" -> ClipboardAnswer clip
+                        "off" -> ClipboardIgnored
+                        _ -> ClipboardAsk
                     else maybe ClipboardIgnored ClipboardSet (base64Decode payload)
   where
     allowed = "cpqs01234567" :: String
@@ -116,6 +120,7 @@ appClipboard st o pane param term = case clipboardAction o param of
     ClipboardSet body -> do
         setSelection (Superseding ClipboardSlot) st pane body
         pushBufferBytes st body
+    ClipboardAsk -> askTerminal st pane AskClipboard term
     ClipboardAnswer clip -> do
         top <- pasteTop <$> readTVarIO st.buffers
         forM_ top $ \pb -> do
@@ -135,43 +140,3 @@ pushBufferBytes st body = do
         bumpDirty st
         pure (old, new)
     notifyPasteChanges st old new
-
-base64Alphabet :: ByteString
-base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-base64Encode :: ByteString -> ByteString
-base64Encode = B.concat . go
-  where
-    go bs
-        | B.null bs = []
-        | otherwise =
-            let (chunk, rest) = B.splitAt 3 bs
-                bytes = B.unpack chunk ++ replicate (3 - B.length chunk) 0
-                n = foldl (\acc b -> acc `shiftL` 8 .|. fromIntegral b) (0 :: Int) bytes
-                sextet i = B.index base64Alphabet ((n `shiftR` (18 - 6 * i)) .&. 63)
-                kept = B.length chunk + 1
-            in B.pack (map sextet [0 .. kept - 1] ++ replicate (4 - kept) 0x3d) : go rest
-
--- | Decode base64, skipping whitespace as tmux's @b64_pton@ does; 'Nothing'
--- for anything that is not base64.
-base64Decode :: ByteString -> Maybe ByteString
-base64Decode raw = do
-    let body = B.filter (`B.notElem` " \t\r\n") raw
-        unpadded = B.takeWhile (/= 0x3d) body
-    if B.any (/= 0x3d) (B.drop (B.length unpadded) body)
-        || B.length unpadded `mod` 4 == 1
-        then Nothing
-        else B.pack . concat <$> mapM quad (chunks unpadded)
-  where
-    chunks bs
-        | B.null bs = []
-        | otherwise = B.take 4 bs : chunks (B.drop 4 bs)
-    quad q = do
-        vs <- mapM value (B.unpack q)
-        let n = foldl (\acc v -> acc `shiftL` 6 .|. v) (0 :: Int) vs
-                    `shiftL` (6 * (4 - length vs))
-            out = length vs - 1
-        pure [ fromIntegral ((n `shiftR` (16 - 8 * i)) .&. 255) | i <- [0 .. out - 1] ]
-    value :: Word8 -> Maybe Int
-    value b = B.elemIndex b base64Alphabet
-

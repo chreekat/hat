@@ -436,7 +436,7 @@ optionTable =
     , live $ scalar "extended-keys-format" ServerScope
         (KChoice ["csi-u", "xterm"]) "xterm"
     , live $ scalar "focus-events" ServerScope KFlag "off"
-    , choicesOnly ["off", "buffer"] $ live $ scalar "get-clipboard" ServerScope
+    , live $ scalar "get-clipboard" ServerScope
         (KChoice ["off", "buffer", "request", "both"]) "buffer"
     , live $ scalar "history-file" ServerScope KString ""
     , notYet $ scalar "input-buffer-size" ServerScope

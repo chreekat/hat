@@ -908,10 +908,16 @@ tmux's two options rather than a policy of its own (`Hat.Server.Clipboard`):
   made in copy mode goes to the attached terminals as an OSC 52 unless it is
   `off`; an app's own OSC 52 is honoured only under `on`, which also makes a
   paste buffer of it.
-- `get-clipboard` (`off` / `buffer`, default `buffer`): an app's OSC 52 query
-  (allowed only under `set-clipboard on`) is answered from the newest paste
-  buffer. tmux's `request` and `both`, which ask the outer terminal for its
-  clipboard, are refused until that round trip exists.
+- `get-clipboard` (`off` / `buffer` / `request` / `both`, default `buffer`):
+  an app's OSC 52 query (allowed only under `set-clipboard on`) is answered
+  from the newest paste buffer, or under `request` and `both` asked of the
+  terminal of the most recently active client attached to the window's
+  session (`Hat.Server.InputRequestsIO`, tmux's input requests). The
+  terminal's reply comes back in that client's input, which the server's key
+  parser already reads, so the round trip needs no wire change; `both` also
+  makes a paste buffer of it. An OSC 4 query of a palette entry the pane
+  leaves unset is forwarded the same way. While a request is out, the pane's
+  other replies wait behind it, and one unanswered for 500 ms lapses.
 
 The pane's OSC 52 never reaches the grid engine: `scrubHost` lifts it out of
 the stream for the server to decide. A tmux-passthrough payload hat does not

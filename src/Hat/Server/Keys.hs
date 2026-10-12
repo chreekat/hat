@@ -25,6 +25,7 @@ module Hat.Server.Keys
     , EscTokens (..)
     , tokenizeKeys
     , feedKeys
+    , isTerminalReply
     , UserKeys
     , userKeys
     , isUserKey
@@ -60,6 +61,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text.Read qualified as TR
 
 import Hat.Model.Ids (PaneId, SessionId, WindowId)
+import Hat.Server.InputRequests (ReplyScan (..), scanReply)
 import Hat.Model.OptionTable (ArrayKey (..))
 import Hat.Server.Mouse
     (Drag, MouseEvent, MouseState, initialMouseState, isMouseKey, isMoveKey
@@ -311,6 +313,11 @@ tokenize timing users = go
                     (k : ks, p) -> (meta k : ks, p)
                     ([], EscPending h) -> ([], EscPending ("\ESC" <> h))
                     ([], NoEscPending) -> ([mkKey "Escape" "\ESC"], NoEscPending)
+            -- A terminal's reply to a query hat forwarded for a pane.
+            | b2 == 0x5d, ReplyComplete n <- scanReply rest ->
+                cons (mkKey terminalReply ("\ESC" <> B.take n rest)) (go (B.drop n rest))
+            | b2 == 0x5d, ReplyCut <- scanReply rest ->
+                held (fst (asMeta (go rest)))
             -- A legacy mouse report: ESC [ M and three raw bytes.
             | "[M" `B.isPrefixOf` rest, B.length rest >= 5 ->
                 cons (mkKey "Mouse" ("\ESC" <> B.take 5 rest)) (go (B.drop 5 rest))
@@ -329,15 +336,18 @@ tokenize timing users = go
                             -- 'Unknown'.
                             let (seqBytes, rest') = spanCsi rest
                             in cons (extendedOrUnknown seqBytes) (go rest')
-            | otherwise -> case go (B.cons b2 rest2) of
-                (k : ks, p) -> (meta k : ks, p)
-                ([], p) -> ([mkKey "Escape" "\ESC"], p)
+            | otherwise -> asMeta (go rest)
       where
         -- What the ESC and everything after it are when no more bytes are
         -- coming; held whole when more may.
         held now = case timing of
             EscImmediate -> (now, NoEscPending)
             EscBuffered  -> ([], EscPending ("\ESC" <> rest))
+
+    -- The keys after an ESC, the first in its Meta form.
+    asMeta = \case
+        (k : ks, p) -> (meta k : ks, p)
+        ([], p) -> ([mkKey "Escape" "\ESC"], p)
 
     -- A key with ESC before it: its Meta form, named in tmux's C-M-S-
     -- order.
@@ -387,6 +397,16 @@ tokenize timing users = go
         | b >= 0xe0 = 3
         | b >= 0xc0 = 2
         | otherwise = 1
+
+-- | The name 'tokenize' gives a terminal's reply to a forwarded query
+-- ('Hat.Server.InputRequests.scanReply'); no key is spelled so.
+terminalReply :: Text
+terminalReply = "TerminalReply"
+
+-- | Whether a "key" is a terminal's reply to a forwarded query, which goes
+-- to the pane that asked rather than to the key tables.
+isTerminalReply :: Key -> Bool
+isTerminalReply k = k.name == terminalReply
 
 -- | Name a swallowed CSI sequence as an extended key, or leave it 'Unknown'.
 -- An 'Unknown' key is never delivered (see 'Hat.Server.Conn.deliversKey'), so

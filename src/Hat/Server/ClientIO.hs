@@ -92,10 +92,11 @@ broadcastAs delivery st sid msg = do
 --   gives way, the newest is never dropped. (tmux drops these with the rest
 --   and re-sends the current state once the tty drains.)
 -- * Replies and lifecycle messages go in order whatever the backlog: the
---   client asked for them, or they end it. So do the outer terminal's mouse
---   tracking, which decides what input comes back and must change in step
---   with the frames showing why, and a copy the user made, which must reach
---   the outer clipboard even when a newer copy follows it.
+--   client asked for them, or they end it. So does a pane's query forwarded
+--   to the terminal, whose program waits on the answer. So do the outer
+--   terminal's mouse tracking, which decides what input comes back and must
+--   change in step with the frames showing why, and a copy the user made,
+--   which must reach the outer clipboard even when a newer copy follows it.
 -- * A connection's teardown waits for its writer to finish, as tmux keeps an
 --   exiting client until it has read everything. A restart cannot wait
 --   that long -- every pane is paused until it re-execs -- so it gives each

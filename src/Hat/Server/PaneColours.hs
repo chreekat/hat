@@ -16,7 +16,6 @@ module Hat.Server.PaneColours
 import Control.Concurrent.STM
 import Data.ByteString (ByteString)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -29,7 +28,6 @@ import Hat.Server.FormatEnv
     (Expand (..), FormatScope (..), FormatTarget (..), clientTheme, freshExpand)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Render (paneDefaults)
-import Hat.Server.Winlink (windowLinks)
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -98,26 +96,14 @@ queryDefaultColour st pane target = paneContext st pane >>= \case
             Emu.Foreground -> fg
             Emu.Background -> bg))
 
--- | What a pane answers an OSC 4 query of one palette entry with: its
--- palette's colour, else — as tmux asks the terminal of a client viewing
--- the window — the colour a client draws the entry in, while one does.
+-- | The colour a pane's palette gives an entry its program queries (OSC 4),
+-- if it gives one.
 queryPaletteColour :: ServerState -> Pane -> Int -> IO (Maybe Emu.Rgb)
 queryPaletteColour st pane n = do
     th <- clientTheme st
     mctx <- paneContext st pane
     palette <- maybe (pure Map.empty) (\(_, _, popts) -> panePalette th pane popts) mctx
-    case Map.lookup n palette of
-        Just c -> pure (colourRgb c)
-        Nothing -> do
-            viewed <- maybe (pure False) (\(_, win, _) -> atomically (terminalViews st win)) mctx
-            pure (if viewed then colourRgb (Cell.Indexed (fromIntegral n)) else Nothing)
-
--- | Whether a terminal client is attached to a session holding the window.
-terminalViews :: ServerState -> Window -> STM Bool
-terminalViews st win = do
-    links <- windowLinks st win
-    clients <- concat <$> mapM (\(sess, _) -> sessionClients st sess.id) links
-    pure (any (\c -> c.role == Attached && isNothing c.control) clients)
+    pure (Map.lookup n palette >>= colourRgb)
 
 -- | The colour a pane's cursor shows (tmux's @tty_update_cursor@): the
 -- program's own OSC 12 colour, else @cursor-colour@ ('Nothing' resets).

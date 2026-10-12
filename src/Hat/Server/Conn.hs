@@ -26,7 +26,7 @@ import Control.Monad (foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.IORef
-import Data.List (nub, sortOn)
+import Data.List (nub, partition, sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
@@ -44,6 +44,10 @@ import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Session (checkUnattached)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send, withClientWriter)
+import Hat.Server.Clipboard (clipboardReply, pushBufferBytes)
+import Hat.Server.InputRequests (Answer (..), clientWaiting, parseAnswer)
+import Hat.Server.InputRequestsIO (forgetClientRequests, terminalAnswered)
+import Hat.Server.PaneColours (oscColourReply)
 import Hat.Server.Control
     ( BlockOrigin (..), controlWriter, feedControlInput, runControlCommands
     , subscriptionLoop )
@@ -331,7 +335,9 @@ resolveSessionNames st names = do
 removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do
     sid <- readTVarIO client.session
-    atomically $ modifyTVar' st.clients (Map.delete client.id)
+    atomically $ do
+        modifyTVar' st.clients (Map.delete client.id)
+        forgetClientRequests st client
     -- tmux's server_client_lost clears the overlay: the popup's command ends.
     mapM_ (closePopup st client) =<< readTVarIO client.popup
     attached <- atomically (findSessionById st sid)
@@ -394,8 +400,13 @@ inputLoop d st re client = loop
         ks <- readIORef client.keyState
         now <- monotonicMs
         opts <- clientOptions st client
+        -- Input held while the terminal owes a reply waits at least half a
+        -- second for the rest of it (tmux's @tty_keys_next@).
+        replyDue <- clientWaiting client.id <$> readTVarIO st.inputRequests
         let escWake = case held of
-                EscPending _ -> [(escWait opts, flushHeldEscape d st client)]
+                EscPending _ ->
+                    [ ( if replyDue then max 500 (escWait opts) else escWait opts
+                      , flushHeldEscape d st client ) ]
                 NoEscPending -> []
             repeatWake = case ks.repeating of
                 Just r -> [(max 0 (r.expires - now), expireKeyRepeat st client)]
@@ -616,7 +627,7 @@ handleKeys d st client bs = do
     let users = userKeys opts.userKeys
         toks = feedKeys EscBuffered users held bs
     writeIORef client.escState toks.escPending
-    deliverKeys d st client toks.escKeys
+    deliverInput d st client toks.escKeys
 
 -- | The escape-time timer fired: resolve the held bytes and clear the
 -- buffer. A no-op if an arriving chunk already completed them.
@@ -624,7 +635,32 @@ flushHeldEscape :: Dispatch -> ServerState -> Client -> IO ()
 flushHeldEscape d st client = do
     held <- readIORef client.escState
     writeIORef client.escState NoEscPending
-    deliverKeys d st client (flushEscape held)
+    deliverInput d st client (flushEscape held)
+
+-- | Hand a client's input on: its terminal's replies to the queries
+-- forwarded for panes ('terminalReplied'), its keys to whatever owns the
+-- keyboard.
+deliverInput :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
+deliverInput d st client keys = do
+    let (replies, typed) = partition isTerminalReply keys
+    mapM_ (terminalReplied st client . B.drop 1 . (.raw)) replies
+    deliverKeys d st client typed
+
+-- | A client's terminal replied to a query forwarded for a pane: the pane
+-- that asked gets its answer — a clipboard's only under @get-clipboard@
+-- @request@ or @both@, which also makes it a buffer (tmux's
+-- @input_request_clipboard_reply@).
+terminalReplied :: ServerState -> Client -> ByteString -> IO ()
+terminalReplied st client raw = forM_ (parseAnswer raw) $ \ans ->
+    terminalAnswered st client ans $ \term -> \case
+        PaletteAnswer n rgb ->
+            pure (Just (oscColourReply ("4;" <> tshow n) rgb term))
+        ClipboardAnswer clip body -> do
+            getting <- optionText "get-clipboard" <$> readTVarIO st.options
+            when (getting == "both") (pushBufferBytes st body)
+            pure $ if getting `elem` ["request", "both"]
+                then Just (clipboardReply clip term body)
+                else Nothing
 
 -- Keys are routed and run ONE AT A TIME, re-resolving the active pane and
 -- its copy-mode table before each. A key that enters or leaves copy mode
