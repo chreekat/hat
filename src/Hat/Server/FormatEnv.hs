@@ -123,6 +123,11 @@ pick :: Wanted -> FormatEnv -> FormatEnv
 pick AllVars m = m
 pick (OnlyVars ns) m = Map.restrictKeys m ns
 
+-- | What an outer layer need build under an inner one's variables.
+unshadowed :: FormatEnv -> Wanted -> Wanted
+unshadowed _ AllVars = AllVars
+unshadowed inner (OnlyVars ns) = OnlyVars (ns `Set.difference` Map.keysSet inner)
+
 -- | The wanted options of a resolved set, as format variables.
 optionVars :: Wanted -> Options -> FormatEnv
 optionVars AllVars o = optionFormats o
@@ -140,8 +145,9 @@ windowFormatEnv st sess ix win = windowVars st sess ix win AllVars
 
 -- | 'windowFormatEnv', built with just the wanted variables.
 windowVars :: ServerState -> Session -> Int -> Window -> Wanted -> IO FormatEnv
-windowVars st sess ix win w =
-    Map.union <$> windowOwnVars st sess ix win w <*> sessionVars st sess w
+windowVars st sess ix win w = do
+    own <- windowOwnVars st sess ix win w
+    Map.union own <$> sessionVars st sess (unshadowed own w)
 
 -- | A window's own variables (and its window options), without its
 -- session's: what a @W:@ loop item adds over the session's environment.
@@ -244,10 +250,9 @@ paneFormatEnv st sess wix win pix pane = paneVars st sess wix win pix pane AllVa
 paneVars
     :: ServerState -> Session -> Int -> Window -> Int -> Pane -> Wanted -> IO FormatEnv
 paneVars st sess wix win pix pane w = do
-    wenv <- windowVars st sess wix win w
     paneUser <- deltaVars w <$> readTVarIO pane.options
-    own <- layerVars paneLayer w (st, sess, win, pix, pane)
-    pure (Map.union paneUser (Map.union own wenv))
+    own <- Map.union paneUser <$> layerVars paneLayer w (st, sess, win, pix, pane)
+    Map.union own <$> windowVars st sess wix win (unshadowed own w)
 
 -- | Where a pane's own variables are read: its server, session, window,
 -- index in that window, and the pane.
@@ -809,10 +814,15 @@ memoExpand st memo t fmt = do
         Nothing -> do
             (names, vars, text) <- demanding st (targetVars st t) [fmt] (expandForced fmt)
             when (not ambient && not (formatVolatile fmt vars)) $
-                keep key KeptExpansion { names, vars, text }
+                keep key KeptExpansion
+                    { names = names `Set.difference` placeIds
+                    , vars = Map.withoutKeys vars placeIds, text }
             pure text
   where
     keep key k = modifyIORef' memo.made (Map.insert key k)
+    -- The place's own ids are the key's, so they stand while it does.
+    placeIds = Set.fromList $
+        ["session_id"] <> ["window_id" | isJust mwin] <> ["pane_id" | isJust mpane]
     (sess, mwin, mpane) = case t.scope of
         InSession s -> (s, Nothing, Nothing)
         InWindow s _ w -> (s, Just w, Nothing)
