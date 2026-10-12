@@ -359,7 +359,7 @@ paneOptionText st sess win pane n = case lookupOptionDef n of
     Just d -> case requireLive d of
         Left e -> pure (Left e)
         Right () ->
-            Right . optionText n <$> atomically (resolveForPane st sess win pane)
+            Right . optionText n <$> resolveForPaneIO st sess win pane
 
 -- | tmux's @options_from_string_check@ for what the registry's kinds cannot
 -- say: a @default-shell@ must name a 'suitableShell'. A checked append
@@ -531,7 +531,7 @@ applyHistoryLimit :: ServerState -> IO ()
 applyHistoryLimit st = do
     sessMap <- readTVarIO st.sessions
     forM_ (Map.elems sessMap) $ \sess -> do
-        limit <- (.historyLimit) <$> atomically (resolveForSession st sess)
+        limit <- (.historyLimit) <$> resolveForSessionIO st sess
         winMap <- readTVarIO sess.windows
         forM_ (Map.elems winMap) $ \win -> do
             paneMap <- readTVarIO win.panes

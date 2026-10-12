@@ -374,10 +374,10 @@ currentResolved st mclient mtarget = do
 -- | The options in effect for a client's current session, so a bare @set@
 -- there is honored.
 clientOptions :: ServerState -> Client -> IO Options
-clientOptions st client = atomically $ do
-    sid <- readTVar client.session
-    msess <- Map.lookup sid <$> readTVar st.sessions
-    maybe (resolveGlobal st) (resolveForSession st) msess
+clientOptions st client = do
+    sid <- readTVarIO client.session
+    msess <- Map.lookup sid <$> readTVarIO st.sessions
+    maybe (atomically (resolveGlobal st)) (resolveForSessionIO st) msess
 
 -- | The scope-specific error for an option target that did not resolve.
 noSuchTarget :: Text -> Maybe Text -> Text

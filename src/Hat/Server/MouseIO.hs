@@ -56,7 +56,7 @@ mouseViewFor st client ys = do
     case mv of
         Nothing -> pure Nothing
         Just (sess, win) -> do
-            sopts <- atomically (resolveForSession st sess)
+            sopts <- resolveForSessionIO st sess
             csize <- readTVarIO client.size
             vp <- readTVarIO client.viewport
             eff <- readTVarIO sess.lastSize
@@ -223,7 +223,7 @@ reshapeFloat
 reshapeFloat st ev pid reshape = do
     mp <- mouseEventPane st ev { onPane = Just pid }
     forM_ mp $ \(sess, win, pane, _) -> do
-        border <- borderOf . (.paneBorderLines) <$> atomically (resolveForPane st sess win pane)
+        border <- borderOf . (.paneBorderLines) <$> resolveForPaneIO st sess win pane
         changed <- atomically $ do
             lay <- readTVar win.layout
             case floatGeom pid lay >>= reshape border of
@@ -338,7 +338,7 @@ mouseFormatVars st client ev = do
         Just line -> do
             msess <- Map.lookup ev.onSession <$> readTVarIO st.sessions
             ranges <- forM (maybeToList msess) $ \sess -> do
-                sopts <- atomically (resolveForSession st sess)
+                sopts <- resolveForSessionIO st sess
                 csize <- readTVarIO client.size
                 statusRangesFor st sess sopts (fromIntegral csize.cols) line
             let name = \case

@@ -83,7 +83,7 @@ cmdSendPrefix st mclient args = do
     case res of
         Left e -> pure [RErr e]
         Right (sess, _, win, pane) -> do
-            o <- atomically (resolveForPane st sess win pane)
+            o <- resolveForPaneIO st sess win pane
             [] <$ forM_ (parseKeyName (optionText which o)) (typeKeyIntoPane st pane)
 
 -- | @display-panes [-bN] [-d delay-ms] [template]@: overlay each pane's

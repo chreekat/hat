@@ -91,7 +91,7 @@ cmdDisplayPopup st mclient args
                     lns <- case mlines of
                         Just l -> pure l
                         Nothing -> do
-                            wopts <- atomically (resolveForWindow st sess win)
+                            wopts <- resolveForWindowIO st sess win
                             pure (fromMaybe BoxSingle
                                 (boxLinesOf (optionText "popup-border-lines" wopts)))
                     let fits = if lns == BoxNone then w >= 1 && h >= 1 else w >= 3 && h >= 3
@@ -153,7 +153,7 @@ cmdDisplayPopup st mclient args
         pure (popupPlaceX tsx w xs, popupPlaceY tsy h ys)
 
     spawn sess tc env ps = do
-        sopts <- atomically (resolveForSession st sess)
+        sopts <- resolveForSessionIO st sess
         cwd <- case lookup "-d" opts of
             Just d -> T.unpack <$> expandFormat st env d
             Nothing -> readTVarIO sess.startCwd

@@ -76,6 +76,9 @@ module Hat.Model
     , resolveForSession
     , resolveForWindow
     , resolveForPane
+    , resolveForSessionIO
+    , resolveForWindowIO
+    , resolveForPaneIO
     , resolveWindowTables
     , resolvePaneTables
     , paneOptionsNow
@@ -947,7 +950,7 @@ tickActivity st = do
 -- server-wide chain (global-window, global-session, server, then the color
 -- scheme's base layer) folded onto the defaults.
 resolveGlobal :: ServerState -> STM Options
-resolveGlobal st = resolveThrough st.serverOptions (ChainKey Nothing Nothing) $
+resolveGlobal st = resolveThrough st.serverOptions (chainKey Nothing Nothing) $
     resolveOptions <$> mapM readOwn
         [ st.globalWindowOptions, st.globalSessionOptions, st.serverOptions
         , st.schemeOptions ]
@@ -962,35 +965,57 @@ data ThemeCache = ThemeCache
 -- | Resolve the effective options for a session: its own set-option overlay
 -- shadows the global chain, so a bare @set@ affects only that session.
 resolveForSession :: ServerState -> Session -> STM Options
-resolveForSession st sess = resolveThrough sess.options (ChainKey Nothing Nothing) $
-    resolveOptions <$> mapM readOwn
-        [ sess.options, st.globalWindowOptions, st.globalSessionOptions
-        , st.serverOptions, st.schemeOptions ]
+resolveForSession st sess =
+    resolveThrough sess.options (chainKey Nothing Nothing) (sessionChain st sess)
+
+sessionChain :: ServerState -> Session -> STM Options
+sessionChain st sess = resolveOptions <$> mapM readOwn
+    [ sess.options, st.globalWindowOptions, st.globalSessionOptions
+    , st.serverOptions, st.schemeOptions ]
 
 -- | Resolve the effective options for a window: its window overlay and its
 -- session's overlay shadow the global chain (window options and session
 -- options occupy disjoint names, so layering both is safe).
 resolveForWindow :: ServerState -> Session -> Window -> STM Options
-resolveForWindow st sess win = resolveThrough win.options (ChainKey (Just sess.id) Nothing) $
-    applyDelta <$> readOwn win.options <*> resolveForSession st sess
+resolveForWindow st sess win =
+    resolveThrough win.options (chainKey (Just sess.id) Nothing) (windowChain st sess win)
+
+windowChain :: ServerState -> Session -> Window -> STM Options
+windowChain st sess win = applyDelta <$> readOwn win.options <*> resolveForSession st sess
 
 -- | Resolve the effective options for one pane: its own overlay (@set -p@)
 -- shadows its window's chain.
 resolveForPane :: ServerState -> Session -> Window -> Pane -> STM Options
 resolveForPane st sess win pane =
-    resolveThrough pane.options (ChainKey (Just sess.id) (Just win.id)) $
-        applyDelta <$> readOwn pane.options <*> resolveForWindow st sess win
+    resolveThrough pane.options (chainKey (Just sess.id) (Just win.id)) (paneChain st sess win pane)
+
+paneChain :: ServerState -> Session -> Window -> Pane -> STM Options
+paneChain st sess win pane = applyDelta <$> readOwn pane.options <*> resolveForWindow st sess win
+
+-- | 'resolveForSession', 'resolveForWindow' and 'resolveForPane' outside a
+-- transaction ('resolveThroughIO').
+resolveForSessionIO :: ServerState -> Session -> IO Options
+resolveForSessionIO st sess =
+    resolveThroughIO sess.options (chainKey Nothing Nothing) (sessionChain st sess)
+
+resolveForWindowIO :: ServerState -> Session -> Window -> IO Options
+resolveForWindowIO st sess win =
+    resolveThroughIO win.options (chainKey (Just sess.id) Nothing) (windowChain st sess win)
+
+resolveForPaneIO :: ServerState -> Session -> Window -> Pane -> IO Options
+resolveForPaneIO st sess win pane =
+    resolveThroughIO pane.options (chainKey (Just sess.id) (Just win.id)) (paneChain st sess win pane)
 
 -- | A window's own table over the global window table, onto the registry
 -- defaults: no session's chain, nor the colour scheme's base layer.
 resolveWindowTables :: ServerState -> Window -> STM Options
-resolveWindowTables st win = resolveThrough win.options (ChainKey Nothing Nothing) $
+resolveWindowTables st win = resolveThrough win.options (chainKey Nothing Nothing) $
     resolveOptions <$> mapM readOwn [win.options, st.globalWindowOptions]
 
 -- | 'resolveWindowTables' under a pane's own table.
 resolvePaneTables :: ServerState -> Window -> Pane -> STM Options
 resolvePaneTables st win pane =
-    resolveThrough pane.options (ChainKey Nothing (Just win.id)) $
+    resolveThrough pane.options (chainKey Nothing (Just win.id)) $
         applyDelta <$> readOwn pane.options <*> resolveWindowTables st win
 
 -- | A pane's options as of now, from its current home; 'Nothing' for a pane

@@ -195,7 +195,7 @@ samplePane st scope name mon sess pane = do
         -- Pane-scoped user options resolve as #{@foo} in a pane context.
         userOpts <- case mloc of
             Just (_, win, _) ->
-                (.user) <$> atomically (resolveForPane st sess win pane)
+                (.user) <$> resolveForPaneIO st sess win pane
             Nothing -> pure Map.empty
         let env = Map.union userOpts env0
             ctx = case mloc of

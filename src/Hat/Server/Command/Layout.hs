@@ -75,7 +75,7 @@ cmdBreakPane st mclient args
     -- -x/-y/-X/-Y geometry with the window's border.
     floatOut sess win pane = do
         eff <- atomically (windowArea st win)
-        border <- borderOf . (.paneBorderLines) <$> atomically (resolveForWindow st sess win)
+        border <- borderOf . (.paneBorderLines) <$> resolveForWindowIO st sess win
         env <- sessionFormatEnv st sess
         let expand v = case T.stripSuffix "%" v of
                 Just body -> (<> "%") <$> expandFormat st env body
@@ -133,7 +133,7 @@ cmdBreakPane st mclient args
                         printed dst nix swin pane
                     [] -> pure []
     breakOut ssess swix swin pane dst mix = do
-        sopts <- atomically (resolveForSession st dst)
+        sopts <- resolveForSessionIO st dst
         ws0 <- readTVarIO dst.windows
         cur <- readTVarIO dst.currentIx
         let anchor = case mix of
@@ -275,7 +275,7 @@ cmdMovePane st mclient args
     -- both.
     reposition sess win eff pane how = do
         border <- borderOf . (.paneBorderLines)
-            <$> atomically (resolveForPane st sess win pane)
+            <$> resolveForPaneIO st sess win pane
         r <- atomically $ do
             writeTVar win.zoomed Nothing
             lay <- windowLayoutAt eff win
@@ -480,7 +480,7 @@ stepLayout st sess win step = do
 applyNamed :: ServerState -> Session -> Window -> LayoutName -> IO [Reply]
 applyNamed st sess win name = do
     eff <- atomically (windowArea st win)
-    sizes <- namedSizesOf <$> atomically (resolveForWindow st sess win)
+    sizes <- namedSizesOf <$> resolveForWindowIO st sess win
     atomically $ writeTVar win.layoutName (Just name)
     relayout st sess win $ \lay -> pure . Right $
         fromMaybe lay (namedLayout sizes eff name (layoutPanes lay))

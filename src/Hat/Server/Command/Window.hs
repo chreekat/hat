@@ -198,7 +198,7 @@ createWindow st sess opts flags pos requested = do
         Right _ -> do
             eff <- readTVarIO sess.lastSize
             environ <- sessionSpawnEnv st sess
-            sopts <- atomically (resolveForSession st sess)
+            sopts <- resolveForSessionIO st sess
             shellCmd <- paneShell sopts
             let (how, kind) = either (const (FreshShell, ProgramPane)) id
                     (launchOf ("-E" `elem` flags) pos)

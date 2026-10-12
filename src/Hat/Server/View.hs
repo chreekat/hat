@@ -167,7 +167,7 @@ renderOnce st client = do
                         active <- readTVar win.activeId
                         pure (Just (sess, win, rects, (eff, floats), ps, active))
     sopts <- case view of
-        Just (sess, _, _, _, _, _) -> atomically (resolveForSession st sess)
+        Just (sess, _, _, _, _, _) -> resolveForSessionIO st sess
         Nothing -> pure opts
     let (rowOff, mStatusRowIx) =
             statusLayout sopts.statusPosition sopts.statusLines
@@ -186,7 +186,7 @@ renderOnce st client = do
                     Nothing -> pure []
                     Just pane -> do
                         pv <- paneView st pane
-                        popts <- atomically (resolveForPane st sess win pane)
+                        popts <- resolveForPaneIO st sess win pane
                         dflt <- paneDefaultColours st expand th sess win pane popts
                         palette <- panePalette th pane popts
                         pure [(pidL, (withPaneColours dflt palette pv, dflt, popts))]
@@ -309,7 +309,7 @@ renderOnce st client = do
     (frame'', origins'') <- case (mdpanes, view) of
         (Just _, Just (sess, win, rects, _, ps, active)) -> do
             th <- clientTheme st
-            wopts <- atomically (resolveForWindow st sess win)
+            wopts <- resolveForWindowIO st sess win
             wix <- atomically (readTVar sess.currentIx)
             let shiftR r = r { startRow = r.startRow + rowOff - viewOrigin.row
                              , endRow = r.endRow + rowOff - viewOrigin.row
@@ -381,7 +381,7 @@ renderOnce st client = do
         (Nothing, Just (sess, win, _, _, ps, active))
             | Just pane <- Map.lookup active ps -> do
                 app <- Emu.appCursorColour pane.emulator
-                popts <- atomically (resolveForPane st sess win pane)
+                popts <- resolveForPaneIO st sess win pane
                 pure (cursorColourOf th app popts.cursorColour)
         _ -> pure Nothing
     oldColour <- readIORef client.lastCursorColour
@@ -470,7 +470,7 @@ syncMouseMode st client view = do
     want <- case view of
         Nothing -> pure 0
         Just (sess, _, _, _) | Just p <- mpopup -> do
-            o <- atomically (resolveForSession st sess)
+            o <- resolveForSessionIO st sess
             ms <- Emu.modes p.screen
             let own = case ms.mouse of
                     Emu.MouseOff -> 0
@@ -479,7 +479,7 @@ syncMouseMode st client view = do
                     Emu.MouseMove -> 3
             pure $ Mouse.overlayMouseMode o.mouseEnabled o.focusFollowsMouse own
         Just (sess, _, _, _) | Just wm <- mmenu -> do
-            o <- atomically (resolveForSession st sess)
+            o <- resolveForSessionIO st sess
             pure $ Mouse.overlayMouseMode o.mouseEnabled o.focusFollowsMouse
                 (if wm.mouse == MenuMouseOn then 3 else 0)
         Just (sess, win, ps, active) -> do
@@ -493,8 +493,8 @@ syncMouseMode st client view = do
                         Emu.MouseDrag -> 2
                         Emu.MouseMove -> 3
                 pure (pid, level)
-            o <- maybe (atomically (resolveForSession st sess))
-                (\pane -> atomically (resolveForPane st sess win pane)) (Map.lookup active ps)
+            o <- maybe (resolveForSessionIO st sess)
+                (\pane -> resolveForPaneIO st sess win pane) (Map.lookup active ps)
             pure $ Mouse.outerMouseMode o.mouseEnabled o.focusFollowsMouse
                 (fromMaybe 0 (List.lookup active tracking)) (map snd tracking)
     old <- readIORef client.lastMouseMode
@@ -654,7 +654,7 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults pa
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
     windowStyle <- expand.style th . (.paneBorderStyle)
-        =<< atomically (resolveForWindow st sess win)
+        =<< resolveForWindowIO st sess win
     (input, look2, panes) <- atomically
         (chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active mmenu)
     bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
@@ -1034,7 +1034,7 @@ promptView pr = PromptView
 -- 'Hat.Server.Status.statusRows').
 statusCells :: ServerState -> Session -> Int -> IO [V.Vector Cell.Cell]
 statusCells st sess width = do
-    sopts <- atomically (resolveForSession st sess)
+    sopts <- resolveForSessionIO st sess
     (env, winEnvs) <- gatherStatus st sess
     renderStatus st sopts env winEnvs width
 

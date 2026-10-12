@@ -335,7 +335,7 @@ paneLayer = varLayer
         pure [ ("pane_current_command", cmd) ]
     , VarGroup ["pane_synchronized"] $ \(st, sess, win, _, pane) -> do
         synced <- optionFlag "synchronize-panes"
-            <$> atomically (resolveForPane st sess win pane)
+            <$> resolveForPaneIO st sess win pane
         pure [ ("pane_synchronized", if synced then "1" else "0") ]
     , VarGroup ["pane_title"] $ \(_, _, _, _, pane) -> do
         title <- Emu.title pane.emulator
@@ -522,7 +522,7 @@ sessionVars :: ServerState -> Session -> Wanted -> IO FormatEnv
 sessionVars st sess w = do
     -- Options are readable as #{status-left}, #{@foo}, … so if-shell theme
     -- conditionals (@#{@pane-theme}@) resolve.
-    sessOpts <- optionVars w <$> atomically (resolveForSession st sess)
+    sessOpts <- optionVars w <$> resolveForSessionIO st sess
     Map.union sessOpts <$> layerVars sessionLayer (.sessionGroups) w (st, sess)
 
 sessionLayer :: VarLayer (ServerState, Session)

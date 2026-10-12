@@ -5,7 +5,8 @@
 -- change ('resolveThrough').
 module Hat.Model.OwnOptions
     ( OwnOptions
-    , ChainKey (..)
+    , ChainKey
+    , chainKey
     , newOwnOptions
     , newOwnOptionsIO
     , readOwn
@@ -13,14 +14,13 @@ module Hat.Model.OwnOptions
     , modifyOwn
     , writeOwn
     , resolveThrough
+    , resolveThroughIO
     ) where
 
 import Control.Concurrent.STM
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
 import System.IO.Unsafe (unsafePerformIO)
 
-import Hat.Model.Ids (SessionId, WindowId)
+import Hat.Model.Ids (SessionId (..), WindowId (..))
 import Hat.Model.Options (Options, OptionsDelta, emptyDelta)
 
 data OwnOptions = OwnOptions
@@ -35,19 +35,23 @@ optionsEpoch :: TVar Int
 optionsEpoch = unsafePerformIO (newTVarIO 0)
 {-# NOINLINE optionsEpoch #-}
 
--- | The chains resolved through a scope as of one options epoch.
+-- | The chains resolved through a scope as of one options epoch: a scope
+-- takes part in a chain per session holding it, so only a few.
 data Resolutions = Resolutions
     { epoch   :: !Int
-    , byChain :: !(Map ChainKey Options)
+    , byChain :: ![(ChainKey, Options)]
     }
 
--- | Which chain a resolution through a scope followed: the session and
--- window above it, where they take part.
-data ChainKey = ChainKey (Maybe SessionId) (Maybe WindowId)
-    deriving (Eq, Ord, Show)
+-- | Which chain a resolution through a scope followed: the raw ids of the
+-- session and window above it, @-1@ where none takes part.
+data ChainKey = ChainKey !Int !Int
+    deriving (Eq, Show)
+
+chainKey :: Maybe SessionId -> Maybe WindowId -> ChainKey
+chainKey s w = ChainKey (maybe (-1) (\(SessionId n) -> n) s) (maybe (-1) (\(WindowId n) -> n) w)
 
 newOwnOptions :: STM OwnOptions
-newOwnOptions = OwnOptions <$> newTVar emptyDelta <*> newTVar (Resolutions (-1) Map.empty)
+newOwnOptions = OwnOptions <$> newTVar emptyDelta <*> newTVar (Resolutions (-1) [])
 
 newOwnOptionsIO :: IO OwnOptions
 newOwnOptionsIO = atomically newOwnOptions
@@ -73,10 +77,26 @@ resolveThrough :: OwnOptions -> ChainKey -> STM Options -> STM Options
 resolveThrough o key resolve = do
     now <- readTVar optionsEpoch
     r <- readTVar o.resolved
-    let current = if r.epoch == now then r.byChain else Map.empty
-    case Map.lookup key current of
+    let current = if r.epoch == now then r.byChain else []
+    case cached key current of
         Just opts -> pure opts
         Nothing -> do
             opts <- resolve
-            writeTVar o.resolved Resolutions { epoch = now, byChain = Map.insert key opts current }
+            writeTVar o.resolved Resolutions { epoch = now, byChain = (key, opts) : current }
             pure opts
+
+-- | 'resolveThrough' outside a transaction: a resolution already cached for
+-- the epoch is read without one, as of the moment the epoch was read.
+resolveThroughIO :: OwnOptions -> ChainKey -> STM Options -> IO Options
+resolveThroughIO o key resolve = do
+    now <- readTVarIO optionsEpoch
+    r <- readTVarIO o.resolved
+    case if r.epoch == now then cached key r.byChain else Nothing of
+        Just opts -> pure opts
+        Nothing -> atomically (resolveThrough o key resolve)
+
+cached :: ChainKey -> [(ChainKey, Options)] -> Maybe Options
+cached key = go
+  where
+    go ((k, o) : rest) = if k == key then Just o else go rest
+    go [] = Nothing

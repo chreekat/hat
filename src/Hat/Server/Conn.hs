@@ -676,7 +676,7 @@ runInputs d st client keys = do
                 -- focus-follows-mouse: moving over a pane makes it active.
                 when (stripMods mk.name == "MouseMovePane") $
                     forM_ mp $ \(sess, win, pane, _) -> do
-                        o <- atomically (resolveForPane st sess win pane)
+                        o <- resolveForPaneIO st sess win pane
                         active <- readTVarIO win.activeId
                         when (o.focusFollowsMouse && pane.id /= active) $
                             void $ d.runArgv st (Just client)

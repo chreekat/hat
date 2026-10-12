@@ -424,7 +424,7 @@ spawnInWindow entry st mclient args
         Just "none" -> pure Borderless
         Just _ -> pure Bordered
         Nothing -> do
-            wopts <- atomically (resolveForWindow st sess win)
+            wopts <- resolveForWindowIO st sess win
             pure (borderOf wopts.paneBorderLines)
     -- The new floating pane's box, and the target's own when a split of a
     -- floating pane reshapes it too (@layout_get_floating_cell@).
@@ -504,7 +504,7 @@ spawnInWindow entry st mclient args
                         T.unpack <$> expandFormat st env d
                     Nothing -> paneCurrentPath target
                 environ0 <- sessionSpawnEnv st sess
-                sopts <- atomically (resolveForSession st sess)
+                sopts <- resolveForSessionIO st sess
                 shellCmd <- paneShell sopts
                 let environ = environ0 <> envPairs opts
                     how = withDefaultCommand (optionText "default-command" sopts) how0
@@ -918,7 +918,7 @@ respawnIn st mclient sess win pane opts flags pos = do
             [c] -> ShellCommand c
             argv -> ExecArgv argv
         kind = if "-E" `elem` flags then EmptyPane else ProgramPane
-    shellCmd <- paneShell =<< atomically (resolveForSession st sess)
+    shellCmd <- paneShell =<< resolveForSessionIO st sess
     mnew <- respawnPane st sess.id win pane shellCmd how kind dir environ
     case mnew of
         Nothing -> pure (Left "pane no longer exists")
@@ -1106,7 +1106,7 @@ cmdResizePane st mclient args
                 when wasZoomed $
                     notifyWindow st "window-unzoomed" (Just sess.id) win []
                 border <- borderOf . (.paneBorderLines)
-                    <$> atomically (resolveForPane st sess win pane)
+                    <$> resolveForPaneIO st sess win pane
                 r <- atomically $ do
                     lay <- windowLayoutAt eff win
                     case resizeSteps pane.id border eff opts flags pos lay of

@@ -82,7 +82,7 @@ cmdDisplayMenu st mclient args
                 | null menu.items -> pure []
                 | otherwise -> do
                     (x, y) <- menuPosition sess win pane tc mev env menu
-                    wopts <- atomically (resolveForWindow st sess win)
+                    wopts <- resolveForWindowIO st sess win
                     eff <- readTVarIO sess.lastSize
                     let wsx = fromIntegral eff.cols
                         wsy = fromIntegral eff.rows
@@ -160,7 +160,7 @@ targetStatus st tc win = do
     case msess of
         Nothing -> pure Nothing
         Just sess -> do
-            sopts <- atomically (resolveForSession st sess)
+            sopts <- resolveForSessionIO st sess
             tsize <- readTVarIO tc.size
             ws <- readTVarIO sess.windows
             let (_, mrow) = statusLayout sopts.statusPosition sopts.statusLines
