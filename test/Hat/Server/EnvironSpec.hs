@@ -13,6 +13,7 @@ import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Server (Reply (..), cmdSetEnvironment, cmdShowEnvironment)
 import Hat.Server.Environ
+import Hat.Server.FormatEnv (FormatScope (..), FormatTarget (..), expandAt)
 
 -- A server with one session named @s@, enough for both environment scopes.
 seedServer :: IO (ServerState, Session)
@@ -120,6 +121,18 @@ spec = do
                 `shouldReturn` [RErr "no such session: nosuch"]
             setEnv st ["-t", "nosuch", "FOO", "bar"]
                 `shouldReturn` [RErr "no such session: nosuch"]
+    describe "formats" $ do
+        it "fall back to the environment, the session's over the global" $ do
+            (st, sess) <- seedServer
+            let expand = expandAt st (FormatTarget (InSession sess) Map.empty)
+            _ <- setEnv st ["-g", "V", "global"]
+            _ <- setEnv st ["-g", "W", "gw"]
+            _ <- setEnv st ["W", "session"]
+            _ <- setEnv st ["-g", "R", "masked"]
+            _ <- setEnv st ["-r", "R"]
+            _ <- setEnv st ["-g", "session_name", "env"]
+            expand "#{V} #{W} [#{R}] #{session_name}"
+                `shouldReturn` "global session [] s"
     describe "entry operations" $ do
         it "set then find returns the value" $ do
             let env = environSet EnvVisible "FOO" "bar" emptyEnviron

@@ -365,7 +365,7 @@ spec = do
             clientTheme st `shouldReturn` terminalTheme
 
     describe "a frame's kept expansions" $
-        it "are redone when a variable they read changes, and never kept when volatile" $ do
+        it "are redone when a variable or environment entry they read changes, and never kept when volatile" $ do
             (st, sess) <- seedSession "/"
             client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
             let set v = atomically $ modifyOwn sess.options (insertDelta "@v" (OVScalar v))
@@ -383,6 +383,11 @@ spec = do
             frame "#{@v}" `shouldReturn` "two"
             _ <- frame "#{@v} %H"
             kept `shouldReturn` 0
+            let setEnv v = atomically $ modifyTVar' sess.environ (environSet EnvVisible "V" v)
+            setEnv "one"
+            frame "#{V}" `shouldReturn` "one"
+            setEnv "two"
+            frame "#{V}" `shouldReturn` "two"
 
     describe "session format counts" $ do
         it "session_created and session_restores expose identity metadata" $ do
@@ -485,6 +490,22 @@ spec = do
             map (.style) (take 2 (V.toList (frame V.! 0))) `shouldBe`
                 [ Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
                 , Cell.defaultStyle { Cell.fg = Cell.Indexed 100, Cell.bg = Cell.Indexed 4 } ]
+    describe "the status line" $
+        it "follows an environment variable its format reads" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
+            runArgv st Nothing ["set", "-g", "status-format", "<#{V}>"] `shouldReturn` []
+            (client, _peer) <- wiredClient st Attached
+            let statusRow v = do
+                    atomically $ modifyTVar' sess.environ (environSet EnvVisible "V" v)
+                    renderOnce st client
+                    frame <- readIORef client.lastFrame
+                    pure (T.strip (T.pack (concatMap Cell.cluster (V.toList (V.last frame)))))
+            statusRow "one" `shouldReturn` "<one>"
+            statusRow "two" `shouldReturn` "<two>"
     describe "a window larger than its client" $ do
         let viewing vp = do
                 (st, sess) <- seedSession "/"

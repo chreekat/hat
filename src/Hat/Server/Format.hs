@@ -25,6 +25,7 @@ module Hat.Server.Format
     , truthy
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Exception (Exception, throw)
 
 import Data.Array qualified as A
@@ -76,6 +77,8 @@ data FormatCtx = FormatCtx
     , demanded  :: Maybe (Set Text)
         -- ^ the names 'vars' was built for, when it holds only those;
         -- 'Nothing' when it holds every variable there is
+    , environ   :: Text -> Maybe Text
+        -- ^ the target's environment variables, valued ones only
     }
 
 -- | An expansion looked up a variable its environment was not built for
@@ -105,6 +108,7 @@ formatCtx env shell zt = FormatCtx
     , animate = NoAnimate
     , theme = terminalTheme
     , demanded = Nothing
+    , environ = const Nothing
     }
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
@@ -789,7 +793,9 @@ exprOps =
 -- to the numeric value; b, d and q transform the found text.
 findVar :: FormatCtx -> ModState -> Text -> Maybe Text
 findVar ctx ms key = do
-    v <- lookupVar ctx key
+    v <- case ms.timeM of
+        Just _ -> lookupVar ctx key
+        Nothing -> lookupVar ctx key <|> ctx.environ key
     case ms.timeM of
         Just tm -> do
             secs <- numFull 0 (maxBound :: Int) v

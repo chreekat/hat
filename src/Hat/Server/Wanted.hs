@@ -21,4 +21,6 @@ data WantedNames = WantedNames
     , sessionGroups :: [Int]  -- ^ the session layer's groups giving any; lazy
     , windowGroups :: [Int]   -- ^ the window layer's; lazy
     , paneGroups :: [Int]     -- ^ the pane layer's; lazy
+    , environNames :: [Text]
+        -- ^ those nothing but an environment variable could give; lazy
     }

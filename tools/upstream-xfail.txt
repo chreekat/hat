@@ -25,7 +25,6 @@ run-shell-output.sh             # run-shell output to client stdout + view-mode 
 screen-redraw-bidi.sh
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
-style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
 utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (tmux: per sequence); NUL/DEL capture differs

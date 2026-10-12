@@ -41,6 +41,7 @@ module Hat.Server.FormatEnv
     , clientFormatVars
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
@@ -71,6 +72,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (schemeName)
+import Hat.Server.Environ (EnvEntry (..), emptyEnviron, environFind)
 import Hat.Server.Format
     ( FormatCtx (..), FormatEnv, UndemandedVar (..), evaluateCtx, formatCtx
     , formatNames, formatVolatile, renderFormatCtx )
@@ -105,9 +107,12 @@ wantedNames ns = WantedNames
     , sessionGroups = givingGroups sessionLayer ns
     , windowGroups = givingGroups windowLayer ns
     , paneGroups = givingGroups paneLayer ns
+    , environNames = filter (not . given) (Set.toList ns)
     }
   where
     optionName n = "@" `T.isPrefixOf` n || isJust (lookupOptionDef n)
+    given n = optionName n || Map.member n sessionLayer.givers
+        || Map.member n windowLayer.givers || Map.member n paneLayer.givers
 
 -- | Variables read together, by the names they give.
 type role VarGroup representational
@@ -153,7 +158,8 @@ unshadowed _ AllVars = AllVars
 unshadowed inner (OnlyVars w)
     | Set.size rest == Set.size w.names = OnlyVars w
     | otherwise = OnlyVars (wantedNames rest)
-        { optionNames = filter (`Set.member` rest) w.optionNames }
+        { optionNames = filter (`Set.member` rest) w.optionNames
+        , environNames = filter (`Set.member` rest) w.environNames }
   where
     rest = w.names `Set.difference` Map.keysSet inner
 
@@ -528,7 +534,19 @@ sessionVars st sess w = do
     -- Options are readable as #{status-left}, #{@foo}, … so if-shell theme
     -- conditionals (@#{@pane-theme}@) resolve.
     sessOpts <- optionVars w <$> resolveForSessionIO st sess
-    Map.union sessOpts <$> layerVars sessionLayer (.sessionGroups) w (st, sess)
+    envVars <- environVars st sess w
+    own <- layerVars sessionLayer (.sessionGroups) w (st, sess)
+    pure (Map.unions [sessOpts, own, envVars])
+
+-- | The wanted environment variables ('targetEnviron') no other variable
+-- gives. See Note [Environment variables in formats].
+environVars :: ServerState -> Session -> Wanted -> IO FormatEnv
+environVars _ _ AllVars = pure Map.empty
+environVars st sess (OnlyVars w)
+    | null w.environNames = pure Map.empty
+    | otherwise = do
+        look <- sessionEnviron st (Just sess)
+        pure (Map.fromList [ (n, v) | n <- w.environNames, Just v <- [look n] ])
 
 sessionLayer :: VarLayer (ServerState, Session)
 sessionLayer = varLayer
@@ -726,9 +744,11 @@ formatCtxFor st env0 = do
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
+    environment <- unsafeInterleaveIO (targetEnviron st env)
     th <- clientTheme st
     pure (formatCtx env job now)
         { theme = th
+        , environ = environment
         , sessions = sessionItems
         , windows = windowItems
         , panes = paneItems
@@ -945,6 +965,28 @@ loopPaneEnvs st env = do
             mapM (\pane -> do
                 pix <- paneIndexOf st win pane
                 paneFormatEnv st sess wix win pix pane) ps
+
+-- Note [Environment variables in formats]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- A name no option or format variable gives reads the target session's
+-- environment, then the global one (tmux's format_find). A build of just
+-- the wanted variables includes those values ('environVars'), so whatever
+-- keeps an expansion while its variables stand also sees them change; an
+-- environment built with every variable leaves them to the context's
+-- lookup ('targetEnviron'), as no build can enumerate them.
+
+-- | The target session's environment as 'sessionEnviron' reads it. See
+-- Note [Environment variables in formats].
+targetEnviron :: ServerState -> FormatEnv -> IO (Text -> Maybe Text)
+targetEnviron st env = targetSessionOf st env >>= sessionEnviron st
+
+-- | A variable of a session's environment, else the global one; a cleared
+-- session entry masks the global.
+sessionEnviron :: ServerState -> Maybe Session -> IO (Text -> Maybe Text)
+sessionEnviron st msess = do
+    (global, own) <- atomically $ (,) <$> readTVar st.globalEnviron
+        <*> maybe (pure emptyEnviron) (readTVar . (.environ)) msess
+    pure $ \n -> (.value) =<< (environFind n own <|> environFind n global)
 
 -- One env per attached client, for the L loop.
 loopClientEnvs :: ServerState -> IO [FormatEnv]
