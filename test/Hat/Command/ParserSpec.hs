@@ -24,6 +24,10 @@ spec = do
     it "unescapes inside double quotes" $
         parses "echo \"a \\\" b\"" [["echo", "a \" b"]]
 
+    it "joins adjacent quoted and bare pieces into one word" $
+        parses "set @r 'can'\\''t ; x' a\"b c\"'d'"
+            [["set", "@r", "can't ; x", "ab cd"]]
+
     it "splits commands on semicolons" $
         parses "select-pane -L ; kill-pane"
             [["select-pane", "-L"], ["kill-pane"]]

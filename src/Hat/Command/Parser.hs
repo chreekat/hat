@@ -119,13 +119,9 @@ commandsP = do
 commandP :: Parser [Text]
 commandP = many (wordP <* space)
 
+-- | A brace block, or a word: adjacent quoted and bare pieces, joined.
 wordP :: Parser Text
-wordP = choice
-    [ singleQuoted
-    , doubleQuoted
-    , braceBlock
-    , bareWord
-    ]
+wordP = braceBlock <|> (T.concat <$> some (choice [singleQuoted, doubleQuoted, bareWord]))
 
 singleQuoted :: Parser Text
 singleQuoted = do
