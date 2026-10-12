@@ -69,6 +69,7 @@ module Hat.Model
     , newServerState
     , bumpDirty
     , withCommandBatch
+    , outsideCommandBatch
     , markActive
     , tickActivity
     , freshId
@@ -103,8 +104,8 @@ module Hat.Model
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM
-import Control.Exception (IOException, bracket_, try)
-import Control.Monad (forM, forM_)
+import Control.Exception (IOException, bracket, bracket_, try)
+import Control.Monad (forM, forM_, when)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
@@ -931,6 +932,16 @@ withCommandBatch :: ServerState -> IO a -> IO a
 withCommandBatch st = bracket_
     (atomically (modifyTVar' st.commandDepth (+ 1)))
     (atomically (modifyTVar' st.commandDepth (subtract 1)))
+
+-- | Block a command outside its batch, if it runs in one, so
+-- reconciliation runs for every other client while it waits.
+outsideCommandBatch :: ServerState -> IO a -> IO a
+outsideCommandBatch st act = bracket leave rejoin (const act)
+  where
+    leave = atomically $ do
+        depth <- readTVar st.commandDepth
+        if depth > 0 then True <$ writeTVar st.commandDepth (depth - 1) else pure False
+    rejoin left = when left (atomically (modifyTVar' st.commandDepth (+ 1)))
 
 -- | Stamp a client as the most-recently-active on its session: advance the
 -- server's activity clock and record the new value on the client and its

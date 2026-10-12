@@ -26,7 +26,6 @@ module Hat.Server.Command.Pane
 
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
-import Control.Exception (bracket_)
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -586,12 +585,9 @@ spawnInWindow entry st mclient args
                         pure printed
 
 -- | Block until a pane's program ends (it dies, or the pane goes), as
--- @split-window -W@ waits; outside the command batch, so reconciliation
--- runs meanwhile.
+-- @split-window -W@ waits.
 awaitPaneEnd :: ServerState -> Pane -> IO ()
-awaitPaneEnd st pane = bracket_
-    (atomically (modifyTVar' st.commandDepth (subtract 1)))
-    (atomically (modifyTVar' st.commandDepth (+ 1)))
+awaitPaneEnd st pane = outsideCommandBatch st
     (atomically $ do
         gone <- readTVar pane.dead
         exited <- readTVar pane.exited

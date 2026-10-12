@@ -8,7 +8,6 @@ module Hat.Server.Command.Wait
     ) where
 
 import Control.Concurrent.STM
-import Control.Exception (bracket_)
 import Control.Monad (join)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -34,13 +33,8 @@ cmdWaitFor st mclient args = do
             | otherwise -> waitChannel st mclient name
         _ -> pure [RErr "usage: wait-for [-ELSUlv] [-F format] [-w waiter] name"]
 
--- Block outside the command batch, so a sleeping waiter does not stall
--- reconciliation for every other client.
 blockOn :: ServerState -> TMVar a -> IO a
-blockOn st mv = bracket_
-    (atomically (modifyTVar' st.commandDepth (subtract 1)))
-    (atomically (modifyTVar' st.commandDepth (+ 1)))
-    (atomically (takeTMVar mv))
+blockOn st mv = outsideCommandBatch st (atomically (takeTMVar mv))
 
 channelsVar :: ServerState -> TVar (Map.Map Text Channel)
 channelsVar st = st.hooks.channels
