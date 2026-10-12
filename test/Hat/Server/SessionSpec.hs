@@ -594,15 +594,26 @@ spec = do
             readTVarIO sess.name `shouldReturn` "renamed"
             readTVarIO other.name `shouldReturn` "s"
 
-    describe "rename-window" $
-        it "pins the given name and turns automatic-rename off" $ do
-            (st, sess) <- seedSession "/"
-            win <- addWindow sess 0
-            p <- stubPane 0
-            atomically $ modifyTVar' win.panes (Map.insert p.id p)
-            [] <- cmdRenameWindow st Nothing ["pinned"]
-            readTVarIO win.name `shouldReturn` "pinned"
-            readTVarIO win.autoRename `shouldReturn` False
+    describe "rename-window" $ do
+        let renamed nm = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                (p0, release) <- adoptedPane 0
+                emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 100
+                let p = p0 { emulator = emu }
+                atomically $ do
+                    modifyTVar' win.panes (Map.insert p.id p)
+                    writeTVar win.layout (singlePane p.id)
+                    writeTVar win.activeId p.id
+                flip finally release $ do
+                    [] <- cmdRenameWindow st Nothing [nm]
+                    (,) <$> readTVarIO win.name <*> readTVarIO win.autoRename
+        it "pins the given name and turns automatic-rename off" $
+            renamed "pinned" `shouldReturn` ("pinned", False)
+        it "pins an empty name too" $
+            renamed "" `shouldReturn` ("", False)
+        it "expands the name as a format" $
+            renamed "w#{window_index}:.##(ok)" `shouldReturn` ("w0:.#(ok)", False)
 
     describe "snapshot commands without persistence" $
         it "list-snapshots and restore-snapshot fail loudly, never silently (bb)" $ do

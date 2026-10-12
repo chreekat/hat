@@ -60,7 +60,6 @@ import Hat.Server.Winlink
 import Hat.Transport.Wire (ServerToClient (Exited))
 import Hat.Server.Locate
     (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
-import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, launchOf, newWindowWithPane
     , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
@@ -536,20 +535,15 @@ cmdRenameWindow st mclient args = do
         [nm] -> do
             res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
             case res of
-                Right (sess, _, win, _) -> do
-                    -- An empty name hands the window back to
-                    -- automatic-rename; a real name pins it.
-                    if T.null nm
-                        then do
-                            atomically (writeTVar win.autoRename True)
-                            refreshAutoNames st
-                        else do
-                            atomically $ do
-                                writeTVar win.name nm
-                                writeTVar win.autoRename False
-                                bumpDirty st
-                            notifyWindow st "window-renamed"
-                                (Just sess.id) win []
+                Right (sess, wix, win, pane) -> do
+                    pix <- paneIndexOf st win pane
+                    env <- paneFormatEnv st sess wix win pix pane
+                    name <- expandFormat st env nm
+                    atomically $ do
+                        writeTVar win.name name
+                        writeTVar win.autoRename False
+                        bumpDirty st
+                    notifyWindow st "window-renamed" (Just sess.id) win []
                     pure []
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
