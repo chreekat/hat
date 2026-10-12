@@ -3,6 +3,7 @@
 module Hat.Server.Toast
     ( showToast
     , showStyledToast
+    , showStyledToastFor
     , toastReplies
     , expireToast
     , dismissToast
@@ -31,11 +32,21 @@ showToast = showMarkupToast MarkupLiteral
 showStyledToast :: ServerState -> Client -> Text -> IO ()
 showStyledToast = showMarkupToast MarkupStyled
 
+-- | 'showStyledToast' for @ms@ milliseconds (@0@: until a key is pressed)
+-- instead of @display-time@.
+showStyledToastFor :: ServerState -> Client -> Int -> Text -> IO ()
+showStyledToastFor st client ms = showMarkupToastFor MarkupStyled (Just ms) st client
+
 showMarkupToast :: Markup -> ServerState -> Client -> Text -> IO ()
-showMarkupToast markup st client t = do
+showMarkupToast markup = showMarkupToastFor markup Nothing
+
+showMarkupToastFor :: Markup -> Maybe Int -> ServerState -> Client -> Text -> IO ()
+showMarkupToastFor markup mms st client t = do
     opts <- clientOptions st client
     now <- getMonotonicTimeNSec
-    let toast = Toast { text = t, markup, deadline = toastDeadline opts now }
+    let toast = Toast
+            { text = t, markup
+            , deadline = toastDeadlineMs (maybe opts.displayTime id mms) now }
     atomically $ do
         writeTVar client.toast (Just toast)
         bumpDirty st
@@ -47,9 +58,13 @@ showMarkupToast markup st client t = do
 -- | @display-time@: the monotonic instant (ns) a toast shown at @shownAt@
 -- times out, or 'Nothing' for @0@ = until a key is pressed.
 toastDeadline :: Options -> Word64 -> Maybe Word64
-toastDeadline opts shownAt
-    | opts.displayTime <= 0 = Nothing
-    | otherwise = Just (shownAt + fromIntegral opts.displayTime * 1000000)
+toastDeadline opts = toastDeadlineMs opts.displayTime
+
+-- | 'toastDeadline' for a toast shown @ms@ milliseconds.
+toastDeadlineMs :: Int -> Word64 -> Maybe Word64
+toastDeadlineMs ms shownAt
+    | ms <= 0 = Nothing
+    | otherwise = Just (shownAt + fromIntegral ms * 1000000)
 
 -- | Whether a toast's deadline has passed at monotonic instant @now@.
 toastExpired :: Word64 -> Toast -> Bool

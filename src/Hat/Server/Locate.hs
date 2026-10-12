@@ -23,6 +23,7 @@ module Hat.Server.Locate
     , locatePane
     , siblingPane
     , findTargetClient
+    , formatClient
     , setCurrentPane
     ) where
 
@@ -428,8 +429,20 @@ siblingPane _ win step = atomically $ do
 -- session).
 findTargetClient
     :: ServerState -> Maybe Client -> Maybe SessionId -> Maybe Text -> IO (Either Text Client)
-findTargetClient st mclient msid mname = atomically $ do
-    cs <- filter terminal . Map.elems <$> readTVar st.clients
+findTargetClient = findClientWhere (\c -> c.role == Attached && isNothing c.control)
+
+-- | 'findTargetClient' among every client with a session, control-mode ones
+-- too: the client a command's formats expand for (tmux's @ft->c@), and
+-- that @display-message -c@ names.
+formatClient
+    :: ServerState -> Maybe Client -> Maybe SessionId -> Maybe Text -> IO (Either Text Client)
+formatClient = findClientWhere (\c -> c.role == Attached)
+
+findClientWhere
+    :: (Client -> Bool)
+    -> ServerState -> Maybe Client -> Maybe SessionId -> Maybe Text -> IO (Either Text Client)
+findClientWhere eligible st mclient msid mname = atomically $ do
+    cs <- filter eligible . Map.elems <$> readTVar st.clients
     live <- readTVar st.sessions
     attached <- fmap concat $ forM cs $ \c -> do
         sid <- readTVar c.session
@@ -448,7 +461,6 @@ findTargetClient st mclient msid mname = atomically $ do
                     (c, _, _) : _ -> Right c
                     [] -> Left "no current client"
   where
-    terminal c = c.role == Attached && isNothing c.control
     clientName c = "client" <> tshow (rawClient c.id)
 
 -- | A command made a pane the one the commands after it act on (tmux's

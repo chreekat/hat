@@ -126,6 +126,15 @@ spec = do
                     named <- filterM (\s -> (== "A") <$> readTVar s.name) ss
                     forM_ named $ \s -> tickActivity st >>= writeTVar s.activity
                 run st ["display-message", "-p", "#{session_name}"] `shouldReturn` [ROutput "A"]
+        it "refuses a -c naming no client, and flags it does not implement" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
+                run st ["display-message", "-c", "nope", "-p", "x"]
+                    `shouldReturn` [RErr "can't find client: nope"]
+                run st ["display-message", "-v", "-p", "x"]
+                    `shouldReturn` [RErr "display-message -v: not supported"]
+                run st ["display-message", "-l", "-p", "#{session_name}"]
+                    `shouldReturn` [ROutput "#{session_name}"]
 
     describe "new-window" $
         it "expands -n as a format in the target session" $

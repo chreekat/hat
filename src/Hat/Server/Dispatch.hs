@@ -79,7 +79,8 @@ import Hat.Server.Command.Types
 import Hat.Server.ClientIO (broadcast, farewellGrace, send, sendFarewells)
 import Hat.Server.ColorScheme
 import Hat.Server.Control (cmdRefreshClient, controlSink)
-import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
+import Hat.Server.ControlQueue (controlNotify)
+import Hat.Server.FormatEnv (clientContextFormatEnv, clientFormatVars, expandFormat, paneFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
 import Hat.Server.Keys
@@ -679,39 +680,97 @@ restartClientAction = \case
     Just Attached -> RestartAttached
     _             -> NoAttachedClient
 
--- | @display-message [-p] [-t target] message@. The target is a pane
--- (tmux's @CMD_FIND_PANE@ with @CANFAIL@): the message expands in the
--- resolved pane's format environment, and an unresolvable target
--- degrades to the plain text instead of erroring.
+-- | @display-message [-lp] [-c target-client] [-d delay] [-t target-pane]
+-- [-F format | message]@ (tmux's @cmd-display-message.c@). The message
+-- expands for the target pane (@CMD_FIND_PANE@ with @CANFAIL@: an
+-- unresolvable target leaves just the client's context) and for the client
+-- shown it when that one views the pane's session, else the session's best
+-- client.
 cmdDisplayMessage :: CommandImpl
-cmdDisplayMessage st mclient args = do
-    let (opts, flags, pos) = parseArgs "t" args
-        raw = T.unwords pos
-    menv <- commandFormatEnv st mclient (lookup "-t" opts)
-    text <- maybe (pure raw) (\env -> expandFormat st env raw) menv
-    case mclient of
-        _ | "-p" `elem` flags -> pure [ROutput text]
-        Just client | Just _ <- client.control -> pure [ROutput ("%message " <> text)]
-        _ -> do
-            forM_ mclient $ \client -> showStyledToast st client text
-            pure []
+cmdDisplayMessage st mclient args
+    | Just e <- unknownFlag "display-message" "aCIlNpv" flags = pure [RErr e]
+    | f : _ <- filter (`elem` ["-a", "-C", "-I", "-N", "-v"]) flags =
+        pure [RErr ("display-message " <> f <> ": not supported")]
+    | isJust (lookup "-F" opts), not (null pos) =
+        pure [RErr "only one of -F or argument must be given"]
+    | Just (Left e) <- mdelay = pure [RErr ("delay " <> e)]
+    | otherwise = do
+        etc <- formatClient st mclient Nothing (lookup "-c" opts)
+        case (lookup "-c" opts, etc) of
+            (Just _, Left e) -> pure [RErr e]
+            _ -> do
+                let mtc = either (const Nothing) Just etc
+                res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+                text <- case res of
+                    Left _ -> do
+                        env <- clientContextFormatEnv st mtc
+                        cvars <- maybe (pure []) (clientFormatVars st) mtc
+                        expand (Map.union (Map.fromList cvars) env)
+                    Right (sess, wix, win, pane) -> do
+                        tcSid <- traverse (readTVarIO . (.session)) mtc
+                        mc <- if tcSid == Just sess.id then pure mtc
+                            else either (const Nothing) Just
+                                <$> formatClient st Nothing (Just sess.id) Nothing
+                        env <- targetFormatEnv st mclient mc (sess, wix, win, pane)
+                        expand env
+                case (mclient, mtc) of
+                    _ | "-p" `elem` flags -> pure [ROutput text]
+                    (Nothing, _) -> pure [RErr text]
+                    (_, Just tc) | Just cs <- tc.control ->
+                        if fmap (.id) mclient == Just tc.id
+                            then pure [ROutput ("%message " <> text)]
+                            else [] <$ atomically
+                                (controlNotify cs (TE.encodeUtf8 ("%message " <> text)))
+                    (_, Just tc) -> do
+                        maybe (showStyledToast st tc text)
+                            (\d -> showStyledToastFor st tc d text)
+                            (either (const Nothing) Just =<< mdelay)
+                        pure []
+                    (_, Nothing) -> pure []
+  where
+    (opts, flags, pos) = parseArgs "cdtF" args
+    template = case lookup "-F" opts of
+        Just f -> f
+        Nothing | not (null pos) -> T.unwords pos
+                | otherwise -> displayMessageTemplate
+    expand env
+        | "-l" `elem` flags = pure template
+        | otherwise = expandFormat st env template
+    mdelay = strtonum 0 4294967295 <$> lookup "-d" opts
+
+-- | tmux's @DISPLAY_MESSAGE_TEMPLATE@: what a bare @display-message@ shows.
+displayMessageTemplate :: Text
+displayMessageTemplate =
+    "[#{session_name}] #{window_index}:#{window_name}, current pane #{pane_index} - (%H:%M %d-%b-%y)"
 
 -- | The format environment a command's arguments expand in: its target
 -- pane's (tmux's @CMD_FIND_PANE@ with @CANFAIL@), with the @mouse_*@
--- variables of the mouse event a binding is acting on.
+-- variables of the mouse event a binding is acting on, and the variables of
+-- the client it runs for (tmux's target client).
 commandFormatEnv :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe FormatEnv)
 commandFormatEnv st mclient mtarget = do
     res <- findTarget st mclient Target.FindPane mtarget
+    case res of
+        Left _ -> pure Nothing
+        Right found@(sess, _, _, _) -> do
+            mc <- either (const Nothing) Just
+                <$> formatClient st mclient (Just sess.id) Nothing
+            Just <$> targetFormatEnv st mclient mc found
+
+-- | A resolved pane target's format environment, with @mc@'s client
+-- variables and the mouse variables of @mclient@'s event.
+targetFormatEnv
+    :: ServerState -> Maybe Client -> Maybe Client -> (Session, Int, Window, Pane)
+    -> IO FormatEnv
+targetFormatEnv st mclient mc (sess, wix, win, pane) = do
     mev <- clientMouseEvent mclient
     mouseVars <- case (,) <$> mclient <*> mev of
         Just (client, ev) -> mouseFormatVars st client ev
         Nothing -> pure []
-    case res of
-        Left _ -> pure Nothing
-        Right (sess, wix, win, pane) -> do
-            pix <- paneIndexOf st win pane
-            env <- paneFormatEnv st sess wix win pix pane
-            pure (Just (Map.union (Map.fromList mouseVars) env))
+    cvars <- maybe (pure []) (clientFormatVars st) mc
+    pix <- paneIndexOf st win pane
+    env <- paneFormatEnv st sess wix win pix pane
+    pure (Map.unions [Map.fromList mouseVars, Map.fromList cvars, env])
 
 cmdRunShell :: CommandImpl
 cmdRunShell st mclient args = do
