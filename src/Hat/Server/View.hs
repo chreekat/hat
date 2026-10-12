@@ -25,6 +25,8 @@ import Data.Word (Word8)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -634,16 +636,18 @@ cachedChrome st th client sess win eff sceneArea rects floats defaults active ro
                 , padStyle = Cell.defaultStyle { Cell.fg = dfg, Cell.bg = dbg }
                 , onLeft = input.scrollbarSide == ScrollbarLeft })
     let look1 = look2 { scrollbarLooks = Map.fromList bars }
-    let scene = case mcc of
-            Just cc | cc.input == input -> cc.scene
-            _ -> buildScene input
-    -- A scene with no borders draws no pane's border style.
-    styles <- if not (V.any (V.any isBorder) scene) then pure [] else
-        forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st th sess win cp.pane
+    let (scene, kinds) = case mcc of
+            Just cc | cc.input == input -> (cc.scene, cc.kinds)
+            _ -> let s = buildScene input in (s, sceneKinds s)
+    -- A scene with no borders draws no pane's border style; a status line
+    -- is drawn over a border.
+    styles <- if Set.disjoint kinds (Set.fromList [BorderChrome, StatusChrome])
+        then pure []
+        else forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st th sess win cp.pane
             cp.options (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
     let look0 = look1 { paneStyles = Map.fromList styles }
-    look <- withStatusLines st th sess win scene panes look0
-        >>= withFills st th sess win scene
+    look <- withStatusLines st th sess win scene kinds panes look0
+        >>= withFills st th sess win kinds
         >>= withMenu st th sess win mmenu
     case mcc of
         Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
@@ -655,13 +659,8 @@ cachedChrome st th client sess win eff sceneArea rects floats defaults active ro
                     | otherwise = maybe 0 (\cc -> cc.chrome.gen) mcc + 1
                 chrome = Chrome { gen, byRow = (chromeFromCells cells).byRow }
             writeIORef client.lastChrome $ Just ChromeCache
-                { input, scene, look, rowOff, cells, chrome }
+                { input, scene, kinds, look, rowOff, cells, chrome }
             pure chrome
-  where
-    isBorder = \case
-        SceneBorder _ -> True
-        SceneStatus {} -> True
-        _ -> False
 
 -- | A pane's view drawn in its default colours and its palette. A pane
 -- with colours of its own gives up its row stamps: they do not cover the
@@ -776,9 +775,9 @@ withMenu st th sess win mmenu look = case mmenu of
         pure look { menuCells = menuGrid th mlook wm }
 
 -- | The window's @fill-character@ cells, when the scene has room for them.
-withFills :: ServerState -> Theme -> Session -> Window -> Scene -> ChromeLook -> IO ChromeLook
-withFills st th sess win scene look
-    | not (V.any (V.any isFill) scene) = pure look
+withFills :: ServerState -> Theme -> Session -> Window -> Set ChromeKind -> ChromeLook -> IO ChromeLook
+withFills st th sess win kinds look
+    | FillChrome `Set.notMember` kinds = pure look
     | otherwise = do
         (wix, wopts) <- atomically $
             (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
@@ -791,19 +790,14 @@ withFills st th sess win scene look
         fillInside <- fill True
         fillOutside <- fill False
         pure look { fillInside, fillOutside }
-  where
-    isFill = \case
-        SceneOutside -> True
-        SceneEmpty -> True
-        _ -> False
 
 -- | Draw each pane's @pane-border-format@ over the border its status line
 -- replaces (tmux's @window_make_pane_status@).
 withStatusLines
-    :: ServerState -> Theme -> Session -> Window -> Scene -> [ChromePane]
-    -> ChromeLook -> IO ChromeLook
-withStatusLines st th sess win scene panes look
-    | not (V.any (V.any isStatus) scene) = pure look
+    :: ServerState -> Theme -> Session -> Window -> Scene -> Set ChromeKind
+    -> [ChromePane] -> ChromeLook -> IO ChromeLook
+withStatusLines st th sess win scene kinds panes look
+    | StatusChrome `Set.notMember` kinds = pure look
     | otherwise = do
         wix <- atomically (readTVar sess.currentIx)
         lines' <- forM panes $ \cp -> do
@@ -816,10 +810,6 @@ withStatusLines st th sess win scene panes look
                     expanded <- expandFormat st env (optionText "pane-border-format" cp.options)
                     pure [ (cp.pane.id, formatDraw th sty expanded base) ]
         pure look { paneLines = Map.fromList (concat lines') }
-  where
-    isStatus = \case
-        SceneStatus {} -> True
-        _ -> False
 
 -- | The tiled panes' rects, in the order their scene marks them.
 tiledOf :: [FloatingPane] -> [(PaneId, Rect)] -> [(PaneId, Rect)]

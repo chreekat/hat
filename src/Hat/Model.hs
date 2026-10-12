@@ -102,6 +102,7 @@ import Data.Maybe (fromMaybe, isNothing, mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -133,7 +134,7 @@ import Hat.Server.Menu (WindowMenu)
 import Hat.Server.Popup (JobState, PopupState)
 import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
-import Hat.Server.Scene (ChromeLook, Scene, SceneInput)
+import Hat.Server.Scene (ChromeKind, ChromeLook, Scene, SceneInput)
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -712,6 +713,7 @@ data ReadGate = ReadersFlowing | ReadersPaused
 data ChromeCache = ChromeCache
     { input   :: SceneInput
     , scene   :: Scene
+    , kinds   :: Set ChromeKind  -- ^ 'Hat.Server.Scene.sceneKinds' of 'scene'
     , look    :: ChromeLook
     , rowOff  :: Int
     , cells   :: [(Pos, Cell.Cell)]

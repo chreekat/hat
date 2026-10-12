@@ -12,6 +12,8 @@ module Hat.Server.Scene
     , PaneStatus (..)
     , Scene
     , SceneCell (..)
+    , ChromeKind (..)
+    , sceneKinds
     , BorderCell (..)
     , CellType (..)
     , buildScene
@@ -36,6 +38,8 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Ord (Down (..))
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Vector qualified as V
 
@@ -93,6 +97,26 @@ data SceneCell
 
 -- | Rows of cells.
 type Scene = V.Vector (V.Vector SceneCell)
+
+-- | A kind of chrome a scene can call for.
+data ChromeKind
+    = BorderChrome
+    | StatusChrome
+    | FillChrome  -- ^ cells no pane covers: 'SceneOutside' and 'SceneEmpty'
+    deriving (Eq, Ord, Show)
+
+-- | Every kind of chrome anywhere in a scene.
+sceneKinds :: Scene -> Set ChromeKind
+sceneKinds = V.foldl' (V.foldl' (\ks c -> maybe ks (`Set.insert` ks) (kindOf c))) Set.empty
+  where
+    kindOf = \case
+        SceneBorder _ -> Just BorderChrome
+        SceneStatus {} -> Just StatusChrome
+        SceneOutside -> Just FillChrome
+        SceneEmpty -> Just FillChrome
+        ScenePane _ -> Nothing
+        SceneScrollbar {} -> Nothing
+        SceneMenu {} -> Nothing
 
 data SceneInput = SceneInput
     { window :: Size
