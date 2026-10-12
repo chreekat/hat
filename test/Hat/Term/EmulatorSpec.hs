@@ -614,6 +614,55 @@ spec = do
                     pure (kept === held)) (zip (drop 1 (scanl (<>) "" chunks)) chunks)
                 pure (conjoin results)
 
+    describe "terminal replies, as tmux gives them" $ do
+        let replyTo setup q = do
+                e <- new80x24
+                _ <- feedStr e setup
+                evs <- feedStr e q
+                pure (B.concat [bs | Output bs <- evs])
+            answers setup q r = replyTo setup q `shouldReturn` r
+        it "device attributes" $ do
+            answers "" "\ESC[c" "\ESC[?1;2c"
+            answers "" "\ESC[0c" "\ESC[?1;2c"
+            answers "" "\ESC[1c" ""
+            answers "" "\ESC[>c" "\ESC[>84;0;0c"
+            answers "" "\ESC[>0c" "\ESC[>84;0;0c"
+        it "an ANSI mode: insert mode's state, any other unknown" $ do
+            answers "" "\ESC[4$p" "\ESC[4;2$y"
+            answers "\ESC[4h" "\ESC[4$p" "\ESC[4;1$y"
+            answers "" "\ESC[20$p" "\ESC[20;0$y"
+            answers "" "\ESC[$p" ""
+        it "a DEC private mode: those tmux reports, any other unknown" $ do
+            answers "" "\ESC[?1$p" "\ESC[?1;2$y"
+            answers "\ESC[?1h" "\ESC[?1$p" "\ESC[?1;1$y"
+            answers "" "\ESC[?3$p" "\ESC[?3;4$y"
+            answers "\ESC[?7l" "\ESC[?7$p" "\ESC[?7;2$y"
+            answers "\ESC[?1049h" "\ESC[?47$p" "\ESC[?47;1$y"
+            answers "\ESC[?2004h" "\ESC[?2004$p" "\ESC[?2004;1$y"
+            answers "" "\ESC[?2031$p" "\ESC[?2031;2$y"
+            answers "\ESC[?2031h" "\ESC[?2031$p" "\ESC[?2031;1$y"
+            answers "\ESC[?2031h\ESCc" "\ESC[?2031$p" "\ESC[?2031;2$y"
+            answers "" "\ESC[?1007$p" "\ESC[?1007;0$y"
+        it "cursor blinking follows the cursor style and ?12" $ do
+            answers "" "\ESC[?12$p" "\ESC[?12;2$y"
+            answers "\ESC[1 q" "\ESC[?12$p" "\ESC[?12;1$y"
+            answers "\ESC[?12h" "\ESC[?12$p" "\ESC[?12;1$y"
+            answers "\ESC[?25;12h\ESC[?12l" "\ESC[?12$p" "\ESC[?12;2$y"
+        it "the cursor style (DECRQSS SP q)" $ do
+            let decrqss = "\ESCP$q q\ESC\\"
+            answers "" decrqss "\ESCP1$r q0 q\ESC\\"
+            answers "\ESC[3 q" decrqss "\ESCP1$r q3 q\ESC\\"
+            answers "\ESC[6 q" decrqss "\ESCP1$r q6 q\ESC\\"
+            answers "\ESC[1 q\ESC[?12l" decrqss "\ESCP1$r q2 q\ESC\\"
+            answers "\ESC[5 q\ESC[0 q" decrqss "\ESCP1$r q0 q\ESC\\"
+        it "refuses any other DECRQSS" $
+            answers "" "\ESCP$qm\ESC\\" "\ESCP0$r\ESC\\"
+        it "surfaces an OSC 12 query as an event, unanswered" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]12;?\a"
+            evs `shouldContain` [OscCursorColourQuery TermBel]
+            B.concat [bs | Output bs <- evs] `shouldBe` ""
+
     describe "cursorPendingWrap" $ do
         it "is set once a glyph lands in the last column under autowrap" $ do
             e <- newEmulator Size { rows = 3, cols = 5 } 1000

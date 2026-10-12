@@ -212,10 +212,12 @@ data SnapBuf = SnapBuf
 -- | The Haskell-side state libghostty does not hold: the color-scheme
 -- subscription hat tracks itself (?2031, not fed to the terminal), the pane
 -- title (hat takes OSC 0\/2 out of the stream), the extended-key mode the app
--- asked for, the host policy the server last set, and the two cross-chunk
--- scrubber states for tmux passthrough and the host sequences.
+-- asked for, the cursor state tmux reports, the host policy the server last
+-- set, and the two cross-chunk scrubber states for tmux passthrough and the
+-- host sequences.
 data EmulatorState = EmulatorState
     { colorSub    :: Bool
+    , cursorModel :: CursorModel
     , title       :: Text
     , keyRequest  :: Int  -- ^ the app's last @CSI > 4 ; n m@: 0, 1 or 2
     , policy      :: HostPolicy
@@ -246,6 +248,7 @@ newEmulator sz limit = do
     lr <- newIORef limit
     st <- newIORef EmulatorState
         { colorSub = False
+        , cursorModel = defaultCursorModel
         , title = ""
         , keyRequest = 0
         , policy = defaultHostPolicy
@@ -338,6 +341,42 @@ feedPiece e t = \case
             pol <- (.policy) <$> readIORef e.state
             when pol.scrollOnClear (scrollScreenIntoHistory t n)
             feedSegments e t raw
+        HostCursor change raw -> do
+            -- RIS resets every mode, the ?2031 subscription with them.
+            modifyIORef' e.state $ \s -> s
+                { cursorModel = applyCursorChange change s.cursorModel
+                , colorSub = s.colorSub && change /= TerminalReset }
+            feedSegments e t raw
+        HostQuery q -> case q of
+            CursorColourQuery term -> pure [OscCursorColourQuery term]
+            _ -> do
+                reply <- queryReply e t q
+                pure [Output reply]
+
+-- | What tmux answers a query about the terminal with, from the pane's
+-- state at this point in its output.
+queryReply :: Emulator -> Ptr CTerm -> HostQuery -> IO ByteString
+queryReply e t q = do
+    s <- readIORef e.state
+    let mode m ansi = report . (/= 0) <$> c_mode t m (if ansi then 1 else 0)
+        report on = if on then 1 else 2
+    case q of
+        ModeQuery AnsiMode m -> modeReply AnsiMode m <$> case m of
+            4 -> mode 4 True
+            _ -> pure 0
+        ModeQuery DecMode m -> modeReply DecMode m <$> case m of
+            3 -> pure 4
+            12 -> pure (cursorBlinkReport s.cursorModel)
+            2031 -> pure (report s.colorSub)
+            _ | m `elem` [47, 1047, 1049] ->
+                  report . (== screenAlternate) <$> c_get t dataActiveScreen
+              | m `elem` reportedDecModes -> mode (fromIntegral m) False
+              | otherwise -> pure 0
+        StatusQuery pt -> pure (statusReply s.cursorModel pt)
+        _ -> pure (attributesReply q)
+  where
+    -- The DEC modes tmux reports straight from the terminal's state.
+    reportedDecModes = [1, 6, 7, 25, 1000, 1002, 1003, 1004, 1005, 1006, 2004, 2026]
 
 -- | tmux's @scroll-on-clear@: before an ED 2, or an ED 0 with the cursor
 -- home, the primary screen's used lines scroll into the history (tmux's

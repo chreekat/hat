@@ -39,7 +39,19 @@ module Hat.Term.HostProtocol
     , HostPiece (..)
     , HostSignal (..)
     , HostPolicy (..)
+    , HostQuery (..)
+    , ModeSpace (..)
+    , CursorChange (..)
     , scrubHost
+      -- * Replies tmux gives from a pane's own state
+    , CursorModel (..)
+    , CursorStyle (..)
+    , defaultCursorModel
+    , applyCursorChange
+    , cursorBlinkReport
+    , attributesReply
+    , modeReply
+    , statusReply
     , cleanName
       -- * Color queries answered by the host
     , QuerySignal (..)
@@ -195,6 +207,33 @@ data HostSignal
     | HostErase Int ByteString
         -- ^ ED 0 or 2 (the parameter, and the sequence itself), which may push
         --   the screen into the history first
+    | HostQuery HostQuery
+        -- ^ a query hat answers as tmux does, never the grid engine
+    | HostCursor CursorChange ByteString
+        -- ^ a change to the cursor state tmux reports, and the sequence
+        --   itself, which the grid engine still takes
+    deriving (Eq, Show)
+
+-- | A query about the terminal itself.
+data HostQuery
+    = PrimaryAttributes    -- ^ DA1, @CSI c@
+    | SecondaryAttributes  -- ^ DA2, @CSI > c@
+    | ModeQuery ModeSpace Int  -- ^ DECRQM, @CSI [?] Ps $ p@
+    | StatusQuery ByteString
+        -- ^ DECRQSS, @DCS $ q Pt ST@: the string from its @q@
+    | CursorColourQuery OscTerm  -- ^ OSC 12 @;?@
+    deriving (Eq, Show)
+
+-- | Which numbering a mode is in: ANSI (@CSI Ps $ p@) or DEC private
+-- (@CSI ? Ps $ p@).
+data ModeSpace = AnsiMode | DecMode
+    deriving (Eq, Show)
+
+-- | A change to the cursor state tmux tracks for its replies.
+data CursorChange
+    = CursorStyleSet Int     -- ^ DECSCUSR @CSI Ps SP q@
+    | CursorBlinkSet Bool    -- ^ DEC mode 12 set or reset
+    | TerminalReset          -- ^ RIS, @ESC c@
     deriving (Eq, Show)
 
 -- | The pane options that shape how its output is taken.
@@ -246,6 +285,8 @@ scrubHost pol carry0 chunk = case carry0 of
                 0x5f -> str p HostTitle          -- '_' APC
                 0x6b -> str p HostRename         -- 'k'
                 0x5b -> csi p          -- '['
+                0x50 -> dcs p          -- 'P'
+                0x63 -> Found (p + 2) (HostSignal (HostCursor TerminalReset "\ESCc"))
                 _ -> Skip 1
         -- An OSC this layer takes: a title or the clipboard.
         osc p =
@@ -259,6 +300,11 @@ scrubHost pol carry0 chunk = case carry0 of
                         Nothing -> Incomplete
                         Just (payload, end, term) -> keep end payload
                             (HostSignal (HostClipboard payload term))
+                    ("12", 0x3b) -> case stringEnd bs (q + 1) of
+                        Nothing -> Incomplete
+                        Just ("?", end, term) ->
+                            Found end (HostSignal (HostQuery (CursorColourQuery term)))
+                        Just _ -> Skip 2
                     _ -> Skip 2
           where
             -- tmux takes the title after the @;@, or an empty one when the
@@ -279,19 +325,52 @@ scrubHost pol carry0 chunk = case carry0 of
             Just (prefix, params, inter, final, end) ->
                 let raw = B.take (end - p) (B.drop p bs)
                     nums = map readParam (B.split 0x3b params)
+                    query q = Found end (HostSignal (HostQuery q))
                 in case (prefix, inter, final, nums) of
                     (Just 0x3e, "", 0x6d, 4 : rest) ->
                         Found end (HostSignal (HostKeyMode (headOr 0 rest)))
                     (Just 0x3e, "", 0x6e, [4]) -> Found end (HostSignal (HostKeyMode 0))
-                    (Just 0x3f, "", f, _)
-                        | not pol.allowAltScreen, f == 0x68 || f == 0x6c
-                        , any (`elem` altModes) nums ->
-                            case filter (`notElem` altModes) nums of
-                                [] -> Dropped end
-                                kept -> Found end (HostBytes (decset kept f))
+                    (Just 0x3f, "", f, _) | f == 0x68 || f == 0x6c ->
+                        decModes end raw f nums
                     (Nothing, "", 0x4a, ns) | ns `elem` [[], [0], [2]] ->
                         Found end (HostSignal (HostErase (headOr 0 ns) raw))
+                    -- tmux answers DA only to a zero parameter, and nothing
+                    -- else does.
+                    (Nothing, "", 0x63, ns)
+                        | headOr 0 ns == 0 -> query PrimaryAttributes
+                        | otherwise -> Dropped end
+                    (Just 0x3e, "", 0x63, ns)
+                        | headOr 0 ns == 0 -> query SecondaryAttributes
+                        | otherwise -> Dropped end
+                    (Nothing, "$", 0x70, ns) -> modeQuery end AnsiMode ns
+                    (Just 0x3f, "$", 0x70, ns) -> modeQuery end DecMode ns
+                    (Nothing, " ", 0x71, ns) | headOr 0 ns >= 0 ->
+                        Found end (HostSignal (HostCursor (CursorStyleSet (headOr 0 ns)) raw))
                     _ -> Skip (end - p)
+        modeQuery end space ns
+            | m > 0 = Found end (HostSignal (HostQuery (ModeQuery space m)))
+            | otherwise = Dropped end
+          where
+            m = headOr 0 ns
+        -- DEC modes set or reset: the alternate-screen switches
+        -- @alternate-screen off@ forbids are dropped, and cursor blinking is
+        -- noted.
+        decModes end raw f nums
+            | null kept, forbidden = Dropped end
+            | 12 `elem` kept = Found end (HostSignal (HostCursor (CursorBlinkSet (f == 0x68)) bytes))
+            | forbidden = Found end (HostBytes bytes)
+            | otherwise = Skip (B.length raw)
+          where
+            kept = if pol.allowAltScreen then nums else filter (`notElem` altModes) nums
+            forbidden = length kept /= length nums
+            bytes = if forbidden then decset kept f else raw
+        -- DECRQSS is the one DCS this layer takes.
+        dcs p = case csiAt bs (p + 2) of
+            Nothing -> Incomplete
+            Just (_, _, "$", 0x71, q) -> case stringEnd bs (q - 1) of
+                Nothing -> Incomplete
+                Just (payload, end, _) -> Found end (HostSignal (HostQuery (StatusQuery payload)))
+            Just _ -> Skip 2
         altModes = [47, 1047, 1049]
         decset ns f = "\ESC[?" <> B.intercalate ";" (map (B8.pack . show) ns) <> B.singleton f
         headOr d = \case
@@ -476,3 +555,66 @@ nextQuery bs = go 0
         Just (0x1b, more)
             | Just (0x5c, rest) <- B.uncons more -> Just rest  -- ST (ESC \)
         Just (_, more) -> afterTerminator more
+
+-- | The cursor state tmux reports: the style DECSCUSR set ('StyleDefault'
+-- until one is), whether it blinks, and whether DEC mode 12 has said so.
+data CursorModel = CursorModel
+    { style       :: CursorStyle
+    , blinking    :: Bool
+    , blinkingSet :: Bool
+    }
+    deriving (Eq, Show)
+
+data CursorStyle = StyleDefault | StyleBlock | StyleUnderline | StyleBar
+    deriving (Eq, Show)
+
+defaultCursorModel :: CursorModel
+defaultCursorModel = CursorModel { style = StyleDefault, blinking = False, blinkingSet = False }
+
+-- | tmux's @screen_set_cursor_style@, and its DEC mode 12 and RIS handling.
+applyCursorChange :: CursorChange -> CursorModel -> CursorModel
+applyCursorChange ch m = case ch of
+    CursorStyleSet 0 -> m { style = StyleDefault, blinkingSet = False }
+    CursorStyleSet n
+        | n >= 1 && n <= 6 ->
+            m { style = [StyleBlock, StyleUnderline, StyleBar] !! ((n - 1) `div` 2)
+              , blinking = odd n }
+        | otherwise -> m
+    CursorBlinkSet b -> m { blinking = b, blinkingSet = True }
+    TerminalReset -> m { blinking = False, blinkingSet = False }
+
+-- | The DECSCUSR @Ps@ a cursor state stands for. With no style set it is
+-- tmux's @cursor-style@ option's, whose only value hat takes is @default@.
+cursorStylePs :: CursorModel -> Int
+cursorStylePs m = case m.style of
+    StyleDefault -> 0
+    StyleBlock -> blinkOr 1 2
+    StyleUnderline -> blinkOr 3 4
+    StyleBar -> blinkOr 5 6
+  where
+    blinkOr on off = if m.blinking then on else off
+
+-- | Whether the cursor blinks, as DECRQM reports mode 12: 1 or 2.
+cursorBlinkReport :: CursorModel -> Int
+cursorBlinkReport m
+    | m.style /= StyleDefault || m.blinkingSet = if m.blinking then 1 else 2
+    | otherwise = if odd (cursorStylePs m) then 1 else 2
+
+-- | tmux's DA1 or DA2 reply.
+attributesReply :: HostQuery -> ByteString
+attributesReply = \case
+    SecondaryAttributes -> "\ESC[>84;0;0c"
+    _ -> "\ESC[?1;2c"
+
+-- | A DECRQM reply: the mode, and 1 set, 2 reset, 4 permanently reset or 0
+-- unknown.
+modeReply :: ModeSpace -> Int -> Int -> ByteString
+modeReply space m n = "\ESC[" <> (if space == DecMode then "?" else "")
+    <> B8.pack (show m) <> ";" <> B8.pack (show n) <> "$y"
+
+-- | A DECRQSS reply: the cursor style is the one setting tmux reports.
+statusReply :: CursorModel -> ByteString -> ByteString
+statusReply m pt
+    | " q" `B.isPrefixOf` B.drop 1 pt =
+        "\ESCP1$r q" <> B8.pack (show (cursorStylePs m)) <> " q\ESC\\"
+    | otherwise = "\ESCP0$r\ESC\\"

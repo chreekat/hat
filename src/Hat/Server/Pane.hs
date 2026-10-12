@@ -143,7 +143,8 @@ import Hat.Server.Hooks
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
-import Hat.Server.PaneColours (oscColourReply, queryDefaultColour, queryPaletteColour)
+import Hat.Server.PaneColours
+    (oscColourReply, queryCursorColour, queryDefaultColour, queryPaletteColour)
 import Hat.Server.Style (applyStyle)
 import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Term.Cell qualified as Cell
@@ -622,6 +623,10 @@ runPaneReader st pane = do
                     mrgb <- queryPaletteColour st pane n
                     forM_ mrgb $ \rgb -> Hat.Term.Pty.writePty pane.pty
                         (oscColourReply ("4;" <> T.pack (show n)) rgb term)
+                Emu.OscCursorColourQuery term -> do
+                    mrgb <- queryCursorColour st pane
+                    forM_ mrgb $ \rgb -> Hat.Term.Pty.writePty pane.pty
+                        (oscColourReply "12" rgb term)
                 -- The app raised a desktop notification (OSC 9/777); hat has
                 -- no notification UI of its own, so forward it verbatim to
                 -- the session's attached terminals to raise with the OS.

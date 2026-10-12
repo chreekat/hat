@@ -74,6 +74,7 @@ import Hat.Transport.Wire
     , sendMessage )
 import Hat.Server.Floating (noFloats)
 import Hat.Server.ColorScheme (ColorScheme (..))
+import Hat.Server.PaneColours (queryPaletteColour)
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
@@ -492,6 +493,21 @@ spec = do
             map (.style) (take 2 (V.toList (frame V.! 0))) `shouldBe`
                 [ Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
                 , Cell.defaultStyle { Cell.fg = Cell.Indexed 100, Cell.bg = Cell.Indexed 4 } ]
+    describe "a pane's palette query" $
+        it "is answered from an entry it set, else by an attached terminal" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            p0 <- stubPane 0
+            let p = p0 { emulator = emu }
+            atomically $ do
+                modifyTVar' win.panes (Map.insert p.id p)
+                writeTVar p.home (Just (sess.id, win))
+            _ <- Emu.feed emu "\ESC]4;2;rgb:01/02/03\a"
+            queryPaletteColour st p 2 `shouldReturn` Just (1, 2, 3)
+            queryPaletteColour st p 1 `shouldReturn` Nothing
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            queryPaletteColour st p 1 `shouldReturn` Just (128, 0, 0)
     describe "a respawned pane" $
         it "draws its new screen, not the old one's rows" $ do
             (st, sess) <- seedSession "/"

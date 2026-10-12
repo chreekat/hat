@@ -33,12 +33,12 @@ import Hat.Server.Keys (EscTiming (..), Key (..))
 import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
-import Hat.Server.PaneColours (oscColourReply)
+import Hat.Server.PaneColours (cursorColourOf, oscColourReply)
 import Hat.Server.Resize (scrollbarReserve)
 import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Server.Scene
 import Hat.Server.Theme (terminalTheme)
-import Hat.Server.View (cursorColourOf, decscusr, messageLine, promptCursorOf, statusLayout)
+import Hat.Server.View (decscusr, messageLine, promptCursorOf, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec

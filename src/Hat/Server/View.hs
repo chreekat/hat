@@ -10,7 +10,6 @@ module Hat.Server.View
     , statusLayout  -- ^ exported for the status-position effect test
     , messageLine  -- ^ exported for the message-line effect test
     , statusRangesFor
-    , cursorColourOf  -- ^ exported for the cursor-colour effect test
     , promptCursorOf
     , decscusr
     ) where
@@ -57,7 +56,7 @@ import Hat.Server.FormatEnv
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
 import Hat.Server.Locate (locatePane, paneIndexOf)
-import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
+import Hat.Server.PaneColours (cursorColourOf, paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
 import Hat.Server.Viewport (viewportFor)
 import Hat.Server.Theme (Theme, colourRgb)
@@ -441,13 +440,6 @@ drawnCells draw n =
   where
     hole = Cell.glyphCell '\0' Cell.defaultStyle
     untouched = V.replicate n hole
-
--- | The colour a pane's cursor shows (tmux's @tty_update_cursor@): the
--- program's own OSC 12 colour, else @cursor-colour@ ('Nothing' resets).
-cursorColourOf :: Theme -> Maybe Emu.Rgb -> Text -> Maybe Emu.Rgb
-cursorColourOf th app opt = case app of
-    Just c -> Just c
-    Nothing -> colourValue th opt >>= id >>= colourRgb
 
 -- | The cursor of an open prompt: its command-mode one in vi command mode.
 promptCursorOf :: PromptState -> PromptCursor

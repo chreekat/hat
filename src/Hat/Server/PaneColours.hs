@@ -9,11 +9,14 @@ module Hat.Server.PaneColours
     , oscColourReply
     , queryDefaultColour
     , queryPaletteColour
+    , cursorColourOf
+    , queryCursorColour
     ) where
 
 import Control.Concurrent.STM
 import Data.ByteString (ByteString)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -26,6 +29,7 @@ import Hat.Server.FormatEnv
     (Expand (..), FormatScope (..), FormatTarget (..), clientTheme, freshExpand)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Render (paneDefaults)
+import Hat.Server.Winlink (windowLinks)
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -95,13 +99,41 @@ queryDefaultColour st pane target = paneContext st pane >>= \case
             Emu.Background -> bg))
 
 -- | What a pane answers an OSC 4 query of one palette entry with: its
--- palette's colour, else the entry's own.
+-- palette's colour, else — as tmux asks the terminal of a client viewing
+-- the window — the colour a client draws the entry in, while one does.
 queryPaletteColour :: ServerState -> Pane -> Int -> IO (Maybe Emu.Rgb)
 queryPaletteColour st pane n = do
     th <- clientTheme st
     mctx <- paneContext st pane
     palette <- maybe (pure Map.empty) (\(_, _, popts) -> panePalette th pane popts) mctx
-    pure (colourRgb (Map.findWithDefault (Cell.Indexed (fromIntegral n)) n palette))
+    case Map.lookup n palette of
+        Just c -> pure (colourRgb c)
+        Nothing -> do
+            viewed <- maybe (pure False) (\(_, win, _) -> atomically (terminalViews st win)) mctx
+            pure (if viewed then colourRgb (Cell.Indexed (fromIntegral n)) else Nothing)
+
+-- | Whether a terminal client is attached to a session holding the window.
+terminalViews :: ServerState -> Window -> STM Bool
+terminalViews st win = do
+    links <- windowLinks st win
+    clients <- concat <$> mapM (\(sess, _) -> sessionClients st sess.id) links
+    pure (any (\c -> c.role == Attached && isNothing c.control) clients)
+
+-- | The colour a pane's cursor shows (tmux's @tty_update_cursor@): the
+-- program's own OSC 12 colour, else @cursor-colour@ ('Nothing' resets).
+cursorColourOf :: Theme -> Maybe Emu.Rgb -> Text -> Maybe Emu.Rgb
+cursorColourOf th app opt = case app of
+    Just c -> Just c
+    Nothing -> colourValue th opt >>= id >>= colourRgb
+
+-- | What a pane answers an OSC 12 query with ('cursorColourOf'); 'Nothing'
+-- leaves it unanswered.
+queryCursorColour :: ServerState -> Pane -> IO (Maybe Emu.Rgb)
+queryCursorColour st pane = do
+    th <- clientTheme st
+    app <- Emu.appCursorColour pane.emulator
+    opt <- maybe "" (\(_, _, popts) -> popts.cursorColour) <$> paneContext st pane
+    pure (cursorColourOf th app opt)
 
 -- | The reply to an OSC colour query (tmux's @input_osc_colour_reply@):
 -- @OSC n ; [index ;] rgb:rrrr/gggg/bbbb@, with the query's terminator.
