@@ -249,6 +249,7 @@ newClient st conn h = do
     originsVar <- newIORef V.empty
     chromeVar <- newIORef Nothing
     statusVar <- newIORef Nothing
+    expansionsVar <- newIORef Map.empty
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef Nothing
@@ -287,6 +288,7 @@ newClient st conn h = do
         , lastOrigins = originsVar
         , lastChrome = chromeVar
         , lastStatus = statusVar
+        , lastExpansions = expansionsVar
         , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
         , lastCursorColour = cursorColourVar

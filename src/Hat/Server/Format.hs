@@ -18,6 +18,7 @@ module Hat.Server.Format
     , formatReadsTree
     , formatReadsLoops
     , formatNames
+    , formatVolatile
     , truthy
     ) where
 
@@ -479,6 +480,21 @@ formatReadsLoops toks t = case T.breakOn "#{" t of
             | tok <- toks
             , d <- [":", "/", ";"]
             ]
+
+-- | Whether an expansion of a format against variables with these values
+-- can change with none of them changing: it, or a value it can expand,
+-- reads the tree beyond them ('formatReadsTree'), runs a command, or reads
+-- the clock (a strftime sequence, a @t@ time modifier, an @A@ animation, a
+-- @T:@ expansion of a value holding a @%@). Conservative, as
+-- 'formatReadsLoops' is.
+formatVolatile :: Text -> [Text] -> Bool
+formatVolatile fmt values =
+    any readsMore expanded
+        || (any (formatReadsLoops ["T"]) expanded && any (T.any (== '%')) values)
+  where
+    expanded = fmt : filter ("#" `T.isInfixOf`) values
+    readsMore t = formatReadsLoops ["S", "W", "P", "L", "N", "C", "A", "t"] t
+        || "#(" `T.isInfixOf` t || T.any (== '%') t
 
 -- | The variable names an expansion of the text looks up itself, by key,
 -- condition or shorthand; the values it expands in turn (@E:@, @T:@) name

@@ -51,8 +51,8 @@ import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
     (FormatScope (..), FormatTarget (..), WindowFlagState (..),
-     activeClientCounts, clientTheme, expandAt, formatCtxFor,
-     reachableValues, sessionFormatEnv, windowFlags, windowOwnEnv)
+     activeClientCounts, clientTheme, expandAt, formatCtxFor, frameMemo, keepMemo,
+     memoExpand, reachableValues, sessionFormatEnv, windowFlags, windowOwnEnv)
 import Hat.Server.Floating (FloatState (..))
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
@@ -146,7 +146,8 @@ renderOnce st client = do
     (csize, fullFlag) <- atomically $
         (,) <$> readTVar client.size <*> swapTVar client.needsFull False
     opts <- readTVarIO st.options
-    let expand = expandAt st
+    memo <- frameMemo client
+    let expand = memoExpand st memo
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions
@@ -320,6 +321,7 @@ renderOnce st client = do
             (grid, rect, cur) <- popupView st expand sess win p
             pure (overlayGrid frame'' rect grid, volatileRows rect origins'', cur)
         _ -> pure (frame'', origins'', if menuShown then (fst cursor', False) else cursor')
+    keepMemo client memo
     old <- readIORef client.lastFrame
     oldOrigins <- readIORef client.lastOrigins
     oldCursor <- readIORef client.lastCursor

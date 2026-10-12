@@ -20,6 +20,10 @@ module Hat.Server.FormatEnv
     , FormatScope (..)
     , targetVars
     , expandAt
+    , ExpansionMemo
+    , frameMemo
+    , keepMemo
+    , memoExpand
     , paneModeEnv
     , resolveShell
     , expandFormat
@@ -35,6 +39,7 @@ import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Exception qualified
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Control.Monad (filterM, forM, forM_, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -58,7 +63,7 @@ import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format
     ( FormatCtx (..), FormatEnv, UndemandedVar (..), evaluateCtx, formatCtx
-    , formatNames, renderFormatCtx )
+    , formatNames, formatVolatile, renderFormatCtx )
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Floating (FloatState (..), modalPane, paneZ, stacking)
 import Hat.Server.Layout
@@ -680,6 +685,53 @@ expandAt st t fmt = do
 
 expandForced :: Text -> FormatCtx -> IO Text
 expandForced fmt ctx = Control.Exception.evaluate (renderFormatCtx ctx fmt)
+
+-- | A frame's expansions: the last frame's, kept, and this one's so far.
+data ExpansionMemo = ExpansionMemo
+    { kept :: Map.Map ExpansionKey KeptExpansion
+    , made :: IORef (Map.Map ExpansionKey KeptExpansion)
+    }
+
+-- | Start a client's frame with the expansions its last frame kept.
+frameMemo :: Client -> IO ExpansionMemo
+frameMemo client =
+    ExpansionMemo <$> readIORef client.lastExpansions <*> newIORef Map.empty
+
+-- | End a client's frame, keeping just the expansions it made.
+keepMemo :: Client -> ExpansionMemo -> IO ()
+keepMemo client memo = readIORef memo.made >>= writeIORef client.lastExpansions
+
+-- | 'expandAt' through a frame's memo: an expansion the last frame kept
+-- stands while every variable it can read is unchanged. One that can
+-- change with no variable changing ('formatVolatile') is never kept, nor
+-- one made in a hook's context.
+memoExpand :: ServerState -> ExpansionMemo -> FormatTarget -> Text -> IO Text
+memoExpand st memo t fmt = do
+    tid <- myThreadId
+    ambient <- Map.member tid <$> readTVarIO st.hooks.ambient
+    let key = ExpansionKey
+            { place = (sess.id, (.id) <$> mwin, (.id) <$> mpane)
+            , overlay = t.overlay, source = fmt }
+    hit <- case Map.lookup key memo.kept of
+        Just k | not ambient -> do
+            now <- targetVars st t (OnlyVars k.names)
+            pure (if now == k.vars then Just k else Nothing)
+        _ -> pure Nothing
+    case hit of
+        Just k -> do
+            keep key k
+            pure k.text
+        Nothing -> do
+            (names, vars, text) <- demanding st (targetVars st t) [fmt] (expandForced fmt)
+            when (not ambient && not (formatVolatile fmt (Map.elems vars))) $
+                keep key KeptExpansion { names, vars, text }
+            pure text
+  where
+    keep key k = modifyIORef' memo.made (Map.insert key k)
+    (sess, mwin, mpane) = case t.scope of
+        InSession s -> (s, Nothing, Nothing)
+        InWindow s _ w -> (s, Just w, Nothing)
+        InPane s _ w _ p -> (s, Just w, Just p)
 
 -- | The theme a hat client draws with (see 'resolveTheme'): every client
 -- shares the server's colour scheme and draws RGB colours.

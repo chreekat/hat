@@ -31,7 +31,8 @@ import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
--- | How a format expands at a target.
+-- | How a format expands at a target: 'expandAt', or through a frame's
+-- 'Hat.Server.FormatEnv.memoExpand'.
 type Expand = FormatTarget -> Text -> IO Text
 
 -- | A pane's style option, its formats expanded in the pane's context

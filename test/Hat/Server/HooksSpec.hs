@@ -297,6 +297,7 @@ fakeClient _ = do
     originsVar <- newIORef V.empty
     chromeVar <- newIORef Nothing
     statusVar <- newIORef Nothing
+    expansionsVar <- newIORef Map.empty
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     colourVar <- newIORef Nothing
@@ -328,6 +329,7 @@ fakeClient _ = do
         , lastOrigins = originsVar
         , lastChrome = chromeVar
         , lastStatus = statusVar
+        , lastExpansions = expansionsVar
         , lastMouseMode = mouseModeVar
         , lastCursor = cursorVar
         , lastCursorColour = colourVar, lastCursorShape = shapeVar

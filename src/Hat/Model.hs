@@ -21,6 +21,8 @@ module Hat.Model
     , RowOrigin (..)
     , ChromeCache (..)
     , StatusCache (..)
+    , ExpansionKey (..)
+    , KeptExpansion (..)
     , WindowKey (..)
     , EnvImport (..)
     , StartupPhase (..)
@@ -720,11 +722,6 @@ data ChromeCache = ChromeCache
     , chrome  :: Chrome
     }
 
--- | A client's rendered status rows with everything their expansion
--- consumed; the render thread's cache. See
--- 'Hat.Server.View.statusRowsCached'.
--- Fields are strict so the identity-matched ones hold the very objects
--- they were built from, never a selector thunk 'samePtr' would miss on.
 -- | What a window's status entry usually changes with, cheap to read each
 -- frame: the status cache's per-window key. See
 -- 'Hat.Server.View.statusRowsCached'.
@@ -737,6 +734,11 @@ data WindowKey = WindowKey
     }
     deriving (Eq)
 
+-- | A client's rendered status rows with everything their expansion
+-- consumed; the render thread's cache. See
+-- 'Hat.Server.View.statusRowsCached'.
+-- Fields are strict so the identity-matched ones hold the very objects
+-- they were built from, never a selector thunk 'samePtr' would miss on.
 data StatusCache = StatusCache
     { opts    :: !Options                    -- ^ matched by object identity
     , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
@@ -747,6 +749,24 @@ data StatusCache = StatusCache
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
     , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
     , rowCells :: ![V.Vector Cell.Cell]
+    }
+
+-- | Where and what a client expanded: the key of a 'KeptExpansion'.
+data ExpansionKey = ExpansionKey
+    { place   :: !(SessionId, Maybe WindowId, Maybe PaneId)
+        -- ^ the session, window or pane expanded in
+    , overlay :: !(Map Text Text)  -- ^ variables given over the place's own
+    , source  :: !Text  -- ^ the format
+    }
+    deriving (Eq, Ord)
+
+-- | An expansion a client keeps from one frame for the next, with every
+-- variable it can read and their values then; see
+-- 'Hat.Server.FormatEnv.memoExpand'.
+data KeptExpansion = KeptExpansion
+    { names :: !(Set Text)
+    , vars  :: !(Map Text Text)
+    , text  :: !Text
     }
 
 data Client = Client
@@ -769,6 +789,8 @@ data Client = Client
         -- ^ what produced each row of 'lastFrame'; render thread only
     , lastChrome :: IORef (Maybe ChromeCache)  -- render thread only
     , lastStatus :: IORef (Maybe StatusCache)  -- render thread only
+    , lastExpansions :: IORef (Map ExpansionKey KeptExpansion)
+        -- ^ the last frame's; render thread only
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef (Maybe Emu.Rgb)
         -- ^ OSC 12 in effect; render thread only

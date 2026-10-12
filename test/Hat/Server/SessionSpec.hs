@@ -76,7 +76,8 @@ import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
-    (Wanted (..), paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv)
+    ( FormatScope (..), FormatTarget (..), Wanted (..), frameMemo, keepMemo, memoExpand
+    , paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
     (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
@@ -168,6 +169,7 @@ addClient st sid sz stamp = do
         <*> newIORef V.empty
         <*> newIORef Nothing
         <*> newIORef Nothing
+        <*> newIORef Map.empty
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
         <*> newIORef CursorDefault
@@ -212,6 +214,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef V.empty
         <*> newIORef Nothing
         <*> newIORef Nothing
+        <*> newIORef Map.empty
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
         <*> newIORef CursorDefault
@@ -345,6 +348,26 @@ spec = do
                 mapM_ (\n -> built [n] `shouldReturn` Map.restrictKeys full (Set.singleton n))
                     names)
                 `finally` release
+
+    describe "a frame's kept expansions" $
+        it "are redone when a variable they read changes, and never kept when volatile" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            let set v = atomically $ modifyTVar' sess.options (insertDelta "@v" (OVScalar v))
+                frame fmt = do
+                    memo <- frameMemo client
+                    out <- memoExpand st memo (FormatTarget (InSession sess) Map.empty) fmt
+                    keepMemo client memo
+                    pure out
+                kept = Map.size <$> readIORef client.lastExpansions
+            set "one"
+            frame "#{@v}" `shouldReturn` "one"
+            frame "#{@v}" `shouldReturn` "one"
+            kept `shouldReturn` 1
+            set "two"
+            frame "#{@v}" `shouldReturn` "two"
+            _ <- frame "#{@v} %H"
+            kept `shouldReturn` 0
 
     describe "session format counts" $ do
         it "session_created and session_restores expose identity metadata" $ do
