@@ -101,6 +101,12 @@ pick :: Wanted -> FormatEnv -> FormatEnv
 pick AllVars m = m
 pick (OnlyVars ns) m = Map.restrictKeys m ns
 
+-- | The wanted ones among some variables, as an environment: an unwanted
+-- value is never computed.
+wantedVars :: Wanted -> [(Text, Text)] -> FormatEnv
+wantedVars AllVars kvs = Map.fromList kvs
+wantedVars (OnlyVars ns) kvs = Map.fromList [ kv | kv@(k, _) <- kvs, k `Set.member` ns ]
+
 -- | The wanted options of a resolved set, as format variables.
 optionVars :: Wanted -> Options -> FormatEnv
 optionVars AllVars o = optionFormats o
@@ -171,7 +177,7 @@ windowOwnVars st sess ix win w = do
         viewers <- Map.findWithDefault 0 win.id <$> atomically (activeClientCounts st)
         pure [ ("window_active_clients", tshow viewers) ]
     winUser <- deltaVars w <$> readTVarIO win.options
-    pure $ Map.union winUser $ pick w $ Map.fromList $
+    pure $ Map.union winUser $ wantedVars w $
         [ ("window_index", tshow ix)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
@@ -295,7 +301,7 @@ paneVars st sess wix win pix pane w = do
              , ("mouse_sgr_flag", flag sgr)
              , ("mouse_utf8_flag", flag utf8)
              , ("alternate_on", flag ms.altScreen) ]
-    pure $ Map.union paneUser $ Map.union (pick w $ Map.fromList $ deadVars <> pidVars <> mouseVars <>
+    pure $ Map.union paneUser $ Map.union (wantedVars w $ deadVars <> pidVars <> mouseVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
         , ("pane_active", if pane.id == active then "1" else "0")
@@ -502,7 +508,7 @@ sessionVars st sess w = do
     -- Options are readable as #{status-left}, #{@foo}, … so if-shell theme
     -- conditionals (@#{@pane-theme}@) resolve.
     sessOpts <- optionVars w <$> atomically (resolveForSession st sess)
-    pure . Map.union sessOpts . pick w . Map.fromList $
+    pure . Map.union sessOpts . wantedVars w $
         [ ("session_name", sname)
         , ("session_id", "$" <> tshow (rawSession sess.id))
         , ("session_windows", tshow nwindows)
