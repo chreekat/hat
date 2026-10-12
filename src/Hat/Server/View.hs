@@ -224,7 +224,7 @@ renderOnce st client = do
                 defaults paneOpts active rowOff o
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect shown
-                                , cells = V.map (V.drop skip.col) (V.drop skip.row pv.cells)
+                                , cells = dropGrid skip pv.cells
                                 , gens = V.drop skip.row <$> pv.rowGens }
                     | (pidL, rect) <- rects
                     , let (shown, skip)
@@ -564,8 +564,7 @@ windowCompositeCells st win size = do
               Just pane -> do
                   cells <- paneViewCells st pane
                   let (shown, skip) = clipToWindow size rect
-                  pure (overlayGrid acc shown
-                      (V.map (V.drop skip.col) (V.drop skip.row cells))))
+                  pure (overlayGrid acc shown (dropGrid skip cells)))
         (blankFrame size) rects
     pure (applyBorders panes (sceneChrome look (buildScene input)))
 
@@ -868,6 +867,12 @@ clipToWindow area r =
     ( Rect { startRow = max 0 r.startRow, endRow = min (fromIntegral area.rows) r.endRow
            , startCol = max 0 r.startCol, endCol = min (fromIntegral area.cols) r.endCol }
     , Pos { row = max 0 (negate r.startRow), col = max 0 (negate r.startCol) } )
+
+-- | A grid less its first @skip.row@ rows and @skip.col@ columns.
+dropGrid :: Pos -> V.Vector (V.Vector a) -> V.Vector (V.Vector a)
+dropGrid skip g
+    | skip == Pos 0 0 = g
+    | otherwise = V.map (V.drop skip.col) (V.drop skip.row g)
 
 -- | An arrow at the midpoint of each of a pane's four border edges,
 -- pointing inward.
