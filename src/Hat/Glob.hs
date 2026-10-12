@@ -4,12 +4,15 @@
 -- @Hat.Server@ deps).
 module Hat.Glob
     ( globMatch
+    , globPaths
     ) where
 
+import Control.Exception (IOException, catch)
 import Data.Char (toLower)
 import Data.List qualified as List
 import Data.Text (Text)
 import Data.Text qualified as T
+import System.Directory (doesPathExist, listDirectory)
 
 -- | fnmatch(3)-style glob: @*@, @?@, @[...]@ classes (ranges, @!@\/@^@
 -- negation), backslash escapes; an unmatched @[@ is a literal. The flag
@@ -40,3 +43,36 @@ globMatch icase pat txt = go (prep pat) (prep txt)
         in do
             (tests, rest) <- items [] ps1
             pure (\c -> neg /= any ($ c) tests, rest)
+
+-- | glob(3) over the filesystem: the paths an absolute pattern names, in
+-- order. A component with no metacharacter is taken as it is; one with
+-- some matches the names in its directory, a leading dot only explicitly.
+globPaths :: FilePath -> IO [FilePath]
+globPaths pat = case pat of
+    '/' : rest -> walk "/" (splitPath rest)
+    _ -> walk "" (splitPath pat)
+  where
+    splitPath = filter (not . null) . splitOn
+    splitOn s = case break (== '/') s of
+        (a, []) -> [a]
+        (a, _ : r) -> a : splitOn r
+    walk dir [] = do
+        ok <- doesPathExist dir
+        pure [ dir | ok ]
+    walk dir (c : cs)
+        | any (`elem` ("*?[" :: String)) c = do
+            names <- listDirectory (if null dir then "." else dir)
+                `catch` \(_ :: IOException) -> pure []
+            let hits = List.sort
+                    [ n | n <- names
+                    , take 1 n /= "." || take 1 c == "."
+                    , globMatch False (T.pack c) (T.pack n) ]
+            concat <$> mapM (\n -> walk (dir `under` n) cs) hits
+        | otherwise = walk (dir `under` unescape c) cs
+    under "" n = n
+    under "/" n = '/' : n
+    under d n = d <> "/" <> n
+    unescape = \case
+        '\\' : x : r -> x : unescape r
+        x : r -> x : unescape r
+        [] -> []
