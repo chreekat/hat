@@ -679,16 +679,18 @@ restartClientAction = \case
     Just Attached -> RestartAttached
     _             -> NoAttachedClient
 
--- | @display-message [-p] [-t target] message@. The target is a pane
+-- | @display-message [-lp] [-t target] message@. The target is a pane
 -- (tmux's @CMD_FIND_PANE@ with @CANFAIL@): the message expands in the
--- resolved pane's format environment, and an unresolvable target
--- degrades to the plain text instead of erroring.
+-- resolved pane's format environment, unless @-l@ takes it literally, and
+-- an unresolvable target degrades to the plain text instead of erroring.
 cmdDisplayMessage :: CommandImpl
 cmdDisplayMessage st mclient args = do
     let (opts, flags, pos) = parseArgs "t" args
         raw = T.unwords pos
     menv <- commandFormatEnv st mclient (lookup "-t" opts)
-    text <- maybe (pure raw) (\env -> expandFormat st env raw) menv
+    text <- case menv of
+        Just env | "-l" `notElem` flags -> expandFormat st env raw
+        _ -> pure raw
     case mclient of
         _ | "-p" `elem` flags -> pure [ROutput text]
         Just client | Just _ <- client.control -> pure [ROutput ("%message " <> text)]

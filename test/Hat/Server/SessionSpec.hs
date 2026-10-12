@@ -493,6 +493,12 @@ spec = do
             map (.style) (take 2 (V.toList (frame V.! 0))) `shouldBe`
                 [ Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
                 , Cell.defaultStyle { Cell.fg = Cell.Indexed 100, Cell.bg = Cell.Indexed 4 } ]
+    describe "display-message -l" $
+        it "prints the message as it is" $ do
+            (st, _) <- seedSession "/"
+            runArgv st Nothing ["display-message", "-pl", "#{session_name} %%"]
+                `shouldReturn` [ROutput "#{session_name} %%"]
+
     describe "a pane's palette query" $
         it "is answered from an entry it set, else by an attached terminal" $ do
             (st, sess) <- seedSession "/"
