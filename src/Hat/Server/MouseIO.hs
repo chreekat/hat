@@ -58,6 +58,7 @@ mouseViewFor st client ys = do
         Just (sess, win) -> do
             sopts <- atomically (resolveForSession st sess)
             csize <- readTVarIO client.size
+            vp <- readTVarIO client.viewport
             eff <- readTVarIO sess.lastSize
             (boxes, modal) <- atomically $ (,) <$> windowBoxes st eff win <*> modalView win
             ws <- readTVarIO sess.windows
@@ -77,7 +78,7 @@ mouseViewFor st client ys = do
                 , statusAt = mStatus, statusLines = sopts.statusLines
                 , statusRange = rangeAt
                 , width = fromIntegral eff.cols, height = fromIntegral eff.rows
-                , boxes, modal }
+                , boxes, modal, origin = vp.origin }
   where
     -- An unranged column is the status line's default area; a range naming
     -- a window that is gone makes no key.

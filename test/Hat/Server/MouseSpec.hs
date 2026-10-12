@@ -5,6 +5,7 @@ import Data.List (mapAccumL)
 import Data.Text (Text)
 import Test.Hspec
 
+import Hat.Geometry (Pos (..))
 import Hat.Model.Ids (PaneId (..), SessionId (..), WindowId (..))
 import Hat.Server.Mouse
 
@@ -20,7 +21,7 @@ view = MouseView
     , boxes =
         [ PaneBox { pane = PaneId 0, xoff = 0, yoff = 0, sx = 40, sy = 23, kind = TiledBox }
         , PaneBox { pane = PaneId 1, xoff = 41, yoff = 0, sx = 39, sy = 23, kind = TiledBox } ]
-    , modal = Nothing }
+    , modal = Nothing, origin = Pos 0 0 }
 
 -- 'view' with a floating pane over the left pane: content 10x4 at 10,5,
 -- its border around it.
@@ -68,6 +69,16 @@ spec = do
                 Just MouseInput { b = 0, x = 0, y = 0, sgrType = ' ', sgrB = 0 }
         it "drops a wheel release (PuTTY sends them)" $
             parseMouseInput "\ESC[<64;3;1m" `shouldBe` Nothing
+
+    describe "a view panned over a larger window" $ do
+        let panned = view { origin = Pos { row = 0, col = 41 } }
+        it "places a report at the window cell under it" $
+            placed panned [sgr 0 3 0 'M'] `shouldBe` [Right ("MouseDown1Pane", Just (PaneId 1))]
+        it "gives a pane the position inside it" $ do
+            let (_, p) = checkMouse 0 panned initialMouseState (sgr 0 3 2 'M')
+            case p of
+                Keyed k -> mouseAt False k.event (view.boxes !! 1) `shouldBe` Just (3, 2)
+                _ -> expectationFailure "no key"
 
     describe "checkMouse names the key" $ do
         it "a click and release on a pane" $

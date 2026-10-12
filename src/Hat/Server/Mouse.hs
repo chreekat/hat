@@ -54,6 +54,7 @@ import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as T
 
+import Hat.Geometry (Pos (..))
 import Hat.Model.Ids (PaneId, SessionId, WindowId)
 
 -- | One report from the outer terminal (tmux's @struct mouse_event@ as
@@ -164,6 +165,7 @@ data MouseView = MouseView
     , boxes :: [PaneBox]
         -- ^ the visible panes, the floating ones first, front to back
     , modal :: Maybe ModalView
+    , origin :: Pos  -- ^ the window cell at the client's top-left; see "Hat.Server.Viewport"
     }
 
 -- | The window's modal pane, as clicks see it.
@@ -224,6 +226,7 @@ data MouseEvent = MouseEvent
     , onWindow :: Maybe WindowId
     , onPane :: Maybe PaneId
     , ignore :: Bool  -- ^ a timed double click, never sent to a pane
+    , viewOrigin :: Pos  -- ^ the client's viewport origin (tmux's @ox@, @oy@)
     }
     deriving (Eq, Show)
 
@@ -282,7 +285,7 @@ checkMouse now view st0 m = case classified of
                 { input = m, lastX = lx, lastY = ly, lastB = lb
                 , statusAt = view.statusAt, statusLines = view.statusLines
                 , onSession = view.session, onWindow = mwin, onPane = mpane
-                , ignore = False }
+                , ignore = False, viewOrigin = view.origin }
         in case mloc of
             Nothing -> (stRecorded, Unplaced)
             Just () -> finish ty loc ev eb (windowXY ex ey)
@@ -296,7 +299,9 @@ checkMouse now view st0 m = case classified of
     -- A drag begun on the modal pane follows the mouse out of it.
     modalDrag md ty = st0.dragPane == Just md.pane && st0.dragFlag /= 0
         && ty `elem` [MouseDrag, MouseUp]
-    windowXY ex ey = (ex, windowRow view.statusAt view.statusLines ey)
+    windowXY ex ey =
+        ( ex + view.origin.col
+        , windowRow view.statusAt view.statusLines ey + view.origin.row )
     -- The status line range, or the pane, border or empty area.
     locate ty ex ey = case view.statusAt of
         Just at | ey >= at && ey < at + view.statusLines ->
@@ -427,7 +432,7 @@ windowRow statusAt statusLines y
 windowPoint :: Bool -> MouseEvent -> (Int, Int)
 windowPoint useLast ev =
     let (x, y) = if useLast then (ev.lastX, ev.lastY) else (ev.input.x, ev.input.y)
-    in (x, windowRow ev.statusAt ev.statusLines y)
+    in (x + ev.viewOrigin.col, windowRow ev.statusAt ev.statusLines y + ev.viewOrigin.row)
 
 -- | tmux's click timer: once it lapses, a second click left waiting for a
 -- third was a double click.
@@ -514,7 +519,8 @@ stripMods t = case T.splitAt 2 t of
 -- inside.
 mouseAt :: Bool -> MouseEvent -> PaneBox -> Maybe (Int, Int)
 mouseAt useLast ev bx =
-    let (x0, y0) = if useLast then (ev.lastX, ev.lastY) else (ev.input.x, ev.input.y)
+    let (x0, y0) = (\(x, y) -> (x + ev.viewOrigin.col, y + ev.viewOrigin.row)) $
+            if useLast then (ev.lastX, ev.lastY) else (ev.input.x, ev.input.y)
         y1 = if ev.statusAt == Just 0 && y0 >= ev.statusLines
                 then y0 - ev.statusLines else y0
     in if x0 < bx.xoff || x0 >= bx.xoff + bx.sx || y1 < bx.yoff || y1 >= bx.yoff + bx.sy

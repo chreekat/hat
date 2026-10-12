@@ -16,7 +16,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 
 import Hat.Model
-import Hat.Geometry (Size (..))
+import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model.Options (Options (..), optionNumber)
 import Hat.Server.Command.Types (Dispatch (..))
 import Hat.Server.Keys (Key (..), KeyState (..))
@@ -62,13 +62,15 @@ menuMouseInput st client k = case parseMouseInput k.raw of
             ks { mouse = ks.mouse { prevX = m.x, prevY = m.y, prevB = m.b } }
         sopts <- clientOptions st client
         csize <- readTVarIO client.size
+        o <- (.origin) <$> readTVarIO client.viewport
         let (_, mrow) = statusLayout sopts.statusPosition sopts.statusLines
                 (fromIntegral csize.rows)
+            inWindow x y = Just (x + o.col, y + o.row)
             at = case mrow of
                 Just 0 | m.y < sopts.statusLines -> Nothing
-                       | otherwise -> Just (m.x, m.y - sopts.statusLines)
+                       | otherwise -> inWindow m.x (m.y - sopts.statusLines)
                 Just r | m.y >= r -> Nothing
-                _ -> Just (m.x, m.y)
+                _ -> inWindow m.x m.y
         pure (Just (MenuMouseAt m.b at))
 
 -- | Run a chosen menu item's command (tmux's @menu_key@ "chosen" path).
