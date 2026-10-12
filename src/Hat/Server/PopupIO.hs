@@ -43,6 +43,7 @@ openPopup st client ps cmd args cwd env = do
     let (jx, jy) = fromMaybe (ps.sx, ps.sy) (innerSize ps)
         sz = Size { rows = fromIntegral jy, cols = fromIntegral jx }
     pty <- Pty.spawn Pty.Spawn { cmd, args, env, cwd = Just cwd, size = sz }
+    atomically $ modifyTVar' st.popupJobs (Map.insert (Pty.pid pty) pty)
     -- A reload execs over the server; the popup's pty must not outlive it.
     Pty.closeOnExec pty
     emu <- Emu.newEmulator sz 0
@@ -112,6 +113,7 @@ runPopupReader st client p = void $ mask_ $ forkIOWithUnmask $ \unmask -> do
         case reaped of
             Just _ -> pure ()
             Nothing -> Pty.signalKill p.jobPty >> void (Pty.waitExit p.jobPty)
+        atomically $ modifyTVar' st.popupJobs (Map.delete (Pty.pid p.jobPty))
 
 -- | Close a popup (tmux's @popup_free_cb@ and @job_free@): off its client,
 -- its command sent SIGTERM and hung up, waiters told.
@@ -138,19 +140,23 @@ awaitPopupClosed p = do
     readTVar p.closed >>= check
     readTVar p.status
 
--- | Close every client's popup and wait for its command to be reaped, as
--- an in-place reload must before it execs: nothing it started survives
--- unwatched.
+-- | Close every client's popup and wait for every popup command to be
+-- reaped, as an in-place reload must before it execs: nothing it started
+-- survives unwatched. That includes the command of a popup its client
+-- closed on its way out, which nothing else waits for once the client
+-- is gone.
 closeAllPopups :: ServerState -> IO ()
 closeAllPopups st = do
     cs <- Map.elems <$> readTVarIO st.clients
-    forM_ cs $ \c -> do
-        mp <- readTVarIO c.popup
-        forM_ mp $ \p -> do
-            closePopup st c p
-            void $ timeout 2000000 (Pty.waitExit p.jobPty)
-            Pty.signalKill p.jobPty
-            void $ timeout 1000000 (Pty.waitExit p.jobPty)
+    forM_ cs $ \c -> mapM_ (closePopup st c) =<< readTVarIO c.popup
+    jobs <- Map.elems <$> readTVarIO st.popupJobs
+    forM_ jobs $ \pty -> do
+        Pty.signalTerm pty
+        Pty.signalHangup pty
+    forM_ jobs $ \pty -> do
+        void $ timeout 2000000 (Pty.waitExit pty)
+        Pty.signalKill pty
+        void $ timeout 1000000 (Pty.waitExit pty)
 
 -- | A key or mouse report while the client shows a popup (tmux's
 -- @popup_key_cb@).

@@ -114,6 +114,7 @@ import Data.Vector qualified as V
 import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
 import System.Posix.Files qualified as PFiles
+import System.Posix.Types (ProcessID)
 
 import Hat.Geometry
 import Hat.Log (Logger)
@@ -158,6 +159,9 @@ data ServerState = ServerState
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
                                 --   'Hat.Server.serverIdle'
+    , popupJobs   :: TVar (Map ProcessID Hat.Term.Pty.PtyHandle)
+        -- ^ popup commands not yet reaped, by pid, whether or not their
+        --   popup is still open; see 'Hat.Server.PopupIO.closeAllPopups'
     , activeConns :: TVar Int   -- ^ connection handlers currently running; see
                                 --   'waitIdle'.
     , served      :: TVar Bool  -- ^ a client connection other than a
@@ -846,6 +850,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
     <*> newTVarIO 0      -- livePanes
+    <*> newTVarIO Map.empty  -- popupJobs
     <*> newTVarIO 0      -- activeConns
     <*> newTVarIO False  -- served
     -- Ready, not LoadingConfig: a bare state (tests) is idle. 'runServerWith'

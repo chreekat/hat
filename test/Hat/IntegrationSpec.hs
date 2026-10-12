@@ -825,6 +825,24 @@ spec = parallel $ do
             doesFileExist (h.sock <> ".reload.last")
         awaitTrue "the popup's command to be reaped" (not <$> pidAlive pid)
 
+    -- A client the farewell sends away closes its popup on its way out,
+    -- inside the window the linger holds open before the exec; a command
+    -- deaf to that hangup must still not outlive the old image unreaped.
+    it "reaps a popup's command across restart-server when its client goes first" $
+        withHat hatBin $ \h -> do
+        let pidFile = h.home <> "/popup.pid"
+        c <- startClientEnv h [("HAT_TEST_RELOAD_LINGER", "300000")] []
+        awaitScreen c "$"
+        _ <- hatCtl h ["bind", "P", "display-popup"
+            , "trap '' TERM HUP; echo $$ > " <> pidFile <> "; exec sleep 1000"]
+        typeInto c "\x02P"
+        pid <- read <$> awaitFile pidFile (not . null . words)
+        _ <- hatCtl h ["restart-server", h.bin]
+        _ <- awaitExit c
+        awaitTrue "the handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitTrue "the popup's command to be reaped" (not <$> pidAlive pid)
+
     it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
         withHat hatBin $ \h -> do
         let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]
