@@ -142,7 +142,8 @@ handleConn d st conn = do
         Just (Known (ClientHello h)) -> case negotiate h.protoVersion of
             Right _ -> welcome d st re h
             Left e  -> sendMessage conn (ServerError e)
-        _ -> sendMessage conn (ServerError "expected hello")
+        Nothing -> logEvent st.logger ClosedBeforeHello
+        Just _ -> sendMessage conn (ServerError "expected hello")
 
 welcome :: Dispatch -> ServerState -> ReadEnd -> Hello -> IO ()
 welcome d st re h = do

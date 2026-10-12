@@ -1997,6 +1997,15 @@ spec = parallel $ do
         ctlOut h ["list-panes", "-F", "#{pane_pid}"] `shouldReturn` pidBefore
         N.close unread.sock
 
+    it "logs a connection that closes before its hello as such, not as a crash" $
+        withHat hatBin $ \h -> do
+        _ <- ctlOut h ["new-session", "-d"]
+        serverUp h.sock `shouldReturn` True
+        logged <- awaitFile (h.home </> "server.log") $ \l ->
+            any (`List.isInfixOf` l) ["ClosedBeforeHello", "ServerCrash"]
+        filter (List.isInfixOf "ServerCrash") (lines logged) `shouldBe` []
+        filter (List.isInfixOf "ClosedBeforeHello") (lines logged) `shouldSatisfy` (not . null)
+
 -- A detached session whose pane, once the returned file exists, raises
 -- 2000 alerts -- a bell and a 1 KiB desktop notification each, far more
 -- than a socket buffer holds -- and then prints STORM-DONE.
