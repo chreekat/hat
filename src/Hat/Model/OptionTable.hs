@@ -667,6 +667,7 @@ optionTable =
         \#{?#{!=:#{pane_dead_signal},},signal #{pane_dead_signal},}, \
         \#{t:pane_dead_time})"
     , paneLocal $ live $ scalar "scroll-on-clear" WindowPaneScope KFlag "on"
+    -- Read only by switch-mode (tmux's window-switch.c), which hat lacks.
     , notYet $ scalar "switch-mode-match-style" WindowPaneScope KStyle
         "bg=cyan fg=black"
     , paneLocal $ live $ scalar "synchronize-panes" WindowPaneScope KFlag "off"
