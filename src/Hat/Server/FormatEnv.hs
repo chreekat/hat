@@ -43,7 +43,7 @@ module Hat.Server.FormatEnv
 
 import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (IOException, SomeException, try)
 import Control.Exception qualified
 import Data.IntSet qualified as IntSet
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
@@ -51,7 +51,7 @@ import Control.Monad (filterM, forM, forM_, void, when)
 import Data.Functor ((<&>))
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -59,7 +59,10 @@ import Data.Text.Read qualified as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
+import Network.Socket (getPeerCredential)
 import System.Posix.Process (getProcessID)
+import System.Posix.Terminal (getSlaveTerminalName)
+import System.Posix.User (getRealUserID, getUserEntryForID, userName)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
 import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.Process
@@ -72,13 +75,13 @@ import Hat.Model.Options
 import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format
-    ( FormatCtx (..), FormatEnv, UndemandedVar (..), evaluateCtx, formatCtx
-    , formatNames, formatVolatile, renderFormatCtx )
+    ( ClientQueries (..), FormatCtx (..), FormatEnv, UndemandedVar (..), evaluateCtx, formatCtx
+    , formatNames, formatVolatile, quoteArgsT, quoteShellSqT, renderFormatCtx )
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Floating (FloatState (..), modalPane, paneZ, stacking)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout, emitLayoutZ)
-import Hat.Server.Locate (locatePane, paneIndexOf)
+import Hat.Server.Locate (clientOptions, locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
 import Hat.Server.Resize (unzoomedArrange, windowArea)
 import Hat.Server.CopyMode qualified as CopyMode
@@ -91,6 +94,8 @@ import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
+
+import Hat.Server.Keys (KeyState (..))
 
 -- | Just these variables.
 onlyVars :: Set.Set Text -> Wanted
@@ -255,6 +260,37 @@ windowLayer = varLayer
     , VarGroup ["window_active_clients"] $ \(st, _, _, win) -> do
         viewers <- Map.findWithDefault 0 win.id <$> atomically (activeClientCounts st)
         pure [ ("window_active_clients", tshow viewers) ]
+    , VarGroup ["window_active_clients_list"] $ \(st, _, _, win) -> atomically $ do
+        ss <- readTVar st.sessions
+        cs <- Map.elems <$> readTVar st.clients
+        viewing <- filterM (\c -> do
+            sid <- readTVar c.session
+            case Map.lookup sid ss of
+                Just s -> maybe False ((== win.id) . (.id)) <$> currentWindow s
+                Nothing -> pure False) cs
+        pure [ ("window_active_clients_list", T.intercalate "," (map clientName viewing)) ]
+    , VarGroup ["window_active_sessions", "window_active_sessions_list"] $
+        \(st, _, _, win) -> atomically $ do
+        links <- windowLinks st win
+        showing <- filterM (\(s, ix) -> (== ix) <$> readTVar s.currentIx) links
+        names <- mapM (\(s, _) -> readTVar s.name) showing
+        pure [ ("window_active_sessions", tshow (length showing))
+             , ("window_active_sessions_list", T.intercalate "," names) ]
+    , VarGroup ["window_start_flag", "window_end_flag", "window_stack_index"] $
+        \(_, sess, ix, _) -> atomically $ do
+        (ws, hist) <- (,) <$> readTVar sess.windows <*> readTVar sess.windowHist
+        pure [ ("window_start_flag", flag ((fst <$> Map.lookupMin ws) == Just ix))
+             , ("window_end_flag", flag ((fst <$> Map.lookupMax ws) == Just ix))
+             , ("window_stack_index"
+               , maybe "0" (tshow . (+ 1)) (List.elemIndex ix hist)) ]
+    , VarGroup ["window_marked_flag"] $ \(st, sess, _, win) -> atomically $ do
+        mp <- readTVar st.markedPane
+        marked <- case mp of
+            Nothing -> pure False
+            Just p -> maybe False (\(sid, w) -> sid == sess.id && w.id == win.id)
+                <$> locatePane st p
+        pure [ ("window_marked_flag", flag marked) ]
+    , VarGroup formatTypeNames $ \_ -> pure (formatType WindowFormat)
     ]
 
 -- | A pane's @pane_pid@: empty unless its program is still running (tmux:
@@ -289,7 +325,44 @@ paneLayer :: VarLayer PaneAt
 paneLayer = varLayer
     -- A signal is reported by number, as tmux does where libc has no
     -- @sys_signame@ (glibc).
-    [ VarGroup ["pane_dead", "pane_dead_time", "pane_dead_status", "pane_dead_signal"] $
+    [ VarGroup formatTypeNames $ \_ -> pure (formatType PaneFormat)
+    , VarGroup ["pane_last"] $ \(_, _, win, _, pane) -> do
+        hist <- readTVarIO win.paneHist
+        pure [ ("pane_last", flag (listToMaybe hist == Just pane.id)) ]
+    , VarGroup ["pane_pipe"] $ \(_, _, _, _, pane) -> do
+        piped <- isJust <$> readTVarIO pane.pipe
+        pure [ ("pane_pipe", flag piped) ]
+    , VarGroup ["pane_start_command", "pane_start_command_list", "pane_start_path"] $
+        \(_, _, _, _, pane) -> do
+        let argv = case pane.start of
+                FreshShell -> []
+                ShellCommand c -> [c]
+                ExecArgv a -> a
+                ShellInject a -> a
+        pure [ ("pane_start_command", T.unwords (map quoteArgsT argv))
+             , ("pane_start_command_list", T.unwords (map quoteShellSqT argv))
+             , ("pane_start_path", T.pack pane.startCwd) ]
+    , VarGroup ["pane_tty"] $ \(_, _, _, _, pane) -> do
+        tty <- (Just . T.pack <$> getSlaveTerminalName (Hat.Term.Pty.masterFd pane.pty))
+            `Control.Exception.catch` \(_ :: IOException) -> pure Nothing
+        pure [ ("pane_tty", t) | Just t <- [tty] ]
+    , VarGroup
+        [ "cursor_flag", "insert_flag", "keypad_cursor_flag", "keypad_flag"
+        , "origin_flag", "wrap_flag", "bracket_paste_flag"
+        , "synchronized_output_flag" ] $ \(_, _, _, _, pane) -> do
+        m <- Emu.vtModes pane.emulator
+        pure [ ("cursor_flag", flag m.cursorVisible)
+             , ("insert_flag", flag m.insertMode)
+             , ("keypad_cursor_flag", flag m.cursorKeys)
+             , ("keypad_flag", flag m.keypadKeys)
+             , ("origin_flag", flag m.originMode)
+             , ("wrap_flag", flag m.autoWrap)
+             , ("bracket_paste_flag", flag m.bracketPaste)
+             , ("synchronized_output_flag", flag m.syncOutput) ]
+    , VarGroup ["history_limit"] $ \(st, sess, win, _, pane) -> do
+        opts <- resolveForPaneIO st sess win pane
+        pure [ ("history_limit", tshow (optionNumber "history-limit" opts)) ]
+    , VarGroup ["pane_dead", "pane_dead_time", "pane_dead_status", "pane_dead_signal"] $
         \(_, _, _, _, pane) -> readTVarIO pane.exited <&> \case
         Nothing -> [("pane_dead", "0")]
         Just e ->
@@ -306,7 +379,6 @@ paneLayer = varLayer
         \(_, _, _, _, pane) -> do
         ms <- Emu.modes pane.emulator
         (sgr, utf8) <- Emu.mouseEncoding pane.emulator
-        let flag b = if b then "1" else "0" :: Text
         pure [ ("mouse_any_flag", flag (ms.mouse /= Emu.MouseOff))
              , ("mouse_standard_flag", flag (ms.mouse == Emu.MouseClick))
              , ("mouse_button_flag", flag (ms.mouse == Emu.MouseDrag))
@@ -442,8 +514,6 @@ panePositionVars area = \case
         , ("pane_at_right", flag (x + w == fromIntegral area.cols))
         , ("pane_at_bottom", flag (y + h == fromIntegral area.rows))
         ]
-  where
-    flag b = if b then "1" else "0"
 
 -- | 'paneFormatEnv' for a pane named only by id: locate its window and
 -- session first.
@@ -542,7 +612,7 @@ sessionLayer = varLayer
     , VarGroup ["session_windows"] $ \(_, sess) -> do
         nwindows <- Map.size <$> readTVarIO sess.windows
         pure [ ("session_windows", tshow nwindows) ]
-    , VarGroup ["host", "pid"] $ \_ -> serverFormatVars
+    , VarGroup serverNames $ \(st, _) -> serverFormatVars st
     , VarGroup ["session_attached"] $ \(st, sess) -> do
         cs <- atomically (sessionClients st sess.id)
         pure [ ("session_attached", tshow (length cs)) ]
@@ -590,6 +660,39 @@ sessionLayer = varLayer
                  ]
     , VarGroup ["session_alert", "session_alerts"] $ \(_, sess) ->
         atomically (sessionAlerts sess)
+    , VarGroup
+        [ "active_window_index", "last_window_index", "session_stack"
+        , "session_path" ] $ \(_, sess) -> atomically $ do
+        (cur, ws, hist, dir) <- (,,,) <$> readTVar sess.currentIx
+            <*> readTVar sess.windows <*> readTVar sess.windowHist
+            <*> readTVar sess.startCwd
+        pure $ [ ("active_window_index", tshow cur)
+               , ("session_stack", T.intercalate "," (map tshow (cur : hist)))
+               , ("session_path", T.pack dir) ]
+            <> [ ("last_window_index", tshow ix) | Just (ix, _) <- [Map.lookupMax ws] ]
+    , VarGroup ["session_attached_list", "session_many_attached"] $ \(st, sess) -> do
+        cs <- atomically (sessionClients st sess.id)
+        pure [ ("session_attached_list", T.intercalate "," (map clientName cs))
+             , ("session_many_attached", flag (length cs > 1)) ]
+    , VarGroup ["session_group_attached_list"] $ \(st, sess) -> atomically $
+        readTVar sess.group >>= \case
+        Nothing -> pure []
+        Just g -> do
+            ss <- readTVar st.sessions
+            cs <- Map.elems <$> readTVar st.clients
+            inGroup <- filterM (\c -> do
+                sid <- readTVar c.session
+                case Map.lookup sid ss of
+                    Just s -> (== Just g) <$> readTVar s.group
+                    Nothing -> pure False) cs
+            pure [ ("session_group_attached_list", T.intercalate "," (map clientName inGroup)) ]
+    , VarGroup ["session_marked"] $ \(st, sess) -> atomically $ do
+        mp <- readTVar st.markedPane
+        marked <- case mp of
+            Nothing -> pure False
+            Just p -> maybe False ((== sess.id) . fst) <$> locatePane st p
+        pure [ ("session_marked", flag marked) ]
+    , VarGroup formatTypeNames $ \_ -> pure (formatType SessionFormat)
     -- The active pane's.
     , VarGroup ["pane_current_path"] $ activePaneVars $ \_ pane -> do
         dir <- paneCurrentPath pane
@@ -631,6 +734,29 @@ sessionAlerts sess = do
     pure [ ("session_alert", T.pack kinds)
          , ("session_alerts", T.intercalate ","
              [ tshow ix <> T.pack cs | (ix, cs) <- alerted ]) ]
+
+-- | Which kind of target a format expands at (tmux's @ft->type@).
+data FormatType = SessionFormat | WindowFormat | PaneFormat
+    deriving (Eq)
+
+-- | The variables 'formatType' gives.
+formatTypeNames :: [Text]
+formatTypeNames = ["session_format", "window_format", "pane_format"]
+
+-- | @session_format@, @window_format@ and @pane_format@: which one the
+-- target is. The innermost layer's stand over the outer ones'.
+formatType :: FormatType -> [(Text, Text)]
+formatType t =
+    [ ("session_format", flag (t == SessionFormat))
+    , ("window_format", flag (t == WindowFormat))
+    , ("pane_format", flag (t == PaneFormat)) ]
+
+flag :: Bool -> Text
+flag b = if b then "1" else "0"
+
+-- | A client's name, as commands target it with @-c@.
+clientName :: Client -> Text
+clientName c = "client" <> tshow (rawClient c.id)
 
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
 -- plus the copy-mode variables while in mode.
@@ -689,14 +815,64 @@ clientContextFormatEnv st mclient = do
     case msess of
         Just sess -> sessionFormatEnv st sess
         Nothing -> Map.union <$> ((.user) <$> readTVarIO st.options)
-            <*> (Map.fromList <$> serverFormatVars)
+            <*> (Map.fromList <$> serverFormatVars st)
+
+-- | The variables 'serverFormatVars' gives.
+serverNames :: [Text]
+serverNames =
+    [ "host", "host_short", "pid", "socket_path", "start_time", "uid", "user"
+    , "next_session_id", "server_sessions", "config_files", "sixel_support"
+    , "buffer_mode_format", "client_mode_format", "tree_mode_format" ]
 
 -- | The formats that describe the server process itself.
-serverFormatVars :: IO [(Text, Text)]
-serverFormatVars = do
-    hostname <- nodeName <$> getSystemID
+serverFormatVars :: ServerState -> IO [(Text, Text)]
+serverFormatVars st = do
+    hostname <- T.pack . nodeName <$> getSystemID
     pid <- getProcessID
-    pure [("host", T.pack hostname), ("pid", tshow pid)]
+    uid <- getRealUserID
+    user <- (Just . T.pack . userName <$> getUserEntryForID uid)
+        `Control.Exception.catch` \(_ :: IOException) -> pure Nothing
+    (nextId, nsessions, mconfig) <- atomically $ (,,)
+        <$> readTVar st.nextSession <*> (Map.size <$> readTVar st.sessions)
+        <*> readTVar st.serverConfig
+    pure $
+        [ ("host", hostname)
+        , ("host_short", T.takeWhile (/= '.') hostname)
+        , ("pid", tshow pid)
+        , ("socket_path", T.pack st.sockPath)
+        , ("start_time", tshow (floor st.startTime :: Integer))
+        , ("uid", tshow uid)
+        , ("next_session_id", "$" <> tshow nextId)
+        , ("server_sessions", tshow nsessions)
+        , ("config_files", maybe "" T.pack mconfig)
+        -- hat's emulator draws no sixel images
+        , ("sixel_support", "0")
+        , ("buffer_mode_format", "#{t/p:buffer_created}: #{buffer_sample}")
+        , ("client_mode_format"
+          , "#[fg=themelightgrey]#{t/p:client_activity}: session #[default]#{session_name}")
+        , ("tree_mode_format", treeModeFormat)
+        ]
+        <> [ ("user", u) | Just u <- [user] ]
+
+-- | tmux's @WINDOW_TREE_DEFAULT_FORMAT@.
+treeModeFormat :: Text
+treeModeFormat = T.concat
+    [ "#{?pane_format,"
+    ,     "#{?pane_marked,#[fg=thememagenta],}#{?pane_floating_flag,#[underscore],}"
+    ,     "#{pane_current_command}#[fg=themelightgrey]#{pane_flags}"
+    ,     "#{?#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}},: \"#{pane_title}\",}"
+    , ",window_format,"
+    ,     "#{?window_marked_flag,#[fg=thememagenta],}"
+    ,     "#{window_name}#[fg=themelightgrey]#{window_flags}"
+    ,     "#{?#{&&:#{==:#{window_panes},1},#{&&:#{pane_title},#{!=:#{pane_title},#{host_short}}}},: \"#{pane_title}\",}"
+    , ","
+    ,     "#[fg=themelightgrey]#{session_windows} windows"
+    ,     "#{?session_grouped, "
+    ,         "(group #{session_group}: "
+    ,         "#{session_group_list}),"
+    ,     "}"
+    ,     "#{?session_attached, (attached),}"
+    , "}" ]
 
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
 -- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)
@@ -726,9 +902,11 @@ formatCtxFor st env0 = do
     paneItems <- unsafeInterleaveIO (loopPaneEnvs st env)
     clientItems <- unsafeInterleaveIO (loopClientEnvs st)
     visibleLines <- unsafeInterleaveIO (targetPaneLines st env)
+    queries <- unsafeInterleaveIO (clientQueries st env)
     th <- clientTheme st
     pure (formatCtx env job now)
         { theme = th
+        , client = queries
         , sessions = sessionItems
         , windows = windowItems
         , panes = paneItems
@@ -950,11 +1128,11 @@ loopPaneEnvs st env = do
 loopClientEnvs :: ServerState -> IO [FormatEnv]
 loopClientEnvs st = do
     cs <- Map.elems <$> readTVarIO st.clients
-    mapM (fmap Map.fromList . clientFormatVars) [ c | c <- cs, c.role == Attached ]
+    mapM (fmap Map.fromList . clientFormatVars st) [ c | c <- cs, c.role == Attached ]
 
 -- | A client's own format variables.
-clientFormatVars :: Client -> IO [(Text, Text)]
-clientFormatVars c = do
+clientFormatVars :: ServerState -> Client -> IO [(Text, Text)]
+clientFormatVars st c = do
     controlFlags <- case c.control of
         Nothing -> pure []
         Just cs -> do
@@ -964,14 +1142,66 @@ clientFormatVars c = do
                 <> [ "wait-exit" | fl.exitWait == AwaitEmptyLine ]
                 <> [ "pause-after=" <> tshow (age `div` 1000)
                    | Just age <- [fl.pauseAfter] ]
-    focused <- readTVarIO c.outerFocused
-    pure
-        [ ("client_name", "client" <> tshow (rawClient c.id))
+    (focused, sz, msess, mlast) <- atomically $ do
+        ss <- readTVar st.sessions
+        sid <- readTVar c.session
+        hist <- readTVar c.sessionHist
+        (,,,) <$> readTVar c.outerFocused <*> readTVar c.size
+            <*> traverse (readTVar . (.name)) (Map.lookup sid ss)
+            <*> traverse (readTVar . (.name))
+                (listToMaybe (mapMaybe (`Map.lookup` ss) hist))
+    ks <- readIORef c.keyState
+    opts <- clientOptions st c
+    (mpid, muid, _) <- getPeerCredential c.sock
+        `Control.Exception.catch` \(_ :: IOException) -> pure (Nothing, Nothing, Nothing)
+    muser <- case muid of
+        Nothing -> pure Nothing
+        Just uid -> (Just . T.pack . userName <$> getUserEntryForID (fromIntegral uid))
+            `Control.Exception.catch` \(_ :: IOException) -> pure Nothing
+    let rootTable = optionText "key-table" opts
+        table = maybe rootTable id ks.table
+        -- hat's clients always read and draw UTF-8
+        flags = ["attached"] <> [ "focused" | focused ] <> controlFlags <> ["UTF-8"]
+    pure $
+        [ ("client_name", clientName c)
         , ("client_colours", clientColours)
-        , ("client_control_mode", if isJust c.control then "1" else "0")
-        , ("client_flags", T.intercalate "," $
-            ["attached"] <> [ "focused" | focused ] <> controlFlags)
+        , ("client_control_mode", flag (isJust c.control))
+        , ("client_flags", T.intercalate "," flags)
+        , ("client_key_table", table)
+        , ("client_prefix", flag (table /= rootTable))
+        , ("client_readonly", "0")
+        , ("client_utf8", "1")
+        , ("client_termname", c.term)
+        , ("client_termtype", "")
+        , ("client_termfeatures"
+          , if isJust c.control then "" else T.intercalate "," termFeatures)
+        , ("client_width", tshow sz.cols)
+        , ("client_created", tshow (floor c.createdAt :: Integer))
         ]
+        -- a control client has no terminal of its own
+        <> [ ("client_height", tshow sz.rows) | isNothing c.control ]
+        <> [ ("client_session", n) | Just n <- [msess] ]
+        <> [ ("client_last_session", n) | Just n <- [mlast] ]
+        <> [ ("client_pid", tshow p) | Just p <- [mpid] ]
+        <> [ ("client_uid", tshow u) | Just u <- [muid] ]
+        <> [ ("client_user", u) | Just u <- [muser] ]
+
+-- | The terminal client an environment's @client_name@ names, for @I@.
+clientQueries :: ServerState -> FormatEnv -> IO (Maybe ClientQueries)
+clientQueries st env = case Map.lookup "client_name" env of
+    Nothing -> pure Nothing
+    Just n -> do
+        cs <- Map.elems <$> readTVarIO st.clients
+        pure $ listToMaybe
+            [ ClientQueries { environ = Map.fromList c.env, features = termFeatures }
+            | c <- cs, clientName c == n, c.role == Attached, isNothing c.control ]
+
+-- | The terminal features (tmux's names, in its order) hat's client draws
+-- with on every terminal: see "Hat.Client.Draw".
+termFeatures :: [Text]
+termFeatures =
+    [ "256", "bpaste", "ccolour", "clipboard", "cstyle", "focus", "mouse", "RGB"
+    , "strikethrough", "sync", "title" ]
 
 -- The target pane's visible lines, for the C search modifier.
 targetPaneLines :: ServerState -> FormatEnv -> IO [Text]

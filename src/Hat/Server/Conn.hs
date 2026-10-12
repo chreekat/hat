@@ -33,6 +33,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import GHC.Clock (getMonotonicTimeNSec)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Socket qualified as N
 import Hat.Geometry
 import Hat.Log
@@ -267,6 +268,7 @@ newClient st conn h = do
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
     viewportVar <- newTVarIO unpannedViewport
+    created <- getPOSIXTime
     controlState <- case h.intent of
         ControlModeIntent {} -> Just <$> newControlState
         _ -> pure Nothing
@@ -308,6 +310,8 @@ newClient st conn h = do
         , envImport = envImportVar
         , env = h.env
         , cwd = h.cwd
+        , term = h.term
+        , createdAt = created
         , stdinSource = NoStdin
         , control = controlState
         , viewport = viewportVar

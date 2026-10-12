@@ -80,7 +80,8 @@ import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
-    , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv )
+    , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv
+    , clientFormatVars, windowFormatEnv )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
     (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
@@ -187,6 +188,8 @@ addClient st sid sz stamp = do
         <*> newTVarIO ImportEnv
         <*> pure []
         <*> pure ""
+        <*> pure ""  -- term
+        <*> pure 0   -- createdAt
         <*> pure NoStdin
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
@@ -234,6 +237,8 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO ImportEnv
         <*> pure clientEnv
         <*> pure ""
+        <*> pure ""  -- term
+        <*> pure 0   -- createdAt
         <*> pure NoStdin
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
@@ -401,6 +406,48 @@ spec = do
             _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
             attached <- sessionFormatEnv st sess
             Map.lookup "session_attached" attached `shouldBe` Just "1"
+
+    describe "session and window position formats" $
+        it "name the current, last and stacked windows, and the target's kind" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            _ <- addWindow sess 3
+            atomically $ do
+                writeTVar sess.currentIx 3
+                writeTVar sess.windowHist [0]
+            senv <- sessionFormatEnv st sess
+            [ Map.lookup n senv | n <- ["active_window_index", "last_window_index", "session_stack"] ]
+                `shouldBe` map Just ["3", "3", "3,0"]
+            wenv <- windowFormatEnv st sess 0 w0
+            [ Map.lookup n wenv | n <- ["window_start_flag", "window_end_flag", "window_stack_index"] ]
+                `shouldBe` map Just ["1", "0", "1"]
+            [ Map.lookup n wenv | n <- ["session_format", "window_format", "pane_format"] ]
+                `shouldBe` map Just ["0", "1", "0"]
+
+    describe "client formats" $
+        it "describe the client: its name, session, key table and flags" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            c <- addClient st sess.id (Size { rows = 24, cols = 80 }) 7
+            vars <- clientFormatVars st c
+            [ lookup n vars | n <- ["client_name", "client_session", "client_key_table"
+                                   , "client_prefix", "client_flags", "client_width"] ]
+                `shouldBe` map Just ["client7", "work", "root", "0", "attached,focused,UTF-8", "80"]
+            senv <- sessionFormatEnv st sess
+            Map.lookup "session_attached_list" senv `shouldBe` Just "client7"
+
+    describe "list-clients" $
+        it "shows each client in tmux's default form, -f filtering them" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            _ <- addClient st sess.id (Size { rows = 30, cols = 90 }) 2
+            -- These clients' sockets have no peer, so no uid to match the server's.
+            runArgv st Nothing ["list-clients"]
+                `shouldReturn` [ ROutput "client1: work [80x24 ] [user ] (attached,focused,UTF-8)"
+                               , ROutput "client2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
+            runArgv st Nothing ["list-clients", "-f", "#{==:#{client_width},90}", "-F", "#{line}"]
+                `shouldReturn` [ROutput "1"]
 
     describe "pane_in_mode" $
         it "is 1 while copy mode is open, 0 otherwise" $ do

@@ -7,12 +7,14 @@
 module Hat.Server.Format
     ( FormatEnv
     , FormatCtx (..)
+    , ClientQueries (..)
     , Animation (..)
     , UndemandedVar (..)
     , formatCtx
     , evaluate
     , evaluateCtx
     , quoteArgsT
+    , quoteShellSqT
     , renderFormat
     , renderFormatCtx
     , formatReadsTree
@@ -76,6 +78,14 @@ data FormatCtx = FormatCtx
     , demanded  :: Maybe (Set Text)
         -- ^ the names 'vars' was built for, when it holds only those;
         -- 'Nothing' when it holds every variable there is
+    , client    :: Maybe ClientQueries
+        -- ^ the terminal client the expansion is for, for @I@
+    }
+
+-- | What @I@ asks of a terminal client.
+data ClientQueries = ClientQueries
+    { environ  :: Map Text Text  -- ^ @I/e@
+    , features :: [Text]         -- ^ @I/f@: tmux's names for its terminal features
     }
 
 -- | An expansion looked up a variable its environment was not built for
@@ -105,6 +115,7 @@ formatCtx env shell zt = FormatCtx
     , animate = NoAnimate
     , theme = terminalTheme
     , demanded = Nothing
+    , client = Nothing
     }
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
@@ -352,7 +363,7 @@ data ModState = ModState
     , sortO :: SortOrder
     , sortR :: Bool
     , repeatF :: Bool
-    , clientQ :: Bool
+    , clientQ :: Maybe Text  -- ^ @I@: which of @c@, @f@, @e@ it asks
     , cycleCount :: Maybe Int  -- ^ @A@: periods per animation frame
     , unimpl :: Maybe Text
     }
@@ -365,7 +376,7 @@ emptyModState = ModState
     , baseF = False, dirF = False, lenF = False, widF = False
     , timeM = Nothing, quoteM = Nothing, expandF = False, expandTimeF = False
     , nameK = Nothing, loopK = Nothing, sortO = OrderList, sortR = False
-    , repeatF = False, clientQ = False, cycleCount = Nothing, unimpl = Nothing
+    , repeatF = False, clientQ = Nothing, cycleCount = Nothing, unimpl = Nothing
     }
 
 collectMods :: [Mod] -> ModState
@@ -415,7 +426,7 @@ collectMods = List.foldl' step emptyModState
         "d" -> st { dirF = True }
         "n" -> st { lenF = True }
         "I" | not (null m.margs), T.any (`elem` ("fce" :: String)) (arg0 m) ->
-                st { clientQ = True }
+                st { clientQ = Just (arg0 m) }
             | otherwise -> st
         "t" -> st { timeM = Just tmode }
           where
@@ -580,7 +591,7 @@ replaceKey ctx depth key = postOps <$> value
     ms = collectMods mods
     exp1 = expand1 ctx depth
     value
-        | ms.clientQ = Just ""  -- no per-client termcap/feature model
+        | Just which <- ms.clientQ = Just (clientVal which)
         | Just nm <- ms.unimpl =
             Just ("<format modifier '" <> nm <> "' unimplemented>")
         | Just periods <- ms.cycleCount = Just (cycleVal periods)
@@ -625,6 +636,14 @@ replaceKey ctx depth key = postOps <$> value
     applySub acc (p0, w0, icase) = regexSub icase (exp1 p0) (exp1 w0) acc
 
     -- format_cycle: the frame for now, each lasting @periods@ x 100ms.
+    -- tmux asks the termcap, then the features, then the environment, the
+    -- last asked answering.
+    clientVal which = case ctx.client of
+        Nothing -> ""
+        Just cq -> last $ ""
+            : [ "<format modifier 'I/c' unimplemented>" | T.elem 'c' which ]
+            <> [ if copy `elem` cq.features then "1" else "0" | T.elem 'f' which ]
+            <> [ Map.findWithDefault "" copy cq.environ | T.elem 'e' which ]
     cycleVal periods
         | ctx.animate == NoAnimate || T.null copy = ""
         | otherwise =

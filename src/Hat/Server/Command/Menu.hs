@@ -71,7 +71,7 @@ cmdDisplayMenu st mclient args
             mouseVars <- case (,) <$> mclient <*> mev of
                 Just (c, ev) -> mouseFormatVars st c ev
                 Nothing -> pure []
-            cvars <- clientFormatVars tc
+            cvars <- clientFormatVars st tc
             pure (Map.unions [Map.fromList mouseVars, Map.fromList cvars, penv])
         title <- maybe (pure "") (expandFormat st env) (lookup "-T" opts)
         tsize <- readTVarIO tc.size

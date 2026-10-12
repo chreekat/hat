@@ -12,6 +12,7 @@ module Hat.Term.Emulator.Types
     , OscTerm (..)
     , Screen (..)
     , Modes (..)
+    , VtModes (..)
     , MouseMode (..)
     , CursorKey (..)
     , KeyPress (..)
@@ -113,6 +114,19 @@ data Modes = Modes
     , mouse       :: MouseMode
     , focusReport :: Bool  -- ^ app enabled focus reporting (?1004)
     , colorReport :: Bool  -- ^ app enabled color-scheme reporting (?2031)
+    }
+    deriving (Eq, Show)
+
+-- | The terminal modes tmux reports as pane format flags.
+data VtModes = VtModes
+    { cursorVisible :: Bool  -- ^ DECTCEM (?25)
+    , insertMode    :: Bool  -- ^ IRM (4)
+    , cursorKeys    :: Bool  -- ^ DECCKM (?1)
+    , keypadKeys    :: Bool  -- ^ DECKPAM (?66)
+    , originMode    :: Bool  -- ^ DECOM (?6)
+    , autoWrap      :: Bool  -- ^ DECAWM (?7)
+    , bracketPaste  :: Bool  -- ^ ?2004
+    , syncOutput    :: Bool  -- ^ ?2026
     }
     deriving (Eq, Show)
 

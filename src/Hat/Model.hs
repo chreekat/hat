@@ -117,7 +117,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime)
-import Data.Time.Clock.POSIX (POSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.Vector qualified as V
 import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
@@ -241,6 +241,7 @@ data ServerState = ServerState
     , home :: Maybe FilePath
         -- ^ the server's home directory (tmux's @find_home@), against which
         --   @~@ in a path resolves
+    , startTime :: POSIXTime  -- ^ when this server process started
     }
 
 data Session = Session
@@ -842,6 +843,8 @@ data Client = Client
     , envImport :: TVar EnvImport  -- ^ set by @attach-session -E@
     , env       :: [(Text, Text)]
     , cwd       :: Text
+    , term      :: Text  -- ^ the client's @TERM@, from its hello
+    , createdAt :: POSIXTime
     , stdinSource :: StdinSource
     , control   :: Maybe ControlState
         -- ^ a tmux control-mode client's protocol state; 'Nothing' for
@@ -915,6 +918,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newMonitorRegistry
     <*> newHooksState
     <*> findHome
+    <*> getPOSIXTime
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
