@@ -721,6 +721,7 @@ routeKeys ctx km = go
 -- tmux does; the caret form @^h@ is an alias for @C-h@.
 parseKeyName :: Text -> Maybe Key
 parseKeyName t
+    | Just hex <- T.stripPrefix "0x" t = hexKey hex
     | Just n <- userKeyNumber t = Just (mkKey ("User" <> T.pack (show n)) "")
     | Just n <- mouseKeyByName t = Just (mkKey n "")
     | Just (n, r) <- lookupNamed t = Just (mkKey n r)
@@ -747,6 +748,14 @@ parseKeyName t
     toLowerAscii c
         | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
         | otherwise = c
+    -- The key whose codepoint the leading hex digits give, the rest ignored
+    -- (tmux reads it with sscanf).
+    hexKey hex = case TR.hexadecimal hex of
+        Right (u, _) | u <= (0x10ffff :: Int) ->
+            case tokenizeKeys (TE.encodeUtf8 (T.singleton (chr u))) of
+                [k] -> Just k
+                _ -> Nothing
+        _ -> Nothing
 
 -- Case- and prefix-order-insensitive lookup of a modified CSI key,
 -- returning its canonical name and bytes.

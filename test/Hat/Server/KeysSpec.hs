@@ -457,6 +457,13 @@ spec = do
             (.name) <$> parseKeyName "s-c-wheelupstatus" `shouldBe` Just "C-S-WheelUpStatus"
             (.name) <$> parseKeyName "MouseDown1Control9" `shouldBe` Just "MouseDown1Control9"
             parseKeyName "MouseDown0Pane" `shouldBe` Nothing
+        it "parses a key by its codepoint in hex, as sscanf reads it" $ do
+            map (fmap (.name) . parseKeyName) ["0x23=", "0x01", "0x1B", "0x20", "0x7F", "0x41"]
+                `shouldBe` map Just ["#", "C-a", "Escape", "Space", "BSpace", "A"]
+            map (fmap (.raw) . parseKeyName) ["0x01", "0xe9"]
+                `shouldBe` map Just ["\x01", "\xc3\xa9"]
+            parseKeyName "0xzz" `shouldBe` Nothing
+
         it "parses plain characters" $ do
             (.name) <$> parseKeyName "x" `shouldBe` Just "x"
             (.name) <$> parseKeyName "%" `shouldBe` Just "%"
