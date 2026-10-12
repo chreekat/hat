@@ -72,11 +72,13 @@ import Hat.Transport.Wire
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
     , sendMessage )
 import Hat.Server.Floating (noFloats)
+import Hat.Server.ColorScheme (ColorScheme (..))
+import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
-    ( FormatScope (..), FormatTarget (..), Wanted (..), frameMemo, keepMemo, memoExpand
+    ( FormatScope (..), FormatTarget (..), Wanted (..), clientTheme, frameMemo, keepMemo, memoExpand
     , paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
@@ -348,6 +350,16 @@ spec = do
                 mapM_ (\n -> built [n] `shouldReturn` Map.restrictKeys full (Set.singleton n))
                     names)
                 `finally` release
+
+    describe "clientTheme" $
+        it "follows the options and the desktop's scheme" $ do
+            (st, _) <- seedSession "/"
+            dark <- clientTheme st
+            atomically (writeTVar st.colorScheme (Just SchemeLight))
+            light <- clientTheme st
+            light `shouldNotBe` dark
+            _ <- runArgv st Nothing ["set-option", "-g", "theme", "terminal"]
+            clientTheme st `shouldReturn` terminalTheme
 
     describe "a frame's kept expansions" $
         it "are redone when a variable they read changes, and never kept when volatile" $ do

@@ -21,6 +21,7 @@ module Hat.Model
     , RowOrigin (..)
     , ChromeCache (..)
     , StatusCache (..)
+    , ThemeCache (..)
     , ExpansionKey (..)
     , KeptExpansion (..)
     , WindowKey (..)
@@ -125,6 +126,7 @@ import Hat.Model.Options
     ( ModeKeys, Options, OptionsDelta, applyDelta
     , defaultOptions, emptyDelta, resolveOptions )
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
+import Hat.Server.Theme (Theme)
 import Hat.Server.ControlTypes (ControlState)
 import Hat.Server.Outbound (Outbound)
 import Hat.Server.HookTypes (HooksState, newHooksState)
@@ -191,6 +193,8 @@ data ServerState = ServerState
     , keymap      :: TVar Keymap
     , buffers     :: TVar PasteStore
     , shellCache  :: TVar (Map Text (UTCTime, Text))  -- ^ #(cmd) results
+    , themeCache  :: TVar (Maybe ThemeCache)
+        -- ^ the last theme resolved; see 'Hat.Server.FormatEnv.clientTheme'
     , cmdHistory  :: TVar [Text]  -- ^ command-prompt history, most-recent first
     , searchHistory :: TVar [Text]
         -- ^ search-prompt history, most-recent first: hat has no search
@@ -871,6 +875,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO defaultKeymap
     <*> newTVarIO emptyPasteStore
     <*> newTVarIO Map.empty
+    <*> newTVarIO Nothing  -- themeCache
     <*> newTVarIO []
     <*> newTVarIO []       -- searchHistory
     <*> newTVarIO Nothing  -- markedPane
@@ -927,6 +932,13 @@ resolveGlobal st = do
     sv <- readTVar st.serverOptions
     sc <- readTVar st.schemeOptions
     memoResolve st.resolvedGlobal [gw, gs, sv, sc]
+
+-- | A resolved theme with what it was resolved from.
+data ThemeCache = ThemeCache
+    { opts   :: !Options  -- ^ matched by object identity
+    , scheme :: !(Maybe ColorScheme)
+    , theme  :: !Theme
+    }
 
 -- | An options resolution held with the delta objects it was computed
 -- from; see 'memoResolve'.

@@ -59,6 +59,7 @@ import Data.Vector qualified as V
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
+import Hat.PtrEq (samePtr)
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format
     ( FormatCtx (..), FormatEnv, UndemandedVar (..), evaluateCtx, formatCtx
@@ -738,9 +739,17 @@ clientTheme :: ServerState -> IO Theme
 clientTheme st = do
     opts <- readTVarIO st.options
     scheme <- readTVarIO st.colorScheme
-    now <- getZonedTime
-    let ctx = formatCtx (Map.singleton "client_colours" clientColours) (const "") now
-    pure (resolveTheme (evaluateCtx ctx) opts scheme)
+    cached <- readTVarIO st.themeCache
+    case cached of
+        Just c | samePtr c.opts opts, c.scheme == scheme -> pure c.theme
+        _ -> do
+            -- The palette formats see only @client_colours@, so the theme
+            -- follows from the options and the scheme alone.
+            now <- getZonedTime
+            let ctx = formatCtx (Map.singleton "client_colours" clientColours) (const "") now
+                theme = resolveTheme (evaluateCtx ctx) opts scheme
+            atomically (writeTVar st.themeCache (Just ThemeCache { opts, scheme, theme }))
+            pure theme
 
 -- | The conditions that produce a window's @#{window_flags}@ string.
 data WindowFlagState = WindowFlagState
