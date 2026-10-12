@@ -8,6 +8,7 @@ module Hat.Server.Format
     ( FormatEnv
     , FormatCtx (..)
     , Animation (..)
+    , UndemandedVar (..)
     , formatCtx
     , evaluate
     , evaluateCtx
@@ -16,8 +17,11 @@ module Hat.Server.Format
     , renderFormatCtx
     , formatReadsTree
     , formatReadsLoops
+    , formatNames
     , truthy
     ) where
+
+import Control.Exception (Exception, throw)
 
 import Data.Array qualified as A
 import Data.ByteString qualified as BS
@@ -27,6 +31,8 @@ import Data.Ord (Down (..))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -63,7 +69,17 @@ data FormatCtx = FormatCtx
     , paneLines :: [Text]       -- ^ target pane's visible lines, for @C@
     , animate   :: Animation
     , theme     :: Theme  -- ^ what theme colours draw as, for the client
+    , demanded  :: Maybe (Set Text)
+        -- ^ the names 'vars' was built for, when it holds only those;
+        -- 'Nothing' when it holds every variable there is
     }
+
+-- | An expansion looked up a variable its environment was not built for
+-- (see 'demanded'), so it has no answer from that environment.
+newtype UndemandedVar = UndemandedVar Text
+    deriving (Show)
+
+instance Exception UndemandedVar
 
 -- | Whether @A@ animation frames expand: only in a status format (tmux's
 -- @FORMAT_STATUS@).
@@ -84,6 +100,7 @@ formatCtx env shell zt = FormatCtx
     , paneLines = []
     , animate = NoAnimate
     , theme = terminalTheme
+    , demanded = Nothing
     }
 
 evaluate :: FormatEnv -> (Text -> Text) -> Text -> Text
@@ -143,7 +160,7 @@ scan ctx depth esc shorth = go
         Just (',', rest) -> "," <> go rest
         Just ('}', rest) -> "}" <> go rest
         Just (c, rest)
-            | shorth, Just var <- shorthand c -> case replaceKey ctx depth var of
+            | shorth, Just var <- shorthandVar c -> case replaceKey ctx depth var of
                 Nothing -> ""
                 Just v -> splice v <> go rest
             | otherwise -> "#" <> T.singleton c <> go rest
@@ -152,17 +169,20 @@ scan ctx depth esc shorth = go
         Nothing -> go t
         Just (sbody, rest) ->
             scan ctx depth esc False sbody <> "]" <> go (T.drop 1 rest)
-    shorthand = \case
-        'D' -> Just "pane_id"
-        'F' -> Just "window_flags"
-        'H' -> Just "host"
-        'I' -> Just "window_index"
-        'P' -> Just "pane_index"
-        'S' -> Just "session_name"
-        'T' -> Just "pane_title"
-        'W' -> Just "window_name"
-        'h' -> Just "host_short"
-        _ -> Nothing
+
+-- | The variable a @#X@ shorthand stands for.
+shorthandVar :: Char -> Maybe Text
+shorthandVar = \case
+    'D' -> Just "pane_id"
+    'F' -> Just "window_flags"
+    'H' -> Just "host"
+    'I' -> Just "window_index"
+    'P' -> Just "pane_index"
+    'S' -> Just "session_name"
+    'T' -> Just "pane_title"
+    'W' -> Just "window_name"
+    'h' -> Just "host_short"
+    _ -> Nothing
 
 -- | tmux's format_skip1: the text before the first delimiter at bracket
 -- depth 0 (honouring #-escapes), and the rest starting at that delimiter.
@@ -460,6 +480,22 @@ formatReadsLoops toks t = case T.breakOn "#{" t of
             , d <- [":", "/", ";"]
             ]
 
+-- | The variable names an expansion of the text looks up itself, by key,
+-- condition or shorthand; the values it expands in turn (@E:@, @T:@) name
+-- their own. A superset, so an environment of just these expands the text
+-- as the whole one does: every word between the delimiters of a key
+-- counts, in a branch taken or not, and so does plain text.
+formatNames :: Text -> Set Text
+formatNames t = Set.fromList (T.split delimits t <> conditions <> shorthands <> sessionLoop)
+  where
+    -- A session loop finds its active item by the current session's id.
+    sessionLoop = [ "session_id" | formatReadsLoops ["S"] t ]
+    delimits c = c == '{' || c == '}' || c == ':' || c == ';' || c == ',' || c == '?'
+    after needle = map (T.drop (T.length needle) . snd) (T.breakOnAll needle t)
+    conditions = [ cond | rest <- after "?", Just (cond, _) <- [skipTo "," rest] ]
+    shorthands =
+        [ var | rest <- after "#", Just (c, _) <- [T.uncons rest], Just var <- [shorthandVar c] ]
+
 -- Key replacement (format_replace): parse modifiers, produce the base
 -- value, then apply the value transformations. Nothing = failed replace.
 replaceKey :: FormatCtx -> Int -> Text -> Maybe Text
@@ -678,7 +714,7 @@ exprOps =
 -- to the numeric value; b, d and q transform the found text.
 findVar :: FormatCtx -> ModState -> Text -> Maybe Text
 findVar ctx ms key = do
-    v <- Map.lookup key ctx.vars
+    v <- lookupVar ctx key
     case ms.timeM of
         Just tm -> do
             secs <- numFull 0 (maxBound :: Int) v
@@ -700,6 +736,15 @@ findVar ctx ms key = do
         Just QShellSq -> quoteShellSqT v
         Just QStyle -> T.replace "#" "##" v
         Just QArgs -> quoteArgsT v
+
+-- | A variable's value; an environment built for other names cannot say
+-- (see 'demanded').
+lookupVar :: FormatCtx -> Text -> Maybe Text
+lookupVar ctx key = case Map.lookup key ctx.vars of
+    Just v -> Just v
+    Nothing -> case ctx.demanded of
+        Just names | key `Set.notMember` names -> throw (UndemandedVar key)
+        _ -> Nothing
 
 -- Loop sorting: the orders hat can derive from item envs; activity falls
 -- back to the default order (hat keeps no per-entity activity clocks).
@@ -729,7 +774,7 @@ sortLoop lk order rev items = (if rev then reverse else id) sorted
 
 isActiveItem :: LoopKind -> FormatCtx -> FormatEnv -> Bool
 isActiveItem lk ctx item = case lk of
-    LSessions -> Map.lookup "session_id" item == Map.lookup "session_id" ctx.vars
+    LSessions -> Map.lookup "session_id" item == lookupVar ctx "session_id"
         && isJust (Map.lookup "session_id" item)
     LWindows -> Map.lookup "window_active" item == Just "1"
     LPanes -> Map.lookup "pane_active" item == Just "1"

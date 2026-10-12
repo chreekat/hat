@@ -1,11 +1,16 @@
 module Hat.Server.FormatSpec (spec) where
 
+import Control.Exception (try)
+import Control.Exception qualified
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (utc, utcToZonedTime)
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import Test.QuickCheck
 
 import Hat.Server.Format
 
@@ -498,3 +503,91 @@ spec = do
             at 0.15 "#{A/0:a,b}" `shouldBe` "b"
             at 0.15 "#{A/x:a,b}" `shouldBe` "b"
             at 0 "#{A:}" `shouldBe` ""
+
+    describe "formatNames" $ do
+        prop "names every variable an expansion reads, through the values it expands" $
+            \f -> ioProperty $ do
+                let fmt = renderFmt f
+                    names = reached (formatNames fmt)
+                    only = ctx { vars = Map.restrictKeys namingEnv names, demanded = Just names }
+                got <- try (Control.Exception.evaluate (evaluateCtx only fmt))
+                pure $ counterexample (T.unpack fmt) $ case got of
+                    Left (UndemandedVar n) -> counterexample ("read " <> T.unpack n) False
+                    Right out -> out === evaluateCtx ctx { vars = namingEnv } fmt
+        it "lets an expansion that reads beyond them say which" $ do
+            let only = ctx { vars = Map.empty, demanded = Just Set.empty }
+            got <- try (Control.Exception.evaluate (evaluateCtx only "#{session_name}"))
+            case got of
+                Left (UndemandedVar n) -> n `shouldBe` "session_name"
+                Right out -> expectationFailure ("expanded to " <> show out)
+  where
+    -- The spec's variables, and some whose values are formats.
+    namingEnv = Map.union env $ Map.fromList
+        [ ("@fmt", "#{session_name}:#{?window_flags,#W,}")
+        , ("@deep", "[#{E:@fmt}]") ]
+    reached ns =
+        let more = foldMap formatNames
+                [ v | v <- Map.elems (Map.restrictKeys namingEnv ns), "#" `T.isInfixOf` v ]
+        in if more `Set.isSubsetOf` ns then ns else reached (ns <> more)
+
+-- | A format of the engine's constructs over 'env'\'s variables and some
+-- unknown ones.
+data Fmt
+    = Lit Text
+    | Key Text
+    | Short Char
+    | Modified Text Text  -- ^ modifiers, variable
+    | Cond Text Fmt Fmt
+    | CondFmt Fmt Fmt Fmt
+    | Compare Fmt Fmt
+    | Loop Char Fmt
+    | Cat [Fmt]
+    deriving (Show)
+
+renderFmt :: Fmt -> Text
+renderFmt = \case
+    Lit t -> t
+    Key k -> "#{" <> k <> "}"
+    Short c -> T.pack ['#', c]
+    Modified m k -> "#{" <> m <> ":" <> k <> "}"
+    Cond k a b -> "#{?" <> k <> "," <> renderFmt a <> "," <> renderFmt b <> "}"
+    CondFmt c a b -> "#{?" <> renderFmt c <> "," <> renderFmt a <> "," <> renderFmt b <> "}"
+    Compare a b -> "#{==:" <> renderFmt a <> "," <> renderFmt b <> "}"
+    Loop l body -> "#{" <> T.singleton l <> ":" <> renderFmt body <> "}"
+    Cat fs -> T.concat (map renderFmt fs)
+
+instance Arbitrary Fmt where
+    arbitrary = sized go
+      where
+        go n
+            | n <= 1 = leaf
+            | otherwise = oneof
+                [ leaf
+                , Cond <$> name <*> sub <*> sub
+                , CondFmt <$> sub <*> sub <*> sub
+                , Compare <$> sub <*> sub
+                , Loop <$> elements "SWP" <*> sub
+                , Cat <$> resize 3 (listOf sub)
+                ]
+          where
+            sub = go (n `div` 3)
+        leaf = oneof
+            [ Lit <$> elements ["", "x", " ", "1", "[", "]"]
+            , Key <$> name
+            , Short <$> elements "DFHIPSTWh"
+            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/"] <*> name
+            ]
+        name = elements
+            [ "session_name", "session_id", "window_name", "window_flags", "window_index"
+            , "empty", "zero", "@s", "@fmt", "@deep", "@rec", "nope", "pane_index" ]
+    shrink = \case
+        Lit _ -> []
+        Key _ -> [Lit "x"]
+        Short _ -> [Lit "x"]
+        Modified _ k -> [Key k]
+        Cond k a b -> [a, b] <> [ Cond k a' b | a' <- shrink a ] <> [ Cond k a b' | b' <- shrink b ]
+        CondFmt c a b -> [c, a, b] <> [ CondFmt c' a b | c' <- shrink c ]
+            <> [ CondFmt c a' b | a' <- shrink a ] <> [ CondFmt c a b' | b' <- shrink b ]
+        Compare a b -> [a, b] <> [ Compare a' b | a' <- shrink a ] <> [ Compare a b' | b' <- shrink b ]
+        Loop l body -> body : [ Loop l b | b <- shrink body ]
+        Cat fs -> fs <> map Cat (shrinkList shrink fs)
