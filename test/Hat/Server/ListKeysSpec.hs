@@ -2,6 +2,7 @@ module Hat.Server.ListKeysSpec (spec) where
 
 import Data.List qualified as List
 import Data.Text (Text)
+import Data.Text qualified as T
 import Test.Hspec
 
 import Hat.Log (newLogger)
@@ -81,7 +82,39 @@ spec = do
                 `shouldReturn` [RErr "invalid key: NotAKey"]
             run st ["list-keys", "-O", "sideways"]
                 `shouldReturn` [RErr "invalid sort order"]
-        it "refuses -N loudly: hat keeps no key notes" $ do
+        it "#{key_note} is the note bind -N gave the key" $ do
             st <- server
-            run st ["list-keys", "-N"]
-                `shouldReturn` [RErr "list-keys -N: key notes are not implemented"]
+            [] <- run st ["bind-key", "-N", "Kill it", "-T", "t", "a", "kill-pane"]
+            [] <- run st ["bind-key", "-T", "t", "b", "kill-pane"]
+            run st ["list-keys", "-T", "t", "-F", "#{key_string}=#{key_note}"]
+                `shouldReturn` map ROutput ["a=Kill it", "b="]
+        it "bind -N without a command re-notes an existing binding, binds nothing new" $ do
+            st <- server
+            [] <- run st ["bind-key", "-T", "t", "a", "kill-pane"]
+            [] <- run st ["bind-key", "-N", "Later note", "-T", "t", "a"]
+            [] <- run st ["bind-key", "-N", "Unbound", "-T", "t", "b"]
+            run st ["list-keys", "-T", "t", "-F", "#{key_string}=#{key_note}=#{key_command}"]
+                `shouldReturn` [ROutput "a=Later note=kill-pane"]
+        it "-N lists only noted bindings, the prefix table's then the root's" $ do
+            st <- server
+            [] <- run st ["bind-key", "-n", "-N", "Root note", "F1", "kill-pane"]
+            [] <- run st ["bind-key", "-N", "Prefix note", "F2", "kill-pane"]
+            [] <- run st ["bind-key", "-T", "t", "-N", "Other table", "F3", "kill-pane"]
+            [] <- run st ["bind-key", "F4", "kill-pane"]
+            out <- run st ["list-keys", "-N", "-F", "#{key_table} #{key_string} #{key_note}"]
+            filter (`elem` map ROutput ["prefix F2 Prefix note", "root F1 Root note"]) out
+                `shouldBe` map ROutput ["prefix F2 Prefix note", "root F1 Root note"]
+            [ l | ROutput l <- out, any (`T.isInfixOf` l) ["F3", "F4"] ] `shouldBe` []
+            [ l | ROutput l <- out, T.null (T.takeWhileEnd (/= ' ') l) ] `shouldBe` []
+        it "-N -a lists un-noted bindings by their command; -P replaces the prefix" $ do
+            st <- server
+            [] <- run st ["bind-key", "-N", "Kill it", "-T", "t", "a", "kill-pane"]
+            [] <- run st ["bind-key", "-T", "t", "b", "kill-window"]
+            run st ["list-keys", "-N", "-T", "t"]
+                `shouldReturn` [ROutput "C-b a Kill it"]
+            run st ["list-keys", "-aN", "-P", ">", "-T", "t"]
+                `shouldReturn` [ROutput "> a Kill it", ROutput "> b kill-window"]
+        it "the default prefix bindings carry tmux's notes" $ do
+            st <- server
+            run st ["list-keys", "-1N", "c"]
+                `shouldReturn` [ROutput "C-b c Create a new window"]

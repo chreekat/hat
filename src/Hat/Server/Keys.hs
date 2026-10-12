@@ -512,6 +512,7 @@ baseKeyCode t
 data Binding = Binding
     { commands :: [[Text]]
     , repeats  :: Repeat
+    , note     :: Maybe Text  -- ^ @bind -N@: what the binding does, for @list-keys -N@
     }
     deriving (Eq, Show)
 

@@ -15,6 +15,9 @@ import Hat.Model
 import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Keys
 
+-- | @bind-key [-nr] [-T key-table] [-N note] key [command ...]@. Without a
+-- command it only re-notes (and with @-r@ marks repeating) a key already
+-- bound, as tmux's @key_bindings_add@ does.
 cmdBind :: CommandImpl
 cmdBind st _ args = do
     let (opts, flags, pos) = parseArgs "TN" args
@@ -22,7 +25,13 @@ cmdBind st _ args = do
             | "-n" `elem` flags = "root"
             | Just t <- lookup "-T" opts = t
             | otherwise = "prefix"
+        note = lookup "-N" opts
+        repeats = if "-r" `elem` flags then Repeats else Once
     case pos of
+        [keyName] | Just key <- parseKeyName keyName -> do
+            atomically $ modifyTVar' st.keymap $
+                Map.adjust (Map.adjust (renote note repeats) key.name) table
+            pure []
         (keyName : rest)
             | Just key <- parseKeyName keyName
             , not (null rest) -> do
@@ -30,12 +39,15 @@ cmdBind st _ args = do
                 atomically $ modifyTVar' st.keymap $
                     Map.insertWith Map.union table
                         (Map.singleton key.name Binding
-                            { commands = cmds
-                            , repeats = if "-r" `elem` flags then Repeats else Once })
+                            { commands = cmds, repeats, note })
                 pure []
         (keyName : _) ->
             pure [RErr ("bind: bad key or command: " <> keyName)]
         _ -> pure [RErr "usage: bind [-n] [-T table] key command..."]
+  where
+    renote note repeats b = b
+        { note = maybe b.note Just note
+        , repeats = if repeats == Repeats then Repeats else b.repeats }
 
 -- A binding's command part: one brace block to re-parse, or argv split
 -- on ";" tokens (from escaped semicolons).

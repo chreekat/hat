@@ -45,6 +45,7 @@ data Listed = Listed
     , key :: Text
     , commands :: [[Text]]
     , repeats :: Bool  -- ^ bound with @-r@
+    , note :: Maybe Text  -- ^ bound with @-N@
     }
 
 -- | The order @-O@ asks for.
@@ -63,7 +64,6 @@ listKeys :: ServerState -> Maybe Client -> [(Char, Entry)] -> [Text] -> IO [Repl
 listKeys st mclient entries pos
     | length pos > 1 =
         pure [RErr "command list-keys: too many arguments (need at most 1)"]
-    | has 'N' = pure [RErr "list-keys -N: key notes are not implemented"]
     | Just k <- only, isNothing (parseKeyName k) = pure [RErr ("invalid key: " <> k)]
     | otherwise = case order of
         Left e -> pure [RErr e]
@@ -73,11 +73,19 @@ listKeys st mclient entries pos
                 Just t | not (Map.member t keymap) ->
                     pure [RErr ("table " <> t <> " doesn't exist")]
                 mtable -> do
-                    let tables = maybe (Map.toList keymap)
-                            (\t -> [(t, Map.findWithDefault Map.empty t keymap)]) mtable
-                        all' = sortListed ord
-                            [ listed t k b | (t, binds) <- tables, (k, b) <- inKeyOrder binds ]
-                        wanted = case parseKeyName =<< only of
+                    let tableNamed t = (t, Map.findWithDefault Map.empty t keymap)
+                        -- -N without -T sorts the prefix and root tables apart.
+                        groups = case mtable of
+                            Just t -> [[tableNamed t]]
+                            Nothing
+                                | notesOnly -> [[tableNamed "prefix"], [tableNamed "root"]]
+                                | otherwise -> [Map.toList keymap]
+                        all' = concat
+                            [ sortListed ord
+                                [ listed t k b | (t, binds) <- tables, (k, b) <- inKeyOrder binds ]
+                            | tables <- groups ]
+                        noted l = not (notesOnly && not (has 'a')) || isJust l.note
+                        wanted = filter noted $ case parseKeyName =<< only of
                             Just k -> filter (\l -> l.key == k.name) all'
                             Nothing -> all'
                         prefix = fromMaybe (promptPrefix gopts.prefix) (value 'P')
@@ -93,6 +101,7 @@ listKeys st mclient entries pos
         [k] -> Just k
         _ -> Nothing
     single = has '1'
+    notesOnly = has 'N'
     order = case T.toLower <$> value 'O' of
         Nothing -> Right KeyTreeOrder
         Just o
@@ -112,7 +121,7 @@ listKeys st mclient entries pos
         base <- clientContextFormatEnv st mclient
         let widthOf f = maximum (0 : map (textWidth . f) ls)
             common = Map.fromList
-                [ ("notes_only", "0")
+                [ ("notes_only", if notesOnly then "1" else "0")
                 , ("key_has_repeat", if any (.repeats) ls then "1" else "0")
                 , ("key_string_width", tshow (widthOf (.key)))
                 , ("key_table_width", tshow (widthOf (.table))) ]
@@ -129,7 +138,7 @@ listKeys st mclient entries pos
             Nothing -> pure [ ROutput t | t <- lines', not (T.null t) ]
     bindingVars prefix l = Map.fromList
         [ ("key_repeat", if l.repeats then "1" else "0")
-        , ("key_note", "")
+        , ("key_note", fromMaybe "" l.note)
         , ("key_prefix", prefix)
         , ("key_table", l.table)
         , ("key_string", l.key)
@@ -137,7 +146,8 @@ listKeys st mclient entries pos
 
 -- | A binding as listed.
 listed :: Text -> Text -> Binding -> Listed
-listed t k b = Listed { table = t, key = k, commands = b.commands, repeats = b.repeats == Repeats }
+listed t k b = Listed
+    { table = t, key = k, commands = b.commands, repeats = b.repeats == Repeats, note = b.note }
 
 -- | A table's bindings in tmux's key tree order: by key code, with keys
 -- tmux has no code for after them by name.
