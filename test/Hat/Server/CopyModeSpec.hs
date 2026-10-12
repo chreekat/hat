@@ -465,6 +465,14 @@ spec = do
             look "search_present" at `shouldBe` Just "0"
         it "a selection begun and not yet moved is not present" $
             look "selection_present" (at { selection = Just ((2, 5), SelChar) }) `shouldBe` Just "0"
+        it "gives no variable copyModeNames leaves out" $ do
+            let states =
+                    [ at
+                    , at { selection = Just ((1, 2), SelChar) }
+                    , at { lastQuery = Just ("o", Forward, SearchText), searchMarks = Just Forward }
+                    ]
+                given = [ k | n <- [NumbersOff, NumbersAbsolute], st <- states, k <- Map.keys (varsUnder n st) ]
+            filter (`notElem` copyModeNames) given `shouldBe` []
 
     describe "copy-pipe's command" $ do
         let withCopyCommand c = applyDelta (singletonDelta "copy-command" (OVScalar c)) defaultOptions

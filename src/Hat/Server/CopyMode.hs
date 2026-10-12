@@ -74,6 +74,7 @@ module Hat.Server.CopyMode
     , matchSpans
     , lastPattern
     , copyModeFormats
+    , copyModeNames
     , startDragSelection
     , dragSelectionTo
     , cursorToScreen
@@ -1117,6 +1118,16 @@ copyCursorPos topRow sy st =
     in if r >= 0 && r < sy
         then Just Pos { row = r, col = st.cursorCol }
         else Nothing
+
+-- | Every variable 'copyModeFormats' can give.
+copyModeNames :: [Text]
+copyModeNames =
+    [ "scroll_position", "top_line_time", "copy_position", "copy_position_limit"
+    , "copy_line_numbers", "rectangle_toggle", "search_present", "search_timed_out"
+    , "copy_cursor_x", "copy_cursor_y", "copy_cursor_line", "copy_cursor_word"
+    , "selection_mode", "search_count", "search_count_partial"
+    , "selection_start_x", "selection_start_y", "selection_end_x", "selection_end_y"
+    , "selection_active", "selection_present" ]
 
 -- | tmux's @window_copy_formats@: the copy-mode variables of a pane in the
 -- mode, words split by the given separators.
