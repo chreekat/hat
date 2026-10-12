@@ -5,11 +5,9 @@
 -- batch so pane reconciliation keeps running while it sleeps.
 module Hat.Server.Command.Wait
     ( cmdWaitFor
-    , blockOn
     ) where
 
 import Control.Concurrent.STM
-import Control.Exception (bracket_)
 import Control.Monad (join)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -35,13 +33,8 @@ cmdWaitFor st mclient args = do
             | otherwise -> waitChannel st mclient name
         _ -> pure [RErr "usage: wait-for [-ELSUlv] [-F format] [-w waiter] name"]
 
--- | Block on a transaction outside the command batch, so a sleeping waiter
--- does not stall reconciliation for every other client.
-blockOn :: ServerState -> STM a -> IO a
-blockOn st wake = bracket_
-    (atomically (modifyTVar' st.commandDepth (subtract 1)))
-    (atomically (modifyTVar' st.commandDepth (+ 1)))
-    (atomically wake)
+blockOn :: ServerState -> TMVar a -> IO a
+blockOn st mv = outsideCommandBatch st (atomically (takeTMVar mv))
 
 channelsVar :: ServerState -> TVar (Map.Map Text Channel)
 channelsVar st = st.hooks.channels
@@ -63,7 +56,7 @@ waitChannel st mclient name = case mclient of
                     ch = Map.findWithDefault emptyChannel name chans
                 writeTVar (channelsVar st)
                     (Map.insert name ch { waiters = ch.waiters <> [w] } chans)
-                pure ([] <$ blockOn st (takeTMVar mv))
+                pure ([] <$ blockOn st mv)
 
 signalChannel :: ServerState -> Text -> IO [Reply]
 signalChannel st name = atomically $ do
@@ -122,7 +115,7 @@ lockChannel st mclient name = case mclient of
                 let w = Waiter { clientName = clientNameOf mclient, wake = mv }
                 writeTVar (channelsVar st)
                     (Map.insert name ch { lockers = ch.lockers <> [w] } chans)
-                pure ([] <$ blockOn st (takeTMVar mv))
+                pure ([] <$ blockOn st mv)
             else do
                 writeTVar (channelsVar st)
                     (Map.insert name ch { locked = True } chans)
@@ -176,7 +169,7 @@ waitEvent st mclient opts flags name = do
                             , filter = lookup "-F" opts
                             , wake = mv }
                     atomically (modifyTVar' st.hooks.eventWaiters (<> [w]))
-                    payload <- blockOn st (takeTMVar mv)
+                    payload <- blockOn st mv
                     pure $ if "-v" `elem` flags
                         then map ROutput payload
                         else []

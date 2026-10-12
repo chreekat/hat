@@ -5,7 +5,7 @@ module Hat.Server.Command.Popup
     ) where
 
 import Control.Concurrent.STM
-import Control.Exception (IOException, bracket_, try)
+import Control.Exception (IOException, try)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -128,7 +128,7 @@ cmdDisplayPopup st mclient args
         mouseVars <- case (,) <$> mclient <*> mev of
             Just (c, ev) -> mouseFormatVars st c ev
             Nothing -> pure []
-        cvars <- clientFormatVars tc
+        cvars <- clientFormatVars st tc
         pure (Map.unions [Map.fromList mouseVars, Map.fromList cvars, penv])
 
     position sess win pane tc env w h = do
@@ -175,12 +175,8 @@ cmdDisplayPopup st mclient args
         case opened of
             Left (_ :: IOException) -> pure []
             Right p
-                | waits -> [] <$ outsideBatch (atomically (awaitPopupClosed p))
+                | waits -> [] <$ outsideCommandBatch st (atomically (awaitPopupClosed p))
                 | otherwise -> pure []
-    -- The wait leaves the command batch, so the screen keeps drawing.
-    outsideBatch = bracket_
-        (atomically (modifyTVar' st.commandDepth (subtract 1)))
-        (atomically (modifyTVar' st.commandDepth (+ 1)))
     -- Only a command client can wait: an attached client's input drives the
     -- popup it would wait on.
     waits = maybe False (\c -> c.role == Control) mclient

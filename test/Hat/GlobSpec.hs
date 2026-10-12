@@ -1,11 +1,24 @@
 module Hat.GlobSpec (spec) where
 
+import Control.Exception (bracket)
+import System.Directory (createDirectory, removeDirectoryRecursive)
+import System.Posix.Temp (mkdtemp)
 import Test.Hspec
 
-import Hat.Glob (globMatch)
+import Hat.Glob (globMatch, globPaths)
 
 spec :: Spec
 spec = do
+    describe "globPaths" $
+        it "names the existing paths a pattern matches, in order, dotfiles only explicitly" $
+            bracket (mkdtemp "/tmp/hat-glob-") removeDirectoryRecursive $ \dir -> do
+                createDirectory (dir <> "/d")
+                mapM_ (\f -> writeFile (dir <> f) "") ["/d/b.conf", "/d/a.conf", "/d/.h.conf", "/d/x"]
+                globPaths (dir <> "/d/*.conf") `shouldReturn` [dir <> "/d/a.conf", dir <> "/d/b.conf"]
+                globPaths (dir <> "/*/.h*") `shouldReturn` [dir <> "/d/.h.conf"]
+                globPaths (dir <> "/d/x") `shouldReturn` [dir <> "/d/x"]
+                globPaths (dir <> "/d/none") `shouldReturn` []
+
     describe "literals" $ do
         it "a literal pattern matches only itself" $ do
             globMatch False "MYVAR" "MYVAR" `shouldBe` True

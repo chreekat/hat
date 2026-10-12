@@ -27,7 +27,7 @@ import Hat.Server.Mouse (MouseInput (..), MouseState (..), parseMouseInput)
 import Hat.Server.View (statusLayout)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
-import Hat.Server.Toast (toastReplies)
+import Hat.Server.Toast (showReplies)
 
 -- | A key or mouse report while the client's window shows a menu (tmux's
 -- @server_client_handle_menu_key@): the menu takes it, and a chosen item's
@@ -81,7 +81,7 @@ runMenuCommand d st client wm cmd = do
     replies <- withCommandBatch st (d.runCommandText st (Just client) cmd)
         `finally` modifyIORef' client.keyState
             (\after -> after { mouseEvent = Nothing, commandState = Nothing })
-    toastReplies st client replies
+    showReplies st client replies
 
 -- | While a chooser is open it owns every keystroke: navigate/search
 -- until Enter (run the item's command and close) or Escape (close). The
@@ -103,7 +103,7 @@ handlePickerInput d st client pk0 keys = do
         Picker.PickerCancel -> closePicker st client
         Picker.PickerRun line -> do
             closePicker st client
-            toastReplies st client =<< d.runCommandText st (Just client) line
+            showReplies st client =<< d.runCommandText st (Just client) line
 
 closePicker :: ServerState -> Client -> IO ()
 closePicker st client = atomically $ do
@@ -127,26 +127,32 @@ handlePromptInput d st client pr0 keys = do
         Prompt.Editing pr -> atomically $ do
             writeTVar client.prompt (Just pr)
             bumpDirty st
-        Prompt.Cancel -> answer Nothing
-        Prompt.Submit line
-            -- A blank submission cancels: never rename a window to "".
-            | T.null (T.strip line) -> answer Nothing
-            | Just _ <- pr0.waiter -> answer (Just line)
-            | otherwise -> do
-                let templated = not (T.null pr0.template)
-                    cmd = Prompt.applyTemplate pr0.template line
-                atomically $ do
-                    writeTVar client.prompt Nothing
-                    -- Templated prompts (rename-window, …) keep the : history
-                    -- clean; only bare command lines are remembered.
-                    unless templated $ do
-                        limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
-                        modifyTVar' st.cmdHistory (Prompt.pushHistory limit line)
-                    bumpDirty st
-                toastReplies st client =<< d.runCommandText st (Just client) cmd
+        Prompt.Cancel -> atomically (answer Nothing)
+        Prompt.Submit line -> do
+            let templated = not (T.null pr0.template)
+                answered = Prompt.answerPrompt pr0 line
+                -- A blank submission cancels: never rename a window to "".
+                blank = T.null (T.strip line)
+            runNow <- atomically $ do
+                -- Templated prompts (rename-window, …) keep the : history
+                -- clean; only bare command lines are remembered.
+                unless templated $ do
+                    limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
+                    modifyTVar' st.cmdHistory (Prompt.pushHistory limit line)
+                case answered of
+                    Prompt.NextPrompt nxt -> Nothing <$ do
+                        writeTVar client.prompt (Just nxt)
+                        bumpDirty st
+                    Prompt.AnswersDone cmd
+                        | blank -> Nothing <$ answer Nothing
+                        | Just _ <- pr0.waiter -> Nothing <$ answer (Just cmd)
+                        | otherwise -> Just cmd <$ answer Nothing
+            forM_ runNow $ \cmd ->
+                showReplies st client =<< d.runCommandText st (Just client) cmd
   where
-    -- Close the prompt, handing a waiting command what it was given.
-    answer given = atomically $ do
+    -- Close the prompt, handing a waiting command what it is to run, in the
+    -- one transaction, so the waiter never sees it closed unanswered.
+    answer cmd = do
         writeTVar client.prompt Nothing
-        forM_ pr0.waiter $ \(PromptWaiter w) -> tryPutTMVar w given
+        forM_ pr0.waiter $ \(PromptWaiter w) -> tryPutTMVar w cmd
         bumpDirty st

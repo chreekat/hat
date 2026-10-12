@@ -7,6 +7,7 @@
 module Hat.Command.Parser
     ( parseCommandLine
     , parseConfig
+    , parseConfigLines
     , parseArgv
     ) where
 
@@ -47,25 +48,35 @@ parseCommandLine input =
 
 -- | Parse a whole config file: comments, blank lines, continuations.
 parseConfig :: Text -> Either Text [[Text]]
-parseConfig input = fmap concat . traverse parseCommandLine
-    $ filter (not . T.null . T.strip)
+parseConfig = either (Left . snd) (Right . map snd) . parseConfigLines
+
+-- | 'parseConfig', each command with the line it starts on, and a parse
+-- error with the line of the command it is in.
+parseConfigLines :: Text -> Either (Int, Text) [(Int, [Text])]
+parseConfigLines input = fmap concat . traverse parseChunk
+    $ filter (not . T.null . T.strip . snd)
     $ joinBraces
-    $ map stripComment
-    $ joinContinuations (T.lines input)
+    $ map (fmap stripComment)
+    $ joinContinuations (zip [1 ..] (T.lines input))
+  where
+    parseChunk (n, text) = either (Left . (n,)) (Right . map (n,)) (parseCommandLine text)
 
 -- Blocks like @bind X { ... }@ and multi-line @"..."@ strings can span
 -- lines. Keep joining while brace depth is positive OR we're mid-quote.
-joinBraces :: [Text] -> [Text]
+joinBraces :: [(Int, Text)] -> [(Int, Text)]
 joinBraces = collapse 0 Free []
   where
     collapse 0 Free [] [] = []
-    collapse _ _ acc [] = [T.intercalate "\n" (reverse acc)]  -- unbalanced
+    collapse _ _ acc [] = [joined acc]  -- unbalanced
     collapse depth q acc (l : rest) =
-        let (d', q') = lineEndState depth q l
+        let (d', q') = lineEndState depth q (snd l)
             acc' = l : acc
         in if d' > 0 || q' /= Free
             then collapse d' q' acc' rest
-            else T.intercalate "\n" (reverse acc') : collapse 0 Free [] rest
+            else joined acc' : collapse 0 Free [] rest
+    joined acc = case reverse acc of
+        ls@((n, _) : _) -> (n, T.intercalate "\n" (map snd ls))
+        [] -> (0, "")
 
 lineEndState :: Int -> QuoteState -> Text -> (Int, QuoteState)
 lineEndState d0 q0 = T.foldl' step (d0, q0)
@@ -84,14 +95,14 @@ data QuoteState = Free | Single | Double | DoubleEsc
     deriving (Eq)
 
 -- Lines ending in a backslash continue on the next line.
-joinContinuations :: [Text] -> [Text]
+joinContinuations :: [(Int, Text)] -> [(Int, Text)]
 joinContinuations = \case
     [] -> []
-    (l : rest)
+    ((n, l) : rest)
         | "\\" `T.isSuffixOf` l
-        , (next : rest') <- joinContinuations rest ->
-            (T.dropEnd 1 l <> " " <> next) : rest'
-        | otherwise -> l : joinContinuations rest
+        , ((_, next) : rest') <- joinContinuations rest ->
+            (n, T.dropEnd 1 l <> " " <> next) : rest'
+        | otherwise -> (n, l) : joinContinuations rest
 
 -- A # starts a comment unless it is inside a word (quoting is handled
 -- coarsely: we only strip comments that follow whitespace or start the
@@ -119,13 +130,9 @@ commandsP = do
 commandP :: Parser [Text]
 commandP = many (wordP <* space)
 
+-- | A brace block, or a word: adjacent quoted and bare pieces, joined.
 wordP :: Parser Text
-wordP = choice
-    [ singleQuoted
-    , doubleQuoted
-    , braceBlock
-    , bareWord
-    ]
+wordP = braceBlock <|> (T.concat <$> some (choice [singleQuoted, doubleQuoted, bareWord]))
 
 singleQuoted :: Parser Text
 singleQuoted = do

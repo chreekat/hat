@@ -45,6 +45,8 @@ module Hat.Model
     , MarkShown (..)
     , FrozenGrid (..)
     , PaneMode (..)
+    , ModeKind (..)
+    , modeName
     , SearchDirection (..)
     , SearchKind (..)
     , flipDirection
@@ -71,6 +73,7 @@ module Hat.Model
     , newServerState
     , bumpDirty
     , withCommandBatch
+    , outsideCommandBatch
     , markActive
     , tickActivity
     , freshId
@@ -105,8 +108,8 @@ module Hat.Model
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM
-import Control.Exception (IOException, bracket_, try)
-import Control.Monad (forM, forM_)
+import Control.Exception (IOException, bracket, bracket_, try)
+import Control.Monad (forM, forM_, when)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
@@ -119,7 +122,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock (UTCTime)
-import Data.Time.Clock.POSIX (POSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.Vector qualified as V
 import Data.Word (Word16, Word64)
 import Network.Socket (Socket)
@@ -243,6 +246,13 @@ data ServerState = ServerState
     , home :: Maybe FilePath
         -- ^ the server's home directory (tmux's @find_home@), against which
         --   @~@ in a path resolves
+    , startTime :: POSIXTime  -- ^ when this server process started
+    , configCauses :: TVar [Text]
+        -- ^ configuration errors not yet shown, oldest first; see
+        --   "Hat.Server.ConfigCauses"
+    , commandSources :: TVar (Map ThreadId [(FilePath, Int)])
+        -- ^ the file and line of each command a thread is running from a
+        --   file, innermost first; see 'Hat.Server.Dispatch.loadCommandFile'
     }
 
 data Session = Session
@@ -340,6 +350,9 @@ data Pane = Pane
         -- ^ requests that the reader catch up on pending output; see
         -- 'Hat.Server.Pane.syncPanes'.
     , clock :: TVar PaneClock
+    , viewBacking :: TVar (Maybe Emu.Emulator)
+        -- ^ the screen view mode's text is written to, while the pane is
+        --   in view mode; see 'Hat.Server.ViewMode.viewModeAdd'
     }
 
 -- | Generations of a pane's output-sync requests.
@@ -495,10 +508,23 @@ data Recentre = RecentreMiddle | RecentreTop | RecentreBottom
 -- browses it. The snapshot never changes while the mode is open, so
 -- program output produced during copy mode stays invisible until exit.
 data PaneMode = PaneMode
-    { frozen    :: !FrozenGrid
+    { kind      :: !ModeKind
+    , frozen    :: !FrozenGrid
     , copyState :: !CopyModeState
     }
     deriving (Eq, Show)
+
+-- | What a 'PaneMode' browses: the pane's own grid (tmux's copy mode) or
+-- the text shown in the pane apart from it (tmux's view mode, over the
+-- pane's 'viewBacking').
+data ModeKind = ModeCopy | ModeView
+    deriving (Eq, Show)
+
+-- | tmux's name for a mode, as @#{pane_mode}@ shows it.
+modeName :: ModeKind -> Text
+modeName = \case
+    ModeCopy -> "copy-mode"
+    ModeView -> "view-mode"
 
 -- | An immutable capture of a pane's absolute grid (oldest scrollback
 -- line first, then the live screen) taken when copy mode is entered.
@@ -630,9 +656,12 @@ data PromptState = PromptState
     , histIx  :: !(Maybe Int)  -- ^ 'Nothing' while editing a fresh line;
                                --   @Just n@ while showing history entry @n@
     , pending :: !Text         -- ^ the fresh line stashed while browsing history
-    , template :: !Text        -- ^ @command-prompt@ template; the submitted
-                               --   line is spliced in for @%%@/@%1@. Empty
-                               --   means run the line verbatim.
+    , template :: !Text        -- ^ @command-prompt@ template; see
+                               --   'Hat.Server.Prompt.applyTemplate'
+    , answers :: ![Text]       -- ^ the lines submitted to the earlier prompts
+                               --   of a multi-prompt @command-prompt@
+    , queued  :: ![(Text, Text)]  -- ^ the prompts still to ask after this
+                                  --   one: each label and initial input
     , promptLabel :: !Text     -- ^ text shown before the edit buffer (@:@ for
                                --   the bare prompt, @(rename-window) @ etc.)
     , killed  :: !Text         -- ^ the last killed text, yanked back by @C-y@
@@ -648,7 +677,7 @@ data PromptState = PromptState
 data PromptKind = LineEntry | KeyEntry
     deriving (Eq, Show)
 
--- | Where a prompt's answer goes: the line or key name it was given, or
+-- | Where a prompt's answer goes: the command its answers make, or
 -- 'Nothing' when it closed unanswered.
 newtype PromptWaiter = PromptWaiter (TMVar (Maybe Text))
     deriving (Eq)
@@ -859,6 +888,8 @@ data Client = Client
     , envImport :: TVar EnvImport  -- ^ set by @attach-session -E@
     , env       :: [(Text, Text)]
     , cwd       :: Text
+    , term      :: Text  -- ^ the client's @TERM@, from its hello
+    , createdAt :: POSIXTime
     , stdinSource :: StdinSource
     , control   :: Maybe ControlState
         -- ^ a tmux control-mode client's protocol state; 'Nothing' for
@@ -934,6 +965,9 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newMonitorRegistry
     <*> newHooksState
     <*> findHome
+    <*> getPOSIXTime
+    <*> newTVarIO []
+    <*> newTVarIO Map.empty
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
@@ -946,6 +980,16 @@ withCommandBatch :: ServerState -> IO a -> IO a
 withCommandBatch st = bracket_
     (atomically (modifyTVar' st.commandDepth (+ 1)))
     (atomically (modifyTVar' st.commandDepth (subtract 1)))
+
+-- | Block a command outside its batch, if it runs in one, so
+-- reconciliation runs for every other client while it waits.
+outsideCommandBatch :: ServerState -> IO a -> IO a
+outsideCommandBatch st act = bracket leave rejoin (const act)
+  where
+    leave = atomically $ do
+        depth <- readTVar st.commandDepth
+        if depth > 0 then True <$ writeTVar st.commandDepth (depth - 1) else pure False
+    rejoin left = when left (atomically (modifyTVar' st.commandDepth (+ 1)))
 
 -- | Stamp a client as the most-recently-active on its session: advance the
 -- server's activity clock and record the new value on the client and its

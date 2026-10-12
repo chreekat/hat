@@ -290,9 +290,11 @@ spec = do
                 paneProgram "/usr/bin/zsh" (ExecArgv ["vim", "x"])
                     `shouldBe` ("vim", ["x"])
             it "default-command stands in for a missing command" $ do
-                shellStart "" Nothing `shouldBe` FreshShell
-                shellStart "htop" Nothing `shouldBe` ShellCommand "htop"
-                shellStart "htop" (Just "top") `shouldBe` ShellCommand "top"
+                shellStart "" [] `shouldBe` FreshShell
+                shellStart "htop" [] `shouldBe` ShellCommand "htop"
+                shellStart "htop" ["top"] `shouldBe` ShellCommand "top"
+            it "one command word is a shell command line, more an argv" $
+                shellStart "" ["sh", "-c", "sleep 1"] `shouldBe` ExecArgv ["sh", "-c", "sleep 1"]
             it "only an absolute, executable path is a suitable shell" $ do
                 suitableShell "/bin/sh" `shouldReturn` True
                 suitableShell "sh" `shouldReturn` False

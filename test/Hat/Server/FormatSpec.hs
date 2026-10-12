@@ -413,6 +413,14 @@ spec = do
         , ("#{I:x}", "")
         ]
 
+    it "asks I of the terminal client: its environment and features" $ do
+        let withClient = renderFormatCtx ctx
+                { client = Just ClientQueries
+                    { environ = Map.fromList [("TERM", "xterm")], features = ["256"] } }
+        map withClient ["#{I/e:TERM}", "#{I/e:NONE}", "#{I/f:256}", "#{I/f:overline}"]
+            `shouldBe` ["xterm", "", "1", "0"]
+        withClient "#{I/c:colors}" `shouldBe` "<format modifier 'I/c' unimplemented>"
+
     cases "escapes inside modifier arguments"
         [ ("#{s/#,/-/:#{l:a,b,c}}", "a-b-c")
         , ("#{=/3/#,:@s}", "abc,")

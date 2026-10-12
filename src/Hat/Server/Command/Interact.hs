@@ -28,7 +28,6 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (send)
 import Hat.Server.Command.Types (CommandImpl, Dispatch (..), Reply (..), parseArgs, unknownFlag)
-import Hat.Server.Command.Wait (blockOn)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
@@ -42,6 +41,7 @@ import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
+import Hat.Server.ViewMode (leaveViewMode)
 import Hat.Server.FormatEnv (expandFormat)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -151,15 +151,16 @@ cmdCopyMode st mclient args = do
                 was <- atomically $ do
                     old <- readTVar pane.mode
                     writeTVar pane.mode Nothing
+                    leaveViewMode pane
                     writeTVar pane.clock NoClock
                     bumpDirty st
                     pure old
-                forM_ was $ \_ -> do
+                forM_ was $ \pm -> do
                     notifyPane st "pane-mode-changed" pane []
                     notifyPane st "pane-mode-exited" pane
                         [ ("mode_entered", PInt 0)
                         , ("current_mode", PText "")
-                        , ("previous_mode", PText "copy-mode") ]
+                        , ("previous_mode", PText (modeName pm.kind)) ]
                 pure []
             | otherwise -> pure []
   where
@@ -175,7 +176,7 @@ cmdCopyMode st mclient args = do
                     state = copyModeAt table startRow startCol
                 atomically $ do
                     writeTVar pane.mode (Just PaneMode
-                        { frozen = frozen, copyState = state })
+                        { kind = ModeCopy, frozen = frozen, copyState = state })
                     bumpDirty st
                 notifyPane st "pane-mode-changed" pane []
                 notifyPane st "pane-mode-entered" pane
@@ -192,13 +193,15 @@ cmdClockMode st mclient args = do
         Left e -> pure [RErr e]
         Right (_, _, _, pane) -> [] <$ enterClockMode st pane
 
--- | @command-prompt [-bFkl] [-I initial] [-p prompt] [-t target-client]
--- [template]@. Opens the line editor on the target client; @-I@ pre-fills
--- it (format-expanded, so @#W@ is the window name), a @template@ has the
--- submitted line spliced in for @%%@ (expanded first under @-F@), and @-k@
--- takes one key, by name, instead of a line. A command from another client
--- waits for the answer and runs the template itself, unless @-b@. Backs
--- the @,@ rename binding: @command-prompt -I "#W" "rename-window '%%'"@.
+-- | @command-prompt [-bFkl] [-I inputs] [-p prompts] [-t target-client]
+-- [template]@. Opens the line editor on the target client, asking each
+-- comma-separated prompt in turn (@-l@: one prompt, commas and all); @-I@
+-- pre-fills each (format-expanded, so @#W@ is the window name), the answers
+-- are spliced into the @template@ (see 'Prompt.applyTemplate'; expanded
+-- first under @-F@), and @-k@ takes one key, by name, instead of a line. A
+-- command from another client waits for the answers and runs the template
+-- itself, unless @-b@. Backs the @,@ rename binding:
+-- @command-prompt -I "#W" "rename-window '%%'"@.
 cmdCommandPrompt :: Dispatch -> CommandImpl
 cmdCommandPrompt d st mclient args
     | Just e <- unknownFlag "command-prompt" "1CbeFiklINPptT" flags = pure [RErr e]
@@ -207,13 +210,14 @@ cmdCommandPrompt d st mclient args
         -- a bare -1 parses as a number
         <> [ "-1" | "-1" `elem` takeWhile ("-" `T.isPrefixOf`) args ] =
         pure [RErr ("command-prompt " <> bad <> ": not supported")]
-    | Just p <- lookup "-p" opts, "," `T.isInfixOf` p, "-l" `notElem` flags =
-        pure [RErr "command-prompt: more than one prompt is not supported"]
     | otherwise = findTargetClient st mclient Nothing (lookup "-t" opts) >>= \case
         Left e -> pure [RErr e]
         Right client -> do
             env <- clientPromptEnv st client
-            initial <- maybe (pure "") (expandFormat st env) (lookup "-I" opts)
+            inputs <- case lookup "-I" opts of
+                Nothing -> pure []
+                Just raw -> mapM (expandFormat st env)
+                    (if literal then [raw] else T.splitOn "," raw)
             tmpl <- if "-F" `elem` flags then expandFormat st env tmpl0 else pure tmpl0
             copts <- clientOptions st client
             let waiting = "-b" `notElem` flags && fmap (.id) mclient `notElem` [Nothing, Just client.id]
@@ -224,27 +228,35 @@ cmdCommandPrompt d st mclient args
                     , wordSeparators = copts.wordSeparators
                     , insertCursor = promptCursor "prompt-cursor" copts
                     , commandCursor = promptCursor "prompt-command-cursor" copts }
-                pr = (Prompt.promptFor pfx initial tmpl)
-                    { promptKeys = keys
-                    , promptKind = if "-k" `elem` flags then KeyEntry else LineEntry
-                    , waiter = mw }
+                prompts = zip labels (inputs <> repeat "")
             -- A client already prompting keeps its prompt.
             opened <- atomically $ readTVar client.prompt >>= \case
                 Just _ -> pure False
-                Nothing -> True <$ (writeTVar client.prompt (Just pr) >> bumpDirty st)
+                Nothing -> case prompts of
+                    [] -> pure False
+                    (label, initial) : rest -> True <$ do
+                        writeTVar client.prompt $ Just (Prompt.promptFor label initial tmpl)
+                            { promptKeys = keys, queued = rest
+                            , promptKind = if "-k" `elem` flags then KeyEntry else LineEntry
+                            , waiter = mw }
+                        bumpDirty st
             case mw of
                 Just (PromptWaiter w) | opened -> do
-                    given <- blockOn st (takeTMVar w `orElse` abandoned client mw)
-                    maybe (pure []) (d.runCommandText st mclient . Prompt.applyTemplate tmpl) given
+                    cmd <- outsideCommandBatch st
+                        (atomically (takeTMVar w `orElse` abandoned client mw))
+                    maybe (pure []) (d.runCommandText st mclient) cmd
                 _ -> pure []
   where
     (opts, flags, pos) = parseArgs "IpTt" args
     tmpl0 = T.unwords pos
-    pfx = case lookup "-p" opts of
-        Just p -> p <> " "
+    literal = "-l" `elem` flags
+    labels = case lookup "-p" opts of
+        Just p
+            | literal -> [p]
+            | otherwise -> map (<> " ") (T.splitOn "," p)
         Nothing
-            | T.null tmpl0 -> ":"
-            | otherwise -> "(" <> T.takeWhile (/= ' ') tmpl0 <> ") "
+            | T.null tmpl0 -> [":"]
+            | otherwise -> ["(" <> T.takeWhile (/= ' ') tmpl0 <> ") "]
     -- The prompt closed without answering: its client went, or another
     -- prompt replaced it.
     abandoned client mw = do

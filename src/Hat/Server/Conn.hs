@@ -15,6 +15,7 @@ module Hat.Server.Conn
     , keyContext
     , reencodeKey
     , handleInput  -- ^ exported for the display-panes key tests
+    , newClient    -- ^ exported for the source-file tests
     ) where
 
 import Control.Concurrent (forkIO, threadDelay)
@@ -30,9 +31,9 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import GHC.Clock (getMonotonicTimeNSec)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Socket qualified as N
 import Hat.Geometry
 import Hat.Log
@@ -176,7 +177,7 @@ welcome d st re h = do
             -- Gate here, not only in ensureSession: setup commands run
             -- directly, so an autostarting `hat new` would otherwise race
             -- its own server's config load (upstream if-shell-TERM.sh).
-            awaitStartup st client.autostart setupCmds
+            awaitStartup st client setupCmds
             -- A reattaching client carries its MRU session history by name (it
             -- re-execs across a restart with a fresh identity). Resolve it back
             -- to ids now the tree is restored (awaitStartup held for it), before
@@ -268,6 +269,7 @@ newClient st conn h = do
     envImportVar <- newTVarIO ImportEnv
     viewportVar <- newTVarIO unpannedViewport
     viewOriginVar <- newIORef (Pos 0 0)
+    created <- getPOSIXTime
     controlState <- case h.intent of
         ControlModeIntent {} -> Just <$> newControlState
         _ -> pure Nothing
@@ -309,6 +311,8 @@ newClient st conn h = do
         , envImport = envImportVar
         , env = h.env
         , cwd = h.cwd
+        , term = h.term
+        , createdAt = created
         , stdinSource = NoStdin
         , control = controlState
         , viewport = viewportVar
@@ -363,7 +367,7 @@ ensureSession st client = do
         (,) <$> readTVar st.sessions <*> readTVar st.lastActiveSession
     case pickAttachSession laId existing of
         Just (_, sess) -> pure sess
-        Nothing -> createSession st Nothing Nothing client.env
+        Nothing -> createSession st Nothing [] client.env
             (T.unpack client.cwd) =<< readTVarIO client.size
 
 -- | Which existing session a fresh client attaches to: the last-active one
@@ -426,11 +430,7 @@ inputLoop d st re client = loop
                     loop
                 Detach -> send client DetachOk
                 Command cmds -> do
-                    replies <- d.runCommands st (Just client) cmds
-                    forM_ replies $ \case
-                        ROutput out -> showToast st client out
-                        RErr e -> showToast st client ("error: " <> e)
-                        RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)
+                    showReplies st client =<< d.runCommands st (Just client) cmds
                     loop
                 ClientHello {} -> pure ()
                 -- Never requested of an attached client.
@@ -578,7 +578,7 @@ selectPaneNumber d st client template num = do
         let numbered = zip [opts.paneBaseIndex ..] order
         forM_ (lookup num numbered) $ \pid -> do
             let target = "%" <> tshow (rawPane pid)
-            toastReplies st client
+            showReplies st client
                 =<< d.runCommandText st (Just client)
                     (T.replace "%%" target template)
 
@@ -741,7 +741,7 @@ runInputs d st client keys = do
             RunCommands cmds -> do
                 writeIORef client.keyState kst { mouseEvent = mev }
                 withCommandBatch st $ forM_ cmds $ \argv ->
-                    toastReplies st client =<< d.runArgv st (Just client) argv
+                    showReplies st client =<< d.runArgv st (Just client) argv
                 after <- readIORef client.keyState
                 pure after { mouseEvent = Nothing, commandState = Nothing }
     st0 <- readIORef client.keyState
@@ -799,7 +799,7 @@ controlLoop d st re client = do
     m <- recvMessage re
     case m of
         Just (Known (Command cmds)) -> do
-            awaitStartup st client.autostart cmds
+            awaitStartup st client cmds
             syncAllPanes st
             open <- newTVarIO True
             let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
@@ -830,7 +830,7 @@ controlModeSession
     :: Dispatch -> ServerState -> ReadEnd -> Client -> ControlState -> [[Text]]
     -> IO ()
 controlModeSession d st re client cs setup = do
-    awaitStartup st client.autostart setup
+    awaitStartup st client setup
     withAsync (subscriptionLoop st client cs) $ \subs -> do
         link subs
         withAsync (controlWriter client cs) $ \writer -> do

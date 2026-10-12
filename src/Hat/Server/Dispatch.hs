@@ -14,6 +14,8 @@ module Hat.Server.Dispatch
     , readConfigUtf8
     , cleanupInherited
     , cmdSourceFile
+    , loadCommandFile
+    , FileLoad (..)
     , cmdRestartServer
     , cmdRestart
     , cmdRestartClient
@@ -28,7 +30,7 @@ module Hat.Server.Dispatch
     , restartClientAction
     ) where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (filterM, forM, forM_, replicateM, unless, void, when)
@@ -36,7 +38,7 @@ import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -49,9 +51,11 @@ import System.Posix.IO qualified as PIO
 import System.Posix.Process (executeFile)
 import System.Posix.Signals (sigHUP, signalProcess)
 import System.Posix.Types (Fd (..))
+import System.IO (IOMode (..), openFile)
+import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Process
 import Text.Read (readMaybe)
-import Hat.Command.Parser (parseCommandLine, parseConfig)
+import Hat.Command.Parser (parseCommandLine, parseConfigLines)
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
@@ -79,9 +83,13 @@ import Hat.Server.Command.Types
 import Hat.Server.ClientIO (broadcast, farewellGrace, send, sendFarewells)
 import Hat.Server.ColorScheme
 import Hat.Server.Control (cmdRefreshClient, controlSink)
-import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
+import Hat.Server.ControlQueue (controlNotify)
+import Hat.Server.FormatEnv (clientContextFormatEnv, clientFormatVars, expandFormat, paneFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
+import Hat.Server.ConfigCauses (addConfigCause, printConfigCauses)
+import Hat.Glob (globPaths)
+import Hat.Server.ViewMode (ViewText (..), viewModeAdd, viewToClient)
 import Hat.Server.Keys
 import Hat.Server.Overlay (handlePickerInput)
 import Hat.Server.Locate
@@ -123,10 +131,86 @@ unknownCommand st argv@(name : _)
             Just _ -> Nothing
             Nothing -> either Just (const Nothing) (resolveCommand name)
 
+-- | Parse a command line and run it, as tmux's @cmd_parse_from_string@
+-- does: a command no name resolves fails the whole line before any of it
+-- runs. Run for a command read from a file, its errors name that file and
+-- line (see 'loadCommandFile').
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
-runCommandText st mclient input = case parseCommandLine input of
-    Left err -> pure [RErr err]
-    Right cmds -> runCommands st mclient cmds
+runCommandText st mclient input = do
+    msource <- currentCommandSource st
+    let located e = maybe e (\(path, n) -> sourceLocated path n e) msource
+    case parseCommandLine input of
+        Left err -> pure [RErr (located err)]
+        Right cmds -> do
+            bad <- firstUnknown st cmds
+            case bad of
+                Just e -> pure [RErr (located e)]
+                Nothing -> runCommands st mclient cmds
+
+-- | The first command among @cmds@ no name resolves, as its error.
+firstUnknown :: ServerState -> [[Text]] -> IO (Maybe Text)
+firstUnknown st cmds = listToMaybe . catMaybes <$> mapM (unknownCommand st) cmds
+
+-- | An error at a file's line, as tmux words it.
+sourceLocated :: FilePath -> Int -> Text -> Text
+sourceLocated path n e = T.pack path <> ":" <> tshow n <> ": " <> e
+
+-- | The file and line of the command this thread runs, if it came from one.
+currentCommandSource :: ServerState -> IO (Maybe (FilePath, Int))
+currentCommandSource st = listToMaybe <$> commandSourceStack st
+
+-- | The files this thread's commands are nested in, innermost first.
+commandSourceStack :: ServerState -> IO [(FilePath, Int)]
+commandSourceStack st = do
+    tid <- myThreadId
+    Map.findWithDefault [] tid <$> readTVarIO st.commandSources
+
+-- | Run @act@ as the command at @path@'s line @n@.
+withCommandSource :: ServerState -> FilePath -> Int -> IO a -> IO a
+withCommandSource st path n act = do
+    tid <- myThreadId
+    let alter f = atomically (modifyTVar' st.commandSources (Map.alter f tid))
+        push = Just . ((path, n) :) . fromMaybe []
+        pop = \case
+            Just (_ : outer@(_ : _)) -> Just outer
+            _ -> Nothing
+    bracket_ (alter push) (alter pop) act
+
+-- | Load a file of commands (tmux's @load_cfg@): it is parsed whole, and
+-- runs only if every command in it parses and names a command, each
+-- command as the one at its file and line. A file that fails is a
+-- configuration cause, as is every error of a clientless load's commands,
+-- whose output goes nowhere. Under 'ParseOnly' nothing runs.
+loadCommandFile :: ServerState -> Maybe Client -> FileLoad -> FilePath -> Text -> IO [Reply]
+loadCommandFile st mclient load path contents = case parseConfigLines contents of
+    Left (n, err) -> [] <$ cause n (parseErrorLine err)
+    Right cmds -> do
+        bad <- listToMaybe . catMaybes <$>
+            mapM (\(n, argv) -> fmap (n,) <$> unknownCommand st argv) cmds
+        case (bad, load) of
+            (Just (n, e), _) -> [] <$ cause n e
+            (Nothing, ParseOnly) -> pure []
+            (Nothing, RunFile) -> fmap concat . forM cmds $ \(n, argv) -> do
+                replies <- withCommandSource st path n (runArgv st mclient argv)
+                case mclient of
+                    Just _ -> pure replies
+                    Nothing -> [] <$ forM_ [ e | RErr e <- replies ] (cause n)
+  where
+    cause n e = atomically (addConfigCause st (sourceLocated path n e))
+
+-- | Whether 'loadCommandFile' runs the commands it parses (@source-file -n@
+-- only checks them).
+data FileLoad = RunFile | ParseOnly
+    deriving (Eq, Show)
+
+-- | A parse error, on one line: the parser's own words without its picture
+-- of the input.
+parseErrorLine :: Text -> Text
+parseErrorLine err = case filter keep (T.lines err) of
+    [] -> T.strip err
+    ls -> T.intercalate ", " (map T.strip ls)
+  where
+    keep l = not (T.null (T.strip l)) && not ("|" `T.isInfixOf` l) && not ("<command>" `T.isPrefixOf` l)
 
 runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
 runCommands st mclient cmds =
@@ -249,7 +333,9 @@ hookArgSpec = \case
     "load-buffer" -> "bt"
     "paste-buffer" -> "bst"
     "list-buffers" -> "FfO"
-    "list-clients" -> "tF"
+    "list-clients" -> "FfOt"
+    "display-message" -> "cdFt"
+    "run-shell" -> "cdst"
     "list-sessions" -> "F"
     "list-windows" -> "Ft"
     "list-panes" -> "Ft"
@@ -421,27 +507,55 @@ commandSpecs =
 -- | Whether @set@\/@set-option@ (session) or @setw@\/@set-window-option@
 -- (window) invoked the set: the default scope when no @-g@\/@-s@\/@-w@ picks
 -- one. See 'cmdSet'.
+-- | @source-file [-Fnq] path ...@ (tmux's @cmd-source-file.c@): each path
+-- a glob, relative to the client's directory, and @-@ the command client's
+-- standard input; each file loads as 'loadCommandFile' does, and once the
+-- server has loaded its own configuration the causes are printed to the
+-- client.
 cmdSourceFile :: CommandImpl
-cmdSourceFile st mclient args = case pos of
-    [path] -> do
-        p <- expandTilde st.home (T.unpack path)
-        exists <- doesFileExist p
-        if not exists
-            then if "-q" `elem` flags
-                then pure []
-                else pure [RErr ("no such file: " <> path)]
-            else do
-                contents <- readConfigUtf8 p
-                case parseConfig contents of
-                    Left err -> pure [RErr err]
-                    Right cmds
-                        -- -n: check syntax, do not execute
-                        | "-n" `elem` flags -> pure []
-                        | otherwise ->
-                            concat <$> mapM (runArgv st mclient) cmds
-    _ -> pure [RErr "usage: source-file path"]
+cmdSourceFile st mclient args
+    | Just e <- unknownFlag "source-file" "Fnqv" flags = pure [RErr e]
+    | "-v" `elem` flags = pure [RErr "source-file -v: not supported"]
+    | null pos = pure [RErr "too few arguments (need at least 1)"]
+    | otherwise = do
+        depth <- length <$> commandSourceStack st
+        if depth >= 50 then pure [RErr "too many nested files"] else do
+            env <- clientContextFormatEnv st mclient
+            found <- forM pos $ \arg -> do
+                path <- if "-F" `elem` flags then expandFormat st env arg else pure arg
+                matches path
+            loaded <- forM found $ \case
+                Left e -> pure [RErr e]
+                Right paths -> concat <$> forM paths loadOne
+            phase <- readTVarIO st.startupPhase
+            causes <- if phase == LoadingConfig then pure []
+                else printConfigCauses st mclient
+            pure (concat loaded <> causes)
   where
-    (_, flags, pos) = parseArgs "" args
+    (_, flags, pos) = parseArgs "t" args
+    load = if "-n" `elem` flags then ParseOnly else RunFile
+    quiet = "-q" `elem` flags
+    matches "-" = pure (Right ["-"])
+    matches path = do
+        p <- expandTilde st.home (T.unpack path)
+        let cwd = maybe "" (T.unpack . (.cwd)) mclient
+            pat = if take 1 p == "/" then p else cwd <> "/" <> p
+        hits <- globPaths pat
+        pure $ case hits of
+            [] | quiet -> Right []
+               | otherwise -> Left ("No such file or directory: " <> path)
+            _ -> Right hits
+    loadOne "-" = readClientStdin mclient >>= \case
+        Left e -> pure [RErr e]
+        Right bytes -> loadCommandFile st mclient load "-"
+            (TE.decodeUtf8With TEE.lenientDecode bytes)
+    loadOne p = do
+        r <- try (readConfigUtf8 p)
+        case r of
+            Left (e :: IOException) -> pure [RErr (T.pack (ioeReason e) <> ": " <> T.pack p)]
+            Right contents -> loadCommandFile st mclient load p contents
+    ioeReason e = if isDoesNotExistError e then "No such file or directory"
+        else if isPermissionError e then "Permission denied" else "Input/output error"
 
 -- | @restart-server [-C] [path]@: reload the server binary in place. See
 -- 'cmdReload'; dropped clients exit and the users reattach.
@@ -679,78 +793,195 @@ restartClientAction = \case
     Just Attached -> RestartAttached
     _             -> NoAttachedClient
 
--- | @display-message [-lp] [-t target] message@. The target is a pane
--- (tmux's @CMD_FIND_PANE@ with @CANFAIL@): the message expands in the
--- resolved pane's format environment, unless @-l@ takes it literally, and
--- an unresolvable target degrades to the plain text instead of erroring.
+-- | @display-message [-lp] [-c target-client] [-d delay] [-t target-pane]
+-- [-F format | message]@ (tmux's @cmd-display-message.c@). The message
+-- expands for the target pane (@CMD_FIND_PANE@ with @CANFAIL@: an
+-- unresolvable target leaves just the client's context) and for the client
+-- shown it when that one views the pane's session, else the session's best
+-- client.
 cmdDisplayMessage :: CommandImpl
-cmdDisplayMessage st mclient args = do
-    let (opts, flags, pos) = parseArgs "t" args
-        raw = T.unwords pos
-    menv <- commandFormatEnv st mclient (lookup "-t" opts)
-    text <- case menv of
-        Just env | "-l" `notElem` flags -> expandFormat st env raw
-        _ -> pure raw
-    case mclient of
-        _ | "-p" `elem` flags -> pure [ROutput text]
-        Just client | Just _ <- client.control -> pure [ROutput ("%message " <> text)]
-        _ -> do
-            forM_ mclient $ \client -> showStyledToast st client text
-            pure []
+cmdDisplayMessage st mclient args
+    | Just e <- unknownFlag "display-message" "aCIlNpv" flags = pure [RErr e]
+    | f : _ <- filter (`elem` ["-a", "-C", "-I", "-N", "-v"]) flags =
+        pure [RErr ("display-message " <> f <> ": not supported")]
+    | isJust (lookup "-F" opts), not (null pos) =
+        pure [RErr "only one of -F or argument must be given"]
+    | Just (Left e) <- mdelay = pure [RErr ("delay " <> e)]
+    | otherwise = do
+        etc <- formatClient st mclient Nothing (lookup "-c" opts)
+        case (lookup "-c" opts, etc) of
+            (Just _, Left e) -> pure [RErr e]
+            _ -> do
+                let mtc = either (const Nothing) Just etc
+                res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+                text <- case res of
+                    Left _ -> do
+                        env <- clientContextFormatEnv st mtc
+                        cvars <- maybe (pure []) (clientFormatVars st) mtc
+                        expand (Map.union (Map.fromList cvars) env)
+                    Right (sess, wix, win, pane) -> do
+                        tcSid <- traverse (readTVarIO . (.session)) mtc
+                        mc <- if tcSid == Just sess.id then pure mtc
+                            else either (const Nothing) Just
+                                <$> formatClient st Nothing (Just sess.id) Nothing
+                        env <- targetFormatEnv st mclient mc (sess, wix, win, pane)
+                        expand env
+                case (mclient, mtc) of
+                    _ | "-p" `elem` flags -> pure [ROutput text]
+                    (Nothing, _) -> pure [RErr text]
+                    (_, Just tc) | Just cs <- tc.control ->
+                        if fmap (.id) mclient == Just tc.id
+                            then pure [ROutput ("%message " <> text)]
+                            else [] <$ atomically
+                                (controlNotify cs (TE.encodeUtf8 ("%message " <> text)))
+                    (_, Just tc) -> do
+                        maybe (showStyledToast st tc text)
+                            (\d -> showStyledToastFor st tc d text)
+                            (either (const Nothing) Just =<< mdelay)
+                        pure []
+                    (_, Nothing) -> pure []
+  where
+    (opts, flags, pos) = parseArgs "cdtF" args
+    template = case lookup "-F" opts of
+        Just f -> f
+        Nothing | not (null pos) -> T.unwords pos
+                | otherwise -> displayMessageTemplate
+    expand env
+        | "-l" `elem` flags = pure template
+        | otherwise = expandFormat st env template
+    mdelay = strtonum 0 4294967295 <$> lookup "-d" opts
+
+-- | tmux's @DISPLAY_MESSAGE_TEMPLATE@: what a bare @display-message@ shows.
+displayMessageTemplate :: Text
+displayMessageTemplate =
+    "[#{session_name}] #{window_index}:#{window_name}, current pane #{pane_index} - (%H:%M %d-%b-%y)"
 
 -- | The format environment a command's arguments expand in: its target
 -- pane's (tmux's @CMD_FIND_PANE@ with @CANFAIL@), with the @mouse_*@
--- variables of the mouse event a binding is acting on.
+-- variables of the mouse event a binding is acting on, and the variables of
+-- the client it runs for (tmux's target client).
 commandFormatEnv :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe FormatEnv)
 commandFormatEnv st mclient mtarget = do
     res <- findTarget st mclient Target.FindPane mtarget
+    case res of
+        Left _ -> pure Nothing
+        Right found@(sess, _, _, _) -> do
+            mc <- either (const Nothing) Just
+                <$> formatClient st mclient (Just sess.id) Nothing
+            Just <$> targetFormatEnv st mclient mc found
+
+-- | A resolved pane target's format environment, with @mc@'s client
+-- variables and the mouse variables of @mclient@'s event.
+targetFormatEnv
+    :: ServerState -> Maybe Client -> Maybe Client -> (Session, Int, Window, Pane)
+    -> IO FormatEnv
+targetFormatEnv st mclient mc (sess, wix, win, pane) = do
     mev <- clientMouseEvent mclient
     mouseVars <- case (,) <$> mclient <*> mev of
         Just (client, ev) -> mouseFormatVars st client ev
         Nothing -> pure []
-    case res of
-        Left _ -> pure Nothing
-        Right (sess, wix, win, pane) -> do
-            pix <- paneIndexOf st win pane
-            env <- paneFormatEnv st sess wix win pix pane
-            pure (Just (Map.union (Map.fromList mouseVars) env))
+    cvars <- maybe (pure []) (clientFormatVars st) mc
+    pix <- paneIndexOf st win pane
+    env <- paneFormatEnv st sess wix win pix pane
+    pure (Map.unions [Map.fromList mouseVars, Map.fromList cvars, env])
 
+-- | @run-shell [-bCE] [-c start-directory] [-d delay] [-t target-pane]
+-- [shell-command [argument ...]]@ (tmux's @cmd-run-shell.c@). The command
+-- is a format, its further arguments its @#{1}@, @#{2}@, …; without @-b@ it
+-- runs to its end before the next command (see 'runShellJob' for where its
+-- output goes).
 cmdRunShell :: CommandImpl
-cmdRunShell st mclient args = do
-    let (opts, flags, pos) = parseArgs "tdc" args
-    menv <- commandFormatEnv st mclient (lookup "-t" opts)
-    cmdText <- maybe pure (expandFormat st) menv (T.unwords pos)
-    -- -d: tmux waits this many seconds before running the command.
-    let delay = maybe 0 (max 0) (readDouble =<< lookup "-d" opts)
-        readDouble t = case TR.double t of
-            Right (v, rest) | T.null rest -> Just v
-            _ -> Nothing
-    -- With no command, -d is a pause in the commands around it (tmux
-    -- blocks the queue), as the default double-click bindings rely on.
-    if T.null (T.strip cmdText)
-        then [] <$ threadDelay (round (delay * 1000000))
-        -- -C: the expanded argument is hat's own command, run in turn.
-        else if "-C" `elem` flags
-            then threadDelay (round (delay * 1000000)) >> runCommandText st mclient cmdText
-            else runShellAsync st mclient cmdText delay
+cmdRunShell st mclient args
+    | Just e <- unknownFlag "run-shell" "bCE" flags = pure [RErr e]
+    | Just _ <- lookup "-s" opts = pure [RErr "run-shell -s: not supported"]
+    | Just d <- lookup "-d" opts, Nothing <- delayOf d =
+        pure [RErr ("invalid delay time: " <> d)]
+    | null pos = [] <$ when waits pause
+    -- -C: the argument is hat's own commands, run in turn.
+    | "-C" `elem` flags = pause >> runCommandText st mclient (T.unwords pos)
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        let found = either (const Nothing) Just res
+            mpane = case (lookup "-t" opts, found) of
+                (Just _, Just (_, _, _, p)) -> Just p
+                _ -> Nothing
+        env <- case found of
+            Just f@(sess, _, _, _) -> do
+                mc <- either (const Nothing) Just
+                    <$> formatClient st mclient (Just sess.id) Nothing
+                targetFormatEnv st mclient mc f
+            Nothing -> clientContextFormatEnv st mclient
+        cmd <- expandFormat st (Map.union numbered env) (T.concat (take 1 pos))
+        dir <- maybe (jobDirectory st mclient ((\(s, _, _, _) -> s) <$> found)) (pure . T.unpack)
+            (lookup "-c" opts)
+        let job = runShellJob cmd dir ("-E" `elem` flags)
+        if waits
+            then do
+                ls <- outsideCommandBatch st (pause >> job)
+                case (mpane, mclient) of
+                    (Just p, _) -> [] <$ unless (null ls) (viewModeAdd st p ViewParsed ls)
+                    (Nothing, Just c)
+                        | c.role == Control || isJust c.control -> pure (map ROutput ls)
+                        | otherwise -> [] <$ unless (null ls) (viewToClient st c ViewParsed ls)
+                    (Nothing, Nothing) -> pure []
+            else [] <$ forkIO (do
+                ls <- pause >> job
+                unless (null ls) $ do
+                    mp <- maybe (backgroundPane st mclient) (pure . Just) mpane
+                    forM_ mp $ \p -> viewModeAdd st p ViewParsed ls)
+  where
+    (opts, flags, pos) = parseArgs "cdst" args
+    waits = "-b" `notElem` flags
+    numbered = Map.fromList (zip (map tshow [1 :: Int ..]) (drop 1 pos))
+    pause = forM_ (lookup "-d" opts >>= delayOf) $ \d ->
+        threadDelay (round (max 0 d * 1000000))
+    delayOf t = case TR.double t of
+        Right (v, rest) | T.null rest -> Just v
+        _ -> Nothing
 
-runShellAsync :: ServerState -> Maybe Client -> Text -> Double -> IO [Reply]
-runShellAsync st mclient cmdText delay = do
-    void . forkIO $ do
-        when (delay > 0) $ threadDelay (round (delay * 1000000))
-        (code, out, errOut) <- readCreateProcessWithExitCode
-            (shell (T.unpack cmdText)) { close_fds = True } ""
-        let firstLine = T.strip . T.takeWhile (/= '\n') . T.pack
-        case code of
-            ExitSuccess ->
-                forM_ mclient $ \client ->
-                    unless (null out) $ showToast st client (firstLine out)
-            ExitFailure n ->
-                forM_ mclient $ \client ->
-                    showToast st client $
-                        "run-shell exited " <> tshow n <> ": "
-                        <> firstLine (out <> errOut)
-    pure []
+-- | Run a @run-shell@ command to its end: its output lines (its errors too
+-- under @-E@), then tmux's word on a failure.
+runShellJob :: Text -> FilePath -> Bool -> IO [Text]
+runShellJob cmd dir withStderr = do
+    (r, w) <- createPipe
+    devnull <- openFile "/dev/null" ReadWriteMode
+    (_, _, _, ph) <- createProcess (shell (T.unpack cmd))
+        { cwd = Just dir
+        , std_in = UseHandle devnull
+        , std_out = UseHandle w
+        , std_err = UseHandle (if withStderr then w else devnull)
+        , close_fds = True }
+    out <- B.hGetContents r
+    code <- waitForProcess ph
+    let text = TE.decodeUtf8With TEE.lenientDecode out
+        -- a last line with no newline is a line too
+        ls = if T.null text then [] else T.splitOn "\n" (fromMaybe text (T.stripSuffix "\n" text))
+        failure = case code of
+            ExitSuccess -> []
+            ExitFailure n
+                | n < 0 -> ["'" <> cmd <> "' terminated by signal " <> tshow (negate n)]
+                | otherwise -> ["'" <> cmd <> "' returned " <> tshow n]
+    pure (ls <> failure)
+
+-- | Where a job runs (tmux's @server_client_get_cwd@): a command client's
+-- own directory, else the target session's.
+jobDirectory :: ServerState -> Maybe Client -> Maybe Session -> IO FilePath
+jobDirectory st mclient msess = case mclient of
+    Just c | c.role == Control, not (T.null c.cwd) -> pure (T.unpack c.cwd)
+    _ -> case msess of
+        Just sess -> readTVarIO sess.startCwd
+        Nothing -> pure (fromMaybe "/" st.home)
+
+-- | Where a @run-shell -b@ with no @-t@ shows its output: the pane its
+-- client is looking at, else the current pane of the best session.
+backgroundPane :: ServerState -> Maybe Client -> IO (Maybe Pane)
+backgroundPane st mclient = do
+    etc <- formatClient st mclient Nothing Nothing
+    mp <- either (const (pure Nothing)) (clientActivePane st) etc
+    case mp of
+        Just p -> pure (Just p)
+        Nothing -> either (const Nothing) (\(_, _, _, p) -> Just p)
+            <$> findTarget st Nothing Target.FindPane Nothing
 
 cmdIfShell :: CommandImpl
 cmdIfShell st mclient args = do

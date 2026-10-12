@@ -54,6 +54,10 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
+import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
+import Hat.Server.Toast (showReplies)
+import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
 import Hat.Server.Pane (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
@@ -81,7 +85,8 @@ import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
-    , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv )
+    , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv
+    , clientFormatVars, windowFormatEnv )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
     (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
@@ -188,6 +193,8 @@ addClient st sid sz stamp = do
         <*> newTVarIO ImportEnv
         <*> pure []
         <*> pure ""
+        <*> pure ""  -- term
+        <*> pure 0   -- createdAt
         <*> pure NoStdin
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
@@ -236,6 +243,8 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO ImportEnv
         <*> pure clientEnv
         <*> pure ""
+        <*> pure ""  -- term
+        <*> pure 0   -- createdAt
         <*> pure NoStdin
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
@@ -260,6 +269,7 @@ stubPane n = do
     alternateV <- newTVarIO False
     syncV <- newTVarIO noOutputSync
     clockV <- newTVarIO NoClock
+    viewV <- newTVarIO Nothing
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -280,6 +290,7 @@ stubPane n = do
         , onAlternate = alternateV
         , outputSync = syncV
         , clock = clockV
+        , viewBacking = viewV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -300,10 +311,15 @@ adoptedPane n = do
 -- lines, viewing the bottom.
 blankCopyMode :: Int -> PaneMode
 blankCopyMode hsize = PaneMode
-    { frozen = FrozenGrid
+    { kind = ModeCopy
+    , frozen = FrozenGrid
         { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty, fgWrapped = V.empty }
     , copyState = copyModeAt "copy-mode" hsize 0
     }
+
+-- | A frozen grid row's text, trailing blanks trimmed.
+rowOf :: PaneMode -> Int -> Text
+rowOf pm r = T.stripEnd (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V.! r))))
 
 spec :: Spec
 spec = do
@@ -410,6 +426,48 @@ spec = do
             attached <- sessionFormatEnv st sess
             Map.lookup "session_attached" attached `shouldBe` Just "1"
 
+    describe "session and window position formats" $
+        it "name the current, last and stacked windows, and the target's kind" $ do
+            (st, sess) <- seedSession "/"
+            w0 <- addWindow sess 0
+            _ <- addWindow sess 3
+            atomically $ do
+                writeTVar sess.currentIx 3
+                writeTVar sess.windowHist [0]
+            senv <- sessionFormatEnv st sess
+            [ Map.lookup n senv | n <- ["active_window_index", "last_window_index", "session_stack"] ]
+                `shouldBe` map Just ["3", "3", "3,0"]
+            wenv <- windowFormatEnv st sess 0 w0
+            [ Map.lookup n wenv | n <- ["window_start_flag", "window_end_flag", "window_stack_index"] ]
+                `shouldBe` map Just ["1", "0", "1"]
+            [ Map.lookup n wenv | n <- ["session_format", "window_format", "pane_format"] ]
+                `shouldBe` map Just ["0", "1", "0"]
+
+    describe "client formats" $
+        it "describe the client: its name, session, key table and flags" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            c <- addClient st sess.id (Size { rows = 24, cols = 80 }) 7
+            vars <- clientFormatVars st c
+            [ lookup n vars | n <- ["client_name", "client_session", "client_key_table"
+                                   , "client_prefix", "client_flags", "client_width"] ]
+                `shouldBe` map Just ["client7", "work", "root", "0", "attached,focused,UTF-8", "80"]
+            senv <- sessionFormatEnv st sess
+            Map.lookup "session_attached_list" senv `shouldBe` Just "client7"
+
+    describe "list-clients" $
+        it "shows each client in tmux's default form, -f filtering them" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            _ <- addClient st sess.id (Size { rows = 30, cols = 90 }) 2
+            -- These clients' sockets have no peer, so no uid to match the server's.
+            runArgv st Nothing ["list-clients"]
+                `shouldReturn` [ ROutput "client1: work [80x24 ] [user ] (attached,focused,UTF-8)"
+                               , ROutput "client2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
+            runArgv st Nothing ["list-clients", "-f", "#{==:#{client_width},90}", "-F", "#{line}"]
+                `shouldReturn` [ROutput "1"]
+
     describe "pane_in_mode" $
         it "is 1 while copy mode is open, 0 otherwise" $ do
             (st, _) <- seedSession "/"
@@ -421,6 +479,58 @@ spec = do
             env1 <- paneModeEnv st p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
+
+    describe "view mode" $ do
+        it "shows added lines in the pane as view-mode, holding the view at its first lines" $ do
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            viewModeAdd st p ViewParsed ["foo", "\ESC[1mbar"]
+            Just pm <- readTVarIO p.mode
+            map (rowOf pm) [0, 1] `shouldBe` ["foo", "bar"]
+            env <- paneModeEnv st p
+            lookup "pane_mode" env `shouldBe` Just "view-mode"
+            viewModeAdd st p ViewParsed [ tshow n | n <- [1 .. 30 :: Int] ]
+            Just pm' <- readTVarIO p.mode
+            pm'.frozen.fgHsize `shouldSatisfy` (> 0)
+            pm'.copyState.viewportOffY `shouldBe` pm'.frozen.fgHsize
+            rowOf pm' 2 `shouldBe` "1"
+        it "drops its screen when the mode ends" $ do
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            viewModeAdd st p ViewLiteral ["x\ESC"]
+            Just pm <- readTVarIO p.mode
+            rowOf pm 0 `shouldBe` "x"
+            _ <- runCopyModeCommand st p "cancel" []
+            readTVarIO p.mode `shouldReturn` Nothing
+            isJust <$> readTVarIO p.viewBacking `shouldReturn` False
+
+    describe "an attached client's command output" $
+        it "goes to the view mode of the pane it looks at, its errors to a message" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            c <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            showReplies st c [ROutput "one", RErr "bad", ROutput "two"]
+            Just pm <- readTVarIO p.mode
+            (pm.kind, map (rowOf pm) [0, 1]) `shouldBe` (ModeView, ["one", "two"])
+            fmap (.text) <$> readTVarIO c.toast `shouldReturn` Just "error: bad"
+
+    describe "configuration causes" $
+        it "wait for a session with a client, then show in its pane's view mode" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' win.panes (Map.insert p.id p)
+                addConfigCause st "c.conf:1: unknown command: x"
+            showConfigCauses st Nothing
+            readTVarIO st.configCauses `shouldReturn` ["c.conf:1: unknown command: x"]
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            showConfigCauses st (Just sess)
+            readTVarIO st.configCauses `shouldReturn` []
+            Just pm <- readTVarIO p.mode
+            (pm.kind, rowOf pm 0) `shouldBe` (ModeView, "c.conf:1: unknown command: x")
 
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do
@@ -506,6 +616,15 @@ spec = do
                 handleInput dispatch st attached "\ESC\x01"
                 timeout 5000000 (wait a) `shouldReturn` Just [ROutput "C-M-a"]
             readTVarIO attached.prompt `shouldReturn` Nothing
+        it "waits through every prompt, then runs the template with each answer" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            (cli, _peer) <- wiredClient st Control
+            withAsync (runArgv st (Just cli) ["command-prompt", "-k", "-p", "a,b", "display-message -pl '%1 %2'"]) $ \a -> do
+                _ <- awaitPrompt attached
+                handleInput dispatch st attached "x"
+                handleInput dispatch st attached "y"
+                timeout 5000000 (wait a) `shouldReturn` Just [ROutput "x y"]
         it "-b opens the prompt without waiting, and a prompt already open stays" $ do
             (st, sess) <- seedSession "/"
             attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
@@ -520,12 +639,6 @@ spec = do
                 `shouldReturn` [RErr "command-prompt -1: not supported"]
             runArgv st Nothing ["command-prompt", "-t", "nosuch", "x"]
                 `shouldReturn` [RErr "can't find client: nosuch"]
-
-    describe "display-message -l" $
-        it "prints the message as it is" $ do
-            (st, _) <- seedSession "/"
-            runArgv st Nothing ["display-message", "-pl", "#{session_name} %%"]
-                `shouldReturn` [ROutput "#{session_name} %%"]
 
     describe "a pane's palette query" $
         it "is answered from an entry it set, else by an attached terminal" $ do
@@ -896,12 +1009,23 @@ spec = do
         it "expands the name as a format" $
             renamed "w#{window_index}:.##(ok)" `shouldReturn` ("w0:.#(ok)", False)
 
-    describe "run-shell -C" $
-        it "runs its argument as commands" $ do
+    describe "run-shell" $ do
+        it "-C runs its argument as commands" $ do
             (st, _) <- seedSession "/"
             _ <- runArgv st Nothing ["run-shell", "-C", "set -g @ran yes; set -g @also too"]
             o <- readTVarIO st.options
             map (`Map.lookup` o.user) ["@ran", "@also"] `shouldBe` [Just "yes", Just "too"]
+        it "prints a command client its output, its arguments as #{1}…, and a failure" $ do
+            (st, _) <- seedSession "/"
+            (c, _) <- wiredClient st Control
+            runArgv st (Just c) ["run-shell", "printf 'a\\nb'; echo #{1}-#{2} >&2", "x", "y"]
+                `shouldReturn` [ROutput "a", ROutput "b"]
+            runArgv st (Just c) ["run-shell", "-E", "echo #{1}-#{2} >&2", "x", "y"]
+                `shouldReturn` [ROutput "x-y"]
+            runArgv st (Just c) ["run-shell", "exit 3"]
+                `shouldReturn` [ROutput "'exit 3' returned 3"]
+            runArgv st (Just c) ["run-shell", "-d", "x", "true"]
+                `shouldReturn` [RErr "invalid delay time: x"]
     describe "snapshot commands without persistence" $
         it "list-snapshots and restore-snapshot fail loudly, never silently (bb)" $ do
             (st, _) <- seedSession "/"

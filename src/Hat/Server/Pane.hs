@@ -270,10 +270,14 @@ baseName path = case Prelude.reverse (takeWhile (/= '/') (Prelude.reverse path))
 data SpawnOrigin = ShellSpawned | Direct
     deriving (Eq, Show)
 
--- | What a new pane given @mrun@ starts: that command line, else the
+-- | What a new pane given the command @argv@ starts (tmux's spawn: one
+-- word is a shell command line, more are exec'd as they are), else the
 -- session's @default-command@ @dc@ ('withDefaultCommand').
-shellStart :: Text -> Maybe Text -> PaneStart
-shellStart dc = withDefaultCommand dc . maybe FreshShell ShellCommand
+shellStart :: Text -> [Text] -> PaneStart
+shellStart dc = withDefaultCommand dc . \case
+    [] -> FreshShell
+    [c] -> ShellCommand c
+    argv -> ExecArgv argv
 
 -- | tmux's spawn: a new pane given no command runs the session's
 -- @default-command@ @dc@ when one is set, else a fresh shell.
@@ -421,6 +425,7 @@ newPane pid pty emu sz dir pending start kind = do
     _ <- Emu.setTitle emu (T.pack host)
     alternateVar <- newTVarIO False
     clockVar <- newTVarIO NoClock
+    viewVar <- newTVarIO Nothing
     pure Pane
         { id = pid
         , pty = pty
@@ -441,6 +446,7 @@ newPane pid pty emu sz dir pending start kind = do
         , onAlternate = alternateVar
         , outputSync = syncVar
         , clock = clockVar
+        , viewBacking = viewVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps
@@ -1769,15 +1775,15 @@ freshSessionName st prefix mname = do
             if nm `elem` taken then freshSessionName st prefix mname else pure (sid, nm)
 
 createSession
-    :: ServerState -> Maybe Text -> Maybe Text -> [(Text, Text)]
+    :: ServerState -> Maybe Text -> [Text] -> [(Text, Text)]
     -> FilePath -> Size -> IO Session
-createSession st mname mrun environ dir sz = do
+createSession st mname argv environ dir sz = do
     (sid, sname0) <- atomically (freshSessionName st Nothing mname)
     opts <- atomically (resolveGlobal st)
     spawnEnv <- globalSpawnEnv st environ
     shellCmd <- paneShell opts
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd
-        (shellStart (optionText "default-command" opts) mrun) ProgramPane dir spawnEnv sz
+        (shellStart (optionText "default-command" opts) argv) ProgramPane dir spawnEnv sz
     now <- getPOSIXTime
     nameVar <- newTVarIO sname0
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)

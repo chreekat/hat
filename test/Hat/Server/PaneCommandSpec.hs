@@ -17,11 +17,14 @@ import Test.Hspec
 
 import Hat.Log (newLogger)
 import Hat.Model
+import Hat.Model.Options (Options (..))
 import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
 import Hat.Server.Snapshot (captureSnapshot, restoreSnapshot)
+import Hat.Term.Cell qualified as Cell
 import Hat.Term.Pty qualified as Pty
+import Data.Vector qualified as V
 
 -- | A fresh server for one test; on exit every pane still alive is killed
 -- and its child reaped, so no test leaks a process.
@@ -114,6 +117,64 @@ spec = do
                 pid <- getProcessID
                 run st ["display-message", "-p", "#{pid}"]
                     `shouldReturn` [ROutput (T.pack (show pid))]
+
+    describe "new-session" $
+        it "execs a command of several words as its argv, which the start formats quote" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "Q", "--", "sh", "-c", "sleep 30", "it's", "a b"]
+                    `shouldReturn` []
+                run st ["display-message", "-p", "-t", "Q:0.0", "#{pane_start_command_list}"]
+                    `shouldReturn` [ROutput "'sh' '-c' 'sleep 30' 'it'\\''s' 'a b'"]
+                run st ["display-message", "-p", "-t", "Q:0.0", "#{pane_start_command}"]
+                    `shouldReturn` [ROutput "sh -c \"sleep 30\" \"it's\" \"a b\""]
+
+    describe "display-message" $ do
+        it "with no target, expands in the most recently active session" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
+                run st ["new-session", "-d", "-s", "B", "sleep 30"] `shouldReturn` []
+                run st ["display-message", "-p", "#{session_name}"] `shouldReturn` [ROutput "B"]
+                atomically $ do
+                    ss <- Map.elems <$> readTVar st.sessions
+                    named <- filterM (\s -> (== "A") <$> readTVar s.name) ss
+                    forM_ named $ \s -> tickActivity st >>= writeTVar s.activity
+                run st ["display-message", "-p", "#{session_name}"] `shouldReturn` [ROutput "A"]
+        it "tells its after hook its -c and -d values apart from its message" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
+                run st ["set-hook", "-g", "after-display-message", "set -gF @got '#{hook_flag_d}/#{hook_argument_0}'"]
+                    `shouldReturn` []
+                _ <- run st ["display-message", "-d", "5", "-p", "msg"]
+                untilM' <- timeout 5_000_000 $ untilM $ do
+                    o <- readTVarIO st.options
+                    pure (Map.lookup "@got" o.user == Just "5/msg")
+                untilM' `shouldBe` Just ()
+        it "refuses a -c naming no client, and flags it does not implement" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
+                run st ["display-message", "-c", "nope", "-p", "x"]
+                    `shouldReturn` [RErr "can't find client: nope"]
+                run st ["display-message", "-v", "-p", "x"]
+                    `shouldReturn` [RErr "display-message -v: not supported"]
+                run st ["display-message", "-l", "-p", "#{session_name}"]
+                    `shouldReturn` [ROutput "#{session_name}"]
+
+    describe "run-shell" $
+        it "-t shows the output in the pane's view mode, -b too once it ends" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["run-shell", "-t", "S:0.0", "echo out"] `shouldReturn` []
+                run st ["display-message", "-p", "-t", "S:0.0", "#{pane_mode}"]
+                    `shouldReturn` [ROutput "view-mode"]
+                run st ["run-shell", "-b", "-t", "S:0.0", "echo later"] `shouldReturn` []
+                [p] <- allPanes st
+                shown <- timeout 5_000_000 $ untilM $ do
+                    mpm <- readTVarIO p.mode
+                    pure $ case mpm of
+                        Just pm | pm.frozen.fgSy > 1 ->
+                            T.isPrefixOf "later" (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V.! 1))))
+                        _ -> False
+                shown `shouldBe` Just ()
 
     describe "new-window" $
         it "expands -n as a format in the target session" $

@@ -104,6 +104,8 @@ parseCli = go Cli
         ("-L" : name : rest) -> go cli { socketName = name } rest
         ("-S" : path : rest) -> go cli { socketPathOverride = Just path } rest
         ("-f" : path : rest) -> go cli { configFile = Just path } rest
+        -- -u asks for UTF-8, which hat's client always speaks.
+        ("-u" : rest) -> go cli rest
         (arg : rest)
             | Just v <- attached "-L" arg -> go cli { socketName = v } rest
             | Just v <- attached "-S" arg ->

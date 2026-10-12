@@ -18,6 +18,8 @@ module Hat.Term.Emulator
     , OscTerm (..)
     , Screen (..)
     , Modes (..)
+    , VtModes (..)
+    , vtModes
     , MouseMode (..)
     , CursorKey (..)
     , KeyPress (..)
@@ -644,6 +646,12 @@ modes e = withMVar e.lock $ \_ -> do
             , focusReport = foc /= 0
             , colorReport = cr
             }
+
+vtModes :: Emulator -> IO VtModes
+vtModes e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    let dec m = (/= 0) <$> c_mode t m 0
+    VtModes <$> dec 25 <*> ((/= 0) <$> c_mode t 4 1) <*> dec 1 <*> dec 66
+        <*> dec 6 <*> dec 7 <*> dec 2004 <*> dec 2026
 
 -- | The mouse encodings the app turned on: SGR (?1006) and UTF-8 (?1005).
 mouseEncoding :: Emulator -> IO (Bool, Bool)

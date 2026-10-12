@@ -21,6 +21,7 @@ module Hat.Server.Command.Session
 
 import Control.Concurrent.STM
 import Control.Monad (filterM, forM, forM_, guard, unless, when)
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -36,6 +37,7 @@ import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (send)
+import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
@@ -111,6 +113,7 @@ newSession st mclient opts flags pos
                         writeTVar sess.startCwd (T.unpack d)
                         bumpDirty st
                     attachClient st client sess
+                    configCausesFor st sess
                     pure []
         _ -> pure [RErr "open terminal failed: not a terminal"]
     detachOthers client sess = do
@@ -152,9 +155,6 @@ newSession st mclient opts flags pos
         gopts <- atomically (resolveGlobal st)
         let dir' = maybe dir T.unpack (lookup "-c" opts)
             detached = "-d" `elem` flags
-            mrun = case pos of
-                [] -> Nothing
-                ws -> Just (T.unwords ws)
             -- @-x -@ / @-y -@ take the creating client's own dimension.
             dimension flag name fromClient fallback =
                 case lookup flag opts of
@@ -174,7 +174,7 @@ newSession st mclient opts flags pos
             let sz = baseSz
                     { cols = fromMaybe baseSz.cols mx
                     , rows = fromMaybe baseSz.rows my }
-            sess <- createSession st (lookup "-s" opts) mrun environ dir' sz
+            sess <- createSession st (lookup "-s" opts) pos environ dir' sz
             forM_ mgroup $ \g -> do
                 sname <- readTVarIO sess.name
                 notifyGroupChange st "session-added-to-group"
@@ -194,6 +194,7 @@ newSession st mclient opts flags pos
     finish sess = do
         unless ("-d" `elem` flags) $
             forM_ mclient $ \client -> attachClient st client sess
+        configCausesFor st sess
         if "-P" `elem` flags
             then do
                 mctx <- atomically $ do
@@ -210,6 +211,13 @@ newSession st mclient opts flags pos
                     (fromMaybe "#{session_name}:" (lookup "-F" opts))
                 pure [ROutput out]
             else pure []
+
+-- | The configuration causes still unshown, as a session is created or
+-- attached once the configuration has loaded (tmux's @cfg_show_causes@).
+configCausesFor :: ServerState -> Session -> IO ()
+configCausesFor st sess = do
+    phase <- readTVarIO st.startupPhase
+    unless (phase == LoadingConfig) (showConfigCauses st (Just sess))
 
 -- | Show @sess@ on @client@, then let @destroy-unattached@ collect any
 -- session the move left without a client (tmux's
@@ -289,7 +297,10 @@ cmdAttachSession st mclient args = do
                 writeTVar sess.startCwd dir
                 bumpDirty st
         case mclient of
-            Just client -> attachClient st client sess >> pure []
+            Just client -> do
+                attachClient st client sess
+                configCausesFor st sess
+                pure []
             Nothing
                 | isJust (lookup "-c" opts) -> pure []
                 | otherwise -> pure [RErr "no client to attach"]
@@ -426,38 +437,102 @@ cmdRenameSession st mclient args
   where
     (opts, flags, pos) = parseArgs "t" args
 
--- | tmux @list-clients@: one line per attached client (control connections
--- are not clients), filtered by @-t@ and shaped by @-F@.
+-- | tmux @list-clients [-r] [-F format] [-f filter] [-O order] [-t
+-- target-session]@: one line per attached client (control connections are
+-- not clients), each expanded in its client's whole context.
 cmdListClients :: CommandImpl
-cmdListClients st mclient args = do
-    let (opts, _, _) = parseArgs "tF" args
-    efilter <- case lookup "-t" opts of
-        Nothing -> pure (Right Nothing)
-        Just t -> do
-            msess <- targetSession st mclient (Just t)
-            pure $ case msess of
-                Nothing -> Left ("no such session: " <> t)
-                Just sess -> Right (Just sess.id)
-    case efilter of
-        Left err -> pure [RErr err]
-        Right msid -> do
-            (cs, sessions) <- atomically $
-                (,) <$> readTVar st.clients <*> readTVar st.sessions
-            fmap concat . forM (Map.elems cs) $ \c -> do
-                sid <- readTVarIO c.session
-                case Map.lookup sid sessions of
-                    Just sess
-                        | c.role == Attached
-                        , maybe True (== sid) msid -> do
-                            senv <- sessionFormatEnv st sess
-                            sname <- readTVarIO sess.name
-                            cvars <- clientFormatVars c
-                            let env = Map.union (Map.fromList
-                                    (("client_session", sname) : cvars)) senv
-                            out <- expandFormat st env $ fromMaybe
-                                "#{session_name}" (lookup "-F" opts)
+cmdListClients st mclient args
+    | Just e <- unknownFlag "list-clients" "r" flags = pure [RErr e]
+    | Just o <- lookup "-O" opts, isNothing (clientOrder o) =
+        pure [RErr "invalid sort order"]
+    | otherwise = do
+        efilter <- case lookup "-t" opts of
+            Nothing -> pure (Right Nothing)
+            Just t -> do
+                msess <- targetSession st mclient (Just t)
+                pure $ case msess of
+                    Nothing -> Left ("no such session: " <> t)
+                    Just sess -> Right (Just sess.id)
+        case efilter of
+            Left err -> pure [RErr err]
+            Right msid -> do
+                (cs, sessions) <- atomically $
+                    (,) <$> readTVar st.clients <*> readTVar st.sessions
+                attached <- fmap concat . forM (Map.elems cs) $ \c -> do
+                    sid <- readTVarIO c.session
+                    act <- readTVarIO c.lastActive
+                    sz <- readTVarIO c.size
+                    pure [ (c, sess, act, sz) | c.role == Attached
+                         , Just sess <- [Map.lookup sid sessions] ]
+                let ordered = sortClients (lookup "-O" opts >>= clientOrder)
+                        ("-r" `elem` flags) attached
+                fmap concat . forM (zip [0 :: Int ..] ordered) $ \(line, (c, sess, _, _)) ->
+                    if maybe False (/= sess.id) msid then pure [] else do
+                        senv <- clientViewEnv sess
+                        cvars <- clientFormatVars st c
+                        let env = Map.unions
+                                [ Map.singleton "line" (tshow line)
+                                , Map.fromList cvars, senv ]
+                        keep <- maybe (pure True)
+                            (fmap truthy . expandFormat st env) (lookup "-f" opts)
+                        if not keep then pure [] else do
+                            out <- expandFormat st env
+                                (fromMaybe listClientsTemplate (lookup "-F" opts))
                             pure [ROutput out]
-                    _ -> pure []
+  where
+    (opts, flags, _) = parseArgs "FfOt" args
+    clientViewEnv sess = do
+        mview <- atomically $ currentWindow sess >>= \case
+            Nothing -> pure Nothing
+            Just win -> do
+                ix <- readTVar sess.currentIx
+                fmap (\p -> (ix, win, p)) <$> activePane win
+        case mview of
+            Nothing -> sessionFormatEnv st sess
+            Just (wix, win, pane) -> do
+                pix <- paneIndexOf st win pane
+                paneFormatEnv st sess wix win pix pane
+
+-- | tmux's @LIST_CLIENTS_TEMPLATE@.
+listClientsTemplate :: Text
+listClientsTemplate = T.concat
+    [ "#{client_name}: #{session_name} "
+    , "[#{client_width}x#{client_height} #{client_termname}] "
+    , "#{?#{!=:#{client_uid},#{uid}},"
+    , "[user #{?client_user,#{client_user},#{client_uid},}] ,}"
+    , "#{?client_flags,(,}#{client_flags}#{?client_flags,),}" ]
+
+-- | How @list-clients -O@ orders clients (tmux's @sort_client_cmp@).
+data ClientOrder = ClientsByName | ClientsBySize | ClientsByCreation
+    | ClientsByActivity | ClientsInOrder
+    deriving (Eq)
+
+-- | tmux's @sort_order_from_string@, for clients.
+clientOrder :: Text -> Maybe ClientOrder
+clientOrder o = case T.toLower o of
+    "activity" -> Just ClientsByActivity
+    "creation" -> Just ClientsByCreation
+    "size" -> Just ClientsBySize
+    "order" -> Just ClientsInOrder
+    n | n `elem` ["name", "title", "index", "key", "modifier", "z"] -> Just ClientsByName
+      | otherwise -> Nothing
+
+-- | tmux's @sort_qsort@ over clients: unsorted (connection order) with no
+-- @-O@, else by the order with the name breaking ties, @-r@ reversing.
+sortClients :: Maybe ClientOrder -> Bool -> [(Client, a, Int, Size)] -> [(Client, a, Int, Size)]
+sortClients morder reversed cs = case morder of
+    Nothing -> cs
+    Just ClientsInOrder -> if reversed then reverse cs else cs
+    Just order -> List.sortBy (\a b -> flipIf (compareBy order a b <> byName a b)) cs
+  where
+    flipIf r = if reversed then compare EQ r else r
+    byName (a, _, _, _) (b, _, _, _) = compare (name a) (name b)
+    name c = "client" <> tshow (rawClient c.id)
+    compareBy order (a, _, actA, szA) (b, _, actB, szB) = case order of
+        ClientsBySize -> compare (szA.cols, szA.rows) (szB.cols, szB.rows)
+        ClientsByCreation -> compare a.createdAt b.createdAt
+        ClientsByActivity -> compare actB actA
+        _ -> EQ
 
 cmdListSessions :: CommandImpl
 cmdListSessions st _ args = do

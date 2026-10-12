@@ -74,7 +74,8 @@ mkClient sz lastFrame = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, popup = popupV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
-            , env = [], cwd = "", stdinSource = NoStdin, control = Nothing
+            , env = [], cwd = "", term = "", createdAt = 0
+            , stdinSource = NoStdin, control = Nothing
             , viewport = viewportV, lastViewOrigin = viewOriginV }
     re <- newReadEnd b
     pure (client, re)

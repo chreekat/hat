@@ -24,6 +24,10 @@ spec = do
     it "unescapes inside double quotes" $
         parses "echo \"a \\\" b\"" [["echo", "a \" b"]]
 
+    it "joins adjacent quoted and bare pieces into one word" $
+        parses "set @r 'can'\\''t ; x' a\"b c\"'d'"
+            [["set", "@r", "can't ; x", "ab cd"]]
+
     it "splits commands on semicolons" $
         parses "select-pane -L ; kill-pane"
             [["select-pane", "-L"], ["kill-pane"]]
@@ -50,6 +54,11 @@ spec = do
                 [ ["set", "-g", "status-left", "abc"]
                 , ["bind", "v", "split-window", "-h"]
                 ]
+
+    it "numbers each config command by the line it starts on, and an error by its" $ do
+        parseConfigLines "a\n\nb \\\n  c ; d\ne {\n f\n}\n"
+            `shouldBe` Right [(1, ["a"]), (3, ["b", "c"]), (3, ["d"]), (5, ["e", "\n f\n"])]
+        fmap fst (either Just (const Nothing) (parseConfigLines "a\nb }\n")) `shouldBe` Just 2
 
     it "skips blank lines" $
         parseConfig "\n\nset -g x y\n\n" `shouldBe` Right [["set", "-g", "x", "y"]]
