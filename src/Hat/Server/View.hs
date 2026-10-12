@@ -1028,7 +1028,7 @@ statusRowsCached st client sess sopts width = do
         Just c | isNothing mamb, c.plain
                , samePtr c.opts sopts, samePtr c.shells shells, c.width == width
                , fmap (clockTick zone now) c.clockPeriod == c.clock -> do
-            vars <- sessionVars st sess (OnlyVars c.names)
+            vars <- sessionVars st sess (OnlyVars c.ownNames)
             wins <- if vars == c.vars then ownVars (OnlyVars c.names) else pure []
             pure (if vars == c.vars && wins == c.wins then Just c.rowCells else Nothing)
         _ -> pure Nothing
@@ -1054,10 +1054,13 @@ statusRowsCached st client sess sopts width = do
                 animated = readsAny ["A"]
                 clockPeriod = formatClock
                     (reached <> [ v | (n, v) <- values, n `Set.member` strftimed ])
+                -- An option's value stands while the options do.
+                ownNames = Set.filter (\n -> isNothing (optionFormat n sopts)) names
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
                     { opts = sopts, shells, clockPeriod
-                    , clock = clockTick zone now <$> clockPeriod, width, names, vars
+                    , clock = clockTick zone now <$> clockPeriod, width, names, ownNames
+                    , vars = Map.restrictKeys vars ownNames
                     , wins = map (`Map.restrictKeys` names) winEnvs
                     , plain, animated, rowCells = rows }
             pure $! foldr seq rows rows

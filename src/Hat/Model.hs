@@ -737,7 +737,8 @@ data StatusCache = StatusCache
     , clock   :: !(Maybe (Int, Integer))  -- ^ the period it read; see 'Hat.Server.Format.clockTick'
     , width   :: !Int
     , names   :: !(Set Text)  -- ^ every variable the expansion can read
-    , vars    :: !(Map Text Text)  -- ^ the session's values of 'names'
+    , ownNames :: !(Set Text)  -- ^ those no option in 'opts' provides
+    , vars    :: !(Map Text Text)  -- ^ the session's values of 'ownNames'
     , wins    :: ![Map Text Text]  -- ^ each window's own values of 'names', in index order
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
     , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
