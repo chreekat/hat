@@ -11,12 +11,14 @@ module Hat.Server.HookMonitor
     , removeMonitor
     , monitorsAt
     , monitorLoop
+    , sampleRound
     , sampleMonitors
     ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, catch)
+import Control.Exception
+    (SomeAsyncException, SomeException, catch, fromException, throwIO)
 import Control.Monad (forM_, forever)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -99,9 +101,15 @@ monitorsAt st scope = do
 monitorLoop :: ServerState -> IO ()
 monitorLoop st = forever $ do
     threadDelay 400_000
-    (sampleMonitors st >> silenceSweep st) `catch` \(e :: SomeException) ->
-        logEvent st.logger DaemonFault
-            { daemon = "hook-monitor", err = tshow e }
+    sampleRound st.logger (sampleMonitors st >> silenceSweep st)
+
+-- | One sampling round: a synchronous fault is logged and the daemon goes
+-- on; an asynchronous exception (the shutdown 'cancel') ends it.
+sampleRound :: Logger -> IO () -> IO ()
+sampleRound lg act = act `catch` \(e :: SomeException) ->
+    case fromException e of
+        Just (_ :: SomeAsyncException) -> throwIO e
+        Nothing -> logEvent lg DaemonFault { daemon = "hook-monitor", err = tshow e }
 
 -- | Raise the silence flag on every monitored window quiet past its
 -- @monitor-silence@ interval, alerting as @silence-action@ says; the alert
