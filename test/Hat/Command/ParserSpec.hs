@@ -55,6 +55,11 @@ spec = do
                 , ["bind", "v", "split-window", "-h"]
                 ]
 
+    it "numbers each config command by the line it starts on, and an error by its" $ do
+        parseConfigLines "a\n\nb \\\n  c ; d\ne {\n f\n}\n"
+            `shouldBe` Right [(1, ["a"]), (3, ["b", "c"]), (3, ["d"]), (5, ["e", "\n f\n"])]
+        fmap fst (either Just (const Nothing) (parseConfigLines "a\nb }\n")) `shouldBe` Just 2
+
     it "skips blank lines" $
         parseConfig "\n\nset -g x y\n\n" `shouldBe` Right [["set", "-g", "x", "y"]]
 
