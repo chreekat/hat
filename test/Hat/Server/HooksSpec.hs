@@ -311,6 +311,7 @@ fakeClient _ = do
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
+    viewOriginV <- newIORef (Pos 0 0)
     pure Client
         { id = ClientId 0
         , role = Control
@@ -348,6 +349,7 @@ fakeClient _ = do
         , stdinSource = NoStdin
         , control = Nothing
         , viewport = viewportV
+        , lastViewOrigin = viewOriginV
         }
 
 -- Wait (bounded) until a channel waiter registers.

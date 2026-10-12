@@ -200,13 +200,15 @@ renderOnce st client = do
                     case placePaneCursor (paneOrigin rects active) 0 pv of
                         (p, True) -> Just p
                         _ -> Nothing
-            (prevView, vp) <- atomically $ do
+            vp <- atomically $ do
                 prev <- readTVar client.viewport
                 let next = viewportFor win.id eff sceneArea shownCursor prev
                 when (next /= prev) $ writeTVar client.viewport next
-                pure (prev, next)
+                pure next
+            drawnOrigin <- readIORef client.lastViewOrigin
+            writeIORef client.lastViewOrigin vp.origin
             let o = vp.origin
-                moved = o /= prevView.origin
+                moved = o /= drawnOrigin
                 toView p = Pos { row = p.row - o.row, col = p.col - o.col }
                 inScene p = p.row >= 0 && p.row < fromIntegral sceneArea.rows
                     && p.col >= 0 && p.col < fromIntegral sceneArea.cols

@@ -844,6 +844,8 @@ data Client = Client
         -- ^ a tmux control-mode client's protocol state; 'Nothing' for
         --   every other client. See "Hat.Server.Control".
     , viewport  :: TVar Viewport  -- ^ see "Hat.Server.Viewport"
+    , lastViewOrigin :: IORef Pos
+        -- ^ the 'viewport' origin 'lastFrame' was drawn at; render thread only
     }
 
 -- | A client's popup: its box, and the command running on a pty of its

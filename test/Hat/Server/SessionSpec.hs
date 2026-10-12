@@ -190,6 +190,7 @@ addClient st sid sz stamp = do
         <*> pure NoStdin
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
+        <*> newIORef (Pos 0 0)
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -237,6 +238,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure NoStdin
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
+        <*> newIORef (Pos 0 0)
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 
@@ -537,6 +539,12 @@ spec = do
         it "shows the panned part, clamped to the window" $
             drawnFrom (\w -> unpannedViewport { origin = Pos 30 50, pinned = Just w })
                 `shouldReturn` T.justifyLeft 40 ' ' "B06"
+        it "a pan along the row redraws the rows it shifts" $ do
+            (st, client) <- viewing (const unpannedViewport)
+            _ <- topRow st client
+            runArgv st Nothing ["refresh-client", "-R", "1"] `shouldReturn` []
+            topRow st client
+                `shouldReturn` T.justifyLeft 40 ' ' ("A06" <> T.replicate 16 " " <> "B06")
         it "refresh-client pans the current client's view, and -c releases it" $ do
             (st, client) <- viewing (const unpannedViewport)
             _ <- topRow st client
