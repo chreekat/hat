@@ -106,6 +106,15 @@ spec = do
                 run st ["kill-pane", "-a", "-t", b] `shouldReturn` []
                 paneIds st "S:0" `shouldReturn` [b]
 
+    describe "new-window" $
+        it "expands -n as a format in the target session" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["new-window", "-d", "-t", "S:9", "-n", "#{session_name}:.##(ok)", "sleep 30"]
+                    `shouldReturn` []
+                run st ["display-message", "-p", "-t", "S:9", "#{window_name}"]
+                    `shouldReturn` [ROutput "S:.#(ok)"]
+
     describe "pipe-pane" $
         it "pipes the pane a full -t target names, not the current one" $
             withServer $ \st -> do

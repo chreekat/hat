@@ -174,10 +174,12 @@ cmdNewWindow st mclient args
     | Just e <- unknownFlag "new-window" "abdEkPS" flags = pure [RErr e]
     | Left e <- launchOf ("-E" `elem` flags) pos = pure [RErr e]
     | otherwise = do
-        res <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        res <- findWindowIndexTarget st mclient (lookup "-t" opts0)
         case res of
             Left e -> pure [RErr e]
             Right (sess, requested) -> do
+                env <- sessionFormatEnv st sess
+                opts <- mapM (expandName env) opts0
                 reuse <- case (lookup "-n" opts, requested) of
                     (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
                         ws <- readTVar sess.windows
@@ -192,7 +194,10 @@ cmdNewWindow st mclient args
                         pure []
                     Right Nothing -> createWindow st sess opts flags pos requested
   where
-    (opts, flags, pos) = parseArgs "nctF" args
+    (opts0, flags, pos) = parseArgs "nctF" args
+    expandName env = \case
+        ("-n", nm) -> (,) "-n" <$> expandFormat st env nm
+        o -> pure o
 
 -- | The creating body of @new-window@: reject an unusable @-t@ before
 -- spawning, spawn the pane, then place it in one transaction — only after
