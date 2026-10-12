@@ -1,7 +1,7 @@
--- | tmux colour handling for the @#{c:...}@ format modifier: name parsing,
--- the 256-colour palette, and SGR escape rendering, mirroring tmux's
+-- | tmux colour handling: name parsing, the 256-colour palette, and SGR
+-- escape rendering, mirroring tmux's
 -- @colour.c@ (@colour_fromstring@, @colour_force_rgb@, @colour_toescape@).
-module Hat.Server.Format.Colour
+module Hat.Colour
     ( Colour (..)
     , colourFromText
     , colourToText
@@ -18,7 +18,7 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Numeric (showHex)
 
-import Hat.Server.Format.X11Colours (x11Colours)
+import Hat.Colour.X11 (x11Colours)
 
 -- | A parsed tmux colour. 'CBase' holds the classic SGR index (0-7 or the
 -- bright 90-97); 'C256' a palette index; 'CRGB' a packed @0xRRGGBB@.

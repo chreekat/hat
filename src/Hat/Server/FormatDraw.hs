@@ -38,7 +38,7 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Data.Vector qualified as V
 
-import Hat.Server.Format.Colour (colourFromText)
+import Hat.Colour (colourFromText)
 import Hat.Server.Theme (Theme, colourCell, terminalTheme, themeColour)
 import Hat.TextWidth (charWidth)
 import Hat.Term.Cell qualified as Cell

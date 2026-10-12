@@ -77,6 +77,8 @@ library
         Hat.Client.Draw
         Hat.Command.Parser
         Hat.Client.Tty
+        Hat.Colour
+        Hat.Colour.X11
         Hat.Debug
         Hat.FuzzyMatch
         Hat.Geometry
@@ -128,10 +130,8 @@ library
         Hat.Server.Flash
         Hat.Server.Floating
         Hat.Server.Format
-        Hat.Server.Format.Colour
         Hat.Server.FormatDraw
         Hat.Server.Format.Fuzzy
-        Hat.Server.Format.X11Colours
         Hat.Server.FormatEnv
         Hat.Server.Handover
         Hat.Server.HookMonitor

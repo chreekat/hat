@@ -1,7 +1,7 @@
 -- | X11 colour names tmux's @colour_byname@ accepts (matched
 -- case-insensitively), as packed @0xRRGGBB@; generated from tmux's
 -- @colour.c@.
-module Hat.Server.Format.X11Colours (x11Colours) where
+module Hat.Colour.X11 (x11Colours) where
 
 import Data.Text (Text)
 

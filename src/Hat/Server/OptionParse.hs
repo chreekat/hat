@@ -19,7 +19,7 @@ import Data.Text.Read qualified as TR
 
 import Hat.Command.Parser (parseCommandLine)
 import Hat.Model.OptionTable
-import Hat.Server.Format.Colour (colourFromText, colourToText)
+import Hat.Colour (colourFromText, colourToText)
 import Hat.Server.Keys (Key (..), parseKeyName)
 import Hat.Server.Style (colourValid, styleValid)
 

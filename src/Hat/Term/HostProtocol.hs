@@ -60,7 +60,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word8)
 
-import Hat.Server.Format.Colour (colourParseX11)
+import Hat.Colour (colourParseX11)
 
 -- | Which color an OSC query asks about: OSC 10 (foreground) or 11
 -- (background).
