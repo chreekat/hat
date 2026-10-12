@@ -144,6 +144,7 @@ import Hat.Server.Menu (WindowMenu)
 import Hat.Server.Popup (JobState, PopupState)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeKind, ChromeLook, Scene, SceneInput)
+import Hat.Server.Wanted (WantedNames)
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -762,8 +763,8 @@ data StatusCache = StatusCache
     , clockPeriod :: !(Maybe Integer)  -- ^ see 'Hat.Server.Format.formatClock'
     , clock   :: !(Maybe (Int, Integer))  -- ^ the period it read; see 'Hat.Server.Format.clockTick'
     , width   :: !Int
-    , names   :: !(Set Text)  -- ^ every variable the expansion can read
-    , ownNames :: !(Set Text)  -- ^ those no option in 'opts' provides
+    , names   :: !WantedNames  -- ^ every variable the expansion can read
+    , ownNames :: !WantedNames  -- ^ those no option in 'opts' provides
     , vars    :: !(Map Text Text)  -- ^ the session's values of 'ownNames'
     , wins    :: ![Map Text Text]  -- ^ each window's own values of 'names', in index order
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
@@ -784,7 +785,7 @@ data ExpansionKey = ExpansionKey
 -- variable it can read and their values then; see
 -- 'Hat.Server.FormatEnv.memoExpand'.
 data KeptExpansion = KeptExpansion
-    { names :: !(Set Text)
+    { names :: !WantedNames
     , vars  :: !(Map Text Text)
     , text  :: !Text
     }

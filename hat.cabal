@@ -175,6 +175,7 @@ library
         Hat.Server.Toast
         Hat.Server.View
         Hat.Server.Viewport
+        Hat.Server.Wanted
         Hat.Server.WindowStruct
         Hat.TextWidth
         Hat.Term.Cell

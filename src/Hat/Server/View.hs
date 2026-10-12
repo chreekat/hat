@@ -51,7 +51,7 @@ import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
-    (FormatScope (..), FormatTarget (..), Wanted (..),
+    (FormatScope (..), FormatTarget (..), Wanted (..), wantedNames,
      clientTheme, demanding, expandAt, formatCtxFor, frameMemo, keepMemo,
      memoExpander, Expand (..), sessionFormatEnv, sessionVars, windowOwnEnv, windowOwnVars)
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
@@ -1093,7 +1093,8 @@ statusRowsCached st client sess sopts width = do
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
                     { opts = sopts, shells, clockPeriod
-                    , clock = clockTick zone now <$> clockPeriod, width, names, ownNames
+                    , clock = clockTick zone now <$> clockPeriod, width
+                    , names = wantedNames names, ownNames = wantedNames ownNames
                     , vars = Map.restrictKeys vars ownNames
                     , wins = map (`Map.restrictKeys` names) winEnvs
                     , plain, animated, rowCells = rows }

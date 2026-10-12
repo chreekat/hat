@@ -3,6 +3,9 @@
 -- listing, choose, capture, and display commands format against.
 module Hat.Server.FormatEnv
     ( Wanted (..)
+    , WantedNames (..)
+    , onlyVars
+    , wantedNames
     , windowFormatEnv
     , windowVars
     , windowOwnEnv
@@ -82,16 +85,29 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Render (paneDefaults)
 import Hat.Server.Theme (Theme, clientColours, resolveTheme)
+import Hat.Server.Wanted
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
--- | Which variables a format environment is built with.
-data Wanted
-    = AllVars
-    | OnlyVars (Set.Set Text)  -- ^ these, where they exist, and no others
+-- | Just these variables.
+onlyVars :: Set.Set Text -> Wanted
+onlyVars ns = OnlyVars (wantedNames ns)
+
+-- | Some names, planned: each part of the plan is worked out on first use,
+-- once for every holder of the result.
+wantedNames :: Set.Set Text -> WantedNames
+wantedNames ns = WantedNames
+    { names = ns
+    , optionNames = filter optionName (Set.toList ns)
+    , sessionGroups = givingGroups sessionLayer ns
+    , windowGroups = givingGroups windowLayer ns
+    , paneGroups = givingGroups paneLayer ns
+    }
+  where
+    optionName n = "@" `T.isPrefixOf` n || isJust (lookupOptionDef n)
 
 -- | Variables read together, by the names they give.
 type role VarGroup representational
@@ -111,36 +127,40 @@ varLayer gs = VarLayer
         [ (n, IntSet.singleton i) | (i, VarGroup ns _) <- zip [0 ..] gs, n <- ns ]
     }
 
--- | A layer's wanted variables, read by just the groups that give them,
--- in the layer's order.
-layerVars :: VarLayer c -> Wanted -> c -> IO FormatEnv
-layerVars l AllVars c = Map.fromList . concat <$> mapM (\(VarGroup _ g) -> g c) (V.toList l.groups)
-layerVars l (OnlyVars ns) c = do
+-- | The groups of a layer that give any of some names, in the layer's
+-- order.
+givingGroups :: VarLayer c -> Set.Set Text -> [Int]
+givingGroups l ns =
+    IntSet.toAscList (foldMap (\n -> Map.findWithDefault IntSet.empty n l.givers) ns)
+
+-- | A layer's wanted variables, read by just the groups that give them
+-- (@groups@ picks those out of a plan), in the layer's order.
+layerVars :: VarLayer c -> (WantedNames -> [Int]) -> Wanted -> c -> IO FormatEnv
+layerVars l _ AllVars c = Map.fromList . concat <$> mapM (\(VarGroup _ g) -> g c) (V.toList l.groups)
+layerVars l groups (OnlyVars w) c = do
     let run i = case l.groups V.! i of VarGroup _ g -> g c
-    kvs <- concat <$> mapM run (IntSet.toAscList (foldMap (\n -> Map.findWithDefault IntSet.empty n l.givers) ns))
-    pure (Map.fromList [ kv | kv@(k, _) <- kvs, k `Set.member` ns ])
+    kvs <- concat <$> mapM run (groups w)
+    pure (Map.fromList [ kv | kv@(k, _) <- kvs, k `Set.member` w.names ])
 
 -- | The wanted ones among some variables.
 pick :: Wanted -> FormatEnv -> FormatEnv
 pick AllVars m = m
-pick (OnlyVars ns) m = Map.restrictKeys m ns
+pick (OnlyVars w) m = Map.restrictKeys m w.names
 
 -- | What an outer layer need build under an inner one's variables.
 unshadowed :: FormatEnv -> Wanted -> Wanted
 unshadowed _ AllVars = AllVars
-unshadowed inner (OnlyVars ns) = OnlyVars (ns `Set.difference` Map.keysSet inner)
+unshadowed inner (OnlyVars w) = onlyVars (w.names `Set.difference` Map.keysSet inner)
 
 -- | The wanted options of a resolved set, as format variables.
 optionVars :: Wanted -> Options -> FormatEnv
 optionVars AllVars o = optionFormats o
-optionVars (OnlyVars ns) o =
-    Map.fromList [ (n, v) | n <- Set.toList ns, Just v <- [optionFormat n o] ]
+optionVars (OnlyVars w) o =
+    Map.fromList [ (n, v) | n <- w.optionNames, Just v <- [optionFormat n o] ]
 
 -- | The wanted entries of one scope's own options, as format variables.
 deltaVars :: Wanted -> OptionsDelta -> FormatEnv
-deltaVars AllVars d = deltaFormats d
-deltaVars (OnlyVars ns) d =
-    Map.fromList [ (n, v) | n <- Set.toList ns, Just v <- [deltaFormat n d] ]
+deltaVars w d = pick w (deltaFormats d)
 
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
 windowFormatEnv st sess ix win = windowVars st sess ix win AllVars
@@ -160,7 +180,7 @@ windowOwnEnv st sess ix win = windowOwnVars st sess ix win AllVars
 windowOwnVars :: ServerState -> Session -> Int -> Window -> Wanted -> IO FormatEnv
 windowOwnVars st sess ix win w = do
     winUser <- deltaVars w <$> readOwnIO win.options
-    Map.union winUser <$> layerVars windowLayer w (st, sess, ix, win)
+    Map.union winUser <$> layerVars windowLayer (.windowGroups) w (st, sess, ix, win)
 
 -- | Where a window's own variables are read: its server, session, index
 -- in that session, and the window.
@@ -253,7 +273,7 @@ paneVars
     :: ServerState -> Session -> Int -> Window -> Int -> Pane -> Wanted -> IO FormatEnv
 paneVars st sess wix win pix pane w = do
     paneUser <- deltaVars w <$> readOwnIO pane.options
-    own <- Map.union paneUser <$> layerVars paneLayer w (st, sess, win, pix, pane)
+    own <- Map.union paneUser <$> layerVars paneLayer (.paneGroups) w (st, sess, win, pix, pane)
     Map.union own <$> windowVars st sess wix win (unshadowed own w)
 
 -- | Where a pane's own variables are read: its server, session, window,
@@ -503,7 +523,7 @@ sessionVars st sess w = do
     -- Options are readable as #{status-left}, #{@foo}, … so if-shell theme
     -- conditionals (@#{@pane-theme}@) resolve.
     sessOpts <- optionVars w <$> atomically (resolveForSession st sess)
-    Map.union sessOpts <$> layerVars sessionLayer w (st, sess)
+    Map.union sessOpts <$> layerVars sessionLayer (.sessionGroups) w (st, sess)
 
 sessionLayer :: VarLayer (ServerState, Session)
 sessionLayer = varLayer
@@ -729,7 +749,7 @@ demanding st build formats expand =
     grow asked env pending
         | Set.null pending = attempt asked env
         | otherwise = do
-            more <- build (OnlyVars pending)
+            more <- build (onlyVars pending)
             let asked' = asked <> pending
                 reached = foldMap formatNames [ v | v <- Map.elems more, "#" `T.isInfixOf` v ]
             grow asked' (Map.union env more) (reached `Set.difference` asked')
@@ -836,7 +856,7 @@ memoExpand st memo t fmt = do
             (names, vars, text) <- demanding st (targetVars st t) [fmt] (expandForced fmt)
             when (not ambient && not (formatVolatile fmt vars)) $
                 keep key KeptExpansion
-                    { names = names `Set.difference` placeIds
+                    { names = wantedNames (names `Set.difference` placeIds)
                     , vars = Map.withoutKeys vars placeIds, text }
             pure text
   where

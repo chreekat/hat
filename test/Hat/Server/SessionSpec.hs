@@ -79,8 +79,8 @@ import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
-    ( FormatScope (..), FormatTarget (..), Wanted (..), clientTheme, frameMemo, keepMemo, memoExpand
-    , paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv )
+    ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
+    , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
     (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
@@ -346,7 +346,7 @@ spec = do
                 writeTVar pane.home (Just (sess.id, win))
                 modifyOwn sess.options (insertDelta "@v" (OVScalar "local"))
             (do full <- paneFormatEnv st sess 0 win 0 pane
-                let built ns = paneVars st sess 0 win 0 pane (OnlyVars (Set.fromList ns))
+                let built ns = paneVars st sess 0 win 0 pane (onlyVars (Set.fromList ns))
                     names = Map.keys full
                 built names `shouldReturn` full
                 built ("nope" : "@nope" : names) `shouldReturn` full
