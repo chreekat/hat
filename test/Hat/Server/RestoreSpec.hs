@@ -10,6 +10,7 @@ import Data.Map.Strict qualified as Map
 import Data.Vector qualified as V
 import System.Exit (ExitCode)
 import System.Posix.IO (closeFd)
+import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (CPid, Fd)
 import System.Process (createProcess, getPid, proc, terminateProcess, waitForProcess)
 import System.Posix.Terminal (openPseudoTerminal)
@@ -32,7 +33,7 @@ import Hat.Server
      defaultRestoreCommands, finallyReady, parseReloadArgs, persistDecision,
      phaseAfterConfig, rebuildReload, reloadSchemePush, replayPane,
      restoreRun, runCommands, shellLine, snapshotHistoryLimit, startupGate,
-     IdleArming (..), idleArming,
+     IdleArming (..), idleArming, Lineage (..), descendsFrom,
      renameRestored, uniquifySessionNames)
 import Hat.Server.ColorScheme (ColorScheme (..))
 import Hat.Server.Layout (fitLayout, singlePane)
@@ -119,36 +120,43 @@ spec = do
     describe "startupGate" $ do
         let cmds = [["new-window"]]
         it "serves everyone once startup is Ready" $ do
-            startupGate Ready Autostarted cmds `shouldBe` Proceed
-            startupGate Ready Joined cmds `shouldBe` Proceed
+            startupGate Ready Autostarted Outsider cmds `shouldBe` Proceed
+            startupGate Ready Joined Outsider cmds `shouldBe` Proceed
         it "holds everyone while a restore is rebuilding the tree" $ do
-            startupGate Restoring Autostarted cmds `shouldBe` Hold
-            startupGate Restoring Joined cmds `shouldBe` Hold
-        it "holds only the autostarting client during config load" $ do
-            startupGate LoadingConfig Autostarted cmds `shouldBe` Hold
-            startupGate LoadingConfig Joined cmds `shouldBe` Proceed
+            startupGate Restoring Autostarted Outsider cmds `shouldBe` Hold
+            startupGate Restoring Joined ServerSpawned cmds `shouldBe` Hold
+        it "serves only a client the config spawned during config load" $ do
+            startupGate LoadingConfig Autostarted Outsider cmds `shouldBe` Hold
+            startupGate LoadingConfig Joined ServerSpawned cmds `shouldBe` Proceed
+            -- a reload's tree is not rebuilt until the config has loaded
+            startupGate LoadingConfig Joined Outsider [["list-panes"]] `shouldBe` Hold
+        it "knows a server's descendants by their parents" $ do
+            self <- getProcessID
+            parent <- getParentProcessID
+            descendsFrom parent self `shouldReturn` True
+            descendsFrom self parent `shouldReturn` False
 
         -- Bug 4: a reload's farewelled clients reattach as Joined; served
         -- against the pre-restore session table they exit "no such session".
         it "holds a joined attach until the tree exists" $ do
-            startupGate LoadingConfig Joined [["attach", "-t", "projects"]]
+            startupGate LoadingConfig Joined ServerSpawned [["attach", "-t", "projects"]]
                 `shouldBe` Hold
-            startupGate LoadingConfig Joined [["attach-session"]]
+            startupGate LoadingConfig Joined ServerSpawned [["attach-session"]]
                 `shouldBe` Hold
         it "holds a joined bare attach too (it would create a session)" $
-            startupGate LoadingConfig Joined [] `shouldBe` Hold
+            startupGate LoadingConfig Joined ServerSpawned [] `shouldBe` Hold
         it "holds a joined new-session during config load" $
-            startupGate LoadingConfig Joined [["new-session", "-s", "x"]]
+            startupGate LoadingConfig Joined ServerSpawned [["new-session", "-s", "x"]]
                 `shouldBe` Hold
         it "never holds a restart-server batch (the guard must reject, not wait)" $ do
             let reload = [["restart-server", "/some/hat"]]
-            startupGate Restoring Autostarted reload `shouldBe` Proceed
-            startupGate LoadingConfig Autostarted reload `shouldBe` Proceed
+            startupGate Restoring Autostarted Outsider reload `shouldBe` Proceed
+            startupGate LoadingConfig Autostarted Outsider reload `shouldBe` Proceed
 
         it "never holds a restart batch either (4f)" $ do
             let reload = [["restart", "/some/hat"]]
-            startupGate Restoring Autostarted reload `shouldBe` Proceed
-            startupGate LoadingConfig Autostarted reload `shouldBe` Proceed
+            startupGate Restoring Autostarted Outsider reload `shouldBe` Proceed
+            startupGate LoadingConfig Autostarted Outsider reload `shouldBe` Proceed
 
     describe "phaseAfterConfig" $ do
         it "moves to Restoring when a tree remains to rebuild" $

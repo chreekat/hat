@@ -177,7 +177,7 @@ welcome d st re h = do
             -- Gate here, not only in ensureSession: setup commands run
             -- directly, so an autostarting `hat new` would otherwise race
             -- its own server's config load (upstream if-shell-TERM.sh).
-            awaitStartup st client.autostart setupCmds
+            awaitStartup st client setupCmds
             -- A reattaching client carries its MRU session history by name (it
             -- re-execs across a restart with a fresh identity). Resolve it back
             -- to ids now the tree is restored (awaitStartup held for it), before
@@ -806,7 +806,7 @@ controlLoop d st re client = do
     m <- recvMessage re
     case m of
         Just (Known (Command cmds)) -> do
-            awaitStartup st client.autostart cmds
+            awaitStartup st client cmds
             syncAllPanes st
             open <- newTVarIO True
             let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
@@ -837,7 +837,7 @@ controlModeSession
     :: Dispatch -> ServerState -> ReadEnd -> Client -> ControlState -> [[Text]]
     -> IO ()
 controlModeSession d st re client cs setup = do
-    awaitStartup st client.autostart setup
+    awaitStartup st client setup
     withAsync (subscriptionLoop st client cs) $ \subs -> do
         link subs
         withAsync (controlWriter client cs) $ \writer -> do

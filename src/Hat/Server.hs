@@ -25,7 +25,7 @@ module Hat.Server
     , SetMode (..)  -- ^ exported for the config-load burn-down test
     , SetDefault (..)
     , finallyReady  -- ^ exported for the startup-gate test
-    , startupGate, StartupGate (..)  -- ^ exported for the startup-gate test
+    , startupGate, StartupGate (..), Lineage (..), descendsFrom  -- ^ exported for the startup-gate test
     , idleArming, IdleArming (..)    -- ^ exported for the idle-arming test
     , phaseAfterConfig  -- ^ exported for the startup-gate test
     , welcome  -- ^ exported for the handshake test
