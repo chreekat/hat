@@ -168,6 +168,12 @@ spec = do
                 [ crow 0 False [cs red 'a', c ' ', c ' '] ]
                 `shouldBe` "\ESC[31ma\ESC[39m\n"
 
+        it "emits nothing for a never-written row after a coloured one" $
+            captureText opts0 { captSeq = True }
+                [ crow 0 False (replicate 4 (cs red 'a'))
+                , crow 1 False (replicate 4 (c ' ')) ]
+                `shouldBe` "\ESC[31maaaa\n\n"
+
         it "encodes bright, 256, and RGB colors like tmux" $ do
             captureText opts0 { captSeq = True }
                 [ crow 0 False [cs defaultStyle { fg = Indexed 9 } 'a'] ]
