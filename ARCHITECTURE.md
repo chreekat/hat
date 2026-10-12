@@ -302,6 +302,7 @@ keys→commands cycle.
   |  Hat.Command.Parser                     | -- pure (megaparsec)
   |  Hat.Geometry / .Path / .Intern         | -- Size/Pos; path building; interning
   |  Hat.TextWidth / .Glob / .PtrEq         | -- wcwidth; fnmatch; identity equality
+  |  Hat.Colour / .X11                      | -- tmux colour names, palette, escapes
   |  Hat.FuzzyMatch / .Debug                | -- fuzzy scorer; ghc-debug socket
   |  Hat.Log                                | -- structured JSON events
   +-----------------------------------------+

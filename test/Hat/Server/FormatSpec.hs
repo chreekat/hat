@@ -557,7 +557,9 @@ spec = do
     namingEnv = Map.union env $ Map.fromList
         [ ("@fmt", "#{session_name}:#{?window_flags,#W,}")
         , ("@deep", "[#{E:@fmt}]")
-        , ("@clock", "%M") ]
+        , ("@clock", "%M")
+        , ("pid", "4242")
+        , ("host", "box") ]
     reached ns =
         let more = foldMap formatNames
                 [ v | v <- Map.elems (Map.restrictKeys namingEnv ns), "#" `T.isInfixOf` v ]
@@ -613,7 +615,7 @@ instance Arbitrary Fmt where
         name = elements
             [ "session_name", "session_id", "window_name", "window_flags", "window_index"
             , "empty", "zero", "@s", "@fmt", "@deep", "@rec", "nope", "pane_index"
-            , "@clock", "@ts", "@age30" ]
+            , "@clock", "@ts", "@age30", "pid", "host" ]
     shrink = \case
         Lit _ -> []
         Key _ -> [Lit "x"]

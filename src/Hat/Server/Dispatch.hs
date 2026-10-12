@@ -59,6 +59,7 @@ import Hat.Model.Options (lookupCommandAlias, quoteIfNeeded)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
+import Hat.Server.Command.ListKeys (cmdListKeys)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
 import Hat.Server.Command.Wait (cmdWaitFor)
@@ -331,6 +332,7 @@ commandTable = Map.fromList (concatMap expand commandSpecs)
 commandSpecs :: [([Text], CommandImpl)]
 commandSpecs =
     [ (["bind-key", "bind"], cmdBind)
+    , (["list-keys", "lsk"], cmdListKeys)
     , (["unbind-key", "unbind"], cmdUnbind)
     , (["set-option", "set"], cmdSet DefaultSession)
     , (["set-window-option", "setw"], cmdSet DefaultWindow)
@@ -422,7 +424,7 @@ commandSpecs =
 cmdSourceFile :: CommandImpl
 cmdSourceFile st mclient args = case pos of
     [path] -> do
-        p <- expandTilde (T.unpack path)
+        p <- expandTilde st.home (T.unpack path)
         exists <- doesFileExist p
         if not exists
             then if "-q" `elem` flags

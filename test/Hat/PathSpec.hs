@@ -14,6 +14,16 @@ spec = do
         it "normalizes redundant separators" $
             render (hatPath "/tmp//hat-1000/") `shouldBe` "/tmp/hat-1000"
 
+    describe "fitsSocketAddr" $ do
+        it "accepts a path a sockaddr_un holds" $
+            fitsSocketAddr (replicate 107 'x') `shouldBe` True
+        it "rejects one that fills sun_path with no room to terminate it" $
+            fitsSocketAddr (replicate 108 'x') `shouldBe` False
+        it "counts the bytes the path encodes to, not its characters" $ do
+            fitsSocketAddr (replicate 54 '\x00e9') `shouldBe` False
+            fitsSocketAddr (replicate 53 '\x00e9') `shouldBe` True
+            fitsSocketAddr (replicate 107 '\xdcff') `shouldBe` True
+
     describe "</:>" $ do
         it "joins with a single separator regardless of trailing slash" $ do
             render (hatPath "/tmp" </:> "default")
@@ -48,7 +58,7 @@ spec = do
         it "expands ~<current-user> to the current user's home" $ do
             entry <- getUserEntryForID =<< getRealUserID
             let name = userName entry
-            expanded <- expandTilde ('~' : name)
+            expanded <- expandTilde Nothing ('~' : name)
             expanded `shouldBe` homeDirectory entry
 
 -- | A named-user resolver that knows no users, for cases exercising only the

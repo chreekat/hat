@@ -6,7 +6,6 @@ import Data.ByteString qualified as B
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import System.Directory (removeDirectoryRecursive)
-import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Posix.Temp (mkdtemp)
 import Test.Hspec
 
@@ -16,14 +15,6 @@ import Hat.Model.Options (optionText)
 import Hat.Server (cmdSourceFile, readConfigUtf8)
 import Hat.Server.Environ
     (EnvEntry (..), EnvVisibility (..), environFind)
-
--- Run an action with @HOME@ pointed at @dir@, restoring the prior value.
-withHome :: FilePath -> IO a -> IO a
-withHome dir act = do
-    old <- lookupEnv "HOME"
-    bracket (setEnv "HOME" dir) (const (restore old)) (const act)
-  where
-    restore = maybe (unsetEnv "HOME") (setEnv "HOME")
 
 spec :: Spec
 spec = do
@@ -51,11 +42,12 @@ spec = do
     describe "source-file" $
         it "expands a ~/ path so a reload actually re-reads the file" $ do
             bracket (mkdtemp "/tmp/hat-source-")
-                    removeDirectoryRecursive $ \dir -> withHome dir $ do
+                    removeDirectoryRecursive $ \dir -> do
                 writeFile (dir <> "/reload.conf")
                     "set -g status-left RELOADED\n"
                 lg <- newLogger "/dev/null"
-                st <- newServerState Map.empty lg (dir <> "/s.sock") Nothing
+                st0 <- newServerState Map.empty lg (dir <> "/s.sock") Nothing
+                let st = st0 { home = Just dir }
                 _ <- cmdSourceFile st Nothing ["~/reload.conf"]
                 opts <- readTVarIO st.options
                 optionText "status-left" opts `shouldBe` "RELOADED"

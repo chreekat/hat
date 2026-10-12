@@ -53,6 +53,7 @@ data LogEvent
     | ConfigError     { file :: FilePath, err :: Text }
     | HistoryFileFault { file :: FilePath, err :: Text }  -- ^ the @history-file@ could not be read or written; logged, non-fatal
     | ProtocolError   { client :: Int, err :: Text }
+    | ClosedBeforeHello  -- ^ a connection ended without a hello (a liveness probe, or a client that died starting)
     | UnknownTermProp { pane :: Int, propKind :: Text, prop :: Int }  -- ^ the emulator reported a terminal property hat does not handle
     | UnknownKeySequence { client :: Int, input :: Text }  -- ^ an input sequence hat could not name; dropped rather than forwarded to the pane
     | UnhandledPassthrough { pane :: Int, payload :: Text }  -- ^ a tmux passthrough payload hat neither answers nor forwards (OSC 52\/12\/4, …), logged instead of silently dropped

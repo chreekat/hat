@@ -9,13 +9,16 @@ module Hat.Path
     , (</:>)
     , expandTildeWith
     , expandTilde
+    , findHome
+    , fitsSocketAddr
     ) where
 
 import Control.Exception (try)
 import Control.Monad (join)
 import System.Environment (lookupEnv)
 import System.FilePath (dropTrailingPathSeparator, normalise, (</>))
-import System.Posix.User (getUserEntryForName, homeDirectory)
+import System.Posix.User
+    (getRealUserID, getUserEntryForID, getUserEntryForName, homeDirectory)
 
 -- | A filesystem path built through the smart constructor. See 'hatPath'.
 newtype HatPath = HatPath FilePath
@@ -55,15 +58,35 @@ expandTildeWith namedHome _ p@('~' : rest)
     sub = drop 1 after
 expandTildeWith _ _ p = p
 
--- | 'expandTildeWith' against the process @HOME@ and the system user database.
+-- | 'expandTildeWith' against the given home and the system user database.
 -- The named user, if the path calls for one, is resolved through @getpwnam@
 -- before the pure expansion runs, keeping the passwd lookup at this IO seam.
-expandTilde :: FilePath -> IO FilePath
-expandTilde p = do
-    home <- lookupEnv "HOME"
+expandTilde :: Maybe FilePath -> FilePath -> IO FilePath
+expandTilde home p = do
     resolved <- maybe (pure []) (fmap (: []) . lookupUserHome) (namedUser p)
     let namedHome name = join (lookup name resolved)
     pure (expandTildeWith namedHome home p)
+
+-- | tmux's @find_home@: a non-empty @HOME@, else the real user's home from
+-- the user database.
+findHome :: IO (Maybe FilePath)
+findHome = lookupEnv "HOME" >>= \case
+    Just h | not (null h) -> pure (Just h)
+    _ -> either (const Nothing :: IOError -> Maybe FilePath) (Just . homeDirectory)
+        <$> try (getUserEntryForID =<< getRealUserID)
+
+-- | Whether a path fits a @sockaddr_un@: @sun_path@ is 108 bytes, terminator
+-- included. Counts the bytes GHC's file-system encoding gives the path (UTF-8,
+-- each lone-surrogate escape standing for the one byte it round-trips).
+fitsSocketAddr :: FilePath -> Bool
+fitsSocketAddr p = sum (map encodedBytes p) < 108
+  where
+    encodedBytes c
+        | c >= '\xdc80' && c <= '\xdcff' = 1
+        | c < '\x80' = 1
+        | c < '\x800' = 2
+        | c < '\x10000' = 3
+        | otherwise = 4 :: Int
 
 -- | The username a leading @~user@/@~user\/rest@ names, or @Nothing@ for a
 -- bare @~@, a @~\/rest@, or any non-tilde path.

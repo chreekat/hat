@@ -24,7 +24,10 @@ defaultKeymap = Map.fromList
         <> map once (digitBinds <> searchBinds <> copyMouseBindings)))
     ]
   where
-    menusIn table = [ once (k, parsed cmd) | (t, k, cmd) <- menuBindings, t == table ]
+    menusIn table =
+        [ (k, Binding { commands = parsed cmd, repeats = Once
+                      , note = if table == "prefix" then lookup k prefixNotes else Nothing })
+        | (t, k, cmd) <- menuBindings, t == table ]
     parsed cmd = either (error . T.unpack) id (parseCommandLine cmd)
     -- tmux's default mouse bindings, less those whose commands Hat lacks
     -- (the scrollbars); those opening menus are 'menuBindings'.
@@ -67,10 +70,12 @@ defaultKeymap = Map.fromList
         , ("TripleClick1Pane", [["select-pane"], ["send-keys", "-X", "select-line"]
             , ["run-shell", "-d", "0.3"], ["send-keys", "-X", "copy-pipe-and-cancel"]])
         ]
-    bindArgv (k, cmd) = (k, Binding { commands = [cmd], repeats = Once })
+    bindArgv (k, cmd) =
+        (k, Binding { commands = [cmd], repeats = Once, note = lookup k prefixNotes })
     -- @bind -r@: these keep the prefix table open for @repeat-time@.
-    repeatArgv (k, cmd) = (k, Binding { commands = [cmd], repeats = Repeats })
-    once (k, cmds) = (k, Binding { commands = cmds, repeats = Once })
+    repeatArgv (k, cmd) =
+        (k, Binding { commands = [cmd], repeats = Repeats, note = lookup k prefixNotes })
+    once (k, cmds) = (k, Binding { commands = cmds, repeats = Once, note = Nothing })
     -- A copy-mode key runs a single @send-keys -X <name>@ command.
     copyBind (k, name) = once (k, [["send-keys", "-X", name]])
     -- Digit keys feed the vi @[count]@ prefix; a bare @0@ is start-of-line.
@@ -171,6 +176,53 @@ defaultKeymap = Map.fromList
         , ("Left", "cursor-left"), ("Right", "cursor-right")
         , ("Up", "cursor-up"), ("Down", "cursor-down")
         ]
+
+-- | tmux's notes on its default prefix bindings (@key-bindings.c@), for the
+-- keys Hat binds to the same action.
+prefixNotes :: [(Text, Text)]
+prefixNotes =
+    [ ("C-b", "Send the prefix key")
+    , ("Space", "Select next layout")
+    , ("!", "Break pane to a new window")
+    , ("\"", "Split window vertically")
+    , ("$", "Rename current session")
+    , ("%", "Split window horizontally")
+    , ("&", "Kill current window")
+    , (",", "Rename current window")
+    , (".", "Move the current window")
+    , (":", "Prompt for a command")
+    , (";", "Move to the previously active pane")
+    , ("[", "Enter copy mode")
+    , ("]", "Paste the most recent paste buffer")
+    , ("c", "Create a new window")
+    , ("d", "Detach the current client")
+    , ("l", "Select the previously current window")
+    , ("n", "Select the next window")
+    , ("o", "Select the next pane")
+    , ("p", "Select the previous window")
+    , ("q", "Display pane numbers")
+    , ("w", "Choose a window from a list")
+    , ("x", "Kill the active pane")
+    , ("z", "Zoom the active pane")
+    , ("{", "Swap the active pane with the pane above")
+    , ("}", "Swap the active pane with the pane below")
+    , ("<", "Display window menu")
+    , (">", "Display pane menu")
+    , ("Up", "Select the pane above the active pane")
+    , ("Down", "Select the pane below the active pane")
+    , ("Left", "Select the pane to the left of the active pane")
+    , ("Right", "Select the pane to the right of the active pane")
+    , ("M-1", "Set the even-horizontal layout")
+    , ("M-2", "Set the even-vertical layout")
+    , ("M-3", "Set the main-horizontal layout")
+    , ("M-4", "Set the main-vertical layout")
+    , ("M-5", "Select the tiled layout")
+    , ("C-Up", "Resize the pane up")
+    , ("C-Down", "Resize the pane down")
+    , ("C-Left", "Resize the pane left")
+    , ("C-Right", "Resize the pane right")
+    ]
+    <> [ (tshow i, "Select window " <> tshow i) | i <- [0 .. 9 :: Int] ]
 
 -- | tmux's default bindings that open menus, by table and key, in its own
 -- command syntax.

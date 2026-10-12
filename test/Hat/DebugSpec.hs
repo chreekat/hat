@@ -15,12 +15,6 @@ spec = do
             debugSocketPath "/x" "/tmp/hat-1000/work"
                 `shouldBe` debugSocketDir "/x" <> "/hat-work"
 
-    describe "fitsSocketAddr" $ do
-        it "accepts a path a sockaddr_un holds" $
-            fitsSocketAddr (replicate 107 'x') `shouldBe` True
-        it "rejects one that fills sun_path with no room to terminate it" $
-            fitsSocketAddr (replicate 108 'x') `shouldBe` False
-
     describe "boundSocketInodes" $ do
         it "picks out the sockets bound under the directory" $
             boundSocketInodes "/x/sockets" procNetUnix `shouldBe` [17625936, 17761356]

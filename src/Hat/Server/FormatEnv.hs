@@ -27,6 +27,7 @@ module Hat.Server.FormatEnv
     , Expand (..)
     , freshExpand
     , memoExpander
+    , clientContextFormatEnv
     , paneModeEnv
     , resolveShell
     , expandFormat
@@ -55,6 +56,7 @@ import Data.Text.Read qualified as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
+import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
 import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.Process
@@ -515,9 +517,7 @@ sessionLayer = varLayer
     , VarGroup ["session_windows"] $ \(_, sess) -> do
         nwindows <- Map.size <$> readTVarIO sess.windows
         pure [ ("session_windows", tshow nwindows) ]
-    , VarGroup ["host"] $ \_ -> do
-        hostname <- nodeName <$> getSystemID
-        pure [ ("host", T.pack hostname) ]
+    , VarGroup ["host", "pid"] $ \_ -> serverFormatVars
     , VarGroup ["session_attached"] $ \(st, sess) -> do
         cs <- atomically (sessionClients st sess.id)
         pure [ ("session_attached", tshow (length cs)) ]
@@ -651,6 +651,27 @@ resolveShell st cmdText = do
                 (Map.insert cmdText (done, val))
             atomically (bumpDirty st)
         pure oldVal
+
+-- | tmux's format context for a command with no target: the issuing
+-- client's session when it has one, else only the global user options.
+clientContextFormatEnv :: ServerState -> Maybe Client -> IO FormatEnv
+clientContextFormatEnv st mclient = do
+    msess <- case mclient of
+        Nothing -> pure Nothing
+        Just c -> atomically $ do
+            sid <- readTVar c.session
+            Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Just sess -> sessionFormatEnv st sess
+        Nothing -> Map.union <$> ((.user) <$> readTVarIO st.options)
+            <*> (Map.fromList <$> serverFormatVars)
+
+-- | The formats that describe the server process itself.
+serverFormatVars :: IO [(Text, Text)]
+serverFormatVars = do
+    hostname <- nodeName <$> getSystemID
+    pid <- getProcessID
+    pure [("host", T.pack hostname), ("pid", tshow pid)]
 
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
 -- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)

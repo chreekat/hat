@@ -3,6 +3,7 @@
 -- @kill-server@.
 module Hat.Server.Command.Session
     ( cmdNewSession
+    , newSessionValueFlags
     , cmdAttachSession
     , cmdKillSession
     , cmdHasSession
@@ -44,16 +45,35 @@ import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , switchActive, windowHolders )
 import Hat.Server.Resize (defaultSizeOf)
-import Hat.Server.FormatEnv (clientFormatVars, expandFormat, sessionFormatEnv)
+import Hat.Server.FormatEnv
+    (clientContextFormatEnv, clientFormatVars, expandFormat, sessionFormatEnv)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Winlink (groupMembers)
 import Hat.Transport.Wire (ServerToClient (DetachOk))
 
+-- | The @new-session@ flags that take a value.
+newSessionValueFlags :: [Char]
+newSessionValueFlags = "sctnxyFef"
+
 -- | @new-session@: create a session, or with @-t@ a member of the target's
 -- session group (sharing its windows), or with @-A@ attach to the named
--- session when it already exists.
+-- session when it already exists. The @-s@ and @-n@ names are formats,
+-- expanded in the issuing client's context.
 cmdNewSession :: CommandImpl
-cmdNewSession st mclient args
+cmdNewSession st mclient args = do
+    let (opts, flags, pos) = parseArgs newSessionValueFlags args
+    env <- clientContextFormatEnv st mclient
+    opts' <- mapM (expandName env) opts
+    newSession st mclient opts' flags pos
+  where
+    expandName env (k, v)
+        | k `elem` ["-s", "-n"] = (,) k <$> expandFormat st env v
+        | otherwise = pure (k, v)
+
+newSession
+    :: ServerState -> Maybe Client -> [(T.Text, T.Text)] -> [T.Text] -> [T.Text]
+    -> IO [Reply]
+newSession st mclient opts flags pos
     | Just e <- unknownFlag "new-session" "AdDPX" flags = pure [RErr e]
     | isJust (lookup "-t" opts), not (null pos) || isJust (lookup "-n" opts) =
         pure [RErr "command or window name given with target"]
@@ -75,7 +95,6 @@ cmdNewSession st mclient args
                         Just t -> joinGroup t
                         Nothing -> createNew Nothing
   where
-    (opts, flags, pos) = parseArgs "sctnxyFef" args
     firstOf fs = listToMaybe [f | f <- fs, isJust (lookup f opts)]
     sessionNamed nm = atomically $ do
         ss <- Map.elems <$> readTVar st.sessions

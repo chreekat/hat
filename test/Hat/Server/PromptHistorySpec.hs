@@ -58,10 +58,12 @@ spec = do
             restoreHistory 0 loaded none `shouldBe` none
 
     describe "historyFilePath" $
-        it "takes an absolute path, and nothing relative or empty" $ do
-            historyFilePath "/var/h" `shouldReturn` Just "/var/h"
-            historyFilePath "rel/h" `shouldReturn` Nothing
-            historyFilePath "" `shouldReturn` Nothing
+        it "takes an absolute path, ~/ under the home, and nothing relative or empty" $ do
+            historyFilePath (Just "/home/b") "/var/h" `shouldBe` Just "/var/h"
+            historyFilePath (Just "/home/b") "~/h" `shouldBe` Just "/home/b/h"
+            historyFilePath Nothing "~/h" `shouldBe` Nothing
+            historyFilePath (Just "/home/b") "rel/h" `shouldBe` Nothing
+            historyFilePath (Just "/home/b") "" `shouldBe` Nothing
 
     describe "history-file round trip" $
         it "saves the prompt histories and loads them back" $ do

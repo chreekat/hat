@@ -51,7 +51,7 @@ import Text.Regex.TDFA
 import Text.Regex.TDFA.Text qualified as RT
 
 import Hat.Glob (globMatch)
-import Hat.Server.Format.Colour (colourFromText, colourToEscape, colourToHex)
+import Hat.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)
 import Hat.Server.FormatDraw (formatTrimLeft, formatTrimRight, formatWidth)
 import Hat.Server.Theme (Theme, terminalTheme)

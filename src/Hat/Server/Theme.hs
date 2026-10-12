@@ -19,7 +19,7 @@ import Data.Word (Word8)
 
 import Hat.Model.Options (Options, optionText)
 import Hat.Server.ColorScheme (ColorScheme (..))
-import Hat.Server.Format.Colour (Colour (..), colourFromText)
+import Hat.Colour (Colour (..), colourFromText)
 import Hat.Term.Cell qualified as Cell
 
 -- | The colour each theme slot draws, in 'slots' order.

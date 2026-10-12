@@ -17,7 +17,7 @@ import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Data.Word (Word8)
 
-import Hat.Server.Format.Colour (colourFromText)
+import Hat.Colour (colourFromText)
 import Hat.Term.Cell qualified as Cell
 
 -- | Fold a comma-separated style string onto the default style.

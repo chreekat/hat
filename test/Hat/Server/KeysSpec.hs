@@ -511,8 +511,8 @@ ctx0 = KeyContext
     , now = 0 }
 
 bindOnce, bindRepeat :: [[Text]] -> Binding
-bindOnce cmds = Binding { commands = cmds, repeats = Once }
-bindRepeat cmds = Binding { commands = cmds, repeats = Repeats }
+bindOnce cmds = Binding { commands = cmds, repeats = Once, note = Nothing }
+bindRepeat cmds = Binding { commands = cmds, repeats = Repeats, note = Nothing }
 
 -- A client that just pressed the prefix.
 armed :: KeyState
