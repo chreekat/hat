@@ -525,7 +525,8 @@ reverseCellCount d = do
              , let Style { reverse = r } = cell.style, r ]
 
 -- Run all actions concurrently, collect their results, and re-raise the
--- first exception. (The test suite has no async dependency.)
+-- first exception. Unlike 'mapConcurrently', a failure cancels nothing:
+-- every action runs to completion before it is re-raised.
 runConcurrently :: forall a. [IO a] -> IO [a]
 runConcurrently actions = do
     vars <- forM actions $ \act -> do
