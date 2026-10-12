@@ -113,8 +113,8 @@ paneScope st mclient mtarget =
     maybe (Left (noSuchTarget "pane" mtarget)) (Right . PaneTable)
         <$> targetPaneScoped st mclient mtarget
 
-deltaVar :: ServerState -> Scope -> TVar OptionsDelta
-deltaVar st = \case
+ownOptionsAt :: ServerState -> Scope -> OwnOptions
+ownOptionsAt st = \case
     ServerTable -> st.serverOptions
     GlobalSessionTable -> st.globalSessionOptions
     GlobalWindowTable -> st.globalWindowOptions
@@ -138,11 +138,11 @@ listsAt sc os = case sc of
 -- value or the registry default.
 ownValue :: ServerState -> Scope -> Text -> STM (Maybe OptionValue)
 ownValue st sc n = do
-    own <- lookupDelta n <$> readTVar (deltaVar st sc)
+    own <- lookupDelta n <$> readOwn (ownOptionsAt st sc)
     case (own, lookupOptionDef n) of
         (Just v, _) -> pure (Just v)
         (Nothing, Just d) | globalTable sc, d.role == PlainOption -> do
-            scheme <- lookupDelta n <$> readTVar st.schemeOptions
+            scheme <- lookupDelta n <$> readOwn st.schemeOptions
             pure (Just (fromMaybe d.defaultValue scheme))
         _ -> pure Nothing
   where
@@ -431,7 +431,7 @@ writeOption st sc n decide = do
             Left e -> pure (Left e)
             Right LeaveValue -> pure (Right ())
             Right act -> do
-                modifyTVar' (deltaVar st sc) $ case act of
+                modifyOwn (ownOptionsAt st sc) $ case act of
                     WriteValue v -> insertDelta n v
                     _ -> deleteDelta n
                 refreshGlobalOptions st
@@ -460,7 +460,7 @@ clearPaneCopies st mclient mtarget sc n mkey = case sc of
   where
     clear win = atomically $ do
         ps <- readTVar win.panes
-        forM_ (Map.elems ps) $ \p -> modifyTVar' p.options $ \d ->
+        forM_ (Map.elems ps) $ \p -> modifyOwn p.options $ \d ->
             case (mkey, lookupDelta n d) of
                 (Just k, Just (OVArray m)) -> insertDelta n (OVArray (Map.delete k m)) d
                 (Just _, _) -> d
@@ -746,7 +746,7 @@ data Listing = OptionsOnly | OptionsAndHooks | HooksOnly
 -- inherited ones under @-A@. Rows hat does not implement are left out.
 showListing :: ServerState -> Scope -> Inheriting -> Listing -> IO [ShowLine]
 showListing st sc inheriting listing = do
-    own <- readTVarIO (deltaVar st sc)
+    own <- readOwnIO (ownOptionsAt st sc)
     let userOptions =
             [ (n, (v, OwnValue, Map.empty))
             | listing /= HooksOnly

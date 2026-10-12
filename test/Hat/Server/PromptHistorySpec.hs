@@ -74,7 +74,7 @@ spec = do
                     lg <- newLogger "/dev/null"
                     st <- newServerState Map.empty lg "/tmp/hat-history.sock" Nothing
                     atomically $ do
-                        writeTVar st.serverOptions (singletonDelta "history-file"
+                        writeOwn st.serverOptions (singletonDelta "history-file"
                             (OVScalar (T.pack path)))
                         refreshGlobalOptions st
                     body st

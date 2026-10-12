@@ -280,7 +280,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     pipeVar   <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
     homeVar   <- newTVarIO Nothing
-    optionsVar <- newTVarIO emptyDelta
+    optionsVar <- newOwnOptionsIO
     exitedVar <- newTVarIO (paneExitOf <$> rp.death)
     inputOffVar <- newTVarIO False
     alternateVar <- newTVarIO rp.screen.altScreen

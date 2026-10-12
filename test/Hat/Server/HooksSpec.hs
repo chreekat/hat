@@ -20,7 +20,7 @@ import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Server.Outbound (newOutbound)
-import Hat.Model.Options (AlertAction (..), Options (..), alertAllows, emptyDelta)
+import Hat.Model.Options (AlertAction (..), Options (..), alertAllows)
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Command.Wait (cmdWaitFor)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks)
@@ -258,8 +258,7 @@ fakeSession = do
     sizeVar <- newTVarIO (Size 80 24)
     environVar <- newTVarIO emptyEnviron
     cwdVar <- newTVarIO "/"
-    optionsVar <- newTVarIO emptyDelta
-    resolvedVar <- newTVarIO Nothing
+    optionsVar <- newOwnOptionsIO
     groupVar <- newTVarIO Nothing
     activityVar <- newTVarIO 0
     holdVar <- newTVarIO NotHeld
@@ -275,7 +274,6 @@ fakeSession = do
         , environ = environVar
         , startCwd = cwdVar
         , options = optionsVar
-        , resolvedOptions = resolvedVar
         , group = groupVar
         , activity = activityVar
         , destroyHold = holdVar

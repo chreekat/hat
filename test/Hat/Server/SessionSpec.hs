@@ -33,7 +33,7 @@ import Hat.Client (TerminalMode (..), nestsOwnServer, terminalMode)
 import Hat.Model
 import Hat.Model.Options
     (ArrayKey (..), Options (..), OptionValue (..)
-    , applyDelta, defaultOptions, emptyDelta, insertDelta, lookupDelta, singletonDelta)
+    , applyDelta, defaultOptions, insertDelta, lookupDelta, singletonDelta)
 import Hat.Server.Alerts (AlertKind (..), deliverAlert)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
@@ -97,8 +97,7 @@ addSession st n = do
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
-        <*> newTVarIO emptyDelta
-        <*> newTVarIO Nothing
+        <*> newOwnOptionsIO
         <*> newTVarIO Nothing
         <*> newTVarIO 0
         <*> newTVarIO NotHeld
@@ -119,8 +118,7 @@ seedSession start = do
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO start
-        <*> newTVarIO emptyDelta
-        <*> newTVarIO Nothing
+        <*> newOwnOptionsIO
         <*> newTVarIO Nothing
         <*> newTVarIO 0
         <*> newTVarIO NotHeld
@@ -144,7 +142,7 @@ addWindow sess n = do
         <*> newTVarIO 0
         <*> newTVarIO Nothing
         <*> newTVarIO True
-        <*> newTVarIO emptyDelta
+        <*> newOwnOptionsIO
         <*> newTVarIO Nothing
         <*> newTVarIO noFloats
         <*> newTVarIO Nothing
@@ -253,7 +251,7 @@ stubPane n = do
     pipeV <- newTVarIO Nothing
     tidV  <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
-    optsV <- newTVarIO emptyDelta
+    optsV <- newOwnOptionsIO
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False
@@ -331,7 +329,7 @@ spec = do
             atomically $ do
                 modifyTVar' st.options $ \o ->
                     o { user = Map.singleton "@v" "global" }
-                modifyTVar' sess.options
+                modifyOwn sess.options
                     (insertDelta "@v" (OVScalar "local"))
             env <- sessionFormatEnv st sess
             Map.lookup "@v" env `shouldBe` Just "local"
@@ -346,7 +344,7 @@ spec = do
             atomically $ do
                 writeTVar win.panes (Map.singleton pane.id pane)
                 writeTVar pane.home (Just (sess.id, win))
-                modifyTVar' sess.options (insertDelta "@v" (OVScalar "local"))
+                modifyOwn sess.options (insertDelta "@v" (OVScalar "local"))
             (do full <- paneFormatEnv st sess 0 win 0 pane
                 let built ns = paneVars st sess 0 win 0 pane (OnlyVars (Set.fromList ns))
                     names = Map.keys full
@@ -370,7 +368,7 @@ spec = do
         it "are redone when a variable they read changes, and never kept when volatile" $ do
             (st, sess) <- seedSession "/"
             client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
-            let set v = atomically $ modifyTVar' sess.options (insertDelta "@v" (OVScalar v))
+            let set v = atomically $ modifyOwn sess.options (insertDelta "@v" (OVScalar v))
                 frame fmt = do
                     memo <- frameMemo client
                     out <- memoExpand st memo (FormatTarget (InSession sess) Map.empty) fmt
@@ -442,7 +440,7 @@ spec = do
                 modifyTVar' win.panes (Map.insert p.id p)
                 writeTVar p.mode (Just (blankCopyMode 3))
                 -- status off: statusCells would touch the stub pane
-                writeTVar st.globalSessionOptions
+                writeOwn st.globalSessionOptions
                     (singletonDelta "status" (OVScalar "off"))
             (client, _peer) <- wiredClient st Attached
             renderOnce st client `finally` release
@@ -476,9 +474,9 @@ spec = do
             _ <- Emu.feed emu "a\ESC[31mb"
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
-                writeTVar st.globalSessionOptions
+                writeOwn st.globalSessionOptions
                     (singletonDelta "status" (OVScalar "off"))
-                writeTVar p.options
+                writeOwn p.options
                     (insertDelta "pane-colours" (OVArray (Map.singleton (KeyIndex 1) "colour100"))
                         (singletonDelta "window-style" (OVScalar "bg=colour4")))
             (client, _peer) <- wiredClient st Attached
@@ -500,7 +498,7 @@ spec = do
                 atomically $ do
                     modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
                     writeTVar sess.lastSize Size { rows = 20, cols = 60 }
-                    writeTVar st.globalSessionOptions (singletonDelta "status" (OVScalar "off"))
+                    writeOwn st.globalSessionOptions (singletonDelta "status" (OVScalar "off"))
                 (client, _peer) <- wiredClient st Attached
                 atomically $ do
                     writeTVar client.size Size { rows = 14, cols = 40 }
@@ -636,7 +634,7 @@ spec = do
             readTVarIO sess.lastSize `shouldReturn` pane big
         it "fits the smallest client under window-size smallest" $ do
             (st, sess) <- seedSession "/"
-            atomically $ writeTVar st.globalWindowOptions
+            atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "window-size" (OVScalar "smallest"))
             _ <- addClient st (SessionId 0) big 2
             _ <- addClient st (SessionId 0) small 1
@@ -645,7 +643,7 @@ spec = do
         it "keeps a manual size whatever the clients" $ do
             (st, sess) <- seedSession "/"
             sz0 <- readTVarIO sess.lastSize
-            atomically $ writeTVar st.globalWindowOptions
+            atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "window-size" (OVScalar "manual"))
             _ <- addClient st (SessionId 0) big 1
             applySessionSize st (SessionId 0)
@@ -671,7 +669,7 @@ spec = do
                 `shouldReturn` [RErr "width too small"]
         it "carves no status row when status is off" $ do
             (st, sess) <- seedSession "/"
-            atomically $ writeTVar st.globalSessionOptions
+            atomically $ writeOwn st.globalSessionOptions
                 (singletonDelta "status" (OVScalar "off"))
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
@@ -717,7 +715,7 @@ spec = do
         it "sizes a detached session from default-size, overridden by -x/-y" $ do
             lg <- newLogger "/dev/null"
             st <- newServerState Map.empty lg "/tmp/hat-newsess-size.sock" Nothing
-            atomically $ writeTVar st.globalSessionOptions
+            atomically $ writeOwn st.globalSessionOptions
                 (singletonDelta "default-size" (OVScalar "50x20"))
             cmdNewSession st Nothing ["-d", "-x", "0"]
                 `shouldReturn` [RErr "width too small"]
@@ -730,7 +728,7 @@ spec = do
                     () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
             flip finally reap $ do
                 readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 50 }
-                lookupDelta "default-size" <$> readTVarIO sess.options
+                lookupDelta "default-size" <$> readOwnIO sess.options
                     `shouldReturn` Just (OVScalar "50x7")
         it "creates a named session with its first window; a duplicate name is refused" $ do
             lg <- newLogger "/dev/null"
@@ -846,16 +844,37 @@ spec = do
         it "a session overlay shadows the global chain for that session only" $ do
             lg <- newLogger "/dev/null"
             st <- newServerState Map.empty lg "/tmp/hat-scopespec.sock" Nothing
-            atomically $ writeTVar st.globalSessionOptions
+            atomically $ writeOwn st.globalSessionOptions
                 (singletonDelta "prefix" (OVScalar "C-b"))
             sessA <- addSession st 0
             sessB <- addSession st 1
-            atomically $ writeTVar sessA.options
+            atomically $ writeOwn sessA.options
                 (singletonDelta "prefix" (OVScalar "C-a"))
             a <- atomically (resolveForSession st sessA)
             b <- atomically (resolveForSession st sessB)
             a.prefix `shouldBe` "C-a"   -- session A's own set
             b.prefix `shouldBe` "C-b"   -- B falls through to the global
+        it "a pane's resolution follows each later write to a scope above it" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-scopespec.sock" Nothing
+            sess <- addSession st 0
+            win <- addWindow sess 0
+            pane <- stubPane 1
+            let seen = atomically $
+                    Map.lookup "@v" . (.user) <$> resolveForPane st sess win pane
+                set scope v = atomically $
+                    modifyOwn scope (insertDelta "@v" (OVScalar v))
+            seen `shouldReturn` Nothing
+            set st.serverOptions "server"
+            seen `shouldReturn` Just "server"
+            set st.globalWindowOptions "global"
+            seen `shouldReturn` Just "global"
+            set sess.options "session"
+            seen `shouldReturn` Just "session"
+            set win.options "window"
+            seen `shouldReturn` Just "window"
+            set pane.options "pane"
+            seen `shouldReturn` Just "pane"
 
     describe "window_active_clients" $ do
         it "counts a client viewing a window linked into another session" $ do
@@ -869,7 +888,7 @@ spec = do
                 modifyTVar' sessB.windows (Map.insert 1 shared)
                 writeTVar sessA.currentIx 2   -- A looks at its own window
                 writeTVar sessB.currentIx 1   -- B looks at the shared one
-                writeTVar st.globalWindowOptions $ singletonDelta
+                writeOwn st.globalWindowOptions $ singletonDelta
                     "window-status-format"
                     (OVScalar "#I#{?window_active_clients,<eyes>,}")
             _ <- addClient st sessB.id (Size { rows = 24, cols = 80 }) 1
@@ -908,7 +927,7 @@ spec = do
                     mapM_ (\(w, p) -> modifyTVar' w.panes (Map.insert p.id p))
                         (zip ws ps)
                     writeTVar sess.currentIx 9
-                    writeTVar sess.options
+                    writeOwn sess.options
                         (singletonDelta "renumber-windows" (OVScalar setting))
                 _ <- atomically (detachPane st (ws !! 1) (ps !! 1))
                 (,) <$> (map (fmap (.id)) . Map.toList <$> readTVarIO sess.windows)
@@ -961,7 +980,7 @@ spec = do
 
         it "raises the activity marker on the current window when no viewer is focused" $ do
             (st, sess) <- seedSession "/"
-            atomically $ writeTVar st.globalWindowOptions
+            atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "monitor-activity" (OVScalar "on"))
             w0 <- addWindow sess 0
             c  <- addClient st sess.id small 1
@@ -1218,7 +1237,7 @@ spec = do
                     writeTVar win.activeId pa.id
                     mapM_ (\p -> writeTVar p.home (Just (sess.id, win))) ps
                 pure (st, win, pa, pb, pc)
-            syncOn p = atomically $ modifyTVar' p.options
+            syncOn p = atomically $ modifyOwn p.options
                 (insertDelta "synchronize-panes" (OVScalar "on"))
             targetIds st p = map (.id) <$> atomically (syncTargets st p)
         it "off (the default): nothing is copied" $ do
@@ -1226,7 +1245,7 @@ spec = do
             targetIds st pa `shouldReturn` []
         it "on for the window: every other pane gets the key" $ do
             (st, win, pa, pb, pc) <- syncWindow
-            atomically $ modifyTVar' win.options
+            atomically $ modifyOwn win.options
                 (insertDelta "synchronize-panes" (OVScalar "on"))
             targetIds st pa `shouldReturn` [pb.id, pc.id]
         it "a pane's own value counts, on both ends" $ do
@@ -1433,7 +1452,7 @@ spec = do
                 modifyTVar' newer.windows (Map.insert 0 w0)
                 writeTVar older.activity 1
                 writeTVar newer.activity 2
-                writeTVar sess.options
+                writeOwn sess.options
                     (singletonDelta "detach-on-destroy" (OVScalar "off"))
             client <- addClient st sess.id (Size 24 80) 3
             cmdKillSession st Nothing ["-t", "work"] `shouldReturn` []
@@ -1458,7 +1477,7 @@ spec = do
                 atomically $ do
                     modifyTVar' w0.panes (Map.insert p.id p)
                     modifyTVar' other.windows (Map.insert 0 w0)
-                    writeTVar st.globalSessionOptions (singletonDelta
+                    writeOwn st.globalSessionOptions (singletonDelta
                         "destroy-unattached" (OVScalar setting))
                 _ <- addClient st other.id (Size 24 80) 1
                 pure (st, sess)
@@ -1715,7 +1734,7 @@ spec = do
 
         it "repaints a monitored background window only when its flag rises" $ do
             (st, _, back, _) <- watchedPair
-            atomically $ writeTVar st.globalWindowOptions
+            atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "monitor-activity" (OVScalar "on"))
             gen <- readTVarIO st.dirty
             windowActivity st (SessionId 0) back

@@ -395,10 +395,10 @@ floatingPanes st win = do
     fmap concat . forM (reverse (stacking fs lay)) $ \pid ->
         case (floatGeom pid lay, Map.lookup pid ps) of
             (Just g, Just p) -> do
-                let chain = [p.options, win.options, st.globalWindowOptions]
-                lineSet <- borderLinesOf <$> chainText chain "pane-border-lines"
-                raw <- chainText chain "pane-border-status"
-                let box = Rect { startRow = g.top, endRow = g.top + g.height
+                popts <- resolvePaneTables st win p
+                let lineSet = borderLinesOf (optionText "pane-border-lines" popts)
+                    raw = optionText "pane-border-status" popts
+                    box = Rect { startRow = g.top, endRow = g.top + g.height
                                , startCol = g.left, endCol = g.left + g.width }
                 pure [ FloatingPane
                     { pane = pid
@@ -434,8 +434,8 @@ cachedArrange eff win lay = do
 -- | A window's @pane-border-status@.
 windowPaneStatus :: ServerState -> Window -> STM PaneStatus
 windowPaneStatus st win = do
-    v <- chainText [win.options, st.globalWindowOptions] "pane-border-status"
-    pure $ case v of
+    wopts <- resolveWindowTables st win
+    pure $ case optionText "pane-border-status" wopts of
         "top" -> PaneStatusTop
         "bottom" -> PaneStatusBottom
         _ -> PaneStatusOff
@@ -446,16 +446,15 @@ windowPaneStatus st win = do
 -- every pane not on its alternate screen.
 paneScrollbars :: ServerState -> Window -> STM (ScrollbarSide, Map.Map PaneId Int)
 paneScrollbars st win = do
-    mode <- chainText [win.options, st.globalWindowOptions] "pane-scrollbars"
-    pos <- chainText [win.options, st.globalWindowOptions] "pane-scrollbars-position"
-    let side = if pos == "left" then ScrollbarLeft else ScrollbarRight
-    if mode /= "on" then pure (side, Map.empty) else do
+    wopts <- resolveWindowTables st win
+    let side = if optionText "pane-scrollbars-position" wopts == "left"
+            then ScrollbarLeft else ScrollbarRight
+    if optionText "pane-scrollbars" wopts /= "on" then pure (side, Map.empty) else do
         ps <- Map.elems <$> readTVar win.panes
         bars <- fmap concat $ forM ps $ \p -> do
             alt <- readTVar p.onAlternate
-            raw <- chainText [p.options, win.options, st.globalWindowOptions]
-                "pane-scrollbars-style"
-            let sb = scrollbarStyle terminalTheme raw
+            popts <- resolvePaneTables st win p
+            let sb = scrollbarStyle terminalTheme (optionText "pane-scrollbars-style" popts)
             pure [ (p.id, sb.width + sb.pad) | not alt ]
         pure (side, Map.fromList bars)
 
@@ -472,12 +471,3 @@ scrollbarReserve side w r
         ScrollbarRight -> r { endCol = r.endCol - w }
   where
     sx = r.endCol - r.startCol
-
--- | An option's text in the nearest of a chain of tables, else its
--- registry default.
-chainText :: [TVar OptionsDelta] -> Text -> STM Text
-chainText tables name = do
-    found <- mapM (fmap (lookupDelta name) . readTVar) tables
-    pure $ case [ v | Just v <- found ] of
-        (v : _) -> valueText v
-        [] -> maybe "" (valueText . (.defaultValue)) (lookupOptionDef name)

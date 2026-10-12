@@ -12,7 +12,6 @@ import Data.Vector qualified as V
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Model.Options (emptyDelta)
 import Hat.Server.Flash (lingerDeadline, flashExpired)
 import Hat.Server.Floating (noFloats)
 import Hat.Server.Layout (Orientation (..), singlePane)
@@ -101,7 +100,7 @@ splitWindow = do
         <*> newTVarIO 0
         <*> newTVarIO Nothing
         <*> newTVarIO True
-        <*> newTVarIO emptyDelta
+        <*> newOwnOptionsIO
         <*> newTVarIO Nothing
         <*> newTVarIO noFloats
         <*> newTVarIO Nothing
@@ -121,7 +120,7 @@ flashStubPane pid = do
     pipeV <- newTVarIO Nothing
     tidV <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
-    optsV <- newTVarIO emptyDelta
+    optsV <- newOwnOptionsIO
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False

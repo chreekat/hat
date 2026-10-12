@@ -11,7 +11,6 @@ import Test.Hspec
 import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Model.Options (emptyDelta)
 import Hat.Server (Reply (..), cmdSetEnvironment, cmdShowEnvironment)
 import Hat.Server.Environ
 
@@ -28,8 +27,7 @@ seedServer = do
         <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
-        <*> newTVarIO emptyDelta
-        <*> newTVarIO Nothing
+        <*> newOwnOptionsIO
         <*> newTVarIO Nothing
         <*> newTVarIO 0
         <*> newTVarIO NotHeld

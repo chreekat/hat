@@ -183,7 +183,7 @@ newSession st mclient opts flags pos
                 writeTVar sess.group mgroup
                 -- An explicit size becomes the session's default-size.
                 when (isJust mx || isJust my) $
-                    modifyTVar' sess.options $ insertDelta "default-size" $
+                    modifyOwn sess.options $ insertDelta "default-size" $
                         OVScalar (T.pack (show sz.cols <> "x" <> show sz.rows))
                 forM_ (lookup "-n" opts) $ \wname -> do
                     ws <- readTVar sess.windows

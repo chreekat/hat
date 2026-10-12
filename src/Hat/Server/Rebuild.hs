@@ -24,7 +24,6 @@ import GHC.Records (HasField)
 
 import Hat.Geometry
 import Hat.Model
-import Hat.Model.Options
 import Hat.Server.Environ (environFromPairs)
 import Hat.Server.Floating (FloatState (..), Modal (..), noFloats)
 import Hat.Server.Mouse (ClickOutside (..))
@@ -125,8 +124,7 @@ rebuildSession st done env mkPane csess = do
         sizeVar    <- newTVarIO sz
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack csess.startCwd)
-        optionsVar <- newTVarIO emptyDelta
-        resolvedVar <- newTVarIO Nothing
+        optionsVar <- newOwnOptionsIO
         groupVar   <- newTVarIO csess.group
         activityVar <- newTVarIO =<< atomically (tickActivity st)
         holdVar    <- newTVarIO HeldUntilAttached
@@ -138,7 +136,7 @@ rebuildSession st done env mkPane csess = do
                 , currentIx = currentVar, windowHist = windowHistVar
                 , lastSize = sizeVar, environ = environVar
                 , startCwd = cwdVar, options = optionsVar
-                , resolvedOptions = resolvedVar, group = groupVar
+                , group = groupVar
                 , activity = activityVar, destroyHold = holdVar }
         atomically $ modifyTVar' st.sessions (Map.insert sid sess)
         forM_ built $ \(_, win, panes) ->
@@ -187,7 +185,7 @@ rebuildWindow st mkPane sz cwin = do
     -- automatically keeps tracking its active pane, a manually-named one
     -- keeps its pinned name.
     autoRenameVar <- newTVarIO cwin.autoRename
-    optionsVar    <- newTVarIO emptyDelta
+    optionsVar    <- newOwnOptionsIO
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing

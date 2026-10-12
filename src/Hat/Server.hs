@@ -308,7 +308,7 @@ seedDefaultShell st = do
         `catch` \(_ :: IOException) -> pure Nothing
     found <- filterM suitableShell (catMaybes [fromEnv, fromPasswd])
     forM_ (listToMaybe found) $ \sh -> atomically $ do
-        modifyTVar' st.globalSessionOptions
+        modifyOwn st.globalSessionOptions
             (insertDelta "default-shell" (OVScalar (T.pack sh)))
         refreshGlobalOptions st
 
@@ -501,7 +501,7 @@ applyScheme st scheme = do
         -- The scheme is a base layer under every user scope, so a user's
         -- own set always wins; then the user's per-scheme config on top.
         atomically $ do
-            writeTVar st.schemeOptions (applyPalette scheme)
+            writeOwn st.schemeOptions (applyPalette scheme)
             refreshGlobalOptions st
         opts <- readTVarIO st.options
         let optName = case scheme of

@@ -159,7 +159,7 @@ windowOwnEnv st sess ix win = windowOwnVars st sess ix win AllVars
 -- | 'windowOwnEnv', built with just the wanted variables.
 windowOwnVars :: ServerState -> Session -> Int -> Window -> Wanted -> IO FormatEnv
 windowOwnVars st sess ix win w = do
-    winUser <- deltaVars w <$> readTVarIO win.options
+    winUser <- deltaVars w <$> readOwnIO win.options
     Map.union winUser <$> layerVars windowLayer w (st, sess, ix, win)
 
 -- | Where a window's own variables are read: its server, session, index
@@ -252,7 +252,7 @@ paneFormatEnv st sess wix win pix pane = paneVars st sess wix win pix pane AllVa
 paneVars
     :: ServerState -> Session -> Int -> Window -> Int -> Pane -> Wanted -> IO FormatEnv
 paneVars st sess wix win pix pane w = do
-    paneUser <- deltaVars w <$> readTVarIO pane.options
+    paneUser <- deltaVars w <$> readOwnIO pane.options
     own <- Map.union paneUser <$> layerVars paneLayer w (st, sess, win, pix, pane)
     Map.union own <$> windowVars st sess wix win (unshadowed own w)
 

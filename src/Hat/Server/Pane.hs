@@ -223,7 +223,7 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
     zoomVar <- newTVarIO Nothing
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     layoutNameVar <- newTVarIO Nothing
-    optionsVar    <- newTVarIO emptyDelta
+    optionsVar    <- newOwnOptionsIO
     silenceVar    <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar    <- newTVarIO Nothing
@@ -407,7 +407,7 @@ newPane pid pty emu sz dir pending start kind = do
     pipeVar <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
     homeVar <- newTVarIO Nothing
-    optionsVar <- newTVarIO emptyDelta
+    optionsVar <- newOwnOptionsIO
     exitedVar <- newTVarIO Nothing
     inputOffVar <- newTVarIO False
     syncVar <- newTVarIO noOutputSync
@@ -456,7 +456,7 @@ respawnPane st sid win old shellCmd how kind dir environ = do
     swapped <- atomically $ do
         claimed <- claimPane old
         if not claimed then pure Nothing else do
-            writeTVar new.options =<< readTVar old.options
+            writeOwn new.options =<< readOwn old.options
             writeTVar new.inputOff =<< readTVar old.inputOff
             modifyTVar' win.panes (Map.insert new.id new)
             bumpDirty st
@@ -1597,7 +1597,7 @@ wrapPaneInWindow st pane = do
     zoomVar <- newTVarIO Nothing
     autoRenameVar <- newTVarIO . (.automaticRename) =<< readTVarIO st.options
     layoutNameVar <- newTVarIO Nothing
-    optionsVar <- newTVarIO emptyDelta
+    optionsVar <- newOwnOptionsIO
     silenceVar <- newTVarIO False
     activityAtVar <- newTVarIO =<< getPOSIXTime
     arrangeVar <- newTVarIO Nothing
@@ -1762,8 +1762,7 @@ createSession st mname mrun environ dir sz = do
     sizeVar <- newTVarIO sz
     environVar <- newTVarIO (environFromPairs environ)
     cwdVar <- newTVarIO dir
-    optionsVar <- newTVarIO emptyDelta
-    resolvedVar <- newTVarIO Nothing
+    optionsVar <- newOwnOptionsIO
     groupVar <- newTVarIO Nothing
     activityVar <- newTVarIO =<< atomically (tickActivity st)
     holdVar <- newTVarIO NotHeld
@@ -1779,7 +1778,6 @@ createSession st mname mrun environ dir sz = do
             , environ = environVar
             , startCwd = cwdVar
             , options = optionsVar
-            , resolvedOptions = resolvedVar
             , group = groupVar
             , activity = activityVar
             , destroyHold = holdVar
@@ -1815,8 +1813,7 @@ createGroupedSession st leader mname environ dir = do
         sizeVar <- newTVar sz
         environVar <- newTVar (environFromPairs environ)
         cwdVar <- newTVar dir
-        optionsVar <- newTVar emptyDelta
-        resolvedVar <- newTVar Nothing
+        optionsVar <- newOwnOptions
         groupVar <- newTVar (Just gname)
         activityVar <- newTVar =<< tickActivity st
         holdVar <- newTVar NotHeld
@@ -1832,7 +1829,6 @@ createGroupedSession st leader mname environ dir = do
                 , environ = environVar
                 , startCwd = cwdVar
                 , options = optionsVar
-                , resolvedOptions = resolvedVar
                 , group = groupVar
                 , activity = activityVar
                 , destroyHold = holdVar

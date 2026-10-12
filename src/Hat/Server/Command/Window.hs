@@ -445,7 +445,7 @@ cmdResizeWindow st mclient args
                       | has "-a" -> fromClients SizeSmallest
                       | otherwise -> pure nudged
                 atomically $ do
-                    modifyTVar' win.options
+                    modifyOwn win.options
                         (insertDelta "window-size" (OVScalar "manual"))
                     writeTVar sess.lastSize sz
                 applySessionSize st sess.id

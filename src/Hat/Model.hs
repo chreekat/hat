@@ -76,6 +76,8 @@ module Hat.Model
     , resolveForSession
     , resolveForWindow
     , resolveForPane
+    , resolveWindowTables
+    , resolvePaneTables
     , paneOptionsNow
     , sessionClients
     , currentWindow
@@ -92,6 +94,7 @@ module Hat.Model
     , rawSession
     , rawWindow
     , tshow
+    , module Hat.Model.OwnOptions
     ) where
 
 import Control.Concurrent (ThreadId)
@@ -126,8 +129,8 @@ import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Path (findHome)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
-    ( ModeKeys, Options, OptionsDelta, applyDelta
-    , defaultOptions, emptyDelta, resolveOptions )
+    ( ModeKeys, Options, applyDelta, defaultOptions, resolveOptions )
+import Hat.Model.OwnOptions
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.Theme (Theme)
 import Hat.Server.ControlTypes (ControlState)
@@ -139,7 +142,6 @@ import Hat.Server.Layout (Layout, LayoutName, paneOrder)
 import Hat.Server.Floating (FloatState)
 import Hat.Server.Menu (WindowMenu)
 import Hat.Server.Popup (JobState, PopupState)
-import Hat.PtrEq (samePtr)
 import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeKind, ChromeLook, Scene, SceneInput)
 import Hat.Transport.Wire (Autostart)
@@ -188,11 +190,10 @@ data ServerState = ServerState
         --   @#{color_scheme}@ and sourcing of the @\@color-scheme-dark@ /
         --   @\@color-scheme-light@ config files.
     , options     :: TVar Options
-    , serverOptions :: TVar OptionsDelta          -- ^ see 'resolveGlobal'
-    , globalSessionOptions :: TVar OptionsDelta   -- ^ see 'resolveForSession'
-    , globalWindowOptions :: TVar OptionsDelta     -- ^ see 'resolveForWindow'
-    , schemeOptions :: TVar OptionsDelta            -- ^ see 'resolveGlobal'
-    , resolvedGlobal :: TVar (Maybe ResolvedOpts)   -- ^ see 'memoResolve'
+    , serverOptions :: OwnOptions          -- ^ see 'resolveGlobal'
+    , globalSessionOptions :: OwnOptions   -- ^ see 'resolveForSession'
+    , globalWindowOptions :: OwnOptions     -- ^ see 'resolveForWindow'
+    , schemeOptions :: OwnOptions            -- ^ see 'resolveGlobal'
     , globalEnviron :: TVar Environ
         -- ^ server-wide variables (@set-environment -g@, config @NAME=value@
         --   lines); see 'Hat.Server.sessionSpawnEnv' for how they reach panes.
@@ -251,8 +252,7 @@ data Session = Session
     , lastSize :: TVar Size              -- ^ the window's pane area; see 'sessionWindowArea'
     , environ  :: TVar Environ           -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
-    , options  :: TVar OptionsDelta      -- ^ session-scoped set-option; see 'resolveForSession'
-    , resolvedOptions :: TVar (Maybe ResolvedOpts)  -- ^ see 'memoResolve'
+    , options  :: OwnOptions      -- ^ session-scoped set-option; see 'resolveForSession'
     , group    :: TVar (Maybe Text)
         -- ^ the name of the session group this session belongs to, if any
     , activity :: TVar Int
@@ -284,7 +284,7 @@ data Window = Window
     , autoRename :: TVar Bool
         -- ^ when set, the name tracks the active pane's foreground command
         -- (@automatic-rename@); an explicit @rename-window@ clears it.
-    , options    :: TVar OptionsDelta  -- ^ window-scoped set-option; see 'resolveForWindow'
+    , options    :: OwnOptions  -- ^ window-scoped set-option; see 'resolveForWindow'
     , arrangeCache :: TVar (Maybe ((Rect, Layout), ([(PaneId, Rect)], [(Pos, Char)])))
         -- ^ the last layout arrangement, keyed by its inputs; see
         -- 'Hat.Server.Resize.windowArrange'
@@ -303,7 +303,7 @@ data Pane = Pane
     , size     :: TVar Size
     , dead     :: TVar Bool
     , startCwd :: FilePath
-    , options  :: TVar OptionsDelta  -- ^ pane-scoped set-option; see 'resolveForPane'
+    , options  :: OwnOptions  -- ^ pane-scoped set-option; see 'resolveForPane'
     , mode     :: TVar (Maybe PaneMode)
         -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
         -- its own cursor/selection over a frozen snapshot of the pane's
@@ -886,11 +886,10 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Serving
     <*> newTVarIO Nothing
     <*> newTVarIO defaultOptions
-    <*> newTVarIO emptyDelta  -- serverOptions
-    <*> newTVarIO emptyDelta  -- globalSessionOptions
-    <*> newTVarIO emptyDelta  -- globalWindowOptions
-    <*> newTVarIO emptyDelta  -- schemeOptions
-    <*> newTVarIO Nothing     -- resolvedGlobal
+    <*> newOwnOptionsIO  -- serverOptions
+    <*> newOwnOptionsIO  -- globalSessionOptions
+    <*> newOwnOptionsIO  -- globalWindowOptions
+    <*> newOwnOptionsIO  -- schemeOptions
     <*> newTVarIO emptyEnviron
     <*> newTVarIO defaultKeymap
     <*> newTVarIO emptyPasteStore
@@ -947,12 +946,10 @@ tickActivity st = do
 -- server-wide chain (global-window, global-session, server, then the color
 -- scheme's base layer) folded onto the defaults.
 resolveGlobal :: ServerState -> STM Options
-resolveGlobal st = do
-    gw <- readTVar st.globalWindowOptions
-    gs <- readTVar st.globalSessionOptions
-    sv <- readTVar st.serverOptions
-    sc <- readTVar st.schemeOptions
-    memoResolve st.resolvedGlobal [gw, gs, sv, sc]
+resolveGlobal st = resolveThrough st.serverOptions (ChainKey Nothing Nothing) $
+    resolveOptions <$> mapM readOwn
+        [ st.globalWindowOptions, st.globalSessionOptions, st.serverOptions
+        , st.schemeOptions ]
 
 -- | A resolved theme with what it was resolved from.
 data ThemeCache = ThemeCache
@@ -961,55 +958,39 @@ data ThemeCache = ThemeCache
     , theme  :: !Theme
     }
 
--- | An options resolution held with the delta objects it was computed
--- from; see 'memoResolve'.
-data ResolvedOpts = ResolvedOpts
-    { deltas :: [OptionsDelta]
-    , opts   :: Options
-    }
-
--- | @resolveOptions deltas@ through a memo: served from the cache when
--- every delta is the very object of the previous resolution, so any
--- set-option that writes a scope's TVar naturally misses.
-memoResolve :: TVar (Maybe ResolvedOpts) -> [OptionsDelta] -> STM Options
-memoResolve cache deltas = do
-    hit <- readTVar cache
-    case hit of
-        Just r | sameDeltas r.deltas deltas -> pure r.opts
-        _ -> do
-            let o = resolveOptions deltas
-            writeTVar cache (Just ResolvedOpts { deltas, opts = o })
-            pure o
-  where
-    sameDeltas (a : as) (b : bs) = samePtr a b && sameDeltas as bs
-    sameDeltas as bs = null as && null bs
-
 -- | Resolve the effective options for a session: its own set-option overlay
 -- shadows the global chain, so a bare @set@ affects only that session.
 resolveForSession :: ServerState -> Session -> STM Options
-resolveForSession st sess = do
-    s <- readTVar sess.options
-    gw <- readTVar st.globalWindowOptions
-    gs <- readTVar st.globalSessionOptions
-    sv <- readTVar st.serverOptions
-    sc <- readTVar st.schemeOptions
-    memoResolve sess.resolvedOptions [s, gw, gs, sv, sc]
+resolveForSession st sess = resolveThrough sess.options (ChainKey Nothing Nothing) $
+    resolveOptions <$> mapM readOwn
+        [ sess.options, st.globalWindowOptions, st.globalSessionOptions
+        , st.serverOptions, st.schemeOptions ]
 
 -- | Resolve the effective options for a window: its window overlay and its
 -- session's overlay shadow the global chain (window options and session
 -- options occupy disjoint names, so layering both is safe).
 resolveForWindow :: ServerState -> Session -> Window -> STM Options
-resolveForWindow st sess win = do
-    w <- readTVar win.options
-    applyDelta w <$> resolveForSession st sess
+resolveForWindow st sess win = resolveThrough win.options (ChainKey (Just sess.id) Nothing) $
+    applyDelta <$> readOwn win.options <*> resolveForSession st sess
 
 -- | Resolve the effective options for one pane: its own overlay (@set -p@)
 -- shadows its window's chain.
 resolveForPane :: ServerState -> Session -> Window -> Pane -> STM Options
-resolveForPane st sess win pane = do
-    p <- readTVar pane.options
-    rest <- resolveForWindow st sess win
-    pure (applyDelta p rest)
+resolveForPane st sess win pane =
+    resolveThrough pane.options (ChainKey (Just sess.id) (Just win.id)) $
+        applyDelta <$> readOwn pane.options <*> resolveForWindow st sess win
+
+-- | A window's own table over the global window table, onto the registry
+-- defaults: no session's chain, nor the colour scheme's base layer.
+resolveWindowTables :: ServerState -> Window -> STM Options
+resolveWindowTables st win = resolveThrough win.options (ChainKey Nothing Nothing) $
+    resolveOptions <$> mapM readOwn [win.options, st.globalWindowOptions]
+
+-- | 'resolveWindowTables' under a pane's own table.
+resolvePaneTables :: ServerState -> Window -> Pane -> STM Options
+resolvePaneTables st win pane =
+    resolveThrough pane.options (ChainKey Nothing (Just win.id)) $
+        applyDelta <$> readOwn pane.options <*> resolveWindowTables st win
 
 -- | A pane's options as of now, from its current home; 'Nothing' for a pane
 -- not yet homed.

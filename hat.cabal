@@ -89,6 +89,7 @@ library
         Hat.Model.Ids
         Hat.Model.OptionTable
         Hat.Model.Options
+        Hat.Model.OwnOptions
         Hat.Model.PaneKind
         Hat.Model.PasteBuffers
         Hat.Path
