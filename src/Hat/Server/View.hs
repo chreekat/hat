@@ -627,8 +627,10 @@ cachedChrome
 cachedChrome st expand th client sess win eff sceneArea rects floats defaults active rowOff = do
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
+    windowStyle <- expand.style th . optionText "pane-border-style"
+        =<< atomically (resolveForWindow st sess win)
     (input, look2, panes) <- atomically
-        (chromeInputs st th sess win eff sceneArea rects floats active mmenu)
+        (chromeInputs st windowStyle sess win eff sceneArea rects floats active mmenu)
     bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
         \(cp, _) -> do
             let height = maybe 0 (\r -> r.endRow - r.startRow) (List.lookup cp.pane.id rects)
@@ -641,8 +643,9 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults ac
                 , padStyle = Cell.defaultStyle { Cell.fg = dfg, Cell.bg = dbg }
                 , onLeft = input.scrollbarSide == ScrollbarLeft })
     let look1 = look2 { scrollbarLooks = Map.fromList bars }
-    let (scene, kinds) = case mcc of
-            Just cc | cc.input == input -> (cc.scene, cc.kinds)
+    let sameInput = maybe False (\cc -> cc.input == input) mcc
+        (scene, kinds) = case mcc of
+            Just cc | sameInput -> (cc.scene, cc.kinds)
             _ -> let s = buildScene input in (s, sceneKinds s)
     -- A scene with no borders draws no pane's border style; a status line
     -- is drawn over a border.
@@ -655,7 +658,7 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults ac
         >>= withFills st expand th sess win kinds
         >>= withMenu st expand th sess win mmenu
     case mcc of
-        Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
+        Just cc | sameInput, cc.look == look, cc.rowOff == rowOff ->
             pure cc.chrome
         _ -> do
             let cells = [ (p { row = p.row + rowOff }, c) | (p, c) <- sceneChrome look scene ]
@@ -700,10 +703,10 @@ data ChromePane = ChromePane
 -- | The scene a window's panes make and how its chrome looks, before any
 -- pane status line is drawn.
 chromeInputs
-    :: ServerState -> Theme -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
+    :: ServerState -> Cell.Style -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
     -> [FloatingPane] -> PaneId -> Maybe WindowMenu
     -> STM (SceneInput, ChromeLook, [ChromePane])
-chromeInputs st th sess win eff sceneArea rects floats active mmenu = do
+chromeInputs st windowStyle sess win eff sceneArea rects floats active mmenu = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
     (side, bars) <- paneScrollbars st win
@@ -729,7 +732,7 @@ chromeInputs st th sess win eff sceneArea rects floats active mmenu = do
         look = ChromeLook
             { borderLines = wopts.paneBorderLines
             , lineSets = Map.fromList [ (f.pane, f.lineSet) | f <- floats ]
-            , windowStyle = styleCell th (optionText "pane-border-style" wopts)
+            , windowStyle
             , paneStyles = Map.empty
             , scrollbarLooks = Map.empty
             , active = Just active
