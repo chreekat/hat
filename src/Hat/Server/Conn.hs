@@ -15,6 +15,7 @@ module Hat.Server.Conn
     , keyContext
     , reencodeKey
     , handleInput  -- ^ exported for the display-panes key tests
+    , newClient    -- ^ exported for the source-file tests
     ) where
 
 import Control.Concurrent (forkIO, threadDelay)

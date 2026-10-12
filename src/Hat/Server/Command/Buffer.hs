@@ -12,6 +12,7 @@ module Hat.Server.Command.Buffer
     , cmdPasteBuffer
     , cmdPipePane
     , storeBuffer
+    , readClientStdin
     ) where
 
 import Control.Concurrent.STM

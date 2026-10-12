@@ -245,6 +245,12 @@ data ServerState = ServerState
         -- ^ the server's home directory (tmux's @find_home@), against which
         --   @~@ in a path resolves
     , startTime :: POSIXTime  -- ^ when this server process started
+    , configCauses :: TVar [Text]
+        -- ^ configuration errors not yet shown, oldest first; see
+        --   "Hat.Server.ConfigCauses"
+    , commandSources :: TVar (Map ThreadId [(FilePath, Int)])
+        -- ^ the file and line of each command a thread is running from a
+        --   file, innermost first; see 'Hat.Server.Dispatch.loadCommandFile'
     }
 
 data Session = Session
@@ -938,6 +944,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newHooksState
     <*> findHome
     <*> getPOSIXTime
+    <*> newTVarIO []
+    <*> newTVarIO Map.empty
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

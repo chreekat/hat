@@ -10,11 +10,33 @@ import System.Posix.Temp (mkdtemp)
 import Test.Hspec
 
 import Hat.Log (newLogger)
-import Hat.Model (ServerState (..), newServerState)
-import Hat.Model.Options (optionText)
+import Hat.Geometry (Size (..))
+import Hat.Model (Client, ServerState (..), newServerState)
+import Hat.Model.Options (Options (..), optionText)
 import Hat.Server (cmdSourceFile, readConfigUtf8)
+import Hat.Server.Command.Types (Reply (..))
+import Hat.Server.Conn (newClient)
+import Hat.Server.Dispatch (FileLoad (..), loadCommandFile)
+import Hat.Transport.Wire (Hello (..), Intent (..), protocolVersion)
+import Network.Socket (Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socketPair)
 import Hat.Server.Environ
     (EnvEntry (..), EnvVisibility (..), environFind)
+
+-- | A fresh server whose files live in a fresh directory.
+withDir :: String -> (FilePath -> ServerState -> IO a) -> IO a
+withDir prefix act = bracket (mkdtemp prefix) removeDirectoryRecursive $ \dir -> do
+    lg <- newLogger "/dev/null"
+    st <- newServerState Map.empty lg (dir <> "/s.sock") Nothing
+    act dir st
+
+-- | A command client (as @hat <command>@ connects), never driven.
+commandClient :: ServerState -> IO (Client, Socket)
+commandClient st = do
+    (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
+    c <- newClient st server Hello
+        { protoVersion = protocolVersion, term = "", env = [], size = Size 24 80
+        , cwd = "/", intent = ControlIntent, autostarted = False, sessionHist = [] }
+    pure (c, peer)
 
 spec :: Spec
 spec = do
@@ -51,6 +73,44 @@ spec = do
                 _ <- cmdSourceFile st Nothing ["~/reload.conf"]
                 opts <- readTVarIO st.options
                 optionText "status-left" opts `shouldBe` "RELOADED"
+
+    describe "files of commands" $ do
+        it "run only whole: a command no name resolves stops the file, as a cause" $
+            withDir "/tmp/hat-cause-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                loadCommandFile st Nothing RunFile p "set -g @a 1\nwibble wobble\n"
+                    `shouldReturn` []
+                opts <- readTVarIO st.options
+                Map.lookup "@a" opts.user `shouldBe` Nothing
+                readTVarIO st.configCauses `shouldReturn` [T.pack p <> ":2: unknown command: wibble"]
+        it "print their causes to the client that sourced them" $
+            withDir "/tmp/hat-cause-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                writeFile p "wibble\n"
+                (c, _) <- commandClient st
+                cmdSourceFile st (Just c) [T.pack p]
+                    `shouldReturn` [ROutput (T.pack p <> ":1: unknown command: wibble")]
+                readTVarIO st.configCauses `shouldReturn` []
+        it "make a clientless command's errors causes, a nested command's naming its line" $
+            withDir "/tmp/hat-cause-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                _ <- loadCommandFile st Nothing RunFile p "set -g @a 1\nif -F 1 'wibble x'\n"
+                opts <- readTVarIO st.options
+                Map.lookup "@a" opts.user `shouldBe` Just "1"
+                readTVarIO st.configCauses
+                    `shouldReturn` [T.pack p <> ":2: " <> T.pack p <> ":2: unknown command: wibble"]
+        it "report a missing file as tmux does, -q quietly" $
+            withDir "/tmp/hat-cause-" $ \dir st -> do
+                cmdSourceFile st Nothing [T.pack (dir <> "/none")]
+                    `shouldReturn` [RErr (T.pack ("No such file or directory: " <> dir <> "/none"))]
+                cmdSourceFile st Nothing ["-q", T.pack (dir <> "/none")] `shouldReturn` []
+        it "glob their paths" $
+            withDir "/tmp/hat-cause-" $ \dir st -> do
+                writeFile (dir <> "/a.conf") "set -g @a 1\n"
+                writeFile (dir <> "/b.conf") "set -g @b 2\n"
+                cmdSourceFile st Nothing [T.pack (dir <> "/*.conf")] `shouldReturn` []
+                opts <- readTVarIO st.options
+                map (`Map.lookup` opts.user) ["@a", "@b"] `shouldBe` [Just "1", Just "2"]
 
     -- tmux's config assignment forms (environ_put): a bare NAME=value line
     -- sets a global environment variable, %hidden NAME=value a hidden one.

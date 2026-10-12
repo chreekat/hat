@@ -18,7 +18,6 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-if-shell-error.sh
 prompt-keys.sh                  # choose-tree as a tree-mode pane mode with its search prompt (#{pane_mode} = tree-mode)
 prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; choose-tree tree-mode search/filter prompts; -1/-N/-i/-k/-e prompt flags
 screen-redraw-bidi.sh

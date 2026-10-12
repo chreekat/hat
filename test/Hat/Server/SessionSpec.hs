@@ -57,6 +57,7 @@ import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
 import Hat.Server.Toast (showReplies)
+import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
 import Hat.Server.Pane (clockModeKey, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
@@ -506,6 +507,22 @@ spec = do
             Just pm <- readTVarIO p.mode
             (pm.kind, map (rowOf pm) [0, 1]) `shouldBe` (ModeView, ["one", "two"])
             fmap (.text) <$> readTVarIO c.toast `shouldReturn` Just "error: bad"
+
+    describe "configuration causes" $
+        it "wait for a session with a client, then show in its pane's view mode" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' win.panes (Map.insert p.id p)
+                addConfigCause st "c.conf:1: unknown command: x"
+            showConfigCauses st Nothing
+            readTVarIO st.configCauses `shouldReturn` ["c.conf:1: unknown command: x"]
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            showConfigCauses st (Just sess)
+            readTVarIO st.configCauses `shouldReturn` []
+            Just pm <- readTVarIO p.mode
+            (pm.kind, rowOf pm 0) `shouldBe` (ModeView, "c.conf:1: unknown command: x")
 
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do

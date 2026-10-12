@@ -124,7 +124,6 @@ import System.Process
     (CreateProcess (..), StdStream (..), proc,
      readCreateProcess, withCreateProcess)
 
-import Hat.Command.Parser (parseConfig)
 import Hat.Log
 import Hat.Model
 import Hat.Model.Options
@@ -147,6 +146,7 @@ import Hat.Server.FormatEnv
 import Hat.Server.Handover
 import Hat.Server.Conn
 import Hat.Server.Dispatch
+import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.HookMonitor (monitorLoop)
 import Hat.Server.Startup
 import Hat.Server.Toast
@@ -530,19 +530,18 @@ notifySubscribedPanes st scheme = do
 
 -- Configuration --------------------------------------------------------
 
+-- | Load the server's configuration (tmux's @start_cfg@), then show what
+-- went wrong ('showConfigCauses').
 loadConfig :: ServerState -> Maybe FilePath -> IO ()
-loadConfig st mconfig =
+loadConfig st mconfig = do
     forM_ mconfig $ \p -> do
         exists <- doesFileExist p
         when exists $ do
             contents <- readConfigUtf8 p
-            case parseConfig contents of
-                Left err -> logEvent st.logger ConfigError
-                    { file = p, err = err }
-                Right cmds -> forM_ cmds $ \argv -> do
-                    replies <- runArgv st Nothing argv
-                    forM_ [e | RErr e <- replies] $ \e ->
-                        logEvent st.logger ConfigError { file = p, err = e }
+            _ <- loadCommandFile st Nothing RunFile p contents
+            causes <- readTVarIO st.configCauses
+            forM_ causes $ \e -> logEvent st.logger ConfigError { file = p, err = e }
+    showConfigCauses st Nothing
 
 -- | Recompute each session's desktop title (see 'composeTitle') from its
 -- current window's active pane, broadcasting only on change. Shares the

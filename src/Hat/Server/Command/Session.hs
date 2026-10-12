@@ -37,6 +37,7 @@ import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (send)
+import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
@@ -112,6 +113,7 @@ newSession st mclient opts flags pos
                         writeTVar sess.startCwd (T.unpack d)
                         bumpDirty st
                     attachClient st client sess
+                    configCausesFor st sess
                     pure []
         _ -> pure [RErr "open terminal failed: not a terminal"]
     detachOthers client sess = do
@@ -192,6 +194,7 @@ newSession st mclient opts flags pos
     finish sess = do
         unless ("-d" `elem` flags) $
             forM_ mclient $ \client -> attachClient st client sess
+        configCausesFor st sess
         if "-P" `elem` flags
             then do
                 mctx <- atomically $ do
@@ -208,6 +211,13 @@ newSession st mclient opts flags pos
                     (fromMaybe "#{session_name}:" (lookup "-F" opts))
                 pure [ROutput out]
             else pure []
+
+-- | The configuration causes still unshown, as a session is created or
+-- attached once the configuration has loaded (tmux's @cfg_show_causes@).
+configCausesFor :: ServerState -> Session -> IO ()
+configCausesFor st sess = do
+    phase <- readTVarIO st.startupPhase
+    unless (phase == LoadingConfig) (showConfigCauses st (Just sess))
 
 -- | Show @sess@ on @client@, then let @destroy-unattached@ collect any
 -- session the move left without a client (tmux's
@@ -287,7 +297,10 @@ cmdAttachSession st mclient args = do
                 writeTVar sess.startCwd dir
                 bumpDirty st
         case mclient of
-            Just client -> attachClient st client sess >> pure []
+            Just client -> do
+                attachClient st client sess
+                configCausesFor st sess
+                pure []
             Nothing
                 | isJust (lookup "-c" opts) -> pure []
                 | otherwise -> pure [RErr "no client to attach"]
