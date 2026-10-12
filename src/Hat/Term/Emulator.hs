@@ -43,6 +43,7 @@ module Hat.Term.Emulator
     , snapshotWithGens
     , screenPainted
     , cursorState
+    , appCursor
     , currentPen
     , modes
     , onAlternateScreen
@@ -908,6 +909,10 @@ screenPaintedT t = do
         mapM (\r -> paintShimRow t tagActive r cols out cap) [0 .. rows - 1]
     pure ( Size { rows = fromIntegral rows, cols = fromIntegral cols }
          , painted )
+
+-- | The cursor style the program set, as tmux reports it.
+appCursor :: Emulator -> IO CursorModel
+appCursor e = (.cursorModel) <$> readIORef e.state
 
 -- | The cursor's position, and whether it is visible.
 cursorState :: Emulator -> IO (Pos, Bool)

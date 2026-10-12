@@ -48,6 +48,7 @@ module Hat.Term.HostProtocol
     , CursorStyle (..)
     , defaultCursorModel
     , applyCursorChange
+    , cursorReplayBytes
     , cursorBlinkReport
     , attributesReply
     , modeReply
@@ -593,6 +594,22 @@ cursorStylePs m = case m.style of
     StyleBar -> blinkOr 5 6
   where
     blinkOr on off = if m.blinking then on else off
+
+-- | Output that takes a fresh pane's cursor state to @m@ through
+-- 'applyCursorChange': DECSCUSR for the style and its blink, then DEC mode
+-- 12 once that has spoken. A blink outliving a reset to the default style
+-- is set by a blinking style first.
+cursorReplayBytes :: CursorModel -> ByteString
+cursorReplayBytes m = style <> blink
+  where
+    style = case m.style of
+        StyleDefault
+            | m.blinking && not m.blinkingSet -> "\ESC[1 q\ESC[0 q"
+            | otherwise -> ""
+        _ -> "\ESC[" <> B8.pack (show (cursorStylePs m)) <> " q"
+    blink
+        | m.blinkingSet = if m.blinking then "\ESC[?12h" else "\ESC[?12l"
+        | otherwise = ""
 
 -- | Whether the cursor blinks, as DECRQM reports mode 12: 1 or 2.
 cursorBlinkReport :: CursorModel -> Int

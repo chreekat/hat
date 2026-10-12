@@ -40,7 +40,7 @@ import Codec.CBOR.Term (decodeTerm)
 import Codec.CBOR.Write (toStrictByteString)
 import Codec.Serialise (Serialise, decode, deserialiseOrFail, encode, serialise)
 import Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
-import Codec.Serialise.Encoding (encodeListLen, encodeWord)
+import Codec.Serialise.Encoding (Encoding, encodeListLen, encodeWord)
 import Control.Monad (replicateM_, unless)
 import Data.ByteString (ByteString)
 import Data.List (mapAccumL)
@@ -58,6 +58,8 @@ import Hat.Server.Persist
 import Hat.Term.Cell (Cell, Style)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator.Types (paintLineBytes)
+import Hat.Term.HostProtocol
+    (CursorModel (..), CursorStyle (..), defaultCursorModel)
 
 -- | What an era-matched reload hands over: the captured tree as the store's
 -- snapshot JSON, and beside it the state that has nowhere durable to live.
@@ -215,8 +217,9 @@ data HotWindow = HotWindow
 
 -- | A pane's captured screen, already painted for replay: the live grid (one
 -- 'Hat.Term.Emulator.paintLineBytes' row per grid row, top first, empty =
--- blank row), the scrollback likewise (oldest line first), its cursor, its
--- alternate-screen flag, and the capture width. The adopted pane feeds these
+-- blank row), the scrollback likewise (oldest line first), its cursor and
+-- the style the program gave it, its alternate-screen flag, and the capture
+-- width. The adopted pane feeds these
 -- bytes verbatim, so a full-screen program survives a reload with its display
 -- intact. An 'emptyReloadScreen' restores to a blank pane, which is what a
 -- pre-screen (era ≤ 2) blob migrates to.
@@ -230,33 +233,70 @@ data ReloadScreen = ReloadScreen
     , scrollback    :: [ByteString]
     , pen           :: Style  -- ^ the live pen (SGR the next glyph takes); see
                               --   'Hat.Server.captureReloadScreen'
+    , cursor        :: CursorModel  -- ^ the cursor style the program set
+                                    --   (era 15)
     }
     deriving (Eq, Show)
 
 -- The same appendable list codec as 'ReloadHot': a longer list from a newer
--- writer has its tail skipped.
+-- writer has its tail skipped. An era ≤ 14 screen never recorded its
+-- cursor style, which comes back as the default.
 instance Serialise ReloadScreen where
     encode s =
-           encodeListLen 9
+           encodeListLen 10
         <> encodeWord 0
         <> encode s.altScreen <> encode s.cursorRow <> encode s.cursorCol
         <> encode s.cursorVisible <> encode s.cols <> encode s.rows
         <> encode s.scrollback <> encode s.pen
+        <> encodeCursor s.cursor
     decode = do
         len <- decodeListLen
         _   <- decodeWord
         s <- ReloadScreen
             <$> decode <*> decode <*> decode <*> decode <*> decode <*> decode
             <*> decode <*> decode
-        replicateM_ (max 0 (len - 9)) (() <$ decodeTerm)
+            <*> (if len >= 10 then decodeCursor else pure defaultCursorModel)
+        replicateM_ (max 0 (len - 10)) (() <$ decodeTerm)
         pure s
+
+-- A cursor style as the same appendable list:
+-- @[tag, style, blinking, blinkingSet]@, the style numbered default 0, block
+-- 1, underline 2, bar 3. A style number this build does not know reads as
+-- the default.
+encodeCursor :: CursorModel -> Encoding
+encodeCursor m =
+       encodeListLen 4
+    <> encodeWord 0
+    <> encodeWord (case m.style of
+        StyleDefault -> 0
+        StyleBlock -> 1
+        StyleUnderline -> 2
+        StyleBar -> 3)
+    <> encode m.blinking <> encode m.blinkingSet
+
+decodeCursor :: Decoder s CursorModel
+decodeCursor = do
+    len <- decodeListLen
+    _   <- decodeWord
+    st  <- decodeWord
+    bl  <- decode
+    bs  <- decode
+    replicateM_ (max 0 (len - 4)) (() <$ decodeTerm)
+    pure CursorModel
+        { style = case st of
+            1 -> StyleBlock
+            2 -> StyleUnderline
+            3 -> StyleBar
+            _ -> StyleDefault
+        , blinking = bl, blinkingSet = bs }
 
 -- | The blank screen a pane with no captured display restores to: no grid, no
 -- scrollback, primary buffer, cursor home and visible. See 'ReloadScreen'.
 emptyReloadScreen :: ReloadScreen
 emptyReloadScreen = ReloadScreen
     { altScreen = False, cursorRow = 0, cursorCol = 0, cursorVisible = True
-    , cols = 0, rows = [], scrollback = [], pen = Cell.defaultStyle }
+    , cols = 0, rows = [], scrollback = [], pen = Cell.defaultStyle
+    , cursor = defaultCursorModel }
 
 -- | The app-set subscriptions a pane carries across a reload, so a program
 -- adopted into a fresh emulator keeps them. A blank set (everything off) is what
@@ -330,7 +370,7 @@ data Handover = Handover
 -- through to safe cleanup rather than misdecode. The golden-byte test pins the
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
-reloadEra = 14
+reloadEra = 15
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".
@@ -387,12 +427,15 @@ decodeHandover bs =
 -- shape, and adds an @e == X@ arm below.
 decodeReloadTree :: Int -> ByteString -> Either Text ReloadTree
 decodeReloadTree e payload
-    -- Era 14 appended the other private modes, and era 13 the extended-key
-    -- mode, which 'ReloadModes' defaults and derives for an older pane.
+    -- Era 15 appended the cursor style, which 'ReloadScreen' defaults for an
+    -- older pane. Era 14 appended the other private modes, and era 13 the
+    -- extended-key mode, which 'ReloadModes' defaults and derives for an
+    -- older pane.
     -- Era 12 let a pane be empty (its tree 'PaneSnap' says so; it has no fd
     -- or child), which eras 10 and 11 never wrote; era 10 differs only by the
     -- two fields 'HotPane' appended in era 11, which its decoder defaults.
-    | e == reloadEra || e == 13 || e == 12 || e == 11 || e == 10 = hotTree =<< deser
+    | e == reloadEra || e == 14 || e == 13 || e == 12 || e == 11 || e == 10 =
+        hotTree =<< deser
     -- Eras 8 and 9 differ from today only by cell-grid screens ('migrateV9'
     -- paints them) and, for era 8, the key protocols 'ReloadModes' defaults.
     | e == 9 || e == 8 = hotTree . migrateV9 =<< deser
@@ -515,7 +558,7 @@ paintScreenV9 (ReloadScreenV9 alt cr cc cv rs sb pen) = ReloadScreen
     , cols = maximum (0 : map length rs)
     , rows = map paint rs
     , scrollback = map paint sb
-    , pen = pen }
+    , pen = pen, cursor = defaultCursorModel }
   where
     paint = paintLineBytes . V.fromList
 

@@ -23,6 +23,7 @@ import Hat.Server.PersistSpec ()  -- the tree generators, shared with the store
 import Hat.Server.Reload
 import Hat.Term.Cell
 import Hat.Term.Emulator (carriedDecModes)
+import Hat.Term.HostProtocol (CursorModel (..), CursorStyle (..), defaultCursorModel)
 
 genText :: Gen T.Text
 genText = T.pack <$> listOf (chooseEnum (' ', '~'))
@@ -147,11 +148,21 @@ instance Arbitrary ReloadScreen where
     arbitrary = ReloadScreen
         <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
         <*> choose (0, 5) <*> shortLines <*> shortLines <*> arbitrary
+        <*> arbitrary
     shrink s =
-        [ ReloadScreen alt cr cc cv co rs sb pen
-        | (alt, cr, cc, (cv, co, rs, sb, pen)) <- shrink
+        [ ReloadScreen alt cr cc cv co rs sb pen cur
+        | (alt, cr, cc, (cv, co, rs, sb, pen), cur) <- shrink
             ( s.altScreen, s.cursorRow, s.cursorCol
-            , (s.cursorVisible, s.cols, s.rows, s.scrollback, s.pen) ) ]
+            , (s.cursorVisible, s.cols, s.rows, s.scrollback, s.pen), s.cursor ) ]
+
+instance Arbitrary CursorModel where
+    arbitrary = CursorModel
+        <$> elements [StyleDefault, StyleBlock, StyleUnderline, StyleBar]
+        <*> arbitrary <*> arbitrary
+    shrink m =
+        [ CursorModel StyleDefault m.blinking m.blinkingSet | m.style /= StyleDefault ]
+        <> [ CursorModel m.style False m.blinkingSet | m.blinking ]
+        <> [ CursorModel m.style m.blinking False | m.blinkingSet ]
 
 -- Short painted lines keep the round-trip cheap; the bytes only need to
 -- survive the CBOR codec, not mean anything to the emulator.
@@ -330,7 +341,7 @@ extKeysTree = case emptyPaneTree of
                 : rest
         [] -> []
 
--- The current-era representative: 'extKeysTree' with its first pane in SGR
+-- The era-14 representative: 'extKeysTree' with its first pane in SGR
 -- mouse and bracketed paste modes, which only era 14 can carry.
 decModesTree :: ReloadTree
 decModesTree = case extKeysTree of
@@ -343,6 +354,21 @@ decModesTree = case extKeysTree of
             (snap, HotPane { modes = modes { decModes = [1006, 2004] }, .. }) : rest
         [] -> []
 
+-- The current-era representative: 'decModesTree' with its first pane's
+-- program showing a steady bar cursor it has said blinks no more, which only
+-- era 15 can carry.
+cursorTree :: ReloadTree
+cursorTree = case decModesTree of
+    ReloadTree {..} -> ReloadTree { sessions = map session sessions, .. }
+  where
+    session HotSession {..} = HotSession { windows = map window windows, .. }
+    window HotWindow {..} = HotWindow { panes = withCursor panes, .. }
+    withCursor = \case
+        (snap, HotPane {..}) : rest ->
+            (snap, HotPane { screen = screen { cursor = bar }, .. }) : rest
+        [] -> []
+    bar = CursorModel { style = StyleBar, blinking = False, blinkingSet = True }
+
 -- A non-trivial captured screen, to pin the current era's encoding: an
 -- alt-screen pane with one styled painted row and one blank scrollback line.
 -- Old corpus rows carry the same screen as cells (one red @x@, one blank
@@ -352,7 +378,7 @@ fixedScreen = ReloadScreen
     { altScreen = True, cursorRow = 1, cursorCol = 2, cursorVisible = True
     , cols = 1
     , rows = ["\ESC[0;31mx"]
-    , scrollback = [""], pen = defaultStyle }
+    , scrollback = [""], pen = defaultStyle, cursor = defaultCursorModel }
 
 -- The current-era representative, with a non-trivial mode set, screen, and
 -- alternate session to pin its encoding.
@@ -549,6 +575,27 @@ corpus =
         \78ff9f40ff8a0081008100f4f4f4f4f4f4f482016370776480ff81\
         \6470726576"
       , fixedCleanup, decModesTree )
+    , ( 15
+      , "851a484154520f039f82071864ff5901e9840079010d7b226c61\
+        \73745f6163746976655f73657373696f6e223a22776f726b222c22\
+        \73657373696f6e73223a5b7b2263757272656e745f6978223a302c\
+        \226e616d65223a22776f726b222c2273746172745f637764223a22\
+        \2f686f6d65222c2277696e646f7773223a5b7b2261637469766522\
+        \3a302c226175746f5f72656e616d65223a747275652c226978223a\
+        \302c226c61796f7574223a224c222c226e616d65223a2277222c22\
+        \70616e6573223a5b7b22637764223a222f746d70227d2c7b226377\
+        \64223a222f746d70227d2c7b22637764223a222f737276222c2265\
+        \6d707479223a747275652c22696e7075745f6f6666223a74727565\
+        \2c227469746c65223a2269646c65227d5d7d5d7d5d7d9f87000718\
+        \648800f5f402f403019f1903ee1907d4ff8a00f50102f5019f481b\
+        \5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4f4f4840003\
+        \f4f58201686d616b65202d6a328087002018658800f5f402f50302\
+        \808a00f50102f5019f481b5b303b33316d78ff9f40ff8a00810081\
+        \00f4f4f4f4f4f4f4840000f4f482029f6376696d63612062ff8184\
+        \008103801a6553f100870020008800f5f402f50302808a00f50102\
+        \f5019f481b5b303b33316d78ff9f40ff8a0081008100f4f4f4f4f4\
+        \f4f4840000f4f482016370776480ff816470726576"
+      , fixedCleanup, cursorTree )
     ]
 
 spec :: Spec
@@ -599,7 +646,7 @@ spec = describe "reload handover" $ do
     -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
     -- one is a compat bug.
     it "encodes the current era to stable bytes" $
-        hexOf (encodeHandover fixedCleanup (hotOf decModesTree))
+        hexOf (encodeHandover fixedCleanup (hotOf cursorTree))
             `shouldBe` currentGolden
   where
     decodesToTree (e, hex, cl, t) =

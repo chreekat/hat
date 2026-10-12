@@ -45,6 +45,7 @@ import Hat.Server.Reload
      ReloadScreen (..), ReloadStart (..), ReloadTree (..), emptyReloadScreen)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
+import Hat.Term.HostProtocol (defaultCursorModel)
 
 -- A minimal non-empty tree: one named session with no windows is enough
 -- for the mirror's write decision, which only inspects emptiness and
@@ -257,6 +258,24 @@ spec = do
             _ <- Emu.feed dst (fst (replayPane rp))
             Emu.decModes dst `shouldReturn` decs
 
+        it "carries the program's cursor style, as DECRQSS and DECRQM report it" $
+            forM_ [ "", "\ESC[5 q", "\ESC[4 q\ESC[?12h", "\ESC[1 q\ESC[0 q"
+                  , "\ESC[?12l", "\ESC[3 q\ESC[?12l\ESC[0 q" ] $ \set -> do
+                let sz = Size { rows = 3, cols = 20 }
+                    reports e = Emu.feed e "\ESCP$q q\ESC\\\ESC[?12$p"
+                src <- Emu.newEmulator sz 1000
+                _ <- Emu.feed src set
+                captured <- captureReloadScreen KeepScrollback src
+                let rp = HotPane
+                        { masterFd = 0, childPid = 0
+                        , modes = ReloadModes False False 0 False 0 0 []
+                        , screen = captured
+                        , start = StartShell, death = Nothing }
+                dst <- Emu.newEmulator sz 1000
+                _ <- Emu.feed dst (fst (replayPane rp))
+                want <- reports src
+                (,) set <$> reports dst `shouldReturn` (set, want)
+
         -- restart-server -C: restart as memory cleanup — the handover keeps
         -- the live grid but sheds every scrollback line.
         it "drops the scrollback from the capture when asked" $ do
@@ -282,7 +301,7 @@ spec = do
                     { altScreen = True, cursorRow = 39, cursorCol = 2
                     , cursorVisible = True, cols = 330
                     , rows = replicate 42 wideRow, scrollback = []
-                    , pen = Cell.defaultStyle }
+                    , pen = Cell.defaultStyle, cursor = defaultCursorModel }
                 rp = HotPane
                     { masterFd = 0, childPid = 0
                     , modes = ReloadModes False False 0 False 0 0 [], screen = sc

@@ -48,6 +48,7 @@ import Hat.Server.Pane
 import Hat.Server.Rebuild (newRebuilt, rebuildSession)
 import Hat.Server.Snapshot (captureTree)
 import Hat.Term.Emulator qualified as Emu
+import Hat.Term.HostProtocol (cursorReplayBytes)
 
 -- | The color-scheme report a reload must re-push into an adopted pane so a
 -- surviving app reacts to the OS scheme immediately, not only on its next
@@ -133,6 +134,7 @@ captureReloadScreen carry emu = do
     (cur, vis) <- Emu.cursorState emu
     m   <- Emu.modes emu
     pen <- Emu.currentPen emu
+    shape <- Emu.appCursor emu
     sb  <- case carry of
         DropScrollback -> pure []
         KeepScrollback -> Emu.scrollbackPainted emu
@@ -145,6 +147,7 @@ captureReloadScreen carry emu = do
         , rows          = rows
         , scrollback    = sb
         , pen           = pen
+        , cursor        = shape
         }
 
 -- | The app-set subscriptions to carry across a reload; the inverse
@@ -347,6 +350,7 @@ replayPane rp =
     ( Emu.modeReplayBytes (emuModesOf rp.modes)
         <> Emu.keyModeReplayBytes (keyModesOf rp.modes)
         <> Emu.decModeReplayBytes rp.modes.decModes
+        <> cursorReplayBytes rp.screen.cursor
         <> Emu.restorePainted restoreModes rp.screen.pen
             Pos { row = rp.screen.cursorRow, col = rp.screen.cursorCol }
             rp.screen.cursorVisible rp.screen.rows
