@@ -173,6 +173,7 @@ library
         Hat.Server.Theme
         Hat.Server.Title
         Hat.Server.Toast
+        Hat.Server.ViewMode
         Hat.Server.View
         Hat.Server.Viewport
         Hat.Server.Wanted

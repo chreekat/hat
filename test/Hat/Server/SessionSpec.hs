@@ -54,6 +54,8 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
+import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
 import Hat.Server.Pane (clockModeKey, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
@@ -262,6 +264,7 @@ stubPane n = do
     alternateV <- newTVarIO False
     syncV <- newTVarIO noOutputSync
     clockV <- newTVarIO NoClock
+    viewV <- newTVarIO Nothing
     pure Pane
         { id = PaneId n
         , pty = error "stubPane: pty is never touched by detachPane"
@@ -282,6 +285,7 @@ stubPane n = do
         , onAlternate = alternateV
         , outputSync = syncV
         , clock = clockV
+        , viewBacking = viewV
         }
 
 -- The pane's cached location ('Pane.home'), projected to ids for assertions.
@@ -302,10 +306,15 @@ adoptedPane n = do
 -- lines, viewing the bottom.
 blankCopyMode :: Int -> PaneMode
 blankCopyMode hsize = PaneMode
-    { frozen = FrozenGrid
+    { kind = ModeCopy
+    , frozen = FrozenGrid
         { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty }
     , copyState = copyModeAt "copy-mode" hsize 0
     }
+
+-- | A frozen grid row's text, trailing blanks trimmed.
+rowOf :: PaneMode -> Int -> Text
+rowOf pm r = T.stripEnd (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V.! r))))
 
 spec :: Spec
 spec = do
@@ -460,6 +469,30 @@ spec = do
             env1 <- paneModeEnv st p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
+
+    describe "view mode" $ do
+        it "shows added lines in the pane as view-mode, holding the view at its first lines" $ do
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            viewModeAdd st p ViewParsed ["foo", "\ESC[1mbar"]
+            Just pm <- readTVarIO p.mode
+            map (rowOf pm) [0, 1] `shouldBe` ["foo", "bar"]
+            env <- paneModeEnv st p
+            lookup "pane_mode" env `shouldBe` Just "view-mode"
+            viewModeAdd st p ViewParsed [ tshow n | n <- [1 .. 30 :: Int] ]
+            Just pm' <- readTVarIO p.mode
+            pm'.frozen.fgHsize `shouldSatisfy` (> 0)
+            pm'.copyState.viewportOffY `shouldBe` pm'.frozen.fgHsize
+            rowOf pm' 2 `shouldBe` "1"
+        it "drops its screen when the mode ends" $ do
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            viewModeAdd st p ViewLiteral ["x\ESC"]
+            Just pm <- readTVarIO p.mode
+            rowOf pm 0 `shouldBe` "x"
+            _ <- runCopyModeCommand st p "cancel" []
+            readTVarIO p.mode `shouldReturn` Nothing
+            isJust <$> readTVarIO p.viewBacking `shouldReturn` False
 
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do

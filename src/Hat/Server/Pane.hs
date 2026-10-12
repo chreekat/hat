@@ -420,6 +420,7 @@ newPane pid pty emu sz dir pending start kind = do
     _ <- Emu.setTitle emu (T.pack host)
     alternateVar <- newTVarIO False
     clockVar <- newTVarIO NoClock
+    viewVar <- newTVarIO Nothing
     pure Pane
         { id = pid
         , pty = pty
@@ -440,6 +441,7 @@ newPane pid pty emu sz dir pending start kind = do
         , onAlternate = alternateVar
         , outputSync = syncVar
         , clock = clockVar
+        , viewBacking = viewVar
         }
 
 -- | Run a new process in an existing pane (@respawn-pane@): the pane keeps

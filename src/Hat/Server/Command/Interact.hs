@@ -41,6 +41,7 @@ import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
+import Hat.Server.ViewMode (leaveViewMode)
 import Hat.Server.FormatEnv (expandFormat)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -150,15 +151,16 @@ cmdCopyMode st mclient args = do
                 was <- atomically $ do
                     old <- readTVar pane.mode
                     writeTVar pane.mode Nothing
+                    leaveViewMode pane
                     writeTVar pane.clock NoClock
                     bumpDirty st
                     pure old
-                forM_ was $ \_ -> do
+                forM_ was $ \pm -> do
                     notifyPane st "pane-mode-changed" pane []
                     notifyPane st "pane-mode-exited" pane
                         [ ("mode_entered", PInt 0)
                         , ("current_mode", PText "")
-                        , ("previous_mode", PText "copy-mode") ]
+                        , ("previous_mode", PText (modeName pm.kind)) ]
                 pure []
             | otherwise -> pure []
   where
@@ -174,7 +176,7 @@ cmdCopyMode st mclient args = do
                     state = copyModeAt table startRow startCol
                 atomically $ do
                     writeTVar pane.mode (Just PaneMode
-                        { frozen = frozen, copyState = state })
+                        { kind = ModeCopy, frozen = frozen, copyState = state })
                     bumpDirty st
                 notifyPane st "pane-mode-changed" pane []
                 notifyPane st "pane-mode-entered" pane

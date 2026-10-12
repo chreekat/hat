@@ -45,6 +45,8 @@ module Hat.Model
     , MarkShown (..)
     , FrozenGrid (..)
     , PaneMode (..)
+    , ModeKind (..)
+    , modeName
     , SearchDirection (..)
     , SearchKind (..)
     , flipDirection
@@ -340,6 +342,9 @@ data Pane = Pane
         -- ^ requests that the reader catch up on pending output; see
         -- 'Hat.Server.Pane.syncPanes'.
     , clock :: TVar PaneClock
+    , viewBacking :: TVar (Maybe Emu.Emulator)
+        -- ^ the screen view mode's text is written to, while the pane is
+        --   in view mode; see 'Hat.Server.ViewMode.viewModeAdd'
     }
 
 -- | Generations of a pane's output-sync requests.
@@ -495,10 +500,23 @@ data Recentre = RecentreMiddle | RecentreTop | RecentreBottom
 -- browses it. The snapshot never changes while the mode is open, so
 -- program output produced during copy mode stays invisible until exit.
 data PaneMode = PaneMode
-    { frozen    :: !FrozenGrid
+    { kind      :: !ModeKind
+    , frozen    :: !FrozenGrid
     , copyState :: !CopyModeState
     }
     deriving (Eq, Show)
+
+-- | What a 'PaneMode' browses: the pane's own grid (tmux's copy mode) or
+-- the text shown in the pane apart from it (tmux's view mode, over the
+-- pane's 'viewBacking').
+data ModeKind = ModeCopy | ModeView
+    deriving (Eq, Show)
+
+-- | tmux's name for a mode, as @#{pane_mode}@ shows it.
+modeName :: ModeKind -> Text
+modeName = \case
+    ModeCopy -> "copy-mode"
+    ModeView -> "view-mode"
 
 -- | An immutable capture of a pane's absolute grid (oldest scrollback
 -- line first, then the live screen) taken when copy mode is entered.

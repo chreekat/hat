@@ -6,6 +6,8 @@ module Hat.Server.Command.CopyMode
     ) where
 
 import Control.Concurrent.STM
+import Control.Monad (when)
+import Data.Maybe (isNothing)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -15,6 +17,7 @@ import Hat.Model.Options (ModeKeys (..), Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.ViewMode (leaveViewMode)
 
 runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
 runCopyModeCommand st pane name cmdArgs = do
@@ -50,6 +53,7 @@ runCopyModeCommand st pane name cmdArgs = do
                             r' <- traverse (scrollPaneToCursor pane) r
                             atomically $ do
                                 writeTVar pane.mode (reMode <$> r')
+                                when (isNothing r') (leaveViewMode pane)
                                 bumpDirty st
                             case r' of
                                 Nothing -> do
@@ -57,7 +61,7 @@ runCopyModeCommand st pane name cmdArgs = do
                                     notifyPane st "pane-mode-exited" pane
                                         [ ("mode_entered", PInt 0)
                                         , ("current_mode", PText "")
-                                        , ("previous_mode", PText "copy-mode") ]
+                                        , ("previous_mode", PText (modeName pm.kind)) ]
                                 Just _ -> pure ()
                             pure []
           where

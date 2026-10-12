@@ -14,7 +14,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..), FrozenGrid (..)
-    , copyModeAt, PaneMode (..), LineNumbers (..), MarkShown (..)
+    , copyModeAt, ModeKind (..), PaneMode (..), LineNumbers (..), MarkShown (..)
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.OptionTable (OptionValue (..))
 import Hat.Model.Options
@@ -430,7 +430,7 @@ spec = do
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
                     | r <- rows ] }
-            varsUnder n st = Map.fromList (copyModeFormats " " n PaneMode { frozen = frozen, copyState = st })
+            varsUnder n st = Map.fromList (copyModeFormats " " n PaneMode { kind = ModeCopy, frozen = frozen, copyState = st })
             vars = varsUnder NumbersOff
             at = copyModeAt "copy-mode" 2 5
             look k st = Map.lookup k (vars st)
@@ -500,7 +500,7 @@ spec = do
                 , lineNumberStyle = fgOf 7, currentLineNumberStyle = fgOf 8
                 , drawPosition = \area -> area V.// [(0, glyphCell 'P' (fgOf 9))]
                 , searchPattern = Nothing }
-            view l st = copyView l PaneMode { frozen = frozen, copyState = st }
+            view l st = copyView l PaneMode { kind = ModeCopy, frozen = frozen, copyState = st }
             at r c = (copyModeAt "copy-mode-vi" r c) { hidePosition = True }
             text l st r = T.pack [ baseChar' cell | cell <- V.toList (fst (view l st) V.! r) ]
             baseChar' cell = case cell.content of
