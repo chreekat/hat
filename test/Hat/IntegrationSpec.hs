@@ -719,6 +719,48 @@ spec = parallel $ do
         left <- rawModesLeftBehind c1
         left `shouldBe` []
 
+    it "hands the client's terminal, cooked, to lock-command until it exits, then redraws" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        typeInto c "echo marker-$((6*7))\r"
+        awaitScreen c "marker-42"
+        let mode = h.home </> "lock-mode"
+            got = h.home </> "lock-got"
+        _ <- hatCtl h ["set", "-g", "lock-command"
+            , "stty -a | grep -o -- '-*icanon' > " <> mode <> "; read x; echo \"$x\" > " <> got]
+        (code, _, err) <- hatCtl h ["lock-client"]
+        (code, err) `shouldBe` (ExitSuccess, "")
+        awaitFile mode (not . null) `shouldReturn` "icanon\n"
+        awaitWith "the lock screen" (fmap (not . T.isInfixOf "marker-42") . screenText) c
+        typeInto c "secret\r"
+        awaitFile got (not . null) `shouldReturn` "secret\n"
+        awaitScreen c "marker-42"
+        typeInto c "echo after-$((1+1))\r"
+        awaitScreen c "after-2"
+        T.isInfixOf "secret" <$> screenText c `shouldReturn` False
+
+    it "a client locked across restart-server rejoins once its lock command exits" $
+        withHat hatBin $ \h -> do
+        ambient <- testPath
+        let bindir = h.home </> "bin"
+        createDirectoryIfMissing True bindir
+        createFileLink h.bin (bindir </> "hat")
+        c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
+        awaitScreen c "$"
+        typeInto c "echo marker-$((6*7))\r"
+        awaitScreen c "marker-42"
+        _ <- hatCtl h ["set", "-g", "lock-command", "read x"]
+        _ <- hatCtl h ["lock-client"]
+        awaitWith "the lock screen" (fmap (not . T.isInfixOf "marker-42") . screenText) c
+        _ <- hatCtl h ["restart", h.bin]
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        typeInto c "\r"
+        awaitWith "the re-exec'd client to reattach"
+            (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
+        awaitScreen c "marker-42"
+
     -- bug 6: a pager (less) draws on the alternate screen; on exit the primary
     -- buffer must be repainted on the *client*, not just in the emulator, or
     -- the pager's screen bleeds through.

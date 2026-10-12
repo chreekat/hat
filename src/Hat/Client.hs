@@ -16,8 +16,10 @@ module Hat.Client
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
-import Control.Exception (IOException, SomeException, catch, bracket_)
-import Control.Monad (forever)
+import Control.Exception
+    ( AsyncException (UserInterrupt), IOException, SomeException, catch, bracket_
+    , throwIO, try )
+import Control.Monad (forever, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
@@ -30,6 +32,7 @@ import System.Environment (getEnvironment, lookupEnv)
 import System.IO
 import System.Posix.IO (stdInput, stdOutput)
 import System.Posix.Signals (Handler (Catch), installHandler)
+import System.Process (CreateProcess (..), createProcess, shell, waitForProcess)
 
 import Hat.Client.Draw
 import Hat.Client.Tty
@@ -116,67 +119,116 @@ attachClient v sock origin setup hist = do
         Just (Known (Welcome _)) ->
             -- withRawMode also owns the stdio buffering switch; see the
             -- ordering note there.
-            withRawMode $
+            withRawMode $ \cooked ->
                 bracket_
                     (B.hPut stdout enterAltScreen)
                     (B.hPut stdout leaveAltScreen)
-                    (shuttle sock re)
+                    (shuttle cooked sock re)
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
 
-shuttle :: Socket -> ReadEnd -> IO ExitReason
-shuttle sock re = do
+shuttle :: CookedMode -> Socket -> ReadEnd -> IO ExitReason
+shuttle cooked sock re = do
     outbox <- newTQueueIO
+    pump <- newTVarIO Pumping
     _ <- installHandler sigWinch
         (Catch $ ttySize >>= atomically . writeTQueue outbox . Resize)
         Nothing
     -- One writer owns the socket; stdin and SIGWINCH both feed it.
-    r <- race (receiver `catch` \(_ :: SomeException) -> pure ServerDied)
-              (race (stdinReader outbox) (sender outbox))
+    r <- race (receiver pump outbox `catch` \(_ :: SomeException) -> pure ServerDied)
+              (race (stdinReader pump outbox) (sender outbox))
     pure $ case r of
         Left reason -> reason
         Right _ -> ServerDied
   where
-    receiver = do
+    receiver pump outbox = do
+        let next = receiver pump outbox
         m <- recvMessage re
         case m of
             Nothing -> pure ServerDied
             Just (Malformed _) -> pure ServerDied
-            Just (UnknownTag _) -> receiver
+            Just (UnknownTag _) -> next
             Just (Known msg) -> case msg of
-                Draw ops -> B.hPut stdout (opsToAnsi ops) >> receiver
+                Draw ops -> B.hPut stdout (opsToAnsi ops) >> next
                 SetTitle t -> do
                     B.hPut stdout ("\ESC]0;" <> TE.encodeUtf8 t <> "\BEL")
-                    receiver
-                RingBell -> B.hPut stdout "\BEL" >> receiver
-                Notify raw -> B.hPut stdout raw >> receiver
-                Message _ -> receiver  -- server renders toasts into frames
+                    next
+                RingBell -> B.hPut stdout "\BEL" >> next
+                Notify raw -> B.hPut stdout raw >> next
+                Message _ -> next  -- server renders toasts into frames
                 DetachOk -> pure Detached
                 RestartClient -> pure (RestartRequested Nothing [])
                 RestartClientTo t hist -> pure (RestartRequested (Just t) hist)
-                CommandDone -> receiver
+                CommandDone -> next
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
-                Welcome _ -> receiver
+                Welcome _ -> next
                 -- Informational: our decoder already reads every dialect
                 -- ≤ ours, and nothing we send upstream is dialect-sensitive.
-                ServerVersion _ -> receiver
+                ServerVersion _ -> next
                 -- Command-client traffic; an attached client's stdin and
                 -- stdout are its terminal.
-                ReadStdin -> receiver
-                WriteStdout _ -> receiver
+                ReadStdin -> next
+                WriteStdout _ -> next
                 ControlExit {} -> pure SessionEnded
-    stdinReader outbox = forever $ do
-        bs <- B.hGetSome stdin 4096
-        if B.null bs
-            then atomically (writeTQueue outbox Detach)
-            else atomically (writeTQueue outbox (Input bs))
+                LockClient cmd -> do
+                    pausingInput pump (lockTerminal cooked cmd)
+                    atomically (writeTQueue outbox LockDone)
+                    next
+    -- A read in flight when a pause is asked is abandoned, so no keystroke
+    -- meant for a lock command is taken first.
+    stdinReader pump outbox = forever $ do
+        open <- atomically $ readTVar pump >>= \case
+            Pumping -> pure True
+            PauseAsked -> False <$ writeTVar pump Paused
+            Paused -> retry
+        when open $ do
+            r <- race (atomically (readTVar pump >>= check . (/= Pumping)))
+                (B.hGetSome stdin 4096)
+            case r of
+                Left () -> pure ()
+                Right bs
+                    | B.null bs -> atomically (writeTQueue outbox Detach)
+                    | otherwise -> atomically (writeTQueue outbox (Input bs))
     sender outbox = forever $ do
         msg <- atomically (readTQueue outbox)
         sendMessage sock msg
+
+-- | Whether 'shuttle' reads the terminal: a lock command has it while
+-- paused.
+data InputPump = Pumping | PauseAsked | Paused
+    deriving (Eq, Show)
+
+-- | Run an action with the terminal's input left unread.
+pausingInput :: TVar InputPump -> IO a -> IO a
+pausingInput pump = bracket_
+    (do atomically (writeTVar pump PauseAsked)
+        atomically (readTVar pump >>= check . (== Paused)))
+    (atomically (writeTVar pump Pumping))
+
+-- | Hand the terminal to the lock command until it exits (tmux's client
+-- @MSG_LOCK@): out of raw mode and the server's screen, onto 'lockScreen';
+-- back again however the command ends. As with tmux's @system@, the
+-- command's own exit status is no concern of ours.
+lockTerminal :: CookedMode -> Text -> IO ()
+lockTerminal cooked cmd =
+    bracket_ (B.hPut stdout leaveAltScreen) (B.hPut stdout enterAltScreen) $
+        withCookedMode cooked $ do
+            B.hPut stdout lockScreen
+            r <- try $ do
+                (_, _, _, ph) <- createProcess (shell (T.unpack cmd)) { delegate_ctlc = True }
+                -- delegate_ctlc reports a command a Ctrl-C ended as a
+                -- UserInterrupt.
+                void (waitForProcess ph) `catch` \case
+                    UserInterrupt -> pure ()
+                    e -> throwIO e
+            case r of
+                Left (e :: IOException) ->
+                    hPutStrLn stderr ("hat: lock-command: " <> show e)
+                Right () -> pure ()
 
 -- | How a control-mode client talks to its terminal: plain lines (@-C@),
 -- or wrapped in tmux's DCS for a terminal that drives it (@-CC@).

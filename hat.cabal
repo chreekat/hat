@@ -88,6 +88,7 @@ library
         Hat.Log
         Hat.Model
         Hat.Model.Ids
+        Hat.Model.MessageLog
         Hat.Model.OptionTable
         Hat.Model.Options
         Hat.Model.OwnOptions
@@ -111,12 +112,14 @@ library
         Hat.Server.Command.Hook
         Hat.Server.Command.Interact
         Hat.Server.Command.Layout
+        Hat.Server.Command.Lock
         Hat.Server.Command.Menu
         Hat.Server.Command.ListKeys
         Hat.Server.Command.Option
         Hat.Server.Command.Popup
         Hat.Server.Command.Pane
         Hat.Server.Command.Session
+        Hat.Server.Command.ShowMessages
         Hat.Server.Command.Types
         Hat.Server.Command.Wait
         Hat.Server.Command.Window
@@ -145,11 +148,13 @@ library
         Hat.Server.Keys
         Hat.Server.Menu
         Hat.Server.Message
+        Hat.Server.MessageLog
         Hat.Server.Mouse
         Hat.Server.MouseIO
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
+        Hat.Server.Lock
         Hat.Server.Mru
         Hat.Server.OptionParse
         Hat.Server.Outbound
@@ -342,6 +347,7 @@ test-suite hat-test
         Hat.Server.LayoutStringSpec
         Hat.Server.MenuSpec
         Hat.Server.MessageSpec
+        Hat.Server.MessageLogSpec
         Hat.Server.MouseSpec
         Hat.Server.MruSpec
         Hat.Server.WinlinkSpec

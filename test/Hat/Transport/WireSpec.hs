@@ -104,6 +104,7 @@ instance Arbitrary ClientToServer where
         , pure Detach
         , StdinData . B.pack <$> arbitrary
         , pure StdinEnd
+        , pure LockDone
         ]
     shrink = \case
         ClientHello h ->
@@ -118,6 +119,7 @@ instance Arbitrary ClientToServer where
         Detach -> []
         StdinData bs -> StdinData . B.pack <$> shrink (B.unpack bs)
         StdinEnd -> []
+        LockDone -> []
 
 instance Arbitrary ServerToClient where
     arbitrary = oneof
@@ -138,6 +140,7 @@ instance Arbitrary ServerToClient where
         , WriteStdout . B.pack <$> arbitrary
         , ControlExit <$> oneof [pure Nothing, Just <$> genText]
             <*> elements [ExitNow, AwaitEmptyLine] <*> arbitrary
+        , LockClient <$> genText
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -161,6 +164,7 @@ instance Arbitrary ServerToClient where
             [ ControlExit Nothing wait status | Just _ <- [reason] ]
             ++ [ ControlExit reason ExitNow status | wait /= ExitNow ]
             ++ [ ControlExit reason wait s | s <- shrink status ]
+        LockClient cmd -> LockClient . T.pack <$> shrink (T.unpack cmd)
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -229,6 +233,7 @@ spec = do
             , ( "Detach", encodeMessage Detach, "8104" )
             , ( "StdinData", encodeMessage (StdinData "in"), "820542696e" )
             , ( "StdinEnd", encodeMessage StdinEnd, "8106" )
+            , ( "LockDone", encodeMessage LockDone, "8107" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -260,6 +265,7 @@ spec = do
             , ( "ControlExit (no reason)"
               , encodeMessage (ControlExit Nothing ExitNow 0)
               , "840f800000" )
+            , ( "LockClient", encodeMessage (LockClient "lock -np"), "8210686c6f636b202d6e70" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -337,6 +343,11 @@ spec = do
         it "downgrades ControlExit to Exited below level 9" $
             hex (encodeServerMessageAt 8 (ControlExit Nothing ExitNow 0))
                 `shouldBe` "8109"
+        -- The level-9 corpus vector for tag 16: a pre-lock peer is never
+        -- asked to run a lock command, only told it cannot be locked.
+        it "downgrades LockClient to a Message below level 10" $
+            hex (encodeServerMessageAt 9 (LockClient "lock -np"))
+                `shouldBe` "820578256c6f636b696e673a206e6f7420737570706f72746564206279207468697320636c69656e74"
         it "reads a level-6 name-only RestartClientTo as empty history" $
             (decodeMessage (B.pack (hexBytes "820c646d61696e"))
                 :: Inbound ServerToClient)

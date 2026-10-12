@@ -449,7 +449,7 @@ optionTable =
     , live $ scalar "menu-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
     , live $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
-    , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
+    , live $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
     , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
     , live $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
     , live $ scalar "set-clipboard" ServerScope
@@ -503,8 +503,8 @@ optionTable =
     , live $ scalar "history-limit" SessionScope (KNumber 0 intMax) "50000"
     , live $ scalar "initial-repeat-time" SessionScope (KNumber 0 2000000) "0"
     , live $ scalar "key-table" SessionScope KString "root"
-    , notYet $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
-    , notYet $ scalar "lock-command" SessionScope KString "lock -np"
+    , live $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
+    , live $ scalar "lock-command" SessionScope KString "lock -np"
     , live $ scalar "message-command-style" SessionScope KStyle
         "bg=themeblack,fg=themeyellow,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\

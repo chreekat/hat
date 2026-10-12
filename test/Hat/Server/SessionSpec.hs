@@ -54,11 +54,13 @@ import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.ClientSession
     ( DetachOnDestroy (..), SessionChoice (..), destroyDestination )
 import Hat.Server.Conn (handleInput)
+import Hat.Server.Lock
+    (LockOutcome (..), lockClient, lockDeadline, lockTimerLoop, ttyHandedBack)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
-import Hat.Server.Toast (showReplies)
+import Hat.Server.Toast (showReplies, showToast)
 import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
 import Hat.Server.Pane (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
@@ -206,6 +208,7 @@ addClient st sid sz stamp = do
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
         <*> newIORef (Pos 0 0)
+        <*> newTVarIO TtyStarted
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -256,6 +259,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
         <*> newIORef (Pos 0 0)
+        <*> newTVarIO TtyStarted
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 
@@ -334,6 +338,21 @@ rowOf pm r = T.stripEnd (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V
 
 spec :: Spec
 spec = do
+    describe "message log" $ do
+        let logged st = do
+                replies <- runArgv st Nothing ["show-messages"]
+                pure [ l | ROutput l <- replies ]
+        it "logs a bound key's commands by the client and the key" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            [] <- runArgv st Nothing ["bind", "-n", "x", "set", "-g", "@x", "1"]
+            handleInput dispatch st client "x"
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 key x: set-option -g @x 1"))
+        it "logs a message shown to a client" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            showToast st client "hello"
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 message: hello"))
     describe "deadNoticeBytes" $
         it "scrolls a line and draws the styled notice, cursor hidden" $ do
             let sz = Size { rows = 3, cols = 8 }
@@ -894,6 +913,74 @@ spec = do
                 (recvMessage peerRe :: IO (Maybe (Inbound ServerToClient)))
             touchSocket client.sock
             got `shouldBe` Nothing
+
+    describe "locking" $ do
+        let small = Size { rows = 24, cols = 80 }
+            big = Size { rows = 50, cols = 200 }
+            locked c = (== TtyStopped) <$> readTVarIO c.ttyState
+            -- What the renderer would draw next, once every layout change
+            -- is reconciled; 'Nothing' while it holds off.
+            renderable st c = atomically $ do
+                readTVar st.dirty >>= writeTVar st.reconciled
+                (Just <$> awaitRenderable st c (-1)) `orElse` pure Nothing
+        it "hands a client's terminal to lock-command, drawing nothing to it until it is handed back" $ do
+            (st, _) <- seedSession "/"
+            (client, peer) <- wiredClient st Attached
+            peerRe <- newReadEnd peer
+            [] <- runArgv st Nothing ["set", "-g", "lock-command", "vlock"]
+            withClientWriter client $
+                runArgv st Nothing ["lock-client", "-t", "client1"] `shouldReturn` []
+            recvMessage peerRe `shouldReturn` Just (Known (LockClient "vlock"))
+            renderable st client `shouldReturn` Nothing
+            ttyHandedBack st client
+            readTVarIO client.ttyState `shouldReturn` TtyRestarted
+            readTVarIO client.needsFull `shouldReturn` True
+            isJust <$> renderable st client `shouldReturn` True
+        it "refuses, loudly, a client whose hat cannot hand over its terminal" $ do
+            (st, _) <- seedSession "/"
+            (client0, _peer) <- wiredClient st Attached
+            let client = client0 { wireLevel = 9 }
+            atomically $ modifyTVar' st.clients (Map.insert client.id client)
+            runArgv st Nothing ["lock-client", "-t", "client1"] `shouldReturn`
+                [RErr "client1 cannot be locked: its hat is too old (protocol 9)"]
+            locked client `shouldReturn` False
+        it "lock-session locks the session's clients, lock-server every client" $ do
+            (st, _) <- seedSession "/"
+            other <- addSession st 1
+            a <- addClient st (SessionId 0) small 2
+            b <- addClient st other.id small 3
+            [] <- runArgv st Nothing ["lock-session", "-t", "work"]
+            ((,) <$> locked a <*> locked b) `shouldReturn` (True, False)
+            [] <- runArgv st Nothing ["lock-server"]
+            locked b `shouldReturn` True
+        it "passes over a client when lock-command is empty, as tmux does" $ do
+            (st, _) <- seedSession "/"
+            a <- addClient st (SessionId 0) small 2
+            [] <- runArgv st Nothing ["set", "-g", "lock-command", ""]
+            runArgv st Nothing ["lock-client"] `shouldReturn` []
+            locked a `shouldReturn` False
+        it "sizes the session from its unlocked clients only" $ do
+            (st, sess) <- seedSession "/"
+            [] <- runArgv st Nothing ["set", "-g", "window-size", "smallest"]
+            _ <- addClient st (SessionId 0) big 2
+            s <- addClient st (SessionId 0) small 1
+            lockClient st s `shouldReturn` Locked
+            readTVarIO sess.lastSize `shouldReturn` big { rows = big.rows - 1 }
+        it "locks a session after lock-after-time seconds idle, from its clients' last key" $ do
+            lockDeadline True 5 100 `shouldBe` Just (100 + 5_000_000_000)
+            lockDeadline False 5 100 `shouldBe` Nothing
+            lockDeadline True 0 100 `shouldBe` Nothing
+            (st, sess) <- seedSession "/"
+            c <- addClient st sess.id small 1
+            [] <- runArgv st Nothing ["set", "-g", "lock-after-time", "60"]
+            handleInput dispatch st c "x"
+            (Map.member sess.id <$> readTVarIO st.lockTimers) `shouldReturn` True
+            -- Run the timer out.
+            atomically $ modifyTVar' st.lockTimers (Map.insert sess.id 0)
+            withAsync (lockTimerLoop st) $ \_ ->
+                timeout 5_000_000 (atomically (readTVar c.ttyState >>= check . (== TtyStopped)))
+                    `shouldReturn` Just ()
+            readTVarIO st.lockTimers `shouldReturn` Map.empty
 
     describe "window-size sizing" $ do
         let big = Size { rows = 50, cols = 200 }

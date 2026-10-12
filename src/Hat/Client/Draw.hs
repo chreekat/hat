@@ -5,6 +5,7 @@ module Hat.Client.Draw
     , sgr
     , enterAltScreen
     , leaveAltScreen
+    , lockScreen
     ) where
 
 import Data.ByteString (ByteString)
@@ -102,3 +103,8 @@ enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[?2004h\ESC[2J\ESC[H"
 -- tracking the server asked for.
 leaveAltScreen :: ByteString
 leaveAltScreen = "\ESC[?1006l\ESC[?1000l\ESC[?1002l\ESC[?1003l\ESC[?2004l\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a\ESC[?12l\ESC[0 q"
+
+-- | Where a lock command runs (tmux's @server_lock_client@): a cleared
+-- alternate screen, its scrollback too, under the terminal's own cursor.
+lockScreen :: ByteString
+lockScreen = "\ESC[ q\ESC[?1049h\ESC[H\ESC[2J\ESC[3J"

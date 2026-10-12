@@ -23,6 +23,7 @@ import Hat.Model
 import Hat.Model.Options (Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Locate (clientOptions)
+import Hat.Server.MessageLog (logShownMessage)
 import Hat.Server.ViewMode (ViewText (..), viewToClient)
 
 -- | Show a server message, its text shown as-is.
@@ -48,6 +49,7 @@ showMarkupToastFor markup mms st client t = do
     let toast = Toast
             { text = t, markup
             , deadline = toastDeadlineMs (maybe opts.displayTime id mms) now }
+    logShownMessage st client t
     atomically $ do
         writeTVar client.toast (Just toast)
         bumpDirty st
