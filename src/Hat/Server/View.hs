@@ -382,7 +382,7 @@ renderOnce st client = do
             | Just pane <- Map.lookup active ps -> do
                 app <- Emu.appCursorColour pane.emulator
                 popts <- atomically (resolveForPane st sess win pane)
-                pure (cursorColourOf th app (optionText "cursor-colour" popts))
+                pure (cursorColourOf th app popts.cursorColour)
         _ -> pure Nothing
     oldColour <- readIORef client.lastCursorColour
     when (colour /= oldColour) $ do
@@ -477,10 +477,10 @@ syncMouseMode st client view = do
                     Emu.MouseClick -> 1
                     Emu.MouseDrag -> 2
                     Emu.MouseMove -> 3
-            pure $ Mouse.overlayMouseMode (optionFlag "mouse" o) (optionFlag "focus-follows-mouse" o) own
+            pure $ Mouse.overlayMouseMode o.mouseEnabled o.focusFollowsMouse own
         Just (sess, _, _, _) | Just wm <- mmenu -> do
             o <- atomically (resolveForSession st sess)
-            pure $ Mouse.overlayMouseMode (optionFlag "mouse" o) (optionFlag "focus-follows-mouse" o)
+            pure $ Mouse.overlayMouseMode o.mouseEnabled o.focusFollowsMouse
                 (if wm.mouse == MenuMouseOn then 3 else 0)
         Just (sess, win, ps, active) -> do
             tracking <- forM (Map.toList ps) $ \(pid, pane) -> do
@@ -495,8 +495,7 @@ syncMouseMode st client view = do
                 pure (pid, level)
             o <- maybe (atomically (resolveForSession st sess))
                 (\pane -> atomically (resolveForPane st sess win pane)) (Map.lookup active ps)
-            pure $ Mouse.outerMouseMode (optionFlag "mouse" o)
-                (optionFlag "focus-follows-mouse" o)
+            pure $ Mouse.outerMouseMode o.mouseEnabled o.focusFollowsMouse
                 (fromMaybe 0 (List.lookup active tracking)) (map snd tracking)
     old <- readIORef client.lastMouseMode
     when (want /= old) $ do
@@ -654,7 +653,7 @@ cachedChrome
 cachedChrome st expand th client sess win eff sceneArea rects floats defaults paneOpts active rowOff origin = do
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
-    windowStyle <- expand.style th . optionText "pane-border-style"
+    windowStyle <- expand.style th . (.paneBorderStyle)
         =<< atomically (resolveForWindow st sess win)
     (input, look2, panes) <- atomically
         (chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active mmenu)
@@ -665,7 +664,7 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults pa
                     cp.pane.id defaults
             slider <- paneSlider cp.pane height
             pure (cp.pane.id, ScrollbarLook
-                { style = scrollbarStyle th (optionText "pane-scrollbars-style" cp.options)
+                { style = scrollbarStyle th cp.options.paneScrollbarsStyle
                 , slider
                 , padStyle = Cell.defaultStyle { Cell.fg = dfg, Cell.bg = dbg }
                 , onLeft = input.scrollbarSide == ScrollbarLeft })
@@ -679,7 +678,8 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults pa
     styles <- if Set.disjoint kinds (Set.fromList [BorderChrome, StatusChrome])
         then pure []
         else forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st expand th sess win cp.pane
-            cp.options (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
+            (if cp.pane.id == active then cp.options.paneActiveBorderStyle
+             else cp.options.paneBorderStyle)
     let look0 = look1 { paneStyles = Map.fromList styles }
     look <- withStatusLines expand th sess win scene kinds panes look0
         >>= withFills st expand th sess win kinds
@@ -853,7 +853,7 @@ withStatusLines expand th sess win scene kinds panes look
                 Just base -> do
                     expanded <- expand.format
                         (FormatTarget (InPane sess wix win cp.number cp.pane) Map.empty)
-                        (optionText "pane-border-format" cp.options)
+                        cp.options.paneBorderFormat
                     pure [ (cp.pane.id, formatDraw th sty expanded base) ]
         pure look { paneLines = Map.fromList (concat lines') }
 
@@ -1132,4 +1132,4 @@ statusRangesFor st sess sopts width i = do
 -- | The status line (0-based) the prompt and messages take: @message-line@,
 -- or the last line when there are fewer.
 messageLine :: Options -> Int
-messageLine sopts = max 0 (min (optionNumber "message-line" sopts) (sopts.statusLines - 1))
+messageLine sopts = max 0 (min sopts.messageLine (sopts.statusLines - 1))

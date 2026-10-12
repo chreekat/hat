@@ -1017,8 +1017,7 @@ syncTargets st pane = do
     sessions <- readTVar st.sessions
     case mhome of
         Just (sid, win) | Just sess <- Map.lookup sid sessions -> do
-            let synced p = optionFlag "synchronize-panes"
-                    <$> resolveForPane st sess win p
+            let synced p = (.synchronizePanes) <$> resolveForPane st sess win p
             on <- synced pane
             if not on then pure [] else do
                 zoom <- readTVar win.zoomed
@@ -1037,7 +1036,7 @@ syncTargets st pane = do
 typeKeyIntoPane :: ServerState -> Pane -> Key -> IO ()
 typeKeyIntoPane st pane key = do
     o <- readTVarIO st.options
-    let bspace = optionText "backspace" o
+    let bspace = o.backspace
         typeInto p = mapM_ (typeIntoPane p) =<< paneKeyBytes (keyEncoding o) bspace p key
     typeInto pane
     targets <- if key.name `elem` ["FocusIn", "FocusOut"]
@@ -1061,8 +1060,7 @@ keyBytesFor kenc bspace emu key = case key.name of
 
 -- | How keys are encoded for panes under these (server) options.
 keyEncoding :: Options -> KeyEncoding
-keyEncoding o = keyEncodingOf (optionText "extended-keys" o)
-    (optionText "extended-keys-format" o)
+keyEncoding o = keyEncodingOf o.extendedKeys o.extendedKeysFormat
 
 -- | Bytes typed into a pane as they are, copied to the panes synchronized
 -- with it (tmux's @window_pane_paste@).

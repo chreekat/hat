@@ -108,12 +108,12 @@ spec = do
             -- one. On a dark background 65 is a receding gray; on a light
             -- background that same gray reads too heavy, so light mode
             -- inactive borders use a lighter gray (250).
-            dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
-            light.paneBorderStyle.fg `shouldBe` Cell.Indexed 250
-            dark.paneActiveBorderStyle.fg `shouldBe` Cell.Indexed 10
-            dark.paneActiveBorderStyle.bold `shouldBe` True
-            light.paneActiveBorderStyle.fg `shouldBe` Cell.Indexed 22
-            light.paneActiveBorderStyle.bold `shouldBe` True
+            (FD.styleCell terminalTheme dark.paneBorderStyle).fg `shouldBe` Cell.Indexed 65
+            (FD.styleCell terminalTheme light.paneBorderStyle).fg `shouldBe` Cell.Indexed 250
+            (FD.styleCell terminalTheme dark.paneActiveBorderStyle).fg `shouldBe` Cell.Indexed 10
+            (FD.styleCell terminalTheme dark.paneActiveBorderStyle).bold `shouldBe` True
+            (FD.styleCell terminalTheme light.paneActiveBorderStyle).fg `shouldBe` Cell.Indexed 22
+            (FD.styleCell terminalTheme light.paneActiveBorderStyle).bold `shouldBe` True
 
         it "gives copy-mode selection a themed amber highlight per scheme" $ do
             let dark = resolveOptions [applyPalette SchemeDark]
@@ -132,9 +132,10 @@ spec = do
                     _ -> Nothing
             -- higher indices in the 256-color grayscale/cube read lighter;
             -- the inactive border must not be bold either
-            idx light.paneBorderStyle.fg > idx light.paneActiveBorderStyle.fg
+            idx (FD.styleCell terminalTheme light.paneBorderStyle).fg
+                > idx (FD.styleCell terminalTheme light.paneActiveBorderStyle).fg
                 `shouldBe` True
-            light.paneBorderStyle.bold `shouldBe` False
+            (FD.styleCell terminalTheme light.paneBorderStyle).bold `shouldBe` False
 
         it "never overrides an option the user has set" $ do
             -- the scheme is the lowest layer, so a user's set-option (here a
@@ -144,7 +145,7 @@ spec = do
                 dark = resolveOptions [userDelta, applyPalette SchemeDark]
             FD.styleCell terminalTheme (optionText "status-style" dark) `shouldBe` userStyle
             -- options the user did not set still adapt
-            dark.paneBorderStyle.fg `shouldBe` Cell.Indexed 65
+            (FD.styleCell terminalTheme dark.paneBorderStyle).fg `shouldBe` Cell.Indexed 65
 
     describe "previewLabelStyle" $ do
         it "bars a stacked window preview's label in a scheme-tracking blue" $ do

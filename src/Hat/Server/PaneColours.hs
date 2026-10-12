@@ -30,19 +30,17 @@ import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
--- | A pane's style option, its formats expanded in the pane's context
--- first (tmux's @style_add@ with the pane's format tree).
+-- | A pane's style option's text, its formats expanded in the pane's
+-- context first (tmux's @style_add@ with the pane's format tree).
 paneStyleOption
-    :: ServerState -> Expand -> Theme -> Session -> Window -> Pane -> Options -> Text
+    :: ServerState -> Expand -> Theme -> Session -> Window -> Pane -> Text
     -> IO Cell.Style
-paneStyleOption st expand th sess win pane popts name
+paneStyleOption st expand th sess win pane raw
     | "#{" `T.isInfixOf` raw = do
         wix <- atomically (readTVar sess.currentIx)
         pix <- paneIndexOf st win pane
         expand.style th =<< expand.format (FormatTarget (InPane sess wix win pix pane) Map.empty) raw
     | otherwise = expand.style th raw
-  where
-    raw = optionText name popts
 
 -- | The foreground and background a pane's default-coloured cells draw in
 -- (tmux's @tty_default_colours@).
@@ -51,8 +49,8 @@ paneDefaultColours
     -> IO (Cell.Color, Cell.Color)
 paneDefaultColours st expand th sess win pane popts = do
     active <- readTVarIO win.activeId
-    ws <- paneStyleOption st expand th sess win pane popts "window-style"
-    was <- paneStyleOption st expand th sess win pane popts "window-active-style"
+    ws <- paneStyleOption st expand th sess win pane popts.windowStyle
+    was <- paneStyleOption st expand th sess win pane popts.windowActiveStyle
     (pfg, pbg) <- Emu.appDefaultColours pane.emulator
     let rgb = maybe Cell.DefaultColor (\(r, g, b) -> Cell.RGB r g b)
     pure (paneDefaults (pane.id == active) (rgb pfg, rgb pbg) ws was)
@@ -64,9 +62,7 @@ panePalette :: Theme -> Pane -> Options -> IO (Map.Map Int Cell.Color)
 panePalette th pane popts = do
     let configured = Map.fromList
             [ (fromIntegral n, c)
-            | (KeyIndex n, v) <- case optionValue "pane-colours" popts of
-                OVArray m -> Map.toList m
-                OVScalar _ -> []
+            | (KeyIndex n, v) <- Map.toList popts.paneColours
             , n < 256
             , Just (Just c) <- [colourValue th v] ]
     Emu.setPaletteDefaults pane.emulator (Map.mapMaybe colourRgb configured)

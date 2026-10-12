@@ -125,8 +125,6 @@ data Options = Options
     , defaultTerminal :: Text
     , wordSeparators  :: Text  -- ^ characters that split @next-word@ etc.
     , statusInterval  :: Int  -- ^ seconds between status redraws; 0 disables
-    , paneBorderStyle        :: Cell.Style
-    , paneActiveBorderStyle  :: Cell.Style
     , modeStyle              :: Cell.Style  -- ^ copy-mode selection highlight
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
@@ -147,6 +145,31 @@ data Options = Options
     , automaticRenameFormat  :: Text   -- ^ the name an auto-renamed window takes
     , updateEnvironment      :: [Text]  -- ^ vars refreshed on each attach
     , commandAlias    :: Map ArrayKey Text   -- ^ array of @name=command@ entries; see 'lookupCommandAlias'
+    -- The options every frame or keystroke reads. A style or format is its
+    -- text: the reader expands and parses it in its own context.
+    , windowStyle                :: Text
+    , windowActiveStyle          :: Text
+    , paneBorderStyle            :: Text
+    , paneActiveBorderStyle      :: Text
+    , paneScrollbarsStyle        :: Text
+    , paneBorderFormat           :: Text
+    , paneBorderStatus           :: Text
+    , paneScrollbars             :: Text
+    , paneScrollbarsPosition     :: Text
+    , paneColours                :: Map ArrayKey Text
+    , synchronizePanes           :: Bool
+    , mouseEnabled               :: Bool  -- ^ @mouse@
+    , focusFollowsMouse          :: Bool
+    , messageLine                :: Int
+    , prefix2                    :: Text
+    , keyTable                   :: Text
+    , prefixTimeout              :: Int
+    , repeatTime                 :: Int
+    , initialRepeatTime          :: Int
+    , userKeys                   :: Map ArrayKey Text
+    , extendedKeys               :: Text
+    , extendedKeysFormat         :: Text
+    , backspace                  :: Text
     , user            :: Map Text Text  -- ^ @\@foo@ options
     , values          :: Map Text OptionValue
         -- ^ every registered option's resolved value, for the typed
@@ -170,8 +193,6 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , defaultTerminal = missing "default-terminal"
         , wordSeparators = missing "word-separators"
         , statusInterval = missing "status-interval"
-        , paneBorderStyle = missing "pane-border-style"
-        , paneActiveBorderStyle = missing "pane-active-border-style"
         , modeStyle = missing "mode-style"
         , paneBorderLines = missing "pane-border-lines"
         , paneBorderIndicators = missing "pane-border-indicators"
@@ -191,6 +212,29 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , automaticRenameFormat = missing "automatic-rename-format"
         , updateEnvironment = missing "update-environment"
         , commandAlias = missing "command-alias"
+        , windowStyle = missing "window-style"
+        , windowActiveStyle = missing "window-active-style"
+        , paneBorderStyle = missing "pane-border-style"
+        , paneActiveBorderStyle = missing "pane-active-border-style"
+        , paneScrollbarsStyle = missing "pane-scrollbars-style"
+        , paneBorderFormat = missing "pane-border-format"
+        , paneBorderStatus = missing "pane-border-status"
+        , paneScrollbars = missing "pane-scrollbars"
+        , paneScrollbarsPosition = missing "pane-scrollbars-position"
+        , paneColours = missing "pane-colours"
+        , synchronizePanes = missing "synchronize-panes"
+        , mouseEnabled = missing "mouse"
+        , focusFollowsMouse = missing "focus-follows-mouse"
+        , messageLine = missing "message-line"
+        , prefix2 = missing "prefix2"
+        , keyTable = missing "key-table"
+        , prefixTimeout = missing "prefix-timeout"
+        , repeatTime = missing "repeat-time"
+        , initialRepeatTime = missing "initial-repeat-time"
+        , userKeys = missing "user-keys"
+        , extendedKeys = missing "extended-keys"
+        , extendedKeysFormat = missing "extended-keys-format"
+        , backspace = missing "backspace"
         , user = Map.empty
         , values = Map.empty
         }
@@ -213,9 +257,29 @@ fieldBindings = Map.fromList
     , ("default-terminal", text (\v o -> o { defaultTerminal = v }))
     , ("word-separators", text (\v o -> o { wordSeparators = v }))
     , ("status-interval", int (\v o -> o { statusInterval = v }))
-    , ("pane-border-style", style (\v o -> o { paneBorderStyle = v }))
-    , ("pane-active-border-style", style (\v o -> o
-        { paneActiveBorderStyle = v }))
+    , ("pane-border-style", text (\v o -> o { paneBorderStyle = v }))
+    , ("pane-active-border-style", text (\v o -> o { paneActiveBorderStyle = v }))
+    , ("window-style", text (\v o -> o { windowStyle = v }))
+    , ("window-active-style", text (\v o -> o { windowActiveStyle = v }))
+    , ("pane-scrollbars-style", text (\v o -> o { paneScrollbarsStyle = v }))
+    , ("pane-border-format", text (\v o -> o { paneBorderFormat = v }))
+    , ("pane-border-status", text (\v o -> o { paneBorderStatus = v }))
+    , ("pane-scrollbars", text (\v o -> o { paneScrollbars = v }))
+    , ("pane-scrollbars-position", text (\v o -> o { paneScrollbarsPosition = v }))
+    , ("pane-colours", arr (\v o -> o { paneColours = v }))
+    , ("synchronize-panes", flag (\v o -> o { synchronizePanes = v }))
+    , ("mouse", flag (\v o -> o { mouseEnabled = v }))
+    , ("focus-follows-mouse", flag (\v o -> o { focusFollowsMouse = v }))
+    , ("message-line", int (\v o -> o { messageLine = v }))
+    , ("prefix2", text (\v o -> o { prefix2 = v }))
+    , ("key-table", text (\v o -> o { keyTable = v }))
+    , ("prefix-timeout", int (\v o -> o { prefixTimeout = v }))
+    , ("repeat-time", int (\v o -> o { repeatTime = v }))
+    , ("initial-repeat-time", int (\v o -> o { initialRepeatTime = v }))
+    , ("user-keys", arr (\v o -> o { userKeys = v }))
+    , ("extended-keys", text (\v o -> o { extendedKeys = v }))
+    , ("extended-keys-format", text (\v o -> o { extendedKeysFormat = v }))
+    , ("backspace", text (\v o -> o { backspace = v }))
     , ("mode-style", style (\v o -> o { modeStyle = v }))
     , ("pane-border-lines", text (\v o -> o { paneBorderLines = borderLinesOf v }))
     , ("pane-border-indicators", text (\v o -> o

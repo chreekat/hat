@@ -396,8 +396,8 @@ floatingPanes st win = do
         case (floatGeom pid lay, Map.lookup pid ps) of
             (Just g, Just p) -> do
                 popts <- resolvePaneTables st win p
-                let lineSet = borderLinesOf (optionText "pane-border-lines" popts)
-                    raw = optionText "pane-border-status" popts
+                let lineSet = popts.paneBorderLines
+                    raw = popts.paneBorderStatus
                     box = Rect { startRow = g.top, endRow = g.top + g.height
                                , startCol = g.left, endCol = g.left + g.width }
                 pure [ FloatingPane
@@ -435,7 +435,7 @@ cachedArrange eff win lay = do
 windowPaneStatus :: ServerState -> Window -> STM PaneStatus
 windowPaneStatus st win = do
     wopts <- resolveWindowTables st win
-    pure $ case optionText "pane-border-status" wopts of
+    pure $ case wopts.paneBorderStatus of
         "top" -> PaneStatusTop
         "bottom" -> PaneStatusBottom
         _ -> PaneStatusOff
@@ -447,14 +447,14 @@ windowPaneStatus st win = do
 paneScrollbars :: ServerState -> Window -> STM (ScrollbarSide, Map.Map PaneId Int)
 paneScrollbars st win = do
     wopts <- resolveWindowTables st win
-    let side = if optionText "pane-scrollbars-position" wopts == "left"
+    let side = if wopts.paneScrollbarsPosition == "left"
             then ScrollbarLeft else ScrollbarRight
-    if optionText "pane-scrollbars" wopts /= "on" then pure (side, Map.empty) else do
+    if wopts.paneScrollbars /= "on" then pure (side, Map.empty) else do
         ps <- Map.elems <$> readTVar win.panes
         bars <- fmap concat $ forM ps $ \p -> do
             alt <- readTVar p.onAlternate
             popts <- resolvePaneTables st win p
-            let sb = scrollbarStyle terminalTheme (optionText "pane-scrollbars-style" popts)
+            let sb = scrollbarStyle terminalTheme popts.paneScrollbarsStyle
             pure [ (p.id, sb.width + sb.pad) | not alt ]
         pure (side, Map.fromList bars)
 

@@ -598,15 +598,15 @@ escTiming opts = if opts.escapeTime <= 0 then EscImmediate else EscBuffered
 -- options and its active pane's mode table.
 keyContext :: Options -> Maybe Text -> Int -> KeyContext
 keyContext opts modeTable now = KeyContext
-    { prefixKeys = filter (/= "None") [opts.prefix, optionText "prefix2" opts]
-    , defaultTable = case optionText "key-table" opts of
+    { prefixKeys = filter (/= "None") [opts.prefix, opts.prefix2]
+    , defaultTable = case opts.keyTable of
         "" -> "root"
         t -> t
     , modeTable = modeTable
-    , prefixTimeout = optionNumber "prefix-timeout" opts
-    , repeatTime = optionNumber "repeat-time" opts
-    , initialRepeatTime = optionNumber "initial-repeat-time" opts
-    , mouseOn = optionFlag "mouse" opts
+    , prefixTimeout = opts.prefixTimeout
+    , repeatTime = opts.repeatTime
+    , initialRepeatTime = opts.initialRepeatTime
+    , mouseOn = opts.mouseEnabled
     , now = now
     }
 
@@ -620,9 +620,7 @@ handleKeys :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleKeys d st client bs = do
     opts <- clientOptions st client
     held <- readIORef client.escState
-    let users = case optionValue "user-keys" opts of
-            OVArray m -> userKeys m
-            OVScalar _ -> []
+    let users = userKeys opts.userKeys
         toks = feedKeys (escTiming opts) users held bs
     writeIORef client.escState toks.escPending
     runKeys d st client toks.escKeys
@@ -680,7 +678,7 @@ runInputs d st client keys = do
                     forM_ mp $ \(sess, win, pane, _) -> do
                         o <- atomically (resolveForPane st sess win pane)
                         active <- readTVarIO win.activeId
-                        when (optionFlag "focus-follows-mouse" o && pane.id /= active) $
+                        when (o.focusFollowsMouse && pane.id /= active) $
                             void $ d.runArgv st (Just client)
                                 ["select-pane", "-t", "%" <> tshow (rawPane pane.id)]
                 routed kst2 mpane (Key { name = mk.name, raw = "" }) (Just mk.event) rest
