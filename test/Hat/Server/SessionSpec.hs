@@ -492,6 +492,22 @@ spec = do
             map (.style) (take 2 (V.toList (frame V.! 0))) `shouldBe`
                 [ Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
                 , Cell.defaultStyle { Cell.fg = Cell.Indexed 100, Cell.bg = Cell.Indexed 4 } ]
+    describe "a respawned pane" $
+        it "draws its new screen, not the old one's rows" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ writeOwn st.globalSessionOptions (singletonDelta "status" (OVScalar "off"))
+            (client, _peer) <- wiredClient st Attached
+            let showing bytes = do
+                    emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+                    _ <- Emu.feed emu bytes
+                    atomically $ modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
+                    renderOnce st client
+                    frame <- readIORef client.lastFrame
+                    pure (T.strip (T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))))
+            showing "123456789Z" `shouldReturn` "123456789Z"
+            showing "123456789" `shouldReturn` "123456789"
     describe "the status line" $
         it "follows an environment variable its format reads" $ do
             (st, sess) <- seedSession "/"

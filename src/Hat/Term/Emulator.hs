@@ -84,6 +84,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Unsafe qualified as BU
 import Data.Char (chr)
 import Data.IORef
+import System.IO.Unsafe (unsafePerformIO)
 import Data.List (dropWhileEnd, intersperse)
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -191,13 +192,16 @@ data PaletteDefaults = PaletteDefaults
 type Rgb = (Word8, Word8, Word8)
 
 -- | Last snapshot's rows with their generation stamps ('rows' and 'gens'
--- always the same length), and the counter the next snapshot stamps rebuilt
--- rows with. See 'snapshotWithGens'.
+-- always the same length). See 'snapshotWithGens'.
 data GridCache = GridCache
     { rows    :: V.Vector (V.Vector Cell)
     , gens    :: V.Vector Int
-    , nextGen :: Int
     }
+
+-- | The next generation stamp, shared by every emulator in the process.
+generations :: IORef Int
+generations = unsafePerformIO (newIORef 0)
+{-# NOINLINE generations #-}
 
 -- | Pinned staging area the shim fills on each snapshot, kept across calls.
 data SnapBuf = SnapBuf
@@ -269,7 +273,7 @@ newEmulator sz limit = do
         freeHaskellFunPtr writePtyW
         freeHaskellFunPtr bellW
     ci <- newIORef Map.empty
-    gc <- newIORef GridCache { rows = V.empty, gens = V.empty, nextGen = 0 }
+    gc <- newIORef GridCache { rows = V.empty, gens = V.empty }
     sb0 <- mallocForeignPtrBytes 0
     sb <- newIORef SnapBuf { buf = sb0, cap = 0 }
     pal <- newIORef PaletteDefaults { builtin = Nothing, applied = Map.empty }
@@ -409,8 +413,9 @@ snapshot e = fst <$> snapshotWithGens e
 
 -- | 'snapshot' plus one generation stamp per row. A row's stamp changes
 -- whenever its content may have since the previous snapshot, and never
--- otherwise: two snapshots of this emulator agreeing on a row's stamp
--- guarantee they agree on its cells, so a consumer may skip the row.
+-- otherwise: two snapshots agreeing on a row's stamp — of this emulator or
+-- any other — guarantee they agree on its cells, so a consumer may skip
+-- the row.
 snapshotWithGens :: Emulator -> IO (Screen, V.Vector Int)
 snapshotWithGens e = withMVar e.lock $ \_ ->
     withForeignPtr e.term (readGrid e.cellIntern e.render e.gridCache e.snapBuf)
@@ -463,6 +468,7 @@ readActiveGrid ci rp cacheRef bufRef t rows cols =
         if not rebuild
             then pure (cache.rows, cache.gens)
             else do
+                gen <- atomicModifyIORef' generations (\g -> (g + 1, g))
                 tagged <- V.generateM rows $ \y -> do
                     clean <- (== 0) <$> (peekElemOff dirty y :: IO Word8)
                     if fits && clean
@@ -482,10 +488,9 @@ readActiveGrid ci rp cacheRef bufRef t rows cols =
                                 case mold >>= (V.!? x) of
                                     Just oldc | oldc == fresh -> pure oldc
                                     _ -> shareVals ci fresh
-                            pure (row, cache.nextGen)
+                            pure (row, gen)
                 let (grid, gens) = V.unzip tagged
-                writeIORef cacheRef GridCache
-                    { rows = grid, gens, nextGen = cache.nextGen + 1 }
+                writeIORef cacheRef GridCache { rows = grid, gens }
                 pure (grid, gens)
 
 -- | Hand the shim's cell array (@rows*cols@ cells) and per-row dirty flags
