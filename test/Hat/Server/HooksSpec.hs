@@ -32,6 +32,7 @@ import Hat.Server.Hooks
 import Hat.Server.Keys (EscPending (..), initialKeyState)
 import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire (Autostart (..))
+import Hat.Term.HostProtocol (defaultCursorModel)
 
 newState :: IO ServerState
 newState = do
@@ -300,7 +301,7 @@ fakeClient _ = do
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     colourVar <- newIORef Nothing
-    shapeVar <- newIORef CursorDefault
+    shapeVar <- newIORef defaultCursorModel
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing

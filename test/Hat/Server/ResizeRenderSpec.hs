@@ -24,6 +24,7 @@ import Hat.Term.Cell
 import Hat.Transport.Wire
     (Autostart (..), DrawOp (..), Inbound (..), ServerToClient (..)
     , ReadEnd (..), newReadEnd, protocolVersion, recvMessage)
+import Hat.Term.HostProtocol (defaultCursorModel)
 
 -- A ready Client at @sz@, its last-sent frame set to @lastFrame@ and its
 -- full-redraw flag cleared — the post-race state bug 97 leaves behind.
@@ -47,7 +48,7 @@ mkClient sz lastFrame = do
     mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef Nothing
-    shapeVar <- newIORef CursorDefault
+    shapeVar <- newIORef defaultCursorModel
     fullV   <- newTVarIO False
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing

@@ -72,6 +72,7 @@ import Hat.Server.Render
 import Hat.Server.Resize
 import Hat.Server.View
 import Hat.Term.Emulator qualified as Emu
+import Hat.Term.HostProtocol (defaultCursorModel)
 import Hat.Transport.Wire
 
 
@@ -260,7 +261,7 @@ newClient st conn h = do
     mouseModeVar <- newIORef 0
     cursorVar <- newIORef (Pos 0 0, True)
     cursorColourVar <- newIORef Nothing
-    cursorShapeVar <- newIORef CursorDefault
+    cursorShapeVar <- newIORef defaultCursorModel
     fullVar <- newTVarIO True
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing

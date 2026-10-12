@@ -157,6 +157,7 @@ import Hat.Server.Wanted (WantedNames)
 import Hat.Transport.Wire (Autostart)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
+import Hat.Term.HostProtocol (CursorModel)
 
 data ServerState = ServerState
     { sessions    :: TVar (Map SessionId Session)
@@ -877,8 +878,8 @@ data Client = Client
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef (Maybe Emu.Rgb)
         -- ^ OSC 12 in effect; render thread only
-    , lastCursorShape :: IORef CursorShape
-        -- ^ DECSCUSR in effect; render thread only
+    , lastCursorShape :: IORef CursorModel
+        -- ^ the outer cursor's style in effect; render thread only
     , lastMouseMode :: IORef Int
         -- ^ the outer terminal's mouse tracking: 0 off, 1 clicks, 2 drags,
         --   3 all motion; render thread only

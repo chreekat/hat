@@ -27,6 +27,7 @@ import Hat.Server.Render (blankFrame)
 import Hat.Transport.Wire
     ( Autostart (..), Inbound (..), ReadEnd (..), ServerToClient (..)
     , newReadEnd, protocolVersion, recvMessage )
+import Hat.Term.HostProtocol (defaultCursorModel)
 
 -- A Client wired to one end of a socketpair (returned second), initially
 -- not ready.
@@ -54,7 +55,7 @@ mkClientWith cid = do
     mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef Nothing
-    shapeVar <- newIORef CursorDefault
+    shapeVar <- newIORef defaultCursorModel
     fullV   <- newTVarIO True
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing

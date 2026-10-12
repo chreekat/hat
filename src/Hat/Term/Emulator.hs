@@ -234,7 +234,7 @@ data EmulatorState = EmulatorState
 -- | The policy a fresh emulator starts with: tmux's defaults.
 defaultHostPolicy :: HostPolicy
 defaultHostPolicy = HostPolicy
-    { allowAltScreen = True, scrollOnClear = True, bufferSize = 1048576 }
+    { allowAltScreen = True, scrollOnClear = True, bufferSize = 1048576, cursorStyle = 0 }
 
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz limit = do
@@ -372,13 +372,13 @@ queryReply e t q = do
             _ -> pure 0
         ModeQuery DecMode m -> modeReply DecMode m <$> case m of
             3 -> pure 4
-            12 -> pure (cursorBlinkReport s.cursorModel)
+            12 -> pure (cursorBlinkReport s.policy.cursorStyle s.cursorModel)
             2031 -> pure (report s.colorSub)
             _ | m `elem` [47, 1047, 1049] ->
                   report . (== screenAlternate) <$> c_get t dataActiveScreen
               | m `elem` reportedDecModes -> mode (fromIntegral m) False
               | otherwise -> pure 0
-        StatusQuery pt -> pure (statusReply s.cursorModel pt)
+        StatusQuery pt -> pure (statusReply s.policy.cursorStyle s.cursorModel pt)
         _ -> pure (attributesReply q)
   where
     -- The DEC modes tmux reports straight from the terminal's state.

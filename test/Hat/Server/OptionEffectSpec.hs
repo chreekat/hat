@@ -35,10 +35,12 @@ import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
 import Hat.Server.PaneColours (cursorColourOf, oscColourReply)
 import Hat.Server.Resize (scrollbarReserve)
-import Hat.Term.HostProtocol (HostPolicy (..), OscTerm (..))
+import Hat.Term.HostProtocol
+    ( CursorChange (..), HostPolicy (..), OscTerm (..), applyCursorChange
+    , defaultCursorModel, terminalCursor, terminalCursorBytes )
 import Hat.Server.Scene
 import Hat.Server.Theme (terminalTheme)
-import Hat.Server.View (decscusr, messageLine, promptCursorOf, statusLayout)
+import Hat.Server.View (messageLine, promptCursorOf, statusLayout)
 import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
@@ -177,12 +179,35 @@ spec = do
                         , commandCursor = promptCursor "prompt-command-cursor" opts } }
             it "inserting, the prompt-cursor style" $ do
                 (promptCursorOf (prompt PromptInsert)).shape `shouldBe` CursorBar
-                decscusr CursorBar `shouldBe` "\ESC[6 q"
+                terminalCursorBytes (terminalCursor (fromEnum CursorBar) defaultCursorModel)
+                    `shouldBe` "\ESC[?12l\ESC[6 q"
             it "in vi command mode, the command-mode style and colour" $
                 promptCursorOf (prompt PromptCommand)
                     `shouldBe` PromptCursor "colour9" CursorBlinkingUnderline
             it "default resets the terminal's own" $
-                decscusr CursorDefault `shouldBe` "\ESC[0 q"
+                terminalCursorBytes (terminalCursor (fromEnum CursorDefault) defaultCursorModel)
+                    `shouldBe` "\ESC[?12l\ESC[0 q"
+
+        -- cursor-style: the outer cursor is the program's DECSCUSR style,
+        -- else the option's, whose blink stands until DEC mode 12 speaks.
+        describe "cursor-style shapes the outer cursor" $ do
+            let program = foldr applyCursorChange defaultCursorModel . reverse
+                outer ps chs = terminalCursorBytes (terminalCursor ps (program chs))
+            it "the option's shape while the program sets none" $
+                outer 6 [] `shouldBe` "\ESC[?12l\ESC[6 q"
+            it "the program's DECSCUSR wins" $
+                outer 6 [CursorStyleSet 3] `shouldBe` "\ESC[?12l\ESC[3 q"
+            it "the program's DEC mode 12 sets the option's shape's blink" $ do
+                outer 2 [CursorBlinkSet True] `shouldBe` "\ESC[?12l\ESC[1 q"
+                outer 5 [CursorBlinkSet False] `shouldBe` "\ESC[?12l\ESC[6 q"
+            it "a program reset to the default style takes the option's again" $
+                outer 4 [CursorStyleSet 5, CursorStyleSet 0] `shouldBe` "\ESC[?12l\ESC[4 q"
+            it "default: the terminal's own shape, blinking if the program asks" $ do
+                outer 0 [] `shouldBe` "\ESC[?12l\ESC[0 q"
+                outer 0 [CursorBlinkSet True] `shouldBe` "\ESC[?12l\ESC[0 q\ESC[?12h"
+            it "the decoded option is its DECSCUSR number" $
+                map (\v -> (applyEntry "cursor-style" (OVScalar v) defaultOptions).cursorStyle)
+                    ["default", "blinking-block", "bar"] `shouldBe` [0, 1, 6]
 
         -- input-buffer-size: the limit a pane's output is scrubbed under.
         describe "input-buffer-size reaches the pane's host policy" $

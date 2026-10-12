@@ -11,15 +11,12 @@ module Hat.Server.View
     , messageLine  -- ^ exported for the message-line effect test
     , statusRangesFor
     , promptCursorOf
-    , decscusr
     ) where
 
 import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (evaluate)
 import Control.Monad (foldM, forM, join, when)
-import Data.ByteString qualified as B
-import Data.ByteString.Char8 qualified as B8
 import Data.IORef
 import Data.Word (Word8)
 import Data.List qualified as List
@@ -73,6 +70,7 @@ import Hat.Server.Status
     (StatusTexts (..), drawStatus, statusFormats, statusRanges, statusRows, statusTexts)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
+import Hat.Term.HostProtocol (defaultCursorModel, terminalCursor, terminalCursorBytes)
 import Hat.Transport.Wire
 
 -- Rendering ---------------------------------------------------------------
@@ -377,13 +375,15 @@ renderOnce st client = do
     -- when it opened.
     th <- clientTheme st
     inPrompt <- fmap promptCursorOf <$> readTVarIO client.prompt
-    colour <- case (inPrompt, view) of
+    viewedPane <- case view of
+        Just (sess, win, _, _, ps, active) | Just pane <- Map.lookup active ps ->
+            Just . (,) pane <$> resolveForPaneIO st sess win pane
+        _ -> pure Nothing
+    colour <- case (inPrompt, viewedPane) of
         (Just pc, _) -> pure (colourValue th pc.colour >>= id >>= colourRgb)
-        (Nothing, Just (sess, win, _, _, ps, active))
-            | Just pane <- Map.lookup active ps -> do
-                app <- Emu.appCursorColour pane.emulator
-                popts <- resolveForPaneIO st sess win pane
-                pure (cursorColourOf th app popts.cursorColour)
+        (Nothing, Just (pane, popts)) -> do
+            app <- Emu.appCursorColour pane.emulator
+            pure (cursorColourOf th app popts.cursorColour)
         _ -> pure Nothing
     oldColour <- readIORef client.lastCursorColour
     when (colour /= oldColour) $ do
@@ -393,12 +393,27 @@ renderOnce st client = do
             Nothing -> "\ESC]112\a"
             Just (r, g, b) -> TE.encodeUtf8 $ T.concat
                 [ "\ESC]12;rgb:", hex2 r, "/", hex2 g, "/", hex2 b, "\a" ]
-    let shape = maybe CursorDefault (.shape) inPrompt
+    -- @cursor-style@: the shape of the screen whose cursor the client shows.
+    -- A mode's screen and a popup's take the global option, as tmux sets
+    -- them up from @global_w_options@.
+    shape <- case (inPrompt, mpopup, viewedPane) of
+        (Just pc, _, _) -> pure (terminalCursor (fromEnum pc.shape) defaultCursorModel)
+        (Nothing, Just p, _) -> do
+            g <- atomically (resolveGlobal st)
+            terminalCursor g.cursorStyle <$> Emu.appCursor p.screen
+        (Nothing, Nothing, Just (pane, popts)) -> do
+            inMode <- isJust <$> readTVarIO pane.mode
+            if inMode
+                then do
+                    g <- atomically (resolveGlobal st)
+                    pure (terminalCursor g.cursorStyle defaultCursorModel)
+                else terminalCursor popts.cursorStyle <$> Emu.appCursor pane.emulator
+        _ -> pure defaultCursorModel
     oldShape <- readIORef client.lastCursorShape
     when (shape /= oldShape) $ do
         writeIORef client.lastCursorShape shape
         -- See Note [Falling behind]
-        sendAs (Superseding CursorShapeSlot) client (Notify (decscusr shape))
+        sendAs (Superseding CursorShapeSlot) client (Notify (terminalCursorBytes shape))
     syncMouseMode st client (fmap (\(sess, win, _, _, ps, active) -> (sess, win, ps, active)) view)
   where
     frameDims f = (V.length f, maybe 0 V.length (f V.!? 0))
@@ -446,10 +461,6 @@ promptCursorOf :: PromptState -> PromptCursor
 promptCursorOf pr = case pr.promptMode of
     PromptCommand -> pr.promptKeys.commandCursor
     PromptInsert -> pr.promptKeys.insertCursor
-
--- | The DECSCUSR sequence setting a cursor shape.
-decscusr :: CursorShape -> B.ByteString
-decscusr shape = "\ESC[" <> B8.pack (show (fromEnum shape)) <> " q"
 
 hex2 :: Word8 -> Text
 hex2 w = T.pack [digit (w `div` 16), digit (w `mod` 16)]

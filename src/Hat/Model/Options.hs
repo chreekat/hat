@@ -47,6 +47,7 @@ module Hat.Model.Options
     , module Hat.Model.OptionTable
     ) where
 
+import Data.List qualified as List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
@@ -91,6 +92,10 @@ data BorderLines
     | BorderNone
     deriving (Eq, Show)
 
+-- | A @cursor-style@ value's DECSCUSR number: its place among the choices.
+cursorStyleNumber :: Text -> Int
+cursorStyleNumber v = maybe 0 fst (List.find ((== v) . snd) (zip [0 ..] cursorStyles))
+
 -- | A @pane-border-lines@ value.
 borderLinesOf :: Text -> BorderLines
 borderLinesOf = \case
@@ -129,6 +134,7 @@ data Options = Options
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
     , cursorColour           :: Text  -- ^ tmux colour text; @\"\"@ = terminal default
+    , cursorStyle            :: Int   -- ^ @cursor-style@ as its DECSCUSR number, 0-6
     , inputBufferSize        :: Int
     , setTitles              :: Bool
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
@@ -198,6 +204,7 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , paneBorderLines = missing "pane-border-lines"
         , paneBorderIndicators = missing "pane-border-indicators"
         , cursorColour = missing "cursor-colour"
+        , cursorStyle = missing "cursor-style"
         , inputBufferSize = missing "input-buffer-size"
         , setTitles = missing "set-titles", escapeTime = missing "escape-time"
         , displayTime = missing "display-time"
@@ -291,6 +298,7 @@ fieldBindings = Map.fromList
             "both" -> IndicatorsBoth
             _ -> IndicatorsColour }))
     , ("cursor-colour", text (\v o -> o { cursorColour = v }))
+    , ("cursor-style", text (\v o -> o { cursorStyle = cursorStyleNumber v }))
     , ("input-buffer-size", int (\v o -> o { inputBufferSize = v }))
     , ("set-titles", flag (\v o -> o { setTitles = v }))
     , ("escape-time", int (\v o -> o { escapeTime = v }))

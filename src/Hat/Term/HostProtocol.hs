@@ -50,6 +50,8 @@ module Hat.Term.HostProtocol
     , defaultCursorModel
     , applyCursorChange
     , cursorReplayBytes
+    , terminalCursor
+    , terminalCursorBytes
     , cursorBlinkReport
     , attributesReply
     , modeReply
@@ -254,6 +256,8 @@ data HostPolicy = HostPolicy
         --   history
     , bufferSize :: Int
         -- ^ @input-buffer-size@; see 'inputStringLimit'
+    , cursorStyle :: Int
+        -- ^ @cursor-style@, as its DECSCUSR number
     }
     deriving (Eq, Show)
 
@@ -603,15 +607,34 @@ applyCursorChange ch m = case ch of
     TerminalReset -> m { blinking = False, blinkingSet = False }
 
 -- | The DECSCUSR @Ps@ a cursor state stands for. With no style set it is
--- tmux's @cursor-style@ option's, whose only value hat takes is @default@.
-cursorStylePs :: CursorModel -> Int
-cursorStylePs m = case m.style of
-    StyleDefault -> 0
+-- the @cursor-style@ option's, @optPs@.
+cursorStylePs :: Int -> CursorModel -> Int
+cursorStylePs optPs m = case m.style of
+    StyleDefault -> optPs
     StyleBlock -> blinkOr 1 2
     StyleUnderline -> blinkOr 3 4
     StyleBar -> blinkOr 5 6
   where
     blinkOr on off = if m.blinking then on else off
+
+-- | The cursor tmux gives the outer terminal for a screen
+-- (@tty_update_cursor@): its program's style, else the @cursor-style@
+-- option's (@optPs@), whose blink stands until the program sets one with
+-- DEC mode 12.
+terminalCursor :: Int -> CursorModel -> CursorModel
+terminalCursor optPs m = case m.style of
+    StyleDefault ->
+        let dflt = applyCursorChange (CursorStyleSet optPs) defaultCursorModel
+        in dflt { blinking = if m.blinkingSet then m.blinking else dflt.blinking
+                , blinkingSet = m.blinkingSet }
+    _ -> m
+
+-- | Output that sets the outer terminal's cursor to a 'terminalCursor':
+-- tmux's @cnorm@ (blinking off), then the style, the terminal's own shape
+-- asked to blink as @cvvis@ does.
+terminalCursorBytes :: CursorModel -> ByteString
+terminalCursorBytes m = "\ESC[?12l\ESC[" <> B8.pack (show (cursorStylePs 0 m)) <> " q"
+    <> (if m.style == StyleDefault && m.blinking then "\ESC[?12h" else "")
 
 -- | Output that takes a fresh pane's cursor state to @m@ through
 -- 'applyCursorChange': DECSCUSR for the style and its blink, then DEC mode
@@ -624,16 +647,17 @@ cursorReplayBytes m = style <> blink
         StyleDefault
             | m.blinking && not m.blinkingSet -> "\ESC[1 q\ESC[0 q"
             | otherwise -> ""
-        _ -> "\ESC[" <> B8.pack (show (cursorStylePs m)) <> " q"
+        _ -> "\ESC[" <> B8.pack (show (cursorStylePs 0 m)) <> " q"
     blink
         | m.blinkingSet = if m.blinking then "\ESC[?12h" else "\ESC[?12l"
         | otherwise = ""
 
--- | Whether the cursor blinks, as DECRQM reports mode 12: 1 or 2.
-cursorBlinkReport :: CursorModel -> Int
-cursorBlinkReport m
+-- | Whether the cursor blinks, as DECRQM reports mode 12: 1 or 2. With no
+-- style or blink set it is the @cursor-style@ option's (@optPs@).
+cursorBlinkReport :: Int -> CursorModel -> Int
+cursorBlinkReport optPs m
     | m.style /= StyleDefault || m.blinkingSet = if m.blinking then 1 else 2
-    | otherwise = if odd (cursorStylePs m) then 1 else 2
+    | otherwise = if odd optPs then 1 else 2
 
 -- | tmux's DA1 or DA2 reply.
 attributesReply :: HostQuery -> ByteString
@@ -647,9 +671,10 @@ modeReply :: ModeSpace -> Int -> Int -> ByteString
 modeReply space m n = "\ESC[" <> (if space == DecMode then "?" else "")
     <> B8.pack (show m) <> ";" <> B8.pack (show n) <> "$y"
 
--- | A DECRQSS reply: the cursor style is the one setting tmux reports.
-statusReply :: CursorModel -> ByteString -> ByteString
-statusReply m pt
+-- | A DECRQSS reply: the cursor style is the one setting tmux reports, the
+-- @cursor-style@ option's (@optPs@) while the program has set none.
+statusReply :: Int -> CursorModel -> ByteString -> ByteString
+statusReply optPs m pt
     | " q" `B.isPrefixOf` B.drop 1 pt =
-        "\ESCP1$r q" <> B8.pack (show (cursorStylePs m)) <> " q\ESC\\"
+        "\ESCP1$r q" <> B8.pack (show (cursorStylePs optPs m)) <> " q\ESC\\"
     | otherwise = "\ESCP0$r\ESC\\"

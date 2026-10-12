@@ -57,6 +57,7 @@ import Hat.Transport.Socket (connectTo)
 import Hat.Transport.Wire qualified as W
 import Hat.Term.Cell (Cell (..), Style (..))
 import Hat.Term.Emulator qualified as Emu
+import Hat.Term.HostProtocol qualified as HP
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
 -- reads any ambient config) and a private socket. See 'withHat'.
@@ -778,6 +779,20 @@ spec = parallel $ do
         err `shouldBe` "duplicate session: work\n"
         typeInto c1 "exit\r"
         _ <- awaitExit c1
+        pure ()
+
+    it "gives the terminal the cursor-style option's shape, the program's over it" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        let outerStyle want = awaitTrue ("the outer cursor " <> show want) $
+                (== want) . (.style) <$> Emu.appCursor c.screen
+        _ <- hatCtl h ["set", "-g", "cursor-style", "bar"]
+        outerStyle HP.StyleBar
+        typeInto c "printf '\\033[4 q'\r"
+        outerStyle HP.StyleUnderline
+        typeInto c "exit\r"
+        _ <- awaitExit c
         pure ()
 
     it "opens a display-menu over the client's window and runs the item its key picks" $

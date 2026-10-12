@@ -91,7 +91,7 @@ runPopupReader st client p = void $ mask_ $ forkIOWithUnmask $ \unmask -> do
     feed bs = unless (B.null bs) $ do
         g <- atomically (resolveGlobal st)
         Emu.setHostPolicy p.screen Emu.defaultHostPolicy
-            { Emu.bufferSize = g.inputBufferSize }
+            { Emu.bufferSize = g.inputBufferSize, Emu.cursorStyle = g.cursorStyle }
         events <- Emu.feed p.screen bs
         forM_ events $ \case
             Emu.Output out -> Pty.writePty p.jobPty out

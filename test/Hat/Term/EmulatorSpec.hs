@@ -682,6 +682,20 @@ spec = do
             answers "\ESC[6 q" decrqss "\ESCP1$r q6 q\ESC\\"
             answers "\ESC[1 q\ESC[?12l" decrqss "\ESCP1$r q2 q\ESC\\"
             answers "\ESC[5 q\ESC[0 q" decrqss "\ESCP1$r q0 q\ESC\\"
+        it "with no style set, the cursor-style option answers" $ do
+            let underStyle ps setup q = do
+                    e <- new80x24
+                    setHostPolicy e defaultHostPolicy { cursorStyle = ps }
+                    _ <- feedStr e setup
+                    evs <- feedStr e q
+                    pure (B.concat [bs | Output bs <- evs])
+                decrqss = "\ESCP$q q\ESC\\"
+            underStyle 5 "" decrqss `shouldReturn` "\ESCP1$r q5 q\ESC\\"
+            underStyle 5 "\ESC[?12l" decrqss `shouldReturn` "\ESCP1$r q5 q\ESC\\"
+            underStyle 5 "\ESC[4 q" decrqss `shouldReturn` "\ESCP1$r q4 q\ESC\\"
+            underStyle 3 "" "\ESC[?12$p" `shouldReturn` "\ESC[?12;1$y"
+            underStyle 4 "" "\ESC[?12$p" `shouldReturn` "\ESC[?12;2$y"
+            underStyle 3 "\ESC[?12l" "\ESC[?12$p" `shouldReturn` "\ESC[?12;2$y"
         it "refuses any other DECRQSS" $
             answers "" "\ESCP$qm\ESC\\" "\ESCP0$r\ESC\\"
         it "surfaces an OSC 12 query as an event, unanswered" $ do

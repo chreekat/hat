@@ -26,6 +26,7 @@ module Hat.Model.OptionTable
     , notYetError
     , refusing
     , choicesOnly
+    , cursorStyles
       -- * Values
     , OptionValue (..)
     , ArrayKey (..)
@@ -423,7 +424,7 @@ optionTable =
     , live $ scalar "copy-command" ServerScope KString ""
     , paneLocal $ live $
         scalar "cursor-colour" WindowPaneScope KColourString ""
-    , notYet $ scalar "cursor-style" WindowPaneScope (KChoice cursorStyles) "default"
+    , paneLocal $ live $ scalar "cursor-style" WindowPaneScope (KChoice cursorStyles) "default"
     , notYet $ scalar "default-client-command" ServerScope KCommand "new-session"
     , live $ scalar "default-terminal" ServerScope KString "tmux-256color"
     , notYet $ scalar "editor" ServerScope KString "/usr/bin/vi"

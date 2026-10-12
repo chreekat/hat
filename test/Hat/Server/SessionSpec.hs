@@ -97,6 +97,7 @@ import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
     (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
 import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
+import Hat.Term.HostProtocol (defaultCursorModel)
 
 -- A bare session with the given id inserted into an existing server.
 addSession :: ServerState -> Int -> IO Session
@@ -186,7 +187,7 @@ addClient st sid sz stamp = do
         <*> newIORef Map.empty
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
-        <*> newIORef CursorDefault
+        <*> newIORef defaultCursorModel
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing
@@ -236,7 +237,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef Map.empty
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
-        <*> newIORef CursorDefault
+        <*> newIORef defaultCursorModel
         <*> newIORef 0        -- lastMouseMode
         <*> newTVarIO True
         <*> newTVarIO Nothing

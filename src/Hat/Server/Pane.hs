@@ -704,6 +704,7 @@ hostPolicyOf o = Emu.defaultHostPolicy
     { Emu.allowAltScreen = optionFlag "alternate-screen" o
     , Emu.scrollOnClear = optionFlag "scroll-on-clear" o
     , Emu.bufferSize = o.inputBufferSize
+    , Emu.cursorStyle = o.cursorStyle
     }
 
 -- | An app renamed its window (@ESC k@, under @allow-rename@; tmux's
