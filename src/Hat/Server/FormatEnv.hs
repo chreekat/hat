@@ -150,7 +150,12 @@ pick (OnlyVars w) m = Map.restrictKeys m w.names
 -- | What an outer layer need build under an inner one's variables.
 unshadowed :: FormatEnv -> Wanted -> Wanted
 unshadowed _ AllVars = AllVars
-unshadowed inner (OnlyVars w) = onlyVars (w.names `Set.difference` Map.keysSet inner)
+unshadowed inner (OnlyVars w)
+    | Set.size rest == Set.size w.names = OnlyVars w
+    | otherwise = OnlyVars (wantedNames rest)
+        { optionNames = filter (`Set.member` rest) w.optionNames }
+  where
+    rest = w.names `Set.difference` Map.keysSet inner
 
 -- | The wanted options of a resolved set, as format variables.
 optionVars :: Wanted -> Options -> FormatEnv
