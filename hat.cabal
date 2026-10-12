@@ -182,6 +182,7 @@ library
         Hat.TextWidth
         Hat.Term.Cell
         Hat.Term.Emulator
+        Hat.Term.Emulator.History
         Hat.Term.Emulator.Types
         Hat.Term.Ghostty
         Hat.Term.HostProtocol
@@ -363,6 +364,7 @@ test-suite hat-test
         Hat.Server.RestoreSpec
         Hat.Server.SessionSpec
         Hat.Term.EmulatorSpec
+        Hat.Term.Emulator.HistorySpec
         Hat.Term.GoldenSpec
         Hat.Transport.WireSpec
     ghc-options:        -threaded -with-rtsopts=-N

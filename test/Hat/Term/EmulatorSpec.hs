@@ -207,10 +207,37 @@ spec = do
         m2 <- modes e
         m2.altScreen `shouldBe` False
 
+    describe "history-limit, as tmux's grid keeps it" $ do
+        -- 25 lines of 25 columns on a 5x40 screen: 21 scroll into history.
+        let numbered = B8.concat
+                [ B8.pack ("L" <> pad2 i <> replicate 22 '.' <> "\r\n") | i <- [0 .. 24 :: Int] ]
+            pad2 i = if i < 10 then '0' : show i else show i
+            oldest e = fmap (T.stripEnd . T.pack . concatMap cluster . V.toList)
+                <$> scrollbackLine e 0
+        it "trims a tenth of the limit as a row scrolls into a full history" $ do
+            e <- newEmulator Size { rows = 5, cols = 40 } 20
+            _ <- feed e numbered
+            scrollbackLength e `shouldReturn` 19
+            oldest e `shouldReturn` Just "L02......................"
+        it "keeps every row a narrowing reflow makes, trimming none" $ do
+            e <- newEmulator Size { rows = 5, cols = 40 } 30
+            _ <- feed e numbered
+            resize e Size { rows = 5, cols = 15 }
+            scrollbackLength e `shouldReturn` 46
+            oldest e `shouldReturn` Just "L00............"
+            resize e Size { rows = 5, cols = 40 }
+            scrollbackLength e `shouldReturn` 21
+        it "keeps trimmed lines out of the history across a reflow" $ do
+            e <- newEmulator Size { rows = 5, cols = 40 } 20
+            _ <- feed e numbered
+            resize e Size { rows = 5, cols = 15 }
+            scrollbackLength e `shouldReturn` 42
+            oldest e `shouldReturn` Just "L02............"
+
     -- A wide pane must still retain the full configured row count (bug c9).
     it "retains the configured scrollback rows at a wide pane size" $ do
         e <- newEmulator Size { rows = 50, cols = 200 } 1000
-        forM_ [1 .. 1100 :: Int] $ \i ->
+        forM_ [1 .. 1049 :: Int] $ \i ->
             feedStr e (B8.pack ("line " ++ show i ++ "\r\n"))
         sblen <- scrollbackLength e
         sblen `shouldBe` 1000
@@ -904,17 +931,14 @@ spec = do
         Just line <- scrollbackLine e 0
         cellsText line `shouldBe` "line13"
 
-    -- The row limit is a non-destructive read-side cap over libghostty's
-    -- byte-bounded history: a lowered limit only hides the oldest rows, so
-    -- raising it again reveals every row still retained (14 here, where a
-    -- destructive per-row cap would have discarded a4/a5 and reported 12).
+    -- Rows trimmed under the lower limit stay gone, as tmux freed them.
     it "honors a raised limit for future scrollback growth" $ do
         e <- newEmulator Size { rows = 5, cols = 20 } 3
         _ <- feedStr e (B8.intercalate "\r\n" ["a" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
         scrollbackLength e `shouldReturn` 3
         setScrollbackLimit e 100
         _ <- feedStr e (B8.intercalate "\r\n" ["b" <> B8.pack (show i) | i <- [1 :: Int .. 10]])
-        scrollbackLength e `shouldReturn` 14
+        scrollbackLength e `shouldReturn` 12
 
     -- bug 5b: DECSTBM/DECOM/IND/RI scroll cases must match tmux row-for-row.
     describe "scroll regions (DECSTBM)" $ do

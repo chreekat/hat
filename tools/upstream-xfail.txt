@@ -63,7 +63,6 @@ input-raw-edit.sh               # emulator: CLEARED on default-bg erases, TAB ce
 input-raw-scroll.sh             # emulator: a scroll region's top line is not pushed into history
 input-raw-sgr.sh                # emulator: OSC 8 id= (linkid) not exposed
 input-raw-unicode.sh            # emulator: no grapheme clustering of RI pairs / VS16 (mode 2027 off)
-input-reflow-stress.sh          # history-limit is a read-side window of the newest rows, so a reflow to 1-3 columns hides the oldest lines until the pane widens; tmux trims only as lines scroll in
 input-requests.sh               # OSC 4 queries are answered from the pane palette, not forwarded to the outer terminal; get-clipboard request/both (OSC 52 query forwarding) unimplemented
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 

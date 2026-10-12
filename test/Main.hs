@@ -72,6 +72,7 @@ import Hat.Server.ViewportSpec qualified
 import Hat.Server.ListKeysSpec qualified
 import Hat.Transport.SocketSpec qualified
 import Hat.Term.EmulatorSpec qualified
+import Hat.Term.Emulator.HistorySpec qualified
 import Hat.Term.GoldenSpec qualified
 import Hat.Transport.WireSpec qualified
 
@@ -103,6 +104,7 @@ main = hspec $ parallel $ do
     describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
     describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec
     describe "Hat.Term.Emulator" Hat.Term.EmulatorSpec.spec
+    describe "Hat.Term.Emulator.History" Hat.Term.Emulator.HistorySpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Transport.Wire" Hat.Transport.WireSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec

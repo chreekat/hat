@@ -101,6 +101,7 @@ import System.Mem.Weak (Weak)
 import Hat.Geometry
 import Hat.Intern (shareVals)
 import Hat.Term.Cell
+import Hat.Term.Emulator.History
 import Hat.Term.Emulator.Types
 import Hat.Term.Ghostty
 import Hat.Term.HostProtocol
@@ -115,7 +116,7 @@ data Emulator = Emulator
     , lock    :: MVar ()
         -- ^ serializes terminal-touching operations so a reader observes the
         --   grid only between them
-    , sbLimit :: IORef Int
+    , history :: IORef History
     , state   :: IORef EmulatorState
     , cellIntern :: CellIntern
         -- ^ shared representatives for cells read out of libghostty
@@ -236,8 +237,8 @@ defaultHostPolicy = HostPolicy
 
 newEmulator :: Size -> Int -> IO Emulator
 newEmulator sz limit = do
-    -- libghostty's max_scrollback is a byte budget, not a row count, so the row
-    -- limit is enforced on the read side ('scrollbackLength'). A retained row
+    -- libghostty's max_scrollback is a byte budget, not a row count, so the
+    -- history's rows are counted beside it ('History'). A retained row
     -- costs ~13 bytes per column, and the budget is fixed at creation while a
     -- resize can widen the grid, so provision each row from the wider of the
     -- creation width and a zoom allowance — the byte cap must never starve the
@@ -247,7 +248,7 @@ newEmulator sz limit = do
     t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) budget
     if t == nullPtr then error "ghostty_terminal_new failed" else pure ()
     lk <- newMVar ()
-    lr <- newIORef limit
+    hr <- newIORef (newHistory limit)
     st <- newIORef EmulatorState
         { colorSub = False
         , cursorModel = defaultCursorModel
@@ -284,7 +285,7 @@ newEmulator sz limit = do
     pal <- newIORef PaletteDefaults { builtin = Nothing, applied = Map.empty }
     cm <- newIORef noColours
     pure Emulator
-        { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci
+        { term = fp, lock = lk, history = hr, state = st, cellIntern = ci
         , render = rp, gridCache = gc, snapBuf = sb, palette = pal, colours = cm }
 
 -- | Feed pty output into the emulator; returns what happened. The
@@ -311,8 +312,10 @@ feed e bs0 = withMVar e.lock $ \_ -> do
     let parts = map partitionPassthrough passPayloads
         unhandled = [UnhandledPassthrough r | (_, r) <- parts, not (B.null r)]
     passEvs <- concat <$> mapM (applySignal e) (concatMap fst parts)
-    interleaved <- withForeignPtr e.term $ \t ->
-        concat <$> mapM (feedPiece e t) pieces
+    interleaved <- withForeignPtr e.term $ \t -> do
+        evs <- concat <$> mapM (feedPiece e t) pieces
+        reconcileHistory e t
+        pure evs
     s1 <- readIORef e.state
     pure $ passEvs
         <> unhandled
@@ -442,10 +445,33 @@ applySignal e sig = case sig of
     SigPalette n term  -> pure [OscPaletteQuery n term]
     SigNotify raw      -> pure [DesktopNotification raw]
 
--- | Resize the terminal; libghostty reflows the primary screen itself.
+-- | Resize the terminal; libghostty reflows the primary screen itself. The
+-- logical lines tmux had trimmed from the history before stay out of it
+-- after, and every row the reflow made of the rest is history.
 resize :: Emulator -> Size -> IO ()
-resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    c_resize t (fromIntegral (max 1 sz.cols)) (fromIntegral (max 1 sz.rows))
+resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    alt <- c_get t dataActiveScreen
+    cols0 <- fromIntegral <$> c_get t dataCols
+    let cols1 = max 1 sz.cols
+        reflows = cols0 /= cols1
+        apply = c_resize t (fromIntegral cols1) (fromIntegral (max 1 sz.rows))
+    if alt == screenAlternate
+        then do
+            apply
+            modifyIORef' e.history (\h -> h { primary = ResizedUnseen })
+        else do
+            (phys0, size0) <- historyRowsT e t
+            let hidden0 = phys0 - size0
+            trimmed <- if reflows && hidden0 > 0
+                then linesBegun <$> mapM (historyRowWrapped t) [0 .. hidden0 - 1]
+                else pure 0
+            apply
+            phys1 <- physicalScrollback t
+            hidden1 <- if reflows
+                then rowsHolding trimmed phys1 (historyRowWrapped t)
+                else pure (min hidden0 phys1)
+            modifyIORef' e.history $ \h ->
+                h { size = phys1 - hidden1, seen = phys1, primary = RowsSeen }
 
 -- | Take an immutable 'Screen' by reading the live grid straight from
 -- libghostty: its cols\/rows, cursor, and every active-area cell.
@@ -818,24 +844,48 @@ currentPenT e t =
         _ <- c_pen t cellp
         (.style) <$> peekShimCell (shareVals e.cellIntern) (pure []) cellp
 
--- Scrollback lives inside libghostty (the HISTORY point tag), so the row limit
--- hat exposes is enforced here on the read side, over libghostty's byte-bounded
--- history. 'scrollbackLine' 0 is the oldest of the newest 'limit' rows.
+-- Scrollback lives inside libghostty (the HISTORY point tag), which retains
+-- rows by a byte budget; the history hat exposes is the newest of them, as
+-- many as tmux's grid would hold ('History'). 'scrollbackLine' 0 is its
+-- oldest row.
 
--- | How many scrollback rows hat exposes: libghostty's physical count capped
--- to the live row limit.
+-- | How many scrollback rows hat exposes: tmux's @history_size@.
 scrollbackLength :: Emulator -> IO Int
-scrollbackLength e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    lim <- readIORef e.sbLimit
+scrollbackLength e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+    snd <$> historyRowsT e t
+
+-- | libghostty's scrollback row count, and how many of its newest rows are
+-- the history.
+historyRowsT :: Emulator -> Ptr CTerm -> IO (Int, Int)
+historyRowsT e t = do
     phys <- physicalScrollback t
-    pure (min phys (max 0 lim))
+    h <- readIORef e.history
+    pure (phys, exposedRows h phys)
+
+-- | Bring the history up to date with what output did to libghostty's
+-- primary scrollback. The alternate screen's scrollback is not the
+-- history, and the primary's is unreadable while it is active.
+reconcileHistory :: Emulator -> Ptr CTerm -> IO ()
+reconcileHistory e t = do
+    alt <- c_get t dataActiveScreen
+    unless (alt == screenAlternate) $ do
+        phys <- physicalScrollback t
+        modifyIORef' e.history (afterOutput phys)
+
+-- | Take every row libghostty's scrollback now holds as the history.
+holdAllHistory :: Emulator -> Ptr CTerm -> IO ()
+holdAllHistory e t = do
+    phys <- physicalScrollback t
+    modifyIORef' e.history $ \h -> h { size = phys, seen = phys, primary = RowsSeen }
+
+-- | Whether a scrollback row soft-wraps, by libghostty's index.
+historyRowWrapped :: Ptr CTerm -> Int -> IO Bool
+historyRowWrapped t y = (/= 0) <$> c_row_wrapped t tagHistory (fromIntegral y)
 
 -- | Scrollback line by age within the exposed window: 0 is the oldest.
 scrollbackLine :: Emulator -> Int -> IO (Maybe (V.Vector Cell))
 scrollbackLine e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    lim <- readIORef e.sbLimit
-    phys <- physicalScrollback t
-    let exposed = min phys (max 0 lim)
+    (phys, exposed) <- historyRowsT e t
     if i < 0 || i >= exposed
         then pure Nothing
         else do
@@ -884,12 +934,11 @@ cursorPendingWrap e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
 -- cell ('Raw.RawGrid'), read under one lock hold.
 rawGrid :: Emulator -> IO Raw.RawGrid
 rawGrid e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    lim <- readIORef e.sbLimit
-    phys <- physicalScrollback t
+    (phys, exposed) <- historyRowsT e t
+    lim <- (.limit) <$> readIORef e.history
     cols <- fromIntegral <$> c_get t dataCols
     rows <- fromIntegral <$> c_get t dataRows
-    let exposed = min phys (max 0 lim)
-        coords = [ (tagHistory, y) | y <- [phys - exposed .. phys - 1] ]
+    let coords = [ (tagHistory, y) | y <- [phys - exposed .. phys - 1] ]
               <> [ (tagActive, y)  | y <- [0 .. rows - 1] ]
     ls <- allocaBytes (max 1 cols * rawCellSize) $ \out ->
         mapM (\(tag, y) -> rawLine t tag y cols out) coords
@@ -974,9 +1023,7 @@ scrollbackPainted e = withMVar e.lock $ \_ -> withForeignPtr e.term (scrollbackP
 -- | 'scrollbackPainted' with the lock already held.
 scrollbackPaintedT :: Emulator -> Ptr CTerm -> IO [ByteString]
 scrollbackPaintedT e t = do
-    lim <- readIORef e.sbLimit
-    phys <- physicalScrollback t
-    let exposed = min phys (max 0 lim)
+    (phys, exposed) <- historyRowsT e t
     if exposed <= 0
         then pure []
         else do
@@ -1033,13 +1080,10 @@ paintShimRow t tag y cols = attempt
 -- the next row.
 scrollbackLineWrapped :: Emulator -> Int -> IO Bool
 scrollbackLineWrapped e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    lim <- readIORef e.sbLimit
-    phys <- physicalScrollback t
-    let exposed = min phys (max 0 lim)
+    (phys, exposed) <- historyRowsT e t
     if i < 0 || i >= exposed
         then pure False
-        else (/= 0) <$> c_row_wrapped t tagHistory
-            (fromIntegral (phys - exposed + i))
+        else historyRowWrapped t (phys - exposed + i)
 
 -- | Whether a live-screen row soft-wraps onto the next row.
 screenRowWrapped :: Emulator -> Int -> IO Bool
@@ -1048,17 +1092,18 @@ screenRowWrapped e r = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
         then pure False
         else (/= 0) <$> c_row_wrapped t tagActive (fromIntegral r)
 
--- | Change the live row cap. Read-side only: libghostty already bounds the
--- history's memory, so a lowered limit hides the oldest rows and a raised one
--- reveals rows still retained, without touching libghostty.
+-- | Change @history-limit@ ('afterLimit'). libghostty already bounds the
+-- history's memory, so the rows trimmed stay there, hidden.
 setScrollbackLimit :: Emulator -> Int -> IO ()
-setScrollbackLimit e limit = writeIORef e.sbLimit limit
+setScrollbackLimit e limit = withMVar e.lock $ \_ ->
+    modifyIORef' e.history (afterLimit limit)
 
 -- | Drop all scrollback (the live screen is untouched): libghostty clears its
 -- history on ED 3 (@CSI 3 J@).
 clearScrollback :: Emulator -> IO ()
-clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
+clearScrollback e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
     feedBytes t "\ESC[3J"
+    holdAllHistory e t
 
 -- | tmux's @resize-pane -T@: drop the screen lines below the cursor and pull
 -- as many of the newest history lines back down on top, so the cursor ends on
@@ -1084,6 +1129,7 @@ trimHistoryBelowCursor e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
             feedBytes t "\ESC[H\ESC[2J\ESC[3J"
             unless (null kept) $ feedBytes t (seedBytes (min (length kept) rows) kept)
             feedBytes t (restorePainted plain pen cur { row = cur.row + n } vis screen')
+            holdAllHistory e t
 
 -- | Seed a fresh emulator's history with captured painted lines (oldest
 -- first, 'paintLineBytes' each), trimmed to the current limit. libghostty
@@ -1094,12 +1140,13 @@ trimHistoryBelowCursor e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
 -- 'restorePainted'. The reload-restore companion to it.
 seedScrollback :: Emulator -> [ByteString] -> IO ()
 seedScrollback e ls = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
-    lim <- readIORef e.sbLimit
+    lim <- (.limit) <$> readIORef e.history
     let kept = drop (length ls - lim) ls
         n = length kept
     unless (n == 0) $ do
         rows <- fromIntegral <$> c_get t dataRows
         feedBytes t (seedBytes (min n rows) kept)
+        holdAllHistory e t
 
 -- | The bytes 'seedScrollback' feeds: an opening reset, then each painted
 -- line closed by a reset — the pen is default at every line boundary, so the
