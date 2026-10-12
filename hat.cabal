@@ -101,6 +101,7 @@ library
         Hat.Server.Command.Hook
         Hat.Server.Command.Interact
         Hat.Server.Command.Layout
+        Hat.Server.Command.ListKeys
         Hat.Server.Command.Option
         Hat.Server.Command.Pane
         Hat.Server.Command.Session
@@ -149,6 +150,7 @@ library
         Hat.Server.Title
         Hat.Server.Toast
         Hat.Server.View
+        Hat.Server.Viewport
         Hat.Server.WindowStruct
         Hat.TextWidth
         Hat.Term.Cell
@@ -313,6 +315,8 @@ test-suite hat-test
         Hat.Server.StyleSpec
         Hat.Server.TargetSpec
         Hat.Server.TitleSpec
+        Hat.Server.ViewportSpec
+        Hat.Server.ListKeysSpec
         Hat.Server.RenderSpec
         Hat.Server.ResizeRenderSpec
         Hat.Server.RestoreSpec

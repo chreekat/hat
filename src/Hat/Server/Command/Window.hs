@@ -60,7 +60,6 @@ import Hat.Server.Winlink
 import Hat.Transport.Wire (ServerToClient (Exited))
 import Hat.Server.Locate
     (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
-import Hat.Server.FormatEnv (refreshAutoNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, launchOf, newWindowWithPane
     , pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
@@ -175,10 +174,12 @@ cmdNewWindow st mclient args
     | Just e <- unknownFlag "new-window" "abdEkPS" flags = pure [RErr e]
     | Left e <- launchOf ("-E" `elem` flags) pos = pure [RErr e]
     | otherwise = do
-        res <- findWindowIndexTarget st mclient (lookup "-t" opts)
+        res <- findWindowIndexTarget st mclient (lookup "-t" opts0)
         case res of
             Left e -> pure [RErr e]
             Right (sess, requested) -> do
+                env <- sessionFormatEnv st sess
+                opts <- mapM (expandName env) opts0
                 reuse <- case (lookup "-n" opts, requested) of
                     (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
                         ws <- readTVar sess.windows
@@ -193,7 +194,10 @@ cmdNewWindow st mclient args
                         pure []
                     Right Nothing -> createWindow st sess opts flags pos requested
   where
-    (opts, flags, pos) = parseArgs "nctF" args
+    (opts0, flags, pos) = parseArgs "nctF" args
+    expandName env = \case
+        ("-n", nm) -> (,) "-n" <$> expandFormat st env nm
+        o -> pure o
 
 -- | The creating body of @new-window@: reject an unusable @-t@ before
 -- spawning, spawn the pane, then place it in one transaction — only after
@@ -536,20 +540,15 @@ cmdRenameWindow st mclient args = do
         [nm] -> do
             res <- findTarget st mclient Target.FindWindow (lookup "-t" opts)
             case res of
-                Right (sess, _, win, _) -> do
-                    -- An empty name hands the window back to
-                    -- automatic-rename; a real name pins it.
-                    if T.null nm
-                        then do
-                            atomically (writeTVar win.autoRename True)
-                            refreshAutoNames st
-                        else do
-                            atomically $ do
-                                writeTVar win.name nm
-                                writeTVar win.autoRename False
-                                bumpDirty st
-                            notifyWindow st "window-renamed"
-                                (Just sess.id) win []
+                Right (sess, wix, win, pane) -> do
+                    pix <- paneIndexOf st win pane
+                    env <- paneFormatEnv st sess wix win pix pane
+                    name <- expandFormat st env nm
+                    atomically $ do
+                        writeTVar win.name name
+                        writeTVar win.autoRename False
+                        bumpDirty st
+                    notifyWindow st "window-renamed" (Just sess.id) win []
                     pure []
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]

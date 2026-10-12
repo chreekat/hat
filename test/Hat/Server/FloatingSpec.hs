@@ -102,7 +102,7 @@ spec = do
 
     describe "outsideCells" $
         it "edges a smaller window with its panes' borders, then fills beyond" $
-            render 4 6 (outsideCells (Size 2 3) (Size 4 6) [Rect 0 2 0 3] [])
+            render 4 6 (outsideCells (Size 2 3) (Rect 0 4 0 6) [Rect 0 2 0 3] [])
                 `shouldBe`
                 [ "   │··"
                 , "   │··"

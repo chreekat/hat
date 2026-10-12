@@ -5,6 +5,7 @@ import Hat.Server.ClientIO (withClientWriter)
 import Hat.Server.Outbound (newOutbound)
 import Control.Concurrent.STM
 import Control.Exception (finally)
+import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -27,7 +28,7 @@ import Hat.Term.Emulator qualified as Emu
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Client (nestsOwnServer)
+import Hat.Client (TerminalMode (..), nestsOwnServer, terminalMode)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
@@ -168,6 +169,7 @@ addClient st sid sz stamp = do
         <*> pure ""
         <*> pure NoStdin
         <*> pure Nothing
+        <*> newTVarIO unpannedViewport
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 
@@ -209,6 +211,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure ""
         <*> pure NoStdin
         <*> pure Nothing
+        <*> newTVarIO unpannedViewport
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 
@@ -356,6 +359,49 @@ spec = do
             frame <- readIORef client.lastFrame
             let row0 = T.pack (concatMap Cell.cluster (V.toList (frame V.! 0)))
             row0 `shouldSatisfy` T.isInfixOf "[0/3]"
+
+    describe "a window larger than its client" $ do
+        let viewing vp = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                emu <- Emu.newEmulator Size { rows = 20, cols = 60 } 100
+                p <- stubPane 0
+                _ <- Emu.feed emu $ mconcat
+                    [ "\ESC[" <> B8.pack (show (i + 1)) <> ";2HA" <> two i
+                        <> "\ESC[" <> B8.pack (show (i + 1)) <> ";21HB" <> two i
+                    | i <- [0 .. 19 :: Int] ]
+                atomically $ do
+                    modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
+                    writeTVar sess.lastSize Size { rows = 20, cols = 60 }
+                    modifyTVar' st.options $ \o -> o { statusLines = 0 }
+                (client, _peer) <- wiredClient st Attached
+                atomically $ do
+                    writeTVar client.size Size { rows = 14, cols = 40 }
+                    writeTVar client.viewport (vp win.id)
+                pure (st, client)
+            topRow st client = do
+                renderOnce st client
+                frame <- readIORef client.lastFrame
+                pure (T.pack (concatMap Cell.cluster (V.toList (frame V.! 0))))
+            drawnFrom vp = viewing vp >>= uncurry topRow
+            two i = B8.pack (if i < 10 then '0' : show i else show i)
+        it "follows the cursor's row into view" $
+            drawnFrom (const unpannedViewport)
+                `shouldReturn` T.justifyLeft 40 ' ' (" A06" <> T.replicate 16 " " <> "B06")
+        it "shows the panned part, clamped to the window" $
+            drawnFrom (\w -> unpannedViewport { origin = Pos 30 50, pinned = Just w })
+                `shouldReturn` T.justifyLeft 40 ' ' "B06"
+        it "refresh-client pans the current client's view, and -c releases it" $ do
+            (st, client) <- viewing (const unpannedViewport)
+            _ <- topRow st client
+            runArgv st Nothing ["refresh-client", "-R", "100"] `shouldReturn` []
+            runArgv st Nothing ["refresh-client", "-U", "2"] `shouldReturn` []
+            topRow st client `shouldReturn` T.justifyLeft 40 ' ' "B04"
+            runArgv st Nothing ["refresh-client", "-U", "0"]
+                `shouldReturn` [RErr "adjustment too small"]
+            runArgv st Nothing ["refresh-client", "-c"] `shouldReturn` []
+            topRow st client
+                `shouldReturn` T.justifyLeft 40 ' ' (" A06" <> T.replicate 16 " " <> "B06")
 
     describe "clear-history" $
         it "empties the target pane's scrollback" $ do
@@ -575,6 +621,21 @@ spec = do
                 readTVarIO win.name `shouldReturn` "init"
                 cmdNewSession st Nothing ["-d", "-s", "alpha"]
                     `shouldReturn` [RErr "duplicate session: alpha"]
+        it "expands -s and -n as formats" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-newsess.sock" Nothing
+            [] <- runArgv st Nothing ["set-option", "-g", "@x", "v"]
+            [] <- cmdNewSession st Nothing
+                ["-d", "-s", "s#{@x}:.##(ok)", "-n", "w#{@x}", "sleep 30"]
+            [sess] <- Map.elems <$> readTVarIO st.sessions
+            [win] <- Map.elems <$> readTVarIO sess.windows
+            [pane] <- Map.elems <$> readTVarIO win.panes
+            let reap = do
+                    _ <- cmdKillSession st Nothing ["-t", "$" <> T.pack (show (rawSession sess.id))]
+                    () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
+            flip finally reap $ do
+                readTVarIO sess.name `shouldReturn` "sv:.#(ok)"
+                readTVarIO win.name `shouldReturn` "wv"
 
     describe "rename-session" $
         it "renames the -t session and refuses a duplicate name" $ do
@@ -594,15 +655,26 @@ spec = do
             readTVarIO sess.name `shouldReturn` "renamed"
             readTVarIO other.name `shouldReturn` "s"
 
-    describe "rename-window" $
-        it "pins the given name and turns automatic-rename off" $ do
-            (st, sess) <- seedSession "/"
-            win <- addWindow sess 0
-            p <- stubPane 0
-            atomically $ modifyTVar' win.panes (Map.insert p.id p)
-            [] <- cmdRenameWindow st Nothing ["pinned"]
-            readTVarIO win.name `shouldReturn` "pinned"
-            readTVarIO win.autoRename `shouldReturn` False
+    describe "rename-window" $ do
+        let renamed nm = do
+                (st, sess) <- seedSession "/"
+                win <- addWindow sess 0
+                (p0, release) <- adoptedPane 0
+                emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 100
+                let p = p0 { emulator = emu }
+                atomically $ do
+                    modifyTVar' win.panes (Map.insert p.id p)
+                    writeTVar win.layout (singlePane p.id)
+                    writeTVar win.activeId p.id
+                flip finally release $ do
+                    [] <- cmdRenameWindow st Nothing [nm]
+                    (,) <$> readTVarIO win.name <*> readTVarIO win.autoRename
+        it "pins the given name and turns automatic-rename off" $
+            renamed "pinned" `shouldReturn` ("pinned", False)
+        it "pins an empty name too" $
+            renamed "" `shouldReturn` ("", False)
+        it "expands the name as a format" $
+            renamed "w#{window_index}:.##(ok)" `shouldReturn` ("w0:.#(ok)", False)
 
     describe "snapshot commands without persistence" $
         it "list-snapshots and restore-snapshot fail loudly, never silently (bb)" $ do
@@ -629,6 +701,13 @@ spec = do
             nestsOwnServer "/tmp/b.sock,123,0" "/tmp/a.sock" `shouldBe` False
         it "an empty TMUX value never refuses" $
             nestsOwnServer "" "/tmp/a.sock" `shouldBe` False
+
+    describe "client terminal mode" $ do
+        it "a detached new-session never grabs the terminal, even bundled" $ do
+            terminalMode [["new-session", "-d"]] `shouldBe` FireAndForget
+            terminalMode [["new", "-dP", "-F", "x"]] `shouldBe` FireAndForget
+        it "-d as another flag's value does not detach" $
+            terminalMode [["new", "-s", "-d"]] `shouldBe` GrabsTerminal
 
     describe "scoped option resolution" $ do
         it "a session overlay shadows the global chain for that session only" $ do

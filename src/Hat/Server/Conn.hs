@@ -252,6 +252,7 @@ newClient st conn h = do
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
+    viewportVar <- newTVarIO unpannedViewport
     controlState <- case h.intent of
         ControlModeIntent {} -> Just <$> newControlState
         _ -> pure Nothing
@@ -290,6 +291,7 @@ newClient st conn h = do
         , cwd = h.cwd
         , stdinSource = NoStdin
         , control = controlState
+        , viewport = viewportVar
         }
 
 -- | Resolve MRU session names to the ids of the sessions that still exist,

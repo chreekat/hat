@@ -9,6 +9,7 @@ module Hat.Server.FormatEnv
     , autoName
     , activeClientCounts
     , sessionFormatEnv
+    , clientContextFormatEnv
     , paneModeEnv
     , resolveShell
     , expandFormat
@@ -31,6 +32,7 @@ import Data.Text.Read qualified as TR
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.LocalTime (getZonedTime)
 import System.Exit (ExitCode (..))
+import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (SystemID (nodeName), getSystemID)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Process
@@ -275,7 +277,7 @@ activeClientCounts st = do
 -- Session-level format environment for the active window and pane.
 sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
 sessionFormatEnv st sess = do
-    hostname <- nodeName <$> getSystemID
+    server <- serverFormatVars
     (sname, wEnv, mactive, nclients, nwindows) <- atomically $ do
         sname <- readTVar sess.name
         mwin <- currentWindow sess
@@ -311,14 +313,13 @@ sessionFormatEnv st sess = do
     userOpts <- (.user) <$> readTVarIO st.options
     localUser <- deltaUserVars <$> readTVarIO sess.options
     msch <- readTVarIO st.colorScheme
-    pure . Map.union localUser . Map.union userOpts . Map.fromList $
+    pure . Map.union localUser . Map.union userOpts . Map.fromList $ server <>
         [ ("session_name", sname)
         , ("session_id", "$" <> tshow (rawSession sess.id))
         , ("session_attached", tshow nclients)
         , ("session_windows", tshow nwindows)
         , ("session_created", tshow (floor sess.createdAt :: Integer))
         , ("session_restores", tshow sess.restores)
-        , ("host", T.pack hostname)
         , ("window_active_clients", "0")
         , ("window_width", tshow sz.cols)
         , ("window_height", tshow sz.rows)
@@ -387,6 +388,27 @@ resolveShell st cmdText = do
                 (Map.insert cmdText (done, val))
             atomically (bumpDirty st)
         pure oldVal
+
+-- | tmux's format context for a command with no target: the issuing
+-- client's session when it has one, else only the global user options.
+clientContextFormatEnv :: ServerState -> Maybe Client -> IO FormatEnv
+clientContextFormatEnv st mclient = do
+    msess <- case mclient of
+        Nothing -> pure Nothing
+        Just c -> atomically $ do
+            sid <- readTVar c.session
+            Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Just sess -> sessionFormatEnv st sess
+        Nothing -> Map.union <$> ((.user) <$> readTVarIO st.options)
+            <*> (Map.fromList <$> serverFormatVars)
+
+-- | The formats that describe the server process itself.
+serverFormatVars :: IO [(Text, Text)]
+serverFormatVars = do
+    hostname <- nodeName <$> getSystemID
+    pid <- getProcessID
+    pure [("host", T.pack hostname), ("pid", tshow pid)]
 
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
 -- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)

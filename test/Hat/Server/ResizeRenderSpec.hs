@@ -52,6 +52,7 @@ mkClient sz lastFrame = do
     dpanesV <- newTVarIO Nothing
     focusV  <- newTVarIO True
     envImpV <- newTVarIO ImportEnv
+    viewportV <- newTVarIO unpannedViewport
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a
             , wireLevel = protocolVersion, outbound = outboundQ, size = sizeV
@@ -64,7 +65,8 @@ mkClient sz lastFrame = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
-            , env = [], cwd = "", stdinSource = NoStdin, control = Nothing }
+            , env = [], cwd = "", stdinSource = NoStdin, control = Nothing
+            , viewport = viewportV }
     re <- newReadEnd b
     pure (client, re)
 
