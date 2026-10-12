@@ -22,13 +22,13 @@ floating-pane-geometry.sh       # needs pane-border-lines as a pane option with 
 if-shell-error.sh
 input-keys.sh
 osc-11colours.sh
-prompt-keys.sh
-prompt-mechanics.sh
+prompt-keys.sh                  # status-keys option; choose-tree as a tree-mode pane mode with its search prompt (#{pane_mode} = tree-mode)
+prompt-mechanics.sh             # status-keys option; command-prompt -P pane prompts + pane-prompt-opened/closed hooks; choose-tree tree-mode search/filter prompts; -1/-N/-i/-k/-e prompt flags
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
 screen-redraw-cache.sh
 screen-redraw-floating.sh       # floating scenes draw right; blocked on pane-border-format/pane-border-status, per-pane pane-border-lines (-B), fill-character, pane-scrollbars options
-screen-redraw-indicators.sh
+screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh); also needs the options branch
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
 screen-redraw-status.sh
@@ -58,7 +58,7 @@ mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choo
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
 # copy-mode advanced motions/options
-copy-mode-redraw.sh             # needs status + copy-mode-position-format/line-numbers + mode redraw
+copy-mode-redraw.sh             # copy-mode-position-format/line-numbers options; a centre-aligned position indicator is not drawn
 copy-mode-scroll-exit.sh        # needs copy-mode -e + send-keys -N + selection/scroll formats (#{selection_present})
 copy-mode-selection-scroll.sh   # needs the mouse option + copy-mode scroll/selection subcommands + mouse wheel
 
@@ -71,7 +71,7 @@ format-variables.sh             # list-clients + monitor-bell + most format_tabl
 # mouse: option + bindings + mouse_* vars unimplemented
 format-mouse.sh                 # mouse option + MouseDown bindings + mouse_* format vars
 menu-mouse.sh                   # mouse option + display-menu + SGR-mouse click routing
-new-pane-mouse.sh               # mouse/default-command options + list-keys + new-pane -M drag
+new-pane-mouse.sh               # mouse/default-command options, MouseDown3Empty menu binding, new-pane -M drag
 
 # option engine breadth: flat scalar table, global-only read-back
 options-array.sh                # array options (option[key], -a append, ordering) unmodeled
