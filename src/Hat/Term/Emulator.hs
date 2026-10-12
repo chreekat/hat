@@ -123,7 +123,62 @@ data Emulator = Emulator
     , snapBuf :: IORef SnapBuf
         -- ^ staging buffer for 'snapshot'; see 'withSnapBuf'
     , palette :: IORef PaletteDefaults
+    , colours :: IORef ColourMemo
     }
+
+-- | The program's colours as last read from the terminal, each kept until
+-- bytes fed since could have changed it ('colourBytes').
+data ColourMemo = ColourMemo
+    { midSequence :: Bool  -- ^ the bytes fed so far end inside an OSC sequence or an escape
+    , defaults :: Maybe (Maybe Rgb, Maybe Rgb)  -- ^ see 'appDefaultColours'
+    , overrides :: Maybe (Map Int Rgb)  -- ^ see 'paletteOverrides'
+    , cursorColour :: Maybe (Maybe Rgb)  -- ^ see 'appCursorColour'
+    }
+
+-- | Nothing kept, outside any sequence.
+noColours :: ColourMemo
+noColours = ColourMemo
+    { midSequence = False, defaults = Nothing, overrides = Nothing, cursorColour = Nothing }
+
+-- | Whether bytes fed after earlier ones (ending inside a sequence when
+-- @mid@) can change the program's colours, which only an OSC sequence
+-- (@ESC ]@, C1 @OSC@) or a full reset (@ESC c@) does; and whether they
+-- end inside such a sequence.
+colourBytes :: Bool -> ByteString -> (Bool, Bool)
+colourBytes mid bs
+    | not mid && B.notElem 0x1b bs && B.notElem 0x9d bs = (False, False)
+    | otherwise =
+        let (touched, end) = B.foldl' step (mid, if mid then InOsc else Ground) bs
+        in (touched, end /= Ground)
+  where
+    step (touched, st) w = case (st, w) of
+        (_, 0x9d) -> (True, InOsc)
+        (Ground, 0x1b) -> (touched, Esc)
+        (Ground, _) -> (touched, Ground)
+        (Esc, 0x5d) -> (True, InOsc)  -- ]
+        (Esc, 0x63) -> (True, Ground)  -- c
+        (Esc, 0x1b) -> (touched, Esc)
+        (Esc, _) -> (touched, Ground)
+        (InOsc, 0x07) -> (touched, Ground)
+        (InOsc, 0x9c) -> (touched, Ground)
+        (InOsc, 0x1b) -> (touched, OscEsc)
+        (InOsc, _) -> (touched, InOsc)
+        (OscEsc, 0x5c) -> (touched, Ground)  -- ST
+        (OscEsc, 0x5d) -> (True, InOsc)
+        (OscEsc, 0x63) -> (True, Ground)
+        (OscEsc, 0x1b) -> (touched, Esc)
+        (OscEsc, _) -> (touched, Ground)
+
+-- | Where 'colourBytes' is in the escape grammar.
+data ColourScan = Ground | Esc | InOsc | OscEsc
+    deriving (Eq)
+
+-- | Note bytes about to reach the terminal: forget whatever colours they
+-- can change.
+noteColourBytes :: Emulator -> ByteString -> IO ()
+noteColourBytes e bs = modifyIORef' e.colours $ \c ->
+    let (touched, mid) = colourBytes c.midSequence bs
+    in if touched then noColours { midSequence = mid } else c { midSequence = mid }
 
 -- | The terminal's own default palette, and the entries hat last laid
 -- over it. See 'setPaletteDefaults'.
@@ -218,9 +273,10 @@ newEmulator sz limit = do
     sb0 <- mallocForeignPtrBytes 0
     sb <- newIORef SnapBuf { buf = sb0, cap = 0 }
     pal <- newIORef PaletteDefaults { builtin = Nothing, applied = Map.empty }
+    cm <- newIORef noColours
     pure Emulator
         { term = fp, lock = lk, sbLimit = lr, state = st, cellIntern = ci
-        , render = rp, gridCache = gc, snapBuf = sb, palette = pal }
+        , render = rp, gridCache = gc, snapBuf = sb, palette = pal, colours = cm }
 
 -- | Feed pty output into the emulator; returns what happened. The
 -- host-protocol scrubbers (tmux passthrough, the title, rename, clipboard and
@@ -318,6 +374,7 @@ feedSegments e t = go
     writeSeg seg
         | B.null seg = pure []
         | otherwise = do
+            noteColourBytes e seg
             BU.unsafeUseAsCStringLen seg $ \(p, n) ->
                 c_write t (castPtr p) (fromIntegral n)
             s <- readIORef e.state
@@ -568,14 +625,27 @@ onAlternateScreen e = withMVar e.lock $ \_ ->
 
 -- | The cursor colour the program set (OSC 12), if it set one.
 appCursorColour :: Emulator -> IO (Maybe Rgb)
-appCursorColour e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    getRgb t dataColorCursor
+appCursorColour e = withMVar e.lock $ \_ -> do
+    c <- readIORef e.colours
+    case c.cursorColour of
+        Just v -> pure v
+        Nothing -> do
+            v <- withForeignPtr e.term $ \t -> getRgb t dataColorCursor
+            modifyIORef' e.colours (\m -> m { cursorColour = Just v })
+            pure v
 
 -- | The default foreground and background the program set (OSC 10, 11),
 -- where it set them.
 appDefaultColours :: Emulator -> IO (Maybe Rgb, Maybe Rgb)
-appDefaultColours e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    (,) <$> getRgb t dataColorForeground <*> getRgb t dataColorBackground
+appDefaultColours e = withMVar e.lock $ \_ -> do
+    c <- readIORef e.colours
+    case c.defaults of
+        Just v -> pure v
+        Nothing -> do
+            v <- withForeignPtr e.term $ \t ->
+                (,) <$> getRgb t dataColorForeground <*> getRgb t dataColorBackground
+            modifyIORef' e.colours (\m -> m { defaults = Just v })
+            pure v
 
 getRgb :: Ptr CTerm -> CInt -> IO (Maybe Rgb)
 getRgb t sel = allocaBytes 3 $ \p -> do
@@ -584,8 +654,16 @@ getRgb t sel = allocaBytes 3 $ \p -> do
 
 -- | The palette entries the program changed (OSC 4), by index.
 paletteOverrides :: Emulator -> IO (Map Int Rgb)
-paletteOverrides e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
-    allocaBytes 768 $ \eff -> allocaBytes 768 $ \dflt -> do
+paletteOverrides e = withMVar e.lock $ \_ -> do
+    c <- readIORef e.colours
+    case c.overrides of
+        Just v -> pure v
+        Nothing -> do
+            v <- withForeignPtr e.term readOverrides
+            modifyIORef' e.colours (\m -> m { overrides = Just v })
+            pure v
+  where
+    readOverrides t = allocaBytes 768 $ \eff -> allocaBytes 768 $ \dflt -> do
         r1 <- c_get_into t dataColorPalette (castPtr eff)
         r2 <- c_get_into t dataColorPaletteDefault (castPtr dflt)
         effBytes <- BU.unsafePackCStringLen (castPtr eff, 768)
@@ -613,6 +691,7 @@ setPaletteDefaults e entries = withMVar e.lock $ \_ -> do
                 | i <- [0 .. 255] ])
         BU.unsafeUseAsCString bytes $ \p -> () <$ c_set t optColorPalette (castPtr p)
         writeIORef e.palette PaletteDefaults { builtin = Just base, applied = entries }
+        modifyIORef' e.colours (\m -> m { overrides = Nothing })
 
 rgbAt :: Ptr Word8 -> Int -> IO Rgb
 rgbAt p i = (,,) <$> peekByteOff p (3 * i) <*> peekByteOff p (3 * i + 1)

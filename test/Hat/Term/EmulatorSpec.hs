@@ -27,6 +27,20 @@ rowText scr r = T.stripEnd (screenRowText scr r)
 feedStr :: Emulator -> B8.ByteString -> IO [Event]
 feedStr = feed
 
+-- | Output that sets, resets or merely passes the program's colours.
+colourPieces :: [B.ByteString]
+colourPieces =
+    [ "\ESC]4;1;#010203\a", "\ESC]4;2;#0a0b0c\ESC\\", "\ESC]104\a", "\ESC]104;1\a"
+    , "\ESC]10;#102030\a", "\ESC]11;#405060\a", "\ESC]111\a"
+    , "\ESC]12;#ff8000\a", "\ESC]112\a", "\ESCc", "\ESC]2;title\a", "abc", "\ESC[1m" ]
+
+-- | Bytes cut at each of a series of positive offsets, in turn.
+splitAtAll :: [Int] -> B.ByteString -> [B.ByteString]
+splitAtAll [] bs = [bs]
+splitAtAll (n : ns) bs
+    | B.null bs = []
+    | otherwise = let (a, b) = B.splitAt n bs in a : splitAtAll ns b
+
 -- | A row-final continuation with no wide glyph ahead of it (a spacer head)
 -- rewritten as the default blank it renders as.
 blankSpacerHead :: V.Vector Cell -> V.Vector Cell
@@ -584,6 +598,21 @@ spec = do
             _ <- feedStr e "\ESC]4;1;#010203\a"
             setPaletteDefaults e (Map.singleton 5 (9, 9, 9))
             paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
+        prop "read between any chunks of output, are the colours the terminal holds" $
+            \(pieceIxs :: [Int]) (cuts :: [Positive Int]) -> withMaxSuccess 300 $ ioProperty $ do
+                let bytes = B.concat [ colourPieces !! (i `mod` length colourPieces) | i <- pieceIxs ]
+                    chunks = splitAtAll (map getPositive cuts) bytes
+                    coloursOf e = (,,) <$> appCursorColour e <*> appDefaultColours e
+                        <*> paletteOverrides e
+                e <- fresh
+                results <- mapM (\(fed, chunk) -> do
+                    _ <- feed e chunk
+                    kept <- coloursOf e
+                    e' <- fresh
+                    _ <- feed e' fed
+                    held <- coloursOf e'
+                    pure (kept === held)) (zip (drop 1 (scanl (<>) "" chunks)) chunks)
+                pure (conjoin results)
 
     describe "cursorPendingWrap" $ do
         it "is set once a glyph lands in the last column under autowrap" $ do
