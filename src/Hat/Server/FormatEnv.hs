@@ -9,6 +9,7 @@ module Hat.Server.FormatEnv
     , autoName
     , activeClientCounts
     , sessionFormatEnv
+    , clientContextFormatEnv
     , paneModeEnv
     , resolveShell
     , expandFormat
@@ -387,6 +388,19 @@ resolveShell st cmdText = do
                 (Map.insert cmdText (done, val))
             atomically (bumpDirty st)
         pure oldVal
+
+-- | tmux's format context for a command with no target: the issuing
+-- client's session when it has one, else only the global user options.
+clientContextFormatEnv :: ServerState -> Maybe Client -> IO FormatEnv
+clientContextFormatEnv st mclient = do
+    msess <- case mclient of
+        Nothing -> pure Nothing
+        Just c -> atomically $ do
+            sid <- readTVar c.session
+            Map.lookup sid <$> readTVar st.sessions
+    case msess of
+        Just sess -> sessionFormatEnv st sess
+        Nothing -> (.user) <$> readTVarIO st.options
 
 -- | Expand a format string fully: #{...}, cached #(...), then strftime.
 -- Inside a hook, the event's payload formats (#{hook}, #{hook_pane}, …)

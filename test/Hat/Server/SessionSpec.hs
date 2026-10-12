@@ -575,6 +575,21 @@ spec = do
                 readTVarIO win.name `shouldReturn` "init"
                 cmdNewSession st Nothing ["-d", "-s", "alpha"]
                     `shouldReturn` [RErr "duplicate session: alpha"]
+        it "expands -s and -n as formats" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-newsess.sock" Nothing
+            [] <- runArgv st Nothing ["set-option", "-g", "@x", "v"]
+            [] <- cmdNewSession st Nothing
+                ["-d", "-s", "s#{@x}:.##(ok)", "-n", "w#{@x}", "sleep 30"]
+            [sess] <- Map.elems <$> readTVarIO st.sessions
+            [win] <- Map.elems <$> readTVarIO sess.windows
+            [pane] <- Map.elems <$> readTVarIO win.panes
+            let reap = do
+                    _ <- cmdKillSession st Nothing ["-t", "$" <> T.pack (show (rawSession sess.id))]
+                    () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
+            flip finally reap $ do
+                readTVarIO sess.name `shouldReturn` "sv:.#(ok)"
+                readTVarIO win.name `shouldReturn` "wv"
 
     describe "rename-session" $
         it "renames the -t session and refuses a duplicate name" $ do
