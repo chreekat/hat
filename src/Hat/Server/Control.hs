@@ -35,7 +35,7 @@ import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as BL
 import Data.IORef
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Sequence (Seq (..))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
@@ -57,11 +57,12 @@ import Hat.Server.FormatEnv
     (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
 import Hat.Server.HookMonitor (parseMonitorSpec)
 import Hat.Server.HookTypes (MonitorTarget (..))
-import Hat.Server.Locate (paneIndexOf)
+import Hat.Server.Locate (findTargetClient, paneIndexOf)
 import Hat.Server.HookTypes (EventSink, PayloadItem (..))
 import Hat.Server.Pane (syncAllPanes)
 import Hat.Server.Hooks (clientNameOf)
 import Hat.Server.Resize (applySessionSize, awaitReconciled)
+import Hat.Server.Viewport (Pan (..), panViewport)
 import Hat.Server.Winlink (windowLinks)
 import Hat.Transport.Wire
 
@@ -494,13 +495,19 @@ parseControlSize arg = case T.stripPrefix "@" arg of
                 else Right Size { rows = fromInteger y, cols = fromInteger x }
         _ -> Left "bad size argument"
 
--- | @refresh-client@: for a control client, @-C@ sizes it (or one of its
--- windows), @-f@ sets its flags, @-A@ sets panes' output flow and @-B@
--- manages subscriptions; for any client, a plain refresh redraws it.
+-- | @refresh-client@: @-U@\/@-D@\/@-L@\/@-R@ pan the target client's view
+-- of a window larger than it and @-c@ returns the view to the cursor; for
+-- a control client, @-C@ sizes it (or one of its windows), @-f@ sets its
+-- flags, @-A@ sets panes' output flow and @-B@ manages subscriptions; for
+-- any client, a plain refresh redraws it.
 cmdRefreshClient :: CommandImpl
 cmdRefreshClient st mclient args
     | Just e <- unknownFlag "refresh-client" "cDlLRSU" flags = pure [RErr e]
-    | Just f <- firstOf ["-c", "-D", "-l", "-L", "-R", "-U"] =
+    | Just pan <- firstOf ["-c", "-L", "-R", "-U", "-D"] =
+        case traverse (strtonum 1 2147483647) (listToMaybe pos) of
+            Left e -> pure [RErr ("adjustment " <> e)]
+            Right madjust -> panClient (panOf pan (fromMaybe 1 madjust))
+    | Just f <- firstOf ["-l"] =
         pure [RErr ("refresh-client " <> f <> ": not supported")]
     | isJust' "-r" = pure [RErr "refresh-client -r: not supported"]
     | otherwise = case mclient of
@@ -521,10 +528,30 @@ cmdRefreshClient st mclient args
                     | Just arg <- lookup "-C" opts -> controlSize client cs arg
                     | otherwise -> redraw client
   where
-    (optsRev, flags, _) = parseArgs "ABCfFrt" args
+    (optsRev, flags, pos) = parseArgs "ABCfFrt" args
     opts = reverse optsRev
     isJust' f = any ((== f) . fst) opts
     firstOf fs = listToMaybe [ f | f <- fs, f `elem` flags ]
+    panOf f n = case f of
+        "-L" -> PanLeft n
+        "-R" -> PanRight n
+        "-U" -> PanUp n
+        "-D" -> PanDown n
+        _ -> Unpan
+    panClient pan = findTargetClient st mclient Nothing (lookup "-t" opts) >>= \case
+        Left e -> pure [RErr e]
+        Right tc -> do
+            atomically $ do
+                sid <- readTVar tc.session
+                msess <- Map.lookup sid <$> readTVar st.sessions
+                forM_ msess $ \sess -> do
+                    mwin <- currentWindow sess
+                    area <- readTVar sess.lastSize
+                    forM_ mwin $ \win ->
+                        modifyTVar' tc.viewport (panViewport pan win.id area)
+                writeTVar tc.needsFull True
+                bumpDirty st
+            pure []
     redraw client = do
         atomically $ do
             writeTVar client.needsFull True

@@ -29,7 +29,6 @@ screen-redraw-bidi.sh
 screen-redraw-cache.sh
 screen-redraw-floating.sh       # floating scenes draw right; blocked on pane-border-format/pane-border-status, per-pane pane-border-lines (-B), fill-character, pane-scrollbars options
 screen-redraw-indicators.sh
-screen-redraw-outside.sh        # outside-window scenes draw right; blocked on refresh-client -U/-L/-D/-R viewport panning
 screen-redraw-popups.sh
 screen-redraw-scrollbars.sh
 screen-redraw-status.sh

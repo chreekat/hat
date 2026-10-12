@@ -22,6 +22,7 @@ module Hat.Server.Locate
     , noSuchTarget
     , locatePane
     , siblingPane
+    , findTargetClient
     ) where
 
 import Control.Applicative ((<|>))
@@ -30,7 +31,7 @@ import Control.Concurrent.STM
 import Control.Monad (forM)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -379,3 +380,32 @@ siblingPane _ win step = atomically $ do
             let pid = order !! ((i + step + length order) `mod` length order)
             in Map.lookup pid ps
         _ -> Nothing
+
+-- | The client a @-c target-client@ names (tmux's @cmd_find_client@): an
+-- attached terminal client by name; without a name, the issuing client
+-- when it is one, else the most recently active one viewing @msid@ (or any
+-- session).
+findTargetClient
+    :: ServerState -> Maybe Client -> Maybe SessionId -> Maybe Text -> IO (Either Text Client)
+findTargetClient st mclient msid mname = atomically $ do
+    cs <- filter terminal . Map.elems <$> readTVar st.clients
+    live <- readTVar st.sessions
+    attached <- fmap concat $ forM cs $ \c -> do
+        sid <- readTVar c.session
+        stamp <- readTVar c.lastActive
+        pure [ (c, sid, stamp) | Map.member sid live ]
+    pure $ case mname of
+        Just n -> case [ c | (c, _, _) <- attached, clientName c == n ] of
+            c : _ -> Right c
+            [] -> Left ("can't find client: " <> n)
+        Nothing
+            | Just c <- mclient, any (\(a, _, _) -> a.id == c.id) attached -> Right c
+            | otherwise ->
+                let inSession = [ a | a@(_, sid, _) <- attached, Just sid == msid ]
+                    pool = if null inSession then attached else inSession
+                in case List.sortOn (\(_, _, stamp) -> negate stamp) pool of
+                    (c, _, _) : _ -> Right c
+                    [] -> Left "no current client"
+  where
+    terminal c = c.role == Attached && isNothing c.control
+    clientName c = "client" <> tshow (rawClient c.id)

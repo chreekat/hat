@@ -49,6 +49,7 @@ import Hat.Server.FormatEnv
     (WindowFlagState (..), activeClientCounts, expandFormat, sessionFormatEnv,
      windowFlags)
 import Hat.Server.Resize (windowArrange)
+import Hat.Server.Viewport (viewportFor)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
 import Hat.Server.Style (parseColor)
@@ -134,16 +135,12 @@ renderOnce st client = do
                         floats <- floatsToDraw st sess win eff
                         let rects = tiled <> [ (f.pane, f.content) | f <- floats ]
                         pure (Just (sess, win, rects, borders, ps, active, floats, eff))
-    (frame, origins, cursor, mActiveRect) <- case view of
+    (frame, origins, cursor, mActiveRect, viewOrigin, panned) <- case view of
         Nothing -> pure
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
-            , (Pos 0 0, False), Nothing )
-        Just (sess, _, rects, borders, ps, active, floats, eff) -> do
-            let shiftRect r = r
-                    { startRow = r.startRow + rowOff
-                    , endRow = r.endRow + rowOff
-                    }
+            , (Pos 0 0, False), Nothing, Pos 0 0, False )
+        Just (sess, win, rects, borders, ps, active, floats, eff) -> do
             -- Snapshot each visible pane once; its cells and its cursor both
             -- come from that one read.
             paneViews <- fmap (Map.fromList . concat) $ forM rects $ \(pidL, _) ->
@@ -152,15 +149,43 @@ renderOnce st client = do
                     Just pane -> do
                         pv <- paneView st pane
                         pure [(pidL, pv)]
-            prevFrame <- readIORef client.lastFrame
-            prevOrigins <- readIORef client.lastOrigins
             let scene = Size
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows
                         - maybe 0 (const opts.statusLines) mStatusRowIx :: Int))
                     , cols = csize.cols }
+                shownCursor = do
+                    pv <- Map.lookup active paneViews
+                    case placePaneCursor (paneOrigin rects active) 0 pv of
+                        (p, True) -> Just p
+                        _ -> Nothing
+            (prevView, vp) <- atomically $ do
+                prev <- readTVar client.viewport
+                let next = viewportFor win.id eff scene shownCursor prev
+                when (next /= prev) $ writeTVar client.viewport next
+                pure (prev, next)
+            let o = vp.origin
+                moved = o /= prevView.origin
+            prevFrame <- readIORef client.lastFrame
+            -- A pane slice's provenance does not record which window
+            -- columns it showed, so no row survives the view moving.
+            prevOrigins <- if moved then pure V.empty else readIORef client.lastOrigins
+            let toView p = Pos { row = p.row - o.row, col = p.col - o.col }
+                inScene p = p.row >= 0 && p.row < fromIntegral scene.rows
+                    && p.col >= 0 && p.col < fromIntegral scene.cols
+                viewCells :: [(Pos, a)] -> [(Pos, a)]
+                viewCells cs = [ (q, c) | (p, c) <- cs, let q = toView p, inScene q ]
+                viewRect r = r
+                    { startRow = r.startRow - o.row, endRow = r.endRow - o.row
+                    , startCol = r.startCol - o.col, endCol = r.endCol - o.col }
+                shiftRect r = (viewRect r)
+                    { startRow = r.startRow - o.row + rowOff
+                    , endRow = r.endRow - o.row + rowOff }
+                shown = Rect
+                    { startRow = o.row, endRow = o.row + fromIntegral scene.rows
+                    , startCol = o.col, endCol = o.col + fromIntegral scene.cols }
                 tiledRects = [ r | (pidL, r) <- rects, pidL `notElem` map (.pane) floats ]
-            chrome <- cachedChrome client opts (List.lookup active rects)
-                rowOff (borders <> outsideCells eff scene tiledRects borders)
+            chrome <- cachedChrome client opts (viewRect <$> List.lookup active rects)
+                rowOff (viewCells (borders <> outsideCells eff shown tiledRects borders))
             let floating = map (.pane) floats
                 layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect rect
@@ -175,7 +200,7 @@ renderOnce st client = do
                     Just pv ->
                         ( applyBorders (overlayGrid fr (shiftRect f.content)
                                 (floatContent f pv.cells))
-                            [ (p { row = p.row + rowOff }, c) | (p, c) <- f.border ]
+                            [ (p { row = p.row + rowOff }, c) | (p, c) <- viewCells f.border ]
                         , volatileRows (shiftRect f.box) os )
                 (base, baseOrigins) = List.foldl' drawFloat (tiledFrame, tiledOrigins) floats
             mflash <- readTVarIO client.flash
@@ -216,10 +241,14 @@ renderOnce st client = do
                     pure (Pos { row = ix
                               , col = min (w - 1) (promptCursorCol pr) }, True)
                 _ -> pure $ case Map.lookup active paneViews of
-                    Nothing -> (Pos 0 0, False)
-                    Just pv -> placePaneCursor (paneOrigin rects active) rowOff pv
+                    Just pv
+                        | Just _ <- pv.cursor
+                        , (p, visible) <- placePaneCursor (paneOrigin rects active) 0 pv
+                        , inScene (toView p) ->
+                            (let q = toView p in q { row = q.row + rowOff }, visible)
+                    _ -> (Pos 0 0, False)
             pure ( withStatus, statusOrigins, cur
-                 , shiftRect <$> List.lookup active rects )
+                 , shiftRect <$> List.lookup active rects, o, moved )
     -- A chooser overlay, when open, is drawn in the active pane's rect
     -- (or the whole window under -Z), with a live preview of the
     -- highlighted node's pane beside the list.
@@ -243,8 +272,10 @@ renderOnce st client = do
     (frame'', origins'') <- case (mdpanes, view) of
         (Just _, Just (_, win, rects, _, _, active, _, _)) -> do
             order <- atomically (map (.id) <$> windowPanes win)
-            let shiftR r = r { startRow = r.startRow + rowOff
-                             , endRow = r.endRow + rowOff }
+            let shiftR r = r { startRow = r.startRow + rowOff - viewOrigin.row
+                             , endRow = r.endRow + rowOff - viewOrigin.row
+                             , startCol = r.startCol - viewOrigin.col
+                             , endCol = r.endCol - viewOrigin.col }
                 colourFor pid = parseColor $ if pid == active
                     then opts.displayPanesActiveColour
                     else opts.displayPanesColour
@@ -266,7 +297,7 @@ renderOnce st client = do
     oldCursor <- readIORef client.lastCursor
     -- A diff is only valid between same-sized frames; force full on any
     -- dimension change.
-    let full = fullFlag || frameDims old /= frameDims frame''
+    let full = fullFlag || panned || frameDims old /= frameDims frame''
         known r = case (oldOrigins V.!? r, origins'' V.!? r) of
             (Just a, Just b) -> sameOrigin a b
             _ -> False
@@ -395,39 +426,40 @@ borderGlyph m = case (has maskL || has maskR, has maskU || has maskD) of
   where
     has bit = m .&. bit /= 0
 
--- | The cells of a client's scene that no pane draws, for a window of
--- @area@ in a scene of @scene@ (@redraw_reset_cell@ and the panes' borders
--- at the window's edge): where the scene is larger, the window's right and
--- bottom edges carry its panes' outer borders and everything beyond them
--- takes the outside fill; a window with no tiled pane takes the inside fill
--- (both @·@, as tmux's default @fill-character@ draws).
-outsideCells :: Size -> Size -> [Rect] -> [(Pos, Char)] -> [(Pos, Char)]
-outsideCells area scene tiled borders = edges <> beyond <> empty
+-- | The cells no pane draws, in window coordinates, of the @view@ a
+-- client's scene shows of a window of @area@ (@redraw_reset_cell@ and the
+-- panes' borders at the window's edge): where the view reaches past the
+-- window, the window's right and bottom edges carry its panes' outer
+-- borders and everything beyond them takes the outside fill; a window with
+-- no tiled pane takes the inside fill (both @·@, as tmux's default
+-- @fill-character@ draws).
+outsideCells :: Size -> Rect -> [Rect] -> [(Pos, Char)] -> [(Pos, Char)]
+outsideCells area view tiled borders = edges <> beyond <> empty
   where
     wsx = fromIntegral area.cols
     wsy = fromIntegral area.rows
-    ssx = fromIntegral scene.cols
-    ssy = fromIntegral scene.rows
+    (vx0, vx1) = (view.startCol, view.endCol)
+    (vy0, vy1) = (view.startRow, view.endRow)
     glyphs = Map.fromList borders
-    rightEdge = wsx < ssx && not (null tiled)
-    bottomEdge = wsy < ssy && not (null tiled)
+    rightEdge = wsx < vx1 && not (null tiled)
+    bottomEdge = wsy < vy1 && not (null tiled)
     armRight q = Map.lookup q glyphs `elem` map Just "\x2500\x253c\x252c\x2534\x251c"
     armDown q = Map.lookup q glyphs `elem` map Just "\x2502\x253c\x252c\x2524\x251c"
     edges = concat
         [ [ (Pos y wsx, if armRight (Pos y (wsx - 1)) then '\x2524' else '\x2502')
-          | rightEdge, y <- [0 .. min wsy ssy - 1] ]
+          | rightEdge, y <- [vy0 .. min wsy vy1 - 1] ]
         , [ (Pos wsy x, if armDown (Pos (wsy - 1) x) then '\x2534' else '\x2500')
-          | bottomEdge, x <- [0 .. min wsx ssx - 1] ]
+          | bottomEdge, x <- [vx0 .. min wsx vx1 - 1] ]
         , [ (Pos wsy wsx, '\x2518') | rightEdge, bottomEdge ] ]
     edgeCols = if rightEdge then 1 else 0
     edgeRows = if bottomEdge then 1 else 0
     beyond = concat
-        [ [ (Pos y x, fill) | y <- [0 .. min (wsy + edgeRows) ssy - 1]
-                            , x <- [wsx + edgeCols .. ssx - 1] ]
-        , [ (Pos y x, fill) | y <- [wsy + edgeRows .. ssy - 1], x <- [0 .. ssx - 1] ] ]
+        [ [ (Pos y x, fill) | y <- [vy0 .. min (wsy + edgeRows) vy1 - 1]
+                            , x <- [wsx + edgeCols .. vx1 - 1] ]
+        , [ (Pos y x, fill) | y <- [wsy + edgeRows .. vy1 - 1], x <- [vx0 .. vx1 - 1] ] ]
     empty
-        | null tiled = [ (Pos y x, fill) | y <- [0 .. min wsy ssy - 1]
-                                         , x <- [0 .. min wsx ssx - 1] ]
+        | null tiled = [ (Pos y x, fill) | y <- [vy0 .. min wsy vy1 - 1]
+                                         , x <- [vx0 .. min wsx vx1 - 1] ]
         | otherwise = []
     fill = '\x00b7'
 

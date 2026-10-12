@@ -54,6 +54,7 @@ import Hat.Server.SendSpec qualified
 import Hat.Server.StyleSpec qualified
 import Hat.Server.TargetSpec qualified
 import Hat.Server.TitleSpec qualified
+import Hat.Server.ViewportSpec qualified
 import Hat.Transport.SocketSpec qualified
 import Hat.Term.EmulatorSpec qualified
 import Hat.Term.GoldenSpec qualified
@@ -111,6 +112,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Style" Hat.Server.StyleSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
+    describe "Hat.Server.Viewport" Hat.Server.ViewportSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
     describe "Hat.Glob" Hat.GlobSpec.spec
