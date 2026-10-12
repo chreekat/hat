@@ -55,7 +55,7 @@ import Hat.Server.Layout (Orientation (..), fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
 import Hat.Transport.Wire qualified as W
-import Hat.Term.Cell (Cell (..), Style (..))
+import Hat.Term.Cell (Cell (..), Color (..), Style (..))
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol qualified as HP
 
@@ -791,6 +791,29 @@ spec = parallel $ do
         outerStyle HP.StyleBar
         typeInto c "printf '\\033[4 q'\r"
         outerStyle HP.StyleUnderline
+        typeInto c "exit\r"
+        _ <- awaitExit c
+        pure ()
+
+    it "reveals an overlay scrollbar on a copy-mode scroll or a hover, then hides it" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        let barShown want = awaitTrue ("the scrollbar shown: " <> show want) $ do
+                scr <- Emu.snapshot c.screen
+                let Style { bg = b } = ((scr.cells V.! 5) V.! 79).style
+                pure ((b /= DefaultColor) == want)
+        _ <- hatCtl h ["set", "-g", "pane-scrollbars-timeout", "300"]
+        _ <- hatCtl h ["set", "-g", "pane-scrollbars", "modal"]
+        _ <- hatCtl h ["copy-mode", "-u"]
+        barShown True
+        barShown False
+        _ <- hatCtl h ["send-keys", "-X", "cancel"]
+        _ <- hatCtl h ["set", "-g", "mouse", "on"]
+        _ <- hatCtl h ["set", "-g", "pane-scrollbars", "auto-hide"]
+        typeInto c "\ESC[<35;80;6M"
+        barShown True
+        barShown False
         typeInto c "exit\r"
         _ <- awaitExit c
         pure ()

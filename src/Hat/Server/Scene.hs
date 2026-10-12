@@ -25,6 +25,7 @@ module Hat.Server.Scene
     , ScrollbarStyle (..)
     , ScrollbarLook (..)
     , scrollbarStyle
+    , overlayWidth
     , sliderOf
     , sceneChrome
     , statusBase
@@ -133,6 +134,9 @@ data SceneInput = SceneInput
     , scrollbars :: Map PaneId Int
         -- ^ the panes showing a scrollbar, with its width and padding
     , scrollbarSide :: ScrollbarSide
+    , overlays :: Map PaneId Int
+        -- ^ the panes showing a scrollbar over their own content, with its
+        --   width there ('overlayWidth')
     , floats :: [FloatingPane]
         -- ^ the floating panes, back to front
     , menu :: Maybe Rect
@@ -231,7 +235,7 @@ buildScene inp =
     -- redraw_window_to_scene: the window's far edge is still drawable.
     inScene x y = x >= 0 && y >= 0 && x <= wsx && y <= wsy && x < ssx && y < ssy
 
-    markPane m (pid, r) = markScrollbar pid r (markStatus pid r (markBorders pid r m))
+    markPane m (pid, r) = markOverlay pid r (markScrollbar pid r (markStatus pid r (markBorders pid r m)))
 
     sbWidth pid = Map.findWithDefault 0 pid inp.scrollbars
     sbLeft = inp.scrollbarSide == ScrollbarLeft
@@ -241,6 +245,16 @@ buildScene inp =
         0 -> m
         w ->
             let x0 = if sbLeft then r.startCol - w else r.endCol
+            in List.foldl' (\acc (x, y) -> Map.insert (x, y)
+                    (SceneScrollbar pid (y - r.startRow) (x - x0)) acc)
+                m [ (x, y) | y <- [r.startRow .. r.endRow - 1], x <- [x0 .. x0 + w - 1]
+                           , inScene x y ]
+
+    -- redraw_mark_pane_scrollbar, for a scrollbar over the pane's own edge.
+    markOverlay pid r m = case Map.findWithDefault 0 pid inp.overlays of
+        0 -> m
+        w ->
+            let x0 = if sbLeft then r.startCol else r.endCol - w
             in List.foldl' (\acc (x, y) -> Map.insert (x, y)
                     (SceneScrollbar pid (y - r.startRow) (x - x0)) acc)
                 m [ (x, y) | y <- [r.startRow .. r.endRow - 1], x <- [x0 .. x0 + w - 1]
@@ -312,7 +326,8 @@ buildScene inp =
     -- redraw_mark_pane for a floating pane: its inside and its border
     -- (clipped to the window, the edges the window cuts off not drawn)
     -- replace whatever they cover.
-    markFloat m0 f = markScrollbar f.pane f.rect (markFloatBorders f (markInside f m0))
+    markFloat m0 f =
+        markOverlay f.pane f.rect (markScrollbar f.pane f.rect (markFloatBorders f (markInside f m0)))
 
     markInside f m = List.foldl' (\acc (x, y) -> Map.insert (x, y) (ScenePane f.pane) acc) m
         [ (x, y) | y <- [max 0 f.rect.startRow .. min wsy f.rect.endRow - 1]
@@ -538,6 +553,14 @@ scrollbarStyle th raw = ScrollbarStyle
 
 defaultScrollbarStyle :: Text
 defaultScrollbarStyle = "bg=themedarkgrey,fg=themelightgrey,width=1,pad=0"
+
+-- | The columns a scrollbar of a style's @(width, pad)@ takes over an
+-- @sx@-column pane (tmux's @redraw_mark_pane@): both while they fit, else
+-- its width alone, within the pane.
+overlayWidth :: (Int, Int) -> Int -> Int
+overlayWidth (w, pad) sx
+    | w + pad <= sx = w + pad
+    | otherwise = min w sx
 
 -- | How one pane's scrollbar draws.
 data ScrollbarLook = ScrollbarLook

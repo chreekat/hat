@@ -287,6 +287,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     exitedVar <- newTVarIO (paneExitOf <$> rp.death)
     inputOffVar <- newTVarIO False
     alternateVar <- newTVarIO rp.screen.altScreen
+    scrollbarVar <- newTVarIO Nothing
     syncVar <- newTVarIO noOutputSync
     clockVar <- newTVarIO NoClock
     viewVar <- newTVarIO Nothing
@@ -301,7 +302,7 @@ adoptPane st histLimit pid (psnap, rp) = do
                 StartCommand t -> ShellCommand t
                 StartArgv argv -> ExecArgv argv
             , exited = exitedVar, kind = psnap.kind, inputOff = inputOffVar
-            , onAlternate = alternateVar, outputSync = syncVar, clock = clockVar
+            , onAlternate = alternateVar, scrollbarShown = scrollbarVar, outputSync = syncVar, clock = clockVar
             , viewBacking = viewVar, replyLock = replyVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the

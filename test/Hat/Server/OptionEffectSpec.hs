@@ -119,7 +119,7 @@ spec = do
                     , panes = [ (PaneId 0, rect 0 3 0 2), (PaneId 1, rect 0 1 3 5)
                               , (PaneId 2, rect 2 3 3 5) ]
                     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, overlays = Map.empty, floats = [], menu = Nothing }
                 look ind = ChromeLook
                     { borderLines = BorderSingle, lineSets = Map.empty, windowStyle = Cell.defaultStyle
                     , paneStyles = Map.fromList

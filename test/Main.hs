@@ -55,6 +55,7 @@ import Hat.Server.PromptSpec qualified
 import Hat.Server.PromptHistorySpec qualified
 import Hat.Server.ReloadSpec qualified
 import Hat.Server.SceneSpec qualified
+import Hat.Server.ScrollbarsSpec qualified
 import Hat.Server.ThemeSpec qualified
 import Hat.Server.RenderSpec qualified
 import Hat.Server.ResizeRenderSpec qualified
@@ -112,6 +113,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.ResizeRender" Hat.Server.ResizeRenderSpec.spec
     describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec
     describe "Hat.Server.Scene" Hat.Server.SceneSpec.spec
+    describe "Hat.Server.Scrollbars" Hat.Server.ScrollbarsSpec.spec
     describe "Hat.Server.Theme" Hat.Server.ThemeSpec.spec
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
     describe "Hat.Client.Tty" Hat.Client.TtySpec.spec

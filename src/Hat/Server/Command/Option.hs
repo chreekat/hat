@@ -51,6 +51,7 @@ import Hat.Server.Locate
 import Hat.Server.OptionParse
 import Hat.Server.Pane (suitableShell)
 import Hat.Server.Resize (applySessionSize)
+import Hat.Server.Scrollbars (hideScrollbars)
 import Hat.Server.Target qualified as Target
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Term.Emulator qualified as Emu
@@ -441,6 +442,7 @@ writeOption st sc n decide = do
         Left e -> pure [RErr e]
         Right () -> do
             when (n == "history-limit") (applyHistoryLimit st)
+            when (n == "pane-scrollbars") (hideScrollbars st)
             resizeAllSessions st
             pure []
 

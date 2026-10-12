@@ -100,7 +100,8 @@ spot-read of each suspect consumer.
 | `copy-mode-line-number-style` / `copy-mode-current-line-number-style` | `copyView`: the numbers, the cursor's line's in the latter | implemented ✅ tested | pure (CopyModeSpec) |
 | `copy-mode-position-format` / `copy-mode-position-style` | `copyView` via `copyLook`: expanded in the pane, drawn with `formatDraw` over the first row's text unless `copy-mode -H` or `toggle-position` hides it; each pane's own value | implemented ✅ tested | pure (CopyModeSpec) + model (SessionSpec) |
 | `window-style` / `window-active-style` | `paneDefaults`/`paintDefaults` (Render.hs) via `paneStyleOption` (View.hs): each pane's own value, formats expanded in the pane, and the answer to an OSC 10/11 query when set (`queryDefaultColour`, PaneColours.hs); `dim=` refused | implemented ✅ tested | pure (RenderSpec) + regress `screen-redraw-window-style` |
-| `pane-scrollbars` | `paneScrollbars` → `scrollbarReserve` in `windowArrange` (Resize.hs), `buildScene`/`sceneChrome` (Scene.hs): `off` and `on` (hidden on the alternate screen); `modal` and `auto-hide` refused | implemented ✅ tested | pure (SceneSpec, OptionEffectSpec) + regress `screen-redraw-scrollbars` scenes |
+| `pane-scrollbars` | `paneScrollbars` → `scrollbarReserve` in `windowArrange` (Resize.hs), `buildScene`/`sceneChrome` (Scene.hs): `on` beside each pane (hidden on the alternate screen); `modal` (in a mode) and `auto-hide` drawn over the pane's edge (`paneOverlays`, Scrollbars.hs; `overlays` in Scene.hs), the cursor hidden under them, shown once revealed: by a mouse move into their area (`scrollbarHover` → `hoverScrollbars`, with all-motion tracking asked of the terminal, `wantsMotion`) or a copy-mode scroll (`scrollShowsScrollbar` in `runCopyModeCommand`); a set hides them all | implemented ✅ tested | pure (SceneSpec, ScrollbarsSpec, MouseSpec) + integration + regress `screen-redraw-scrollbars` scenes |
+| `pane-scrollbars-timeout` | `revealScrollbar`/`hoverScrollbars` (Scrollbars.hs): a revealed overlay scrollbar hides this many ms after it was revealed, a mouse move anywhere over the window restarting the count | implemented ✅ tested | integration |
 | `pane-scrollbars-position` | `scrollbarReserve` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (OptionEffectSpec) |
 | `pane-scrollbars-style` | `scrollbarStyle` (Scene.hs): colours, `width=`, `pad=`; each pane's own value | implemented ✅ tested | pure (SceneSpec) |
 | `display-panes-format` | `panesStamp` (DisplayPanes.hs) via the overlay in `renderOnce` (View.hs): drawn on each pane's top row | implemented ✅ tested | pure (DisplayPanesSpec) |
@@ -224,6 +225,13 @@ spot-read of each suspect consumer.
 - **`cursor-style`** in a mode or popup reads the current global value; tmux
   fixes it when the mode's screen is made, and a later set re-reads it from
   the pane's options.
+
+- **`pane-scrollbars`**: a click or drag on a scrollbar (tmux's
+  `ScrollbarUp`/`ScrollbarSlider`/`ScrollbarDown` mouse locations and their
+  default bindings, which need `copy-mode -S` and `scroll-to-mouse`) is not
+  placed: it lands as on the pane. Only copy-mode commands (`send-keys -X`,
+  so the wheel bindings and `copy-mode -u` too) reveal an overlay
+  scrollbar, not a mouse drag's scrolling.
 
 - **`history-file`**: hat has no search prompt, so a file's `search:`
   entries are only carried through to the next save. Entries are text: a byte that is

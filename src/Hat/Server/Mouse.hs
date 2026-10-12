@@ -28,6 +28,7 @@ module Hat.Server.Mouse
     , MouseEvent (..)
     , MouseKey (..)
     , checkMouse
+    , scrollbarHover
     , clickExpired
     , mouseKeyName
       -- * Panes
@@ -260,9 +261,7 @@ checkMouse now view st0 m = case classified of
     lb = st0.prevB
     -- The event type, and the position and button it is about.
     classified
-        | (m.sgrType /= ' ' && isDrag m.sgrB && isRelease m.sgrB)
-          || (m.sgrType == ' ' && isDrag m.b && isRelease m.b && isRelease lb) =
-            Just (MouseMove, m.x, m.y, 0)
+        | isMotion st0 m = Just (MouseMove, m.x, m.y, 0)
         | isDrag m.b = if st0.dragFlag /= 0
             then if m.x == lx && m.y == ly then Nothing
                  else Just (MouseDrag, m.x, m.y, m.b)
@@ -404,6 +403,30 @@ checkMouse now view st0 m = case classified of
         130 -> 10
         131 -> 11
         _ -> 0
+
+-- | Whether a report is a bare move (tmux's @KEYC_TYPE_MOUSEMOVE@).
+isMotion :: MouseState -> MouseInput -> Bool
+isMotion st0 m =
+    (m.sgrType /= ' ' && isDrag m.sgrB && isRelease m.sgrB)
+    || (m.sgrType == ' ' && isDrag m.b && isRelease m.b && isRelease st0.prevB)
+
+-- | Where a report moves the mouse over the window, for the overlay
+-- scrollbars (the point tmux's @server_client_check_mouse@ hands
+-- @server_client_update_scrollbar_hover@): 'Nothing' for a report that is
+-- not a move, @Just Nothing@ for a move off the window area, onto the
+-- status line or outside the modal pane.
+scrollbarHover :: MouseView -> MouseState -> MouseInput -> Maybe (Maybe (Int, Int))
+scrollbarHover view st0 m
+    | not (isMotion st0 m) = Nothing
+    | Just at <- view.statusAt, m.y >= at, m.y < at + view.statusLines = Just Nothing
+    | px > view.width || py > view.height = Just Nothing
+    | Just md <- view.modal
+    , maybe True (\bx -> not (contains bx px py)) (find (\bx -> bx.pane == md.pane) view.boxes) =
+        Just Nothing
+    | otherwise = Just (Just (px, py))
+  where
+    px = m.x + view.origin.col
+    py = windowRow view.statusAt view.statusLines m.y + view.origin.row
 
 -- | Whether a window point is on a pane's box (tmux's
 -- @window_pane_contains@): a tiled pane's to its right and bottom border, a

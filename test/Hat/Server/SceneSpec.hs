@@ -43,7 +43,7 @@ cross = SceneInput
         [ (PaneId 0, rect 0 2 0 3), (PaneId 1, rect 0 2 4 7)
         , (PaneId 2, rect 3 5 0 3), (PaneId 3, rect 3 5 4 7) ]
     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, overlays = Map.empty, floats = [], menu = Nothing }
 
 spec :: Spec
 spec = do
@@ -61,7 +61,7 @@ spec = do
                     , area = Size { rows = 4, cols = 6 }
                     , panes = [ (PaneId 0, rect 0 2 0 3) ]
                     , paneStatus = PaneStatusOff, twoPane = Nothing
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, overlays = Map.empty, floats = [], menu = Nothing }
             picture plainLook (buildScene inp) `shouldBe`
                 [ "...│~~"
                 , "...│~~"
@@ -144,7 +144,7 @@ spec = do
                     { window = Size { rows = 4, cols = 3 }, area = Size { rows = 4, cols = 3 }
                     , panes = [ (PaneId 0, rect 0 4 0 1), (PaneId 1, rect 0 4 2 3) ]
                     , paneStatus = PaneStatusOff, twoPane = Just LeftRight
-                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
+                    , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, overlays = Map.empty, floats = [], menu = Nothing }
                 owners = [ case (buildScene inp V.! y) V.! 1 of
                                SceneBorder b -> b.styleOwner
                                _ -> Nothing
@@ -160,7 +160,7 @@ spec = do
                 { window = Size { rows = 3, cols = 5 }, area = Size { rows = 3, cols = 5 }
                 , panes = [ (PaneId 0, rect 0 3 0 3) ], paneStatus = PaneStatusOff
                 , twoPane = Nothing, scrollbars = Map.singleton (PaneId 0) 2
-                , scrollbarSide = ScrollbarRight, floats = [], menu = Nothing }
+                , scrollbarSide = ScrollbarRight, overlays = Map.empty, floats = [], menu = Nothing }
             chrome = sceneChrome look (buildScene inp)
             bgAt x y = (.style.bg) <$> lookup (Pos y x) chrome
         it "takes the columns between the pane and its border" $
@@ -169,6 +169,26 @@ spec = do
             map (\y -> (bgAt 3 y, bgAt 4 y)) [0, 2] `shouldBe`
                 [ (Just Cell.DefaultColor, Just (Cell.Indexed 0))
                 , (Just Cell.DefaultColor, Just (Cell.Indexed 7)) ]
+    describe "overlay scrollbars (modal, auto-hide)" $ do
+        let inp side = SceneInput
+                { window = Size { rows = 2, cols = 5 }, area = Size { rows = 2, cols = 5 }
+                , panes = [ (PaneId 0, rect 0 2 0 3), (PaneId 1, rect 0 2 4 5) ]
+                , paneStatus = PaneStatusOff, twoPane = Nothing, scrollbars = Map.empty
+                , scrollbarSide = side, overlays = Map.singleton (PaneId 0) 2
+                , floats = [], menu = Nothing }
+            look = plainLook { scrollbarLooks = Map.singleton (PaneId 0) ScrollbarLook
+                { style = ScrollbarStyle
+                    { colours = Cell.defaultStyle, width = 1, pad = 1 }
+                , slider = (0, 2), padStyle = Cell.defaultStyle, onLeft = False } }
+        it "covers the pane's last columns, its border where it was" $
+            picture look (buildScene (inp ScrollbarRight)) `shouldBe` [ ".  │.", ".  │." ]
+        it "on the left, covers its first columns" $ do
+            let scene = buildScene (inp ScrollbarLeft)
+            (scene V.! 0) V.! 0 `shouldBe` SceneScrollbar (PaneId 0) 0 0
+            (scene V.! 0) V.! 2 `shouldBe` ScenePane (PaneId 0)
+        it "is its width and padding, or its width alone, within the pane" $
+            map (uncurry overlayWidth) [((1, 1), 5), ((2, 3), 4), ((6, 0), 4)]
+                `shouldBe` [2, 2, 4]
     describe "sliderOf" $ do
         it "with no history fills the bar" $
             sliderOf 10 10 0 Nothing `shouldBe` (0, 10)

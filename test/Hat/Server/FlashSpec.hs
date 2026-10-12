@@ -125,6 +125,7 @@ flashStubPane pid = do
     exitedV <- newTVarIO Nothing
     inputOffV <- newTVarIO False
     alternateV <- newTVarIO False
+    scrollbarV <- newTVarIO Nothing
     syncV <- newTVarIO noOutputSync
     clockV <- newTVarIO NoClock
     viewV <- newTVarIO Nothing
@@ -147,6 +148,7 @@ flashStubPane pid = do
         , kind = ProgramPane
         , inputOff = inputOffV
         , onAlternate = alternateV
+        , scrollbarShown = scrollbarV
         , outputSync = syncV
         , clock = clockV
         , viewBacking = viewV

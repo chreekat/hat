@@ -64,9 +64,10 @@ import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
 import Hat.Server.Mouse
-    (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), Placement (..), checkMouse, clickExpired
+    (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), Placement (..), checkMouse, clickExpired, scrollbarHover
     , parseMouseInput, stripMods)
 import Hat.Server.MouseIO (mouseDragUpdate, mouseEventPane, mouseViewFor, sendMouse)
+import Hat.Server.Scrollbars (hoverScrollbars)
 import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
@@ -792,6 +793,7 @@ runInputs d st client keys = do
             case mview of
                 Nothing -> pure (kst, Nothing)
                 Just view -> do
+                    forM_ (scrollbarHover view kst.mouse inp) (hoverScrollbars st client)
                     now <- monotonicMs
                     case checkMouse now view kst.mouse inp of
                         (ms, Keyed mk) -> pure (kst { mouse = ms }, Just mk)

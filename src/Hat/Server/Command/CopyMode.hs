@@ -17,6 +17,7 @@ import Hat.Model.Options (ModeKeys (..), Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.Scrollbars (revealScrollbar, scrollShowsScrollbar)
 import Hat.Server.ViewMode (leaveViewMode)
 
 runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
@@ -62,7 +63,8 @@ runCopyModeCommand st pane name cmdArgs = do
                                         [ ("mode_entered", PInt 0)
                                         , ("current_mode", PText "")
                                         , ("previous_mode", PText (modeName pm.kind)) ]
-                                Just _ -> pure ()
+                                Just s -> when (scrollShowsScrollbar name state.viewportOffY s.viewportOffY) $
+                                    revealScrollbar st pane
                             pure []
           where
             state = pm.copyState

@@ -426,6 +426,7 @@ newPane pid pty emu sz dir pending start kind = do
     host <- Posix.nodeName <$> Posix.getSystemID
     _ <- Emu.setTitle emu (T.pack host)
     alternateVar <- newTVarIO False
+    scrollbarVar <- newTVarIO Nothing
     clockVar <- newTVarIO NoClock
     viewVar <- newTVarIO Nothing
     replyVar <- newMVar ()
@@ -447,6 +448,7 @@ newPane pid pty emu sz dir pending start kind = do
         , kind = kind
         , inputOff = inputOffVar
         , onAlternate = alternateVar
+        , scrollbarShown = scrollbarVar
         , outputSync = syncVar
         , clock = clockVar
         , viewBacking = viewVar

@@ -55,6 +55,8 @@ import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPan
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.PaneColours (cursorColourOf, paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
+import Hat.Server.Scrollbars
+    (coversColumn, hidesOnTimer, paneOverlays, scrollbarSideOf, scrollbarsModeOf)
 import Hat.Server.Viewport (viewportFor)
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
@@ -187,6 +189,7 @@ renderOnce st client = do
                         dflt <- paneDefaultColours st expand th sess win pane popts
                         palette <- panePalette th pane popts
                         pure [(pidL, (withPaneColours dflt palette pv, dflt, popts))]
+            overlayStyles <- atomically (paneOverlays st win)
             let paneViews = Map.fromList [ (p, pv) | (p, (pv, _, _)) <- painted ]
                 defaults = Map.fromList [ (p, d) | (p, (_, d, _)) <- painted ]
                 paneOpts = Map.fromList [ (p, o) | (p, (_, _, o)) <- painted ]
@@ -220,7 +223,7 @@ renderOnce st client = do
             -- columns it showed, so no row survives the view moving.
             prevOrigins <- if moved then pure V.empty else readIORef client.lastOrigins
             chrome <- cachedChrome st expand th client sess win eff sceneArea rects floats
-                defaults paneOpts active rowOff o
+                defaults paneOpts overlayStyles active rowOff o
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect shown
                                 , cells = dropGrid skip pv.cells
@@ -273,15 +276,22 @@ renderOnce st client = do
                     , flashedOrigins V.//
                         [ (ix, VolatileRow) | (ix, _) <- overRows
                         , ix < V.length flashedOrigins ] )
+            -- tmux hides the cursor under its pane's overlay scrollbar.
+            let underOverlay local = case (Map.lookup active overlayStyles, List.lookup active rects) of
+                    (Just (barW, _), Just r) ->
+                        coversColumn (maybe ScrollbarRight scrollbarSideOf (Map.lookup active paneOpts)) barW
+                            (r.endCol - r.startCol) local.col
+                    _ -> False
             cur <- case (mprompt, msgRow) of
                 (Just _, (ix, _, Just cx) : _) ->
                     pure (Pos { row = ix, col = min (w - 1) cx }, True)
                 _ -> pure $ case Map.lookup active paneViews of
                     Just pv
-                        | Just _ <- pv.cursor
+                        | Just local <- pv.cursor
                         , (p, visible) <- placePaneCursor (paneOrigin rects active) 0 pv
                         , inScene (toView p) ->
-                            (let q = toView p in q { row = q.row + rowOff }, visible)
+                            ( let q = toView p in q { row = q.row + rowOff }
+                            , visible && not (underOverlay local) )
                     _ -> (Pos 0 0, False)
             pure ( withStatus, statusOrigins, cur
                  , shiftRect <$> List.lookup active rects, o, moved )
@@ -474,18 +484,18 @@ syncMouseMode st client view = do
     mpopup <- readTVarIO client.popup
     want <- case view of
         Nothing -> pure 0
-        Just (sess, _, _, _) | Just p <- mpopup -> do
-            o <- resolveForSessionIO st sess
+        Just (sess, win, _, _) | Just p <- mpopup -> do
+            o <- resolveForWindowIO st sess win
             ms <- Emu.modes p.screen
             let own = case ms.mouse of
                     Emu.MouseOff -> 0
                     Emu.MouseClick -> 1
                     Emu.MouseDrag -> 2
                     Emu.MouseMove -> 3
-            pure $ Mouse.overlayMouseMode o.mouseEnabled o.focusFollowsMouse own
-        Just (sess, _, _, _) | Just wm <- mmenu -> do
-            o <- resolveForSessionIO st sess
-            pure $ Mouse.overlayMouseMode o.mouseEnabled o.focusFollowsMouse
+            pure $ Mouse.overlayMouseMode o.mouseEnabled (wantsMotion o) own
+        Just (sess, win, _, _) | Just wm <- mmenu -> do
+            o <- resolveForWindowIO st sess win
+            pure $ Mouse.overlayMouseMode o.mouseEnabled (wantsMotion o)
                 (if wm.mouse == MenuMouseOn then 3 else 0)
         Just (sess, win, ps, active) -> do
             tracking <- forM (Map.toList ps) $ \(pid, pane) -> do
@@ -500,13 +510,18 @@ syncMouseMode st client view = do
                 pure (pid, level)
             o <- maybe (resolveForSessionIO st sess)
                 (\pane -> resolveForPaneIO st sess win pane) (Map.lookup active ps)
-            pure $ Mouse.outerMouseMode o.mouseEnabled o.focusFollowsMouse
+            pure $ Mouse.outerMouseMode o.mouseEnabled (wantsMotion o)
                 (fromMaybe 0 (List.lookup active tracking)) (map snd tracking)
     old <- readIORef client.lastMouseMode
     when (want /= old) $ do
         writeIORef client.lastMouseMode want
         -- See Note [Falling behind]
         send client (Notify (Mouse.mouseModeBytes want))
+
+-- | Whether the mouse's every motion is wanted: for @focus-follows-mouse@,
+-- or to reveal overlay scrollbars on hover.
+wantsMotion :: Options -> Bool
+wantsMotion o = o.focusFollowsMouse || hidesOnTimer (scrollbarsModeOf o.paneScrollbars)
 
 -- | Drop the pane provenance of the rect's rows: whatever repainted them
 -- owns them now.
@@ -551,7 +566,7 @@ windowCompositeCells st win size = do
         pure (r, fl, ps, a, s)
     let input = SceneInput
             { window = size, area = size, panes = tiledOf floats rects, paneStatus = status
-            , twoPane = Nothing, scrollbars = Map.empty, scrollbarSide = ScrollbarRight
+            , twoPane = Nothing, scrollbars = Map.empty, scrollbarSide = ScrollbarRight, overlays = Map.empty
             , floats, menu = Nothing }
         look = ChromeLook
             { borderLines = opts.paneBorderLines
@@ -653,16 +668,17 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 cachedChrome
     :: ServerState -> Expand -> Theme -> Client -> Session -> Window -> Size -> Size
     -> [(PaneId, Rect)] -> [FloatingPane] -> Map.Map PaneId (Cell.Color, Cell.Color)
-    -> Map.Map PaneId Options -> PaneId -> Int -> Pos -> IO Chrome
-cachedChrome st expand th client sess win eff sceneArea rects floats defaults paneOpts active rowOff origin = do
+    -> Map.Map PaneId Options -> Map.Map PaneId (Int, Int) -> PaneId -> Int -> Pos -> IO Chrome
+cachedChrome st expand th client sess win eff sceneArea rects floats defaults paneOpts overlayStyles active rowOff origin = do
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
     windowStyle <- expand.style th . (.paneBorderStyle)
         =<< resolveForWindowIO st sess win
     (input, look2, panes) <- atomically
-        (chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active mmenu)
-    bars <- forM [ (cp, w) | cp <- panes, Just w <- [Map.lookup cp.pane.id input.scrollbars] ] $
-        \(cp, _) -> do
+        (chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts overlayStyles active mmenu)
+    let barred p = Map.member p input.scrollbars || Map.member p input.overlays
+    bars <- forM [ cp | cp <- panes, barred cp.pane.id ] $
+        \cp -> do
             let height = maybe 0 (\r -> r.endRow - r.startRow) (List.lookup cp.pane.id rects)
                 (dfg, dbg) = Map.findWithDefault (Cell.DefaultColor, Cell.DefaultColor)
                     cp.pane.id defaults
@@ -741,9 +757,9 @@ data ChromePane = ChromePane
 -- pane status line is drawn.
 chromeInputs
     :: ServerState -> Cell.Style -> Session -> Window -> Size -> Size -> [(PaneId, Rect)]
-    -> [FloatingPane] -> Map.Map PaneId Options -> PaneId -> Maybe WindowMenu
-    -> STM (SceneInput, ChromeLook, [ChromePane])
-chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active mmenu = do
+    -> [FloatingPane] -> Map.Map PaneId Options -> Map.Map PaneId (Int, Int) -> PaneId
+    -> Maybe WindowMenu -> STM (SceneInput, ChromeLook, [ChromePane])
+chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts overlayStyles active mmenu = do
     wopts <- resolveForWindow st sess win
     status <- windowPaneStatus st win
     (side, bars) <- paneScrollbars st win
@@ -766,6 +782,9 @@ chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts active 
         input = SceneInput
             { window = eff, area = sceneArea, panes = tiledOf floats rects
             , paneStatus = status, twoPane, scrollbars = bars, scrollbarSide = side
+            , overlays = Map.fromList
+                [ (pid, overlayWidth sb (r.endCol - r.startCol))
+                | (pid, r) <- rects, Just sb <- [Map.lookup pid overlayStyles] ]
             , floats, menu = menuRect <$> mmenu }
         look = ChromeLook
             { borderLines = wopts.paneBorderLines

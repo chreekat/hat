@@ -80,6 +80,14 @@ spec = do
                 Keyed k -> mouseAt False k.event (view.boxes !! 1) `shouldBe` Just (3, 2)
                 _ -> expectationFailure "no key"
 
+    describe "scrollbarHover" $ do
+        let hover = scrollbarHover view initialMouseState
+        it "a move over the window is at its window point" $
+            hover (sgr 35 50 3 'M') `shouldBe` Just (Just (50, 3))
+        it "a move onto the status line is off the window" $
+            hover (sgr 35 5 23 'M') `shouldBe` Just Nothing
+        it "a click is no move" $
+            hover (sgr 0 50 3 'M') `shouldBe` Nothing
     describe "checkMouse names the key" $ do
         it "a click and release on a pane" $
             at0 [sgr 0 3 0 'M', sgr 0 3 0 'm'] `shouldBe` ["MouseDown1Pane", "MouseUp1Pane"]

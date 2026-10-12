@@ -351,6 +351,9 @@ data Pane = Pane
     , onAlternate :: TVar Bool
         -- ^ whether the pane's program is on the alternate screen, as of
         -- the last output its reader fed
+    , scrollbarShown :: TVar (Maybe Word64)
+        -- ^ the monotonic instant (ns) its revealed overlay scrollbar hides
+        -- at; see 'Hat.Server.Scrollbars.revealScrollbar'
     , outputSync :: TVar OutputSync
         -- ^ requests that the reader catch up on pending output; see
         -- 'Hat.Server.Pane.syncPanes'.

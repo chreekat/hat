@@ -168,6 +168,7 @@ library
         Hat.Server.Render
         Hat.Server.Resize
         Hat.Server.Scene
+        Hat.Server.Scrollbars
         Hat.Server.Snapshot
         Hat.Server.Startup
         Hat.Server.Status
@@ -355,6 +356,7 @@ test-suite hat-test
         Hat.Server.PromptHistorySpec
         Hat.Server.ReloadSpec
         Hat.Server.SceneSpec
+        Hat.Server.ScrollbarsSpec
         Hat.Server.ThemeSpec
         Hat.Server.SendSpec
         Hat.Server.StatusSpec
