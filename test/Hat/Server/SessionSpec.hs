@@ -894,12 +894,23 @@ spec = do
         it "expands the name as a format" $
             renamed "w#{window_index}:.##(ok)" `shouldReturn` ("w0:.#(ok)", False)
 
-    describe "run-shell -C" $
-        it "runs its argument as commands" $ do
+    describe "run-shell" $ do
+        it "-C runs its argument as commands" $ do
             (st, _) <- seedSession "/"
             _ <- runArgv st Nothing ["run-shell", "-C", "set -g @ran yes; set -g @also too"]
             o <- readTVarIO st.options
             map (`Map.lookup` o.user) ["@ran", "@also"] `shouldBe` [Just "yes", Just "too"]
+        it "prints a command client its output, its arguments as #{1}…, and a failure" $ do
+            (st, _) <- seedSession "/"
+            (c, _) <- wiredClient st Control
+            runArgv st (Just c) ["run-shell", "printf 'a\\nb'; echo #{1}-#{2} >&2", "x", "y"]
+                `shouldReturn` [ROutput "a", ROutput "b"]
+            runArgv st (Just c) ["run-shell", "-E", "echo #{1}-#{2} >&2", "x", "y"]
+                `shouldReturn` [ROutput "x-y"]
+            runArgv st (Just c) ["run-shell", "exit 3"]
+                `shouldReturn` [ROutput "'exit 3' returned 3"]
+            runArgv st (Just c) ["run-shell", "-d", "x", "true"]
+                `shouldReturn` [RErr "invalid delay time: x"]
     describe "snapshot commands without persistence" $
         it "list-snapshots and restore-snapshot fail loudly, never silently (bb)" $ do
             (st, _) <- seedSession "/"

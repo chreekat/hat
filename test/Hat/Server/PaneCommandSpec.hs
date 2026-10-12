@@ -21,7 +21,9 @@ import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
 import Hat.Server.Snapshot (captureSnapshot, restoreSnapshot)
+import Hat.Term.Cell qualified as Cell
 import Hat.Term.Pty qualified as Pty
+import Data.Vector qualified as V
 
 -- | A fresh server for one test; on exit every pane still alive is killed
 -- and its child reaped, so no test leaks a process.
@@ -145,6 +147,23 @@ spec = do
                     `shouldReturn` [RErr "display-message -v: not supported"]
                 run st ["display-message", "-l", "-p", "#{session_name}"]
                     `shouldReturn` [ROutput "#{session_name}"]
+
+    describe "run-shell" $
+        it "-t shows the output in the pane's view mode, -b too once it ends" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["run-shell", "-t", "S:0.0", "echo out"] `shouldReturn` []
+                run st ["display-message", "-p", "-t", "S:0.0", "#{pane_mode}"]
+                    `shouldReturn` [ROutput "view-mode"]
+                run st ["run-shell", "-b", "-t", "S:0.0", "echo later"] `shouldReturn` []
+                [p] <- allPanes st
+                shown <- timeout 5_000_000 $ untilM $ do
+                    mpm <- readTVarIO p.mode
+                    pure $ case mpm of
+                        Just pm | pm.frozen.fgSy > 1 ->
+                            T.isPrefixOf "later" (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V.! 1))))
+                        _ -> False
+                shown `shouldBe` Just ()
 
     describe "new-window" $
         it "expands -n as a format in the target session" $

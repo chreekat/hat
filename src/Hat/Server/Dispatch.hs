@@ -36,7 +36,7 @@ import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -49,6 +49,7 @@ import System.Posix.IO qualified as PIO
 import System.Posix.Process (executeFile)
 import System.Posix.Signals (sigHUP, signalProcess)
 import System.Posix.Types (Fd (..))
+import System.IO (IOMode (..), openFile)
 import System.Process
 import Text.Read (readMaybe)
 import Hat.Command.Parser (parseCommandLine, parseConfig)
@@ -83,6 +84,7 @@ import Hat.Server.ControlQueue (controlNotify)
 import Hat.Server.FormatEnv (clientContextFormatEnv, clientFormatVars, expandFormat, paneFormatEnv)
 import Hat.Server.Handover
 import Hat.Server.Toast
+import Hat.Server.ViewMode (ViewText (..), viewModeAdd, viewToClient)
 import Hat.Server.Keys
 import Hat.Server.Overlay (handlePickerInput)
 import Hat.Server.Locate
@@ -772,42 +774,103 @@ targetFormatEnv st mclient mc (sess, wix, win, pane) = do
     env <- paneFormatEnv st sess wix win pix pane
     pure (Map.unions [Map.fromList mouseVars, Map.fromList cvars, env])
 
+-- | @run-shell [-bCE] [-c start-directory] [-d delay] [-t target-pane]
+-- [shell-command [argument ...]]@ (tmux's @cmd-run-shell.c@). The command
+-- is a format, its further arguments its @#{1}@, @#{2}@, …; without @-b@ it
+-- runs to its end before the next command (see 'runShellJob' for where its
+-- output goes).
 cmdRunShell :: CommandImpl
-cmdRunShell st mclient args = do
-    let (opts, flags, pos) = parseArgs "tdc" args
-    menv <- commandFormatEnv st mclient (lookup "-t" opts)
-    cmdText <- maybe pure (expandFormat st) menv (T.unwords pos)
-    -- -d: tmux waits this many seconds before running the command.
-    let delay = maybe 0 (max 0) (readDouble =<< lookup "-d" opts)
-        readDouble t = case TR.double t of
-            Right (v, rest) | T.null rest -> Just v
-            _ -> Nothing
-    -- With no command, -d is a pause in the commands around it (tmux
-    -- blocks the queue), as the default double-click bindings rely on.
-    if T.null (T.strip cmdText)
-        then [] <$ threadDelay (round (delay * 1000000))
-        -- -C: the expanded argument is hat's own command, run in turn.
-        else if "-C" `elem` flags
-            then threadDelay (round (delay * 1000000)) >> runCommandText st mclient cmdText
-            else runShellAsync st mclient cmdText delay
+cmdRunShell st mclient args
+    | Just e <- unknownFlag "run-shell" "bCE" flags = pure [RErr e]
+    | Just _ <- lookup "-s" opts = pure [RErr "run-shell -s: not supported"]
+    | Just d <- lookup "-d" opts, Nothing <- delayOf d =
+        pure [RErr ("invalid delay time: " <> d)]
+    | null pos = [] <$ when waits pause
+    -- -C: the argument is hat's own commands, run in turn.
+    | "-C" `elem` flags = pause >> runCommandText st mclient (T.unwords pos)
+    | otherwise = do
+        res <- findTarget st mclient Target.FindPane (lookup "-t" opts)
+        let found = either (const Nothing) Just res
+            mpane = case (lookup "-t" opts, found) of
+                (Just _, Just (_, _, _, p)) -> Just p
+                _ -> Nothing
+        env <- case found of
+            Just f@(sess, _, _, _) -> do
+                mc <- either (const Nothing) Just
+                    <$> formatClient st mclient (Just sess.id) Nothing
+                targetFormatEnv st mclient mc f
+            Nothing -> clientContextFormatEnv st mclient
+        cmd <- expandFormat st (Map.union numbered env) (T.concat (take 1 pos))
+        dir <- maybe (jobDirectory st mclient ((\(s, _, _, _) -> s) <$> found)) (pure . T.unpack)
+            (lookup "-c" opts)
+        let job = runShellJob cmd dir ("-E" `elem` flags)
+        if waits
+            then do
+                ls <- outsideCommandBatch st (pause >> job)
+                case (mpane, mclient) of
+                    (Just p, _) -> [] <$ unless (null ls) (viewModeAdd st p ViewParsed ls)
+                    (Nothing, Just c)
+                        | c.role == Control || isJust c.control -> pure (map ROutput ls)
+                        | otherwise -> [] <$ unless (null ls) (viewToClient st c ViewParsed ls)
+                    (Nothing, Nothing) -> pure []
+            else [] <$ forkIO (do
+                ls <- pause >> job
+                unless (null ls) $ do
+                    mp <- maybe (backgroundPane st mclient) (pure . Just) mpane
+                    forM_ mp $ \p -> viewModeAdd st p ViewParsed ls)
+  where
+    (opts, flags, pos) = parseArgs "cdst" args
+    waits = "-b" `notElem` flags
+    numbered = Map.fromList (zip (map tshow [1 :: Int ..]) (drop 1 pos))
+    pause = forM_ (lookup "-d" opts >>= delayOf) $ \d ->
+        threadDelay (round (max 0 d * 1000000))
+    delayOf t = case TR.double t of
+        Right (v, rest) | T.null rest -> Just v
+        _ -> Nothing
 
-runShellAsync :: ServerState -> Maybe Client -> Text -> Double -> IO [Reply]
-runShellAsync st mclient cmdText delay = do
-    void . forkIO $ do
-        when (delay > 0) $ threadDelay (round (delay * 1000000))
-        (code, out, errOut) <- readCreateProcessWithExitCode
-            (shell (T.unpack cmdText)) { close_fds = True } ""
-        let firstLine = T.strip . T.takeWhile (/= '\n') . T.pack
-        case code of
-            ExitSuccess ->
-                forM_ mclient $ \client ->
-                    unless (null out) $ showToast st client (firstLine out)
-            ExitFailure n ->
-                forM_ mclient $ \client ->
-                    showToast st client $
-                        "run-shell exited " <> tshow n <> ": "
-                        <> firstLine (out <> errOut)
-    pure []
+-- | Run a @run-shell@ command to its end: its output lines (its errors too
+-- under @-E@), then tmux's word on a failure.
+runShellJob :: Text -> FilePath -> Bool -> IO [Text]
+runShellJob cmd dir withStderr = do
+    (r, w) <- createPipe
+    devnull <- openFile "/dev/null" ReadWriteMode
+    (_, _, _, ph) <- createProcess (shell (T.unpack cmd))
+        { cwd = Just dir
+        , std_in = UseHandle devnull
+        , std_out = UseHandle w
+        , std_err = UseHandle (if withStderr then w else devnull)
+        , close_fds = True }
+    out <- B.hGetContents r
+    code <- waitForProcess ph
+    let text = TE.decodeUtf8With TEE.lenientDecode out
+        -- a last line with no newline is a line too
+        ls = if T.null text then [] else T.splitOn "\n" (fromMaybe text (T.stripSuffix "\n" text))
+        failure = case code of
+            ExitSuccess -> []
+            ExitFailure n
+                | n < 0 -> ["'" <> cmd <> "' terminated by signal " <> tshow (negate n)]
+                | otherwise -> ["'" <> cmd <> "' returned " <> tshow n]
+    pure (ls <> failure)
+
+-- | Where a job runs (tmux's @server_client_get_cwd@): a command client's
+-- own directory, else the target session's.
+jobDirectory :: ServerState -> Maybe Client -> Maybe Session -> IO FilePath
+jobDirectory st mclient msess = case mclient of
+    Just c | c.role == Control, not (T.null c.cwd) -> pure (T.unpack c.cwd)
+    _ -> case msess of
+        Just sess -> readTVarIO sess.startCwd
+        Nothing -> pure (fromMaybe "/" st.home)
+
+-- | Where a @run-shell -b@ with no @-t@ shows its output: the pane its
+-- client is looking at, else the current pane of the best session.
+backgroundPane :: ServerState -> Maybe Client -> IO (Maybe Pane)
+backgroundPane st mclient = do
+    etc <- formatClient st mclient Nothing Nothing
+    mp <- either (const (pure Nothing)) (clientActivePane st) etc
+    case mp of
+        Just p -> pure (Just p)
+        Nothing -> either (const Nothing) (\(_, _, _, p) -> Just p)
+            <$> findTarget st Nothing Target.FindPane Nothing
 
 cmdIfShell :: CommandImpl
 cmdIfShell st mclient args = do
