@@ -3,6 +3,7 @@
 -- @kill-server@.
 module Hat.Server.Command.Session
     ( cmdNewSession
+    , newSessionValueFlags
     , cmdAttachSession
     , cmdKillSession
     , cmdHasSession
@@ -47,6 +48,10 @@ import Hat.Transport.Wire (ServerToClient (DetachOk, Exited))
 -- | @new-session@: create a session, or with @-t@ a member of the target's
 -- session group (sharing its windows), or with @-A@ attach to the named
 -- session when it already exists.
+-- | The @new-session@ flags that take a value.
+newSessionValueFlags :: [Char]
+newSessionValueFlags = "sctnxyFef"
+
 cmdNewSession :: CommandImpl
 cmdNewSession st mclient args
     | Just e <- unknownFlag "new-session" "AdDPX" flags = pure [RErr e]
@@ -70,7 +75,7 @@ cmdNewSession st mclient args
                         Just t -> joinGroup t
                         Nothing -> createNew Nothing
   where
-    (opts, flags, pos) = parseArgs "sctnxyFef" args
+    (opts, flags, pos) = parseArgs newSessionValueFlags args
     firstOf fs = listToMaybe [f | f <- fs, isJust (lookup f opts)]
     sessionNamed nm = atomically $ do
         ss <- Map.elems <$> readTVar st.sessions

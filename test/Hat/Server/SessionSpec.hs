@@ -27,7 +27,7 @@ import Hat.Term.Emulator qualified as Emu
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
-import Hat.Client (nestsOwnServer)
+import Hat.Client (TerminalMode (..), nestsOwnServer, terminalMode)
 import Hat.Model
 import Hat.Model.Options
     (Options (..), OptionName (..), OptionValue (..)
@@ -640,6 +640,13 @@ spec = do
             nestsOwnServer "/tmp/b.sock,123,0" "/tmp/a.sock" `shouldBe` False
         it "an empty TMUX value never refuses" $
             nestsOwnServer "" "/tmp/a.sock" `shouldBe` False
+
+    describe "client terminal mode" $ do
+        it "a detached new-session never grabs the terminal, even bundled" $ do
+            terminalMode [["new-session", "-d"]] `shouldBe` FireAndForget
+            terminalMode [["new", "-dP", "-F", "x"]] `shouldBe` FireAndForget
+        it "-d as another flag's value does not detach" $
+            terminalMode [["new", "-s", "-d"]] `shouldBe` GrabsTerminal
 
     describe "scoped option resolution" $ do
         it "a session overlay shadows the global chain for that session only" $ do
