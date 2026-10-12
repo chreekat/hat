@@ -30,7 +30,6 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -428,11 +427,7 @@ inputLoop d st re client = loop
                     loop
                 Detach -> send client DetachOk
                 Command cmds -> do
-                    replies <- d.runCommands st (Just client) cmds
-                    forM_ replies $ \case
-                        ROutput out -> showToast st client out
-                        RErr e -> showToast st client ("error: " <> e)
-                        RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)
+                    showReplies st client =<< d.runCommands st (Just client) cmds
                     loop
                 ClientHello {} -> pure ()
                 -- Never requested of an attached client.
@@ -583,7 +578,7 @@ selectPaneNumber d st client template num = do
         let numbered = zip [opts.paneBaseIndex ..] order
         forM_ (lookup num numbered) $ \pid -> do
             let target = "%" <> tshow (rawPane pid)
-            toastReplies st client
+            showReplies st client
                 =<< d.runCommandText st (Just client)
                     (T.replace "%%" target template)
 
@@ -752,7 +747,7 @@ runInputs d st client keys = do
             RunCommands cmds -> do
                 writeIORef client.keyState kst { mouseEvent = mev }
                 withCommandBatch st $ forM_ cmds $ \argv ->
-                    toastReplies st client =<< d.runArgv st (Just client) argv
+                    showReplies st client =<< d.runArgv st (Just client) argv
                 after <- readIORef client.keyState
                 pure after { mouseEvent = Nothing, commandState = Nothing }
     st0 <- readIORef client.keyState

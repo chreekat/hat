@@ -56,6 +56,7 @@ import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
+import Hat.Server.Toast (showReplies)
 import Hat.Server.Pane (clockModeKey, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
@@ -493,6 +494,18 @@ spec = do
             _ <- runCopyModeCommand st p "cancel" []
             readTVarIO p.mode `shouldReturn` Nothing
             isJust <$> readTVarIO p.viewBacking `shouldReturn` False
+
+    describe "an attached client's command output" $
+        it "goes to the view mode of the pane it looks at, its errors to a message" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            c <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            showReplies st c [ROutput "one", RErr "bad", ROutput "two"]
+            Just pm <- readTVarIO p.mode
+            (pm.kind, map (rowOf pm) [0, 1]) `shouldBe` (ModeView, ["one", "two"])
+            fmap (.text) <$> readTVarIO c.toast `shouldReturn` Just "error: bad"
 
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do

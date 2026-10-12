@@ -4,7 +4,7 @@ module Hat.Server.Toast
     ( showToast
     , showStyledToast
     , showStyledToastFor
-    , toastReplies
+    , showReplies
     , expireToast
     , dismissToast
     , toastDeadline
@@ -13,7 +13,7 @@ module Hat.Server.Toast
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM_, unless, void, when)
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word64)
@@ -23,6 +23,7 @@ import Hat.Model
 import Hat.Model.Options (Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Locate (clientOptions)
+import Hat.Server.ViewMode (ViewText (..), viewToClient)
 
 -- | Show a server message, its text shown as-is.
 showToast :: ServerState -> Client -> Text -> IO ()
@@ -90,11 +91,14 @@ dismissToast st client = atomically $ do
         writeTVar client.toast Nothing
         bumpDirty st
 
--- | Show a command's replies to the client that asked for it, errors marked.
--- Only the last line survives on screen; a command that means to report more
--- than one line has a pager, not a toast.
-toastReplies :: ServerState -> Client -> [Reply] -> IO ()
-toastReplies st client replies = forM_ replies $ \case
-    ROutput out -> showToast st client out
-    RErr e -> showToast st client ("error: " <> e)
-    RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)
+-- | Show a command's replies to the attached client that asked for it, as
+-- tmux's @cmdq_print@ and @cmdq_error@ do: its output in its active pane's
+-- view mode, its errors as a message.
+showReplies :: ServerState -> Client -> [Reply] -> IO ()
+showReplies st client replies = do
+    let out = [ o | ROutput o <- replies ]
+    unless (null out) $ viewToClient st client ViewParsed out
+    forM_ replies $ \case
+        ROutput _ -> pure ()
+        RErr e -> showToast st client ("error: " <> e)
+        RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)

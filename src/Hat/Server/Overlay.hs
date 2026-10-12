@@ -27,7 +27,7 @@ import Hat.Server.Mouse (MouseInput (..), MouseState (..), parseMouseInput)
 import Hat.Server.View (statusLayout)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
-import Hat.Server.Toast (toastReplies)
+import Hat.Server.Toast (showReplies)
 
 -- | A key or mouse report while the client's window shows a menu (tmux's
 -- @server_client_handle_menu_key@): the menu takes it, and a chosen item's
@@ -81,7 +81,7 @@ runMenuCommand d st client wm cmd = do
     replies <- withCommandBatch st (d.runCommandText st (Just client) cmd)
         `finally` modifyIORef' client.keyState
             (\after -> after { mouseEvent = Nothing, commandState = Nothing })
-    toastReplies st client replies
+    showReplies st client replies
 
 -- | While a chooser is open it owns every keystroke: navigate/search
 -- until Enter (run the item's command and close) or Escape (close). The
@@ -103,7 +103,7 @@ handlePickerInput d st client pk0 keys = do
         Picker.PickerCancel -> closePicker st client
         Picker.PickerRun line -> do
             closePicker st client
-            toastReplies st client =<< d.runCommandText st (Just client) line
+            showReplies st client =<< d.runCommandText st (Just client) line
 
 closePicker :: ServerState -> Client -> IO ()
 closePicker st client = atomically $ do
@@ -146,5 +146,5 @@ handlePromptInput d st client pr0 keys = do
             -- A blank submission cancels: never rename a window to "".
             case answered of
                 Prompt.AnswersDone cmd | not (T.null (T.strip line)) ->
-                    toastReplies st client =<< d.runCommandText st (Just client) cmd
+                    showReplies st client =<< d.runCommandText st (Just client) cmd
                 _ -> pure ()
