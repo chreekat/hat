@@ -588,7 +588,10 @@ paletteOverrides e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t ->
     allocaBytes 768 $ \eff -> allocaBytes 768 $ \dflt -> do
         r1 <- c_get_into t dataColorPalette (castPtr eff)
         r2 <- c_get_into t dataColorPaletteDefault (castPtr dflt)
-        if r1 /= resSuccess || r2 /= resSuccess then pure Map.empty else do
+        effBytes <- BU.unsafePackCStringLen (castPtr eff, 768)
+        dfltBytes <- BU.unsafePackCStringLen (castPtr dflt, 768)
+        if r1 /= resSuccess || r2 /= resSuccess || effBytes == dfltBytes
+            then pure Map.empty else do
             pairs <- mapM (\i -> (,,) i <$> rgbAt eff i <*> rgbAt dflt i) [0 .. 255]
             pure (Map.fromList [ (i, c) | (i, c, d) <- pairs, c /= d ])
 
