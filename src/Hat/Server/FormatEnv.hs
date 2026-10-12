@@ -2,28 +2,39 @@
 -- and expanding formats against it: the shared substrate the status line,
 -- listing, choose, capture, and display commands format against.
 module Hat.Server.FormatEnv
-    ( windowFormatEnv
+    ( Wanted (..)
+    , windowFormatEnv
+    , windowVars
     , windowOwnEnv
+    , windowOwnVars
     , paneFormatEnv
+    , paneVars
     , paneEnvById
     , refreshAutoNames
     , autoName
     , activeClientCounts
     , sessionFormatEnv
+    , sessionVars
+    , demanding
+    , FormatTarget (..)
+    , FormatScope (..)
+    , targetVars
+    , expandAt
     , paneModeEnv
     , resolveShell
     , expandFormat
     , formatCtxFor
     , clientTheme
-    , reachableValues
     , WindowFlagState (..)
     , windowFlags
+    , reachableValues
     , clientFormatVars
     ) where
 
 import Control.Concurrent (forkIO, myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
+import Control.Exception qualified
 import Control.Monad (filterM, forM, forM_, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -46,7 +57,8 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ColorScheme (schemeName)
 import Hat.Server.Format
-    (FormatCtx (..), FormatEnv, evaluateCtx, formatCtx, renderFormatCtx)
+    ( FormatCtx (..), FormatEnv, UndemandedVar (..), evaluateCtx, formatCtx
+    , formatNames, renderFormatCtx )
 import Hat.Server.HookTypes (HookAmbient (..), HooksState (..))
 import Hat.Server.Floating (FloatState (..), modalPane, paneZ, stacking)
 import Hat.Server.Layout
@@ -64,26 +76,61 @@ import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
+-- | Which variables a format environment is built with.
+data Wanted
+    = AllVars
+    | OnlyVars (Set.Set Text)  -- ^ these, where they exist, and no others
+
+wants :: Wanted -> Text -> Bool
+wants AllVars _ = True
+wants (OnlyVars ns) n = n `Set.member` ns
+
+-- | Run a read only when a variable it gives is wanted.
+whenWanted :: Wanted -> [Text] -> IO [(Text, Text)] -> IO [(Text, Text)]
+whenWanted w names act
+    | any (wants w) names = act
+    | otherwise = pure []
+
+-- | The wanted ones among some variables.
+pick :: Wanted -> FormatEnv -> FormatEnv
+pick AllVars m = m
+pick (OnlyVars ns) m = Map.restrictKeys m ns
+
+-- | The wanted options of a resolved set, as format variables.
+optionVars :: Wanted -> Options -> FormatEnv
+optionVars AllVars o = optionFormats o
+optionVars (OnlyVars ns) o =
+    Map.fromList [ (n, v) | n <- Set.toList ns, Just v <- [optionFormat n o] ]
+
+-- | The wanted entries of one scope's own options, as format variables.
+deltaVars :: Wanted -> OptionsDelta -> FormatEnv
+deltaVars AllVars d = deltaFormats d
+deltaVars (OnlyVars ns) d =
+    Map.fromList [ (n, v) | n <- Set.toList ns, Just v <- [deltaFormat n d] ]
+
 windowFormatEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
-windowFormatEnv st sess ix win =
-    Map.union <$> windowOwnEnv st sess ix win <*> sessionFormatEnv st sess
+windowFormatEnv st sess ix win = windowVars st sess ix win AllVars
+
+-- | 'windowFormatEnv', built with just the wanted variables.
+windowVars :: ServerState -> Session -> Int -> Window -> Wanted -> IO FormatEnv
+windowVars st sess ix win w =
+    Map.union <$> windowOwnVars st sess ix win w <*> sessionVars st sess w
 
 -- | A window's own variables (and its window options), without its
 -- session's: what a @W:@ loop item adds over the session's environment.
 windowOwnEnv :: ServerState -> Session -> Int -> Window -> IO FormatEnv
-windowOwnEnv st sess ix win = do
-    eff <- atomically (windowArea st win)
-    (wname, lay, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,,)
-        <$> readTVar win.name <*> readTVar win.layout
+windowOwnEnv st sess ix win = windowOwnVars st sess ix win AllVars
+
+-- | 'windowOwnEnv', built with just the wanted variables.
+windowOwnVars :: ServerState -> Session -> Int -> Window -> Wanted -> IO FormatEnv
+windowOwnVars st sess ix win w = do
+    (wname, cur, mlast, bell, act, auto, zoom) <- atomically $ (,,,,,,)
+        <$> readTVar win.name
         <*> readTVar sess.currentIx <*> (listToMaybe <$> readTVar sess.windowHist)
         <*> readTVar win.bellFlag <*> readTVar win.activity
         <*> readTVar win.autoRename <*> readTVar win.zoomed
     sil <- readTVarIO win.silenceFlag
     fs <- readTVarIO win.floats
-    ps <- readTVarIO win.panes
-    (links, linkNames) <- atomically $ do
-        links <- map fst <$> windowLinks st win
-        (,) links <$> mapM (\s -> readTVar s.name) links
     let flags = windowFlags WindowFlagState
             { flagCurrent = ix == cur
             , flagLast = Just ix == mlast
@@ -93,39 +140,49 @@ windowOwnEnv st sess ix win = do
             , flagModal = isJust fs.modal
             , flagZoomed = isJust zoom
             }
-    winUser <- deltaFormats <$> readTVarIO win.options
-    viewers <- Map.findWithDefault 0 win.id <$> atomically (activeClientCounts st)
-    pure $ Map.union winUser $ Map.fromList
+    sizeVars <- whenWanted w ["window_width", "window_height"] $ do
+        eff <- atomically (windowArea st win)
+        pure [ ("window_width", tshow eff.cols), ("window_height", tshow eff.rows) ]
+    layoutVars <- whenWanted w ["window_layout", "window_visible_layout"] $ do
+        eff <- atomically (windowArea st win)
+        lay <- readTVarIO win.layout
+        pure [ ("window_layout", emitLayoutZ (stacking fs lay) (fitLayout eff lay))
+             , ("window_visible_layout", emitLayout
+                 (fitLayout eff (maybe lay singlePane zoom))) ]
+    paneCount <- whenWanted w ["window_panes"] $ do
+        ps <- readTVarIO win.panes
+        pure [ ("window_panes", tshow (Map.size ps)) ]
+    linkVars <- whenWanted w
+        ["window_linked", "window_linked_sessions", "window_linked_sessions_list"] $ do
+        (links, linkNames) <- atomically $ do
+            links <- map fst <$> windowLinks st win
+            (,) links <$> mapM (\s -> readTVar s.name) links
+        pure [ ("window_linked", if length links > 1 then "1" else "0")
+             -- A session group shares one window map, so it counts once.
+             , ("window_linked_sessions", tshow (length
+                 (List.nubBy (\a b -> a.windows == b.windows) links)))
+             , ("window_linked_sessions_list", T.intercalate "," linkNames) ]
+    viewerVars <- whenWanted w ["window_active_clients"] $ do
+        viewers <- Map.findWithDefault 0 win.id <$> atomically (activeClientCounts st)
+        pure [ ("window_active_clients", tshow viewers) ]
+    winUser <- deltaVars w <$> readTVarIO win.options
+    pure $ Map.union winUser $ pick w $ Map.fromList $
         [ ("window_index", tshow ix)
-        , ("window_active_clients", tshow viewers)
         , ("window_id", "@" <> tshow (rawWindow win.id))
         , ("window_name", wname)
-        , ("window_width", tshow eff.cols)
-        , ("window_height", tshow eff.rows)
-        , ("window_layout", emitLayoutZ (stacking fs lay) (fitLayout eff lay))
-        , ("window_visible_layout", emitLayout
-            (fitLayout eff (maybe lay singlePane zoom)))
         , ("window_raw_flags", flags)
         , ("window_active", if ix == cur then "1" else "0")
         , ("window_flags", flags)
-        , ("window_panes", tshow (Map.size ps))
         , ("window_zoomed_flag", if isJust zoom then "1" else "0")
         , ("window_modal_pane", maybe "" (\p -> "%" <> tshow (rawPane p)) (modalPane fs))
         , ("window_bell_flag", if bell then "1" else "0")
         , ("window_activity_flag", if act then "1" else "0")
         , ("window_silence_flag", if sil then "1" else "0")
         , ("automatic_rename", if auto then "1" else "0")
-        , ("window_linked", if length links > 1 then "1" else "0")
-        -- A session group shares one window map, so it counts once.
-        , ("window_linked_sessions", tshow (length
-            (List.nubBy (\a b -> a.windows == b.windows) links)))
-        , ("window_linked_sessions_list", T.intercalate "," linkNames)
         , ("window_last_flag", if Just ix == mlast then "1" else "0")
         ]
+        <> sizeVars <> layoutVars <> paneCount <> linkVars <> viewerVars
 
--- | The full format environment for a specific pane, including the
--- fields tmux-resurrect's @save.sh@ dumps (pid, command, cursor,
--- history, cwd).
 -- | A pane's @pane_pid@: empty unless its program is still running (tmux:
 -- an open fd), so it also shadows the session's active-pane value.
 panePid :: Pane -> IO Text
@@ -135,48 +192,81 @@ panePid pane = do
         then tshow (Hat.Term.Pty.pid pane.pty)
         else ""
 
+-- | The full format environment for a specific pane, including the
+-- fields tmux-resurrect's @save.sh@ dumps (pid, command, cursor,
+-- history, cwd).
 paneFormatEnv
     :: ServerState -> Session -> Int -> Window -> Int -> Pane -> IO FormatEnv
-paneFormatEnv st sess wix win pix pane = do
-    wenv <- windowFormatEnv st sess wix win
-    dir <- paneCurrentPath pane
-    cmd <- paneCommandName pane
-    scr <- Emu.snapshot pane.emulator
-    hsize <- Emu.scrollbackLength pane.emulator
-    pendingWrap <- Emu.cursorPendingWrap pane.emulator
+paneFormatEnv st sess wix win pix pane = paneVars st sess wix win pix pane AllVars
+
+-- | 'paneFormatEnv', built with just the wanted variables.
+paneVars
+    :: ServerState -> Session -> Int -> Window -> Int -> Pane -> Wanted -> IO FormatEnv
+paneVars st sess wix win pix pane w = do
+    wenv <- windowVars st sess wix win w
     active <- readTVarIO win.activeId
-    title <- Emu.title pane.emulator
+    pathVars <- whenWanted w ["pane_current_path"] $ do
+        dir <- paneCurrentPath pane
+        pure [ ("pane_current_path", T.pack dir) ]
+    cmdVars <- whenWanted w ["pane_current_command"] $ do
+        cmd <- paneCommandName pane
+        pure [ ("pane_current_command", cmd) ]
+    cursorVars <- whenWanted w ["cursor_x", "cursor_y", "cursor_character"] $ do
+        scr <- Emu.snapshot pane.emulator
+        pendingWrap <- Emu.cursorPendingWrap pane.emulator
+        pure [ ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
+             , ("cursor_y", tshow scr.cursor.row)
+             , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
+                   Cell.Glyph c cs _ -> T.pack (c : cs)
+                   Cell.Continuation -> "") ]
+    historyVars <- whenWanted w ["history_size"] $ do
+        hsize <- Emu.scrollbackLength pane.emulator
+        pure [ ("history_size", tshow hsize) ]
+    titleVars <- whenWanted w ["pane_title"] $ do
+        title <- Emu.title pane.emulator
+        pure [ ("pane_title", title) ]
     sz <- readTVarIO pane.size
-    area <- atomically (windowArea st win)
-    (geom, floatVars) <- atomically $ do
-        zoomed <- readTVar win.zoomed
-        lay <- fitLayout area <$> readTVar win.layout
-        fs <- readTVar win.floats
-        hist <- readTVar win.paneHist
-        -- tmux's zoom swaps the whole tree for the zoomed pane alone, so
-        -- nothing floats while a window is zoomed.
-        let floating = isNothing zoomed && isFloating pane.id lay
-            modal = modalPane fs == Just pane.id
-            letters = T.concat
-                [ if pane.id == active then "*" else ""
-                , if listToMaybe hist == Just pane.id then "-" else ""
-                , if zoomed == Just pane.id then "Z" else ""
-                , if floating then "F" else ""
-                , if modal then "O" else "" ]
-        pure ( if zoomed == Just pane.id
-                then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
-                else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
-             , [ ("pane_floating_flag", if floating then "1" else "0")
-               , ("pane_modal_flag", if modal then "1" else "0")
-               , ("pane_z", tshow (paneZ fs lay pane.id))
-               , ("pane_flags", letters) ] )
-    unzoomed <- atomically (List.lookup pane.id <$> unzoomedArrange st area win)
-    (dfg, dbg) <- paneColourVars st sess win pane
-    paneUser <- deltaFormats <$> readTVarIO pane.options
+    geomVars <- whenWanted w (geomNames <> positionNames) $ do
+        area <- atomically (windowArea st win)
+        (geom, floatVars) <- atomically $ do
+            zoomed <- readTVar win.zoomed
+            lay <- fitLayout area <$> readTVar win.layout
+            fs <- readTVar win.floats
+            hist <- readTVar win.paneHist
+            -- tmux's zoom swaps the whole tree for the zoomed pane alone, so
+            -- nothing floats while a window is zoomed.
+            let floating = isNothing zoomed && isFloating pane.id lay
+                modal = modalPane fs == Just pane.id
+                letters = T.concat
+                    [ if pane.id == active then "*" else ""
+                    , if listToMaybe hist == Just pane.id then "-" else ""
+                    , if zoomed == Just pane.id then "Z" else ""
+                    , if floating then "F" else ""
+                    , if modal then "O" else "" ]
+            pure ( if zoomed == Just pane.id
+                    then Just (0, 0, fromIntegral area.cols, fromIntegral area.rows)
+                    else (\c -> (c.xoff, c.yoff, c.sx, c.sy)) <$> paneCell pane.id lay
+                 , [ ("pane_floating_flag", if floating then "1" else "0")
+                   , ("pane_modal_flag", if modal then "1" else "0")
+                   , ("pane_z", tshow (paneZ fs lay pane.id))
+                   , ("pane_flags", letters) ] )
+        pure (floatVars <> panePositionVars area geom)
+    unzoomedVars <- whenWanted w ["pane_unzoomed_width", "pane_unzoomed_height"] $ do
+        area <- atomically (windowArea st win)
+        unzoomed <- atomically (List.lookup pane.id <$> unzoomedArrange st area win)
+        pure $ concat [ [ ("pane_unzoomed_width", tshow (r.endCol - r.startCol))
+                        , ("pane_unzoomed_height", tshow (r.endRow - r.startRow)) ]
+                      | Just r <- [unzoomed] ]
+    colourVars <- whenWanted w ["pane_fg", "pane_bg"] $ do
+        (dfg, dbg) <- paneColourVars st sess win pane
+        pure [ ("pane_fg", dfg), ("pane_bg", dbg) ]
+    paneUser <- deltaVars w <$> readTVarIO pane.options
     mexit <- readTVarIO pane.exited
     (marked, inputOff) <- atomically $ (,) <$> readTVar st.markedPane <*> readTVar pane.inputOff
-    synced <- optionFlag "synchronize-panes"
-        <$> atomically (resolveForPane st sess win pane)
+    syncVars <- whenWanted w ["pane_synchronized"] $ do
+        synced <- optionFlag "synchronize-panes"
+            <$> atomically (resolveForPane st sess win pane)
+        pure [ ("pane_synchronized", if synced then "1" else "0") ]
     -- A signal is reported by number, as tmux does where libc has no
     -- @sys_signame@ (glibc).
     let deadVars = case mexit of
@@ -186,44 +276,40 @@ paneFormatEnv st sess wix win pix pane = do
                 , ("pane_dead_time", tshow (floor e.diedAt :: Integer)) ]
                 <> [ ("pane_dead_status", tshow n) | Just n <- [e.status] ]
                 <> [ ("pane_dead_signal", tshow n) | Just n <- [e.signal] ]
-    pid <- panePid pane
-    let pidVars = [ ("pane_pid", pid) ]
-    ms <- Emu.modes pane.emulator
-    (sgr, utf8) <- Emu.mouseEncoding pane.emulator
-    let flag b = if b then "1" else "0" :: Text
-        mouseVars =
-            [ ("mouse_any_flag", flag (ms.mouse /= Emu.MouseOff))
-            , ("mouse_standard_flag", flag (ms.mouse == Emu.MouseClick))
-            , ("mouse_button_flag", flag (ms.mouse == Emu.MouseDrag))
-            , ("mouse_all_flag", flag (ms.mouse == Emu.MouseMove))
-            , ("mouse_sgr_flag", flag sgr)
-            , ("mouse_utf8_flag", flag utf8)
-            , ("alternate_on", flag ms.altScreen) ]
-    pure $ Map.union paneUser $ Map.union (Map.fromList $ deadVars <> pidVars <> mouseVars <>
+    pidVars <- whenWanted w ["pane_pid"] $ do
+        pid <- panePid pane
+        pure [ ("pane_pid", pid) ]
+    mouseVars <- whenWanted w mouseNames $ do
+        ms <- Emu.modes pane.emulator
+        (sgr, utf8) <- Emu.mouseEncoding pane.emulator
+        let flag b = if b then "1" else "0" :: Text
+        pure [ ("mouse_any_flag", flag (ms.mouse /= Emu.MouseOff))
+             , ("mouse_standard_flag", flag (ms.mouse == Emu.MouseClick))
+             , ("mouse_button_flag", flag (ms.mouse == Emu.MouseDrag))
+             , ("mouse_all_flag", flag (ms.mouse == Emu.MouseMove))
+             , ("mouse_sgr_flag", flag sgr)
+             , ("mouse_utf8_flag", flag utf8)
+             , ("alternate_on", flag ms.altScreen) ]
+    pure $ Map.union paneUser $ Map.union (pick w $ Map.fromList $ deadVars <> pidVars <> mouseVars <>
         [ ("pane_id", "%" <> tshow (rawPane pane.id))
         , ("pane_index", tshow pix)
-        , ("pane_current_path", T.pack dir)
-        , ("pane_current_command", cmd)
         , ("pane_active", if pane.id == active then "1" else "0")
         , ("pane_marked", if marked == Just pane.id then "1" else "0")
         , ("pane_marked_set", if isJust marked then "1" else "0")
         , ("pane_input_off", if inputOff then "1" else "0")
-        , ("pane_synchronized", if synced then "1" else "0")
-        , ("pane_title", title)
-        , ("cursor_x", tshow (scr.cursor.col + fromEnum pendingWrap))
-        , ("cursor_y", tshow scr.cursor.row)
-        , ("cursor_character", case (Emu.screenCell scr scr.cursor).content of
-              Cell.Glyph c cs _ -> T.pack (c : cs)
-              Cell.Continuation -> "")
-        , ("history_size", tshow hsize)
         , ("pane_width", tshow sz.cols)
         , ("pane_height", tshow sz.rows)
-        , ("pane_fg", dfg)
-        , ("pane_bg", dbg)
         ]
-        <> concat [ [ ("pane_unzoomed_width", tshow (r.endCol - r.startCol))
-                    , ("pane_unzoomed_height", tshow (r.endRow - r.startRow)) ]
-                  | Just r <- [unzoomed] ] <> floatVars <> panePositionVars area geom) wenv
+        <> pathVars <> cmdVars <> syncVars <> titleVars <> cursorVars <> historyVars
+        <> colourVars <> unzoomedVars <> geomVars) wenv
+  where
+    geomNames = ["pane_floating_flag", "pane_modal_flag", "pane_z", "pane_flags"]
+    positionNames =
+        [ "pane_left", "pane_top", "pane_x", "pane_y", "pane_right", "pane_bottom"
+        , "pane_at_left", "pane_at_top", "pane_at_right", "pane_at_bottom" ]
+    mouseNames =
+        [ "mouse_any_flag", "mouse_standard_flag", "mouse_button_flag"
+        , "mouse_all_flag", "mouse_sgr_flag", "mouse_utf8_flag", "alternate_on" ]
 
 -- | @pane_fg@ and @pane_bg@: the colours a pane's default-coloured cells
 -- draw in (see 'Hat.Server.Render.paneDefaults'), its styles read as
@@ -349,64 +435,81 @@ activeClientCounts st = do
 
 -- Session-level format environment for the active window and pane.
 sessionFormatEnv :: ServerState -> Session -> IO FormatEnv
-sessionFormatEnv st sess = do
-    hostname <- nodeName <$> getSystemID
-    (sname, wEnv, mactive, nclients, nwindows) <- atomically $ do
-        sname <- readTVar sess.name
-        mwin <- currentWindow sess
-        cur <- readTVar sess.currentIx
-        nwindows <- Map.size <$> readTVar sess.windows
-        counts <- activeClientCounts st
-        wEnv <- case mwin of
-            Nothing -> pure []
-            Just win -> do
-                wname <- readTVar win.name
-                pure [ ("window_index", tshow cur)
-                     , ("window_id", "@" <> tshow (rawWindow win.id))
-                     , ("window_name", wname)
-                     , ( "window_active_clients"
-                       , tshow (Map.findWithDefault 0 win.id counts) )
-                     ]
-        mactive <- maybe (pure Nothing) activePane mwin
-        cs <- sessionClients st sess.id
-        gEnv <- groupEnv
-        alerts <- sessionAlerts sess
-        pure (sname, wEnv <> gEnv <> alerts, mactive, length cs, nwindows)
+sessionFormatEnv st sess = sessionVars st sess AllVars
+
+-- | 'sessionFormatEnv', built with just the wanted variables.
+sessionVars :: ServerState -> Session -> Wanted -> IO FormatEnv
+sessionVars st sess w = do
+    hostVars <- whenWanted w ["host"] $ do
+        hostname <- nodeName <$> getSystemID
+        pure [ ("host", T.pack hostname) ]
+    (sname, mwin, cur, nwindows) <- atomically $ (,,,)
+        <$> readTVar sess.name <*> currentWindow sess
+        <*> readTVar sess.currentIx <*> (Map.size <$> readTVar sess.windows)
+    let wEnv = case mwin of
+            Nothing -> []
+            Just win ->
+                [ ("window_index", tshow cur)
+                , ("window_id", "@" <> tshow (rawWindow win.id)) ]
+    wNameVars <- whenWanted w ["window_name"] $ case mwin of
+        Nothing -> pure []
+        Just win -> do
+            wname <- readTVarIO win.name
+            pure [ ("window_name", wname) ]
+    viewerVars <- whenWanted w ["window_active_clients"] $ do
+        counts <- atomically (activeClientCounts st)
+        pure $ ("window_active_clients", "0") : case mwin of
+            Nothing -> []
+            Just win ->
+                [ ( "window_active_clients"
+                  , tshow (Map.findWithDefault 0 win.id counts) ) ]
+    attachedVars <- whenWanted w ["session_attached"] $ do
+        cs <- atomically (sessionClients st sess.id)
+        pure [ ("session_attached", tshow (length cs)) ]
+    gEnv <- whenWanted w groupNames (atomically groupEnv)
+    alerts <- whenWanted w ["session_alert", "session_alerts"] (atomically (sessionAlerts sess))
+    mactive <- maybe (pure Nothing) (atomically . activePane) mwin
     pEnv <- case mactive of
         Nothing -> pure []
         Just pane -> do
-            dir <- paneCurrentPath pane
-            title <- Emu.title pane.emulator
-            cmd <- paneCommandName pane
+            pathVars <- whenWanted w ["pane_current_path"] $ do
+                dir <- paneCurrentPath pane
+                pure [ ("pane_current_path", T.pack dir) ]
+            titleVars <- whenWanted w ["pane_title"] $ do
+                title <- Emu.title pane.emulator
+                pure [ ("pane_title", title) ]
+            cmdVars <- whenWanted w ["pane_current_command"] $ do
+                cmd <- paneCommandName pane
+                pure [ ("pane_current_command", cmd) ]
+            pidVars <- whenWanted w ["pane_pid"] $ do
+                pid <- panePid pane
+                pure [ ("pane_pid", pid) ]
             modeEnv <- paneModeEnv st pane
-            pid <- panePid pane
-            pure $ [ ("pane_current_path", T.pack dir)
-                   , ("pane_current_command", cmd)
-                   , ("pane_pid", pid)
-                   , ("pane_active", "1")
-                   , ("pane_title", title)
-                   , ("pane_id", "%" <> tshow (rawPane pane.id))
-                   ] <> modeEnv
-    sz <- readTVarIO sess.lastSize
+            pure $ pathVars <> cmdVars <> pidVars <>
+                [ ("pane_active", "1") ] <> titleVars <>
+                [ ("pane_id", "%" <> tshow (rawPane pane.id)) ] <> modeEnv
+    sizeVars <- whenWanted w ["window_width", "window_height"] $ do
+        sz <- readTVarIO sess.lastSize
+        pure [ ("window_width", tshow sz.cols), ("window_height", tshow sz.rows) ]
+    schemeVars <- whenWanted w ["color_scheme"] $ do
+        msch <- readTVarIO st.colorScheme
+        pure [ ("color_scheme", maybe "" schemeName msch) ]
     -- Options are readable as #{status-left}, #{@foo}, … so if-shell theme
     -- conditionals (@#{@pane-theme}@) resolve.
-    sessOpts <- optionFormats <$> atomically (resolveForSession st sess)
-    msch <- readTVarIO st.colorScheme
-    pure . Map.union sessOpts . Map.fromList $
+    sessOpts <- optionVars w <$> atomically (resolveForSession st sess)
+    pure . Map.union sessOpts . pick w . Map.fromList $
         [ ("session_name", sname)
         , ("session_id", "$" <> tshow (rawSession sess.id))
-        , ("session_attached", tshow nclients)
         , ("session_windows", tshow nwindows)
         , ("session_created", tshow (floor sess.createdAt :: Integer))
         , ("session_restores", tshow sess.restores)
-        , ("host", T.pack hostname)
-        , ("window_active_clients", "0")
-        , ("window_width", tshow sz.cols)
-        , ("window_height", tshow sz.rows)
-        , ("color_scheme", maybe "" schemeName msch)
         ]
-        <> wEnv <> pEnv
+        <> hostVars <> attachedVars <> sizeVars <> schemeVars
+        <> wEnv <> wNameVars <> viewerVars <> gEnv <> alerts <> pEnv
   where
+    groupNames =
+        [ "session_grouped", "session_group", "session_group_size"
+        , "session_group_list", "session_group_attached", "session_group_many_attached" ]
     groupEnv = readTVar sess.group >>= \case
         Nothing -> pure [("session_grouped", "0")]
         Just g -> do
@@ -520,6 +623,63 @@ formatCtxFor st env0 = do
         , clients = clientItems
         , paneLines = visibleLines
         }
+
+-- | The variables 'formatCtxFor' reads its loop and search data through.
+contextIds :: Set.Set Text
+contextIds = Set.fromList ["session_id", "window_id", "pane_id"]
+
+-- | Expand against just the variables some formats read: their names
+-- ('formatNames'), those of every value they reach that is itself a
+-- format, the context ids, and any further one an expansion turns out to
+-- look up ('UndemandedVar'). @expand@ forces everything it reads. Also
+-- the names the variables were built for, and the variables.
+demanding
+    :: ServerState -> (Wanted -> IO FormatEnv) -> [Text] -> (FormatCtx -> IO a)
+    -> IO (Set.Set Text, FormatEnv, a)
+demanding st build formats expand =
+    grow Set.empty Map.empty (contextIds <> foldMap formatNames formats)
+  where
+    grow asked env pending
+        | Set.null pending = attempt asked env
+        | otherwise = do
+            more <- build (OnlyVars pending)
+            let asked' = asked <> pending
+                reached = foldMap formatNames [ v | v <- Map.elems more, "#" `T.isInfixOf` v ]
+            grow asked' (Map.union env more) (reached `Set.difference` asked')
+    attempt asked env = do
+        ctx <- formatCtxFor st env
+        r <- try (expand ctx { demanded = Just asked })
+        case r of
+            Right a -> pure (asked, env, a)
+            Left (UndemandedVar n) -> grow asked env (Set.singleton n)
+
+-- | Where a format expands: a session, window or pane, with variables
+-- given over its own.
+data FormatTarget = FormatTarget
+    { scope   :: FormatScope
+    , overlay :: FormatEnv
+    }
+
+data FormatScope
+    = InSession Session
+    | InWindow Session Int Window  -- ^ the window and its index
+    | InPane Session Int Window Int Pane  -- ^ … and the pane and its index
+
+-- | A target's variables, built with just the wanted ones.
+targetVars :: ServerState -> FormatTarget -> Wanted -> IO FormatEnv
+targetVars st t w = Map.union (pick w t.overlay) <$> case t.scope of
+    InSession sess -> sessionVars st sess w
+    InWindow sess wix win -> windowVars st sess wix win w
+    InPane sess wix win pix pane -> paneVars st sess wix win pix pane w
+
+-- | Expand a format at a target, building just the variables it reads.
+expandAt :: ServerState -> FormatTarget -> Text -> IO Text
+expandAt st t fmt = do
+    (_, _, txt) <- demanding st (targetVars st t) [fmt] (expandForced fmt)
+    pure txt
+
+expandForced :: Text -> FormatCtx -> IO Text
+expandForced fmt ctx = Control.Exception.evaluate (renderFormatCtx ctx fmt)
 
 -- | The theme a hat client draws with (see 'resolveTheme'): every client
 -- shares the server's colour scheme and draws RGB colours.

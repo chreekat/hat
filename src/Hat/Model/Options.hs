@@ -38,7 +38,9 @@ module Hat.Model.Options
     , optionArray
       -- * As format variables
     , optionFormats
+    , optionFormat
     , deltaFormats
+    , deltaFormat
       -- * Odds and ends
     , lookupCommandAlias
     , quoteIfNeeded
@@ -352,22 +354,43 @@ optionArray n o = case optionValue n o of
 -- arrays as their entries joined by spaces.
 optionFormats :: Options -> Map Text Text
 optionFormats o = Map.union o.user $ Map.fromList
-    [ (d.name, formatText d.name v)
-    | d <- optionTable, isLive d, d.role == PlainOption
-    , Just v <- [Map.lookup d.name o.values] ]
+    [ (d.name, v) | d <- optionTable, Just v <- [registeredFormat d o] ]
+
+-- | One option as a format variable, as 'optionFormats' has it.
+optionFormat :: Text -> Options -> Maybe Text
+optionFormat n o = case Map.lookup n o.user of
+    Just v -> Just v
+    Nothing -> lookupOptionDef n >>= \d -> registeredFormat d o
+
+-- | A registered option as a format variable, unless it is not one.
+registeredFormat :: OptionDef -> Options -> Maybe Text
+registeredFormat d o
+    | isLive d && d.role == PlainOption = valueFormat d <$> Map.lookup d.name o.values
+    | otherwise = Nothing
 
 -- | One scope's own entries as format variables, rendered as 'optionFormats'
 -- renders them.
 deltaFormats :: OptionsDelta -> Map Text Text
 deltaFormats d = Map.fromList
-    [ (n, formatText n v)
-    | (n, v) <- deltaEntries d
-    , "@" `T.isPrefixOf` n || maybe False isLive (lookupOptionDef n) ]
+    [ (n, v) | (n, _) <- deltaEntries d, Just v <- [deltaFormat n d] ]
+
+-- | One of a scope's own entries as a format variable, as 'deltaFormats'
+-- has it.
+deltaFormat :: Text -> OptionsDelta -> Maybe Text
+deltaFormat n d = do
+    v <- lookupDelta n d
+    if "@" `T.isPrefixOf` n || maybe False isLive (lookupOptionDef n)
+        then Just (formatText n v)
+        else Nothing
 
 -- | tmux's numeric @options_to_string@.
 formatText :: Text -> OptionValue -> Text
-formatText n v = case ((.kind) <$> lookupOptionDef n, v) of
-    (Just KFlag, OVScalar t) -> if t == "on" then "1" else "0"
+formatText n v = maybe (valueText v) (`valueFormat` v) (lookupOptionDef n)
+
+-- | 'formatText' for a registered option.
+valueFormat :: OptionDef -> OptionValue -> Text
+valueFormat d v = case (d.kind, v) of
+    (KFlag, OVScalar t) -> if t == "on" then "1" else "0"
     _ -> valueText v
 
 -- | The command a name aliases, if any: the first @name=command@ entry in

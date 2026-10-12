@@ -50,14 +50,14 @@ import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
-    (WindowFlagState (..), activeClientCounts, clientTheme, expandFormat, formatCtxFor,
-     paneFormatEnv, reachableValues, sessionFormatEnv, windowFlags,
-     windowFormatEnv, windowOwnEnv)
+    (FormatScope (..), FormatTarget (..), WindowFlagState (..),
+     activeClientCounts, clientTheme, expandAt, formatCtxFor,
+     reachableValues, sessionFormatEnv, windowFlags, windowOwnEnv)
 import Hat.Server.Floating (FloatState (..))
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
 import Hat.Server.Locate (locatePane, paneIndexOf)
-import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
+import Hat.Server.PaneColours (Expand, paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
@@ -146,6 +146,7 @@ renderOnce st client = do
     (csize, fullFlag) <- atomically $
         (,) <$> readTVar client.size <*> swapTVar client.needsFull False
     opts <- readTVarIO st.options
+    let expand = expandAt st
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions
@@ -187,7 +188,7 @@ renderOnce st client = do
                     Just pane -> do
                         pv <- paneView st pane
                         popts <- atomically (resolveForPane st sess win pane)
-                        dflt <- paneDefaultColours st th sess win pane popts
+                        dflt <- paneDefaultColours st expand th sess win pane popts
                         palette <- panePalette th pane popts
                         pure [(pidL, (withPaneColours dflt palette pv, dflt))]
             let paneViews = Map.fromList [ (p, pv) | (p, (pv, _)) <- painted ]
@@ -196,8 +197,8 @@ renderOnce st client = do
             prevOrigins <- readIORef client.lastOrigins
             let sceneArea = csize
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
-            chrome <- cachedChrome st th client sess win eff sceneArea rects floats defaults
-                active rowOff
+            chrome <- cachedChrome st expand th client sess win eff sceneArea rects floats
+                defaults active rowOff
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect shown
                                 , cells = V.map (V.drop skip.col) (V.drop skip.row pv.cells)
@@ -297,8 +298,8 @@ renderOnce st client = do
                         sx = r.endCol - r.startCol
                         fgc = Cell.defaultStyle { Cell.fg = colourFor pid }
                     mformat <- if T.null fmt then pure Nothing else do
-                        env <- paneFormatEnv st sess wix win n pane
-                        expanded <- expandFormat st env fmt
+                        expanded <- expand
+                            (FormatTarget (InPane sess wix win n pane) Map.empty) fmt
                         pure (Just (drawnCells (formatDraw th fgc expanded) sx))
                     pure [ (Pos (p.row + r.startRow) (p.col + r.startCol), cell)
                          | (p, cell) <- DisplayPanes.panesStamp (colourFor pid) n
@@ -316,7 +317,7 @@ renderOnce st client = do
     mpopup <- readTVarIO client.popup
     (frame3, origins3, cursor'') <- case (mpopup, view) of
         (Just p, Just (sess, win, _, _, _, _)) -> do
-            (grid, rect, cur) <- popupView st sess win p
+            (grid, rect, cur) <- popupView st expand sess win p
             pure (overlayGrid frame'' rect grid, volatileRows rect origins'', cur)
         _ -> pure (frame'', origins'', if menuShown then (fst cursor', False) else cursor')
     old <- readIORef client.lastFrame
@@ -377,17 +378,18 @@ renderOnce st client = do
 -- every frame in the client's current window's context, under the colours
 -- its flags give; where it goes; and its command's cursor.
 popupView
-    :: ServerState -> Session -> Window -> Popup
+    :: ServerState -> Expand -> Session -> Window -> Popup
     -> IO (V.Vector (V.Vector Cell.Cell), Rect, (Pos, Bool))
-popupView st sess win p = do
+popupView st expand sess win p = do
     th <- clientTheme st
     ps <- readTVarIO p.state
     scr <- Emu.snapshot p.screen
     (wix, wopts) <- atomically $ (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
-    env <- windowFormatEnv st sess wix win
     let styleOf name = do
             let raw = optionText name wopts
-            expanded <- if "#{" `T.isInfixOf` raw then expandFormat st env raw else pure raw
+            expanded <- if "#{" `T.isInfixOf` raw
+                then expand (FormatTarget (InWindow sess wix win) Map.empty) raw
+                else pure raw
             pure (styleCell th expanded)
     dflt <- (\c -> overrideColours th c ps.style) <$> styleOf "popup-style"
     bdr <- (\c -> overrideColours th c ps.borderStyle) <$> styleOf "popup-border-style"
@@ -616,10 +618,10 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 -- its cells differ, so an unchanged chrome keeps its 'Chrome' generation
 -- and every row's chrome provenance stays matchable.
 cachedChrome
-    :: ServerState -> Theme -> Client -> Session -> Window -> Size -> Size
+    :: ServerState -> Expand -> Theme -> Client -> Session -> Window -> Size -> Size
     -> [(PaneId, Rect)] -> [FloatingPane] -> Map.Map PaneId (Cell.Color, Cell.Color) -> PaneId
     -> Int -> IO Chrome
-cachedChrome st th client sess win eff sceneArea rects floats defaults active rowOff = do
+cachedChrome st expand th client sess win eff sceneArea rects floats defaults active rowOff = do
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
     (input, look2, panes) <- atomically
@@ -643,12 +645,12 @@ cachedChrome st th client sess win eff sceneArea rects floats defaults active ro
     -- is drawn over a border.
     styles <- if Set.disjoint kinds (Set.fromList [BorderChrome, StatusChrome])
         then pure []
-        else forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st th sess win cp.pane
+        else forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st expand th sess win cp.pane
             cp.options (if cp.pane.id == active then "pane-active-border-style" else "pane-border-style")
     let look0 = look1 { paneStyles = Map.fromList styles }
-    look <- withStatusLines st th sess win scene kinds panes look0
-        >>= withFills st th sess win kinds
-        >>= withMenu st th sess win mmenu
+    look <- withStatusLines expand th sess win scene kinds panes look0
+        >>= withFills st expand th sess win kinds
+        >>= withMenu st expand th sess win mmenu
     case mcc of
         Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
             pure cc.chrome
@@ -748,22 +750,24 @@ chromeInputs st th sess win eff sceneArea rects floats active mmenu = do
 -- (as tmux's @menu_reapply_styles@) and expanded in the menu's target's
 -- context, under the colours its flags give.
 withMenu
-    :: ServerState -> Theme -> Session -> Window -> Maybe WindowMenu -> ChromeLook
+    :: ServerState -> Expand -> Theme -> Session -> Window -> Maybe WindowMenu -> ChromeLook
     -> IO ChromeLook
-withMenu st th sess win mmenu look = case mmenu of
+withMenu st expand th sess win mmenu look = case mmenu of
     Nothing -> pure look
     Just wm -> do
         (wix, wopts, ps) <- atomically $ (,,)
             <$> readTVar sess.currentIx <*> resolveForWindow st sess win <*> readTVar win.panes
         let (_, _, pid) = wm.target
-        env <- case Map.lookup pid ps of
+        scope <- case Map.lookup pid ps of
             Just pane -> do
                 pix <- paneIndexOf st win pane
-                paneFormatEnv st sess wix win pix pane
-            Nothing -> windowFormatEnv st sess wix win
+                pure (InPane sess wix win pix pane)
+            Nothing -> pure (InWindow sess wix win)
         let styleOf name = do
                 let raw = optionText name wopts
-                expanded <- if "#{" `T.isInfixOf` raw then expandFormat st env raw else pure raw
+                expanded <- if "#{" `T.isInfixOf` raw
+                    then expand (FormatTarget scope Map.empty) raw
+                    else pure raw
                 pure (styleCell th expanded)
         sty <- styleOf "menu-style"
         sel <- styleOf "menu-selected-style"
@@ -775,16 +779,17 @@ withMenu st th sess win mmenu look = case mmenu of
         pure look { menuCells = menuGrid th mlook wm }
 
 -- | The window's @fill-character@ cells, when the scene has room for them.
-withFills :: ServerState -> Theme -> Session -> Window -> Set ChromeKind -> ChromeLook -> IO ChromeLook
-withFills st th sess win kinds look
+withFills
+    :: ServerState -> Expand -> Theme -> Session -> Window -> Set ChromeKind -> ChromeLook
+    -> IO ChromeLook
+withFills st expand th sess win kinds look
     | FillChrome `Set.notMember` kinds = pure look
     | otherwise = do
         (wix, wopts) <- atomically $
             (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
-        env <- windowFormatEnv st sess wix win
-        let fill inside = fillCell th look.windowStyle <$> expandFormat st
-                (Map.insert "is_inside" (flag inside)
-                    (Map.insert "is_outside" (flag (not inside)) env))
+        let fill inside = fillCell th look.windowStyle <$> expand
+                (FormatTarget (InWindow sess wix win) (Map.fromList
+                    [ ("is_inside", flag inside), ("is_outside", flag (not inside)) ]))
                 (optionText "fill-character" wopts)
             flag b = if b then "1" else "0"
         fillInside <- fill True
@@ -794,9 +799,9 @@ withFills st th sess win kinds look
 -- | Draw each pane's @pane-border-format@ over the border its status line
 -- replaces (tmux's @window_make_pane_status@).
 withStatusLines
-    :: ServerState -> Theme -> Session -> Window -> Scene -> Set ChromeKind
+    :: Expand -> Theme -> Session -> Window -> Scene -> Set ChromeKind
     -> [ChromePane] -> ChromeLook -> IO ChromeLook
-withStatusLines st th sess win scene kinds panes look
+withStatusLines expand th sess win scene kinds panes look
     | StatusChrome `Set.notMember` kinds = pure look
     | otherwise = do
         wix <- atomically (readTVar sess.currentIx)
@@ -806,8 +811,9 @@ withStatusLines st th sess win scene kinds panes look
             case statusBase lineSet sty cp.number scene cp.pane.id of
                 Nothing -> pure []
                 Just base -> do
-                    env <- paneFormatEnv st sess wix win cp.number cp.pane
-                    expanded <- expandFormat st env (optionText "pane-border-format" cp.options)
+                    expanded <- expand
+                        (FormatTarget (InPane sess wix win cp.number cp.pane) Map.empty)
+                        (optionText "pane-border-format" cp.options)
                     pure [ (cp.pane.id, formatDraw th sty expanded base) ]
         pure look { paneLines = Map.fromList (concat lines') }
 
@@ -917,8 +923,7 @@ copyLook st pane = do
         Nothing -> pure (global, pure)
         Just (sess, win, popts, wix) -> do
             pix <- paneIndexOf st win pane
-            env <- paneFormatEnv st sess wix win pix pane
-            pure (popts, expandFormat st env)
+            pure (popts, expandAt st (FormatTarget (InPane sess wix win pix pane) Map.empty))
     let raw name = optionText name opts
         style name
             | "#{" `T.isInfixOf` raw name = styleCell th <$> expand (raw name)

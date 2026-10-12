@@ -3,7 +3,8 @@
 -- @window-active-style@), its palette (@pane-colours@ under the program's
 -- OSC 4 changes), and what it answers its program's colour queries with.
 module Hat.Server.PaneColours
-    ( paneStyleOption
+    ( Expand
+    , paneStyleOption
     , paneDefaultColours
     , panePalette
     , oscColourReply
@@ -22,24 +23,27 @@ import Data.Word (Word8)
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.FormatDraw (colourValue, styleCell)
-import Hat.Server.FormatEnv (clientTheme, expandFormat, paneFormatEnv)
+import Hat.Server.FormatEnv
+    (FormatScope (..), FormatTarget (..), clientTheme, expandAt)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Render (paneDefaults)
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
+-- | How a format expands at a target.
+type Expand = FormatTarget -> Text -> IO Text
+
 -- | A pane's style option, its formats expanded in the pane's context
 -- first (tmux's @style_add@ with the pane's format tree).
 paneStyleOption
-    :: ServerState -> Theme -> Session -> Window -> Pane -> Options -> Text
+    :: ServerState -> Expand -> Theme -> Session -> Window -> Pane -> Options -> Text
     -> IO Cell.Style
-paneStyleOption st th sess win pane popts name
+paneStyleOption st expand th sess win pane popts name
     | "#{" `T.isInfixOf` raw = do
         wix <- atomically (readTVar sess.currentIx)
         pix <- paneIndexOf st win pane
-        env <- paneFormatEnv st sess wix win pix pane
-        styleCell th <$> expandFormat st env raw
+        styleCell th <$> expand (FormatTarget (InPane sess wix win pix pane) Map.empty) raw
     | otherwise = pure (styleCell th raw)
   where
     raw = optionText name popts
@@ -47,12 +51,12 @@ paneStyleOption st th sess win pane popts name
 -- | The foreground and background a pane's default-coloured cells draw in
 -- (tmux's @tty_default_colours@).
 paneDefaultColours
-    :: ServerState -> Theme -> Session -> Window -> Pane -> Options
+    :: ServerState -> Expand -> Theme -> Session -> Window -> Pane -> Options
     -> IO (Cell.Color, Cell.Color)
-paneDefaultColours st th sess win pane popts = do
+paneDefaultColours st expand th sess win pane popts = do
     active <- readTVarIO win.activeId
-    ws <- paneStyleOption st th sess win pane popts "window-style"
-    was <- paneStyleOption st th sess win pane popts "window-active-style"
+    ws <- paneStyleOption st expand th sess win pane popts "window-style"
+    was <- paneStyleOption st expand th sess win pane popts "window-active-style"
     (pfg, pbg) <- Emu.appDefaultColours pane.emulator
     let rgb = maybe Cell.DefaultColor (\(r, g, b) -> Cell.RGB r g b)
     pure (paneDefaults (pane.id == active) (rgb pfg, rgb pbg) ws was)
@@ -93,7 +97,7 @@ queryDefaultColour st pane target = paneContext st pane >>= \case
     Nothing -> pure Nothing
     Just (sess, win, popts) -> do
         th <- clientTheme st
-        (fg, bg) <- paneDefaultColours st th sess win pane popts
+        (fg, bg) <- paneDefaultColours st (expandAt st) th sess win pane popts
         pure (colourRgb (case target of
             Emu.Foreground -> fg
             Emu.Background -> bg))

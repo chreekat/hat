@@ -75,7 +75,8 @@ import Hat.Server.Floating (noFloats)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
 import Hat.Server.Render (blankFrame)
-import Hat.Server.FormatEnv (paneModeEnv, sessionFormatEnv)
+import Hat.Server.FormatEnv
+    (Wanted (..), paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv)
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.Resize
     (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
@@ -324,6 +325,26 @@ spec = do
                     (insertDelta "@v" (OVScalar "local"))
             env <- sessionFormatEnv st sess
             Map.lookup "@v" env `shouldBe` Just "local"
+
+    describe "format variables built for some names" $
+        it "agree with the full environment on those names" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            (adopted, release) <- adoptedPane 0
+            emu <- Emu.newEmulator Size { rows = 24, cols = 80 } 100
+            let pane = adopted { emulator = emu }
+            atomically $ do
+                writeTVar win.panes (Map.singleton pane.id pane)
+                writeTVar pane.home (Just (sess.id, win))
+                modifyTVar' sess.options (insertDelta "@v" (OVScalar "local"))
+            (do full <- paneFormatEnv st sess 0 win 0 pane
+                let built ns = paneVars st sess 0 win 0 pane (OnlyVars (Set.fromList ns))
+                    names = Map.keys full
+                built names `shouldReturn` full
+                built ("nope" : "@nope" : names) `shouldReturn` full
+                mapM_ (\n -> built [n] `shouldReturn` Map.restrictKeys full (Set.singleton n))
+                    names)
+                `finally` release
 
     describe "session format counts" $ do
         it "session_created and session_restores expose identity metadata" $ do
