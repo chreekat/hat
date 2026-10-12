@@ -175,17 +175,51 @@ spec = do
             st.histIx `shouldBe` Nothing
             st.pending `shouldBe` ""
 
+    describe "templateReplace" $ do
+        it "escapes a single quote for %%, which sits inside single quotes" $
+            templateReplace "set @r '%%'" "can't ; x" 1
+                `shouldBe` "set @r 'can'\\''t ; x'"
+
+        it "replaces only the first %%" $
+            templateReplace "a '%%' ; b '%%'" "v" 1 `shouldBe` "a 'v' ; b '%%'"
+
+        it "backslash-escapes the double-quote specials for %%%" $
+            templateReplace "set @r \"%%%\"" "a\"$;~\\z" 1
+                `shouldBe` "set @r \"a\\\"\\$\\;\\~\\\\z\""
+
+        it "replaces every %N of its own index raw" $
+            templateReplace "x %1 ; y %1 %2" "v ; w" 1 `shouldBe` "x v ; w ; y v ; w %2"
+
+        it "backslash-escapes the double-quote specials for %N%" $
+            templateReplace "\"%2%\"" "b\"$" 2 `shouldBe` "\"b\\\"\\$\""
+
+        it "leaves a lone % alone" $
+            templateReplace "50% %x" "v" 1 `shouldBe` "50% %x"
+
     describe "applyTemplate" $ do
-        it "substitutes %% with the typed line" $
-            applyTemplate "rename-window '%%'" "my win"
-                `shouldBe` "rename-window 'my win'"
-
-        it "substitutes %1 as an alias for %%" $
-            applyTemplate "rename-window '%1'" "logs"
-                `shouldBe` "rename-window 'logs'"
-
         it "runs the typed line verbatim when the template is empty" $
-            applyTemplate "" "new-window" `shouldBe` "new-window"
+            applyTemplate "" ["new-window"] `shouldBe` "new-window"
+
+        it "gives each answer its own index, and the next %% to each" $
+            applyTemplate "a %1 %2 '%%' '%%'" ["x", "y"] `shouldBe` "a x y 'x' 'y'"
+
+    describe "answerPrompt" $ do
+        let two = (promptFor "one " "" "set @a %1 ; set @b %2")
+                { queued = [("two ", "init")] }
+
+        it "asks the queued prompt next, with its own label and input" $
+            case answerPrompt two "x" of
+                NextPrompt nxt -> do
+                    nxt.promptLabel `shouldBe` "two "
+                    nxt.input `shouldBe` "init"
+                    nxt.queued `shouldBe` []
+                other -> expectationFailure ("expected NextPrompt: " <> show other)
+
+        it "splices every answer once the last prompt is answered" $
+            case answerPrompt two "x" of
+                NextPrompt nxt ->
+                    answerPrompt nxt "y" `shouldBe` AnswersDone "set @a x ; set @b y"
+                other -> expectationFailure ("expected NextPrompt: " <> show other)
 
     describe "status-keys vi" $ do
         let viPrompt = emptyPrompt

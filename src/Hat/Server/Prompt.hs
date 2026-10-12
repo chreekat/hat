@@ -6,13 +6,17 @@ module Hat.Server.Prompt
     ( PromptEdit (..)
     , emptyPrompt
     , promptFor
+    , PromptAnswered (..)
+    , answerPrompt
     , applyTemplate
+    , templateReplace
     , editPrompt
     , pushHistory
     , addHistory
     ) where
 
-import Data.Char (isAlphaNum, isSpace)
+import Data.Char (digitToInt, isAlphaNum, isDigit, isSpace)
+import Data.List qualified as List
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -36,6 +40,8 @@ emptyPrompt = PromptState
     , histIx = Nothing
     , pending = ""
     , template = ""
+    , answers = []
+    , queued = []
     , promptLabel = ":"
     , killed = ""
     , promptKeys = PromptKeys
@@ -57,12 +63,56 @@ promptFor label initial tmpl = emptyPrompt
     , promptLabel = label
     }
 
--- | Splice a submitted line into a @command-prompt@ template, replacing
--- every @%%@ or @%1@ with the line. An empty template runs the line as-is.
-applyTemplate :: Text -> Text -> Text
-applyTemplate tmpl line
-    | T.null tmpl = line
-    | otherwise = T.replace "%1" line (T.replace "%%" line tmpl)
+-- | Where submitting a line to a prompt leads.
+data PromptAnswered
+    = NextPrompt PromptState  -- ^ a multi-prompt's next question
+    | AnswersDone Text        -- ^ the command every answer makes
+    deriving (Eq, Show)
+
+-- | Submit @line@ to a prompt: ask the next queued prompt, or splice every
+-- answer into the template.
+answerPrompt :: PromptState -> Text -> PromptAnswered
+answerPrompt pr line = case pr.queued of
+    (label, initial) : rest -> NextPrompt (promptFor label initial pr.template)
+        { answers = answers', queued = rest, promptKeys = pr.promptKeys }
+    [] -> AnswersDone (applyTemplate pr.template answers')
+  where
+    answers' = pr.answers <> [line]
+
+-- | Splice a @command-prompt@'s answers into its template, the @n@th answer
+-- through 'templateReplace' at index @n@ (tmux's @args_make_commands@). An
+-- empty template is tmux's default, @%1@: the answer runs as typed.
+applyTemplate :: Text -> [Text] -> Text
+applyTemplate tmpl answers =
+    List.foldl' (\t (i, a) -> templateReplace t a i)
+        (if T.null tmpl then "%1" else tmpl) (zip [1 ..] answers)
+
+-- | tmux's @cmd_template_replace@: put @s@ in for every @%idx@ (raw) or
+-- @%idx%@ (double-quote escaped), and for the first @%%@ (escaped for single
+-- quotes) or @%%%@ (double-quote escaped).
+templateReplace :: Text -> Text -> Int -> Text
+templateReplace tmpl s idx
+    | not (T.any (== '%') tmpl) = tmpl
+    | otherwise = T.pack (go False (T.unpack tmpl))
+  where
+    go _ [] = []
+    go replaced ('%' : rest)
+        | d : rest' <- rest, isDigit d, d /= '0', digitToInt d == idx =
+            marker replaced NoQuote rest'
+        | not replaced, '%' : rest' <- rest = marker True SingleQuoted rest'
+    go replaced (c : rest) = c : go replaced rest
+    marker replaced q = \case
+        '%' : rest -> escape DoubleQuoted <> go replaced rest
+        rest -> escape q <> go replaced rest
+    escape = \case
+        NoQuote -> T.unpack s
+        SingleQuoted -> concatMap (\c -> if c == '\'' then "'\\''" else [c]) (T.unpack s)
+        DoubleQuoted -> concatMap (\c -> if c `elem` ("\"\\$;~" :: String)
+            then ['\\', c] else [c]) (T.unpack s)
+
+-- | How 'templateReplace' quotes a replacement: for the quotes around the
+-- marker in the template.
+data Quoting = NoQuote | SingleQuoted | DoubleQuoted
 
 -- | Apply one key to the prompt, read as its @status-keys@ say. @history@
 -- is the command history, most-recent first, used by the Up/Down keys.

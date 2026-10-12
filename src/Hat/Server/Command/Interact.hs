@@ -191,26 +191,31 @@ cmdClockMode st mclient args = do
         Left e -> pure [RErr e]
         Right (_, _, _, pane) -> [] <$ enterClockMode st pane
 
--- | Open the interactive command prompt on the invoking client.
--- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line
--- editor; @-I@ pre-fills it (format-expanded, so @#W@ is the window name),
--- and a @template@ has the submitted line spliced in for @%%@. Backs the
--- @,@ rename binding: @command-prompt -I "#W" "rename-window '%%'"@.
+-- | @command-prompt [-l] [-I inputs] [-p prompts] [template]@. Opens the
+-- line editor, asking each comma-separated prompt in turn (@-l@: one prompt,
+-- commas and all); @-I@ pre-fills each (format-expanded, so @#W@ is the
+-- window name), and the answers are spliced into the @template@ (see
+-- 'Prompt.applyTemplate'). Backs the @,@ rename binding:
+-- @command-prompt -I "#W" "rename-window '%%'"@.
 cmdCommandPrompt :: CommandImpl
 cmdCommandPrompt st mclient args = do
-    let (opts, _flags, pos) = parseArgs "Ip" args
+    let (opts, flags, pos) = parseArgs "Ip" args
         tmpl = T.unwords pos
-        pfx = case lookup "-p" opts of
-            Just p -> p
+        literal = "-l" `elem` flags
+        labels = case lookup "-p" opts of
+            Just p
+                | literal -> [p]
+                | otherwise -> map (<> " ") (T.splitOn "," p)
             Nothing
-                | T.null tmpl -> ":"
-                | otherwise -> "(" <> T.takeWhile (/= ' ') tmpl <> ") "
+                | T.null tmpl -> [":"]
+                | otherwise -> ["(" <> T.takeWhile (/= ' ') tmpl <> ") "]
     forM_ mclient $ \client -> do
-        initial <- case lookup "-I" opts of
-            Nothing -> pure ""
+        inputs <- case lookup "-I" opts of
+            Nothing -> pure []
             Just raw -> do
                 env <- clientPromptEnv st client
-                expandFormat st env raw
+                mapM (expandFormat st env)
+                    (if literal then [raw] else T.splitOn "," raw)
         copts <- clientOptions st client
         let keys = PromptKeys
                 { statusKeys = if optionText "status-keys" copts == "vi"
@@ -218,9 +223,10 @@ cmdCommandPrompt st mclient args = do
                 , wordSeparators = copts.wordSeparators
                 , insertCursor = promptCursor "prompt-cursor" copts
                 , commandCursor = promptCursor "prompt-command-cursor" copts }
-        atomically $ do
-            writeTVar client.prompt $ Just
-                (Prompt.promptFor pfx initial tmpl) { promptKeys = keys }
+            prompts = zip labels (inputs <> repeat "")
+        forM_ (listToMaybe prompts) $ \(label, initial) -> atomically $ do
+            writeTVar client.prompt $ Just (Prompt.promptFor label initial tmpl)
+                { promptKeys = keys, queued = drop 1 prompts }
             bumpDirty st
     pure []
 

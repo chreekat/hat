@@ -625,9 +625,12 @@ data PromptState = PromptState
     , histIx  :: !(Maybe Int)  -- ^ 'Nothing' while editing a fresh line;
                                --   @Just n@ while showing history entry @n@
     , pending :: !Text         -- ^ the fresh line stashed while browsing history
-    , template :: !Text        -- ^ @command-prompt@ template; the submitted
-                               --   line is spliced in for @%%@/@%1@. Empty
-                               --   means run the line verbatim.
+    , template :: !Text        -- ^ @command-prompt@ template; see
+                               --   'Hat.Server.Prompt.applyTemplate'
+    , answers :: ![Text]       -- ^ the lines submitted to the earlier prompts
+                               --   of a multi-prompt @command-prompt@
+    , queued  :: ![(Text, Text)]  -- ^ the prompts still to ask after this
+                                  --   one: each label and initial input
     , promptLabel :: !Text     -- ^ text shown before the edit buffer (@:@ for
                                --   the bare prompt, @(rename-window) @ etc.)
     , killed  :: !Text         -- ^ the last killed text, yanked back by @C-y@

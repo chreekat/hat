@@ -132,9 +132,11 @@ handlePromptInput d st client pr0 keys = do
             bumpDirty st
         Prompt.Submit line -> do
             let templated = not (T.null pr0.template)
-                cmd = Prompt.applyTemplate pr0.template line
+                answered = Prompt.answerPrompt pr0 line
             atomically $ do
-                writeTVar client.prompt Nothing
+                writeTVar client.prompt $ case answered of
+                    Prompt.NextPrompt nxt -> Just nxt
+                    Prompt.AnswersDone _ -> Nothing
                 -- Templated prompts (rename-window, …) keep the : history
                 -- clean; only bare command lines are remembered.
                 unless templated $ do
@@ -142,5 +144,7 @@ handlePromptInput d st client pr0 keys = do
                     modifyTVar' st.cmdHistory (Prompt.pushHistory limit line)
                 bumpDirty st
             -- A blank submission cancels: never rename a window to "".
-            unless (T.null (T.strip line)) $ do
-                toastReplies st client =<< d.runCommandText st (Just client) cmd
+            case answered of
+                Prompt.AnswersDone cmd | not (T.null (T.strip line)) ->
+                    toastReplies st client =<< d.runCommandText st (Just client) cmd
+                _ -> pure ()

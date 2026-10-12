@@ -51,7 +51,6 @@ mode-mutation.sh                # needs client attach tracking + choose-client/c
 copy-mode-redraw.sh             # a centre-aligned copy-mode-position-format indicator is not drawn
 
 # formats: remaining gaps sit outside the modifier engine
-cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
