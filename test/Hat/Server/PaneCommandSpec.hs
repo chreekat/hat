@@ -115,6 +115,16 @@ spec = do
                 run st ["display-message", "-p", "#{pid}"]
                     `shouldReturn` [ROutput (T.pack (show pid))]
 
+    describe "new-session" $
+        it "execs a command of several words as its argv, which the start formats quote" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "Q", "--", "sh", "-c", "sleep 30", "it's", "a b"]
+                    `shouldReturn` []
+                run st ["display-message", "-p", "-t", "Q:0.0", "#{pane_start_command_list}"]
+                    `shouldReturn` [ROutput "'sh' '-c' 'sleep 30' 'it'\\''s' 'a b'"]
+                run st ["display-message", "-p", "-t", "Q:0.0", "#{pane_start_command}"]
+                    `shouldReturn` [ROutput "sh -c \"sleep 30\" \"it's\" \"a b\""]
+
     describe "display-message" $ do
         it "with no target, expands in the most recently active session" $
             withServer $ \st -> do

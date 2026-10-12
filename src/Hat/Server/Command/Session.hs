@@ -153,9 +153,6 @@ newSession st mclient opts flags pos
         gopts <- atomically (resolveGlobal st)
         let dir' = maybe dir T.unpack (lookup "-c" opts)
             detached = "-d" `elem` flags
-            mrun = case pos of
-                [] -> Nothing
-                ws -> Just (T.unwords ws)
             -- @-x -@ / @-y -@ take the creating client's own dimension.
             dimension flag name fromClient fallback =
                 case lookup flag opts of
@@ -175,7 +172,7 @@ newSession st mclient opts flags pos
             let sz = baseSz
                     { cols = fromMaybe baseSz.cols mx
                     , rows = fromMaybe baseSz.rows my }
-            sess <- createSession st (lookup "-s" opts) mrun environ dir' sz
+            sess <- createSession st (lookup "-s" opts) pos environ dir' sz
             forM_ mgroup $ \g -> do
                 sname <- readTVarIO sess.name
                 notifyGroupChange st "session-added-to-group"

@@ -365,7 +365,7 @@ ensureSession st client = do
         (,) <$> readTVar st.sessions <*> readTVar st.lastActiveSession
     case pickAttachSession laId existing of
         Just (_, sess) -> pure sess
-        Nothing -> createSession st Nothing Nothing client.env
+        Nothing -> createSession st Nothing [] client.env
             (T.unpack client.cwd) =<< readTVarIO client.size
 
 -- | Which existing session a fresh client attaches to: the last-active one
