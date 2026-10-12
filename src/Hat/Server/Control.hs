@@ -59,6 +59,7 @@ import Hat.Server.HookMonitor (parseMonitorSpec)
 import Hat.Server.HookTypes (MonitorTarget (..))
 import Hat.Server.Locate (findTargetClient, paneIndexOf)
 import Hat.Server.HookTypes (EventSink, PayloadItem (..))
+import Hat.Server.MessageLog (logShownMessage)
 import Hat.Server.Pane (syncAllPanes)
 import Hat.Server.Hooks (clientNameOf)
 import Hat.Server.Resize (applySessionSize, awaitReconciled)
@@ -105,7 +106,9 @@ runControlCommands d st client cs origin = \case
         -- Report only once any layout change the command made reached the
         -- panes, so the next command observes their new sizes.
         awaitReconciled st
-        let failed = not (null [ () | RErr _ <- replies ])
+        let errors = [ e | RErr e <- replies ]
+            failed = not (null errors)
+        mapM_ (logShownMessage st client) errors
         atomically $ do
             forM_ replies (mapM_ (controlEmit cs) . replyLines)
             end t n (if failed then "error" else "end")

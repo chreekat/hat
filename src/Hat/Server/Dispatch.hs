@@ -63,7 +63,9 @@ import Hat.Model.Options (lookupCommandAlias, quoteIfNeeded)
 import Hat.Path (expandTilde)
 import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
-import Hat.Server.Command.ListKeys (cmdListKeys)
+import Hat.Server.Command.ListKeys (cmdListKeys, printCommands)
+import Hat.Server.Command.ShowMessages (cmdShowMessages)
+import Hat.Server.MessageLog (logCommand)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
 import Hat.Server.Command.Wait (cmdWaitFor)
@@ -255,6 +257,7 @@ runBuiltin :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
 runBuiltin st mclient name0 args = case resolveCommand name0 of
     Left e -> pure [RErr e]
     Right name | Just impl <- Map.lookup name commandTable -> do
+        logCommand st mclient (printCommands [name0 : args])
         replies <- impl st mclient args
             `catch` \(e :: SomeException) ->
                 pure [RErr (name <> ": " <> T.pack (show e))]
@@ -500,6 +503,7 @@ commandSpecs =
     , (["set-hook"], cmdSetHook)
     , (["show-hooks"], cmdShowHooks)
     , (["wait-for", "wait"], cmdWaitFor)
+    , (["show-messages", "showmsgs"], cmdShowMessages)
     ]
 
 -- Command implementations.

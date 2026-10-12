@@ -63,6 +63,7 @@ import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
+import Hat.Server.MessageLog (logShownMessage)
 import Hat.Server.Mouse
     (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), Placement (..), checkMouse, clickExpired
     , parseMouseInput, stripMods)
@@ -775,11 +776,11 @@ runInputs d st client keys = do
             -- The commands see the key's mouse event, and may change the
             -- key state (a drag they start).
             RunCommands cmds -> do
-                writeIORef client.keyState kst { mouseEvent = mev }
+                writeIORef client.keyState kst { mouseEvent = mev, firingKey = Just k0.name }
                 withCommandBatch st $ forM_ cmds $ \argv ->
                     showReplies st client =<< d.runArgv st (Just client) argv
                 after <- readIORef client.keyState
-                pure after { mouseEvent = Nothing, commandState = Nothing }
+                pure after { mouseEvent = Nothing, commandState = Nothing, firingKey = Nothing }
     st0 <- readIORef client.keyState
     loop st0 keys
   where
@@ -843,7 +844,9 @@ controlLoop d st re client = do
                 `finally` atomically (writeTVar open False)
             forM_ replies $ \case
                 ROutput out -> send client (Message out)
-                RErr e -> send client (ServerError e)
+                RErr e -> do
+                    logShownMessage st client e
+                    send client (ServerError e)
                 RData bytes -> forM_ (chunksOf stdoutChunk bytes) $
                     send client . WriteStdout
             -- Report done only once any layout change the command made has

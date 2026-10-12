@@ -448,7 +448,7 @@ optionTable =
     , live $ scalar "menu-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
     , live $ scalar "menu-border-lines" WindowScope (KChoice popupLines) "single"
-    , notYet $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
+    , live $ scalar "message-limit" ServerScope (KNumber 0 intMax) "1000"
     , live $ scalar "prefix-timeout" ServerScope (KNumber 0 intMax) "0"
     , live $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
     , live $ scalar "set-clipboard" ServerScope

@@ -460,8 +460,6 @@ findClientWhere eligible st mclient msid mname = atomically $ do
                 in case List.sortOn (\(_, _, stamp) -> negate stamp) pool of
                     (c, _, _) : _ -> Right c
                     [] -> Left "no current client"
-  where
-    clientName c = "client" <> tshow (rawClient c.id)
 
 -- | A command made a pane the one the commands after it act on (tmux's
 -- @cmd_find_from_winlink_pane@ on the queue's current state). Without a

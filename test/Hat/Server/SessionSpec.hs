@@ -58,7 +58,7 @@ import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
-import Hat.Server.Toast (showReplies)
+import Hat.Server.Toast (showReplies, showToast)
 import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
 import Hat.Server.Pane (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
@@ -331,6 +331,21 @@ rowOf pm r = T.stripEnd (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V
 
 spec :: Spec
 spec = do
+    describe "message log" $ do
+        let logged st = do
+                replies <- runArgv st Nothing ["show-messages"]
+                pure [ l | ROutput l <- replies ]
+        it "logs a bound key's commands by the client and the key" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            [] <- runArgv st Nothing ["bind", "-n", "x", "set", "-g", "@x", "1"]
+            handleInput dispatch st client "x"
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 key x: set-option -g @x 1"))
+        it "logs a message shown to a client" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            showToast st client "hello"
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 message: hello"))
     describe "deadNoticeBytes" $
         it "scrolls a line and draws the styled notice, cursor hidden" $ do
             let sz = Size { rows = 3, cols = 8 }

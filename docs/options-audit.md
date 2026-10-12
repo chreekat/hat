@@ -128,6 +128,7 @@ spot-read of each suspect consumer.
 | `update-environment` | `applyUpdateEnvironment` (Server.hs) | implemented ✅ tested | pure |
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
 | `prompt-history-limit` | `pushHistory` (Prompt.hs) on each submitted line, `restoreHistory` (PromptHistory.hs) as the `history-file` loads: the newest entries of each type are kept | implemented ✅ tested | pure (PromptSpec, PromptHistorySpec) |
+| `message-limit` | `logMessage` (MessageLog.hs) trims the message log as each message is added (tmux's `server_add_message`); `show-messages` lists what is left | implemented ✅ tested | pure + model (MessageLogSpec, SessionSpec) |
 | `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |

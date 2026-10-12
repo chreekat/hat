@@ -98,6 +98,7 @@ module Hat.Model
     , findWindowById
     , findSessionById
     , rawClient
+    , clientName
     , rawPane
     , rawSession
     , rawWindow
@@ -132,6 +133,7 @@ import System.Posix.Types (ProcessID)
 import Hat.Geometry
 import Hat.Log (Logger)
 import Hat.Model.Ids
+import Hat.Model.MessageLog (MessageLog, emptyMessageLog)
 import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
 import Hat.Path (findHome)
@@ -257,6 +259,7 @@ data ServerState = ServerState
     , inputRequests :: TVar InputRequests
         -- ^ panes' queries forwarded to clients' terminals; see
         --   "Hat.Server.InputRequestsIO"
+    , messageLog :: TVar MessageLog  -- ^ see "Hat.Server.MessageLog"
     }
 
 data Session = Session
@@ -976,6 +979,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO []
     <*> newTVarIO Map.empty
     <*> newTVarIO noRequests
+    <*> newTVarIO emptyMessageLog
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
@@ -1213,6 +1217,10 @@ findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
 
 rawClient :: ClientId -> Int
 rawClient (ClientId n) = n
+
+-- | A client's name (tmux's @c->name@), as commands target it with @-c@.
+clientName :: Client -> Text
+clientName c = "client" <> tshow (rawClient c.id)
 
 rawPane :: PaneId -> Int
 rawPane (PaneId n) = n

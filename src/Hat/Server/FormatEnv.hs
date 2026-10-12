@@ -772,10 +772,6 @@ formatType t =
 flag :: Bool -> Text
 flag b = if b then "1" else "0"
 
--- | A client's name, as commands target it with @-c@.
-clientName :: Client -> Text
-clientName c = "client" <> tshow (rawClient c.id)
-
 -- | Copy-mode format variables for a pane: @pane_in_mode@/@pane_mode@,
 -- plus the copy-mode variables while in mode.
 paneModeEnv :: ServerState -> Pane -> IO [(Text, Text)]

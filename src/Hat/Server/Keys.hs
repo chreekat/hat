@@ -615,6 +615,9 @@ data KeyState = KeyState
     , commandState :: Maybe (SessionId, WindowId, PaneId)
         -- ^ the pane the commands being run act on by default, when it is
         --   not the client's own (tmux's queue state, as a menu sets it)
+    , firingKey :: Maybe Text
+        -- ^ the key whose binding's commands are running (tmux's queue
+        --   event key)
     }
     deriving (Eq, Show)
 
@@ -630,7 +633,7 @@ initialKeyState :: KeyState
 initialKeyState = KeyState
     { table = Nothing, tableSince = 0, repeating = Nothing
     , bracketPasting = False, mouse = initialMouseState, mouseEvent = Nothing
-    , drag = Nothing, commandState = Nothing }
+    , drag = Nothing, commandState = Nothing, firingKey = Nothing }
 
 -- | Whether the client is in the prefix table.
 prefixArmed :: KeyState -> Bool
