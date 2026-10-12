@@ -439,7 +439,7 @@ optionTable =
     , live $ scalar "get-clipboard" ServerScope
         (KChoice ["off", "buffer", "request", "both"]) "buffer"
     , live $ scalar "history-file" ServerScope KString ""
-    , notYet $ scalar "input-buffer-size" ServerScope
+    , live $ scalar "input-buffer-size" ServerScope
         (KNumber 1048576 uintMax) "1048576"
     , live $ scalar "menu-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themewhite"

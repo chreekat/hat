@@ -299,7 +299,7 @@ newEmulator sz limit = do
 feed :: Emulator -> ByteString -> IO [Event]
 feed e bs0 = withMVar e.lock $ \_ -> do
     s0 <- readIORef e.state
-    let (pass1, depassed, passPayloads) = scrubPassthrough s0.passthrough bs0
+    let (pass1, depassed, passPayloads) = scrubPassthrough s0.policy.bufferSize s0.passthrough bs0
         (carry1, pieces) = scrubHost s0.policy s0.hostCarry depassed
     modifyIORef' e.state $ \s -> s
         { passthrough = pass1

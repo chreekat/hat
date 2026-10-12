@@ -40,6 +40,7 @@ module Hat.Term.HostProtocol
     , HostSignal (..)
     , HostPolicy (..)
     , HostQuery (..)
+    , inputStringLimit
     , ModeSpace (..)
     , CursorChange (..)
     , scrubHost
@@ -123,9 +124,10 @@ data OscTerm = TermBel | TermSt
 data PassState
     = Outside ByteString
         -- ^ carry: proper prefix of @ESC Ptmux;@ at chunk end
-    | Inside ByteString ByteString
+    | Inside ByteString (Maybe ByteString)
         -- ^ carry: a trailing @ESC@ that may start the ST, and the un-doubled
-        --   payload accumulated so far
+        --   payload accumulated so far ('Nothing' once it outgrew the input
+        --   buffer)
 
 -- | Strip DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's output
 -- before the emulator parses it, returning the scrubbed bytes and each completed
@@ -140,14 +142,20 @@ data PassState
 -- payload (see 'honoredSignals'), discarding the rest. Framing only lives
 -- here; the caller decides what to do with each payload. A wrapper can span
 -- pty reads, so the state — including the partial payload — carries across
--- 'feed' chunks.
-scrubPassthrough :: PassState -> ByteString -> (PassState, ByteString, [ByteString])
-scrubPassthrough st0 chunk = case st0 of
+-- 'feed' chunks. A wrapper longer than tmux's input buffer holds under an
+-- @input-buffer-size@ of @size@ ('inputStringLimit', counting its @tmux;@)
+-- yields nothing, as tmux discards it.
+scrubPassthrough :: Int -> PassState -> ByteString -> (PassState, ByteString, [ByteString])
+scrubPassthrough size st0 chunk = case st0 of
     Outside carry        -> outside [] [] (carry <> chunk)
-    Inside carry payload -> inside [] [] [payload] (carry <> chunk)
+    Inside carry payload -> inside [] [] (fmap (: []) payload) (carry <> chunk)
   where
     intro = "\ESCPtmux;"
     finish = B.concat . reverse
+    -- The payload so far, or 'Nothing' once the buffer would overflow.
+    bounded = (>>= \ps -> let p = finish ps
+                       in if 5 + B.length p > inputStringLimit size then Nothing else Just p)
+    add piece = fmap (piece :)
     outside oacc payloads bs = case B.breakSubstring intro bs of
         (before, r)
             | B.null r ->
@@ -156,19 +164,19 @@ scrubPassthrough st0 chunk = case st0 of
                 let held = introSuffix before
                     emit = B.take (B.length before - B.length held) before
                 in (Outside held, finish (emit : oacc), reverse payloads)
-            | otherwise -> inside (before : oacc) payloads [] (B.drop (B.length intro) r)
+            | otherwise -> inside (before : oacc) payloads (Just []) (B.drop (B.length intro) r)
     -- Inside the wrapper nothing reaches the emulator; the payload is rebuilt
     -- (un-doubling the ESCs the wrapper doubled) until the ST — a lone ESC
     -- followed by backslash — closes it and emits the completed payload.
     inside oacc payloads pacc bs = case B.elemIndex 0x1b bs of
-        Nothing -> (Inside "" (finish (bs : pacc)), finish oacc, reverse payloads)
+        Nothing -> (Inside "" (bounded (add bs pacc)), finish oacc, reverse payloads)
         Just i ->
-            let pacc' = B.take i bs : pacc
+            let pacc' = add (B.take i bs) pacc
             in case B.uncons (B.drop (i + 1) bs) of
-                Nothing           -> (Inside "\ESC" (finish pacc'), finish oacc, reverse payloads)
-                Just (0x1b, rest) -> inside oacc payloads ("\ESC" : pacc') rest
-                Just (0x5c, rest) -> outside oacc (finish pacc' : payloads) rest
-                Just (c, rest)    -> inside oacc payloads (B.singleton c : pacc') rest
+                Nothing           -> (Inside "\ESC" (bounded pacc'), finish oacc, reverse payloads)
+                Just (0x1b, rest) -> inside oacc payloads (add "\ESC" pacc') rest
+                Just (0x5c, rest) -> outside oacc (maybe payloads (: payloads) (bounded pacc')) rest
+                Just (c, rest)    -> inside oacc payloads (add (B.singleton c) pacc') rest
     -- The longest proper prefix of the intro that this chunk ends with.
     introSuffix bs =
         let cap = min (B.length intro - 1) (B.length bs)
@@ -245,15 +253,21 @@ data HostPolicy = HostPolicy
         -- ^ @scroll-on-clear@: clearing the screen keeps its lines in the
         --   history
     , bufferSize :: Int
-        -- ^ @input-buffer-size@: the longest string payload kept
+        -- ^ @input-buffer-size@; see 'inputStringLimit'
     }
     deriving (Eq, Show)
+
+-- | The longest string tmux's input parser keeps under an
+-- @input-buffer-size@ of @n@: its buffer starts at 32 bytes and doubles
+-- while the doubling fits in @n@, holding one byte less than its size.
+inputStringLimit :: Int -> Int
+inputStringLimit n = last (takeWhile (<= max 32 n) (iterate (* 2) 32)) - 1
 
 -- | Pick the sequences hat handles itself out of a pane's output (see
 -- 'HostSignal'), dropping the alternate-screen switches @alternate-screen
 -- off@ forbids, and pass everything else on as bytes. A sequence torn across
--- reads is held until it completes; a string payload longer than the
--- @input-buffer-size@ is dropped whole, as tmux discards it.
+-- reads is held until it completes; a string longer than tmux's input
+-- buffer holds ('inputStringLimit') is dropped whole, as tmux discards it.
 scrubHost :: HostPolicy -> HostCarry -> ByteString -> (HostCarry, [HostPiece])
 scrubHost pol carry0 chunk = case carry0 of
     HostCarry held -> scan (held <> chunk)
@@ -261,6 +275,7 @@ scrubHost pol carry0 chunk = case carry0 of
         Just (_, end, _) -> scan (B.drop end chunk)
         Nothing -> (HostDiscarding, [])
   where
+    limit = inputStringLimit pol.bufferSize
     scan bs = go 0 0 []
       where
         len = B.length bs
@@ -273,7 +288,7 @@ scrubHost pol carry0 chunk = case carry0 of
                 let p = i + d
                 in case classify p of
                     Incomplete
-                        | len - p > pol.bufferSize + 16 ->
+                        | len - p > limit + 16 ->
                             finish HostDiscarding s p acc
                         | otherwise -> finish (HostCarry (B.drop p bs)) s p acc
                     Skip n -> go s (p + n) acc
@@ -299,7 +314,7 @@ scrubHost pol carry0 chunk = case carry0 of
                     ("2", c) -> titleAt c q
                     ("52", 0x3b) -> case stringEnd bs (q + 1) of
                         Nothing -> Incomplete
-                        Just (payload, end, term) -> keep end payload
+                        Just (payload, end, term) -> keep (q + 1 - (p + 2)) end payload
                             (HostSignal (HostClipboard payload term))
                     ("12", 0x3b) -> case stringEnd bs (q + 1) of
                         Nothing -> Incomplete
@@ -311,15 +326,17 @@ scrubHost pol carry0 chunk = case carry0 of
             -- tmux takes the title after the @;@, or an empty one when the
             -- number is the whole string.
             titleAt c q
-                | c == 0x3b = str' (q + 1) HostTitle
-                | c == 0x07 || c == 0x1b = str' q HostTitle
+                | c == 0x3b = str' (q + 1 - (p + 2)) (q + 1) HostTitle
+                | c == 0x07 || c == 0x1b = str' (q - (p + 2)) q HostTitle
                 | otherwise = Skip 2
-        str p mk = str' (p + 2) mk
-        str' q mk = case stringEnd bs q of
+        str p mk = str' 0 (p + 2) mk
+        str' lead q mk = case stringEnd bs q of
             Nothing -> Incomplete
-            Just (payload, end, _) -> keep end payload (HostSignal (mk payload))
-        keep end payload piece
-            | B.length payload > pol.bufferSize = Dropped end
+            Just (payload, end, _) -> keep lead end payload (HostSignal (mk payload))
+        -- tmux's buffer holds the whole string, @lead@ bytes ahead of the
+        -- payload included.
+        keep lead end payload piece
+            | lead + B.length payload > limit = Dropped end
             | otherwise = Found end piece
         csi p = case csiAt bs (p + 2) of
             Nothing -> Incomplete
@@ -370,7 +387,8 @@ scrubHost pol carry0 chunk = case carry0 of
             Nothing -> Incomplete
             Just (_, _, "$", 0x71, q) -> case stringEnd bs (q - 1) of
                 Nothing -> Incomplete
-                Just (payload, end, _) -> Found end (HostSignal (HostQuery (StatusQuery payload)))
+                Just (payload, end, _) ->
+                    keep 0 end payload (HostSignal (HostQuery (StatusQuery payload)))
             Just _ -> Skip 2
         altModes = [47, 1047, 1049]
         decset ns f = "\ESC[?" <> B.intercalate ";" (map (B8.pack . show) ns) <> B.singleton f

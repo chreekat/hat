@@ -107,6 +107,7 @@ spot-read of each suspect consumer.
 | `display-panes-colour` / `display-panes-active-colour` | `panesStamp` via `renderOnce` (View.hs): the window's values, theme colours resolved | implemented ✅ tested | pure (DisplayPanesSpec) |
 | `pane-colours` | `panePalette` → `paintPalette` (View.hs, Render.hs): each pane's own value under its program's OSC 4 colours; also the emulator's palette defaults (`setPaletteDefaults`) and the answer to an OSC 4 query (`queryPaletteColour`, PaneColours.hs; an unset entry is asked of the terminal, `askTerminal`) | implemented ✅ tested | pure (RenderSpec) + model (SessionSpec) |
 | `cursor-colour` | `cursorColourOf` via `renderOnce` (View.hs): the program's OSC 12 colour, else the active pane's value, theme colours resolved, sent as `rgb:` | implemented ✅ tested | pure (OptionEffectSpec) |
+| `input-buffer-size` | `hostPolicyOf` (Pane.hs) → `scrubHost`/`scrubPassthrough` (HostProtocol.hs) via `inputStringLimit`: an OSC 0/2/52, APC, `ESC k`, DECRQSS or tmux passthrough longer than tmux's doubling input buffer holds is dropped whole; a popup's from the global value | implemented ✅ tested | emulator (EmulatorSpec) + pure (OptionEffectSpec) |
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
 | `clock-mode-colour` / `clock-mode-style` | `clockCells`/`clockText` (Clock.hs) via `clockView` (View.hs): the `clock-mode` screen, each pane's window's values, theme colours resolved | implemented ✅ tested | pure (ClockSpec) |
@@ -211,6 +212,13 @@ spot-read of each suspect consumer.
   shell's base name (see `paneProgram`). The shell chosen is tmux's; only the
   login-ness differs. `respawn-pane` re-reads `default-shell` where tmux
   reuses the pane's original shell.
+
+- **`input-buffer-size`** bounds the strings hat parses above the grid
+  engine (titles, `ESC k`, OSC 52, DECRQSS, tmux passthrough). The strings
+  libghostty parses itself (OSC 4/7/8/10/11/104…, other DCS) are bounded by
+  libghostty's own limits, not this option; an over-long one of those is not
+  necessarily dropped as tmux drops it. tmux also stops storing C0 controls
+  inside an OSC, which hat counts.
 
 - **`history-file`**: hat has no search prompt, so a file's `search:`
   entries are only carried through to the next save. Entries are text: a byte that is

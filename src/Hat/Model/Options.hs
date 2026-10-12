@@ -129,6 +129,7 @@ data Options = Options
     , paneBorderLines        :: BorderLines
     , paneBorderIndicators   :: BorderIndicators
     , cursorColour           :: Text  -- ^ tmux colour text; @\"\"@ = terminal default
+    , inputBufferSize        :: Int
     , setTitles              :: Bool
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
     , displayTime            :: Int   -- ^ toast duration, ms
@@ -197,6 +198,7 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , paneBorderLines = missing "pane-border-lines"
         , paneBorderIndicators = missing "pane-border-indicators"
         , cursorColour = missing "cursor-colour"
+        , inputBufferSize = missing "input-buffer-size"
         , setTitles = missing "set-titles", escapeTime = missing "escape-time"
         , displayTime = missing "display-time"
         , displayPanesTime = missing "display-panes-time"
@@ -289,6 +291,7 @@ fieldBindings = Map.fromList
             "both" -> IndicatorsBoth
             _ -> IndicatorsColour }))
     , ("cursor-colour", text (\v o -> o { cursorColour = v }))
+    , ("input-buffer-size", int (\v o -> o { inputBufferSize = v }))
     , ("set-titles", flag (\v o -> o { setTitles = v }))
     , ("escape-time", int (\v o -> o { escapeTime = v }))
     , ("display-time", int (\v o -> o { displayTime = v }))

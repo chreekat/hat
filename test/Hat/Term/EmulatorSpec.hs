@@ -1,6 +1,6 @@
 module Hat.Term.EmulatorSpec (spec) where
 
-import Control.Monad (forM_)
+import Control.Monad (forM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Map.Strict qualified as Map
@@ -1156,6 +1156,52 @@ spec = do
             e <- new80x24
             evs <- feedStr e "\ESC_apc title\ESC\\"
             [ x | TitleRequest x <- evs ] `shouldBe` ["apc title"]
+
+        describe "input-buffer-size bounds the strings kept" $ do
+            -- tmux's input buffer starts at 32 bytes and doubles, so it keeps
+            -- one byte less than the largest such size within the limit.
+            let clip n = "\ESC]52;" <> B8.replicate (n - 3) 'A' <> "\a"
+                clipped evs = length [ () | ClipboardRequest {} <- evs ]
+                withLimit n = do
+                    e <- new80x24
+                    setHostPolicy e defaultHostPolicy { bufferSize = n }
+                    pure e
+            it "keeps a string one byte short of the buffer, drops one that fills it" $ do
+                e <- new80x24
+                (clipped <$> feedStr e (clip 1048575)) `shouldReturn` 1
+                (clipped <$> feedStr e (clip 1048576 <> "x")) `shouldReturn` 0
+                scr <- snapshot e
+                rowText scr 0 `shouldBe` "x"
+            it "a limit between doublings holds no more than the doubling below it" $ do
+                e <- withLimit 2000000
+                (clipped <$> feedStr e (clip 1048576)) `shouldReturn` 0
+                e' <- withLimit 2097152
+                (clipped <$> feedStr e' (clip 1048576)) `shouldReturn` 1
+            it "drops a string that outgrows the buffer across reads" $ do
+                e <- new80x24
+                _ <- feedStr e "\ESC]2;"
+                forM_ [1 .. 64 :: Int] $ \_ -> feedStr e (B8.replicate 16384 'A')
+                evs <- feedStr e "\ax"
+                [ t | TitleRequest t <- evs ] `shouldBe` []
+                scr <- snapshot e
+                rowText scr 0 `shouldBe` "x"
+            it "counts a passthrough's tmux; prefix and un-doubled payload" $ do
+                let pass n = "\ESCPtmux;" <> B8.replicate (n - 5) 'a' <> "\ESC\\"
+                    passed evs = length [ () | UnhandledPassthrough {} <- evs ]
+                e <- new80x24
+                (passed <$> feedStr e (pass 1048575)) `shouldReturn` 1
+                (passed <$> feedStr e (pass 1048576 <> "x")) `shouldReturn` 0
+                scr <- snapshot e
+                rowText scr 0 `shouldBe` "x"
+            it "drops a passthrough that outgrows the buffer across reads" $ do
+                let passed evs = length [ () | UnhandledPassthrough {} <- evs ]
+                e <- new80x24
+                n1 <- passed <$> feedStr e "\ESCPtmux;"
+                ns <- forM [1 .. 64 :: Int] $ \_ -> passed <$> feedStr e (B8.replicate 16384 'a')
+                evs <- feedStr e "\ESC\\x"
+                (n1 + sum ns + passed evs) `shouldBe` 0
+                scr <- snapshot e
+                rowText scr 0 `shouldBe` "x"
 
     prop "plain ascii lands verbatim on row 0" $ \(PlainLine s) -> ioProperty $ do
         e <- new80x24

@@ -24,7 +24,7 @@ import System.Timeout (timeout)
 
 import Hat.Geometry
 import Hat.Model
-import Hat.Model.Options (optionText)
+import Hat.Model.Options (Options (..), optionText)
 import Hat.Server.Keys (Key (..), KeyState (..))
 import Hat.Server.Mouse (MouseInput (..), MouseState (..), mouseInputBytes, parseMouseInput)
 import Hat.Server.MouseIO (emulatorMouseMode)
@@ -87,7 +87,11 @@ runPopupReader st client p = void $ mask_ $ forkIOWithUnmask $ \unmask -> do
     (void (try loop :: IO (Either SomeException ())))
         `finally` release
   where
+    -- A popup's screen has no pane, so the global options shape it.
     feed bs = unless (B.null bs) $ do
+        g <- atomically (resolveGlobal st)
+        Emu.setHostPolicy p.screen Emu.defaultHostPolicy
+            { Emu.bufferSize = g.inputBufferSize }
         events <- Emu.feed p.screen bs
         forM_ events $ \case
             Emu.Output out -> Pty.writePty p.jobPty out

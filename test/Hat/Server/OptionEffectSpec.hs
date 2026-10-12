@@ -30,12 +30,12 @@ import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
 import Hat.Server.Keys (Key (..))
-import Hat.Server.Pane (paneProgram, shellStart, suitableShell)
+import Hat.Server.Pane (hostPolicyOf, paneProgram, shellStart, suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
 import Hat.Server.PaneColours (cursorColourOf, oscColourReply)
 import Hat.Server.Resize (scrollbarReserve)
-import Hat.Term.HostProtocol (OscTerm (..))
+import Hat.Term.HostProtocol (HostPolicy (..), OscTerm (..))
 import Hat.Server.Scene
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.View (decscusr, messageLine, promptCursorOf, statusLayout)
@@ -183,6 +183,12 @@ spec = do
                     `shouldBe` PromptCursor "colour9" CursorBlinkingUnderline
             it "default resets the terminal's own" $
                 decscusr CursorDefault `shouldBe` "\ESC[0 q"
+
+        -- input-buffer-size: the limit a pane's output is scrubbed under.
+        describe "input-buffer-size reaches the pane's host policy" $
+            it "the option's value" $
+                (hostPolicyOf (applyEntry "input-buffer-size" (OVScalar "2097152") defaultOptions)).bufferSize
+                    `shouldBe` 2097152
 
         -- A pane answers its program's colour queries in tmux's spelling.
         describe "OSC colour replies" $
