@@ -10,6 +10,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (getSystemID, nodeName)
 import System.Timeout (timeout)
 import Test.Hspec
@@ -105,6 +106,14 @@ spec = do
                 paneIds st "S:0" `shouldReturn` [a, b]
                 run st ["kill-pane", "-a", "-t", b] `shouldReturn` []
                 paneIds st "S:0" `shouldReturn` [b]
+
+    describe "server formats" $
+        it "#{pid} is the server's process id" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                pid <- getProcessID
+                run st ["display-message", "-p", "#{pid}"]
+                    `shouldReturn` [ROutput (T.pack (show pid))]
 
     describe "new-window" $
         it "expands -n as a format in the target session" $
