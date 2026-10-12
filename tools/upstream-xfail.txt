@@ -55,9 +55,6 @@ cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyT
 format-render-contexts.sh       # status-interval option + choose-tree/customize contexts
 format-variables.sh             # list-clients + monitor-bell + most format_table vars
 
-# mouse: commands its bindings and tests reach
-new-pane-mouse.sh               # list-keys unimplemented (the rest passes)
-
 # option engine breadth: flat scalar table, global-only read-back
 options-values.sh               # needs default-client-command (not yet live)
 
@@ -85,5 +82,4 @@ session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot 
 lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
-screen-redraw-menus.sh          # menu-clipped scene: capture-pane -e emits an SGR reset on an empty line after a coloured one
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report
