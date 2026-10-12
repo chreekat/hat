@@ -17,6 +17,7 @@ import Test.Hspec
 
 import Hat.Log (newLogger)
 import Hat.Model
+import Hat.Model.Options (Options (..))
 import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
@@ -138,6 +139,16 @@ spec = do
                     named <- filterM (\s -> (== "A") <$> readTVar s.name) ss
                     forM_ named $ \s -> tickActivity st >>= writeTVar s.activity
                 run st ["display-message", "-p", "#{session_name}"] `shouldReturn` [ROutput "A"]
+        it "tells its after hook its -c and -d values apart from its message" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
+                run st ["set-hook", "-g", "after-display-message", "set -gF @got '#{hook_flag_d}/#{hook_argument_0}'"]
+                    `shouldReturn` []
+                _ <- run st ["display-message", "-d", "5", "-p", "msg"]
+                untilM' <- timeout 5_000_000 $ untilM $ do
+                    o <- readTVarIO st.options
+                    pure (Map.lookup "@got" o.user == Just "5/msg")
+                untilM' `shouldBe` Just ()
         it "refuses a -c naming no client, and flags it does not implement" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
