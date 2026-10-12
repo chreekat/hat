@@ -37,6 +37,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Data.IORef (modifyIORef', readIORef)
+import Data.Ord (Down (..))
 
 import Hat.Model
 import Hat.Model.Options
@@ -85,10 +86,20 @@ targetSession st mclient mtarget = do
                 sid <- readTVar client.session
                 case Map.lookup sid sessions of
                     Just sess -> pure (Just sess)
-                    Nothing -> pure (snd <$> Map.lookupMax sessions)
+                    Nothing -> bestSession st
             Nothing -> case mambSid >>= (`Map.lookup` sessions) of
                 Just sess -> pure (Just sess)
-                Nothing -> pure (snd <$> Map.lookupMax sessions)
+                Nothing -> bestSession st
+
+-- | tmux's @cmd_find_best_session@: the most recently active session, the
+-- first by name among equals.
+bestSession :: ServerState -> STM (Maybe Session)
+bestSession st = do
+    ss <- Map.elems <$> readTVar st.sessions
+    ranked <- forM ss $ \s -> (,,) <$> readTVar s.activity <*> readTVar s.name <*> pure s
+    pure $ case List.sortOn (\(act, nm, _) -> (Down act, nm)) ranked of
+        (_, _, s) : _ -> Just s
+        [] -> Nothing
 
 -- | The hook context's target session, for clientless resolution: a hook
 -- command with no client and no -t acts on the event's session.
@@ -113,7 +124,7 @@ ambientWindowPane st = \case
 -- | Snapshot the server tree for the pure cmd-find core
 -- ('Hat.Server.Target.resolveTarget'). The current state is the client's
 -- attached view, else the session its @TMUX_PANE@ lives in, else the
--- newest session (matching 'targetSession').
+-- 'bestSession' (matching 'targetSession').
 targetWorld :: ServerState -> Maybe Client -> IO Target.World
 targetWorld st mclient = do
     sessMap <- readTVarIO st.sessions
@@ -145,6 +156,7 @@ targetWorld st mclient = do
             , currentIx = cur, lastIx = lastIx }
     pbase <- (.paneBaseIndex) <$> readTVarIO st.options
     mmarked <- readTVarIO st.markedPane
+    mbest <- fmap (.id) <$> atomically (bestSession st)
     msid <- traverse (\c -> readTVarIO c.session) mclient
     mambS <- ambientSession st mclient
     (mambW, mambP) <- ambientWindowPane st mclient
@@ -164,7 +176,7 @@ targetWorld st mclient = do
             v <- List.lookup "TMUX_PANE" client.env
             n <- T.stripPrefix "%" v >>= parseDec
             Target.sessionCurrentFound entries (PaneId n)
-        bestCur = Target.sessionCurrent =<< listToMaybe (reverse entries)
+        bestCur = Target.sessionCurrent =<< entryById =<< mbest
     (mev, mstate) <- case mclient of
         Nothing -> pure (Nothing, Nothing)
         Just c -> (\ks -> (ks.mouseEvent, ks.commandState)) <$> readIORef c.keyState

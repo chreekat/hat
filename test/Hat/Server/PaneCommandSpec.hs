@@ -115,6 +115,18 @@ spec = do
                 run st ["display-message", "-p", "#{pid}"]
                     `shouldReturn` [ROutput (T.pack (show pid))]
 
+    describe "display-message" $ do
+        it "with no target, expands in the most recently active session" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "A", "sleep 30"] `shouldReturn` []
+                run st ["new-session", "-d", "-s", "B", "sleep 30"] `shouldReturn` []
+                run st ["display-message", "-p", "#{session_name}"] `shouldReturn` [ROutput "B"]
+                atomically $ do
+                    ss <- Map.elems <$> readTVar st.sessions
+                    named <- filterM (\s -> (== "A") <$> readTVar s.name) ss
+                    forM_ named $ \s -> tickActivity st >>= writeTVar s.activity
+                run st ["display-message", "-p", "#{session_name}"] `shouldReturn` [ROutput "A"]
+
     describe "new-window" $
         it "expands -n as a format in the target session" $
             withServer $ \st -> do
