@@ -424,7 +424,7 @@ commandSpecs =
 cmdSourceFile :: CommandImpl
 cmdSourceFile st mclient args = case pos of
     [path] -> do
-        p <- expandTilde (T.unpack path)
+        p <- expandTilde st.home (T.unpack path)
         exists <- doesFileExist p
         if not exists
             then if "-q" `elem` flags

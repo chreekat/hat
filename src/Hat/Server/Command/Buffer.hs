@@ -28,7 +28,6 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import GHC.IO.Exception (IOException (..))
-import System.Environment (lookupEnv)
 import System.FilePath (isAbsolute, (</>))
 
 import Hat.Path (expandTilde)
@@ -215,7 +214,7 @@ expandPath :: ServerState -> Maybe Client -> Text -> IO FilePath
 expandPath st mclient raw = do
     env <- targetEnv st mclient
     expanded <- T.unpack <$> expandFormat st env raw
-    p <- expandTilde expanded
+    p <- expandTilde st.home expanded
     if p == "-" || isAbsolute p
         then pure p
         else (</> p) <$> clientDir st mclient
@@ -231,7 +230,7 @@ clientDir st = \case
             Nothing -> home
     Nothing -> home
   where
-    home = fromMaybe "/" <$> lookupEnv "HOME"
+    home = pure (fromMaybe "/" st.home)
 
 -- | The default target pane's format variables, or none without one.
 targetEnv :: ServerState -> Maybe Client -> IO FormatEnv

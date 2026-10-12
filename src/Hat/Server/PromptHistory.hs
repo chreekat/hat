@@ -21,9 +21,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error (lenientDecode)
-import System.Environment (lookupEnv)
 import System.IO.Error (isDoesNotExistError)
-import System.Posix.User (getRealUserID, getUserEntryForID, homeDirectory)
 
 import Hat.Log
 import Hat.Model
@@ -77,17 +75,11 @@ renderHistory h = T.concat
 
 -- | tmux's @prompt_find_history_file@: an absolute path as given, @~/@
 -- under the home directory, anything else (empty included) no file.
-historyFilePath :: Text -> IO (Maybe FilePath)
-historyFilePath setting = case T.unpack setting of
-    path@('/' : _) -> pure (Just path)
-    '~' : '/' : rest -> fmap (<> ('/' : rest)) <$> homeDir
-    _ -> pure Nothing
-  where
-    homeDir = lookupEnv "HOME" >>= \case
-        Just h | not (null h) -> pure (Just h)
-        _ -> either (const Nothing :: IOException -> Maybe FilePath)
-                (Just . homeDirectory)
-            <$> try (getUserEntryForID =<< getRealUserID)
+historyFilePath :: Maybe FilePath -> Text -> Maybe FilePath
+historyFilePath home setting = case T.unpack setting of
+    path@('/' : _) -> Just path
+    '~' : '/' : rest -> (<> ('/' : rest)) <$> home
+    _ -> Nothing
 
 -- | Read the @history-file@ into the prompt histories, as their newest
 -- entries. A missing file is a fresh start; any other failure is logged and
@@ -123,4 +115,4 @@ saveHistory st = withHistoryFile st $ \path -> do
 withHistoryFile :: ServerState -> (FilePath -> IO ()) -> IO ()
 withHistoryFile st act = do
     setting <- optionText "history-file" <$> readTVarIO st.options
-    mapM_ act =<< historyFilePath setting
+    mapM_ act (historyFilePath st.home setting)

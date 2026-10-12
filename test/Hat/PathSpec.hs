@@ -48,7 +48,7 @@ spec = do
         it "expands ~<current-user> to the current user's home" $ do
             entry <- getUserEntryForID =<< getRealUserID
             let name = userName entry
-            expanded <- expandTilde ('~' : name)
+            expanded <- expandTilde Nothing ('~' : name)
             expanded `shouldBe` homeDirectory entry
 
 -- | A named-user resolver that knows no users, for cases exercising only the

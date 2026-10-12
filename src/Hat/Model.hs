@@ -119,6 +119,7 @@ import Hat.Log (Logger)
 import Hat.Model.Ids
 import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
+import Hat.Path (findHome)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( ModeKeys, Options, OptionsDelta, applyDelta
@@ -222,6 +223,9 @@ data ServerState = ServerState
     , hooks :: HooksState
         -- ^ hook bindings, monitors, and wait-for channels; see
         --   'Hat.Server.Hooks'.
+    , home :: Maybe FilePath
+        -- ^ the server's home directory (tmux's @find_home@), against which
+        --   @~@ in a path resolves
     }
 
 data Session = Session
@@ -877,6 +881,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Nothing  -- serverConfig
     <*> newMonitorRegistry
     <*> newHooksState
+    <*> findHome
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
