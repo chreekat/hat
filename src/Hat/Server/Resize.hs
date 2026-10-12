@@ -113,7 +113,10 @@ sessionArea st sess mwid = do
 clientClaim :: Int -> Maybe WindowId -> Client -> STM (Maybe (Int, Size, Int))
 clientClaim statusLines mwid c = do
     stamp <- readTVar c.lastActive
+    tty <- readTVar c.ttyState
     case c.control of
+        -- A locked client sizes nothing (tmux's @CLIENT_NOSIZEFLAGS@).
+        Nothing | tty == TtyStopped -> pure Nothing
         Nothing -> do
             sz <- readTVar c.size
             pure (Just (stamp, sz, statusLines))

@@ -63,6 +63,7 @@ import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
+import Hat.Server.Lock (armLockTimer, ttyHandedBack)
 import Hat.Server.MessageLog (logShownMessage)
 import Hat.Server.Mouse
     (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), Placement (..), checkMouse, clickExpired
@@ -204,6 +205,7 @@ welcome d st re h = do
                     refreshSessionEnv st sess client
                     sname <- readTVarIO sess.name
                     applySessionSize st sess.id
+                    armLockTimer st sess.id
                     sendMessage conn (Welcome sname)
                     sendMessage conn (ServerVersion protocolVersion)
                     atomically $ writeTVar client.ready True
@@ -274,6 +276,7 @@ newClient st conn h = do
     envImportVar <- newTVarIO ImportEnv
     viewportVar <- newTVarIO unpannedViewport
     viewOriginVar <- newIORef (Pos 0 0)
+    ttyVar <- newTVarIO TtyStarted
     created <- getPOSIXTime
     controlState <- case h.intent of
         ControlModeIntent {} -> Just <$> newControlState
@@ -322,6 +325,7 @@ newClient st conn h = do
         , control = controlState
         , viewport = viewportVar
         , lastViewOrigin = viewOriginVar
+        , ttyState = ttyVar
         }
 
 -- | Resolve MRU session names to the ids of the sessions that still exist,
@@ -444,6 +448,7 @@ inputLoop d st re client = loop
                 Command cmds -> do
                     showReplies st client =<< d.runCommands st (Just client) cmds
                     loop
+                LockDone -> ttyHandedBack st client >> loop
                 ClientHello {} -> pure ()
                 -- Never requested of an attached client.
                 StdinData _ -> loop
@@ -491,9 +496,9 @@ noteClientActivity st client = do
         already <- isMostActive st client
         markActive st client
         pure (not already)
-    when becameActive $ do
-        sid <- readTVarIO client.session
-        applySessionSize st sid
+    sid <- readTVarIO client.session
+    armLockTimer st sid
+    when becameActive $ applySessionSize st sid
 
 -- | Whether a key event is delivered to the focused pane's program. A sequence
 -- the tokenizer could not name is dropped, so bytes hat does not understand

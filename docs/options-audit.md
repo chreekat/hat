@@ -129,6 +129,8 @@ spot-read of each suspect consumer.
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
 | `prompt-history-limit` | `pushHistory` (Prompt.hs) on each submitted line, `restoreHistory` (PromptHistory.hs) as the `history-file` loads: the newest entries of each type are kept | implemented ✅ tested | pure (PromptSpec, PromptHistorySpec) |
 | `message-limit` | `logMessage` (MessageLog.hs) trims the message log as each message is added (tmux's `server_add_message`); `show-messages` lists what is left | implemented ✅ tested | pure + model (MessageLogSpec, SessionSpec) |
+| `lock-after-time` | `armLockTimer` (Lock.hs) on each key, attach and unlock (tmux's `session_update_activity`); `lockTimerLoop` locks the idle session's clients | implemented ✅ tested | model (SessionSpec) |
+| `lock-command` | `lockClient` (Lock.hs) sends it to the client as `LockClient`; the client runs it in its own cooked terminal (`lockTerminal`, Client.hs); empty passes over the client, as tmux | implemented ✅ tested | model (SessionSpec) + integration |
 | `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |

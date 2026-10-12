@@ -120,6 +120,8 @@ awaitRenderable st client lastGen = do
     g <- readTVar st.dirty
     full <- readTVar client.needsFull
     check (g /= lastGen || full)
+    -- A locked client's terminal is its lock command's.
+    check . (/= TtyStopped) =<< readTVar client.ttyState
     done <- readTVar st.reconciled
     check (done >= g)
     check =<< hasRoom client  -- See Note [Falling behind]
@@ -140,8 +142,22 @@ statusLayout pos count rows = case pos of
 flashTarget :: [(PaneId, Rect)] -> PaneId -> Maybe Rect
 flashTarget rects active = List.lookup active rects
 
+-- | Before drawing to a terminal just handed back, forget what the last
+-- frames set on it: it comes back with none of the server's mouse
+-- tracking or cursor colour and shape. Render thread only.
+freshTerminalDrawn :: Client -> IO ()
+freshTerminalDrawn c = do
+    restarted <- atomically $ readTVar c.ttyState >>= \case
+        TtyRestarted -> True <$ writeTVar c.ttyState TtyStarted
+        _ -> pure False
+    when restarted $ do
+        writeIORef c.lastMouseMode 0
+        writeIORef c.lastCursorColour Nothing
+        writeIORef c.lastCursorShape CursorDefault
+
 renderOnce :: ServerState -> Client -> IO ()
 renderOnce st client = do
+    freshTerminalDrawn client
     -- One transaction: the frame is built from this size, so 'fullFlag' must
     -- decide against the same size.
     (csize, fullFlag) <- atomically $

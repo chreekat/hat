@@ -65,6 +65,7 @@ import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.ListKeys (cmdListKeys, printCommands)
 import Hat.Server.Command.ShowMessages (cmdShowMessages)
+import Hat.Server.Command.Lock (cmdLockClient, cmdLockServer, cmdLockSession)
 import Hat.Server.MessageLog (logCommand)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
@@ -504,6 +505,9 @@ commandSpecs =
     , (["show-hooks"], cmdShowHooks)
     , (["wait-for", "wait"], cmdWaitFor)
     , (["show-messages", "showmsgs"], cmdShowMessages)
+    , (["lock-server", "lock"], cmdLockServer)
+    , (["lock-session", "locks"], cmdLockSession)
+    , (["lock-client", "lockc"], cmdLockClient)
     ]
 
 -- Command implementations.

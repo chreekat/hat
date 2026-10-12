@@ -59,6 +59,7 @@ mkClient sz lastFrame = do
     envImpV <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
     viewOriginV <- newIORef (Pos 0 0)
+    ttyV <- newTVarIO TtyStarted
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a
             , wireLevel = protocolVersion, outbound = outboundQ, size = sizeV
@@ -76,7 +77,8 @@ mkClient sz lastFrame = do
             , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "", term = "", createdAt = 0
             , stdinSource = NoStdin, control = Nothing
-            , viewport = viewportV, lastViewOrigin = viewOriginV }
+            , viewport = viewportV, lastViewOrigin = viewOriginV
+            , ttyState = ttyV }
     re <- newReadEnd b
     pure (client, re)
 

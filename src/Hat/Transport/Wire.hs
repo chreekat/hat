@@ -91,7 +91,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 9
+protocolVersion = 10
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -190,6 +190,8 @@ data ClientToServer
     | StdinData ByteString  -- ^ a chunk of the client's standard input,
                             --   answering 'ReadStdin'
     | StdinEnd              -- ^ the client's standard input is exhausted
+    | LockDone              -- ^ the command a 'LockClient' ran has exited;
+                            --   the terminal is the server's again
     deriving (Eq, Show, Generic)
 
 data ServerToClient
@@ -218,6 +220,9 @@ data ServerToClient
         -- ^ a control-mode client is done: print @%exit@ with the reason
         --   (if any), linger per 'ExitWait', and exit with the status
         --   (level 9 and up)
+    | LockClient Text
+        -- ^ hand the terminal to this shell command (@lock-command@), then
+        --   answer 'LockDone' once it exits (level 10 and up)
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -257,6 +262,7 @@ class WireMessage a where
 --   Detach      = 4
 --   StdinData   = 5
 --   StdinEnd    = 6
+--   LockDone    = 7
 instance WireMessage ClientToServer where
     encodeWire = \case
         ClientHello h -> encodeListLen 2 <> encodeWord 0 <> encodeHello h
@@ -266,6 +272,7 @@ instance WireMessage ClientToServer where
         Detach        -> encodeListLen 1 <> encodeWord 4
         StdinData bs  -> encodeListLen 2 <> encodeWord 5 <> encode bs
         StdinEnd      -> encodeListLen 1 <> encodeWord 6
+        LockDone      -> encodeListLen 1 <> encodeWord 7
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . ClientHello <$> decodeHello)
         1 -> field len (Known . Input <$> decode)
@@ -274,6 +281,7 @@ instance WireMessage ClientToServer where
         4 -> nullary len (Known Detach)
         5 -> field len (Known . StdinData <$> decode)
         6 -> nullary len (Known StdinEnd)
+        7 -> nullary len (Known LockDone)
         _ -> pure (UnknownTag tag)
 
 -- ServerToClient tag registry (append-only; never renumber or reuse):
@@ -293,6 +301,7 @@ instance WireMessage ClientToServer where
 --   ReadStdin     = 13
 --   WriteStdout   = 14
 --   ControlExit   = 15
+--   LockClient    = 16
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -317,6 +326,7 @@ instance WireMessage ServerToClient where
                     ExitNow -> 0
                     AwaitEmptyLine -> 1)
                 <> encode status
+        LockClient cmd -> encodeListLen 2 <> encodeWord 16 <> encode cmd
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -349,6 +359,7 @@ instance WireMessage ServerToClient where
                     w -> Malformed ("ControlExit: unknown wait " <> show w)
             _ -> pure (Malformed
                 ("ControlExit: expected 3 fields, got " <> show (len - 1)))
+        16 -> field len (Known . LockClient <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -418,6 +429,10 @@ encodeServerMessageAt lvl = \case
     -- Only a control-mode client (level 9 and up) is ever sent this; an
     -- older peer would only know its session ended.
     ControlExit {} | lvl < 9 -> encodeMessage Exited
+    -- A pre-10 peer cannot hand over its terminal; the server never asks it
+    -- to (see 'Hat.Server.Lock.lockClient').
+    LockClient _ | lvl < 10 ->
+        encodeMessage (Message "locking: not supported by this client")
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

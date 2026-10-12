@@ -17,6 +17,7 @@ module Hat.Model
     , PipeHandle (..)
     , Client (..)
     , ClientRole (..)
+    , ClientTty (..)
     , StdinSource (..)
     , RowOrigin (..)
     , ChromeCache (..)
@@ -260,6 +261,9 @@ data ServerState = ServerState
         -- ^ panes' queries forwarded to clients' terminals; see
         --   "Hat.Server.InputRequestsIO"
     , messageLog :: TVar MessageLog  -- ^ see "Hat.Server.MessageLog"
+    , lockTimers :: TVar (Map SessionId Word64)
+        -- ^ when each session locks if idle (monotonic ns); see
+        --   'Hat.Server.Lock.armLockTimer'
     }
 
 data Session = Session
@@ -907,7 +911,16 @@ data Client = Client
     , viewport  :: TVar Viewport  -- ^ see "Hat.Server.Viewport"
     , lastViewOrigin :: IORef Pos
         -- ^ the 'viewport' origin 'lastFrame' was drawn at; render thread only
+    , ttyState  :: TVar ClientTty  -- ^ see "Hat.Server.Lock"
     }
+
+-- | Whether the server draws to a client's terminal (tmux's
+-- @TTY_STARTED@).
+data ClientTty
+    = TtyStarted
+    | TtyStopped    -- ^ handed to a lock command
+    | TtyRestarted  -- ^ handed back in its own fresh state, not yet drawn to
+    deriving (Eq, Show)
 
 -- | A client's popup: its box, and the command running on a pty of its
 -- own. See "Hat.Server.PopupIO".
@@ -980,6 +993,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO Map.empty
     <*> newTVarIO noRequests
     <*> newTVarIO emptyMessageLog
+    <*> newTVarIO Map.empty  -- lockTimers
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)

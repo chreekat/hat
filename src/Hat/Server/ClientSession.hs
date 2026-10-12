@@ -23,6 +23,7 @@ import Hat.Server.ClientIO (send)
 import Hat.Server.Hooks
     (PayloadItem (..), clientNameOf, notify, sessionTarget)
 import Hat.Server.Mru (recordVisit)
+import Hat.Server.Lock (armLockTimer)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Transport.Wire (ServerToClient (Exited))
 
@@ -48,6 +49,7 @@ switchClientTo st client sess = do
         bumpDirty st
     applySessionSize st old
     applySessionSize st sess.id
+    armLockTimer st sess.id
     when (old /= sess.id) $ do
         sname <- readTVarIO sess.name
         notify st "client-session-changed" (sessionTarget sess.id)
