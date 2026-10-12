@@ -875,12 +875,12 @@ cmdSendKeys st mclient args = do
                         Just bytes ->
                             [] <$ typeIntoPaneSynced st pane (B.pack bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise = [] <$ forM_ pos (\a -> do
+                    | otherwise = fmap (const []) . typeWrites . concat =<< forM pos (\a -> do
                         -- a key sent to a pane in clock mode ends it instead
                         spent <- clockModeKey st pane
-                        unless spent $ case parseKeyName a of
-                            Just k | not literal -> typeKeyIntoPane st pane k
-                            _ -> typeIntoPaneSynced st pane (TE.encodeUtf8 a))
+                        if spent then pure [] else case parseKeyName a of
+                            Just k | not literal -> keyWrites st pane k
+                            _ -> syncedWrites st pane (TE.encodeUtf8 a))
     (opts, flags, pos) = parseArgs "tN" args
     literal = "-l" `elem` flags
     hexBytes = "-H" `elem` flags

@@ -58,6 +58,10 @@ module Hat.Server.Pane
     , typeIntoPane
     , syncTargets
     , typeKeyIntoPane
+    , keyWrites
+    , syncedWrites
+    , typeWrites
+    , coalesceWrites
     , keyBytesFor
     , typeIntoPaneSynced
     , hostPolicyOf
@@ -1039,15 +1043,29 @@ syncTargets st pane = do
 -- terminal expects it, and copied to the panes synchronized with it. A focus
 -- report concerns only the pane it was meant for.
 typeKeyIntoPane :: ServerState -> Pane -> Key -> IO ()
-typeKeyIntoPane st pane key = do
+typeKeyIntoPane st pane key = typeWrites =<< keyWrites st pane key
+
+-- | What 'typeKeyIntoPane' writes, and to which panes.
+keyWrites :: ServerState -> Pane -> Key -> IO [(Pane, B.ByteString)]
+keyWrites st pane key = do
     o <- readTVarIO st.options
     let bspace = o.backspace
-        typeInto p = mapM_ (typeIntoPane p) =<< paneKeyBytes (keyEncoding o) bspace p key
-    typeInto pane
+        writeTo p = fmap ((,) p) <$> paneKeyBytes (keyEncoding o) bspace p key
     targets <- if key.name `elem` ["FocusIn", "FocusOut"]
         then pure []
         else atomically (syncTargets st pane)
-    mapM_ typeInto targets
+    catMaybes <$> mapM writeTo (pane : targets)
+
+-- | Type writes into their panes, one write per pane carrying all of its
+-- bytes, as tmux's buffered pane output reaches the program.
+typeWrites :: [(Pane, B.ByteString)] -> IO ()
+typeWrites ws = forM_ (coalesceWrites (.id) ws) (uncurry typeIntoPane)
+
+-- | Writes joined per destination, in the order each was first written to.
+coalesceWrites :: Ord k => (a -> k) -> [(a, B.ByteString)] -> [(a, B.ByteString)]
+coalesceWrites key ws =
+    [ (dest, B.concat [ bs | (d, bs) <- ws, key d == key dest ])
+    | (dest, _) <- List.nubBy (\a b -> key (fst a) == key (fst b)) ws ]
 
 -- | The bytes a key sends to a pane (tmux's @input_key@): Backspace sends
 -- what the @backspace@ option names, a @User@/N/ key sends nothing, and
@@ -1070,10 +1088,13 @@ keyEncoding o = keyEncodingOf o.extendedKeys o.extendedKeysFormat
 -- | Bytes typed into a pane as they are, copied to the panes synchronized
 -- with it (tmux's @window_pane_paste@).
 typeIntoPaneSynced :: ServerState -> Pane -> B.ByteString -> IO ()
-typeIntoPaneSynced st pane bytes = do
-    typeIntoPane pane bytes
+typeIntoPaneSynced st pane bytes = typeWrites =<< syncedWrites st pane bytes
+
+-- | What 'typeIntoPaneSynced' writes, and to which panes.
+syncedWrites :: ServerState -> Pane -> B.ByteString -> IO [(Pane, B.ByteString)]
+syncedWrites st pane bytes = do
     targets <- atomically (syncTargets st pane)
-    forM_ targets $ \p -> typeIntoPane p bytes
+    pure [ (p, bytes) | p <- pane : targets ]
 
 -- | Forward a recognized key as the pane's advertised terminal expects, not
 -- as the outer terminal's incidental bytes. The arrows are DECCKM-dependent

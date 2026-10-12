@@ -54,7 +54,7 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
-import Hat.Server.Pane (clockModeKey, deadNoticeBytes, enterClockMode, syncTargets)
+import Hat.Server.Pane (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
@@ -1836,6 +1836,11 @@ spec = do
         it "drops a sequence it could not name" $
             deliversKey (withFocus True) True
                 Key { name = "Unknown", raw = "\ESC[97~" } `shouldBe` False
+
+    describe "a command's writes to panes" $
+        it "join per pane, in the order each was first written to" $
+            coalesceWrites id [(1 :: Int, "a"), (2, "x"), (1, "b")]
+                `shouldBe` [(1, "ab"), (2, "x")]
 
     describe "reencodeKey (what the pane receives)" $ do
         -- hat advertises TERM=tmux-256color (khome=\E[1~, kend=\E[4~), so Home
