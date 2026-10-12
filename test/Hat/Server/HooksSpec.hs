@@ -6,6 +6,7 @@ import Test.Hspec
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
+import Control.Exception (AsyncException (ThreadKilled), throwIO)
 import Control.Monad (void)
 import Data.IORef
 import Data.Map.Strict qualified as Map
@@ -25,7 +26,7 @@ import Hat.Server.Command.Wait (cmdWaitFor)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks)
 import Hat.Server.Dispatch (installHooks, runCommandText)
 import Hat.Server.Environ (emptyEnviron)
-import Hat.Server.HookMonitor (addMonitor, parseMonitorSpec, sampleMonitors)
+import Hat.Server.HookMonitor (addMonitor, parseMonitorSpec, sampleMonitors, sampleRound)
 import Hat.Server.HookTypes
 import Hat.Server.Hooks
 import Hat.Server.Keys (EscPending (..), PrefixState (..))
@@ -177,6 +178,14 @@ spec = describe "hooks engine" $ do
             _ <- runCommandText st Nothing "set -g @value two"
             sampleMonitors st
             userOpt st "@seen" `shouldReturn` Just "one->two"
+
+        it "a sampling round survives a synchronous fault" $ do
+            lg <- newLogger "/dev/null"
+            sampleRound lg (throwIO (userError "sample failed")) `shouldReturn` ()
+
+        it "a sampling round ends on an asynchronous exception, so cancel stops the daemon" $ do
+            lg <- newLogger "/dev/null"
+            sampleRound lg (throwIO ThreadKilled) `shouldThrow` (== ThreadKilled)
 
         it "a monitor change wakes wait-for -E waiters on its name" $ do
             st <- newState
