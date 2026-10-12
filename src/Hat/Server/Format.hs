@@ -510,17 +510,23 @@ formatClock zone now texts
     secs = floor now :: Integer
     finer t = formatReadsLoops ["t"] t || "%#" `T.isInfixOf` t
 
--- | The variable names an expansion of the text looks up itself, by key,
--- condition or shorthand; the values it expands in turn (@E:@, @T:@) name
--- their own. A superset, so an environment of just these expands the text
--- as the whole one does: every word between the delimiters of a key
--- counts, in a branch taken or not, and so does plain text.
+-- | The variable names an expansion of the text looks up itself: each key
+-- (@{name}@, or @:name}@ after modifiers), condition and shorthand, in a
+-- branch taken or not; the values it expands in turn (@E:@, @T:@) name
+-- their own. A key holding a delimiter is not among them: its lookup
+-- raises 'UndemandedVar' instead.
 formatNames :: Text -> Set Text
-formatNames t = Set.fromList (T.split delimits t <> conditions <> shorthands <> sessionLoop)
+formatNames t = Set.fromList (keys Nothing t <> conditions <> shorthands <> sessionLoop)
   where
     -- A session loop finds its active item by the current session's id.
     sessionLoop = [ "session_id" | formatReadsLoops ["S"] t ]
     delimits c = c == '{' || c == '}' || c == ':' || c == ';' || c == ',' || c == '?'
+    keys opened s = case T.break delimits s of
+        (seg, rest) -> case T.uncons rest of
+            Nothing -> []
+            Just (d, rest') ->
+                [ seg | Just o <- [opened], o == '{' || o == ':' || o == ';', d == '}' ]
+                    <> keys (Just d) rest'
     after needle = map (T.drop (T.length needle) . snd) (T.breakOnAll needle t)
     conditions = [ cond | rest <- after "?", Just (cond, _) <- [skipTo "," rest] ]
     shorthands =

@@ -506,7 +506,7 @@ spec = do
 
     describe "formatNames" $ do
         prop "names every variable an expansion reads, through the values it expands" $
-            \f -> ioProperty $ do
+            \f -> withMaxSuccess 1000 $ ioProperty $ do
                 let fmt = renderFmt f
                     names = reached (formatNames fmt)
                     only = ctx { vars = Map.restrictKeys namingEnv names, demanded = Just names }
