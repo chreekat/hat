@@ -827,7 +827,7 @@ memoExpander st memo = Expand { format = memoExpand st memo, style = memoStyle m
 memoStyle :: ExpansionMemo -> Theme -> Text -> IO Cell.Style
 memoStyle memo th raw = do
     let sty = case Map.lookup raw memo.keptStyles of
-            Just (th', s) | th' == th -> s
+            Just (th', s) | samePtr th' th || th' == th -> s
             _ -> styleCell th raw
     modifyIORef' memo.madeStyles (Map.insert raw (th, sty))
     pure sty
