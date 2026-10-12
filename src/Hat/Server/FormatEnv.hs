@@ -24,6 +24,9 @@ module Hat.Server.FormatEnv
     , frameMemo
     , keepMemo
     , memoExpand
+    , Expand (..)
+    , freshExpand
+    , memoExpander
     , paneModeEnv
     , resolveShell
     , expandFormat
@@ -696,16 +699,45 @@ expandForced fmt ctx = Control.Exception.evaluate (renderFormatCtx ctx fmt)
 data ExpansionMemo = ExpansionMemo
     { kept :: Map.Map ExpansionKey KeptExpansion
     , made :: IORef (Map.Map ExpansionKey KeptExpansion)
+    , keptStyles :: Map.Map Text (Theme, Cell.Style)
+    , madeStyles :: IORef (Map.Map Text (Theme, Cell.Style))
     }
 
 -- | Start a client's frame with the expansions its last frame kept.
 frameMemo :: Client -> IO ExpansionMemo
-frameMemo client =
-    ExpansionMemo <$> readIORef client.lastExpansions <*> newIORef Map.empty
+frameMemo client = ExpansionMemo
+    <$> readIORef client.lastExpansions <*> newIORef Map.empty
+    <*> readIORef client.lastStyles <*> newIORef Map.empty
 
 -- | End a client's frame, keeping just the expansions it made.
 keepMemo :: Client -> ExpansionMemo -> IO ()
-keepMemo client memo = readIORef memo.made >>= writeIORef client.lastExpansions
+keepMemo client memo = do
+    readIORef memo.made >>= writeIORef client.lastExpansions
+    readIORef memo.madeStyles >>= writeIORef client.lastStyles
+
+-- | How a frame expands formats at a target and parses styles.
+data Expand = Expand
+    { format :: FormatTarget -> Text -> IO Text
+    , style  :: Theme -> Text -> IO Cell.Style
+    }
+
+-- | Expand and parse afresh ('expandAt', 'styleCell').
+freshExpand :: ServerState -> Expand
+freshExpand st = Expand { format = expandAt st, style = \th -> pure . styleCell th }
+
+-- | Expand and parse through a frame's memo ('memoExpand', 'memoStyle').
+memoExpander :: ServerState -> ExpansionMemo -> Expand
+memoExpander st memo = Expand { format = memoExpand st memo, style = memoStyle memo }
+
+-- | 'styleCell' through a frame's memo: the last frame's parse of the same
+-- text under the same theme stands.
+memoStyle :: ExpansionMemo -> Theme -> Text -> IO Cell.Style
+memoStyle memo th raw = do
+    let sty = case Map.lookup raw memo.keptStyles of
+            Just (th', s) | th' == th -> s
+            _ -> styleCell th raw
+    modifyIORef' memo.madeStyles (Map.insert raw (th, sty))
+    pure sty
 
 -- | 'expandAt' through a frame's memo: an expansion the last frame kept
 -- stands while every variable it can read is unchanged. One that can

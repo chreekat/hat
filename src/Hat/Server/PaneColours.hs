@@ -3,8 +3,7 @@
 -- @window-active-style@), its palette (@pane-colours@ under the program's
 -- OSC 4 changes), and what it answers its program's colour queries with.
 module Hat.Server.PaneColours
-    ( Expand
-    , paneStyleOption
+    ( paneStyleOption
     , paneDefaultColours
     , panePalette
     , oscColourReply
@@ -22,18 +21,14 @@ import Data.Word (Word8)
 
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.FormatDraw (colourValue, styleCell)
+import Hat.Server.FormatDraw (colourValue)
 import Hat.Server.FormatEnv
-    (FormatScope (..), FormatTarget (..), clientTheme, expandAt)
+    (Expand (..), FormatScope (..), FormatTarget (..), clientTheme, freshExpand)
 import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Render (paneDefaults)
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
-
--- | How a format expands at a target: 'expandAt', or through a frame's
--- 'Hat.Server.FormatEnv.memoExpand'.
-type Expand = FormatTarget -> Text -> IO Text
 
 -- | A pane's style option, its formats expanded in the pane's context
 -- first (tmux's @style_add@ with the pane's format tree).
@@ -44,8 +39,8 @@ paneStyleOption st expand th sess win pane popts name
     | "#{" `T.isInfixOf` raw = do
         wix <- atomically (readTVar sess.currentIx)
         pix <- paneIndexOf st win pane
-        styleCell th <$> expand (FormatTarget (InPane sess wix win pix pane) Map.empty) raw
-    | otherwise = pure (styleCell th raw)
+        expand.style th =<< expand.format (FormatTarget (InPane sess wix win pix pane) Map.empty) raw
+    | otherwise = expand.style th raw
   where
     raw = optionText name popts
 
@@ -98,7 +93,7 @@ queryDefaultColour st pane target = paneContext st pane >>= \case
     Nothing -> pure Nothing
     Just (sess, win, popts) -> do
         th <- clientTheme st
-        (fg, bg) <- paneDefaultColours st (expandAt st) th sess win pane popts
+        (fg, bg) <- paneDefaultColours st (freshExpand st) th sess win pane popts
         pure (colourRgb (case target of
             Emu.Foreground -> fg
             Emu.Background -> bg))

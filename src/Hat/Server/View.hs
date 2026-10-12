@@ -53,11 +53,11 @@ import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
     (FormatScope (..), FormatTarget (..), Wanted (..),
      clientTheme, demanding, expandAt, formatCtxFor, frameMemo, keepMemo,
-     memoExpand, sessionFormatEnv, sessionVars, windowOwnEnv, windowOwnVars)
+     memoExpander, Expand (..), sessionFormatEnv, sessionVars, windowOwnEnv, windowOwnVars)
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
 import Hat.Server.Locate (locatePane, paneIndexOf)
-import Hat.Server.PaneColours (Expand, paneDefaultColours, panePalette, paneStyleOption)
+import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
@@ -148,7 +148,7 @@ renderOnce st client = do
         (,) <$> readTVar client.size <*> swapTVar client.needsFull False
     opts <- readTVarIO st.options
     memo <- frameMemo client
-    let expand = memoExpand st memo
+    let expand = memoExpander st memo
     view <- atomically $ do
         sid <- readTVar client.session
         msess <- Map.lookup sid <$> readTVar st.sessions
@@ -300,7 +300,7 @@ renderOnce st client = do
                         sx = r.endCol - r.startCol
                         fgc = Cell.defaultStyle { Cell.fg = colourFor pid }
                     mformat <- if T.null fmt then pure Nothing else do
-                        expanded <- expand
+                        expanded <- expand.format
                             (FormatTarget (InPane sess wix win n pane) Map.empty) fmt
                         pure (Just (drawnCells (formatDraw th fgc expanded) sx))
                     pure [ (Pos (p.row + r.startRow) (p.col + r.startCol), cell)
@@ -391,9 +391,9 @@ popupView st expand sess win p = do
     let styleOf name = do
             let raw = optionText name wopts
             expanded <- if "#{" `T.isInfixOf` raw
-                then expand (FormatTarget (InWindow sess wix win) Map.empty) raw
+                then expand.format (FormatTarget (InWindow sess wix win) Map.empty) raw
                 else pure raw
-            pure (styleCell th expanded)
+            expand.style th expanded
     dflt <- (\c -> overrideColours th c ps.style) <$> styleOf "popup-style"
     bdr <- (\c -> overrideColours th c ps.borderStyle) <$> styleOf "popup-border-style"
     let colours c = Cell.defaultStyle { Cell.fg = c.fg, Cell.bg = c.bg }
@@ -769,9 +769,9 @@ withMenu st expand th sess win mmenu look = case mmenu of
         let styleOf name = do
                 let raw = optionText name wopts
                 expanded <- if "#{" `T.isInfixOf` raw
-                    then expand (FormatTarget scope Map.empty) raw
+                    then expand.format (FormatTarget scope Map.empty) raw
                     else pure raw
-                pure (styleCell th expanded)
+                expand.style th expanded
         sty <- styleOf "menu-style"
         sel <- styleOf "menu-selected-style"
         bdr <- styleOf "menu-border-style"
@@ -790,7 +790,7 @@ withFills st expand th sess win kinds look
     | otherwise = do
         (wix, wopts) <- atomically $
             (,) <$> readTVar sess.currentIx <*> resolveForWindow st sess win
-        let fill inside = fillCell th look.windowStyle <$> expand
+        let fill inside = fillCell th look.windowStyle <$> expand.format
                 (FormatTarget (InWindow sess wix win) (Map.fromList
                     [ ("is_inside", flag inside), ("is_outside", flag (not inside)) ]))
                 (optionText "fill-character" wopts)
@@ -814,7 +814,7 @@ withStatusLines expand th sess win scene kinds panes look
             case statusBase lineSet sty cp.number scene cp.pane.id of
                 Nothing -> pure []
                 Just base -> do
-                    expanded <- expand
+                    expanded <- expand.format
                         (FormatTarget (InPane sess wix win cp.number cp.pane) Map.empty)
                         (optionText "pane-border-format" cp.options)
                     pure [ (cp.pane.id, formatDraw th sty expanded base) ]

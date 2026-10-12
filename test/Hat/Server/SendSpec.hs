@@ -50,6 +50,7 @@ mkClientWith cid = do
     chromeV <- newIORef Nothing
     statusV <- newIORef Nothing
     expansionsV <- newIORef Map.empty
+    stylesV <- newIORef Map.empty
     mouseModeVar <- newIORef 0
     curV    <- newIORef (Pos 0 0, True)
     colourV <- newIORef Nothing
@@ -73,6 +74,7 @@ mkClientWith cid = do
             , lastChrome = chromeV
             , lastStatus = statusV
             , lastExpansions = expansionsV
+            , lastStyles = stylesV
             , lastMouseMode = mouseModeVar
             , lastCursorColour = colourV, lastCursorShape = shapeVar
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV

@@ -172,6 +172,7 @@ addClient st sid sz stamp = do
         <*> newIORef Nothing
         <*> newIORef Nothing
         <*> newIORef Map.empty
+        <*> newIORef Map.empty
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing
         <*> newIORef CursorDefault
@@ -216,6 +217,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newIORef V.empty
         <*> newIORef Nothing
         <*> newIORef Nothing
+        <*> newIORef Map.empty
         <*> newIORef Map.empty
         <*> newIORef (Pos 0 0, True)
         <*> newIORef Nothing

@@ -784,6 +784,9 @@ data Client = Client
     , lastStatus :: IORef (Maybe StatusCache)  -- render thread only
     , lastExpansions :: IORef (Map ExpansionKey KeptExpansion)
         -- ^ the last frame's; render thread only
+    , lastStyles :: IORef (Map Text (Theme, Cell.Style))
+        -- ^ the styles the last frame parsed, by their text and the theme
+        --   they were parsed under; render thread only
     , lastCursor :: IORef (Pos, Bool)
     , lastCursorColour :: IORef (Maybe Emu.Rgb)
         -- ^ OSC 12 in effect; render thread only
