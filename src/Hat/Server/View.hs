@@ -57,6 +57,7 @@ import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPan
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.PaneColours (paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
+import Hat.Server.Viewport (viewportFor)
 import Hat.Server.Theme (Theme, colourRgb)
 import Hat.Server.Picker qualified as Picker
 import Hat.Server.Render
@@ -166,16 +167,12 @@ renderOnce st client = do
     let (rowOff, mStatusRowIx) =
             statusLayout sopts.statusPosition sopts.statusLines
                 (fromIntegral csize.rows)
-    (frame, origins, cursor, mActiveRect) <- case view of
+    (frame, origins, cursor, mActiveRect, viewOrigin, panned) <- case view of
         Nothing -> pure
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
-            , (Pos 0 0, False), Nothing )
+            , (Pos 0 0, False), Nothing, Pos 0 0, False )
         Just (sess, win, rects, (eff, floats), ps, active) -> do
-            let shiftRect r = r
-                    { startRow = r.startRow + rowOff
-                    , endRow = r.endRow + rowOff
-                    }
             -- Snapshot each visible pane once; its cells and its cursor both
             -- come from that one read.
             th <- clientTheme st
@@ -190,12 +187,35 @@ renderOnce st client = do
                         pure [(pidL, (withPaneColours dflt palette pv, dflt))]
             let paneViews = Map.fromList [ (p, pv) | (p, (pv, _)) <- painted ]
                 defaults = Map.fromList [ (p, d) | (p, (_, d)) <- painted ]
-            prevFrame <- readIORef client.lastFrame
-            prevOrigins <- readIORef client.lastOrigins
             let sceneArea = csize
                     { rows = fromIntegral (max 0 (fromIntegral csize.rows - sopts.statusLines)) }
+                shownCursor = do
+                    pv <- Map.lookup active paneViews
+                    case placePaneCursor (paneOrigin rects active) 0 pv of
+                        (p, True) -> Just p
+                        _ -> Nothing
+            (prevView, vp) <- atomically $ do
+                prev <- readTVar client.viewport
+                let next = viewportFor win.id eff sceneArea shownCursor prev
+                when (next /= prev) $ writeTVar client.viewport next
+                pure (prev, next)
+            let o = vp.origin
+                moved = o /= prevView.origin
+                toView p = Pos { row = p.row - o.row, col = p.col - o.col }
+                inScene p = p.row >= 0 && p.row < fromIntegral sceneArea.rows
+                    && p.col >= 0 && p.col < fromIntegral sceneArea.cols
+                shiftRect r = r
+                    { startRow = r.startRow + rowOff - o.row
+                    , endRow = r.endRow + rowOff - o.row
+                    , startCol = r.startCol - o.col
+                    , endCol = r.endCol - o.col
+                    }
+            prevFrame <- readIORef client.lastFrame
+            -- A pane slice's provenance does not record which window
+            -- columns it showed, so no row survives the view moving.
+            prevOrigins <- if moved then pure V.empty else readIORef client.lastOrigins
             chrome <- cachedChrome st th client sess win eff sceneArea rects floats defaults
-                active rowOff
+                active rowOff o
             let layers =
                     [ PaneLayer { pane = pidL, rect = shiftRect shown
                                 , cells = V.map (V.drop skip.col) (V.drop skip.row pv.cells)
@@ -252,10 +272,14 @@ renderOnce st client = do
                 (Just _, (ix, _, Just cx) : _) ->
                     pure (Pos { row = ix, col = min (w - 1) cx }, True)
                 _ -> pure $ case Map.lookup active paneViews of
-                    Nothing -> (Pos 0 0, False)
-                    Just pv -> placePaneCursor (paneOrigin rects active) rowOff pv
+                    Just pv
+                        | Just _ <- pv.cursor
+                        , (p, visible) <- placePaneCursor (paneOrigin rects active) 0 pv
+                        , inScene (toView p) ->
+                            (let q = toView p in q { row = q.row + rowOff }, visible)
+                    _ -> (Pos 0 0, False)
             pure ( withStatus, statusOrigins, cur
-                 , shiftRect <$> List.lookup active rects )
+                 , shiftRect <$> List.lookup active rects, o, moved )
     -- A chooser overlay, when open, is drawn in the active pane's rect
     -- (or the whole window under -Z), with a live preview of the
     -- highlighted node's pane beside the list.
@@ -281,8 +305,10 @@ renderOnce st client = do
             th <- clientTheme st
             wopts <- atomically (resolveForWindow st sess win)
             wix <- atomically (readTVar sess.currentIx)
-            let shiftR r = r { startRow = r.startRow + rowOff
-                             , endRow = r.endRow + rowOff }
+            let shiftR r = r { startRow = r.startRow + rowOff - viewOrigin.row
+                             , endRow = r.endRow + rowOff - viewOrigin.row
+                             , startCol = r.startCol - viewOrigin.col
+                             , endCol = r.endCol - viewOrigin.col }
                 colourFor pid = fromMaybe Cell.DefaultColor $ join $ colourValue th $
                     optionText (if pid == active then "display-panes-active-colour"
                                 else "display-panes-colour") wopts
@@ -322,7 +348,7 @@ renderOnce st client = do
     oldCursor <- readIORef client.lastCursor
     -- A diff is only valid between same-sized frames; force full on any
     -- dimension change.
-    let full = fullFlag || frameDims old /= frameDims frame3
+    let full = fullFlag || panned || frameDims old /= frameDims frame3
         known r = case (oldOrigins V.!? r, origins3 V.!? r) of
             (Just a, Just b) -> sameOrigin a b
             _ -> False
@@ -616,8 +642,8 @@ paneOrigin rects pidL = case List.lookup pidL rects of
 cachedChrome
     :: ServerState -> Theme -> Client -> Session -> Window -> Size -> Size
     -> [(PaneId, Rect)] -> [FloatingPane] -> Map.Map PaneId (Cell.Color, Cell.Color) -> PaneId
-    -> Int -> IO Chrome
-cachedChrome st th client sess win eff sceneArea rects floats defaults active rowOff = do
+    -> Int -> Pos -> IO Chrome
+cachedChrome st th client sess win eff sceneArea rects floats defaults active rowOff origin = do
     mcc <- readIORef client.lastChrome
     mmenu <- readTVarIO win.menu
     (input, look2, panes) <- atomically
@@ -646,16 +672,23 @@ cachedChrome st th client sess win eff sceneArea rects floats defaults active ro
         >>= withFills st th sess win scene
         >>= withMenu st th sess win mmenu
     case mcc of
-        Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff ->
+        Just cc | cc.input == input, cc.look == look, cc.rowOff == rowOff
+                , cc.origin == origin ->
             pure cc.chrome
         _ -> do
-            let cells = [ (p { row = p.row + rowOff }, c) | (p, c) <- sceneChrome look scene ]
+            let shown p = p.row >= 0 && p.row < fromIntegral sceneArea.rows
+                    && p.col >= 0 && p.col < fromIntegral sceneArea.cols
+                cells =
+                    [ (q { row = q.row + rowOff }, c)
+                    | (p, c) <- sceneChrome look scene
+                    , let q = Pos { row = p.row - origin.row, col = p.col - origin.col }
+                    , shown q ]
                 gen
                     | Just cc <- mcc, cc.cells == cells = cc.chrome.gen
                     | otherwise = maybe 0 (\cc -> cc.chrome.gen) mcc + 1
                 chrome = Chrome { gen, byRow = (chromeFromCells cells).byRow }
             writeIORef client.lastChrome $ Just ChromeCache
-                { input, scene, look, rowOff, cells, chrome }
+                { input, scene, look, rowOff, origin, cells, chrome }
             pure chrome
   where
     isBorder = \case

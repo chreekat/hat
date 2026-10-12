@@ -20,6 +20,8 @@ module Hat.Model
     , StdinSource (..)
     , RowOrigin (..)
     , ChromeCache (..)
+    , Viewport (..)
+    , unpannedViewport
     , StatusCache (..)
     , WindowKey (..)
     , EnvImport (..)
@@ -706,6 +708,21 @@ data AcceptGate
 data ReadGate = ReadersFlowing | ReadersPaused
     deriving (Eq, Show)
 
+-- | Which part of its window a client shows (tmux's @oox@, @ooy@, @osx@,
+-- @osy@ and @pan_window@): all of it when it fits, else a client-sized view.
+data Viewport = Viewport
+    { origin :: !Pos  -- ^ the window cell drawn at the scene's top-left
+    , extent :: !Size  -- ^ how much of the window is drawn
+    , pinned :: !(Maybe WindowId)
+        -- ^ the window @refresh-client@ panned the view over; 'Nothing'
+        --   while the view follows the cursor
+    }
+    deriving (Eq, Show)
+
+unpannedViewport :: Viewport
+unpannedViewport = Viewport
+    { origin = Pos 0 0, extent = Size { rows = 0, cols = 0 }, pinned = Nothing }
+
 -- | A client's window scene and its drawn chrome, with the inputs that
 -- produced them; the render thread's cache. See
 -- 'Hat.Server.View.cachedChrome'.
@@ -714,6 +731,7 @@ data ChromeCache = ChromeCache
     , scene   :: Scene
     , look    :: ChromeLook
     , rowOff  :: Int
+    , origin  :: Pos  -- ^ the viewport origin the cells were cut at
     , cells   :: [(Pos, Cell.Cell)]
     , chrome  :: Chrome
     }
@@ -792,6 +810,7 @@ data Client = Client
     , control   :: Maybe ControlState
         -- ^ a tmux control-mode client's protocol state; 'Nothing' for
         --   every other client. See "Hat.Server.Control".
+    , viewport  :: TVar Viewport  -- ^ see "Hat.Server.Viewport"
     }
 
 -- | A client's popup: its box, and the command running on a pty of its

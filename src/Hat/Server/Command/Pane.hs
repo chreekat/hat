@@ -149,8 +149,16 @@ captureText opts = T.concat . go Cell.defaultStyle
     -- approximated as everything up to the last non-default cell, and a
     -- wrapped row under @-J@ is fully used by construction.
     visible r
-        | emptyCells || (opts.captJoin && r.wrapped) = V.toList r.cells
+        | opts.captJoin && r.wrapped = V.toList r.cells
+        | emptyCells = allocated (V.toList r.cells)
         | otherwise = rtrimBlank (V.toList r.cells)
+    -- tmux's cellsize: a row allocates no cells until written, then grows
+    -- in quarter-, half- and full-width steps, so a written row renders the
+    -- same as its whole width once trailing blanks trim; an untouched row
+    -- renders nothing, not even a pen reset.
+    allocated cls
+        | null (rtrimBlank cls) = []
+        | otherwise = cls
     renderCells pen [] = ("", pen)
     renderCells pen (cell : cls)
         | Cell.Continuation <- cell.content = renderCells pen cls

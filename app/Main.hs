@@ -159,22 +159,6 @@ controlMode path mconfig flavour setup = do
             exitWith (ExitFailure 1)
         Left _ -> exitWith (ExitFailure 1)
 
--- | Whether a command line grabs this terminal to render, or runs and exits.
-data TerminalMode
-    = GrabsTerminal  -- ^ establish the session server-side, then attach and render
-    | FireAndForget  -- ^ run as a control command and exit
-
--- | Verbs that grab this terminal and render, running server-side first to
--- establish the session: @new-session@/@new@ (unless detached with @-d@)
--- and @attach-session@/@attach@ with an explicit target. A bare @new@ still
--- attaches; a @new -d@ stays fire-and-forget.
-terminalMode :: [[T.Text]] -> TerminalMode
-terminalMode [cmd@(verb : _)]
-    | verb `elem` ["new-session", "new"] =
-        if "-d" `notElem` cmd then GrabsTerminal else FireAndForget
-    | verb `elem` ["attach-session", "attach"] = GrabsTerminal
-terminalMode _ = FireAndForget
-
 attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> [T.Text] -> IO ()
 attach path mconfig setup hist = do
     -- Attaching from inside a pane of the *same* server ($TMUX names its

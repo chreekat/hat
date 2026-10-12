@@ -5,7 +5,7 @@
 am-terminal.sh                  # terminal-overrides option unimplemented
 border-arrows.sh                # wontfix: hat deliberately draws triangle indicators, not tmux's ACS arrows
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
-check-names.sh                  # rename-window '' must name the window empty (hat hands it back to automatic-rename), then UTF-8 name validation + buffer -F listing
+check-names.sh                  # invalid UTF-8 in argv is lossily decoded before the server can reject it (wire carries Text); OSC 2 titles not cleaned as untrusted (#( to _(, invalid UTF-8 kept); ESC k sets pane_title, not the window name
 combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
 # tabs to spaces in the grid, so a copied tab-indented line comes back
@@ -19,13 +19,12 @@ cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
 if-shell-error.sh
-prompt-keys.sh
-prompt-mechanics.sh
+prompt-keys.sh                  # choose-tree as a tree-mode pane mode with its search prompt (#{pane_mode} = tree-mode)
+prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; choose-tree tree-mode search/filter prompts; -1/-N/-i/-k/-e prompt flags
 run-shell-output.sh             # run-shell output to client stdout + view-mode screen (pane_mode)
 screen-redraw-bidi.sh
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
-screen-redraw-indicators.sh     # hat's triangle indicators (see border-arrows.sh); capture-pane -e emits an SGR reset on an empty line after a coloured one
-screen-redraw-outside.sh        # refresh-client -U/-D/-L/-R (panning a window bigger than the client) unimplemented
+screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
 style-trim.sh
 tty-draw-line.sh                # nested-attach client draw fidelity
 tty-keys.sh
@@ -49,7 +48,7 @@ mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choo
 mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
 
 # copy-mode advanced motions/options
-copy-mode-redraw.sh             # refresh-client -c (panning) + copy mode resizing with its pane (tmux reflows its backing copy)
+copy-mode-redraw.sh             # a centre-aligned copy-mode-position-format indicator is not drawn
 
 # formats: remaining gaps sit outside the modifier engine
 cmd-template-replace.sh         # cmd_template_replace quoting semantics (applyTemplate is a naive %%/%1 replace)

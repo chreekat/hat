@@ -68,6 +68,8 @@ import Hat.Server.StyleSpec qualified
 import Hat.Server.FormatDrawSpec qualified
 import Hat.Server.TargetSpec qualified
 import Hat.Server.TitleSpec qualified
+import Hat.Server.ViewportSpec qualified
+import Hat.Server.ListKeysSpec qualified
 import Hat.Transport.SocketSpec qualified
 import Hat.Term.EmulatorSpec qualified
 import Hat.Term.GoldenSpec qualified
@@ -137,6 +139,8 @@ main = hspec $ parallel $ do
     describe "Hat.Server.FormatDraw" Hat.Server.FormatDrawSpec.spec
     describe "Hat.Server.Target" Hat.Server.TargetSpec.spec
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
+    describe "Hat.Server.Viewport" Hat.Server.ViewportSpec.spec
+    describe "Hat.Server.ListKeys" Hat.Server.ListKeysSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
     describe "Hat.Glob" Hat.GlobSpec.spec

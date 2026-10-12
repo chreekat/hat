@@ -9,6 +9,8 @@ module Hat.Client
     , runControlMode
     , awaitEmptyLine
     , nestsOwnServer
+    , TerminalMode (..)
+    , terminalMode
     ) where
 
 import Control.Concurrent (threadDelay)
@@ -31,6 +33,8 @@ import System.Posix.Signals (Handler (Catch), installHandler)
 
 import Hat.Client.Draw
 import Hat.Client.Tty
+import Hat.Server.Command.Session (newSessionValueFlags)
+import Hat.Server.Command.Types (parseArgs)
 import Hat.Term.Pty (sigWinch)
 import Hat.Transport.Wire
 
@@ -55,6 +59,24 @@ versionMismatch = "unexpected greeting — mismatched hat versions?"
 nestsOwnServer :: String -> FilePath -> Bool
 nestsOwnServer tmuxVar target =
     not (null tmuxVar) && takeWhile (/= ',') tmuxVar == target
+
+-- | Whether a command line grabs this terminal to render, or runs and exits.
+data TerminalMode
+    = GrabsTerminal  -- ^ establish the session server-side, then attach and render
+    | FireAndForget  -- ^ run as a control command and exit
+    deriving (Eq, Show)
+
+-- | Verbs that grab this terminal and render, running server-side first to
+-- establish the session: @new-session@/@new@ (unless detached with @-d@)
+-- and @attach-session@/@attach@ with an explicit target. A bare @new@ still
+-- attaches; a @new -d@ stays fire-and-forget.
+terminalMode :: [[Text]] -> TerminalMode
+terminalMode [verb : args]
+    | verb `elem` ["new-session", "new"] =
+        let (_, flags, _) = parseArgs newSessionValueFlags args
+        in if "-d" `notElem` flags then GrabsTerminal else FireAndForget
+    | verb `elem` ["attach-session", "attach"] = GrabsTerminal
+terminalMode _ = FireAndForget
 
 hello :: Word16 -> Autostart -> Intent -> [Text] -> IO ClientToServer
 hello v origin intent hist = do
