@@ -20,6 +20,8 @@ module Hat.Server.Format
     , formatNames
     , formatVolatile
     , formatClock
+    , clockTick
+    , formatStrftimes
     , truthy
     ) where
 
@@ -42,7 +44,7 @@ import Data.Text.Read qualified as TR
 import Data.Time.Clock.POSIX (POSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime
-    (TimeZone, ZonedTime (..), utc, utcToZonedTime, zonedTimeToUTC)
+    (TimeZone, ZonedTime (..), timeZoneMinutes, utc, utcToZonedTime, zonedTimeToUTC)
 import Numeric (showFFloat)
 import Text.Regex.TDFA
     (CompOption (..), MatchArray, Regex, defaultCompOpt, defaultExecOpt, matchOnce)
@@ -482,33 +484,70 @@ formatReadsLoops toks t = case T.breakOn "#{" t of
             , d <- [":", "/", ";"]
             ]
 
--- | Whether an expansion of a format against variables with these values
--- can change with none of them changing: it, or a value it can expand,
--- reads the tree beyond them ('formatReadsTree'), runs a command, or reads
--- the clock (a strftime sequence, a @t@ time modifier, an @A@ animation, a
--- @T:@ expansion of a value holding a @%@). Conservative, as
+-- | Whether an expansion of a format against these variables can change
+-- with none of them changing: it, or a value it can expand, reads the tree
+-- beyond them ('formatReadsTree'), runs a command, or reads the clock (a
+-- strftime sequence, a @t@ time modifier, an @A@ animation, a value it
+-- renders as a strftime template, 'formatStrftimes'). Conservative, as
 -- 'formatReadsLoops' is.
-formatVolatile :: Text -> [Text] -> Bool
-formatVolatile fmt values =
+formatVolatile :: Text -> FormatEnv -> Bool
+formatVolatile fmt vars =
     any readsMore expanded
-        || (any (formatReadsLoops ["T"]) expanded && any (T.any (== '%')) values)
+        || any (T.any (== '%')) (Map.restrictKeys vars (foldMap formatStrftimes expanded))
   where
-    expanded = fmt : filter ("#" `T.isInfixOf`) values
+    expanded = fmt : filter ("#" `T.isInfixOf`) (Map.elems vars)
     readsMore t = formatReadsLoops ["S", "W", "P", "L", "N", "C", "A", "t"] t
         || "#(" `T.isInfixOf` t || T.any (== '%') t
 
--- | What expanding these texts (formats, and the values they can expand)
--- reads of the clock at a time: their strftime sequences rendered then,
--- so two times that answer alike expand them alike. The whole second when
--- they read it more finely than they show: a time modifier (@t@), or a
--- @%@ an expansion could complete into a sequence.
-formatClock :: TimeZone -> POSIXTime -> [Text] -> Text
-formatClock zone now texts
-    | any finer texts = tshow secs
-    | otherwise = T.intercalate "\0" [ strftimeAt zone secs t | t <- texts, "%" `T.isInfixOf` t ]
+-- | How often expanding these texts (formats, and the values they can
+-- expand) reads a different clock: in seconds, the shortest period any of
+-- their strftime sequences shows; a second when they read the clock more
+-- finely than they show (a time modifier, @t@, or a @%@ an expansion
+-- could complete into a sequence); 'Nothing' when they read none.
+formatClock :: [Text] -> Maybe Integer
+formatClock texts
+    | any finer texts = Just 1
+    | otherwise = case concatMap periods texts of
+        [] -> Nothing
+        ps -> Just (minimum ps)
   where
-    secs = floor now :: Integer
     finer t = formatReadsLoops ["t"] t || "%#" `T.isInfixOf` t
+    periods t = case T.breakOn "%" t of
+        (_, rest) -> case T.uncons rest of
+            Nothing -> []
+            Just (_, afterPct) ->
+                let spec = T.dropWhile (`elem` ("-_0^" :: String)) afterPct
+                    spec' = T.dropWhile (`elem` ("EO" :: String)) (T.dropWhile isDigit spec)
+                in case T.uncons spec' of
+                    Nothing -> [1]
+                    Just (c, more) -> maybe id (:) (period c) (periods more)
+    period c
+        | c `elem` ("%nt" :: String) = Nothing
+        | c `elem` ("MR" :: String) = Just 60
+        | c `elem` ("HIklpP" :: String) = Just 3600
+        | c `elem` ("aAbBhdejmuwyYCGgfUWVDFxZz" :: String) = Just 86400
+        | otherwise = Just 1
+
+-- | Which period of a clock reading a time falls in, as local time counts
+-- it: two times in the same one expand the texts 'formatClock' measured
+-- alike.
+clockTick :: TimeZone -> POSIXTime -> Integer -> (Int, Integer)
+clockTick zone now period =
+    (timeZoneMinutes zone, (floor now + 60 * fromIntegral (timeZoneMinutes zone)) `div` period)
+
+-- | The variables whose values an expansion of the text renders as
+-- strftime templates (@T:@), and so reads the clock through.
+formatStrftimes :: Text -> Set Text
+formatStrftimes t = Set.fromList
+    [ copy
+    | (_, rest) <- T.breakOnAll "#{" t
+    , Just (inner, _) <- [findClose (T.drop 2 rest)]
+    , Just (mods, copy) <- [parseMods inert 1 inner]
+    , any (\m -> m.mname == "T") mods
+    , not ("#{" `T.isInfixOf` copy) ]
+  where
+    -- The modifiers' own arguments are never expanded here.
+    inert = formatCtx Map.empty (const "") (utcToZonedTime utc (posixSecondsToUTCTime 0))
 
 -- | The variable names an expansion of the text looks up itself: each key
 -- (@{name}@, or @:name}@ after modifiers), condition and shorthand, in a

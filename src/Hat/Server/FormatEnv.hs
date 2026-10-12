@@ -761,7 +761,7 @@ memoExpand st memo t fmt = do
             pure k.text
         Nothing -> do
             (names, vars, text) <- demanding st (targetVars st t) [fmt] (expandForced fmt)
-            when (not ambient && not (formatVolatile fmt (Map.elems vars))) $
+            when (not ambient && not (formatVolatile fmt vars)) $
                 keep key KeptExpansion { names, vars, text }
             pure text
   where

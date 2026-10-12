@@ -46,7 +46,7 @@ import Hat.Server.ClientIO (hasRoom, send, sendAs)
 import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Server.DisplayPanes qualified as DisplayPanes
 import Hat.Server.Flash (startLingerClock)
-import Hat.Server.Format (formatClock, formatReadsLoops)
+import Hat.Server.Format (clockTick, formatClock, formatReadsLoops, formatStrftimes)
 import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
 import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
@@ -1027,7 +1027,7 @@ statusRowsCached st client sess sopts width = do
     hit <- case mc of
         Just c | isNothing mamb, c.plain
                , samePtr c.opts sopts, samePtr c.shells shells, c.width == width
-               , formatClock zone now c.clockTexts == c.clock -> do
+               , fmap (clockTick zone now) c.clockPeriod == c.clock -> do
             vars <- sessionVars st sess (OnlyVars c.names)
             wins <- if vars == c.vars then ownVars (OnlyVars c.names) else pure []
             pure (if vars == c.vars && wins == c.wins then Just c.rowCells else Nothing)
@@ -1046,16 +1046,18 @@ statusRowsCached st client sess sopts width = do
                 pure texts
             th <- clientTheme st
             let rows = drawStatus th sopts texts width
-                reached = formats <>
-                    [ v | v <- Map.elems vars <> concatMap Map.elems winEnvs
-                        , "#" `T.isInfixOf` v || "%" `T.isInfixOf` v ]
+                values = Map.toList vars <> concatMap Map.toList winEnvs
+                reached = formats <> [ v | (_, v) <- values, "#" `T.isInfixOf` v ]
+                strftimed = foldMap formatStrftimes reached
                 readsAny toks = any (formatReadsLoops toks) reached
                 plain = not (readsAny ["S", "P", "L", "N", "C", "A"])
                 animated = readsAny ["A"]
+                clockPeriod = formatClock
+                    (reached <> [ v | (n, v) <- values, n `Set.member` strftimed ])
             when (isNothing mamb) $ writeIORef client.lastStatus $
                 Just StatusCache
-                    { opts = sopts, shells, clockTexts = reached
-                    , clock = formatClock zone now reached, width, names, vars
+                    { opts = sopts, shells, clockPeriod
+                    , clock = clockTick zone now <$> clockPeriod, width, names, vars
                     , wins = map (`Map.restrictKeys` names) winEnvs
                     , plain, animated, rowCells = rows }
             pure $! foldr seq rows rows

@@ -733,12 +733,12 @@ data ChromeCache = ChromeCache
 data StatusCache = StatusCache
     { opts    :: !Options                    -- ^ matched by object identity
     , shells  :: !(Map Text (UTCTime, Text)) -- ^ matched by object identity
-    , clockTexts :: ![Text]  -- ^ the texts whose strftime sequences the expansion reads
-    , clock   :: !Text  -- ^ what it read of the clock; see 'Hat.Server.Format.formatClock'
+    , clockPeriod :: !(Maybe Integer)  -- ^ see 'Hat.Server.Format.formatClock'
+    , clock   :: !(Maybe (Int, Integer))  -- ^ the period it read; see 'Hat.Server.Format.clockTick'
     , width   :: !Int
     , names   :: !(Set Text)  -- ^ every variable the expansion can read
-    , vars    :: !(Map Text Text)  -- ^ the session's values of those variables
-    , wins    :: ![Map Text Text]  -- ^ each window's own values of them, in index order
+    , vars    :: !(Map Text Text)  -- ^ the session's values of 'names'
+    , wins    :: ![Map Text Text]  -- ^ each window's own values of 'names', in index order
     , plain   :: !Bool  -- ^ no format reads the tree beyond @wins@, or animates; see 'Hat.Server.Format.formatReadsLoops'
     , animated :: !Bool  -- ^ a format animates (@A:@), so the rows change with time alone
     , rowCells :: ![V.Vector Cell.Cell]

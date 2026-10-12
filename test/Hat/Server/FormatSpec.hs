@@ -7,7 +7,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (utc, utcToZonedTime)
+import Data.Time.LocalTime (minutesToTimeZone, utc, utcToZonedTime)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
@@ -520,16 +520,35 @@ spec = do
             case got of
                 Left (UndemandedVar n) -> n `shouldBe` "session_name"
                 Right out -> expectationFailure ("expanded to " <> show out)
-    describe "formatClock" $
+    describe "formatClock" $ do
+        it "reads the clock as finely as its strftime sequences show it" $ do
+            formatClock ["%H:%M"] `shouldBe` Just 60
+            formatClock ["%-H %p"] `shouldBe` Just 3600
+            formatClock ["%d-%b"] `shouldBe` Just 86400
+            formatClock ["%T"] `shouldBe` Just 1
+            formatClock ["#{t/r:@ts}"] `shouldBe` Just 1
+            formatClock ["100%%"] `shouldBe` Nothing
+            formatClock ["plain"] `shouldBe` Nothing
+        it "reads the clock through the values a T: renders" $
+            formatStrftimes "#{T:status-right}#{E:@x}#{T;=/5:@y}#{=3:#{T:@z}}"
+                `shouldBe` Set.fromList ["status-right", "@y", "@z"]
+        it "turns a period over at local midnight" $ do
+            let ist = minutesToTimeZone 330
+                midnight = 1765996200 :: Integer  -- 2025-12-18 00:00 IST
+                tick s = clockTick ist (fromIntegral s) 86400
+            tick (midnight - 1) `shouldNotBe` tick midnight
+            tick (midnight + 86399) `shouldBe` tick midnight
         prop "alike at two times, alike expansions" $
             \f (Positive da) (Positive db) ->
                 let fmt = renderFmt f
-                    at d = ctx { vars = namingEnv, now = fromIntegral (testNow + d) }
-                    texts = fmt : [ v | v <- Map.elems namingEnv
-                                      , "#" `T.isInfixOf` v || "%" `T.isInfixOf` v ]
-                    clockAt d = formatClock utc (fromIntegral (testNow + d)) texts
-                    a = da `mod` 7200 :: Integer
-                    b = a + db `mod` 90
+                    zone = minutesToTimeZone 330
+                    at d = ctx { vars = namingEnv, now = fromIntegral (testNow + d), tz = zone }
+                    templates = fmt : filter ("#" `T.isInfixOf`) (Map.elems namingEnv)
+                    texts = templates <> Map.elems (Map.restrictKeys namingEnv
+                        (foldMap formatStrftimes templates))
+                    clockAt d = clockTick zone (fromIntegral (testNow + d)) <$> formatClock texts
+                    a = da `mod` 200000 :: Integer
+                    b = a + db `mod` 5000
                     alike = clockAt a == clockAt b
                 in withMaxSuccess 2000 $ counterexample (T.unpack fmt) $ cover 10 alike "alike" $
                     not alike .||. renderFormatCtx (at a) fmt === renderFormatCtx (at b) fmt
@@ -586,7 +605,7 @@ instance Arbitrary Fmt where
           where
             sub = go (n `div` 3)
         leaf = oneof
-            [ Lit <$> elements ["", "x", " ", "1", "[", "]", "%H:%M", "%S", "%", "%%"]
+            [ Lit <$> elements ["", "x", " ", "1", "[", "]", "%H:%M", "%S", "%", "%%", "%d", "%-H", "%p"]
             , Key <$> name
             , Short <$> elements "DFHIPSTWh"
             , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/", "t", "t/r"] <*> name
