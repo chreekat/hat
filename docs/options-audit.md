@@ -57,7 +57,7 @@ spot-read of each suspect consumer.
 | `pane-base-index` | `cmdListPanes` pane numbering (Server.hs) | implemented ✅ tested | integration |
 | `status-position` | `statusLayout` (View.hs) | implemented ✅ tested | pure |
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
-| `history-limit` | emulator scrollback cap (Server.hs) | implemented ✅ tested | integration |
+| `history-limit` | the emulator's history (`Hat.Term.Emulator.History`): tmux's grid trimming as rows scroll in, kept across reflows, over libghostty's scrollback; a live set trims as `session_update_history` does (`setScrollbackLimit`) | implemented ✅ tested | pure (HistorySpec) + emulator (EmulatorSpec) + integration |
 | `default-terminal` | `$TERM` for new panes (Server.hs) | implemented ✅ tested | integration |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `wrap-search` | `findMatch` (CopyMode.hs): a search past the last match starts over from the other end only when on | implemented ✅ tested | pure (CopyModeSpec) |
