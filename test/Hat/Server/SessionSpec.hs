@@ -1,6 +1,6 @@
 module Hat.Server.SessionSpec (spec) where
 
-import Control.Concurrent.Async (withAsync)
+import Control.Concurrent.Async (wait, withAsync)
 import Hat.Server.ClientIO (send, withClientWriter)
 import Hat.Server.Outbound (backlog, newOutbound)
 import Control.Concurrent.STM
@@ -493,6 +493,34 @@ spec = do
             map (.style) (take 2 (V.toList (frame V.! 0))) `shouldBe`
                 [ Cell.defaultStyle { Cell.bg = Cell.Indexed 4 }
                 , Cell.defaultStyle { Cell.fg = Cell.Indexed 100, Cell.bg = Cell.Indexed 4 } ]
+    describe "command-prompt" $ do
+        let awaitPrompt client = timeout 5000000 (atomically
+                (readTVar client.prompt >>= maybe retry pure))
+        it "-k waits for a key on the target client, then runs its template" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            (cli, _peer) <- wiredClient st Control
+            withAsync (runArgv st (Just cli) ["command-prompt", "-k", "display-message -pl '%%'"]) $ \a -> do
+                Just pr <- awaitPrompt attached
+                pr.promptKind `shouldBe` KeyEntry
+                handleInput dispatch st attached "\ESC\x01"
+                timeout 5000000 (wait a) `shouldReturn` Just [ROutput "C-M-a"]
+            readTVarIO attached.prompt `shouldReturn` Nothing
+        it "-b opens the prompt without waiting, and a prompt already open stays" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            (cli, _peer) <- wiredClient st Control
+            runArgv st (Just cli) ["command-prompt", "-b", "-p", "one", "x"] `shouldReturn` []
+            runArgv st (Just cli) ["command-prompt", "-b", "-p", "two", "x"] `shouldReturn` []
+            fmap (.promptLabel) <$> readTVarIO attached.prompt `shouldReturn` Just "one "
+        it "refuses what it cannot do" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st Nothing ["command-prompt", "-1", "x"]
+                `shouldReturn` [RErr "command-prompt -1: not supported"]
+            runArgv st Nothing ["command-prompt", "-t", "nosuch", "x"]
+                `shouldReturn` [RErr "can't find client: nosuch"]
+
     describe "display-message -l" $
         it "prints the message as it is" $ do
             (st, _) <- seedSession "/"

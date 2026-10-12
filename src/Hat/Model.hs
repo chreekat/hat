@@ -56,6 +56,8 @@ module Hat.Model
     , PanesKeyHold (..)
     , DisplayPanesState (..)
     , PromptState (..)
+    , PromptKind (..)
+    , PromptWaiter (..)
     , PromptKeys (..)
     , PromptMode (..)
     , PickerState (..)
@@ -633,8 +635,23 @@ data PromptState = PromptState
     , killed  :: !Text         -- ^ the last killed text, yanked back by @C-y@
     , promptKeys :: !PromptKeys  -- ^ fixed when the prompt opens
     , promptMode :: !PromptMode
+    , promptKind :: !PromptKind
+    , waiter  :: !(Maybe PromptWaiter)
+        -- ^ the command that opened the prompt, waiting for what it is given
     }
     deriving (Eq, Show)
+
+-- | What a prompt takes: an edited line, or one key (@command-prompt -k@).
+data PromptKind = LineEntry | KeyEntry
+    deriving (Eq, Show)
+
+-- | Where a prompt's answer goes: the line or key name it was given, or
+-- 'Nothing' when it closed unanswered.
+newtype PromptWaiter = PromptWaiter (TMVar (Maybe Text))
+    deriving (Eq)
+
+instance Show PromptWaiter where
+    show _ = "PromptWaiter"
 
 -- | A modal chooser overlay (@choose-tree@ / @choose-window@): a
 -- filterable tree of sessions, windows and panes where each node carries

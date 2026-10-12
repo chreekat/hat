@@ -255,7 +255,7 @@ hookArgSpec = \case
     "list-panes" -> "Ft"
     "bind-key" -> "TN"
     "unbind-key" -> "T"
-    "command-prompt" -> "Ip"
+    "command-prompt" -> "IpTt"
     "display-panes" -> "d"
     "set-hook" -> "tB"
     "show-hooks" -> "tF"
@@ -375,7 +375,7 @@ commandSpecs =
     , (["send-keys", "send"], cmdSendKeys)
     , (["copy-mode"], cmdCopyMode)
     , (["clock-mode"], cmdClockMode)
-    , (["command-prompt"], cmdCommandPrompt)
+    , (["command-prompt"], cmdCommandPrompt dispatch)
     , (["choose-tree"], cmdChooseTree)
     , (["choose-window", "choosew"], cmdChooseWindow)
     , (["display-panes", "displayp"], cmdDisplayPanes)

@@ -127,20 +127,26 @@ handlePromptInput d st client pr0 keys = do
         Prompt.Editing pr -> atomically $ do
             writeTVar client.prompt (Just pr)
             bumpDirty st
-        Prompt.Cancel -> atomically $ do
-            writeTVar client.prompt Nothing
-            bumpDirty st
-        Prompt.Submit line -> do
-            let templated = not (T.null pr0.template)
-                cmd = Prompt.applyTemplate pr0.template line
-            atomically $ do
-                writeTVar client.prompt Nothing
-                -- Templated prompts (rename-window, …) keep the : history
-                -- clean; only bare command lines are remembered.
-                unless templated $ do
-                    limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
-                    modifyTVar' st.cmdHistory (Prompt.pushHistory limit line)
-                bumpDirty st
+        Prompt.Cancel -> answer Nothing
+        Prompt.Submit line
             -- A blank submission cancels: never rename a window to "".
-            unless (T.null (T.strip line)) $ do
+            | T.null (T.strip line) -> answer Nothing
+            | Just _ <- pr0.waiter -> answer (Just line)
+            | otherwise -> do
+                let templated = not (T.null pr0.template)
+                    cmd = Prompt.applyTemplate pr0.template line
+                atomically $ do
+                    writeTVar client.prompt Nothing
+                    -- Templated prompts (rename-window, …) keep the : history
+                    -- clean; only bare command lines are remembered.
+                    unless templated $ do
+                        limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
+                        modifyTVar' st.cmdHistory (Prompt.pushHistory limit line)
+                    bumpDirty st
                 toastReplies st client =<< d.runCommandText st (Just client) cmd
+  where
+    -- Close the prompt, handing a waiting command what it was given.
+    answer given = atomically $ do
+        writeTVar client.prompt Nothing
+        forM_ pr0.waiter $ \(PromptWaiter w) -> tryPutTMVar w given
+        bumpDirty st

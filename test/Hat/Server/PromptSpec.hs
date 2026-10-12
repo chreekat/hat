@@ -5,9 +5,9 @@ import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Test.Hspec
 
-import Hat.Model (PromptKeys (..), PromptMode (..), PromptState (..))
+import Hat.Model (PromptKeys (..), PromptKind (..), PromptMode (..), PromptState (..))
 import Hat.Model.Options (ModeKeys (..))
-import Hat.Server.Keys (tokenizeKeys)
+import Hat.Server.Keys (Key (..), tokenizeKeys)
 import Hat.Server.Prompt
 
 -- | Feed raw bytes (as a user would type them) through the editor, one
@@ -196,6 +196,12 @@ spec = do
         it "replaces %% once but %1 everywhere" $ do
             applyTemplate "%% %%" "x" `shouldBe` "x %%"
             applyTemplate "%1 %1" "x" `shouldBe` "x x"
+
+    describe "a key prompt" $
+        it "takes the next key, by name" $
+            editPrompt [] (promptFor "" "" "") { promptKind = KeyEntry }
+                Key { name = "C-M-a", raw = "\ESC\x01" }
+                `shouldBe` Submit "C-M-a"
 
     describe "status-keys vi" $ do
         let viPrompt = emptyPrompt

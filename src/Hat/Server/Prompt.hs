@@ -17,7 +17,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 
 import Hat.Model
-    (CursorShape (..), PromptCursor (..), PromptKeys (..), PromptMode (..), PromptState (..))
+    ( CursorShape (..), PromptCursor (..), PromptKeys (..), PromptKind (..), PromptMode (..)
+    , PromptState (..) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.Keys (Key (..))
 
@@ -44,6 +45,8 @@ emptyPrompt = PromptState
         , insertCursor = PromptCursor "" CursorDefault
         , commandCursor = PromptCursor "" CursorDefault }
     , promptMode = PromptInsert
+    , promptKind = LineEntry
+    , waiter = Nothing
     }
 
 -- | A prompt pre-filled with @initial@ and shown behind @prefix@. On
@@ -87,6 +90,10 @@ applyTemplate tmpl line
 -- | Apply one key to the prompt, read as its @status-keys@ say. @history@
 -- is the command history, most-recent first, used by the Up/Down keys.
 editPrompt :: [Text] -> PromptState -> Key -> PromptEdit
+editPrompt _ st key
+    | st.promptKind == KeyEntry =
+        -- A mouse report, or bytes no key is named for, is not a key press.
+        if key.name `elem` ["Mouse", "Unknown"] then Editing st else Submit key.name
 editPrompt history st key = case st.promptKeys.statusKeys of
     KeysEmacs -> emacsKey history st key
     KeysVi -> case st.promptMode of

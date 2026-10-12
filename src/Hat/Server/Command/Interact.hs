@@ -27,14 +27,15 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (send)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, unknownFlag)
+import Hat.Server.Command.Types (CommandImpl, Dispatch (..), Reply (..), parseArgs, unknownFlag)
+import Hat.Server.Command.Wait (blockOn)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientOptions, clientView, findTarget)
+import Hat.Server.Locate (clientOptions, clientView, findTarget, findTargetClient)
 import Hat.Server.Pane (enterClockMode, typeKeyIntoPane)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
@@ -191,38 +192,65 @@ cmdClockMode st mclient args = do
         Left e -> pure [RErr e]
         Right (_, _, _, pane) -> [] <$ enterClockMode st pane
 
--- | Open the interactive command prompt on the invoking client.
--- | @command-prompt [-I initial] [-p prompt] [template]@. Opens the line
--- editor; @-I@ pre-fills it (format-expanded, so @#W@ is the window name),
--- and a @template@ has the submitted line spliced in for @%%@. Backs the
--- @,@ rename binding: @command-prompt -I "#W" "rename-window '%%'"@.
-cmdCommandPrompt :: CommandImpl
-cmdCommandPrompt st mclient args = do
-    let (opts, _flags, pos) = parseArgs "Ip" args
-        tmpl = T.unwords pos
-        pfx = case lookup "-p" opts of
-            Just p -> p
-            Nothing
-                | T.null tmpl -> ":"
-                | otherwise -> "(" <> T.takeWhile (/= ' ') tmpl <> ") "
-    forM_ mclient $ \client -> do
-        initial <- case lookup "-I" opts of
-            Nothing -> pure ""
-            Just raw -> do
-                env <- clientPromptEnv st client
-                expandFormat st env raw
-        copts <- clientOptions st client
-        let keys = PromptKeys
-                { statusKeys = if optionText "status-keys" copts == "vi"
-                    then KeysVi else KeysEmacs
-                , wordSeparators = copts.wordSeparators
-                , insertCursor = promptCursor "prompt-cursor" copts
-                , commandCursor = promptCursor "prompt-command-cursor" copts }
-        atomically $ do
-            writeTVar client.prompt $ Just
-                (Prompt.promptFor pfx initial tmpl) { promptKeys = keys }
-            bumpDirty st
-    pure []
+-- | @command-prompt [-bFkl] [-I initial] [-p prompt] [-t target-client]
+-- [template]@. Opens the line editor on the target client; @-I@ pre-fills
+-- it (format-expanded, so @#W@ is the window name), a @template@ has the
+-- submitted line spliced in for @%%@ (expanded first under @-F@), and @-k@
+-- takes one key, by name, instead of a line. A command from another client
+-- waits for the answer and runs the template itself, unless @-b@. Backs
+-- the @,@ rename binding: @command-prompt -I "#W" "rename-window '%%'"@.
+cmdCommandPrompt :: Dispatch -> CommandImpl
+cmdCommandPrompt d st mclient args
+    | Just e <- unknownFlag "command-prompt" "1CbeFiklINPptT" flags = pure [RErr e]
+    | bad : _ <- [ f | f <- flags, f `notElem` ["-b", "-F", "-k", "-l"] ]
+        <> [ "-T" | Just _ <- [lookup "-T" opts] ]
+        -- a bare -1 parses as a number
+        <> [ "-1" | "-1" `elem` takeWhile ("-" `T.isPrefixOf`) args ] =
+        pure [RErr ("command-prompt " <> bad <> ": not supported")]
+    | Just p <- lookup "-p" opts, "," `T.isInfixOf` p, "-l" `notElem` flags =
+        pure [RErr "command-prompt: more than one prompt is not supported"]
+    | otherwise = findTargetClient st mclient Nothing (lookup "-t" opts) >>= \case
+        Left e -> pure [RErr e]
+        Right client -> do
+            env <- clientPromptEnv st client
+            initial <- maybe (pure "") (expandFormat st env) (lookup "-I" opts)
+            tmpl <- if "-F" `elem` flags then expandFormat st env tmpl0 else pure tmpl0
+            copts <- clientOptions st client
+            let waiting = "-b" `notElem` flags && fmap (.id) mclient `notElem` [Nothing, Just client.id]
+            mw <- if waiting then Just . PromptWaiter <$> newEmptyTMVarIO else pure Nothing
+            let keys = PromptKeys
+                    { statusKeys = if optionText "status-keys" copts == "vi"
+                        then KeysVi else KeysEmacs
+                    , wordSeparators = copts.wordSeparators
+                    , insertCursor = promptCursor "prompt-cursor" copts
+                    , commandCursor = promptCursor "prompt-command-cursor" copts }
+                pr = (Prompt.promptFor pfx initial tmpl)
+                    { promptKeys = keys
+                    , promptKind = if "-k" `elem` flags then KeyEntry else LineEntry
+                    , waiter = mw }
+            -- A client already prompting keeps its prompt.
+            opened <- atomically $ readTVar client.prompt >>= \case
+                Just _ -> pure False
+                Nothing -> True <$ (writeTVar client.prompt (Just pr) >> bumpDirty st)
+            case mw of
+                Just (PromptWaiter w) | opened -> do
+                    given <- blockOn st (takeTMVar w `orElse` abandoned client mw)
+                    maybe (pure []) (d.runCommandText st mclient . Prompt.applyTemplate tmpl) given
+                _ -> pure []
+  where
+    (opts, flags, pos) = parseArgs "IpTt" args
+    tmpl0 = T.unwords pos
+    pfx = case lookup "-p" opts of
+        Just p -> p <> " "
+        Nothing
+            | T.null tmpl0 -> ":"
+            | otherwise -> "(" <> T.takeWhile (/= ' ') tmpl0 <> ") "
+    -- The prompt closed without answering: its client went, or another
+    -- prompt replaced it.
+    abandoned client mw = do
+        live <- Map.member client.id <$> readTVar st.clients
+        cur <- readTVar client.prompt
+        if live && fmap (.waiter) cur == Just mw then retry else pure Nothing
 
 -- | A prompt's cursor from its @…-colour@ and @…-style@ options.
 promptCursor :: Text -> Options -> PromptCursor
