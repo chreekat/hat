@@ -187,6 +187,16 @@ spec = do
         it "runs the typed line verbatim when the template is empty" $
             applyTemplate "" "new-window" `shouldBe` "new-window"
 
+        it "quotes the line for the quotes %% and %%% stand in" $ do
+            applyTemplate "display -p '%%'" "it's" `shouldBe` "display -p 'it'\\''s'"
+            applyTemplate "display -p \"%%%\"" "a\"$b;~\\"
+                `shouldBe` "display -p \"a\\\"\\$b\\;\\~\\\\\""
+            applyTemplate "display -p \"%1%\"" "$x" `shouldBe` "display -p \"\\$x\""
+
+        it "replaces %% once but %1 everywhere" $ do
+            applyTemplate "%% %%" "x" `shouldBe` "x %%"
+            applyTemplate "%1 %1" "x" `shouldBe` "x x"
+
     describe "status-keys vi" $ do
         let viPrompt = emptyPrompt
                 { promptKeys = emptyPrompt.promptKeys

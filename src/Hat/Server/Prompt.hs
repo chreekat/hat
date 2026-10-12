@@ -57,12 +57,32 @@ promptFor label initial tmpl = emptyPrompt
     , promptLabel = label
     }
 
--- | Splice a submitted line into a @command-prompt@ template, replacing
--- every @%%@ or @%1@ with the line. An empty template runs the line as-is.
+-- | Splice a submitted line into a @command-prompt@ template (tmux's
+-- @cmd_template_replace@): the first @%%@ and every @%1@ become the line,
+-- escaped for the single quotes @%%@ sits in, or for the double quotes
+-- @%%%@ and @%1%@ sit in. An empty template runs the line as-is.
 applyTemplate :: Text -> Text -> Text
 applyTemplate tmpl line
     | T.null tmpl = line
-    | otherwise = T.replace "%1" line (T.replace "%%" line tmpl)
+    | otherwise = go False tmpl
+  where
+    go replaced t = case T.uncons t of
+        Nothing -> ""
+        Just ('%', r)
+            | Just r1 <- T.stripPrefix "1" r -> splice replaced r1
+            | not replaced, Just r1 <- T.stripPrefix "%" r -> spliceSingle r1
+        Just (c, r) -> T.cons c (go replaced r)
+    splice replaced r = case T.stripPrefix "%" r of
+        Just r' -> T.concatMap doubleQuoted line <> go replaced r'
+        Nothing -> line <> go replaced r
+    spliceSingle r = case T.stripPrefix "%" r of
+        Just r' -> T.concatMap doubleQuoted line <> go True r'
+        Nothing -> T.concatMap singleQuoted line <> go True r
+    singleQuoted '\'' = "'\\''"
+    singleQuoted c = T.singleton c
+    doubleQuoted c
+        | c `elem` ("\"\\$;~" :: String) = T.pack ['\\', c]
+        | otherwise = T.singleton c
 
 -- | Apply one key to the prompt, read as its @status-keys@ say. @history@
 -- is the command history, most-recent first, used by the Up/Down keys.
