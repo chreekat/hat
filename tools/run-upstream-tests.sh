@@ -5,6 +5,8 @@
 #
 # Prints each script's outcome and wall-clock seconds, slowest first. Set
 # HAT_UPSTREAM_LOGS=DIR to keep each script's combined output as DIR/<name>.log.
+# Scripts listed in tools/upstream-serial.txt run after the parallel batch,
+# one at a time, and are marked (serial) in the report.
 #
 # Outcomes per script (see ARCHITECTURE.md "Testing strategy"):
 #   PASS  - exit 0, not in xfail list
@@ -38,6 +40,7 @@ regress="$tmux_src/regress"
 
 here=$(dirname "$0")
 xfail_file="$here/upstream-xfail.txt"
+serial_file="$here/upstream-serial.txt"
 # $HAT_BIN overrides; else build and locate the dev binary as one step, so it
 # is fresh and the two agree on a builddir. Never fall through to a $PATH
 # `hat`, which on a dev box is the stale system-installed one.
@@ -53,6 +56,18 @@ if [ $# -gt 0 ]; then
 else
     tests=$(cd "$regress" && ls *.sh)
 fi
+
+# The scripts named in a list file, comments and reasons stripped.
+listed_in() {
+    [ -f "$1" ] && sed 's/#.*//' "$1" | awk 'NF { print $1 }'
+}
+serial_names=$(listed_in "$serial_file")
+is_serial() { printf '%s\n' $serial_names | grep -qxF "$1"; }
+parallel_tests=""; serial_tests=""
+for t in $tests; do
+    if is_serial "$t"; then serial_tests="$serial_tests $t"
+    else parallel_tests="$parallel_tests $t"; fi
+done
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0 1 15
@@ -120,7 +135,11 @@ export regress hat_bin results HAT_UPSTREAM_LOGS
 # loaded the box is; the summary reports it to make a failure interpretable.
 loadavg() { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo '?'; }
 load_start=$(loadavg)
-printf '%s\n' $tests | xargs -P"$jobs" -I{} bash -c 'run_one "$@"' _ {}
+[ -n "$parallel_tests" ] &&
+    printf '%s\n' $parallel_tests | xargs -P"$jobs" -I{} bash -c 'run_one "$@"' _ {}
+for t in $serial_tests; do
+    bash -c 'run_one "$@"' _ "$t"
+done
 load_end=$(loadavg)
 
 pass=0; fail=0; xfail=0; xpass=0
@@ -149,13 +168,16 @@ while read -r code secs name; do
             outcome=FAIL
         fi
     fi
-    printf '%-5s %6ss  %s\n' "$outcome" "$secs" "$name" >> "$outcomes"
+    mode=""
+    is_serial "$name" && mode=" (serial)"
+    printf '%-5s %6ss  %s%s\n' "$outcome" "$secs" "$name" "$mode" >> "$outcomes"
 done < "$results"
 
 sort -k2 -rn "$outcomes"
 
 echo "jobs=$jobs cores=$cores load(1m) start=$load_start end=$load_end"
 echo "pass=$pass xfail=$xfail fail=$fail xpass=$xpass"
+[ -n "$serial_tests" ] && echo "serial (run alone after the parallel batch):$serial_tests"
 [ -n "$failed_names" ] && echo "FAILED:$failed_names"
 [ -n "$xpassed_names" ] && echo "XPASSED (remove from xfail!):$xpassed_names"
 [ "$fail" -eq 0 ] && [ "$xpass" -eq 0 ]
