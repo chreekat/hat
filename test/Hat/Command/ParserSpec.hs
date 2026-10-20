@@ -57,6 +57,18 @@ spec = do
         commands "# a comment\nset -g base-index 1 # trailing\n"
             `shouldBe` [["set", "-g", "base-index", "1"]]
 
+    it "starts a comment with a # that starts a word, and only then" $ do
+        commands "set a x;#c\nset b x ;#c\n" `shouldBe` [["set", "a", "x"], ["set", "b", "x"]]
+        commands "set a x#c \"y\"#c 'z'#c \\#c\n"
+            `shouldBe` [["set", "a", "x#c", "y#c", "z#c", "#c"]]
+        commands "bind x {#c\nset a\n}\n" `shouldBe` [["bind", "x", "\nset a\n"]]
+        commands "# don't\nset a b\n" `shouldBe` [["set", "a", "b"]]
+        commands "set a \\'#c\n" `shouldBe` [["set", "a", "'#c"]]
+
+    it "drops a quoted line's leading blanks, and the comment lines a quote spans" $
+        commands "set a \"x\n  # c\n\t#{b}\" 'y\n   #, z'\n"
+            `shouldBe` [["set", "a", "x\n\n#{b}", "y\n#, z"]]
+
     it "parses a multi-line config with continuations" $
         commands "set -g status-left \\\n  'abc'\nbind v split-window -h\n"
             `shouldBe`

@@ -61,7 +61,7 @@ parseScript input = case runScriptP statementsP stream of
   where
     stream = concatMap lexChunk chunks <> [(T.count "\n" input + 1, LEnd)]
     chunks = joinBraces
-        $ map (fmap stripComment)
+        $ stripComments
         $ joinContinuations (zip [1 ..] (T.lines input))
     lexChunk (n, text) = case parse (tokensP <* eof) "<command>" text of
         Left err -> [(n, LBad (T.pack (errorBundlePretty err)))]
@@ -356,31 +356,56 @@ joinContinuations = \case
             (n, T.dropEnd 1 l <> " " <> next) : rest'
         | otherwise -> (n, l) : joinContinuations rest
 
--- A # starts a comment unless it is inside a word (quoting is handled
--- coarsely: we only strip comments that follow whitespace or start the
--- line, which matches tmux config practice), or opens the format the word
--- after a directive may be.
-stripComment :: Text -> Text
-stripComment line = go 0 False False False
+-- | Drop comments as tmux's lexer skips them: a @#@ that starts a word (at
+-- a line's start, after a blank, or after an unquoted @;@, @{@ or @}@) runs
+-- to the end of its line, unless it opens the format a directive tests. A
+-- line a quote continues loses its leading blanks, and then, if it starts a
+-- comment (a @#@ not before one of @,#{}:@), the rest of it too.
+stripComments :: [(Int, Text)] -> [(Int, Text)]
+stripComments = go Free
   where
-    n = T.length line
-    wordStart i = i == 0 || isSpace (T.index line (i - 1))
-    go i inSingle inDouble afterDirective
-        | i >= n = line
-        | otherwise = case T.index line i of
-            '\'' | not inDouble -> go (i + 1) (not inSingle) inDouble False
-            '"' | not inSingle -> go (i + 1) inSingle (not inDouble) False
-            '\\' | inDouble -> go (i + 2) inSingle inDouble False
-            '#' | not inSingle && not inDouble, wordStart i ->
-                case formatSpan (T.drop i line) of
-                    Just (fmt, _) | afterDirective -> go (i + T.length fmt) False False False
-                    _ -> T.take i line
-            '%' | not inSingle && not inDouble, wordStart i ->
-                let w = T.takeWhile (not . isSpace) (T.drop i line)
-                in go (i + T.length w) False False
-                    (not (T.all (\c -> c == '%' || isDigit c) w))
-            c | isSpace c -> go (i + 1) inSingle inDouble afterDirective
-            _ -> go (i + 1) inSingle inDouble False
+    go _ [] = []
+    go q ((n, l) : rest) = case stripLine q l of
+        (l', q') -> (n, l') : go q' rest
+
+stripLine :: QuoteState -> Text -> (Text, QuoteState)
+stripLine q0 line0
+    | q0 == Free = scan line0 Free
+    | otherwise = case T.dropWhile (`elem` [' ', '\t']) line0 of
+        rest | Just ('#', after) <- T.uncons rest
+             , maybe True ((`notElem` (",#{}:" :: String)) . fst) (T.uncons after) ->
+                ("", q0)
+             | otherwise -> scan rest q0
+  where
+    scan line q = go 0 q True False
+      where
+        n = T.length line
+        at = T.index line
+        cut i st = (T.take i line, st)
+        go i st boundary afterDirective
+            | i >= n = cut n st
+            | otherwise = case (st, at i) of
+                (Single, '\'') -> go (i + 1) Free False False
+                (Single, _) -> go (i + 1) Single False False
+                (Double, '"') -> go (i + 1) Free False False
+                (Double, '\\') -> go (i + 2) Double False False
+                (Double, _) -> go (i + 1) Double False False
+                (DoubleEsc, _) -> go (i + 1) Double False False
+                (Free, c) -> case c of
+                    '\'' -> go (i + 1) Single False False
+                    '"' -> go (i + 1) Double False False
+                    '\\' -> go (i + 2) Free False False
+                    '#' | boundary -> case formatSpan (T.drop i line) of
+                        Just (fmt, _) | afterDirective ->
+                            go (i + T.length fmt) Free False False
+                        _ -> cut i Free
+                    '%' | boundary ->
+                        let w = T.takeWhile (`notElem` [' ', '\t']) (T.drop i line)
+                        in go (i + T.length w) Free False
+                            (not (T.all (\d -> d == '%' || isDigit d) w))
+                    _ | c == ' ' || c == '\t' -> go (i + 1) Free True afterDirective
+                      | c `elem` [';', '{', '}'] -> go (i + 1) Free True False
+                      | otherwise -> go (i + 1) Free False False
 
 commandsP :: Parser [[Text]]
 commandsP = do
