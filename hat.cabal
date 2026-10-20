@@ -132,6 +132,7 @@ library
         Hat.Server.Dispatch
         Hat.Server.DisplayPanes
         Hat.Server.DisplayPos
+        Hat.Server.Editor
         Hat.Server.Environ
         Hat.Server.Flash
         Hat.Server.Floating

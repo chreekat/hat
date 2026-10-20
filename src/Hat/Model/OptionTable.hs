@@ -474,7 +474,7 @@ optionTable =
         `described` "Default command to run when tmux is run without a command."
     , live $ scalar "default-terminal" ServerScope KString "tmux-256color"
         `described` "Default for the 'TERM' environment variable."
-    , notYet $ scalar "editor" ServerScope KString "/usr/bin/vi"
+    , live $ scalar "editor" ServerScope KString "/usr/bin/vi"
         `described` "Editor run to edit files."
     -- tmux defaults to 10; hat's native escape handling needs no wait.
     , live $ scalar "escape-time" ServerScope (KNumber 0 intMax) "0"

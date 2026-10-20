@@ -15,6 +15,7 @@ module Hat.Server.Command.Buffer
     , readClientStdin
     , bufferEnv
     , formatTrue
+    , modifyStore_
     ) where
 
 import Control.Concurrent.STM

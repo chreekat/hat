@@ -65,7 +65,7 @@ fresh = TreeState
     , tagged = [], current = Nothing, currentIx = 0, offset = 0
     , modePrompt = Nothing, search = Nothing, hidePane = Nothing
     , groups = SquashGroups, confirm = AskBeforeKill, zoom = ModeLeftZoom
-    , showHelp = False
+    , showHelp = False, editor = Nothing
     }
 
 -- | The lines of a state, with tmux's default keys, settled onto them.

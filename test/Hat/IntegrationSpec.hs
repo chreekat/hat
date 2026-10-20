@@ -928,6 +928,20 @@ spec = parallel $ do
         awaitTrue "the client to switch to the match" $
             (== "projects:1\n") <$> ctlOut h ["list-clients", "-F", "#{session_name}:#{window_index}"]
 
+    it "edits a buffer from choose-buffer in the editor option's program" $
+        withHat hatBin $ \h -> do
+        let editor = h.home <> "/editor.sh"
+        writeExecutable editor "#!/bin/sh\nprintf edited > \"$1\"\n"
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "editor", editor]
+        _ <- hatCtl h ["set-buffer", "-b", "b1", "old"]
+        _ <- hatCtl h ["choose-buffer"]
+        awaitScreen c "b1"
+        typeInto c "e"
+        awaitTrue "the buffer to hold what the editor saved" $
+            (== "edited") <$> ctlOut h ["show-buffer", "-b", "b1"]
+
     it "ends a popup's command across restart-server, leaving nothing behind" $
         withHat hatBin $ \h -> do
         let pidFile = h.home <> "/popup.pid"

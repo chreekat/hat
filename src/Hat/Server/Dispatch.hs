@@ -124,7 +124,8 @@ dispatch = Dispatch
     { runArgv = runArgv
     , runCommands = runCommands
     , runCommandText = runCommandText
-    , unknownCommand = unknownCommand }
+    , unknownCommand = unknownCommand
+    , newEditorPane = cmdNewEditorPane }
 
 unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
 unknownCommand _ [] = pure Nothing

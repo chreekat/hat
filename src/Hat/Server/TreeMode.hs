@@ -28,12 +28,13 @@ import Data.Vector qualified as V
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
 import Hat.Model.Options (Options (..), StatusPosition (..), optionText)
-import Hat.Model.PasteBuffers (PasteBuffer (..), pasteWalk)
-import Hat.Server.Command.Buffer (bufferEnv, formatTrue)
+import Hat.Model.PasteBuffers (PasteBuffer (..), pasteReplace, pasteWalk)
+import Hat.Server.Command.Buffer (bufferEnv, formatTrue, modifyStore_)
 import Hat.Server.Command.Types
     (CommandImpl, Dispatch (..), Reply (..), parseArgs, templateReplace, unknownFlag)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.FormatDraw (FormatColours (..), formatTrimLeft, formatWidth, styleCell)
+import Hat.Server.Editor (spawnEditor)
 import Hat.Server.FormatEnv
     ( clientFormatEnv, clientTheme, expandFormat, paneFormatEnv, sessionFormatEnv
     , windowFormatEnv )
@@ -124,6 +125,7 @@ enterTreeMode cmdName allowed kind st mclient args
                 , confirm = if has "-y" then KillWithoutAsking else AskBeforeKill
                 , zoom = zoomed
                 , showHelp = False
+                , editor = Nothing
                 }
         (items, _) <- buildItems st st0
         pure (startSelection items st0)
@@ -516,7 +518,31 @@ drawTreeMode st ts size = do
                             , cols = fromIntegral (rect.endCol - rect.startCol) }
             pv <- previewOf look st ts tag area
             pure (overlayGrid drawn.cells rect pv)
-    pure (cells, drawn.cursor)
+    pure (waitingBox ts.editor cells, drawn.cursor)
+
+-- | tmux's @window_buffer_draw_waiting@: while the mode waits on an editor,
+-- a box saying so over the middle of its screen.
+waitingBox
+    :: Maybe EditorWait -> V.Vector (V.Vector Cell.Cell)
+    -> V.Vector (V.Vector Cell.Cell)
+waitingBox mwait g = case mwait of
+    Just w | sx >= boxW, sy >= 3 ->
+        let label = "WAITING FOR EDITOR (PID " <> tshow w.editorPid <> ")"
+            x = (sx - boxW) `div` 2
+            y = (sy - 3) `div` 2
+            glyph c = Cell.glyphCell c Cell.defaultStyle
+            edge a b c = [glyph a] <> replicate (boxW - 2) (glyph b) <> [glyph c]
+            middle = [glyph '│'] <> map glyph (" " <> T.unpack label <> " ") <> [glyph '│']
+            put r cs acc = case acc V.!? r of
+                Nothing -> acc
+                Just row -> acc V.// [(r, row V.// zip [x ..] cs)]
+        in put y (edge '┌' '─' '┐') (put (y + 1) middle (put (y + 2) (edge '└' '─' '┘') g))
+      where
+        boxW = T.length ("WAITING FOR EDITOR (PID " <> tshow w.editorPid <> ")") + 4
+    _ -> g
+  where
+    sy = V.length g
+    sx = maybe 0 V.length (g V.!? 0)
 
 -- | What the preview box shows for an item (tmux's @window_tree_draw@,
 -- @window_buffer_draw@, @window_client_draw@).
@@ -827,7 +853,10 @@ treeModeKey :: Dispatch -> ServerState -> Maybe Client -> Pane -> Key -> IO ()
 treeModeKey d st mclient pane key = do
     mmode <- atomically (topMode pane)
     case mmode of
-        Just (TreeMode ts0) -> do
+        Just (TreeMode ts0)
+          | Just _ <- ts0.editor ->
+            when (key.name `elem` ["q", "Escape", "C-c"]) (resetPaneMode st pane)
+          | otherwise -> do
             size <- readTVarIO pane.size
             (items, ls, _, h, ts) <- layoutTree st size ts0
             case ts.modePrompt of
@@ -999,7 +1028,7 @@ treeModeKey d st mclient pane key = do
 
     bufferKindKey ls ts k = do
         case k of
-            "e" -> toast "choose-buffer: e (edit buffer) is not supported"
+            "e" -> forM_ (current ls ts) $ \l -> editBuffer l.item
             "d" -> forM_ (current ls ts) $ \l -> do
                 put (stepOff ls ts)
                 deleteBuffer l.item
@@ -1015,6 +1044,23 @@ treeModeKey d st mclient pane key = do
         none <- null . pasteWalk <$> readTVarIO st.buffers
         stillHere <- isTreeTop
         when (none && stillHere) (resetPaneMode st pane)
+    -- tmux's @window_buffer_start_edit@: the buffer in an editor, its text
+    -- replaced by what the editor saves, unless the buffer went meanwhile.
+    editBuffer i = do
+        mpb <- listToMaybe . filter ((== i.name) . (.name)) . pasteWalk
+            <$> readTVarIO st.buffers
+        mc <- client
+        forM_ ((,) <$> mpb <*> mc) $ \(pb, c) -> do
+            let finish w mbytes = do
+                    mine <- endEdit st pane w
+                    forM_ (if mine then mbytes else Nothing) $ \bytes -> do
+                        let trimmed
+                                | not (B.null pb.body), B.last pb.body /= 10
+                                , B.last bytes == 10 = B.init bytes
+                                | otherwise = bytes
+                        unless (B.null trimmed) $
+                            modifyStore_ st (pasteReplace pb.name pb.order trimmed)
+            spawnEditor d st c pb.body (beginEdit st pane) finish
     deleteBuffer i = do
         mc <- client
         _ <- d.runArgv st mc ["delete-buffer", "-b", i.name]
@@ -1052,6 +1098,24 @@ treeModeKey d st mclient pane key = do
         sel i = ts { currentIx = i, current = Just (ls !! i).item.tag }
     isTreeTop = atomically (topMode pane) >>= \case
         Just (TreeMode _) -> pure True
+        _ -> pure False
+
+-- | The pane's tree mode waits on an editor it opened.
+beginEdit :: ServerState -> Pane -> EditorWait -> IO ()
+beginEdit st pane w = atomically $ modifyTopMode st pane $ \case
+    TreeMode t -> TreeMode t { editor = Just w }
+    other -> other
+
+-- | An editor the pane's tree mode waited on has ended: 'True' when the mode
+-- is still there waiting on it, which then stops waiting (tmux cancels an
+-- editor its mode left behind).
+endEdit :: ServerState -> Pane -> EditorWait -> IO Bool
+endEdit st pane w = atomically $ do
+    es <- readTVar pane.modes
+    case es of
+        e@ModeEntry { mode = TreeMode t } : rest | t.editor == Just w -> do
+            writeTVar pane.modes (e { mode = TreeMode t { editor = Nothing } } : rest)
+            True <$ bumpDirty st
         _ -> pure False
 
 blankPrompt :: Text -> PromptState

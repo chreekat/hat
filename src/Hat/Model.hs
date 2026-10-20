@@ -61,6 +61,7 @@ module Hat.Model
     , GroupView (..)
     , KillConfirm (..)
     , ModeZoom (..)
+    , EditorWait (..)
     , TreePrompt (..)
     , TreePromptUse (..)
     , PromptEntry (..)
@@ -581,6 +582,8 @@ data TreeState = TreeState
     , confirm    :: !KillConfirm
     , zoom       :: !ModeZoom
     , showHelp   :: !Bool             -- ^ the key help is drawn over the list
+    , editor     :: !(Maybe EditorWait)
+        -- ^ the editor the mode's @e@ opened, while it runs
     }
     deriving (Eq, Show)
 
@@ -641,6 +644,14 @@ data KillConfirm = AskBeforeKill | KillWithoutAsking
 -- | @-Z@: whether the mode zoomed its pane on entry, and so unzooms it on
 -- exit.
 data ModeZoom = ModeZoomed | ModeLeftZoom
+    deriving (Eq, Show)
+
+-- | An editor a tree mode waits on (tmux's @spawn_editor_state@): its pane,
+-- and the pid the mode's screen names while it waits.
+data EditorWait = EditorWait
+    { editorPane :: !PaneId
+    , editorPid  :: !Int
+    }
     deriving (Eq, Show)
 
 -- | A prompt drawn on the mode's own screen.

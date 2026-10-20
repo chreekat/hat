@@ -11,6 +11,7 @@ module Hat.Server.Command.Pane
     , cmdCapturePane
     , cmdSplitWindow
     , cmdNewPane
+    , cmdNewEditorPane
     , cmdSelectPane
     , cmdLastPane
     , cmdKillPane
@@ -364,8 +365,14 @@ cmdSplitWindow = spawnInWindow SplitEntry
 cmdNewPane :: CommandImpl
 cmdNewPane = spawnInWindow NewPaneEntry
 
+-- | tmux's @spawn_editor@ pane: a modal floating pane nine tenths of the
+-- window's size, centred, that closes when its program ends. It takes
+-- @new-pane@'s arguments, less the geometry.
+cmdNewEditorPane :: CommandImpl
+cmdNewEditorPane = spawnInWindow EditorEntry
+
 -- | Which command is spawning the pane; they share @cmd_split_window_exec@.
-data SpawnEntry = SplitEntry | NewPaneEntry
+data SpawnEntry = SplitEntry | NewPaneEntry | EditorEntry
     deriving (Eq)
 
 spawnInWindow :: SpawnEntry -> CommandImpl
@@ -382,8 +389,8 @@ spawnInWindow entry st mclient args
                 lay <- atomically (windowLayoutAt eff win)
                 fs <- readTVarIO win.floats
                 let floating = case entry of
-                        NewPaneEntry -> "-L" `notElem` flags
                         SplitEntry -> isFloating target.id lay
+                        _ -> "-L" `notElem` flags
                 if | modalFlag && not floating ->
                         pure [RErr "modal pane must be floating"]
                    | modalFlag && isJust fs.modal ->
@@ -414,9 +421,9 @@ spawnInWindow entry st mclient args
   where
     (entryName, boolFlags, valueFlags) = case entry of
         SplitEntry -> ("split-window", "bdEfhIkPvWZ", "BceFlmpRsStT")
-        NewPaneEntry -> ("new-pane", "bCdEfhIkLMOPvWZ", "BceFlmpRsStTxXyY")
+        _ -> ("new-pane", "bCdEfhIkLMOPvWZ", "BceFlmpRsStTxXyY")
     (opts, flags, pos) = parseArgs valueFlags args
-    modalFlag = "-O" `elem` flags
+    modalFlag = "-O" `elem` flags || entry == EditorEntry
     -- A floating pane's border, which its geometry counts: -B's, else the
     -- window's pane-border-lines.
     borderFor sess win = case lookup "-B" opts of
@@ -448,6 +455,15 @@ spawnInWindow entry st mclient args
                 <*> traverse expand (lookup "-Y" opts)
             pure $ (\(g, cascade) -> (Nothing, g, cascade))
                 <$> floatingGeom eff border Nothing fs.lastNew geomArgs
+        EditorEntry ->
+            let wsx = fromIntegral eff.cols
+                wsy = fromIntegral eff.rows
+                sx = wsx * 9 `div` 10
+                sy = wsy * 9 `div` 10
+            in pure (Right (Nothing, FloatGeom
+                { width = sx, height = sy
+                , left = wsx `div` 2 - sx `div` 2, top = wsy `div` 2 - sy `div` 2 }
+                , fs.lastNew))
     spawnFloating sess wix win target eff targetGeom g cascade =
         splitInto sess wix win target eff $ \pid lay fs -> do
             let resized = maybe lay (\tg -> setFloatGeom target.id tg lay) targetGeom
@@ -465,6 +481,7 @@ spawnInWindow entry st mclient args
         <> [ ("pane-border-lines", v) | Just v <- [lookup "-B" opts] ]
         <> [ ("remain-on-exit", "key") | "-k" `elem` flags || isJust (lookup "-m" opts) ]
         <> [ ("remain-on-exit-format", v) | Just v <- [lookup "-m" opts] ]
+        <> [ ("remain-on-exit", "off") | entry == EditorEntry ]
     firstError = \case
         [] -> pure Nothing
         act : rest -> act >>= either (pure . Just) (const (firstError rest))
