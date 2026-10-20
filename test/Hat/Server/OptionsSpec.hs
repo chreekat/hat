@@ -141,6 +141,11 @@ spec = do
                 (setOption Assign defaultOptions "cursor-color" "red")
                 `shouldBe` Right "red"
 
+        it "takes pane-border-indicators' color spelling as colour" $
+            optionText "pane-border-indicators"
+                <$> setOption Assign defaultOptions "pane-border-indicators" "color"
+                `shouldBe` Right "colour"
+
         it "appends to a string option with -a" $ do
             let opts0 = set Assign defaultOptions "status-right" "a"
                 opts1 = set Append opts0 "status-right" "b"

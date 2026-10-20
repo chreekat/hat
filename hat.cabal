@@ -184,7 +184,6 @@ library
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Theme
-        Hat.Server.Title
         Hat.Server.Toast
         Hat.Server.ViewMode
         Hat.Server.ConfigCauses

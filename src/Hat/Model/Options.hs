@@ -137,6 +137,7 @@ data Options = Options
     , cursorStyle            :: Int   -- ^ @cursor-style@ as its DECSCUSR number, 0-6
     , inputBufferSize        :: Int
     , setTitles              :: Bool
+    , setTitlesString        :: Text  -- ^ the desktop title's format
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
     , displayTime            :: Int   -- ^ toast duration, ms
     , displayPanesTime       :: Int   -- ^ pane-number overlay duration, ms
@@ -207,6 +208,7 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , cursorStyle = missing "cursor-style"
         , inputBufferSize = missing "input-buffer-size"
         , setTitles = missing "set-titles", escapeTime = missing "escape-time"
+        , setTitlesString = missing "set-titles-string"
         , displayTime = missing "display-time"
         , displayPanesTime = missing "display-panes-time"
         , displayPanesColour = missing "display-panes-colour"
@@ -301,6 +303,7 @@ fieldBindings = Map.fromList
     , ("cursor-style", text (\v o -> o { cursorStyle = cursorStyleNumber v }))
     , ("input-buffer-size", int (\v o -> o { inputBufferSize = v }))
     , ("set-titles", flag (\v o -> o { setTitles = v }))
+    , ("set-titles-string", text (\v o -> o { setTitlesString = v }))
     , ("escape-time", int (\v o -> o { escapeTime = v }))
     , ("display-time", int (\v o -> o { displayTime = v }))
     , ("display-panes-time", int (\v o -> o { displayPanesTime = v }))

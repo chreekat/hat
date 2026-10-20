@@ -837,6 +837,19 @@ spec = parallel $ do
         _ <- awaitExit c
         pure ()
 
+    it "titles the terminal with set-titles-string under set-titles" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        let outerTitle t = awaitTrue (show t) (B8.isInfixOf ("\ESC]0;" <> t) <$> readIORef c.transcript)
+        _ <- hatCtl h ["set", "-g", "set-titles", "on"]
+        outerTitle "hat: "
+        _ <- hatCtl h ["set", "-g", "set-titles-string", "T:#{window_index}"]
+        outerTitle "T:0\BEL"
+        typeInto c "exit\r"
+        _ <- awaitExit c
+        pure ()
+
     it "reveals an overlay scrollbar on a copy-mode scroll or a hover, then hides it" $
         withHat hatBin $ \h -> do
         c <- startClient h

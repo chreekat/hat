@@ -287,8 +287,7 @@ keys→commands cycle.
   |    .Target / .Locate                    |    target lookup over the live tree
   |  Hat.Server.Mouse / .MouseIO           | -- mouse reports -> mouse keys (pure);
   |                                         |    placing, sending, dragging
-  |  Hat.Server.Style / .ColorScheme /      | -- style strings; light/dark palette;
-  |    .Title                               |    title formatting
+  |  Hat.Server.Style / .ColorScheme        | -- style strings; light/dark palette
   |  Hat.Server.Snapshot / .Persist /       | -- persistence: capture+mirror+rebuild,
   |    .WindowStruct                        |    SQLite codec, shared tree-reader
   |  Hat.Server.Reload / .Handover          | -- in-place reload payload; adopt
@@ -739,6 +738,12 @@ The format-string mini-language is bigger than it looks: `#{?cond,a,b}`,
 `#{e|>:a,b}`, `#{=N:str}`, `#{T:format}` for time, `#{s/from/to:str}`
 substitution, and more. tmux's exhaustive `format-strings.sh` regress
 script is the conformance bar, and it passes.
+
+Hat deliberately extends the language with two modifiers in characters
+tmux leaves unused — `~` (abbreviate a home directory) and `J` (join parts,
+collapsing from the left to fit a width) — so its desktop title is an
+ordinary `set-titles-string` format rather than code. They are documented
+in `docs/options-audit.md` ("Hat extensions").
 
 ## Hooks
 

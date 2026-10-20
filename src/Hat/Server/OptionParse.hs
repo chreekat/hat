@@ -37,7 +37,7 @@ parseScalar
     -> Either Text Text
 parseScalar d mode own current mvalue = case (d.kind, mvalue) of
     (KFlag, _) -> flagValue current mvalue
-    (KChoice cs, _) -> choiceValue cs current mvalue
+    (KChoice cs, _) -> choiceValue cs current (choiceSpelling d <$> mvalue)
     (_, Nothing) -> Left "empty value"
     (KString, Just v) ->
         let new = appended "" v
