@@ -518,16 +518,21 @@ claimOwnLatest st client = do
     msess <- Map.lookup sid <$> readTVar st.sessions
     maybe (pure False) (claimLatest st client) msess
 
--- | Record activity from a client and, when it becomes the latest client
--- of its window, re-derive the sizes so a @latest@ window follows it.
+-- | Record activity from a client.
 noteClientActivity :: ServerState -> Client -> IO ()
 noteClientActivity st client = do
-    becameLatest <- atomically $ do
-        markActive st client
-        claimOwnLatest st client
-    sid <- readTVarIO client.session
-    armLockTimer st sid
-    when becameLatest $ applySessionSize st sid
+    atomically (markActive st client)
+    armLockTimer st =<< readTVarIO client.session
+
+-- | A client's keys, a focus-out report aside, make it the latest client of
+-- the window it shows once they have run (tmux's
+-- @server_client_update_latest@ after each key); the sizes are re-derived
+-- when that moved it, so a @latest@ window follows it.
+noteKeysLatest :: ServerState -> Client -> [Key] -> IO ()
+noteKeysLatest st client keys =
+    when (any ((/= "FocusOut") . (.name)) keys) $ do
+        moved <- atomically (claimOwnLatest st client)
+        when moved $ applySessionSize st =<< readTVarIO client.session
 
 -- | Whether a key event is delivered to the focused pane's program. A sequence
 -- the tokenizer could not name is dropped, so bytes hat does not understand
@@ -688,6 +693,7 @@ deliverInput d st client keys = do
     mapM_ (terminalReplied st client . B.drop 1 . (.raw)) replies
     mapM_ (identified st client . (.raw)) idents
     deliverKeys d st client typed
+    noteKeysLatest st client typed
 
 -- | A client's terminal identified itself: add the features that reveals
 -- to its terminal, and if that changes it, send the client the new one

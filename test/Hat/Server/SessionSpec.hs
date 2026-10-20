@@ -168,6 +168,12 @@ addWindow sess n = do
     atomically $ modifyTVar' sess.windows (Map.insert n win)
     pure win
 
+-- A client types a key bound to a no-op, so it reaches no pane.
+typeKey :: ServerState -> Client -> IO ()
+typeKey st c = do
+    [] <- runArgv st Nothing ["bind", "-n", "x", "set", "-g", "@typed", "1"]
+    handleInput dispatch st c "x"
+
 -- The size of the window a session shows.
 curSize :: Session -> IO Size
 curSize sess = atomically $
@@ -1037,7 +1043,7 @@ spec = do
             _ <- addWindow sess 0
             b <- addClient st (SessionId 0) big 2
             _ <- addClient st (SessionId 0) small 1
-            handleInput dispatch st b ""
+            typeKey st b
             curSize sess `shouldReturn` pane big
         it "fits the smallest client under window-size smallest" $ do
             (st, sess) <- seedSession "/"
@@ -2032,8 +2038,8 @@ spec = do
             (st, sess, other, w0, _) <- sharedPair
             [a] <- atomically (sessionClients st sess.id)
             [b] <- atomically (sessionClients st other.id)
-            handleInput dispatch st a ""
-            handleInput dispatch st b ""
+            typeKey st a
+            typeKey st b
             readTVarIO w0.size `shouldReturn` Size 49 200
 
         it "resizes a shared latest window when another of its viewers types" $ do
@@ -2041,12 +2047,23 @@ spec = do
             atomically (writeTVar other.currentIx 0)
             [a] <- atomically (sessionClients st sess.id)
             [b] <- atomically (sessionClients st other.id)
-            handleInput dispatch st b ""
+            typeKey st b
             readTVarIO w0.size `shouldReturn` Size 23 80
-            handleInput dispatch st a ""
+            typeKey st a
             readTVarIO w0.size `shouldReturn` Size 49 200
             mapM curSize [sess, other]
                 `shouldReturn` [Size 49 200, Size 49 200]
+
+        it "keeps a shared latest window's latest client when another reports focus-out" $ do
+            (st, sess, other, w0, _) <- sharedPair
+            atomically (writeTVar other.currentIx 0)
+            [a] <- atomically (sessionClients st sess.id)
+            [b] <- atomically (sessionClients st other.id)
+            emu <- Emu.newEmulator (Size 24 80) 10
+            atomically $ modifyTVar' w0.panes (Map.map (\p -> p { emulator = emu }))
+            typeKey st b
+            handleInput dispatch st a "\ESC[O"
+            readTVarIO w0.size `shouldReturn` Size 23 80
 
     describe "per-window sizing" $ do
         let -- #{window_width}x#{window_height} of window @ix@ of @sess@.
