@@ -47,6 +47,7 @@ mode-mutation.sh                # needs client attach tracking + choose-client/c
 format-render-contexts.sh       # choose-tree -F (tree mode) and customize-mode contexts, awaiting the mode-stack decision; the rest passes
 
 # option engine breadth: flat scalar table, global-only read-back
+format-variables.sh             # #{version} is the bare number but hat -V says "hat X", so the script's sed 's/^tmux //' leaves "hat 0.0.1" to compare against
 options-values.sh               # needs default-client-command (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that
