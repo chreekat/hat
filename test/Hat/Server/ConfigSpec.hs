@@ -1,10 +1,11 @@
 module Hat.Server.ConfigSpec (spec) where
 
-import Control.Concurrent.STM (readTVarIO)
+import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
 import Control.Exception (bracket)
 import Data.ByteString qualified as B
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.Time.Clock (getCurrentTime)
 import System.Directory (removeDirectoryRecursive)
 import System.Posix.Temp (mkdtemp)
 import Test.Hspec
@@ -124,18 +125,27 @@ spec = do
                 opts <- readTVarIO st.options
                 map (`Map.lookup` opts.user) ["@a", "@b"] `shouldBe` [Just "1", Just "2"]
                 readTVarIO st.configCauses `shouldReturn` []
-        it "expand in the global context before any of the file runs, without jobs" $
+        it "expand in the global context before any of the file runs" $
             withDir "/tmp/hat-cond-" $ \dir st -> do
                 let p = dir <> "/c.conf"
                 _ <- loadCommandFile st Nothing RunFile p "set -g @c 1\n"
                 loadCommandFile st Nothing RunFile p (T.unlines
                     [ "set -g @d 1", "%if #{@c}", "set -g @a 1", "%endif"
-                    , "%if #{@d}", "set -g @b 1", "%endif"
-                    , "%if \"#(echo 1)\"", "set -g @e 1", "%endif" ])
+                    , "%if #{@d}", "set -g @b 1", "%endif" ])
                     `shouldReturn` []
                 opts <- readTVarIO st.options
-                map (`Map.lookup` opts.user) ["@a", "@b", "@e"]
-                    `shouldBe` [Just "1", Nothing, Nothing]
+                map (`Map.lookup` opts.user) ["@a", "@b"] `shouldBe` [Just "1", Nothing]
+        it "expand without jobs: none starts, and a cached one's output is unseen" $
+            withDir "/tmp/hat-cond-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                now <- getCurrentTime
+                atomically (writeTVar st.shellCache (Map.singleton "echo 1" (now, "1")))
+                loadCommandFile st Nothing RunFile p (T.unlines
+                    [ "%if \"#(echo 1)\"", "set -g @e 1", "%endif"
+                    , "%if \"#(echo 2)\"", "set -g @f 1", "%endif" ])
+                    `shouldReturn` []
+                Map.lookup "@e" . (.user) <$> readTVarIO st.options `shouldReturn` Nothing
+                Map.keys <$> readTVarIO st.shellCache `shouldReturn` ["echo 1"]
         it "see the assignments made above them, which a failed file keeps" $
             withDir "/tmp/hat-cond-" $ \dir st -> do
                 let p = dir <> "/c.conf"
