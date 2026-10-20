@@ -73,6 +73,14 @@ spec = do
                 plain = Cell.defaultStyle { Cell.fg = black, Cell.bg = green }
             map (.style) (concatMap V.toList drawn) `shouldSatisfy`
                 all (`elem` [plain, plain { Cell.underline = True }])
+        it "draws a bell or activity window like any other" $ do
+            let alerted flag = case ctxFor opts0 of
+                    ctx -> ctx { windows = [ Map.insert flag "1" w | w <- ctx.windows ] }
+                plain = Cell.defaultStyle { Cell.fg = black, Cell.bg = green }
+            [ (r V.! 10).style
+              | flag <- ["window_bell_flag", "window_activity_flag"]
+              , r <- statusRows (alerted flag) opts0 24 ]
+                `shouldBe` [plain, plain]
         it "spells a flagless window without tmux's padding space" $ do
             let win ix name = Map.fromList
                     [ ("window_index", ix), ("window_name", name)
