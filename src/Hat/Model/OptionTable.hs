@@ -625,11 +625,10 @@ optionTable =
     , live $ scalar "monitor-silence" WindowScope (KNumber 0 intMax) "0"
     , live $ scalar "other-pane-height" WindowScope KString "0"
     , live $ scalar "other-pane-width" WindowScope KString "0"
+    -- tmux's default is a format: themegreen, or another theme colour for
+    -- a modal, marked, synchronized or in-mode pane.
     , paneLocal $ live $ scalar "pane-active-border-style" WindowPaneScope KStyle
-        "fg=#{?pane_modal_flag,themeblue,\
-        \#{?pane_marked,thememagenta,\
-        \#{?synchronize-panes,themered,\
-        \#{?pane_in_mode,themeyellow,themegreen}}}}"
+        "fg=green"
     , live $ scalar "pane-base-index" WindowScope (KNumber 0 ushrtMax) "0"
     , paneLocal $ live $ scalar "pane-border-format" WindowPaneScope KString
         "#{?pane_active,#[reverse],}#{pane_index}#[default] \"#{pane_title}\"\
@@ -644,8 +643,8 @@ optionTable =
             "single"
     , paneLocal $ live $ scalar "pane-border-status" WindowPaneScope
         (KChoice ["off", "top", "bottom", "top-floating", "bottom-floating"]) "off"
-    , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle
-        "fg=themelightgrey"
+    -- tmux defaults to fg=themelightgrey.
+    , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle "default"
     , paneLocal $ live $ arrayOf "pane-colours" WindowPaneScope KColour " ," []
     , live $ scalar "pane-scrollbars" WindowScope
         (KChoice ["off", "modal", "on", "auto-hide"]) "off"
