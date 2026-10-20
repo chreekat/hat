@@ -74,7 +74,7 @@ import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
 import Hat.Server.View
-import Hat.Term.Caps (createTerm)
+import Hat.Term.Caps (appliedFeatures, capList, createTerm)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel)
 import Hat.Transport.Wire
@@ -211,6 +211,11 @@ welcome d st re h = do
                     sname <- readTVarIO sess.name
                     applySessionSize st sess.id
                     armLockTimer st sess.id
+                    -- Ahead of the greeting, so the client draws its very
+                    -- first bytes in its terminal's dialect.
+                    mterm <- readTVarIO client.ttyTerm
+                    forM_ mterm $ \t -> when (client.wireLevel >= 11) $
+                        sendMessage conn (OpenedTerminal (capList t) (appliedFeatures t))
                     sendMessage conn (Welcome sname)
                     sendMessage conn (ServerVersion protocolVersion)
                     atomically $ writeTVar client.ready True

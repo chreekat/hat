@@ -145,6 +145,7 @@ instance Arbitrary ServerToClient where
         , ControlExit <$> oneof [pure Nothing, Just <$> genText]
             <*> elements [ExitNow, AwaitEmptyLine] <*> arbitrary
         , LockClient <$> genText
+        , OpenedTerminal <$> listOf genText <*> listOf genText
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -169,6 +170,9 @@ instance Arbitrary ServerToClient where
             ++ [ ControlExit reason ExitNow status | wait /= ExitNow ]
             ++ [ ControlExit reason wait s | s <- shrink status ]
         LockClient cmd -> LockClient . T.pack <$> shrink (T.unpack cmd)
+        OpenedTerminal caps feats ->
+            [ OpenedTerminal cs feats | cs <- shrinkList (const []) caps ]
+            ++ [ OpenedTerminal caps fs | fs <- shrinkList (const []) feats ]
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -276,6 +280,9 @@ spec = do
               , encodeMessage (ControlExit Nothing ExitNow 0)
               , "840f800000" )
             , ( "LockClient", encodeMessage (LockClient "lock -np"), "8210686c6f636b202d6e70" )
+            , ( "OpenedTerminal"
+              , encodeMessage (OpenedTerminal ["am=1"] ["title"])
+              , "83119f64616d3d31ff9f657469746c65ff" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 

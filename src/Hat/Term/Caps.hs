@@ -19,6 +19,7 @@ module Hat.Term.Caps
     , featureName
     , featurePresent
     , featureNames
+    , appliedFeatures
       -- * Resolving
     , createTerm
     , overrideEntries
@@ -250,7 +251,11 @@ clientColourCount t
 
 -- | @client_termfeatures@: the applied features' names, comma-joined.
 featureNames :: TtyTerm -> Text
-featureNames t = T.intercalate "," (map featureName (Set.toAscList t.features))
+featureNames = T.intercalate "," . appliedFeatures
+
+-- | The applied features' names, in tmux's order.
+appliedFeatures :: TtyTerm -> [Text]
+appliedFeatures t = map featureName (Set.toAscList t.features)
 
 -- | @#{I/f:name}@ (tmux's @tty_feature_present@): applied, or every one
 -- of its capabilities (and flags) present anyway. As in tmux, a name no

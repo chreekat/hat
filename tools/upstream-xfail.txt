@@ -2,7 +2,6 @@
 # One per line. When a script starts passing, the runner exits
 # nonzero (XPASS) until its line is removed - keep this list honest.
 # Baseline recorded 2026-07-08: everything fails (CLI compat is young).
-am-terminal.sh                  # terminal-overrides option unimplemented
 border-arrows.sh                # wontfix: hat deliberately draws triangle indicators, not tmux's ACS arrows
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
 check-names.sh                  # invalid UTF-8 in argv is lossily decoded before the server can reject it (wire carries Text)

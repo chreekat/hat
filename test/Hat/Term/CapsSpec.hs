@@ -1,6 +1,5 @@
 module Hat.Term.CapsSpec (spec) where
 
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Test.Hspec
 
@@ -85,6 +84,4 @@ spec = do
     describe "capList and termFromWire" $
         it "carry a resolved term across" $ do
             let t = term "xterm-256color" ("Tc=1" : "U8=1" : vt100) ["*:am@"] Nothing
-            termFromWire t.name (capList t)
-                (map featureName (Set.toAscList t.features))
-                `shouldBe` t
+            termFromWire t.name (capList t) (appliedFeatures t) `shouldBe` t

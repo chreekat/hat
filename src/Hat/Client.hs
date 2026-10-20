@@ -22,6 +22,7 @@ import Control.Exception
 import Control.Monad (forever, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Word (Word16)
 import Data.Text qualified as T
@@ -40,6 +41,7 @@ import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
 import Hat.Server.Command.Session (newSessionValueFlags)
 import Hat.Server.Command.Types (parseArgs)
+import Hat.Term.Caps (termFromWire)
 import Hat.Term.Pty (sigWinch)
 import Hat.Transport.Wire
 
@@ -129,48 +131,61 @@ attachClient v sock origin setup hist =
     withHello v origin (AttachIntent setup) hist Rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
+    awaitWelcome sock re legacyDialect
+
+-- | Read the greeting, drawing in the dialect of the terminal the server
+-- says it opened ahead of it; a server that predates that says nothing.
+awaitWelcome :: Socket -> ReadEnd -> Dialect -> IO ExitReason
+awaitWelcome sock re d = do
     greeting <- recvMessage re
     case greeting of
+        Just (Known (OpenedTerminal caps feats)) ->
+            awaitWelcome sock re (dialectOf (termFromWire "" caps feats))
         Just (Known (Welcome _)) ->
             -- withRawMode also owns the stdio buffering switch; see the
             -- ordering note there.
             withRawMode $ \cooked ->
                 bracket_
-                    (B.hPut stdout enterAltScreen)
-                    (B.hPut stdout leaveAltScreen)
-                    (shuttle cooked sock re)
+                    (B.hPut stdout (enterAltScreen d))
+                    (B.hPut stdout (leaveAltScreen d))
+                    (shuttle d cooked sock re)
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
 
-shuttle :: CookedMode -> Socket -> ReadEnd -> IO ExitReason
-shuttle cooked sock re = do
+shuttle :: Dialect -> CookedMode -> Socket -> ReadEnd -> IO ExitReason
+shuttle d cooked sock re = do
     outbox <- newTQueueIO
     pump <- newTVarIO Pumping
+    size <- newIORef =<< ttySize
     _ <- installHandler sigWinch
-        (Catch $ ttySize >>= atomically . writeTQueue outbox . Resize)
+        (Catch $ do
+            sz <- ttySize
+            writeIORef size sz
+            atomically (writeTQueue outbox (Resize sz)))
         Nothing
     -- One writer owns the socket; stdin and SIGWINCH both feed it.
-    r <- race (receiver pump outbox `catch` \(_ :: SomeException) -> pure ServerDied)
+    r <- race (receiver size pump outbox `catch` \(_ :: SomeException) -> pure ServerDied)
               (race (stdinReader pump outbox) (sender outbox))
     pure $ case r of
         Left reason -> reason
         Right _ -> ServerDied
   where
-    receiver pump outbox = do
-        let next = receiver pump outbox
+    receiver size pump outbox = do
+        let next = receiver size pump outbox
         m <- recvMessage re
         case m of
             Nothing -> pure ServerDied
             Just (Malformed _) -> pure ServerDied
             Just (UnknownTag _) -> next
             Just (Known msg) -> case msg of
-                Draw ops -> B.hPut stdout (opsToAnsi ops) >> next
-                SetTitle t -> do
-                    B.hPut stdout ("\ESC]0;" <> TE.encodeUtf8 t <> "\BEL")
+                Draw ops -> do
+                    sz <- readIORef size
+                    B.hPut stdout (opsToAnsi d sz ops)
                     next
+                SetTitle t -> B.hPut stdout (titleBytes d t) >> next
                 RingBell -> B.hPut stdout "\BEL" >> next
                 Notify raw -> B.hPut stdout raw >> next
                 Message _ -> next  -- server renders toasts into frames
@@ -181,6 +196,7 @@ shuttle cooked sock re = do
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
                 Welcome _ -> next
+                OpenedTerminal {} -> next
                 -- Informational: our decoder already reads every dialect
                 -- ≤ ours, and nothing we send upstream is dialect-sensitive.
                 ServerVersion _ -> next
@@ -190,7 +206,7 @@ shuttle cooked sock re = do
                 WriteStdout _ -> next
                 ControlExit {} -> pure SessionEnded
                 LockClient cmd -> do
-                    pausingInput pump (lockTerminal cooked cmd)
+                    pausingInput pump (lockTerminal d cooked cmd)
                     atomically (writeTQueue outbox LockDone)
                     next
     -- A read in flight when a pause is asked is abandoned, so no keystroke
@@ -228,9 +244,9 @@ pausingInput pump = bracket_
 -- @MSG_LOCK@): out of raw mode and the server's screen, onto 'lockScreen';
 -- back again however the command ends. As with tmux's @system@, the
 -- command's own exit status is no concern of ours.
-lockTerminal :: CookedMode -> Text -> IO ()
-lockTerminal cooked cmd =
-    bracket_ (B.hPut stdout leaveAltScreen) (B.hPut stdout enterAltScreen) $
+lockTerminal :: Dialect -> CookedMode -> Text -> IO ()
+lockTerminal d cooked cmd =
+    bracket_ (B.hPut stdout (leaveAltScreen d)) (B.hPut stdout (enterAltScreen d)) $
         withCookedMode cooked $ do
             B.hPut stdout lockScreen
             r <- try $ do

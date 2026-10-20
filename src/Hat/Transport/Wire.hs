@@ -91,7 +91,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 10
+protocolVersion = 11
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -228,6 +228,11 @@ data ServerToClient
     | LockClient Text
         -- ^ hand the terminal to this shell command (@lock-command@), then
         --   answer 'LockDone' once it exits (level 10 and up)
+    | OpenedTerminal [Text] [Text]
+        -- ^ the terminal the server opened for an attaching client: its
+        --   capabilities and applied features, as 'Hat.Term.Caps.capList'
+        --   and 'Hat.Term.Caps.featureName' give them. Sent ahead of
+        --   'Welcome', so only to a level-11-and-up peer.
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -307,6 +312,7 @@ instance WireMessage ClientToServer where
 --   WriteStdout   = 14
 --   ControlExit   = 15
 --   LockClient    = 16
+--   OpenedTerminal = 17
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -332,6 +338,8 @@ instance WireMessage ServerToClient where
                     AwaitEmptyLine -> 1)
                 <> encode status
         LockClient cmd -> encodeListLen 2 <> encodeWord 16 <> encode cmd
+        OpenedTerminal caps feats ->
+            encodeListLen 3 <> encodeWord 17 <> encode caps <> encode feats
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -365,6 +373,10 @@ instance WireMessage ServerToClient where
             _ -> pure (Malformed
                 ("ControlExit: expected 3 fields, got " <> show (len - 1)))
         16 -> field len (Known . LockClient <$> decode)
+        17 -> case len of
+            3 -> Known <$> (OpenedTerminal <$> decode <*> decode)
+            _ -> pure (Malformed
+                ("OpenedTerminal: expected 2 fields, got " <> show (len - 1)))
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
