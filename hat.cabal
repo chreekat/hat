@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               hat
-version:            0.1.0
+version:            0.0.1
 synopsis:           A terminal multiplexer
 license:            AGPL-3.0-or-later
 license-file:       LICENSE
@@ -200,6 +200,11 @@ library
         Hat.Term.Winsize
         Hat.Transport.Socket
         Hat.Transport.Wire
+        Hat.Version
+    other-modules:
+        Paths_hat
+    autogen-modules:
+        Paths_hat
     include-dirs:       cbits
     -- hat_spawn.c is pty plumbing; ghostty_shim.c is the emulator's libghostty-vt
     -- FFI shim (bug 17).
