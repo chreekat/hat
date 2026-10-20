@@ -514,10 +514,11 @@ optionTable =
         \#{E:message-style}}]#{message}"
     , live $ scalar "message-line" SessionScope
         (KChoice ["0", "1", "2", "3", "4"]) "0"
+    -- tmux's default draws in themeyellow and themeblack.
     , live $ scalar "message-style" SessionScope KStyle
-        "bg=themeyellow,fg=themeblack,\
+        "bg=yellow,fg=black,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
-        \fill=themeyellow}"
+        \fill=yellow}"
     , live $ scalar "mouse" SessionScope KFlag "off"
     , live $ scalar "prefix" SessionScope KKey "C-b"
     , live $ scalar "prefix2" SessionScope KKey "None"
