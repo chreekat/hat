@@ -6,12 +6,14 @@ module Hat.Client.Terminfo
     ( readTermCaps
     ) where
 
-import Control.Exception (try)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import Control.Exception (evaluate, try)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Console.Terminfo.Base
     (SetupTermError, getCapability, setupTerm, tiGetFlag, tiGetNum, tiGetStr)
+import System.IO.Unsafe (unsafePerformIO)
 
 import Hat.Term.Caps (CapType (..), capCodes)
 
@@ -20,11 +22,15 @@ import Hat.Term.Caps (CapType (..), capCodes)
 -- flags as @1@. A flag the entry leaves unset is omitted, since terminfo
 -- does not tell it from one it lacks.
 readTermCaps :: Text -> IO (Either Text [Text])
-readTermCaps nm = do
+readTermCaps nm = withMVar terminfoLock $ \() -> do
     r <- try (setupTerm (T.unpack nm))
-    pure $ case r of
-        Left (_ :: SetupTermError) -> Left ("missing or unsuitable terminal: " <> nm)
-        Right t -> Right (mapMaybe (entry t) capCodes)
+    case r of
+        Left (_ :: SetupTermError) -> pure (Left ("missing or unsuitable terminal: " <> nm))
+        Right t -> do
+            let caps = mapMaybe (entry t) capCodes
+            -- 'getCapability' reads lazily: every read happens under the lock.
+            _ <- evaluate (sum (map T.length caps))
+            pure (Right caps)
   where
     entry t (n, ty) =
         let key = T.unpack n
@@ -35,3 +41,10 @@ readTermCaps nm = do
             CapFlag -> case getCapability t (tiGetFlag key) of
                 Just True -> Just (named "1")
                 _ -> Nothing
+
+-- | Held across every use of terminfo, whose current terminal
+-- (@cur_term@) is process-global and swapped in and out unlocked by the
+-- terminfo package.
+terminfoLock :: MVar ()
+terminfoLock = unsafePerformIO (newMVar ())
+{-# NOINLINE terminfoLock #-}
