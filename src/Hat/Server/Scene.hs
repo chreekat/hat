@@ -421,6 +421,9 @@ data ChromeLook = ChromeLook
         -- ^ indicator glyphs replacing the border at those cells
     , menuCells :: V.Vector (V.Vector Cell.Cell)
         -- ^ the window's menu as it draws itself
+    , isolates :: Bool
+        -- ^ whether vertical borders go between bidi isolates (the
+        --   client's terminal has @Bidi@)
     }
     deriving (Eq, Show)
 
@@ -452,7 +455,27 @@ sceneChrome look scene =
                     (borderGlyph (linesOf look owner) (owner >>= (`Map.lookup` look.numbers))
                         (cellTypeOf b.mask))
                     (Map.lookup pos look.arrows)
-            in Just (Cell.glyphCell glyph sty')
+            in Just (isolatedRun look scene pos b (Cell.glyphCell glyph sty'))
+
+-- | A vertical border run closes the bidi isolate the cells before it
+-- are in and opens one after (tmux's @REDRAW_ISOLATES@), so a bidi
+-- terminal never reorders text across it.
+isolatedRun :: ChromeLook -> Scene -> Pos -> BorderCell -> Cell.Cell -> Cell.Cell
+isolatedRun look scene pos b cell
+    | not look.isolates || cellTypeOf b.mask /= CellUD = cell
+    | Cell.Glyph c more w <- cell.content =
+        cell { Cell.content = case (sameRun (pos.col - 1), sameRun (pos.col + 1)) of
+            (False, False) -> Cell.Glyph endIsolate (c : more <> [startIsolate]) w
+            (False, True) -> Cell.Glyph endIsolate (c : more) w
+            (True, False) -> Cell.Glyph c (more <> [startIsolate]) w
+            (True, True) -> cell.content }
+    | otherwise = cell
+  where
+    sameRun x = case scene V.!? pos.row >>= (V.!? x) of
+        Just (SceneBorder b') -> b' == b
+        _ -> False
+    startIsolate = '\x2066'
+    endIsolate = '\x2069'
 
 -- | The line set a pane's border draws in (tmux's
 -- @window_pane_get_pane_lines@): a floating pane's own, else the window's.

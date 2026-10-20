@@ -19,7 +19,6 @@ cursor-test2.sh
 cursor-test4.sh
 prompt-keys.sh                  # choose-tree as a tree-mode pane mode with its search prompt (#{pane_mode} = tree-mode)
 prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; choose-tree tree-mode search/filter prompts; -1/-N/-i/-k/-e prompt flags
-screen-redraw-bidi.sh           # terminal-overrides unimplemented, and the client has no terminfo capabilities (Bidi) to wrap spans in isolates
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
 tty-draw-line.sh                # resize-window sizes the whole session, not one window, so later windows keep its width; a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused)

@@ -26,7 +26,7 @@ import Data.Word (Word8)
 import Hat.Geometry
 import Hat.Term.Caps
 import Hat.Term.Cell
-import Hat.TextWidth (charWidth)
+import Hat.TextWidth (charWidth, textWidth)
 import Hat.Transport.Wire (DrawOp (..))
 
 -- | What the client's terminal can be sent, as tmux's terminal model
@@ -204,7 +204,7 @@ opsToAnsi :: Dialect -> Size -> [DrawOp] -> ByteString
 opsToAnsi d sz ops = BL.toStrict . BB.toLazyByteString $
     (if d.sync then BB.byteString "\ESC[?2026h" else mempty)
     <> BB.byteString "\ESC[?25l"
-    <> foldMap (opBuilder d sz) ops
+    <> go ClearAll ops
     <> restoreCursor
     <> (if d.sync then BB.byteString "\ESC[?2026l" else mempty)
   where
@@ -216,17 +216,33 @@ opsToAnsi d sz ops = BL.toStrict . BB.toLazyByteString $
         [] -> mempty
         vs | last vs -> BB.byteString "\ESC[?25h"
            | otherwise -> mempty
+    go prev = \case
+        [] -> mempty
+        op : rest -> opBuilder d sz (continues prev op) op <> go op rest
 
-opBuilder :: Dialect -> Size -> DrawOp -> BB.Builder
-opBuilder d sz = \case
+-- | Whether a run starts with a zero-width character right where the
+-- previous run ended, so it must follow on with no cursor move: a
+-- terminal joins such a character to the cell before it only when it
+-- comes straight after (as the bidi isolate closing a run does; see
+-- 'Hat.Server.Scene.isolatedRun').
+continues :: DrawOp -> DrawOp -> Bool
+continues (Put p _ t) (Put q _ u)
+    | Just (c, _) <- T.uncons u, c >= '\x300', charWidth c == 0 =
+        q.row == p.row && q.col == p.col + textWidth t
+continues _ _ = False
+
+opBuilder :: Dialect -> Size -> Bool -> DrawOp -> BB.Builder
+opBuilder d sz contiguous = \case
     ClearAll -> BB.byteString "\ESC[0m\ESC[2J\ESC[H"
     Put pos st txt
         -- tmux's TERM_NOAM: writing the bottom-right cell would scroll.
         | d.clipCorner, pos.row == fromIntegral sz.rows - 1 ->
-            moveTo pos <> sgrBuilder d st
+            move pos <> sgrBuilder d st
                 <> TE.encodeUtf8Builder (fitColumns (fromIntegral sz.cols - 1 - pos.col) txt)
-        | otherwise -> moveTo pos <> sgrBuilder d st <> TE.encodeUtf8Builder txt
+        | otherwise -> move pos <> sgrBuilder d st <> TE.encodeUtf8Builder txt
     CursorAt pos _visible -> moveTo pos
+  where
+    move pos = if contiguous then mempty else moveTo pos
 
 -- | The longest prefix of a run that fits in the columns, keeping the
 -- zero-width characters that close it.

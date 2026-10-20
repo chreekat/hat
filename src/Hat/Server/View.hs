@@ -70,6 +70,7 @@ import Hat.Server.Mouse qualified as Mouse
 import Hat.Server.FormatDraw (DrawRange)
 import Hat.Server.Status
     (StatusTexts (..), drawStatus, statusFormats, statusRanges, statusRows, statusTexts)
+import Hat.Term.Caps (hasCap)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel, terminalCursor, terminalCursorBytes)
@@ -597,7 +598,7 @@ windowCompositeCells st win size = do
             , active = Just active, marked = Nothing, numbers = Map.empty
             , paneLines = Map.empty
             , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
-            , arrows = Map.empty, menuCells = V.empty }
+            , arrows = Map.empty, menuCells = V.empty, isolates = False }
     panes <- foldM (\acc (pid, rect) -> case Map.lookup pid ps of
               Nothing   -> pure acc
               Just pane -> do
@@ -719,7 +720,8 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults pa
         else forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st expand th sess win cp.pane
             (if cp.pane.id == active then cp.options.paneActiveBorderStyle
              else cp.options.paneBorderStyle)
-    let look0 = look1 { paneStyles = Map.fromList styles }
+    isolates <- maybe False (hasCap "Bidi") <$> readTVarIO client.ttyTerm
+    let look0 = look1 { paneStyles = Map.fromList styles, isolates }
     look <- withStatusLines expand th sess win scene kinds panes look0
         >>= withFills st expand th sess win kinds
         >>= withMenu st expand th sess win mmenu
@@ -820,7 +822,8 @@ chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts overlay
             , arrows = if useArrows
                 then maybe Map.empty edgeArrows (List.lookup active rects)
                 else Map.empty
-            , menuCells = V.empty }
+            , menuCells = V.empty
+            , isolates = False }
     pure (input, look, panes)
   where
     menuRect wm = Rect

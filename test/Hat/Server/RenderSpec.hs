@@ -140,6 +140,15 @@ spec = do
         let ops = diffFrame old new
         ops `shouldBe` [Put Pos { row = 0, col = 0 } defaultStyle "aa"]
 
+    it "sends the cell before one led by a zero-width character" $ do
+        let iso = Cell { content = Glyph '\x2069' ['|'] Narrow, style = defaultStyle { bold = True } }
+            row cs = V.fromList [V.fromList cs]
+            old = row [blankCell, blankCell, blankCell]
+            new = row [blankCell, blankCell, iso]
+        diffFrame old new `shouldBe`
+            [ Put Pos { row = 0, col = 1 } defaultStyle " "
+            , Put Pos { row = 0, col = 2 } defaultStyle { bold = True } "\x2069|" ]
+
     prop "a known-equal row mask never changes the diff" $
         forAll ((,,) <$> genFrame smallSize <*> genFrame smallSize
                      <*> infiniteListOf arbitrary) $
