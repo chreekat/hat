@@ -224,6 +224,8 @@ attach path mconfig answered setup hist = do
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
+        -- Only a command client's commands finish.
+        CommandsFinished _ -> putStrLn "[exited]"
         RestartRequested target hist' -> restartClient path mconfig target hist'
         ServerDied -> do
             hPutStrLn stderr "hat: server connection lost"
@@ -278,6 +280,7 @@ control path mconfig answered cmds = do
                 ServerDied -> do
                     hPutStrLn stderr "hat: server exited unexpectedly"
                     exitFailure
+                CommandsFinished n | n /= 0 -> exitWith (ExitFailure n)
                 _ -> pure ()
 
 -- | Connect, spawning the server first if none is running. The origin says

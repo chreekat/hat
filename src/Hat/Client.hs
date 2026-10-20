@@ -55,6 +55,7 @@ data ExitReason
         -- ^ server asked us to re-exec in place, naming the session to
         --   rejoin (when it knows it) and the MRU session history to carry
         --   back; see 'Main.attach'
+    | CommandsFinished Int  -- ^ the commands ran; exit with this status
     deriving (Eq, Show)
 
 versionMismatch :: Text
@@ -222,6 +223,7 @@ shuttle dialect cooked sock re = do
                 ReadStdin -> next
                 WriteStdout _ -> next
                 ControlExit {} -> pure SessionEnded
+                ExitStatus _ -> next
                 LockClient cmd -> do
                     d <- readIORef dialect
                     pausingInput pump (lockTerminal d cooked cmd)
@@ -415,25 +417,28 @@ controlAt v sock origin answered out cmds =
     case greeting of
         Just (Known (Welcome _)) -> do
             sendMessage sock (Command cmds)
-            drain re
+            drain Nothing re
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
   where
-    drain re = do
+    drain status re = do
+        let next = drain status re
+            done = pure (maybe SessionEnded CommandsFinished status)
         m <- recvMessage re
         case m of
-            Nothing -> pure SessionEnded
-            Just (Known (Message t)) -> out.line t >> drain re
-            Just (Known (WriteStdout bs)) -> out.bytes bs >> drain re
-            Just (Known ReadStdin) -> sendStdin re.sock >> drain re
+            Nothing -> done
+            Just (Known (Message t)) -> out.line t >> next
+            Just (Known (WriteStdout bs)) -> out.bytes bs >> next
+            Just (Known ReadStdin) -> sendStdin re.sock >> next
+            Just (Known (ExitStatus n)) -> drain (Just n) re
             Just (Known (ServerError e)) -> pure (Rejected e)
-            Just (Known CommandDone) -> pure SessionEnded
-            Just (Known Exited) -> pure SessionEnded
-            Just (Known _) -> drain re
-            Just (UnknownTag _) -> drain re
+            Just (Known CommandDone) -> done
+            Just (Known Exited) -> done
+            Just (Known _) -> next
+            Just (UnknownTag _) -> next
             Just (Malformed err) ->
                 pure (Rejected ("wire protocol error: " <> T.pack err
                     <> " — mismatched hat versions?"))
