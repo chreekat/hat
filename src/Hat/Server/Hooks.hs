@@ -120,7 +120,7 @@ hookFormats name payload = Map.fromList $
 -- | The name a client waits and is listed under (tmux's tty-less client
 -- naming); a clientless command has none.
 clientNameOf :: Maybe Client -> Text
-clientNameOf = maybe "" (\c -> "client-" <> tshow (rawClient c.id))
+clientNameOf = maybe "" clientName
 
 -- Ambient context -------------------------------------------------------
 

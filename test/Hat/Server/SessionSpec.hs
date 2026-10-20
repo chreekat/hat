@@ -56,7 +56,7 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (handleInput)
 import Hat.Server.Lock
     (LockOutcome (..), lockClient, lockDeadline, lockTimerLoop, ttyHandedBack)
-import Hat.Server.Dispatch (runArgv)
+import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
@@ -2255,6 +2255,24 @@ spec = do
                 `shouldReturn` "\ESC[27;5;9~"
             ((.raw) <$> reencodeKey always (Just emu) (Key "C-a" "\SOH"))
                 `shouldReturn` "\SOH"
+
+    describe "client hooks" $ do
+        let hooked = do
+                (st, sess) <- seedSession "/"
+                installHooks st
+                _ <- addWindow sess 0
+                pure (st, sess)
+            recorded st = runArgv st Nothing ["show", "-gqv", "@h"]
+        it "names the client in #{hook_client} as list-clients does" $ do
+            (st, _) <- hooked
+            other <- addSession st 1
+            _ <- addWindow other 0
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- runArgv st Nothing ["set-hook", "-g", "client-session-changed",
+                "set -gF @h '#{hook_client}'"]
+            runArgv st (Just client) ["switch-client", "-t", "$1"] `shouldReturn` []
+            listed <- runArgv st Nothing ["list-clients", "-F", "#{client_name}"]
+            recorded st `shouldReturn` listed
 
     describe "input routing within a chunk" $ do
         let keyed = do
