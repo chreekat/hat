@@ -47,7 +47,7 @@ import Hat.Server.HookMonitor (monitorsAt)
 import Hat.Server.Hooks (ambientFor, hookEntriesAt, writeHookArray)
 import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
-    , targetCurrentWindow, targetPaneScoped, targetSession )
+    , targetCurrentWindow, targetPane, targetSession )
 import Hat.Server.OptionParse
 import Hat.Server.Pane (suitableShell)
 import Hat.Server.Resize (applySessionSize)
@@ -112,7 +112,7 @@ windowScope st mclient mtarget =
         <$> targetWindowScoped st mclient mtarget
 paneScope st mclient mtarget =
     maybe (Left (noSuchTarget "pane" mtarget)) (Right . PaneTable)
-        <$> targetPaneScoped st mclient mtarget
+        <$> targetPane st mclient mtarget
 
 ownOptionsAt :: ServerState -> Scope -> OwnOptions
 ownOptionsAt st = \case

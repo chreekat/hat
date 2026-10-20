@@ -79,6 +79,15 @@ geometry st tgt = do
 
 spec :: Spec
 spec = do
+    describe "set-option -p" $
+        it "sets the option on the pane a full -t target names" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                run st ["set", "-p", "-t", "S:0.0", "@where", "first"] `shouldReturn` []
+                run st ["show", "-pv", "-t", "S:0.0", "@where"] `shouldReturn` [ROutput "first"]
+                run st ["show", "-pqv", "-t", "S:0.1", "@where"] `shouldReturn` []
+
     describe "kill-pane" $ do
         it "kills the pane a full -t target names, not the current one" $
             withServer $ \st -> do
