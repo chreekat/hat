@@ -63,8 +63,13 @@ spec = do
     it "leaves out an attribute the terminal lacks" $
         sgr (dialect []) defaultStyle { bold = True, strike = True } `shouldBe` "\ESC[0m"
 
-    it "writes an attribute's own capability when it is not a plain SGR" $
+    it "writes an attribute's own capability when it is not a plain SGR" $ do
         sgr (dialect ["smso=\ESC[3m"]) defaultStyle { italic = True } `shouldBe` "\ESC[0;3m"
+        sgr (dialect ["bold=\ESC[1;2m"]) defaultStyle { bold = True } `shouldBe` "\ESC[0m\ESC[1;2m"
+
+    it "writes 24-bit colours as they are on a terminal that takes them" $
+        sgr legacyDialect defaultStyle { fg = RGB 1 22 255, bg = RGB 0 100 9 }
+            `shouldBe` "\ESC[0;38;2;1;22;255;48;2;0;100;9m"
 
     describe "colours a terminal cannot show" $ do
         it "takes 24-bit colours to the nearest of the 256" $
