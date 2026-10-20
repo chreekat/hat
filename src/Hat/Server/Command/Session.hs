@@ -42,7 +42,7 @@ import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( PayloadItem (..), noTarget, notify, notifyGroupChange, sessionTarget )
-import Hat.Server.Locate (findTarget, findTargetClient, paneIndexOf, targetSession, withTargetSession)
+import Hat.Server.Locate (findTarget, formatClient, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , switchActive, windowHolders )
@@ -622,7 +622,7 @@ cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient0 args = do
     let (opts, flags, _) = parseArgs "ct" args
     etarget <- case lookup "-c" opts of
-        Just name -> fmap Just <$> findTargetClient st mclient0 Nothing (Just name)
+        Just name -> fmap Just <$> formatClient st mclient0 Nothing (Just name)
         Nothing -> pure (Right mclient0)
     case etarget of
         Left e -> pure [RErr e]

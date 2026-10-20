@@ -581,6 +581,17 @@ spec = do
             Just (CopyMode pm) <- atomically (topMode p)
             (pm.kind, rowOf pm 0) `shouldBe` (ModeView, "c.conf:1: unknown command: x")
 
+    describe "switch-client -c" $
+        it "names a control-mode client too (lifecycle-deferred.sh)" $ do
+            (st, sess) <- seedSession "/"
+            other <- addSession st 1
+            c <- addClient st sess.id (Size 24 80) 1
+            cs <- newControlState
+            atomically $ modifyTVar' st.clients (Map.insert c.id c { control = Just cs })
+            runArgv st Nothing ["switch-client", "-c", clientName c, "-t", "s"]
+                `shouldReturn` []
+            readTVarIO c.session `shouldReturn` other.id
+
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do
             (st, _) <- seedSession "/"

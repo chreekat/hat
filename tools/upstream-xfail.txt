@@ -67,7 +67,6 @@ pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot c
 # windows / sessions / pipe / lifecycle
 window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
 session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
-lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode} = tree-mode) + command-prompt -P + switch-client -c target-client
 
 # screen redraw / theme
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report

@@ -434,8 +434,8 @@ findTargetClient
 findTargetClient = findClientWhere (\c -> c.role == Attached && isNothing c.control)
 
 -- | 'findTargetClient' among every client with a session, control-mode ones
--- too: the client a command's formats expand for (tmux's @ft->c@), and
--- that @display-message -c@ names.
+-- too: the client a command's formats expand for (tmux's @ft->c@), and any
+-- client a command names by @-c@ or a target-client @-t@.
 formatClient
     :: ServerState -> Maybe Client -> Maybe SessionId -> Maybe Text -> IO (Either Text Client)
 formatClient = findClientWhere (\c -> c.role == Attached)

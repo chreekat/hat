@@ -29,7 +29,7 @@ import Hat.Server.DisplayPanes (armPanes)
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
-import Hat.Server.Locate (clientOptions, clientView, findTarget, findTargetClient)
+import Hat.Server.Locate (clientOptions, clientView, findTarget, findTargetClient, formatClient)
 import Hat.Server.Pane (typeKeyIntoPane)
 import Hat.Server.PaneMode (enterClockMode, modifyTopMode, resetPaneModeAll, setPaneMode)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
@@ -58,7 +58,7 @@ cmdDetachClient st mclient args
                 [] <$ mapM_ (`send` DetachOk) cs
     | otherwise = do
         etarget <- case lookup "-t" opts of
-            Just name -> fmap Just <$> findTargetClient st mclient Nothing (Just name)
+            Just name -> fmap Just <$> formatClient st mclient Nothing (Just name)
             Nothing -> pure (Right mclient)
         case etarget of
             Left e -> pure [RErr e]
