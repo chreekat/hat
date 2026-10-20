@@ -27,13 +27,13 @@ import Data.Vector qualified as V
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
-import Hat.Model.Options (Options (..), StatusPosition (..))
+import Hat.Model.Options (Options (..), StatusPosition (..), optionText)
 import Hat.Model.PasteBuffers (PasteBuffer (..), pasteWalk)
 import Hat.Server.Command.Buffer (bufferEnv, formatTrue)
 import Hat.Server.Command.Types
     (CommandImpl, Dispatch (..), Reply (..), parseArgs, templateReplace, unknownFlag)
 import Hat.Server.Format (FormatEnv)
-import Hat.Server.FormatDraw (FormatColours (..), styleCell)
+import Hat.Server.FormatDraw (FormatColours (..), formatTrimLeft, formatWidth, styleCell)
 import Hat.Server.FormatEnv
     ( clientFormatEnv, clientTheme, expandFormat, paneFormatEnv, sessionFormatEnv
     , windowFormatEnv )
@@ -487,15 +487,17 @@ drawTreeMode
 drawTreeMode st ts size = do
     (_, ls, noMatches, _, settled) <- layoutTree st size ts
     opts <- readTVarIO st.options
-    th <- clientTheme st
-    let border = styleCell th "bg=themedarkgrey,fg=themelightgrey"
-        drawn = drawTree DrawInput
+    look <- treeLook st ts
+    help <- if ts.showHelp
+        then mapM look.expand (helpFormats (helpText ts.kind))
+        else pure []
+    let drawn = drawTree DrawInput
             { size = size
             , lines = ls
             , noMatches = noMatches
-            , theme = th
-            , selectStyle = opts.modeStyle
-            , borderStyle = border
+            , theme = look.theme
+            , selectStyle = look.selection
+            , borderStyle = look.border
             , promptStyle = Cell.defaultStyle
                 { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
             , promptTop = opts.statusPosition == StatusTop
@@ -504,31 +506,32 @@ drawTreeMode st ts size = do
                 (BufferList, _) -> Nothing
                 (_, ViewPreview) -> Just "preview"
                 (_, ViewInfo) -> Just "info"
-            , help = helpText ts.kind
+            , help = help
+            , helpWidth = (helpText ts.kind).width
             } settled
     cells <- case drawn.previewArea of
         Nothing -> pure drawn.cells
         Just (rect, tag) -> do
             let area = Size { rows = fromIntegral (rect.endRow - rect.startRow)
                             , cols = fromIntegral (rect.endCol - rect.startCol) }
-            pv <- previewOf th border st ts tag area
+            pv <- previewOf look st ts tag area
             pure (overlayGrid drawn.cells rect pv)
     pure (cells, drawn.cursor)
 
 -- | What the preview box shows for an item (tmux's @window_tree_draw@,
 -- @window_buffer_draw@, @window_client_draw@).
 previewOf
-    :: Theme -> Cell.Style -> ServerState -> TreeState -> TreeTag -> Size
+    :: TreeLook -> ServerState -> TreeState -> TreeTag -> Size
     -> IO (V.Vector (V.Vector Cell.Cell))
-previewOf th treeBorderStyle st ts tag size = case (ts.view, tag) of
+previewOf look st ts tag size = case (ts.view, tag) of
     (ViewInfo, _) | ts.kind == SessionTree -> do
         env <- itemEnv st tag
         let groups = case tag of
                 TagPane _ -> [paneInfoLines, windowInfoLines, sessionInfoLines]
                 TagWinlink _ _ -> [windowInfoLines, sessionInfoLines]
                 _ -> [sessionInfoLines]
-        expanded <- mapM (mapM (expandFormat st env . withBorderStyle)) groups
-        pure (infoGrid th treeBorderStyle size expanded)
+        expanded <- mapM (mapM (expandFormat st env)) groups
+        pure (infoGrid look size expanded)
     (_, TagPane pid)
         | ts.hidePane == Just pid -> pure blank
         | otherwise -> do
@@ -549,8 +552,9 @@ previewOf th treeBorderStyle st ts tag size = case (ts.view, tag) of
                 cols <- forM shown $ \p -> do
                     scr <- Emu.snapshot p.emulator
                     pix <- paneIndexOf st win p
-                    title <- Map.findWithDefault "" "pane_title" <$> paneEnv sess ix win pix p
-                    pure (scr, tshow pix <> ":" <> title, p.id == active)
+                    env <- paneFormatEnv st sess ix win pix p
+                    opts <- resolveForPaneIO st sess win p
+                    labelled scr env opts (p.id == active)
                 pure (fitGrid size (columns cols))
             _ -> pure blank
     (_, TagSession sid) -> do
@@ -562,10 +566,11 @@ previewOf th treeBorderStyle st ts tag size = case (ts.view, tag) of
                 cur <- readTVarIO sess.currentIx
                 cols <- fmap catMaybes . forM ws $ \(wix, win) -> do
                     mp <- atomically (activePane win)
-                    wname <- readTVarIO win.name
                     forM mp $ \p -> do
                         scr <- Emu.snapshot p.emulator
-                        pure (scr, tshow wix <> ":" <> wname, wix == cur)
+                        env <- windowFormatEnv st sess wix win
+                        opts <- resolveForWindowIO st sess win
+                        labelled scr env opts (wix == cur)
                 pure (fitGrid size (columns cols))
     (_, TagBuffer o) -> do
         bufs <- pasteWalk <$> readTVarIO st.buffers
@@ -589,13 +594,23 @@ previewOf th treeBorderStyle st ts tag size = case (ts.view, tag) of
                 scr <- Emu.snapshot p.emulator
                 pure (screenPreview scr w (h - 2))
             _ -> pure []
-        let rule = replicate w (Cell.glyphCell '─' treeBorderStyle)
+        let rule = replicate w (Cell.glyphCell '─' look.border)
         pure (fitGrid size (take (h - 1) (rows <> repeat []) <> [rule]))
   where
     w = fromIntegral size.cols
     h = fromIntegral size.rows
     blank = fitGrid size []
-    paneEnv sess ix win pix p = paneFormatEnv st sess ix win pix p
+    -- An item's column: its screen, and its label (@tree-mode-preview-format@)
+    -- in @tree-mode-preview-style@ over the background of its border
+    -- (@tree-mode-border-style@), both in the item's options and context.
+    labelled scr env opts isCur = do
+        let style name = styleIn look.theme (expandFormat st env) (optionText name opts)
+        edge <- style "tree-mode-border-style"
+        sty <- style "tree-mode-preview-style"
+        label <- expandFormat st env (optionText "tree-mode-preview-format" opts)
+        pure Column
+            { screen = scr, label = label, labelStyle = sty { Cell.bg = edge.bg }
+            , edge = edge, centre = isCur }
     -- tmux's window_tree_draw_session/_window: the screens side by side,
     -- as many as fit 24 columns each, centred on the current one, each
     -- under a boxed label.
@@ -604,7 +619,7 @@ previewOf th treeBorderStyle st ts tag size = case (ts.view, tag) of
         | otherwise =
             let total = length entries
                 visible = if w `div` total < 24 then max 1 (w `div` 24) else total
-                current = fromMaybe 0 (lookup True (zip (map (\(_, _, c) -> c) entries) [0 ..]))
+                current = fromMaybe 0 (lookup True (zip (map (.centre) entries) [0 ..]))
                 (start, end)
                     | current < visible = (0, visible)
                     | current >= total - visible = (total - visible, total)
@@ -631,34 +646,78 @@ previewOf th treeBorderStyle st ts tag size = case (ts.view, tag) of
                     | rightOn = [ border '│', Cell.blankCell
                                 , if y == h `div` 2 then border '>' else Cell.blankCell ]
                     | otherwise = []
-                cellsOf i (scr, label, isCur) y =
+                cellsOf i col y =
                     let cw = colWidth i
-                        body = withLabel cw label isCur (screenPreview scr cw h)
+                        body = withLabel cw col (screenPreview col.screen cw h)
                         row = take cw (fromMaybe [] (listToMaybe (drop y body)) <> repeat Cell.blankCell)
-                    in row <> [ border '│' | i /= length shown - 1 ]
+                    in row <> [ Cell.glyphCell '│' col.edge | i /= length shown - 1 ]
             in if each <= 0 then [] else [ take w (rowAt y) | y <- [0 .. h - 1] ]
-    border c = Cell.glyphCell c treeBorderStyle
+    border c = Cell.glyphCell c look.border
     -- tmux's window_tree_draw_label: the label boxed in the middle.
-    withLabel cw label isCur rows
-        | cw < 5 || h < 3 || T.null label = rows
+    withLabel cw col rows
+        | cw < 5 || h < 3 || lw == 0 = rows
         | otherwise =
-            let lbl = T.take (cw - 4) label
-                lw = T.length lbl
-                ox = (cw - lw + 1) `div` 2
+            let ox = (cw - lw + 1) `div` 2
                 oy = (h + 1) `div` 2
-                labelStyle = treeBorderStyle
-                    { Cell.fg = Cell.Indexed (if isCur then 1 else 4) }
+                edge c = Cell.glyphCell c col.edge
+                clear = Cell.glyphCell ' ' Cell.defaultStyle { Cell.bg = col.edge.bg }
                 boxRow y
-                    | y == oy - 1 = [ (ox - 2, [border '┌'] <> replicate (lw + 2) (border '─') <> [border '┐']) ]
-                    | y == oy = [ (ox - 2, [border '│', Cell.glyphCell ' ' treeBorderStyle]
-                                     <> [ Cell.glyphCell c labelStyle | c <- T.unpack lbl ]
-                                     <> [Cell.glyphCell ' ' treeBorderStyle, border '│']) ]
-                    | y == oy + 1 = [ (ox - 2, [border '└'] <> replicate (lw + 2) (border '─') <> [border '┘']) ]
+                    | y == oy - 1 = [ (ox - 2, [edge '┌'] <> replicate (lw + 2) (edge '─') <> [edge '┐']) ]
+                    | y == oy = [ (ox - 2, [edge '│', clear] <> labelCells <> [clear, edge '│']) ]
+                    | y == oy + 1 = [ (ox - 2, [edge '└'] <> replicate (lw + 2) (edge '─') <> [edge '┘']) ]
                     | otherwise = []
                 padded = take h (map (\r -> take cw (r <> repeat Cell.blankCell)) rows
                     <> repeat (replicate cw Cell.blankCell))
             in [ foldl (\r (x, cs) -> take x r <> cs <> drop (x + length cs) r) row (boxRow y)
                | (y, row) <- zip [0 ..] padded ]
+      where
+        fitted
+            | formatWidth col.label > cw - 4 = formatTrimLeft (cw - 4) col.label
+            | otherwise = col.label
+        labelCells = drawFormat look.theme OwnColours col.labelStyle fitted
+        lw = length labelCells
+
+-- | One previewed screen beside its neighbours, and how it is labelled.
+data Column = Column
+    { screen     :: !Emu.Screen
+    , label      :: !Text        -- ^ @tree-mode-preview-format@, expanded
+    , labelStyle :: !Cell.Style
+    , edge       :: !Cell.Style  -- ^ its @tree-mode-border-style@
+    , centre     :: !Bool        -- ^ the columns centre on this one
+    }
+
+-- | How a tree mode draws in its pane (tmux's @mode_tree_draw@ styles): its
+-- window's tree-mode styles, and its formats expanded in the pane's context.
+data TreeLook = TreeLook
+    { theme     :: !Theme
+    , selection :: !Cell.Style  -- ^ @tree-mode-selection-style@
+    , border    :: !Cell.Style  -- ^ @tree-mode-border-style@
+    , expand    :: Text -> IO Text
+    }
+
+treeLook :: ServerState -> TreeState -> IO TreeLook
+treeLook st ts = do
+    th <- clientTheme st
+    global <- readTVarIO st.options
+    mloc <- atomically (findPaneLoc st ts.origin.fromPane)
+    (opts, expand) <- case mloc of
+        Nothing -> pure (global, pure)
+        Just (sess, ix, win, pane) -> do
+            pix <- paneIndexOf st win pane
+            env <- paneFormatEnv st sess ix win pix pane
+            o <- resolveForWindowIO st sess win
+            pure (o, expandFormat st env)
+    let style name = styleIn th expand (optionText name opts)
+    selection <- style "tree-mode-selection-style"
+    border <- style "tree-mode-border-style"
+    pure TreeLook { theme = th, selection = selection, border = border, expand = expand }
+
+-- | A style option's cells, its formats expanded first (tmux's
+-- @style_apply@ with a format tree).
+styleIn :: Theme -> (Text -> IO Text) -> Text -> IO Cell.Style
+styleIn th expand raw
+    | "#{" `T.isInfixOf` raw = styleCell th <$> expand raw
+    | otherwise = pure (styleCell th raw)
 
 -- | tmux's @screen_write_preview@: an @nx@ by @ny@ window of a screen,
 -- around its cursor when that shows (marked in reverse), else the top left.
@@ -693,21 +752,18 @@ fitGrid size rows = V.fromList
 
 -- | tmux's @window_tree_draw_info@: each group of expanded lines, a rule
 -- between groups, and the column rule carried down below them.
-infoGrid :: Theme -> Cell.Style -> Size -> [[Text]] -> V.Vector (V.Vector Cell.Cell)
-infoGrid th treeBorderStyle size groups = fitGrid size (take h (body <> tailRows))
+infoGrid :: TreeLook -> Size -> [[Text]] -> V.Vector (V.Vector Cell.Cell)
+infoGrid look size groups = fitGrid size (take h (body <> tailRows))
   where
     w = fromIntegral size.cols
     h = fromIntegral size.rows
-    rule = [ Cell.glyphCell (if x == 14 && w > 14 then '┼' else '─') treeBorderStyle
+    rule = [ Cell.glyphCell (if x == 14 && w > 14 then '┼' else '─') look.border
            | x <- [0 .. w - 1] ]
-    drawn t = take w (drawFormat th OwnColours Cell.defaultStyle t)
+    drawn t = take w (drawFormat look.theme OwnColours Cell.defaultStyle t)
     body = concat (zipWith (\i g -> [ rule | i /= (0 :: Int) ] <> map drawn g) [0 ..] groups)
     tailRows
-        | w > 14 = repeat (replicate 14 Cell.blankCell <> [Cell.glyphCell '│' treeBorderStyle])
+        | w > 14 = repeat (replicate 14 Cell.blankCell <> [Cell.glyphCell '│' look.border])
         | otherwise = []
-
-withBorderStyle :: Text -> Text
-withBorderStyle = T.replace "#{E:tree-mode-border-style}" "bg=themedarkgrey,fg=themelightgrey"
 
 infoFlag :: Text -> Text -> Text
 infoFlag label cond =

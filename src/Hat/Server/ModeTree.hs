@@ -26,6 +26,7 @@ module Hat.Server.ModeTree
     , TreeDraw (..)
     , DrawInput (..)
     , drawTree
+    , helpFormats
     , drawFormat
     ) where
 
@@ -392,7 +393,8 @@ data DrawInput = DrawInput
     , promptTop   :: !Bool         -- ^ the prompt sits on the top row
     , sortShown   :: !Bool         -- ^ the mode sorts (shows its order)
     , viewName    :: !(Maybe Text)
-    , help        :: !HelpText
+    , help        :: ![Text]       -- ^ the key help's lines, expanded ('helpFormats')
+    , helpWidth   :: !Int
     }
 
 -- | A drawn tree mode: its screen, where the preview of which item goes,
@@ -506,10 +508,8 @@ drawTree inp st = TreeDraw
         | otherwise = Nothing
 
     -- The key help, boxed over the middle of the screen.
-    helpLines = map (T.replace "%1" inp.help.itemName . T.replace
-            "#{E:tree-mode-border-style}" "bg=themedarkgrey,fg=themelightgrey")
-        (helpStart <> inp.help.lines <> helpEnd)
-    helpW = max 39 inp.help.width
+    helpLines = inp.help
+    helpW = max 39 inp.helpWidth
     withHelp g
         | not st.showHelp || w < helpW + 2 || sy < length helpLines + 2 = g
         | otherwise =
@@ -549,6 +549,10 @@ stamp r c cs g = case g V.!? r of
     Nothing -> g
     Just row -> g V.// [(r, row V.//
         [ (c + k, x) | (k, x) <- zip [0 ..] cs, c + k < V.length row, c + k >= 0 ])]
+
+-- | A mode's key help as formats, every line of it.
+helpFormats :: HelpText -> [Text]
+helpFormats h = map (T.replace "%1" h.itemName) (helpStart <> h.lines <> helpEnd)
 
 helpStart :: [Text]
 helpStart = map ("#[fg=themelightgrey]" <>)

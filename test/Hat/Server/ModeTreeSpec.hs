@@ -131,7 +131,7 @@ spec = do
                     , borderStyle = styleCell terminalTheme "bg=themedarkgrey,fg=themelightgrey"
                     , promptStyle = Cell.defaultStyle, promptTop = False
                     , sortShown = True, viewName = Just "preview"
-                    , help = HelpText "item" 0 [] } ts'
+                    , help = [], helpWidth = 0 } ts'
         it "draws each line as key, tree branch, name and text" $ do
             let rows = map rowText (V.toList (draw fresh False).cells)
             take 3 rows `shouldBe` ["(0) - s: x", "(1) ├─> - 0: x", "(2) │   ├─> 0: x"]

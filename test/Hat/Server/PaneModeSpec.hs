@@ -6,7 +6,10 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad (forM_, void)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import System.Timeout (timeout)
 import Test.Hspec
 
@@ -16,6 +19,8 @@ import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.PaneMode (dropModesForReload)
+import Hat.Server.TreeMode (drawTreeMode)
+import Hat.Term.Cell qualified as Cell
 import Hat.Term.Pty qualified as Pty
 
 -- | A fresh server for one test; on exit every pane still alive is killed
@@ -156,6 +161,36 @@ spec = do
                 run st ["choose-client", "-t", "S:0.0"] `shouldReturn` []
                 display st "S:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
 
+    describe "tree-mode options" $ do
+        it "tree-mode-border-style draws the preview box" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["set", "-g", "tree-mode-border-style", "fg=red"] `shouldReturn` []
+                run st ["choose-tree", "-t", "S:0.0"] `shouldReturn` []
+                cells <- treeCells st
+                styleOf '┌' cells `shouldBe` Just Cell.defaultStyle { Cell.fg = Cell.Indexed 1 }
+        it "tree-mode-selection-style draws the selected line" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["set", "-g", "tree-mode-selection-style", "bg=blue"] `shouldReturn` []
+                run st ["choose-tree", "-t", "S:0.0"] `shouldReturn` []
+                cells <- treeCells st
+                map (fmap (.style.bg) . listToMaybe) (take 2 cells)
+                    `shouldBe` [Just Cell.DefaultColor, Just (Cell.Indexed 4)]
+        it "tree-mode-preview-format (a pane's own) and -style label each previewed pane" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                [pane] <- paneIds st "S:0"
+                run st ["set", "-p", "-t", pane, "tree-mode-preview-format", "L#{pane_index}"] `shouldReturn` []
+                run st ["set", "-g", "tree-mode-preview-style", "fg=green"] `shouldReturn` []
+                run st ["set", "-g", "tree-mode-border-style", "bg=black"] `shouldReturn` []
+                run st ["choose-tree", "-t", "S:0.0"] `shouldReturn` []
+                cells <- treeCells st
+                any (T.isInfixOf "│ L0 │" . rowText) cells `shouldBe` True
+                styleOf 'L' cells `shouldBe`
+                    Just Cell.defaultStyle
+                        { Cell.fg = Cell.Indexed 2, Cell.bg = Cell.Indexed 0 }
+
     describe "dropModesForReload" $
         it "clears every mode and undoes a -Z zoom, keeping -k panes" $
             withServer $ \st -> do
@@ -189,6 +224,22 @@ searchable st = do
     run st ["new-session", "-d", "-s", "projects", "-n", "notes", "cat"] `shouldReturn` []
     run st ["new-window", "-d", "-t", "projects:1", "-n", "hat", "cat"] `shouldReturn` []
     run st ["choose-tree", "-w", "-t", "work:0.0", "set -g @chosen '%%'"] `shouldReturn` []
+
+-- | What the server's only pane's tree mode draws, row by row.
+treeCells :: ServerState -> IO [[Cell.Cell]]
+treeCells st = do
+    [p] <- allPanes st
+    Just (TreeMode ts) <- atomically (topMode p)
+    size <- readTVarIO p.size
+    (cells, _) <- drawTreeMode st ts size
+    pure (map V.toList (V.toList cells))
+
+-- | The style of the first cell drawing a character.
+styleOf :: Char -> [[Cell.Cell]] -> Maybe Cell.Style
+styleOf c rows = listToMaybe [ cell.style | row <- rows, cell <- row, Cell.baseChar cell == c ]
+
+rowText :: [Cell.Cell] -> Text
+rowText = T.pack . map Cell.baseChar
 
 -- | A window's pane ids, in pane-index order.
 paneIds :: ServerState -> Text -> IO [Text]
