@@ -432,8 +432,9 @@ optionTable =
     , live $ scalar "escape-time" ServerScope (KNumber 0 intMax) "0"
     , live $ scalar "exit-empty" ServerScope KFlag "on"
     , live $ scalar "exit-unattached" ServerScope KFlag "off"
+    -- tmux defaults to off, ignoring an app's request for extended keys.
     , live $ scalar "extended-keys" ServerScope
-        (KChoice ["off", "on", "always"]) "off"
+        (KChoice ["off", "on", "always"]) "on"
     , live $ scalar "extended-keys-format" ServerScope
         (KChoice ["csi-u", "xterm"]) "xterm"
     , live $ scalar "focus-events" ServerScope KFlag "off"
