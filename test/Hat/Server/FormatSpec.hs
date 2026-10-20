@@ -13,6 +13,7 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
 import Hat.Server.Format
+import Hat.Term.Caps (createTerm)
 
 env :: Map.Map Text Text
 env = Map.fromList
@@ -413,13 +414,16 @@ spec = do
         , ("#{I:x}", "")
         ]
 
-    it "asks I of the terminal client: its environment and features" $ do
-        let withClient = renderFormatCtx ctx
+    it "asks I of the terminal client: its environment, capabilities and features" $ do
+        let term = either (error . show) id $ createTerm "xterm"
+                ["am=1", "clear=\ESC[H\ESC[2J", "cup=x", "colors=8"] [] [] (Just "256")
+            withClient = renderFormatCtx ctx
                 { client = Just ClientQueries
-                    { environ = Map.fromList [("TERM", "xterm")], features = ["256"] } }
-        map withClient ["#{I/e:TERM}", "#{I/e:NONE}", "#{I/f:256}", "#{I/f:overline}"]
-            `shouldBe` ["xterm", "", "1", "0"]
-        withClient "#{I/c:colors}" `shouldBe` "<format modifier 'I/c' unimplemented>"
+                    { environ = Map.fromList [("TERM", "xterm")], term } }
+        map withClient
+            [ "#{I/e:TERM}", "#{I/e:NONE}", "#{I/f:256}", "#{I/f:overline}"
+            , "#{I/c:colors}", "#{I/c:Bidi}" ]
+            `shouldBe` ["xterm", "", "1", "0", "1", "0"]
 
     cases "escapes inside modifier arguments"
         [ ("#{s/#,/-/:#{l:a,b,c}}", "a-b-c")

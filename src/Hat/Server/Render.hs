@@ -36,6 +36,7 @@ import Hat.Geometry
 import Hat.Model.Ids (PaneId)
 import Hat.PtrEq (samePtr)
 import Hat.Term.Cell
+import Hat.TextWidth (charWidth)
 import Hat.Transport.Wire (DrawOp (..))
 
 type Frame = V.Vector (V.Vector Cell)
@@ -297,11 +298,17 @@ rowOps r oldRow newRow = runsToOps r newRow eff
             Nothing -> True
             Just oldCell -> not (samePtr oldCell nc) && oldCell /= nc
     -- A wide char and its continuation cell redraw together: touching
-    -- either marks both.
+    -- either marks both. A cell led by a zero-width character redraws
+    -- the one before it too, since a terminal joins that character to the
+    -- cell printed just before (see 'Hat.Client.Draw.continues').
     eff = VU.generate n $ \c ->
         raw VU.! c
             || (colWidth c == 2 && c + 1 < n && raw VU.! (c + 1))
             || (colWidth c == 0 && c > 0 && raw VU.! (c - 1))
+            || (c + 1 < n && raw VU.! (c + 1) && zeroWidthLed (newRow V.! (c + 1)))
+    zeroWidthLed cell = case cell.content of
+        Glyph b _ _ -> b >= '\x300' && charWidth b == 0
+        Continuation -> False
     colWidth c = maybe 1 cellWidth (newRow V.!? c)
 
 -- Group consecutive changed cells with equal style into single Puts.

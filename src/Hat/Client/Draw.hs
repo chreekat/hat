@@ -1,32 +1,212 @@
 -- | Turn 'DrawOp's into the escape-sequence bytes the client blits to
--- its tty. Pure; see 'opsToAnsi'.
+-- its tty, in its terminal's 'Dialect'. Pure; see 'opsToAnsi'.
 module Hat.Client.Draw
-    ( opsToAnsi
+    ( Dialect
+    , dialectOf
+    , legacyDialect
+    , opsToAnsi
     , sgr
+    , titleBytes
     , enterAltScreen
+    , featuresOn
     , leaveAltScreen
     , lockScreen
     ) where
 
+import Data.Bits (testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
+import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Vector qualified as V
+import Data.Word (Word8)
 
 import Hat.Geometry
+import Hat.Term.Caps
 import Hat.Term.Cell
+import Hat.TextWidth (charWidth, textWidth)
 import Hat.Transport.Wire (DrawOp (..))
 
--- | Each batch is bracketed in DEC 2026 synchronized output (BSU/ESU),
--- so the terminal presents the whole frame at once — a full redraw's
--- clear-then-repaint would otherwise flicker — and in hide-cursor /
--- restore-cursor so the cursor never trails the paint.
-opsToAnsi :: [DrawOp] -> ByteString
-opsToAnsi ops = BL.toStrict . BB.toLazyByteString $
-    BB.byteString "\ESC[?2026h\ESC[?25l"
-    <> foldMap opBuilder ops
+-- | What the client's terminal can be sent, as tmux's terminal model
+-- ("Hat.Term.Caps") decides it: the choices the encoder makes per frame.
+-- Cursor motion, clearing and SGR colour numbers assume a VT100-like
+-- terminal, as tmux's do where it writes them directly.
+data Dialect = Dialect
+    { depth :: !ColourDepth
+    , attrParams :: !(V.Vector ByteString)
+        -- ^ by 'attrIndex': the SGR parameters turning those attributes on
+    , attrRaws :: !(V.Vector ByteString)
+        -- ^ by 'attrIndex': the bytes after the SGR for those attributes
+        --   whose capability is no plain SGR
+    , rawAttrs :: !Bool   -- ^ some attribute has such bytes
+    , standardMask :: !Int
+        -- ^ the 'attrIndex' bits of the attributes the terminal has, when
+        --   each it has is its usual SGR parameter; -1 when not
+    , clipCorner :: !Bool  -- ^ never write the bottom-right cell (no @am@)
+    , sync :: !Bool        -- ^ bracket frames in DEC 2026 (@Sync@)
+    , title :: Maybe (ByteString, ByteString)  -- ^ @tsl@ and @fsl@
+    , altOn :: ByteString   -- ^ @smcup@
+    , altOff :: ByteString  -- ^ @rmcup@
+    , pasteOn :: ByteString   -- ^ @Enbp@
+    , pasteOff :: ByteString  -- ^ @Dsbp@
+    , focusOn :: ByteString   -- ^ @Enfcs@
+    , focusOff :: ByteString  -- ^ @Dsfcs@
+    , cursorColourReset :: ByteString  -- ^ @Cr@
+    , cursorStyleReset :: ByteString   -- ^ @Se@, else @Ss@ with 0
+    , mouseOff :: ByteString  -- ^ mouse modes off, when it has @kmous@
+    }
+
+-- | How many colours a terminal shows (tmux's @TERM_RGBCOLOURS@,
+-- @TERM_256COLOURS@, else its @colors@).
+data ColourDepth = DepthRGB | Depth256 | Depth Int
+    deriving (Eq)
+
+-- | How each attribute is turned on: an SGR parameter merged into the
+-- run's one SGR, the capability's own bytes, or not at all.
+data AttrCode = AttrSgr !Int | AttrRaw !ByteString | AttrNone
+
+data AttrCodes = AttrCodes
+    { bold, faint, italic, underline, blink, reverse, strike :: !AttrCode }
+
+-- | The attributes in 'attrIndex' order.
+attrList :: AttrCodes -> [AttrCode]
+attrList a = [a.bold, a.faint, a.italic, a.underline, a.blink, a.reverse, a.strike]
+
+-- | A style's attributes as a number below 128, one bit each.
+attrIndex :: Style -> Int
+attrIndex st =
+    bit st.bold 1 + bit st.faint 2 + bit st.italic 4 + bit st.underline 8
+    + bit st.blink 16 + bit st.reverse 32 + bit st.strike 64
+  where
+    bit b n = if b then n else 0
+
+-- | Every attribute combination's SGR parameters and trailing raw bytes,
+-- rendered once per dialect so a run only looks its own up.
+withAttrs :: AttrCodes -> Dialect -> Dialect
+withAttrs a d = d
+    { attrParams = V.generate 128 (render param)
+    , attrRaws = V.generate 128 (render raw)
+    , rawAttrs = any isRaw (attrList a)
+    , standardMask = maybe (-1) sum
+        (sequence (zipWith standard [0 :: Int ..] (zip usual (attrList a))))
+    }
+  where
+    usual = [1, 2, 3, 4, 5, 7, 9]
+    standard k (n, code) = case code of
+        AttrSgr p | p == n -> Just (2 ^ k)
+        AttrNone -> Just 0
+        _ -> Nothing
+    render f i = BL.toStrict . BB.toLazyByteString $ mconcat
+        [ f code | (k, code) <- zip [0 :: Int ..] (attrList a), testBit i k ]
+    param = \case
+        AttrSgr n -> BB.char8 ';' <> BB.intDec n
+        _ -> mempty
+    raw = \case
+        AttrRaw bs -> BB.byteString bs
+        _ -> mempty
+    isRaw = \case
+        AttrRaw _ -> True
+        _ -> False
+
+dialectOf :: TtyTerm -> Dialect
+dialectOf t = withAttrs attrs Dialect
+    { depth
+    , attrParams = V.empty
+    , attrRaws = V.empty
+    , rawAttrs = False
+    , standardMask = -1
+    , clipCorner = noAutoMargin t
+    , sync = hasCap "Sync" t
+    , title = if hasCap "tsl" t && hasCap "fsl" t
+        then Just (str "tsl", str "fsl") else Nothing
+    , altOn = str "smcup"
+    , altOff = str "rmcup"
+    , pasteOn = str "Enbp"
+    , pasteOff = str "Dsbp"
+    , focusOn = str "Enfcs"
+    , focusOff = str "Dsfcs"
+    , cursorColourReset = str "Cr"
+    , cursorStyleReset
+    , mouseOff = if hasCap "kmous" t then mouseModesOff else ""
+    }
+  where
+    attrs = AttrCodes
+        { bold = code "bold"
+        , faint = code "dim"
+        , italic = if hasCap "sitm" t then code "sitm" else code "smso"
+        , underline = code "smul"
+        , blink = code "blink"
+        , reverse = code "rev"
+        , strike = code "smxx"
+        }
+    depth
+        | rgbColours t = DepthRGB
+        | colours256 t || capNumber "colors" t >= 256 = Depth256
+        | otherwise = Depth (capNumber "colors" t)
+    cursorStyleReset
+        | hasCap "Se" t = str "Se"
+        | hasCap "Ss" t = "\ESC[0 q"
+        | otherwise = ""
+    str n = TE.encodeUtf8 (capString n t)
+    code n
+        | not (hasCap n t) = AttrNone
+        | otherwise = case sgrParam (capString n t) of
+            Just p -> AttrSgr p
+            Nothing -> AttrRaw (str n)
+
+-- | The parameter of a plain one-parameter SGR, @\\E[Nm@.
+sgrParam :: Text -> Maybe Int
+sgrParam s = do
+    body <- T.stripPrefix "\ESC[" s >>= T.stripSuffix "m"
+    if not (T.null body) && T.all (`elem` ['0' .. '9']) body && T.length body <= 3
+        then Just (read (T.unpack body))
+        else Nothing
+
+-- | The fixed xterm dialect a client draws in when its server never sent
+-- the terminal it opened (one that predates it).
+legacyDialect :: Dialect
+legacyDialect = withAttrs standard Dialect
+    { depth = DepthRGB
+    , attrParams = V.empty
+    , attrRaws = V.empty
+    , rawAttrs = False
+    , standardMask = -1
+    , clipCorner = False
+    , sync = True
+    , title = Just ("\ESC]0;", "\BEL")
+    , altOn = "\ESC[?1049h"
+    , altOff = "\ESC[?1049l"
+    , pasteOn = "\ESC[?2004h"
+    , pasteOff = "\ESC[?2004l"
+    , focusOn = "\ESC[?1004h"
+    , focusOff = "\ESC[?1004l"
+    , cursorColourReset = "\ESC]112\a"
+    , cursorStyleReset = "\ESC[0 q"
+    , mouseOff = mouseModesOff
+    }
+  where
+    standard = AttrCodes
+        { bold = AttrSgr 1, faint = AttrSgr 2, italic = AttrSgr 3
+        , underline = AttrSgr 4, blink = AttrSgr 5, reverse = AttrSgr 7
+        , strike = AttrSgr 9 }
+
+mouseModesOff :: ByteString
+mouseModesOff = "\ESC[?1006l\ESC[?1000l\ESC[?1002l\ESC[?1003l"
+
+-- | A batch of ops for a terminal of the given size. Under 'sync' it is
+-- bracketed in DEC 2026 synchronized output (BSU/ESU), so the terminal
+-- presents the whole frame at once — a full redraw's clear-then-repaint
+-- would otherwise flicker — and always in hide-cursor / restore-cursor so
+-- the cursor never trails the paint.
+opsToAnsi :: Dialect -> Size -> [DrawOp] -> ByteString
+opsToAnsi d sz ops = BL.toStrict . BB.toLazyByteString $
+    (if d.sync then BB.byteString "\ESC[?2026h" else mempty)
+    <> BB.byteString "\ESC[?25l"
+    <> go ClearAll ops
     <> restoreCursor
-    <> BB.byteString "\ESC[?2026l"
+    <> (if d.sync then BB.byteString "\ESC[?2026l" else mempty)
   where
     -- The renderer puts CursorAt last; if a batch lacks one (pure
     -- content update), leave the cursor hidden state to the final op
@@ -36,13 +216,46 @@ opsToAnsi ops = BL.toStrict . BB.toLazyByteString $
         [] -> mempty
         vs | last vs -> BB.byteString "\ESC[?25h"
            | otherwise -> mempty
+    go prev = \case
+        [] -> mempty
+        op : rest -> opBuilder d sz (continues prev op) op <> go op rest
 
-opBuilder :: DrawOp -> BB.Builder
-opBuilder = \case
+-- | Whether a run starts with a zero-width character right where the
+-- previous run ended, so it must follow on with no cursor move: a
+-- terminal joins such a character to the cell before it only when it
+-- comes straight after (as the bidi isolate closing a run does; see
+-- 'Hat.Server.Scene.isolatedRun').
+continues :: DrawOp -> DrawOp -> Bool
+continues (Put p _ t) (Put q _ u)
+    | Just (c, _) <- T.uncons u, c >= '\x300', charWidth c == 0 =
+        q.row == p.row && q.col == p.col + textWidth t
+continues _ _ = False
+
+opBuilder :: Dialect -> Size -> Bool -> DrawOp -> BB.Builder
+opBuilder d sz contiguous = \case
     ClearAll -> BB.byteString "\ESC[0m\ESC[2J\ESC[H"
-    Put pos st txt ->
-        moveTo pos <> sgrBuilder st <> TE.encodeUtf8Builder txt
+    Put pos st txt
+        -- tmux's TERM_NOAM: writing the bottom-right cell would scroll.
+        | d.clipCorner, pos.row == fromIntegral sz.rows - 1 ->
+            move pos <> sgrBuilder d st
+                <> TE.encodeUtf8Builder (fitColumns (fromIntegral sz.cols - 1 - pos.col) txt)
+        | otherwise -> move pos <> sgrBuilder d st <> TE.encodeUtf8Builder txt
     CursorAt pos _visible -> moveTo pos
+  where
+    move pos = if contiguous then mempty else moveTo pos
+
+-- | The longest prefix of a run that fits in the columns, keeping the
+-- zero-width characters that close it.
+fitColumns :: Int -> Text -> Text
+fitColumns room txt = T.take (go 0 0 (T.unpack txt)) txt
+  where
+    go :: Int -> Int -> String -> Int
+    go n _ [] = n
+    go n used (c : cs)
+        | used + w > room = n
+        | otherwise = go (n + 1) (used + w) cs
+      where
+        w = charWidth c
 
 moveTo :: Pos -> BB.Builder
 moveTo p = BB.byteString "\ESC["
@@ -50,24 +263,71 @@ moveTo p = BB.byteString "\ESC["
     <> BB.intDec (p.col + 1) <> BB.char8 'H'
 
 -- | Full SGR for a style, starting from reset so runs are independent.
-sgr :: Style -> ByteString
-sgr = BL.toStrict . BB.toLazyByteString . sgrBuilder
+sgr :: Dialect -> Style -> ByteString
+sgr d = BL.toStrict . BB.toLazyByteString . sgrBuilder d
 
-sgrBuilder :: Style -> BB.Builder
-sgrBuilder st =
+sgrBuilder :: Dialect -> Style -> BB.Builder
+sgrBuilder d st = case d.depth of
+    DepthRGB | d.standardMask >= 0 -> sgrStandard d.standardMask st
+    Depth256 | d.standardMask >= 0 -> sgrStandard d.standardMask (nearest256 st)
+    DepthRGB -> sgrIn d st
+    Depth256 -> sgrIn d (nearest256 st)
+    Depth n -> sgrLow d n (fitColours n st)
+
+-- | A style's 24-bit colours as the nearest of the 256.
+nearest256 :: Style -> Style
+nearest256 st = case (st.fg, st.bg) of
+    (RGB {}, _) -> st { fg = near st.fg, bg = near st.bg }
+    (_, RGB {}) -> st { bg = near st.bg }
+    _ -> st
+  where
+    near = \case
+        RGB r g b -> Indexed (findRgb r g b)
+        c -> c
+
+-- | The SGR on a terminal of 256 colours or more whose attributes all
+-- take their usual parameters: the per-run hot path, kept to fixed code.
+sgrStandard :: Int -> Style -> BB.Builder
+sgrStandard m st =
     BB.byteString "\ESC[0"
-    <> flag st.bold 1
-    <> flag st.faint 2
-    <> flag st.italic 3
-    <> flag st.underline 4
-    <> flag st.blink 5
-    <> flag st.reverse 7
-    <> flag st.strike 9
+    <> flag (st.bold && testBit m 0) 1
+    <> flag (st.faint && testBit m 1) 2
+    <> flag (st.italic && testBit m 2) 3
+    <> flag (st.underline && testBit m 3) 4
+    <> flag (st.blink && testBit m 4) 5
+    <> flag (st.reverse && testBit m 5) 7
+    <> flag (st.strike && testBit m 6) 9
     <> fgCode st.fg
     <> bgCode st.bg
     <> BB.char8 'm'
   where
+    flag :: Bool -> Int -> BB.Builder
     flag b n = if b then BB.char8 ';' <> BB.intDec n else mempty
+
+-- | The SGR on a terminal of 256 colours or more: RGB colours as they are,
+-- or as the nearest of the 256.
+sgrIn :: Dialect -> Style -> BB.Builder
+sgrIn d st =
+    BB.byteString "\ESC[0"
+    <> BB.byteString (V.unsafeIndex d.attrParams i)
+    <> fgCode st.fg
+    <> bgCode st.bg
+    <> BB.char8 'm'
+    <> (if d.rawAttrs then BB.byteString (V.unsafeIndex d.attrRaws i) else mempty)
+  where
+    i = attrIndex st
+
+-- | The SGR on a terminal of fewer colours, its colours already fitted.
+sgrLow :: Dialect -> Int -> Style -> BB.Builder
+sgrLow d n st =
+    BB.byteString "\ESC[0"
+    <> BB.byteString (V.unsafeIndex d.attrParams i)
+    <> colourCode Fg (Depth n) st.fg
+    <> colourCode Bg (Depth n) st.bg
+    <> BB.char8 'm'
+    <> BB.byteString (V.unsafeIndex d.attrRaws i)
+  where
+    i = attrIndex st
 
 fgCode :: Color -> BB.Builder
 fgCode = \case
@@ -91,18 +351,147 @@ bgCode = \case
         <> BB.intDec (fromIntegral g) <> BB.char8 ';'
         <> BB.intDec (fromIntegral b)
 
--- Also enables focus reporting (@?1004@) so the outer terminal sends
--- @\ESC[I@/@\ESC[O@; the server forwards them to panes when
--- @focus-events@ is on. And bracketed paste (@?2004@), so a paste reaches
--- the pane whole rather than through the key tables.
-enterAltScreen :: ByteString
-enterAltScreen = "\ESC[?1049h\ESC[?1004h\ESC[?2004h\ESC[2J\ESC[H"
+data Layer = Fg | Bg
 
--- Also resets the cursor colour (OSC 112) and style (DECSCUSR 0, blinking
--- off) in case a pane's were mirrored onto the outer terminal, and any mouse
--- tracking the server asked for.
-leaveAltScreen :: ByteString
-leaveAltScreen = "\ESC[?1006l\ESC[?1000l\ESC[?1002l\ESC[?1003l\ESC[?2004l\ESC[?1004l\ESC[?1049l\ESC[0m\ESC[?25h\ESC]112\a\ESC[?12l\ESC[0 q"
+-- | A style's colours as a terminal of fewer than 256 colours can show
+-- them (tmux's @tty_check_fg@ and @tty_check_bg@): 24-bit colours by way
+-- of the 256 palette to the 16 colours, and bright colours to bold
+-- (foreground) or plain (background) on an 8-colour terminal.
+fitColours :: Int -> Style -> Style
+fitColours n st =
+    let fg16 = to16 n (to256 st.fg)
+        bg16 = to16 n (to256 st.bg)
+        (fg', boldUp) = case fg16 of
+            Bright c | n < 16 -> (Indexed c, True)
+            Converted c | n < 16 -> (Indexed (avoidSame c bg16), False)
+            other -> (plain other, False)
+    in st { fg = fg', bg = plainBg bg16, bold = st.bold || boldUp }
+  where
+    to256 = \case
+        RGB r g b -> Indexed (findRgb r g b)
+        c -> c
+    -- Mapping to black-on-black or white-on-white is not much use, so the
+    -- foreground changes.
+    avoidSame c bg16
+        | c == 0, plain bg16 == Indexed 0 = 7
+        | c == 7, plain bg16 == Indexed 7 = 0
+        | otherwise = c
+    plainBg = \case
+        Bright c | n < 16 -> Indexed c
+        Converted c | n < 16 -> Indexed c
+        other -> plain other
+
+-- | A colour reduced to 16, remembering whether a bright one was bright to
+-- start with (aixterm) or became so from the 256 palette.
+data Colour16 = Kept Color | Bright Word8 | Converted Word8
+
+to16 :: Int -> Color -> Colour16
+to16 n = \case
+    Indexed i
+        | i < 8 -> Kept (Indexed i)
+        | i < 16 -> if n < 16 then Bright (i - 8) else Kept (Indexed i)
+        | otherwise -> case colour256to16 i of
+            c | c < 8 -> Kept (Indexed c)
+              | otherwise -> Converted (c - 8) `orBright` n
+    c -> Kept c
+  where
+    orBright (Converted c) k | k >= 16 = Kept (Indexed (c + 8))
+    orBright x _ = x
+
+plain :: Colour16 -> Color
+plain = \case
+    Kept c -> c
+    Bright c -> Indexed (c + 8)
+    Converted c -> Indexed c
+
+colourCode :: Layer -> ColourDepth -> Color -> BB.Builder
+colourCode layer depth = \case
+    DefaultColor -> mempty
+    Indexed n
+        | n < 8 -> BB.char8 ';' <> BB.intDec (base + fromIntegral n)
+        | n < 16, depth /= DepthRGB, depth /= Depth256 ->
+            BB.char8 ';' <> BB.intDec (base + 60 + fromIntegral n - 8)
+        | otherwise -> BB.byteString (ext "5;") <> BB.intDec (fromIntegral n)
+    -- Only a 256-colour terminal is left an RGB colour to fit; see
+    -- 'fitColours' for fewer.
+    RGB r g b | depth /= DepthRGB ->
+        BB.byteString (ext "5;") <> BB.intDec (fromIntegral (findRgb r g b))
+    RGB r g b -> BB.byteString (ext "2;")
+        <> BB.intDec (fromIntegral r) <> BB.char8 ';'
+        <> BB.intDec (fromIntegral g) <> BB.char8 ';'
+        <> BB.intDec (fromIntegral b)
+  where
+    (base, ext) = case layer of
+        Fg -> (30, (";38;" <>))
+        Bg -> (40, (";48;" <>))
+
+-- | The nearest colour of the xterm 256 palette (tmux's
+-- @colour_find_rgb@): the 6x6x6 cube or the grey ramp, whichever is closer.
+findRgb :: Word8 -> Word8 -> Word8 -> Word8
+findRgb r8 g8 b8
+    | (cr, cg, cb) == (r, g, b) = cube
+    | dist (grey, grey, grey) < dist (cr, cg, cb) = fromIntegral (232 + greyIdx)
+    | otherwise = cube
+  where
+    (r, g, b) = (fromIntegral r8, fromIntegral g8, fromIntegral b8) :: (Int, Int, Int)
+    to6 v | v < 48 = 0
+          | v < 114 = 1
+          | otherwise = (v - 35) `div` 40
+    q2c i = [0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff] !! i
+    (qr, qg, qb) = (to6 r, to6 g, to6 b)
+    (cr, cg, cb) = (q2c qr, q2c qg, q2c qb)
+    cube = fromIntegral (16 + 36 * qr + 6 * qg + qb)
+    avg = (r + g + b) `div` 3
+    greyIdx = if avg > 238 then 23 else (avg - 3) `div` 10
+    grey = 8 + 10 * greyIdx
+    dist (x, y, z) = (x - r) * (x - r) + (y - g) * (y - g) + (z - b) * (z - b)
+
+-- | The nearest of the 16 colours to a 256-palette one (tmux's
+-- @colour_256to16@).
+colour256to16 :: Word8 -> Word8
+colour256to16 i = table !! fromIntegral i
+  where
+    table =
+        [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+        , 0, 4, 4, 4, 12, 12, 2, 6, 4, 4, 12, 12, 2, 2, 6, 4
+        , 12, 12, 2, 2, 2, 6, 12, 12, 10, 10, 10, 10, 14, 12, 10, 10
+        , 10, 10, 10, 14, 1, 5, 4, 4, 12, 12, 3, 8, 4, 4, 12, 12
+        , 2, 2, 6, 4, 12, 12, 2, 2, 2, 6, 12, 12, 10, 10, 10, 10
+        , 14, 12, 10, 10, 10, 10, 10, 14, 1, 1, 5, 4, 12, 12, 1, 1
+        , 5, 4, 12, 12, 3, 3, 8, 4, 12, 12, 2, 2, 2, 6, 12, 12
+        , 10, 10, 10, 10, 14, 12, 10, 10, 10, 10, 10, 14, 1, 1, 1, 5
+        , 12, 12, 1, 1, 1, 5, 12, 12, 1, 1, 1, 5, 12, 12, 3, 3
+        , 3, 7, 12, 12, 10, 10, 10, 10, 14, 12, 10, 10, 10, 10, 10, 14
+        , 9, 9, 9, 9, 13, 12, 9, 9, 9, 9, 13, 12, 9, 9, 9, 9
+        , 13, 12, 9, 9, 9, 9, 13, 12, 11, 11, 11, 11, 7, 12, 10, 10
+        , 10, 10, 10, 14, 9, 9, 9, 9, 9, 13, 9, 9, 9, 9, 9, 13
+        , 9, 9, 9, 9, 9, 13, 9, 9, 9, 9, 9, 13, 9, 9, 9, 9
+        , 9, 13, 11, 11, 11, 11, 11, 15, 0, 0, 0, 0, 0, 0, 8, 8
+        , 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 15, 15, 15, 15, 15, 15 ]
+
+-- | A window title (tmux's @tty_set_title@): nothing on a terminal
+-- without @tsl@ and @fsl@.
+titleBytes :: Dialect -> Text -> ByteString
+titleBytes d t = case d.title of
+    Just (start, end) -> start <> TE.encodeUtf8 t <> end
+    Nothing -> ""
+
+-- Also enables focus reporting so the outer terminal sends
+-- @\ESC[I@/@\ESC[O@; the server forwards them to panes when
+-- @focus-events@ is on. And bracketed paste, so a paste reaches the pane
+-- whole rather than through the key tables.
+enterAltScreen :: Dialect -> ByteString
+enterAltScreen d = d.altOn <> featuresOn d <> "\ESC[2J\ESC[H"
+
+-- | The modes 'enterAltScreen' turns on besides the alternate screen.
+featuresOn :: Dialect -> ByteString
+featuresOn d = d.focusOn <> d.pasteOn
+
+-- Also resets the cursor colour and style in case a pane's were mirrored
+-- onto the outer terminal, and any mouse tracking the server asked for.
+leaveAltScreen :: Dialect -> ByteString
+leaveAltScreen d = d.mouseOff <> d.pasteOff <> d.focusOff <> d.altOff
+    <> "\ESC[0m\ESC[?25h" <> d.cursorColourReset <> "\ESC[?12l" <> d.cursorStyleReset
 
 -- | Where a lock command runs (tmux's @server_lock_client@): a cleared
 -- alternate screen, its scrollback too, under the terminal's own cursor.

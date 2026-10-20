@@ -46,7 +46,9 @@ setSelection delivery st pane body = do
     setting <- optionText "set-clipboard" <$> readTVarIO st.options
     when (setting /= "off") $ do
         viewers <- atomically (paneViewers st pane)
-        forM_ viewers $ \c -> sendAs delivery c (Notify (selectionBytes body))
+        forM_ viewers $ \c -> do
+            ms <- terminalHas "Ms" c
+            when ms $ sendAs delivery c (Notify (selectionBytes body))
         notifyPane st "pane-set-clipboard" pane []
 
 -- | The clients whose current window holds @pane@.

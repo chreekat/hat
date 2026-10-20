@@ -281,6 +281,17 @@ spec = do
             map (.name) (flushEscape held.escPending)
                 `shouldBe` ["M-]", "5", "2", ";", "c", ";", "S", "G"]
 
+        it "a terminal identifying itself is one token each reply, held until whole" $ do
+            let held = feedKeys EscBuffered [] NoEscPending "\ESC[?62;4c\ESC[>84;0;0c\ESCP>|tmux"
+                whole = feedKeys EscBuffered [] held.escPending " 3.6\ESC\\x"
+            map isIdentification held.escKeys `shouldBe` [True, True]
+            map (.raw) held.escKeys `shouldBe` ["\ESC[?62;4c", "\ESC[>84;0;0c"]
+            map (.raw) whole.escKeys `shouldBe` ["\ESCP>|tmux 3.6\ESC\\", "x"]
+            map isIdentification whole.escKeys `shouldBe` [True, False]
+
+        it "a CSI ? sequence ending other than in c is no identification" $
+            map isIdentification (tokenizeKeys "\ESC[?1u") `shouldBe` [False]
+
         it "flushEscape emits the held ESC as Escape on timeout" $
             map (.name) (flushEscape (EscPending "\ESC")) `shouldBe` ["Escape"]
 

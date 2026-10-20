@@ -31,6 +31,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -75,6 +76,8 @@ import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
 import Hat.Server.View
+import Hat.Term.Caps
+    (appliedFeatures, capList, createTerm, identificationQueries, identify, parseIdentification)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel)
 import Hat.Transport.Wire
@@ -194,7 +197,9 @@ welcome d st re h = do
             -- survives the restart.
             atomically . writeTVar client.sessionHist
                 =<< atomically (resolveSessionNames st h.sessionHist)
-            setupErr <- attachSetup d st client setupCmds
+            setupErr <- openTerminal st client h >>= \case
+                Just e -> pure (Just e)
+                Nothing -> attachSetup d st client setupCmds
             msess <- case setupErr of
                 Just _ -> pure Nothing
                 Nothing -> currentSession st client
@@ -209,9 +214,16 @@ welcome d st re h = do
                     sname <- readTVarIO sess.name
                     applySessionSize st sess.id
                     armLockTimer st sess.id
+                    -- Ahead of the greeting, so the client draws its very
+                    -- first bytes in its terminal's dialect.
+                    mterm <- readTVarIO client.ttyTerm
+                    forM_ mterm $ \t -> when (client.wireLevel >= 11) $
+                        sendMessage conn (OpenedTerminal (capList t) (appliedFeatures t))
                     sendMessage conn (Welcome sname)
                     sendMessage conn (ServerVersion protocolVersion)
                     atomically $ writeTVar client.ready True
+                    forM_ mterm $ \t ->
+                        send client (Notify (TE.encodeUtf8 (identificationQueries t)))
                     logEvent st.logger ClientConnected
                         { client = rawClient client.id, term = h.term }
                     -- Linked: a dying render loop must end the connection
@@ -220,6 +232,20 @@ welcome d st re h = do
                         link a
                         inputLoop d st re client
                             `finally` removeClient st client
+
+-- | Open an attaching client's terminal (tmux's @tty_open@): the
+-- capabilities its hello carried under the server's @terminal-overrides@
+-- and @terminal-features@, and its @COLORTERM@. Returns why it cannot be
+-- opened, if it cannot; a hello without capabilities opens nothing.
+openTerminal :: ServerState -> Client -> Hello -> IO (Maybe Text)
+openTerminal st client h = case h.termCaps of
+    Nothing -> pure Nothing
+    Just raw -> do
+        opts <- readTVarIO st.options
+        case createTerm client.term raw (optionArray "terminal-overrides" opts)
+                (optionArray "terminal-features" opts) (lookup "COLORTERM" h.env) of
+            Left cause -> pure (Just ("open terminal failed: " <> cause))
+            Right t -> Nothing <$ atomically (writeTVar client.ttyTerm (Just t))
 
 -- | Run an attaching client's setup commands, leaving @client.session@
 -- pointing at the session it should render. An empty command list means a
@@ -280,6 +306,7 @@ newClient st conn h = do
     viewportVar <- newTVarIO unpannedViewport
     viewOriginVar <- newIORef (Pos 0 0)
     ttyVar <- newTVarIO TtyStarted
+    ttyTermVar <- newTVarIO Nothing
     created <- getPOSIXTime
     controlState <- case h.intent of
         ControlModeIntent {} -> Just <$> newControlState
@@ -322,7 +349,8 @@ newClient st conn h = do
         , envImport = envImportVar
         , env = h.env
         , cwd = h.cwd
-        , term = h.term
+        , term = if T.null h.term then "unknown" else h.term
+        , ttyTerm = ttyTermVar
         , createdAt = created
         , stdinSource = NoStdin
         , control = controlState
@@ -657,9 +685,27 @@ flushHeldEscape d st client = do
 -- keyboard.
 deliverInput :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
 deliverInput d st client keys = do
-    let (replies, typed) = partition isTerminalReply keys
+    let (replies, keys') = partition isTerminalReply keys
+        (idents, typed) = partition isIdentification keys'
     mapM_ (terminalReplied st client . B.drop 1 . (.raw)) replies
+    mapM_ (identified st client . (.raw)) idents
     deliverKeys d st client typed
+
+-- | A client's terminal identified itself: add the features that reveals
+-- to its terminal, and if that changes it, send the client the new one
+-- and redraw it in full (tmux's @tty_update_features@).
+identified :: ServerState -> Client -> ByteString -> IO ()
+identified st client raw = forM_ (parseIdentification (TE.decodeUtf8Lenient raw)) $ \ident -> do
+    overrides <- optionArray "terminal-overrides" <$> readTVarIO st.options
+    changed <- atomically $ readTVar client.ttyTerm >>= \case
+        Just t | t' <- identify overrides ident t, t' /= t -> do
+            writeTVar client.ttyTerm (Just t')
+            writeTVar client.needsFull True
+            bumpDirty st
+            pure (Just t')
+        _ -> pure Nothing
+    forM_ changed $ \t -> when (client.wireLevel >= 11) $
+        send client (OpenedTerminal (capList t) (appliedFeatures t))
 
 -- | A client's terminal replied to a query forwarded for a pane: the pane
 -- that asked gets its answer — a clipboard's only under @get-clipboard@

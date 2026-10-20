@@ -2,7 +2,6 @@
 # One per line. When a script starts passing, the runner exits
 # nonzero (XPASS) until its line is removed - keep this list honest.
 # Baseline recorded 2026-07-08: everything fails (CLI compat is young).
-am-terminal.sh                  # terminal-overrides option unimplemented
 border-arrows.sh                # wontfix: hat deliberately draws triangle indicators, not tmux's ACS arrows
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
 check-names.sh                  # invalid UTF-8 in argv is lossily decoded before the server can reject it (wire carries Text)
@@ -20,7 +19,6 @@ cursor-test2.sh
 cursor-test4.sh
 prompt-keys.sh                  # choose-tree as a tree-mode pane mode with its search prompt (#{pane_mode} = tree-mode)
 prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; choose-tree tree-mode search/filter prompts; -1/-N/-i/-k/-e prompt flags
-screen-redraw-bidi.sh           # terminal-overrides unimplemented, and the client has no terminfo capabilities (Bidi) to wrap spans in isolates
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
 tty-draw-line.sh                # resize-window sizes the whole session, not one window, so later windows keep its width; a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused)
@@ -47,9 +45,9 @@ mode-mutation.sh                # needs client attach tracking + choose-client/c
 
 # formats: remaining gaps sit outside the modifier engine
 format-render-contexts.sh       # choose-tree -F (tree mode) and customize-mode contexts, awaiting the mode-stack decision; the rest passes
-format-variables.sh             # #{I/c:...}: hat's client has no terminfo capability model (a terminfo reader is a new dependency)
 
 # option engine breadth: flat scalar table, global-only read-back
+format-variables.sh             # #{version} is the bare number but hat -V says "hat X", so the script's sed 's/^tmux //' leaves "hat 0.0.1" to compare against
 options-values.sh               # needs default-client-command (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that

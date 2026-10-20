@@ -1812,6 +1812,14 @@ spec = parallel $ do
         code `shouldBe` ExitFailure 1
         err `shouldSatisfy` List.isInfixOf "not a terminal"
 
+    it "refuses a TERM terminfo does not know, as tmux does" $
+        withHat hatBin $ \h -> do
+        c <- startClientEnv h [("TERM", "hat-no-such-terminal")] []
+        status <- awaitExit c
+        t <- readIORef c.transcript
+        status `shouldBe` Exited (ExitFailure 1)
+        t `shouldSatisfy` B8.isInfixOf "missing or unsuitable terminal: hat-no-such-terminal"
+
     it "runs cat: line-buffered echo, not doubled" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -2155,7 +2163,8 @@ attachUnread h = do
     W.sendMessage sock $ W.ClientHello W.Hello
         { protoVersion = W.protocolVersion, term = "xterm", env = []
         , size = Size { rows = 24, cols = 80 }, cwd = T.pack h.home
-        , intent = W.AttachIntent [], autostarted = False, sessionHist = [] }
+        , intent = W.AttachIntent [], autostarted = False, sessionHist = []
+        , termCaps = Nothing }
     re <- W.newReadEnd sock
     W.recvMessage re >>= \case
         Just (W.Known (W.Welcome _)) -> pure re

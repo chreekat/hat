@@ -61,6 +61,7 @@ mkClient sz lastFrame = do
     viewportV <- newTVarIO unpannedViewport
     viewOriginV <- newIORef (Pos 0 0)
     ttyV <- newTVarIO TtyStarted
+    termV <- newTVarIO Nothing
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a
             , wireLevel = protocolVersion, outbound = outboundQ, size = sizeV
@@ -76,7 +77,7 @@ mkClient sz lastFrame = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , picker = pickV, popup = popupV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
-            , env = [], cwd = "", term = "", createdAt = 0
+            , env = [], cwd = "", term = "", ttyTerm = termV, createdAt = 0
             , stdinSource = NoStdin, control = Nothing
             , viewport = viewportV, lastViewOrigin = viewOriginV
             , ttyState = ttyV }

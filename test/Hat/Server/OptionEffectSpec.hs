@@ -130,7 +130,7 @@ spec = do
                     , active = Just (PaneId 1), marked = Nothing, numbers = Map.empty
                     , paneLines = Map.empty
                     , fillInside = Cell.blankCell, fillOutside = Cell.blankCell
-                    , arrows = ind, menuCells = mempty }
+                    , arrows = ind, menuCells = mempty, isolates = False }
                 styleAt p = (.style) <$> lookup p (sceneChrome (look Map.empty) (buildScene input))
             it "a border beside the active pane takes its style" $
                 styleAt (Pos { row = 1, col = 4 }) `shouldBe` Just activeSty
