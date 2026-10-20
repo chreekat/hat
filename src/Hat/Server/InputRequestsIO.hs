@@ -48,7 +48,11 @@ askTerminal st pane a term = do
         forM_ mc $ \c -> modifyTVar' st.inputRequests (ask now pane.id c.id a term)
         pure mc
     -- See Note [Falling behind]
-    forM_ mc $ \c -> send c (Notify (queryBytes a))
+    forM_ mc $ \c -> do
+        can <- case a of
+            AskClipboard -> terminalHas "Ms" c
+            AskPalette _ -> pure True
+        when can $ send c (Notify (queryBytes a))
 
 -- | The query a terminal is asked: tmux's own spellings.
 queryBytes :: Asked -> ByteString

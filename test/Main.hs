@@ -9,6 +9,7 @@ import Hat.Bench.ReportSpec qualified
 import Hat.Bench.ResidencySpec qualified
 import Hat.Bench.RtsStatsSpec qualified
 import Hat.Client.DrawSpec qualified
+import Hat.Client.TerminfoSpec qualified
 import Hat.Client.TtySpec qualified
 import Hat.Command.ParserSpec qualified
 import Hat.DebugSpec qualified
@@ -75,6 +76,7 @@ import Hat.Server.TitleSpec qualified
 import Hat.Server.ViewportSpec qualified
 import Hat.Server.ListKeysSpec qualified
 import Hat.Transport.SocketSpec qualified
+import Hat.Term.CapsSpec qualified
 import Hat.Term.EmulatorSpec qualified
 import Hat.Term.Emulator.HistorySpec qualified
 import Hat.Term.GoldenSpec qualified
@@ -107,6 +109,7 @@ main = hspec $ parallel $ do
     describe "Hat.Transport.Socket" Hat.Transport.SocketSpec.spec
     describe "Hat.Term.Pty" Hat.Term.PtySpec.spec
     describe "Hat.Server.Persist" Hat.Server.PersistSpec.spec
+    describe "Hat.Term.Caps" Hat.Term.CapsSpec.spec
     describe "Hat.Term.Emulator" Hat.Term.EmulatorSpec.spec
     describe "Hat.Term.Emulator.History" Hat.Term.Emulator.HistorySpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
@@ -118,6 +121,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Scrollbars" Hat.Server.ScrollbarsSpec.spec
     describe "Hat.Server.Theme" Hat.Server.ThemeSpec.spec
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
+    describe "Hat.Client.Terminfo" Hat.Client.TerminfoSpec.spec
     describe "Hat.Client.Tty" Hat.Client.TtySpec.spec
     describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec
     describe "Hat.Server.Session" Hat.Server.SessionSpec.spec

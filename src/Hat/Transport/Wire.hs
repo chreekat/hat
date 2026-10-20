@@ -91,7 +91,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 10
+protocolVersion = 11
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -177,6 +177,11 @@ data Hello = Hello
                               --   carries across a restart; absent in a
                               --   seven-field hello -> @[]@. See
                               --   'Hat.Server.Conn.newClient'.
+    , termCaps     :: Maybe [Text]
+        -- ^ the terminfo capabilities read for @term@, as
+        --   'Hat.Client.Terminfo.readTermCaps' lists them (@[]@ when the
+        --   client has no terminal or no @TERM@); 'Nothing' from an
+        --   eight-field hello, whose client predates them.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -223,6 +228,11 @@ data ServerToClient
     | LockClient Text
         -- ^ hand the terminal to this shell command (@lock-command@), then
         --   answer 'LockDone' once it exits (level 10 and up)
+    | OpenedTerminal [Text] [Text]
+        -- ^ the terminal the server opened for an attaching client: its
+        --   capabilities and applied features, as 'Hat.Term.Caps.capList'
+        --   and 'Hat.Term.Caps.featureName' give them. Sent ahead of
+        --   'Welcome', so only to a level-11-and-up peer.
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -302,6 +312,7 @@ instance WireMessage ClientToServer where
 --   WriteStdout   = 14
 --   ControlExit   = 15
 --   LockClient    = 16
+--   OpenedTerminal = 17
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -327,6 +338,8 @@ instance WireMessage ServerToClient where
                     AwaitEmptyLine -> 1)
                 <> encode status
         LockClient cmd -> encodeListLen 2 <> encodeWord 16 <> encode cmd
+        OpenedTerminal caps feats ->
+            encodeListLen 3 <> encodeWord 17 <> encode caps <> encode feats
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -360,6 +373,10 @@ instance WireMessage ServerToClient where
             _ -> pure (Malformed
                 ("ControlExit: expected 3 fields, got " <> show (len - 1)))
         16 -> field len (Known . LockClient <$> decode)
+        17 -> case len of
+            3 -> Known <$> (OpenedTerminal <$> decode <*> decode)
+            _ -> pure (Malformed
+                ("OpenedTerminal: expected 2 fields, got " <> show (len - 1)))
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -376,7 +393,7 @@ nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 -- >= 6 and ignores extras, so fields can be appended compatibly.
 encodeHello :: Hello -> Encoding
 encodeHello h =
-       encodeListLen 8
+       encodeListLen (maybe 8 (const 9) h.termCaps)
     <> encodeWord16 h.protoVersion
     <> encode h.term
     <> encode h.env
@@ -385,6 +402,7 @@ encodeHello h =
     <> encode h.intent
     <> encode h.autostarted
     <> encode h.sessionHist
+    <> foldMap encode h.termCaps
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -403,7 +421,8 @@ decodeHello = do
                 -- absent; any the decoder doesn't know yet are skipped.
                 <*> (if n >= 7 then decode else pure False)
                 <*> (if n >= 8 then decode else pure [])
-            replicateM_ (max 0 (n - 8)) skipField
+                <*> (if n >= 9 then Just <$> decode else pure Nothing)
+            replicateM_ (max 0 (n - 9)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).

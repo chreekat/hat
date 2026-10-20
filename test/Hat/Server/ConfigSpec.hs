@@ -35,7 +35,7 @@ commandClient st = do
     (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
     c <- newClient st server Hello
         { protoVersion = protocolVersion, term = "", env = [], size = Size 24 80
-        , cwd = "/", intent = ControlIntent, autostarted = False, sessionHist = [] }
+        , cwd = "/", intent = ControlIntent, autostarted = False, sessionHist = [], termCaps = Nothing }
     pure (c, peer)
 
 spec :: Spec

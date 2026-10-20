@@ -70,6 +70,7 @@ import Hat.Server.Mouse qualified as Mouse
 import Hat.Server.FormatDraw (DrawRange)
 import Hat.Server.Status
     (StatusTexts (..), drawStatus, statusFormats, statusRanges, statusRows, statusTexts)
+import Hat.Term.Caps (hasCap)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel, terminalCursor, terminalCursorBytes)
@@ -393,7 +394,8 @@ renderOnce st client = do
             pure (cursorColourOf th app popts.cursorColour)
         _ -> pure Nothing
     oldColour <- readIORef client.lastCursorColour
-    when (colour /= oldColour) $ do
+    colourCaps <- terminalHas (maybe "Cr" (const "Cs") colour) client
+    when (colour /= oldColour && colourCaps) $ do
         writeIORef client.lastCursorColour colour
         -- See Note [Falling behind]
         sendAs (Superseding CursorColourSlot) client $ Notify $ case colour of
@@ -417,7 +419,8 @@ renderOnce st client = do
                 else terminalCursor popts.cursorStyle <$> Emu.appCursor pane.emulator
         _ -> pure defaultCursorModel
     oldShape <- readIORef client.lastCursorShape
-    when (shape /= oldShape) $ do
+    styleCaps <- terminalHas "Ss" client
+    when (shape /= oldShape && styleCaps) $ do
         writeIORef client.lastCursorShape shape
         -- See Note [Falling behind]
         sendAs (Superseding CursorShapeSlot) client (Notify (terminalCursorBytes shape))
@@ -510,7 +513,8 @@ syncMouseMode st client view = do
             pure $ Mouse.outerMouseMode o.mouseEnabled (wantsMotion o)
                 (fromMaybe 0 (List.lookup active tracking)) (map snd tracking)
     old <- readIORef client.lastMouseMode
-    when (want /= old) $ do
+    mouseCaps <- terminalHas "kmous" client
+    when (want /= old && mouseCaps) $ do
         writeIORef client.lastMouseMode want
         -- See Note [Falling behind]
         send client (Notify (Mouse.mouseModeBytes want))
@@ -572,7 +576,8 @@ cachedChrome st expand th client sess win eff sceneArea rects floats defaults pa
         else forM panes $ \cp -> (,) cp.pane.id <$> paneStyleOption st expand th sess win cp.pane
             (if cp.pane.id == active then cp.options.paneActiveBorderStyle
              else cp.options.paneBorderStyle)
-    let look0 = look1 { paneStyles = Map.fromList styles }
+    isolates <- maybe False (hasCap "Bidi") <$> readTVarIO client.ttyTerm
+    let look0 = look1 { paneStyles = Map.fromList styles, isolates }
     look <- withStatusLines expand th sess win scene kinds panes look0
         >>= withFills st expand th sess win kinds
         >>= withMenu st expand th sess win mmenu
@@ -673,7 +678,8 @@ chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts overlay
             , arrows = if useArrows
                 then maybe Map.empty edgeArrows (List.lookup active rects)
                 else Map.empty
-            , menuCells = V.empty }
+            , menuCells = V.empty
+            , isolates = False }
     pure (input, look, panes)
   where
     menuRect wm = Rect

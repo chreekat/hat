@@ -34,7 +34,7 @@ plainLook = ChromeLook
     , paneLines = Map.empty, lineSets = Map.empty
     , fillInside = Cell.glyphCell ' ' Cell.defaultStyle
     , fillOutside = Cell.glyphCell '~' Cell.defaultStyle
-    , arrows = Map.empty, menuCells = V.empty }
+    , arrows = Map.empty, menuCells = V.empty, isolates = False }
 
 rect :: Int -> Int -> Int -> Int -> Rect
 rect r0 r1 c0 c1 = Rect { startRow = r0, endRow = r1, startCol = c0, endCol = c1 }
@@ -78,6 +78,11 @@ spec = do
             [ (off, ct) | SceneStatus (PaneId 1) off ct <- V.toList (scene V.! 0) ]
                 `shouldBe` [ (0, CellLR) ]
             picture plainLook scene !! 0 `shouldBe` "───┬───"
+    describe "bidi isolates" $
+        it "close before and open after each vertical border run" $ do
+            let chrome = sceneChrome plainLook { isolates = True } (buildScene cross)
+            map Cell.cluster [ c | (Pos 0 3, c) <- chrome ] `shouldBe` ["\x2069\x2502\x2066"]
+            map Cell.cluster [ c | (Pos 2 3, c) <- chrome ] `shouldBe` ["\x253c"]
     describe "the window's menu" $
         it "covers every pane, border and floating pane under its box, clipped to the window" $ do
             let float = FloatingPane

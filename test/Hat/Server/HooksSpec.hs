@@ -313,6 +313,7 @@ fakeClient _ = do
     viewportV <- newTVarIO unpannedViewport
     viewOriginV <- newIORef (Pos 0 0)
     ttyV <- newTVarIO TtyStarted
+    termV <- newTVarIO Nothing
     pure Client
         { id = ClientId 0
         , role = Control
@@ -346,7 +347,7 @@ fakeClient _ = do
         , envImport = envImportVar
         , env = []
         , cwd = "/"
-        , term = ""
+        , term = "", ttyTerm = termV
         , createdAt = 0
         , stdinSource = NoStdin
         , control = Nothing

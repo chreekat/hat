@@ -95,6 +95,7 @@ import Hat.Version (versionText)
 import Hat.Server.Wanted
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
+import Hat.Term.Caps (TtyTerm (..), clientColourCount, featureNames)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -1207,6 +1208,7 @@ clientFormatVars st c = do
             <*> traverse (readTVar . (.name))
                 (listToMaybe (mapMaybe (`Map.lookup` ss) hist))
     ks <- readIORef c.keyState
+    mterm <- readTVarIO c.ttyTerm
     opts <- clientOptions st c
     (mpid, muid, _) <- getPeerCredential c.sock
         `Control.Exception.catch` \(_ :: IOException) -> pure (Nothing, Nothing, Nothing)
@@ -1220,7 +1222,7 @@ clientFormatVars st c = do
         flags = ["attached"] <> [ "focused" | focused ] <> controlFlags <> ["UTF-8"]
     pure $
         [ ("client_name", clientName c)
-        , ("client_colours", clientColours)
+        , ("client_colours", maybe "" (tshow . clientColourCount) mterm)
         , ("client_control_mode", flag (isJust c.control))
         , ("client_flags", T.intercalate "," flags)
         , ("client_key_table", table)
@@ -1228,9 +1230,8 @@ clientFormatVars st c = do
         , ("client_readonly", "0")
         , ("client_utf8", "1")
         , ("client_termname", c.term)
-        , ("client_termtype", "")
-        , ("client_termfeatures"
-          , if isJust c.control then "" else T.intercalate "," termFeatures)
+        , ("client_termtype", maybe "" (.termType) mterm)
+        , ("client_termfeatures", maybe "" featureNames mterm)
         , ("client_width", tshow sz.cols)
         , ("client_created", tshow (floor c.createdAt :: Integer))
         ]
@@ -1248,16 +1249,10 @@ clientQueries st env = case Map.lookup "client_name" env of
     Nothing -> pure Nothing
     Just n -> do
         cs <- Map.elems <$> readTVarIO st.clients
+        terms <- mapM (\c -> (c,) <$> readTVarIO c.ttyTerm) cs
         pure $ listToMaybe
-            [ ClientQueries { environ = Map.fromList c.env, features = termFeatures }
-            | c <- cs, clientName c == n, c.role == Attached, isNothing c.control ]
-
--- | The terminal features (tmux's names, in its order) hat's client draws
--- with on every terminal: see "Hat.Client.Draw".
-termFeatures :: [Text]
-termFeatures =
-    [ "256", "bpaste", "ccolour", "clipboard", "cstyle", "focus", "mouse", "RGB"
-    , "strikethrough", "sync", "title" ]
+            [ ClientQueries { environ = Map.fromList c.env, term }
+            | (c, Just term) <- terms, clientName c == n, c.role == Attached ]
 
 -- The target pane's visible lines, for the C search modifier.
 targetPaneLines :: ServerState -> FormatEnv -> IO [Text]
