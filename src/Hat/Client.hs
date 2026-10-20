@@ -102,7 +102,7 @@ withHello v origin intent hist refuse body = do
         Left e -> pure (refuse e)
         Right caps -> body $ ClientHello Hello
             { protoVersion = v
-            , term = maybe "xterm" T.pack mterm
+            , term = maybe "" T.pack mterm
             , env = [(T.pack k, T.pack v') | (k, v') <- env0]
             , size = sz
             , cwd = T.pack dir

@@ -74,6 +74,7 @@ import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
 import Hat.Server.View
+import Hat.Term.Caps (createTerm)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel)
 import Hat.Transport.Wire
@@ -193,7 +194,9 @@ welcome d st re h = do
             -- survives the restart.
             atomically . writeTVar client.sessionHist
                 =<< atomically (resolveSessionNames st h.sessionHist)
-            setupErr <- attachSetup d st client setupCmds
+            setupErr <- openTerminal st client h >>= \case
+                Just e -> pure (Just e)
+                Nothing -> attachSetup d st client setupCmds
             msess <- case setupErr of
                 Just _ -> pure Nothing
                 Nothing -> currentSession st client
@@ -219,6 +222,20 @@ welcome d st re h = do
                         link a
                         inputLoop d st re client
                             `finally` removeClient st client
+
+-- | Open an attaching client's terminal (tmux's @tty_open@): the
+-- capabilities its hello carried under the server's @terminal-overrides@
+-- and @terminal-features@, and its @COLORTERM@. Returns why it cannot be
+-- opened, if it cannot; a hello without capabilities opens nothing.
+openTerminal :: ServerState -> Client -> Hello -> IO (Maybe Text)
+openTerminal st client h = case h.termCaps of
+    Nothing -> pure Nothing
+    Just raw -> do
+        opts <- readTVarIO st.options
+        case createTerm client.term raw (optionArray "terminal-overrides" opts)
+                (optionArray "terminal-features" opts) (lookup "COLORTERM" h.env) of
+            Left cause -> pure (Just ("open terminal failed: " <> cause))
+            Right t -> Nothing <$ atomically (writeTVar client.ttyTerm (Just t))
 
 -- | Run an attaching client's setup commands, leaving @client.session@
 -- pointing at the session it should render. An empty command list means a
@@ -279,6 +296,7 @@ newClient st conn h = do
     viewportVar <- newTVarIO unpannedViewport
     viewOriginVar <- newIORef (Pos 0 0)
     ttyVar <- newTVarIO TtyStarted
+    ttyTermVar <- newTVarIO Nothing
     created <- getPOSIXTime
     controlState <- case h.intent of
         ControlModeIntent {} -> Just <$> newControlState
@@ -321,7 +339,8 @@ newClient st conn h = do
         , envImport = envImportVar
         , env = h.env
         , cwd = h.cwd
-        , term = h.term
+        , term = if T.null h.term then "unknown" else h.term
+        , ttyTerm = ttyTermVar
         , createdAt = created
         , stdinSource = NoStdin
         , control = controlState

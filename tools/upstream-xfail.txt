@@ -47,7 +47,6 @@ mode-mutation.sh                # needs client attach tracking + choose-client/c
 
 # formats: remaining gaps sit outside the modifier engine
 format-render-contexts.sh       # choose-tree -F (tree mode) and customize-mode contexts, awaiting the mode-stack decision; the rest passes
-format-variables.sh             # #{I/c:...}: hat's client has no terminfo capability model (a terminfo reader is a new dependency)
 
 # option engine breadth: flat scalar table, global-only read-back
 options-values.sh               # needs default-client-command (not yet live)

@@ -203,6 +203,7 @@ addClient st sid sz stamp = do
         <*> pure []
         <*> pure ""
         <*> pure ""  -- term
+        <*> newTVarIO Nothing  -- ttyTerm
         <*> pure 0   -- createdAt
         <*> pure NoStdin
         <*> pure Nothing
@@ -254,6 +255,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure clientEnv
         <*> pure ""
         <*> pure ""  -- term
+        <*> newTVarIO Nothing  -- ttyTerm
         <*> pure 0   -- createdAt
         <*> pure NoStdin
         <*> pure Nothing

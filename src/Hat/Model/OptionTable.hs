@@ -454,8 +454,8 @@ optionTable =
     , live $ scalar "prompt-history-limit" ServerScope (KNumber 0 intMax) "100"
     , live $ scalar "set-clipboard" ServerScope
         (KChoice ["off", "external", "on"]) "external"
-    , notYet $ arrayOf "terminal-overrides" ServerScope KString "," ["linux*:AX@"]
-    , notYet $ arrayOf "terminal-features" ServerScope KString ","
+    , live $ arrayOf "terminal-overrides" ServerScope KString "," ["linux*:AX@"]
+    , live $ arrayOf "terminal-features" ServerScope KString ","
         [ "xterm*:clipboard:ccolour:cstyle:focus:title", "screen*:title"
         , "rxvt*:ignorefkeys" ]
     , live $ scalar "theme" ServerScope

@@ -58,6 +58,7 @@ import Hat.Colour (colourFromText, colourToEscape, colourToHex)
 import Hat.Server.Format.Fuzzy (fuzzyMatch)
 import Hat.Server.FormatDraw (formatTrimLeft, formatTrimRight, formatWidth)
 import Hat.Server.Theme (Theme, terminalTheme)
+import Hat.Term.Caps (TtyTerm, featurePresent, hasCap)
 import Hat.TextWidth (textWidth)
 
 type FormatEnv = Map Text Text
@@ -88,7 +89,7 @@ data FormatCtx = FormatCtx
 -- | What @I@ asks of a terminal client.
 data ClientQueries = ClientQueries
     { environ  :: Map Text Text  -- ^ @I/e@
-    , features :: [Text]         -- ^ @I/f@: tmux's names for its terminal features
+    , term     :: TtyTerm        -- ^ @I/c@ and @I/f@
     }
 
 -- | An expansion looked up a variable its environment was not built for
@@ -645,9 +646,10 @@ replaceKey ctx depth key = postOps <$> value
     clientVal which = case ctx.client of
         Nothing -> ""
         Just cq -> last $ ""
-            : [ "<format modifier 'I/c' unimplemented>" | T.elem 'c' which ]
-            <> [ if copy `elem` cq.features then "1" else "0" | T.elem 'f' which ]
+            : [ flag (hasCap copy cq.term) | T.elem 'c' which ]
+            <> [ flag (featurePresent copy cq.term) | T.elem 'f' which ]
             <> [ Map.findWithDefault "" copy cq.environ | T.elem 'e' which ]
+    flag b = if b then "1" else "0" :: Text
     cycleVal periods
         | ctx.animate == NoAnimate || T.null copy = ""
         | otherwise =

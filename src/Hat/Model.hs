@@ -158,6 +158,7 @@ import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeKind, ChromeLook, Scene, SceneInput)
 import Hat.Server.Wanted (WantedNames)
 import Hat.Transport.Wire (Autostart)
+import Hat.Term.Caps (TtyTerm)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (CursorModel)
@@ -907,6 +908,10 @@ data Client = Client
     , env       :: [(Text, Text)]
     , cwd       :: Text
     , term      :: Text  -- ^ the client's @TERM@, from its hello
+    , ttyTerm   :: TVar (Maybe TtyTerm)
+        -- ^ its terminal once opened at attach (tmux's @tty.term@);
+        --   'Nothing' for a control client, or one whose hello carried no
+        --   capabilities
     , createdAt :: POSIXTime
     , stdinSource :: StdinSource
     , control   :: Maybe ControlState
