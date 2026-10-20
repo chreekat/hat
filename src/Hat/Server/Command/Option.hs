@@ -26,10 +26,16 @@ module Hat.Server.Command.Option
     , refreshGlobalOptions
     , statusRefreshInterval
     , applyHistoryLimit
+    , Scope (..)
+    , ownValue
+    , hookScopeOf
+    , hookEntryValue
+    , assignOption
+    , removeOption
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
@@ -334,6 +340,48 @@ runSet cmd st mclient args = do
                                             writeOption st sc n
                                                 (\own eff -> planSet mdef req' spelled
                                                     mkey own eff mvalue')
+
+-- | Assign a value to an option (or one array item of it) in one table's
+-- option or hook store, as customize-mode's prompts do (tmux's
+-- @options_from_string@ and @options_array_set@): checked as @set-option@
+-- checks it, a hat-unimplemented option refused.
+assignOption
+    :: ServerState -> Scope -> OptionRole -> Text -> Maybe ArrayKey -> Text
+    -> IO (Either Text ())
+assignOption st sc role n mkey v =
+    changeOption st sc role n mkey (SetRequest Assign SetValue OverwriteAny Loud) (Just v)
+
+-- | Remove an option (or one array item of it) from one table's option or
+-- hook store; a global table's registered option goes back to its default
+-- (tmux's @options_remove_or_default@).
+removeOption :: ServerState -> Scope -> OptionRole -> Text -> Maybe ArrayKey -> IO ()
+removeOption st sc role n mkey = void $
+    changeOption st sc role n mkey (SetRequest Assign UnsetValue OverwriteAny Loud) Nothing
+
+changeOption
+    :: ServerState -> Scope -> OptionRole -> Text -> Maybe ArrayKey -> SetRequest
+    -> Maybe Text -> IO (Either Text ())
+changeOption st sc role n mkey req mvalue =
+    case mapM_ requireLive mdef >> paneValuesFor role of
+        Left e -> pure (Left e)
+        Right () -> firstError <$> case role of
+            HookOption -> case hookScopeOf sc of
+                Nothing -> pure [RErr ("no hooks at this scope: " <> n)]
+                Just hs -> writeHook st hs n mdef (\own -> plan own own mvalue)
+            PlainOption -> do
+                checked <- checkValue st sc n req mvalue
+                case checked of
+                    Left e -> pure [RErr e]
+                    Right (req', mvalue') ->
+                        writeOption st sc n (\own eff -> planSet mdef req' spelled mkey own eff mvalue')
+  where
+    mdef = lookupOptionDef n
+    spelled = n <> maybe "" (\k -> "[" <> arrayKeyText k <> "]") mkey
+    plan own eff = planSet mdef req spelled mkey own eff
+    paneValuesFor = \case
+        PlainOption -> requirePaneValues sc mdef
+        HookOption -> Right ()
+    firstError rs = maybe (Right ()) Left (listToMaybe [ e | RErr e <- rs ])
 
 -- | Assign a registered option on one pane, as a command whose flags set pane
 -- options does (tmux's @options_set_string@ on @wp->options@): the value is

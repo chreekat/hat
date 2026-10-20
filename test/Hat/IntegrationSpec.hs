@@ -938,6 +938,25 @@ spec = parallel $ do
         awaitTrue "the move table's binding to run" $
             (== "yes\n") <$> ctlOut h ["show", "-gv", "@moved"]
 
+    it "adds a user option from customize-mode's Server Options, then edits it in the editor" $
+        withHat hatBin $ \h -> do
+        let editor = h.home <> "/editor.sh"
+        writeExecutable editor "#!/bin/sh\nprintf edited > \"$1\"\n"
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "editor", editor]
+        _ <- hatCtl h ["customize-mode"]
+        awaitScreen c "Server Options"
+        ctlOut h ["display", "-p", "#{pane_mode}"] `shouldReturn` "options-mode\n"
+        typeInto c "\r"
+        awaitScreen c "New user option: @"
+        typeInto c "cm added\r"
+        awaitTrue "the option to be set" $
+            (== "added\n") <$> ctlOut h ["show", "-sv", "@cm"]
+        typeInto c "lje"
+        awaitTrue "the editor's text to become the value" $
+            (== "edited\n") <$> ctlOut h ["show", "-sv", "@cm"]
+
     it "edits a buffer from choose-buffer in the editor option's program" $
         withHat hatBin $ \h -> do
         let editor = h.home <> "/editor.sh"

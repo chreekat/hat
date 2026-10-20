@@ -95,7 +95,7 @@ import Hat.Glob (globPaths)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd, viewToClient)
 import Hat.Server.Keys
 import Hat.Server.PaneMode (dropModesForReload)
-import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree)
+import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree, cmdCustomizeMode)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Locate
 import Hat.Server.Format (FormatEnv)
@@ -472,6 +472,7 @@ commandSpecs =
     , (["choose-tree"], cmdChooseTree)
     , (["choose-buffer"], cmdChooseBuffer)
     , (["choose-client"], cmdChooseClient)
+    , (["customize-mode"], cmdCustomizeMode)
     , (["display-panes", "displayp"], cmdDisplayPanes)
     , (["display-menu", "menu"], cmdDisplayMenu)
     , (["display-popup", "popup"], cmdDisplayPopup)

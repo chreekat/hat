@@ -3,6 +3,8 @@
 module Hat.Server.Command.ListKeys
     ( cmdListKeys
     , printCommands
+    , printCommand
+    , inKeyOrder
     , keyCode
     ) where
 

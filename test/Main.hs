@@ -51,6 +51,7 @@ import Hat.Server.OptionsSpec qualified
 import Hat.Server.PaneCommandSpec qualified
 import Hat.Server.PaneModeSpec qualified
 import Hat.Server.ModeTreeSpec qualified
+import Hat.Server.CustomizeSpec qualified
 import Hat.Server.PaneReaderSpec qualified
 import Hat.Server.PopupSpec qualified
 import Hat.Server.PromptSpec qualified
@@ -134,6 +135,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.PaneCommand" Hat.Server.PaneCommandSpec.spec
     describe "Hat.Server.PaneMode" Hat.Server.PaneModeSpec.spec
     describe "Hat.Server.ModeTree" Hat.Server.ModeTreeSpec.spec
+    describe "Hat.Server.Customize" Hat.Server.CustomizeSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Alerts" Hat.Server.AlertsSpec.spec

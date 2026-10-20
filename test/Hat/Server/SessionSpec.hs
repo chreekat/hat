@@ -350,7 +350,8 @@ treeAt pid = TreeState
     , tagged = [], current = Nothing, currentIx = 0, offset = 0
     , modePrompt = Nothing, search = Nothing, hidePane = Nothing
     , groups = SquashGroups, confirm = AskBeforeKill, zoom = ModeLeftZoom
-    , showHelp = False, editor = Nothing
+    , showHelp = False, editor = Nothing, itemsShown = AllItems
+    , globalsShown = GlobalsShown
     }
 
 -- | A frozen grid row's text, trailing blanks trimmed.

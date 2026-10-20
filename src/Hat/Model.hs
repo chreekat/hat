@@ -62,6 +62,18 @@ module Hat.Model
     , KillConfirm (..)
     , ModeZoom (..)
     , EditorWait (..)
+    , ItemsShown (..)
+    , GlobalsShown (..)
+    , CustomizeGroup (..)
+    , KeyPart (..)
+    , OptionTableRef (..)
+    , OptionFamily (..)
+    , OptionTarget (..)
+    , EnvScopeRef (..)
+    , EnvTarget (..)
+    , KeyTarget (..)
+    , ItemChange (..)
+    , ChangeReach (..)
     , TreePrompt (..)
     , TreePromptUse (..)
     , PromptEntry (..)
@@ -153,13 +165,14 @@ import Hat.Path (findHome)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( ModeKeys, Options, applyDelta, defaultOptions, resolveOptions )
+import Hat.Model.OptionTable (ArrayKey)
 import Hat.Model.OwnOptions
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.Theme (Theme)
 import Hat.Server.ControlTypes (ControlState)
 import Hat.Server.Outbound (Outbound)
 import Hat.Server.HookTypes (HooksState, newHooksState)
-import Hat.Server.Environ (Environ, emptyEnviron)
+import Hat.Server.Environ (Environ, EnvVisibility, emptyEnviron)
 import Hat.Server.InputRequests (InputRequests, noRequests)
 import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
@@ -534,6 +547,7 @@ modeName = \case
         SessionTree -> "tree-mode"
         BufferList -> "buffer-mode"
         ClientList -> "client-mode"
+        OptionTree -> "options-mode"
 
 -- | One entry of a pane's mode stack.
 data ModeEntry = ModeEntry
@@ -584,6 +598,8 @@ data TreeState = TreeState
     , showHelp   :: !Bool             -- ^ the key help is drawn over the list
     , editor     :: !(Maybe EditorWait)
         -- ^ the editor the mode's @e@ opened, while it runs
+    , itemsShown :: !ItemsShown       -- ^ customize-mode's @C@
+    , globalsShown :: !GlobalsShown   -- ^ customize-mode's @H@
     }
     deriving (Eq, Show)
 
@@ -592,6 +608,9 @@ data TreeKind
     = SessionTree  -- ^ @tree-mode@: sessions, windows, panes (choose-tree)
     | BufferList   -- ^ @buffer-mode@: paste buffers (choose-buffer)
     | ClientList   -- ^ @client-mode@: attached clients (choose-client)
+    | OptionTree
+        -- ^ @options-mode@: options, hooks, environments and key bindings
+        --   (customize-mode)
     deriving (Eq, Show)
 
 -- | The target a tree mode was entered with (tmux keeps it as a
@@ -610,7 +629,85 @@ data TreeTag
     | TagPane !PaneId
     | TagBuffer !Int     -- ^ the buffer's order stamp, stable across renames
     | TagClient !ClientId
+    | TagGroup !CustomizeGroup          -- ^ a customize-mode group heading
+    | TagOption !CustomizeGroup !Text !(Maybe ArrayKey)
+        -- ^ an option or hook as the group lists it, or one of its array items
+    | TagEnvironment !CustomizeGroup !Text
+    | TagKeyTable !Text
+    | TagKey !Text !Text                -- ^ a binding: its table and key
+    | TagKeyPart !Text !Text !KeyPart
     deriving (Eq, Ord, Show)
+
+-- | customize-mode's groups (tmux's top-level items), in its order.
+data CustomizeGroup
+    = ServerOptions | SessionOptions | WindowPaneOptions
+    | SessionHooks | WindowPaneHooks
+    | GlobalEnvironment | SessionEnvironment
+    deriving (Eq, Ord, Show, Enum, Bounded)
+
+-- | The lines customize-mode lists under a key binding.
+data KeyPart = KeyCommand | KeyNote | KeyRepeat
+    deriving (Eq, Ord, Show)
+
+-- | customize-mode's @C@: every item, or only those changed from default.
+data ItemsShown = AllItems | ChangedItems
+    deriving (Eq, Show)
+
+-- | customize-mode's @H@: whether the global tables' items are listed.
+data GlobalsShown = GlobalsShown | GlobalsHidden
+    deriving (Eq, Show)
+
+-- | An option table, by the ids of what owns it.
+data OptionTableRef
+    = ServerTableRef
+    | GlobalSessionTableRef
+    | SessionTableRef !SessionId
+    | GlobalWindowTableRef
+    | WindowTableRef !WindowId
+    | PaneTableRef !PaneId
+    deriving (Eq, Show)
+
+-- | Whether a customize-mode item is an option or a hook (tmux's
+-- @window_customize_option_type@).
+data OptionFamily = PlainFamily | HookFamily
+    deriving (Eq, Show)
+
+-- | The option (or one array item of it) a customize-mode prompt changes.
+data OptionTarget = OptionTarget
+    { table  :: !OptionTableRef
+    , family :: !OptionFamily
+    , name   :: !Text
+    , arrayKey :: !(Maybe ArrayKey)
+    }
+    deriving (Eq, Show)
+
+-- | An environment, by the id of what owns it.
+data EnvScopeRef = GlobalEnvRef | SessionEnvRef !SessionId
+    deriving (Eq, Show)
+
+-- | The variable a customize-mode prompt changes, and how it was shown when
+-- the prompt opened (a variable unset meanwhile comes back so).
+data EnvTarget = EnvTarget
+    { envScope   :: !EnvScopeRef
+    , name       :: !Text
+    , visibility :: !EnvVisibility
+    }
+    deriving (Eq, Show)
+
+-- | The binding a customize-mode prompt changes.
+data KeyTarget = KeyTarget
+    { keyTable :: !Text
+    , keyName  :: !Text
+    }
+    deriving (Eq, Show)
+
+-- | What customize-mode's @u@\/@U@ and @d@\/@D@ do.
+data ItemChange = UnsetItem | ResetItem
+    deriving (Eq, Show)
+
+-- | Whether a change acts on the selected item or the tagged ones.
+data ChangeReach = CurrentItem | TaggedItems
+    deriving (Eq, Show)
 
 -- | The list's sort (@-O@, @-r@, the @O@ and @r@ keys).
 data TreeSort = TreeSort
@@ -637,7 +734,7 @@ data PreviewView = ViewPreview | ViewInfo
 data GroupView = SquashGroups | ShowAllGroups
     deriving (Eq, Show)
 
--- | @-y@: whether the kill keys ask first.
+-- | @-y@: whether the keys that kill, unset or reset ask first.
 data KillConfirm = AskBeforeKill | KillWithoutAsking
     deriving (Eq, Show)
 
@@ -670,6 +767,16 @@ data TreePromptUse
     | PromptKill        -- ^ @x@: confirm killing the selected item
     | PromptKillTagged  -- ^ @X@: confirm killing the tagged items
     | PromptEachCommand -- ^ @:@: a command for each tagged item
+    | PromptNewOption !OptionTableRef !OptionFamily
+        -- ^ customize-mode: a new user option or hook in a table
+    | PromptOptionValue !OptionTarget
+    | PromptArrayKey !OptionTarget      -- ^ an array item's new key
+    | PromptEnvironmentValue !EnvTarget
+    | PromptNewEnvironment !EnvScopeRef
+    | PromptNewKey !Text                -- ^ a new binding in a table
+    | PromptKeyCommand !KeyTarget
+    | PromptKeyNote !KeyTarget
+    | PromptChange !ItemChange !ChangeReach
     deriving (Eq, Show)
 
 -- | Whether a prompt takes a line, or answers on its first key.
