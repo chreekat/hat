@@ -26,6 +26,8 @@ module Hat.Model.OptionTable
     , notYetError
     , refusing
     , choicesOnly
+    , aliasing
+    , choiceSpelling
     , cursorStyles
       -- * Values
     , OptionValue (..)
@@ -80,6 +82,9 @@ data LiveSupport = LiveSupport
     , paneValues :: PaneValues
     , refuse :: Text -> Maybe Text
         -- ^ a canonical value hat cannot honour yet, with the reason
+    , aliases :: [(Text, Text)]
+        -- ^ for a choice option, hat's extra spellings of its choices, each
+        -- with the choice it names
     }
 
 -- | Whether a window-and-pane option's consumer reads a pane's own value
@@ -259,11 +264,23 @@ live d = d { gate = Live fullSupport }
 
 fullSupport :: LiveSupport
 fullSupport = LiveSupport
-    { onlyChoices = Nothing, paneValues = PaneValuesIgnored, refuse = const Nothing }
+    { onlyChoices = Nothing, paneValues = PaneValuesIgnored, refuse = const Nothing
+    , aliases = [] }
 
 -- | Narrow a live choice option to the values hat implements.
 choicesOnly :: [Text] -> OptionDef -> OptionDef
 choicesOnly cs = adjustSupport (\s -> s { onlyChoices = Just cs })
+
+-- | Accept extra spellings of a live choice option's choices, beyond
+-- tmux's.
+aliasing :: [(Text, Text)] -> OptionDef -> OptionDef
+aliasing as = adjustSupport (\s -> s { aliases = as })
+
+-- | The choice a spelling names: an alias's choice, else the spelling.
+choiceSpelling :: OptionDef -> Text -> Text
+choiceSpelling d v = case d.gate of
+    Live s | Just c <- lookup v s.aliases -> c
+    _ -> v
 
 -- | A live window-and-pane option whose consumer honours a pane's own value.
 paneLocal :: OptionDef -> OptionDef
@@ -636,7 +653,7 @@ optionTable =
         \#[range=control|7][#{?#{pane_floating_flag},t,f}]#[norange]\
         \#[range=control|8][#{?#{window_zoomed_flag},u,z}]#[norange]\
         \#[range=control|9][x]#[norange],}"
-    , live $ scalar "pane-border-indicators" WindowScope
+    , aliasing [("color", "colour")] $ live $ scalar "pane-border-indicators" WindowScope
         (KChoice ["off", "colour", "arrows", "both"]) "colour"
     , paneLocal $ live $ scalar "pane-border-lines" WindowPaneScope
             (KChoice ["single", "double", "heavy", "simple", "number", "spaces", "none"])

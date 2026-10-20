@@ -240,6 +240,11 @@ spot-read of each suspect consumer.
   entries are only carried through to the next save. Entries are text: a byte that is
   not UTF-8 in a tmux-written entry is rewritten as U+FFFD.
 
+## Hat extensions (deliberate, beyond tmux)
+
+- **`pane-border-indicators`** also takes `color` for `colour` (the
+  registry's `aliasing`); `show-options` prints the canonical `colour`.
+
 ## The effect-test sweep
 
 Every row is pinned by a prefix-style **effect test**: set a non-default value,
