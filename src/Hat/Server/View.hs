@@ -412,7 +412,8 @@ renderOnce st client = do
             pure (cursorColourOf th app popts.cursorColour)
         _ -> pure Nothing
     oldColour <- readIORef client.lastCursorColour
-    when (colour /= oldColour) $ do
+    colourCaps <- terminalHas (maybe "Cr" (const "Cs") colour) client
+    when (colour /= oldColour && colourCaps) $ do
         writeIORef client.lastCursorColour colour
         -- See Note [Falling behind]
         sendAs (Superseding CursorColourSlot) client $ Notify $ case colour of
@@ -436,7 +437,8 @@ renderOnce st client = do
                 else terminalCursor popts.cursorStyle <$> Emu.appCursor pane.emulator
         _ -> pure defaultCursorModel
     oldShape <- readIORef client.lastCursorShape
-    when (shape /= oldShape) $ do
+    styleCaps <- terminalHas "Ss" client
+    when (shape /= oldShape && styleCaps) $ do
         writeIORef client.lastCursorShape shape
         -- See Note [Falling behind]
         sendAs (Superseding CursorShapeSlot) client (Notify (terminalCursorBytes shape))
@@ -529,7 +531,8 @@ syncMouseMode st client view = do
             pure $ Mouse.outerMouseMode o.mouseEnabled (wantsMotion o)
                 (fromMaybe 0 (List.lookup active tracking)) (map snd tracking)
     old <- readIORef client.lastMouseMode
-    when (want /= old) $ do
+    mouseCaps <- terminalHas "kmous" client
+    when (want /= old && mouseCaps) $ do
         writeIORef client.lastMouseMode want
         -- See Note [Falling behind]
         send client (Notify (Mouse.mouseModeBytes want))

@@ -73,6 +73,7 @@ module Hat.Model
     , SelKind (..)
     , newServerState
     , bumpDirty
+    , terminalHas
     , withCommandBatch
     , outsideCommandBatch
     , markActive
@@ -158,7 +159,7 @@ import Hat.Server.Render (Chrome, Frame, RowOrigin (..))
 import Hat.Server.Scene (ChromeKind, ChromeLook, Scene, SceneInput)
 import Hat.Server.Wanted (WantedNames)
 import Hat.Transport.Wire (Autostart)
-import Hat.Term.Caps (TtyTerm)
+import Hat.Term.Caps (TtyTerm, hasCap)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (CursorModel)
@@ -1003,6 +1004,12 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO noRequests
     <*> newTVarIO emptyMessageLog
     <*> newTVarIO Map.empty  -- lockTimers
+
+-- | Whether a client's terminal has a capability. One the server never
+-- opened (its client predates capabilities) is written to as it always
+-- was, so has them all.
+terminalHas :: Text -> Client -> IO Bool
+terminalHas cap c = maybe True (hasCap cap) <$> readTVarIO c.ttyTerm
 
 bumpDirty :: ServerState -> STM ()
 bumpDirty st = modifyTVar' st.dirty (+ 1)
