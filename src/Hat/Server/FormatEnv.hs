@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , paneVars
     , paneEnvById
     , refreshAutoNames
+    , commitAutoName
     , autoName
     , activeClientCounts
     , sessionFormatEnv
@@ -564,13 +565,18 @@ refreshAutoNames st = do
             auto <- readTVarIO win.autoRename
             when auto $ do
                 mnew <- autoName st sess ix win fmt
-                forM_ mnew $ \newName -> atomically $ do
-                    cur <- readTVar win.name
-                    -- An explicit name given since the read above stands.
-                    stillAuto <- readTVar win.autoRename
-                    when (stillAuto && cur /= newName && not (T.null newName)) $ do
-                        writeTVar win.name newName
-                        bumpDirty st
+                forM_ mnew (atomically . commitAutoName st win)
+
+-- | Give a window the automatic name computed for it, outside any
+-- transaction, by 'autoName': unless it has since stopped renaming
+-- automatically, so an explicit name given meanwhile stands.
+commitAutoName :: ServerState -> Window -> Text -> STM ()
+commitAutoName st win newName = do
+    cur <- readTVar win.name
+    stillAuto <- readTVar win.autoRename
+    when (stillAuto && cur /= newName && not (T.null newName)) $ do
+        writeTVar win.name newName
+        bumpDirty st
 
 -- | The name an @automatic-rename@ window should currently take: the
 -- @automatic-rename-format@ expanded against the active pane. The default

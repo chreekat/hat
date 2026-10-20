@@ -98,7 +98,7 @@ import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
     , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv
-    , clientFormatVars, windowFormatEnv, windowVars )
+    , clientFormatVars, commitAutoName, windowFormatEnv, windowVars )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
 import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 import Hat.Term.HostProtocol (defaultCursorModel)
@@ -1210,6 +1210,22 @@ spec = do
             renamed "" `shouldReturn` ("", False)
         it "expands the name as a format" $
             renamed "w#{window_index}:.##(ok)" `shouldReturn` ("w0:.#(ok)", False)
+
+    describe "automatic-rename" $ do
+        it "gives a window renaming automatically the name computed for it" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            atomically (commitAutoName st win "sleep")
+            readTVarIO win.name `shouldReturn` "sleep"
+        it "keeps a name given while the poll computed one (lifecycle-deferred.sh)" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            -- new-session -n lands between the poll's compute and its commit
+            atomically $ do
+                writeTVar win.name "base"
+                writeTVar win.autoRename False
+            atomically (commitAutoName st win "sleep")
+            readTVarIO win.name `shouldReturn` "base"
 
     describe "run-shell" $ do
         it "-C runs its argument as commands" $ do
