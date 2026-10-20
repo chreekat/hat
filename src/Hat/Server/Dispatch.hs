@@ -56,7 +56,8 @@ import System.IO (IOMode (..), openFile)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Process
 import Text.Read (readMaybe)
-import Hat.Command.Parser (parseCommandLine, parseConfigLines)
+import Hat.Command.Parser (parseCommandLine, parseScript)
+import Hat.Server.Script (FileLoad (..), resolveScript)
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
@@ -186,13 +187,14 @@ withCommandSource st path n act = do
             _ -> Nothing
     bracket_ (alter push) (alter pop) act
 
--- | Load a file of commands (tmux's @load_cfg@): it is parsed whole, and
--- runs only if every command in it parses and names a command, each
--- command as the one at its file and line. A file that fails is a
+-- | Load a file of commands (tmux's @load_cfg@): it is parsed whole (see
+-- 'resolveScript'), and runs only if it parses and every command of the
+-- branches it takes names a command, each command as the one at its file
+-- and line. A file that fails is a
 -- configuration cause, as is every error of a clientless load's commands,
 -- whose output goes nowhere. Under 'ParseOnly' nothing runs.
 loadCommandFile :: ServerState -> Maybe Client -> FileLoad -> FilePath -> Text -> IO [Reply]
-loadCommandFile st mclient load path contents = case parseConfigLines contents of
+loadCommandFile st mclient load path contents = resolveScript st mclient load script >>= \case
     Left (n, err) -> [RExitStatus 1] <$ cause n (parseErrorLine err)
     Right cmds -> do
         bad <- listToMaybe . catMaybes <$>
@@ -206,12 +208,8 @@ loadCommandFile st mclient load path contents = case parseConfigLines contents o
                     Just _ -> pure replies
                     Nothing -> [] <$ forM_ [ e | RErr e <- replies ] (cause n)
   where
+    script = parseScript contents
     cause n e = atomically (addConfigCause st (sourceLocated path n e))
-
--- | Whether 'loadCommandFile' runs the commands it parses (@source-file -n@
--- only checks them).
-data FileLoad = RunFile | ParseOnly
-    deriving (Eq, Show)
 
 -- | A parse error, on one line: the parser's own words without its picture
 -- of the input.

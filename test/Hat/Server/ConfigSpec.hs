@@ -17,6 +17,7 @@ import Hat.Server (cmdSourceFile, readConfigUtf8)
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Conn (newClient)
 import Hat.Server.Dispatch (FileLoad (..), loadCommandFile)
+import Hat.Server.Keys (Binding (..))
 import Hat.Transport.Wire (Hello (..), Intent (..), protocolVersion)
 import Network.Socket (Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socketPair)
 import Hat.Server.Environ
@@ -112,6 +113,55 @@ spec = do
                 cmdSourceFile st Nothing [T.pack (dir <> "/*.conf")] `shouldReturn` []
                 opts <- readTVarIO st.options
                 map (`Map.lookup` opts.user) ["@a", "@b"] `shouldBe` [Just "1", Just "2"]
+
+    describe "conditionals" $ do
+        it "run only the branch taken; a branch not taken never fails the file" $
+            withDir "/tmp/hat-cond-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                loadCommandFile st Nothing RunFile p
+                    "%if #{@unset}\nwibble\n%else\nset -g @a 1\n%endif\n%if 1 set -g @b 2 %endif\n"
+                    `shouldReturn` []
+                opts <- readTVarIO st.options
+                map (`Map.lookup` opts.user) ["@a", "@b"] `shouldBe` [Just "1", Just "2"]
+                readTVarIO st.configCauses `shouldReturn` []
+        it "expand in the global context before any of the file runs, without jobs" $
+            withDir "/tmp/hat-cond-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                _ <- loadCommandFile st Nothing RunFile p "set -g @c 1\n"
+                loadCommandFile st Nothing RunFile p (T.unlines
+                    [ "set -g @d 1", "%if #{@c}", "set -g @a 1", "%endif"
+                    , "%if #{@d}", "set -g @b 1", "%endif"
+                    , "%if \"#(echo 1)\"", "set -g @e 1", "%endif" ])
+                    `shouldReturn` []
+                opts <- readTVarIO st.options
+                map (`Map.lookup` opts.user) ["@a", "@b", "@e"]
+                    `shouldBe` [Just "1", Nothing, Nothing]
+        it "see the assignments made above them, which a failed file keeps" $
+            withDir "/tmp/hat-cond-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                loadCommandFile st Nothing RunFile p
+                    "CONDX=yes\n%if #{CONDX}\nset -g @a 1\n%endif\n%if 1\n%endif\n"
+                    `shouldReturn` [RExitStatus 1]
+                readTVarIO st.configCauses `shouldReturn` [T.pack p <> ":6: syntax error"]
+                env <- readTVarIO st.globalEnviron
+                environFind "CONDX" env `shouldBe` Just (EnvEntry (Just "yes") EnvVisible)
+                opts <- readTVarIO st.options
+                Map.lookup "@a" opts.user `shouldBe` Nothing
+        it "only check a file under source-file -n, assigning nothing" $
+            withDir "/tmp/hat-cond-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                loadCommandFile st Nothing ParseOnly p "CONDY=1\n%if #{CONDY}\nwibble\n%endif\n"
+                    `shouldReturn` []
+                environFind "CONDY" <$> readTVarIO st.globalEnviron `shouldReturn` Nothing
+        it "choose a key binding's commands when it is bound" $
+            withDir "/tmp/hat-cond-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                loadCommandFile st Nothing RunFile p
+                    "bind x {\n%if #{@unset}\nset -g @a 1\n%else\nset -g @a 2\n%endif\n}\n"
+                    `shouldReturn` []
+                km <- readTVarIO st.keymap
+                ((.commands) <$> (Map.lookup "prefix" km >>= Map.lookup "x"))
+                    `shouldBe` Just [["set", "-g", "@a", "2"]]
 
     -- tmux's config assignment forms (environ_put): a bare NAME=value line
     -- sets a global environment variable, %hidden NAME=value a hidden one.

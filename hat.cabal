@@ -77,6 +77,7 @@ library
         Hat.Client.Draw
         Hat.Client.Terminfo
         Hat.Command.Parser
+        Hat.Command.Script
         Hat.Client.Tty
         Hat.Base64
         Hat.Colour
@@ -181,6 +182,7 @@ library
         Hat.Server.Render
         Hat.Server.Resize
         Hat.Server.Scene
+        Hat.Server.Script
         Hat.Server.Scrollbars
         Hat.Server.Snapshot
         Hat.Server.Startup
@@ -327,6 +329,7 @@ test-suite hat-test
         Hat.Client.TtySpec
         Hat.ClientSpec
         Hat.Command.ParserSpec
+        Hat.Command.ScriptSpec
         Hat.DebugSpec
         Hat.FuzzyMatchSpec
         Hat.GlobSpec
