@@ -119,8 +119,10 @@ run_one() {
     start=$(date +%s.%N)
     (
         cd "$tdir"
+        # -k: a script that traps TERM (tty-keys.sh) runs on past it, so
+        # its time is up only with a KILL.
         TMUX_TMPDIR="$tdir" HOME="$tdir" TEST_TMUX="$hat_bin" HAT_PERSIST=0 \
-            timeout 150 sh "$name"
+            timeout -k 10 150 sh "$name"
     ) >"$log" 2>&1
     code=$?
     end=$(date +%s.%N)
