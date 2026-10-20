@@ -541,8 +541,13 @@ optionTable =
     , live $ scalar "renumber-windows" SessionScope KFlag "off"
     , live $ scalar "repeat-time" SessionScope (KNumber 0 2000000) "500"
     , live $ scalar "set-titles" SessionScope KFlag "off"
-    , notYet $ scalar "set-titles-string" SessionScope KString
-        "#S:#I:#W - \"#T\" #{session_alerts}"
+    -- hat's own title rather than tmux's (see docs/options-audit.md)
+    , live $ scalar "set-titles-string" SessionScope KString
+        "#{J/80/#: :hat,\
+        \#{?#{m/r:^[0-9]*$,#{session_name}},,#{session_name}},\
+        \#{?#{||:#{automatic_rename},#{m/r:^[0-9]*$,#{window_name}}},,#{window_name}},\
+        \#{~/#{HOME}:pane_current_path},\
+        \#{?#{!=:#{pane_title},},#{pane_title},#{pane_current_command}}}"
     , live $ scalar "silence-action" SessionScope (KChoice bellActions) "other"
     , live $ scalar "status" SessionScope
         (KChoice ["off", "on", "2", "3", "4", "5"]) "on"

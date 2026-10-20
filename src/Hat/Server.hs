@@ -142,8 +142,10 @@ import Hat.Server.ColorScheme
     ( ColorScheme (..), WatcherFault (..), applyPalette, parseSchemeLine
     , watcherFault, withRegisteredMonitor )
 import Hat.Server.FormatEnv
-    (WindowFlagState (..), refreshAutoNames, windowFlags)
+    ( FormatScope (..), FormatTarget (..), WindowFlagState (..), expandAt
+    , refreshAutoNames, windowFlags )
 import Hat.Server.Handover
+import Hat.Server.Locate (paneIndexOf)
 import Hat.Server.Conn
 import Hat.Server.Dispatch
 import Hat.Server.ConfigCauses (showConfigCauses)
@@ -157,7 +159,6 @@ import Hat.Server.Pane
 import Hat.Server.PromptHistory (loadHistory, saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Resize
-import Hat.Server.Title (TitleParts (..), composeTitle)
 import Hat.Transport.Socket (ensureSocketDir, listenOn)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -547,46 +548,27 @@ loadConfig st mconfig = do
             forM_ causes $ \e -> logEvent st.logger ConfigError { file = p, err = e }
     showConfigCauses st Nothing
 
--- | Recompute each session's desktop title (see 'composeTitle') from its
--- current window's active pane, broadcasting only on change. Shares the
--- 500ms poll with 'refreshAutoNames' because the same inputs (foreground
--- command, cwd) change without any event. A no-op unless @set-titles@ is
--- on.
+-- | Expand each session's @set-titles-string@ (tmux's
+-- @server_client_set_title@) at its current window's active pane,
+-- broadcasting only on change. Shares the 500ms poll with
+-- 'refreshAutoNames' because the same inputs (foreground command, cwd)
+-- change without any event. A session without @set-titles@ is skipped.
 refreshTitles :: ServerState -> IORef (Map.Map SessionId Text) -> IO ()
 refreshTitles st ref = do
-    opts <- readTVarIO st.options
-    when opts.setTitles $ do
-        homeDir <- maybe "" T.pack <$> lookupEnv "HOME"
-        sessions <- readTVarIO st.sessions
-        forM_ (Map.toList sessions) $ \(sid, sess) -> do
-            (sname, mwin) <- atomically $
-                (,) <$> readTVar sess.name <*> currentWindow sess
+    sessions <- readTVarIO st.sessions
+    forM_ (Map.toList sessions) $ \(sid, sess) -> do
+        opts <- resolveForSessionIO st sess
+        when opts.setTitles $ do
+            (wix, mwin) <- atomically $
+                (,) <$> readTVar sess.currentIx <*> currentWindow sess
             forM_ mwin $ \win -> do
-                wname <- readTVarIO win.name
-                auto <- readTVarIO win.autoRename
                 mpane <- atomically (activePane win)
                 forM_ mpane $ \pane -> do
-                    dir <- paneCurrentPath pane
-                    prog <- paneCommandName pane
-                    ptitle <- Emu.title pane.emulator
-                    let t = composeTitle titleBudget TitleParts
-                            { session = sname
-                            -- An auto-renamed window just repeats the
-                            -- program; only a pinned name adds signal.
-                            , window = if auto then "" else wname
-                            , path = T.pack dir
-                            , home = homeDir
-                            -- A title the program set itself (OSC) is
-                            -- the most specific component we have.
-                            , program = if T.null ptitle then prog else ptitle
-                            }
+                    pix <- paneIndexOf st win pane
+                    t <- expandAt st FormatTarget
+                        { scope = InPane sess wix win pix pane, overlay = Map.empty }
+                        opts.setTitlesString
                     prev <- Map.lookup sid <$> readIORef ref
                     unless (prev == Just t) $ do
                         modifyIORef' ref (Map.insert sid t)
                         broadcastAs (Superseding TitleSlot) st sid (SetTitle t)
-
--- | Room for the composed desktop title. The title bar's real width is
--- unknowable from here; this keeps the tail visible in any reasonable
--- window.
-titleBudget :: Int
-titleBudget = 80

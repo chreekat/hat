@@ -115,7 +115,7 @@ spot-read of each suspect consumer.
 | `clock-mode-colour` / `clock-mode-style` | `clockCells`/`clockText` (Clock.hs) via `clockView` (View.hs): the `clock-mode` screen, each pane's window's values, theme colours resolved | implemented ✅ tested | pure (ClockSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
-| `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
+| `set-titles` / `set-titles-string` | `refreshTitles` (Server.hs): each session with `set-titles` titles its clients with its `set-titles-string` expanded at the current pane | implemented ✅ tested | integration + rendered (TitleSpec) |
 | `escape-time` | `escTiming`/`feedKeys`/`flushEscape` (Server.hs, Keys.hs) | implemented ✅ tested | pure |
 | `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented ✅ tested | pure |
@@ -244,6 +244,22 @@ spot-read of each suspect consumer.
 
 - **`pane-border-indicators`** also takes `color` for `colour` (the
   registry's `aliasing`); `show-options` prints the canonical `colour`.
+
+- **`set-titles-string`** defaults to hat's own title rather than tmux's
+  `#S:#I:#W - "#T" #{session_alerts}`: `hat: <session>: <window>: <path>:
+  <program>`, skipping numeric session and window names and an
+  automatic-rename window's, the path with `$HOME` as `~`, the program the
+  pane's own title when it set one, else its command; collapsed from the
+  left to 80 characters. It is an ordinary format, so a user can write it
+  (or tmux's) in a config. It needs two format modifiers tmux lacks, in
+  characters tmux's `format.c` leaves unused:
+  - `#{~/home:key}` — the value with `home` (exactly, or as a leading
+    directory) written as `~`; an empty `home` changes nothing.
+  - `#{J/width/separator:part,part,…}` — each part expanded, the empty ones
+    skipped, joined by the separator (`#:` escapes a colon in it). While the
+    join is wider than `width` characters, parts drop from the left; the one
+    before the last first shortens from the left at `/` (`…/b/c`, then
+    `…/c`) before it drops; the last part stands whole even over the width.
 
 ## The effect-test sweep
 
