@@ -799,6 +799,37 @@ spec = do
         evs <- feedStr e "\ESC]2;my title\BEL"
         evs `shouldSatisfy` elem (TitleRequest "my title")
 
+    describe "the title stack (CSI 22/23 t)" $ do
+        let stackEvents evs = [ ev | ev <- evs, isStackEvent ev ]
+            isStackEvent = \case
+                TitleRequest _ -> True
+                TitlePush -> True
+                TitlePop -> True
+                _ -> False
+        it "reports pushes and pops in stream order among the titles" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC]2;a\a\ESC[22;0t\ESC]2;b\a\ESC[23;2t"
+            stackEvents evs `shouldBe` [TitleRequest "a", TitlePush, TitleRequest "b", TitlePop]
+        it "takes several operations from one sequence" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC[22;0;23;0t"
+            stackEvents evs `shouldBe` [TitlePush, TitlePop]
+        it "ignores the icon title and a missing parameter" $ do
+            e <- new80x24
+            evs <- feedStr e "\ESC[22;1t\ESC[22t\ESC[23t"
+            stackEvents evs `shouldBe` []
+        it "pops back the title pushed, latest first, keeping ten" $ do
+            e <- new80x24
+            mapM_ (\i -> setTitle e (T.pack (show i)) >> pushTitle e) [1 .. 12 :: Int]
+            titleStack e `shouldReturn` map (T.pack . show) [12, 11 .. 3 :: Int]
+            _ <- setTitle e "top"
+            popTitle e `shouldReturn` "12"
+            title e `shouldReturn` "12"
+        it "leaves the title alone popping an empty stack" $ do
+            e <- new80x24
+            _ <- setTitle e "kept"
+            popTitle e `shouldReturn` "kept"
+
     it "reports bells" $ do
         e <- new80x24
         evs <- feedStr e "\BEL"

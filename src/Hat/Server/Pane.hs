@@ -656,6 +656,10 @@ runPaneReader st pane = do
                         changed <- Emu.setTitle pane.emulator t
                         when changed $ notifyPane st "pane-title-changed" pane
                             [ ("new_title", PText t) ]
+                Emu.TitlePush -> Emu.pushTitle pane.emulator
+                Emu.TitlePop -> do
+                    t <- Emu.popTitle pane.emulator
+                    notifyPane st "pane-title-changed" pane [ ("new_title", PText t) ]
                 Emu.RenameRequest raw -> when (allowed "allow-rename") $
                     forM_ (cleanName raw) (renameFromApp st pane)
                 Emu.ClipboardRequest param term -> forM_ mopts $ \o ->
@@ -973,11 +977,13 @@ setScreenTitle :: Pane -> Text -> IO ()
 setScreenTitle pane t =
     void (Emu.setTitle pane.emulator t)
 
--- | Give a rebuilt pane the input state and title it was captured with.
-restorePaneState :: Pane -> Bool -> Maybe Text -> IO ()
-restorePaneState pane off mtitle = do
+-- | Give a rebuilt pane the input state, title and title stack it was
+-- captured with.
+restorePaneState :: Pane -> Bool -> Maybe Text -> [Text] -> IO ()
+restorePaneState pane off mtitle stack = do
     atomically (writeTVar pane.inputOff off)
     forM_ mtitle (setScreenTitle pane)
+    Emu.setTitleStack pane.emulator stack
 
 -- | Write keyboard input — typed, sent or pasted — to a pane's program,
 -- unless @select-pane -d@ turned its input off.

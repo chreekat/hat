@@ -308,7 +308,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     -- pre-reload scheme until the OS scheme next changes (bug f3).
     scheme <- readTVarIO st.colorScheme
     forM_ (reloadSchemePush rp.modes scheme) (Hat.Term.Pty.writePty pty)
-    restorePaneState pane psnap.inputOff psnap.title
+    restorePaneState pane psnap.inputOff psnap.title psnap.titleStack
     pure pane
   where
     paneExitOf d = PaneExit

@@ -239,9 +239,10 @@ captureWindow ws = do
     psnaps <- forM ws.wsPanes $ \pane -> do
         off <- readTVarIO pane.inputOff
         t <- Emu.title pane.emulator
+        ts <- Emu.titleStack pane.emulator
         let common p = p
                 { kind = pane.kind, inputOff = off
-                , title = if T.null t then Nothing else Just t }
+                , title = if T.null t then Nothing else Just t, titleStack = ts }
         case pane.kind of
             EmptyPane -> pure (common (plainPane (T.pack pane.startCwd)))
             ProgramPane -> do
@@ -331,7 +332,7 @@ restorePane st shellCmd env whitelist sid sz psnap = do
         EmptyPane -> emptyPane st pid FreshShell dir sz
         ProgramPane -> spawnPane st pid sid shellCmd
             (restoreRun whitelist origin psnap.command) dir env sz
-    pane <$ restorePaneState pane psnap.inputOff psnap.title
+    pane <$ restorePaneState pane psnap.inputOff psnap.title psnap.titleStack
 
 -- | @list-snapshots@: the store's history generations, newest first —
 -- one line each: generation, capture time, session\/window counts.
