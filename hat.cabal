@@ -325,6 +325,7 @@ test-suite hat-test
         Hat.Client.DrawSpec
         Hat.Client.TerminfoSpec
         Hat.Client.TtySpec
+        Hat.ClientSpec
         Hat.Command.ParserSpec
         Hat.DebugSpec
         Hat.FuzzyMatchSpec

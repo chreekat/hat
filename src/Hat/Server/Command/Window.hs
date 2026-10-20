@@ -57,13 +57,15 @@ import Hat.Server.Winlink
     , groupMembers
     , renumberIfSet, renumberSession, repackSession, shuffleUp, windowLinks )
 import Hat.Server.Locate
-    (findTarget, findWindowIndexTarget, paneIndexOf, withTargetSession)
+    (findTarget, findWindowIndexTarget, formatClient, paneIndexOf, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), killPaneLocs, killPaneLocsWith, launchOf, newWindowWithPane
     , paneShell, pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
     , withDefaultCommand
     , windowActivity )
-import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea, recalculateSizes)
+import Hat.Server.Resize
+    ( applySessionSize, clampWindowSize, claimLatest, clientWindowArea, newWindowSize
+    , recalculateSizes, windowResized )
 import Hat.Server.FormatEnv
     (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -167,7 +169,7 @@ cmdNewWindow st mclient args
                     Right (Just ix) -> do
                         unless ("-d" `elem` flags) $ switchToWindow st sess ix
                         pure []
-                    Right Nothing -> createWindow st sess opts flags pos requested
+                    Right Nothing -> createWindow st mclient sess opts flags pos requested
   where
     (opts0, flags, pos) = parseArgs "nctF" args
     expandName env = \case
@@ -179,9 +181,9 @@ cmdNewWindow st mclient args
 -- which any @-k@ occupant (already displaced from the index map) is killed,
 -- so the session never passes through empty.
 createWindow
-    :: ServerState -> Session -> [(Text, Text)] -> [Text] -> [Text]
+    :: ServerState -> Maybe Client -> Session -> [(Text, Text)] -> [Text] -> [Text]
     -> Maybe Int -> IO [Reply]
-createWindow st sess opts flags pos requested = do
+createWindow st mclient sess opts flags pos requested = do
     let insert
             | "-b" `elem` flags = InsertBefore
             | "-a" `elem` flags = InsertAfter
@@ -196,7 +198,9 @@ createWindow st sess opts flags pos requested = do
     case precheck of
         Left e -> pure [RErr e]
         Right _ -> do
-            eff <- readTVarIO sess.lastSize
+            tc <- either (const Nothing) Just
+                <$> formatClient st mclient (Just sess.id) Nothing
+            eff <- atomically (newWindowSize st tc sess)
             environ <- sessionSpawnEnv st sess
             sopts <- resolveForSessionIO st sess
             shellCmd <- paneShell sopts
@@ -209,7 +213,7 @@ createWindow st sess opts flags pos requested = do
                     T.unpack <$> expandFormat st env d
             (win, pane) <- newWindowWithPane st sess.id shellCmd
                 (withDefaultCommand (optionText "default-command" sopts) how) kind
-                dir environ eff
+                dir environ eff ((.id) <$> tc)
             forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                 writeTVar win.name nm
                 writeTVar win.autoRename False
@@ -289,7 +293,7 @@ cmdSelectWindow st mclient args
             Left e -> pure [RErr e]
             Right (sess, ix, _, _) -> do
                 cur <- readTVarIO sess.currentIx
-                if "-T" `elem` flags && ix == cur
+                selectedBy st mclient sess =<< if "-T" `elem` flags && ix == cur
                     then stepSession st sess False StepLast
                     else [] <$ switchToWindow st sess ix
   where
@@ -301,7 +305,21 @@ cmdSelectWindow st mclient args
     stepCommand step = do
         res <- findTarget st mclient Target.FindWindow target
         either (pure . pure . RErr)
-            (\(sess, _, _, _) -> stepSession st sess False step) res
+            (\(sess, _, _, _) -> selectedBy st mclient sess =<< stepSession st sess False step) res
+
+-- | After a window selection, the selecting client becomes the latest
+-- client of the window @sess@ now shows (tmux's @cmd_select_window_exec@).
+selectedBy :: ServerState -> Maybe Client -> Session -> [Reply] -> IO [Reply]
+selectedBy st mclient sess replies = do
+    unless (any isErr replies) $ atomically $ do
+        forM_ mclient $ \c -> claimLatest st c sess
+        recalculateSizes st
+        bumpDirty st
+    pure replies
+  where
+    isErr = \case
+        RErr _ -> True
+        _ -> False
 
 -- | Move the session's current window one 'Step', alerted windows only
 -- when @alerts@, failing with tmux's words when there is nowhere to go.
@@ -348,7 +366,7 @@ switchToInfo st sess ix = do
             attached <- not . null <$> sessionClients st sess.id
             wopts <- resolveForWindow st sess win
             writeTVar win.activity (not attached && wopts.monitorActivity)
-            -- See Note [Sizing per session]
+            -- See Note [Sizing per window]
             recalculateSizes st
             bumpDirty st
             pure (Just (cur, Map.lookup cur ws, ix, win))
@@ -392,7 +410,8 @@ sessionStep name step st mclient args
     | otherwise = do
         res <- findTarget st mclient Target.FindSession (lookup "-t" opts)
         either (pure . pure . RErr)
-            (\(sess, _, _, _) -> stepSession st sess ("-a" `elem` flags) step)
+            (\(sess, _, _, _) ->
+                selectedBy st mclient sess =<< stepSession st sess ("-a" `elem` flags) step)
             res
   where
     (opts, flags, _) = parseArgs "t" args
@@ -428,7 +447,7 @@ cmdResizeWindow st mclient args
             case res of
               Left e -> pure [RErr e]
               Right (sess, _, win, _) -> do
-                current <- readTVarIO sess.lastSize
+                current <- readTVarIO win.size
                 let given = current
                         { cols = maybe current.cols fromIntegral mx
                         , rows = maybe current.rows fromIntegral my }
@@ -441,7 +460,7 @@ cmdResizeWindow st mclient args
                     shrink n
                         | toInteger n >= toInteger adjust = n - fromIntegral adjust
                         | otherwise = n
-                let fromClients = atomically . clientWindowArea st sess
+                let fromClients = atomically . clientWindowArea st sess win
                 sz <- clampWindowSize <$> case () of
                     _ | has "-A" -> fromClients SizeLargest
                       | has "-a" -> fromClients SizeSmallest
@@ -449,13 +468,12 @@ cmdResizeWindow st mclient args
                 atomically $ do
                     modifyOwn win.options
                         (insertDelta "window-size" (OVScalar "manual"))
-                    writeTVar sess.lastSize sz
+                    writeTVar win.manualSize sz
+                    recalculateSizes st
+                    -- tmux's resize_window fires even at the size it had.
+                    now <- readTVar win.size
+                    when (now == current) $ windowResized st win current
                 applySessionSize st sess.id
-                notifyWindow st "window-resized" (Just sess.id) win
-                    [ ("old_width", PInt (fromIntegral current.cols))
-                    , ("old_height", PInt (fromIntegral current.rows))
-                    , ("width", PInt (fromIntegral sz.cols))
-                    , ("height", PInt (fromIntegral sz.rows)) ]
                 pure []
   where
     (opts, flags, pos) = parseArgs "txy" args

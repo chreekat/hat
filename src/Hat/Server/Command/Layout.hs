@@ -35,12 +35,12 @@ import Hat.Server.FormatEnv (expandFormat, paneFormatEnv, sessionFormatEnv)
 import Hat.Server.Hooks (PayloadItem (..), notifyPane, notifyWindow)
 import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
-import Hat.Server.Locate (findTarget, findWindowIndexTarget, markedTarget, paneIndexOf)
+import Hat.Server.Locate (findTarget, findWindowIndexTarget, formatClient, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Mouse (Drag (..))
 import Hat.Server.MouseIO (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag)
 import Hat.Server.Pane (rehomePanes, removePaneFromTree, switchActive, wrapPaneInWindow)
-import Hat.Server.Resize (applySessionSize, windowArea, windowLayoutAt)
+import Hat.Server.Resize (applySessionSize, windowLayoutAt)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Winlink (attachWindow, shuffleUp)
 
@@ -74,7 +74,7 @@ cmdBreakPane st mclient args
     -- -W: float the pane where it is (@cmd_break_pane_float@), at the
     -- -x/-y/-X/-Y geometry with the window's border.
     floatOut sess win pane = do
-        eff <- atomically (windowArea st win)
+        eff <- readTVarIO win.size
         border <- borderOf . (.paneBorderLines) <$> resolveForWindowIO st sess win
         env <- sessionFormatEnv st sess
         let expand v = case T.stripSuffix "%" v of
@@ -146,7 +146,10 @@ cmdBreakPane st mclient args
         case requested of
             Just ix | Map.member ix ws1 -> pure [RErr ("index in use: " <> tshow ix)]
             _ -> do
-                win2 <- wrapPaneInWindow st pane
+                sz <- readTVarIO swin.size
+                tc <- either (const Nothing) (Just . (.id))
+                    <$> formatClient st mclient (Just dst.id) Nothing
+                win2 <- wrapPaneInWindow st pane sz tc
                 forM_ (lookup "-n" opts) $ \nm -> atomically $ do
                     writeTVar win2.name nm
                     writeTVar win2.autoRename False
@@ -240,7 +243,7 @@ cmdMovePane st mclient args
         case res of
             Left e -> pure [RErr e]
             Right dst@(dsess, _, win, pane) -> do
-                eff <- atomically (windowArea st win)
+                eff <- readTVarIO win.size
                 floating <- atomically $ do
                     z <- readTVar win.zoomed
                     lay <- readTVar win.layout
@@ -335,7 +338,7 @@ joinPane st dst@(dsess, _, dwin, dpane) src@(_, _, swin, spane) opts flags = do
 -- | Tile a floating pane back where its cell sits (@cmd_join_pane_tile@).
 tileBack :: ServerState -> Session -> Window -> Pane -> [Text] -> IO [Reply]
 tileBack st sess win pane flags = do
-    eff <- atomically (windowArea st win)
+    eff <- readTVarIO win.size
     ok <- atomically $ do
         lay <- windowLayoutAt eff win
         case tileFloating eff pane.id lay of
@@ -354,7 +357,7 @@ joinTiled
     :: ServerState -> (Session, Int, Window, Pane) -> (Session, Int, Window, Pane)
     -> [(Text, Text)] -> [Text] -> IO [Reply]
 joinTiled st (dsess, dwix, dwin, dpane) (ssess, swix, swin, spane) opts flags = do
-            eff <- atomically (windowArea st dwin)
+            eff <- readTVarIO dwin.size
             lay <- atomically (windowLayoutAt eff dwin)
             let expand t = sessionFormatEnv st dsess >>= \env -> expandFormat st env t
             let orient = if "-h" `elem` flags then LeftRight else TopBottom
@@ -479,7 +482,7 @@ stepLayout st sess win step = do
 -- cycles onward from it and a bare @select-layout@ reapplies it.
 applyNamed :: ServerState -> Session -> Window -> LayoutName -> IO [Reply]
 applyNamed st sess win name = do
-    eff <- atomically (windowArea st win)
+    eff <- readTVarIO win.size
     sizes <- namedSizesOf <$> resolveForWindowIO st sess win
     atomically $ writeTVar win.layoutName (Just name)
     relayout st sess win $ \lay -> pure . Right $
@@ -499,7 +502,7 @@ relayout
     :: ServerState -> Session -> Window -> (Layout -> IO (Either Text Layout))
     -> IO [Reply]
 relayout st sess win change = do
-    eff <- atomically (windowArea st win)
+    eff <- readTVarIO win.size
     lay <- atomically (windowLayoutAt eff win)
     r <- change lay
     case r of

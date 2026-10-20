@@ -46,7 +46,7 @@ import Hat.Server.Layout (Cell (..), Layout (..), Orientation (..), fitLayout, p
 import Hat.Server.Locate (findTarget, locatePane)
 import Hat.Server.ModeStack (SetMode (..), unzoomPaneWindow)
 import Hat.Server.PaneMode (resetPaneMode, setPaneMode, zoomForMode)
-import Hat.Server.Resize (applySessionSize, windowArea, windowPaneStatus)
+import Hat.Server.Resize (applySessionSize, windowPaneStatus)
 import Hat.Server.Scene (PaneStatus (..), borderGlyph, cellTypeOf)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Toast (showToast)
@@ -215,7 +215,7 @@ panesScreen st pane ps = do
                 topts <- resolveForWindowIO st tsess twin
                 twix <- atomically (readTVar tsess.currentIx)
                 (root, status, panes, active, floatOrder) <- atomically $ do
-                    eff <- windowArea st swin
+                    eff <- readTVar swin.size
                     lay <- readTVar swin.layout
                     let root = fitLayout eff lay
                     status <- windowPaneStatus st swin

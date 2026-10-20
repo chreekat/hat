@@ -86,7 +86,7 @@ cmdDisplayPopup st mclient args
                 (Right h0, Right w0, Right mlines) -> do
                     let w = min w0 tsx
                         h = min h0 tsy
-                    (x, y) <- position sess win pane tc env w h
+                    (x, y) <- position win pane tc env w h
                     title <- maybe (pure "") (expandFormat st env) (lookup "-T" opts)
                     lns <- case mlines of
                         Just l -> pure l
@@ -131,9 +131,9 @@ cmdDisplayPopup st mclient args
         cvars <- clientFormatVars st tc
         pure (Map.unions [Map.fromList mouseVars, Map.fromList cvars, penv])
 
-    position sess win pane tc env w h = do
+    position win pane tc env w h = do
         mev <- clientMouseEvent mclient
-        eff <- readTVarIO sess.lastSize
+        eff <- readTVarIO win.size
         (rects, _) <- atomically (windowArrange st eff win)
         tsize <- readTVarIO tc.size
         lastAt <- readTVarIO win.menuLast

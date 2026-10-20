@@ -108,7 +108,7 @@ treeJson t = encodeSnapshotJson Snapshot
     windowOf w = WindowSnap
         { ix = w.ix, name = w.name, layout = w.layout, active = w.active
         , paneHist = w.paneHist, autoRename = w.autoRename
-        , key = w.key, linkOf = w.linkOf, modal = w.modal
+        , key = w.key, linkOf = w.linkOf, modal = w.modal, size = w.size
         , panes = map fst w.panes }
 
 -- Mirror of 'Hat.Server.rebuildReload' down to 'adoptPane', minus the pty

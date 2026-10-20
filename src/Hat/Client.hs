@@ -12,6 +12,7 @@ module Hat.Client
     , nestsOwnServer
     , TerminalMode (..)
     , terminalMode
+    , forwardToServer
     ) where
 
 import Control.Concurrent (threadDelay)
@@ -176,7 +177,7 @@ shuttle dialect cooked sock re = do
         Nothing
     -- One writer owns the socket; stdin and SIGWINCH both feed it.
     r <- race (receiver size pump outbox `catch` \(_ :: SomeException) -> pure ServerDied)
-              (race (stdinReader pump outbox) (sender outbox))
+              (race (stdinReader pump outbox) (forwardToServer sock outbox))
     pure $ case r of
         Left reason -> reason
         Right _ -> ServerDied
@@ -244,9 +245,16 @@ shuttle dialect cooked sock re = do
                 Right bs
                     | B.null bs -> atomically (writeTQueue outbox Detach)
                     | otherwise -> atomically (writeTQueue outbox (Input bs))
-    sender outbox = forever $ do
-        msg <- atomically (readTQueue outbox)
-        sendMessage sock msg
+
+-- | The one writer of a client's socket: send what the client queues for
+-- the server until its end is gone, then drop the rest. How the session
+-- ended is the receiver's to say, from what the server sent last.
+forwardToServer :: Socket -> TQueue ClientToServer -> IO ()
+forwardToServer sock outbox = do
+    msg <- atomically (readTQueue outbox)
+    try (sendMessage sock msg) >>= \case
+        Right () -> forwardToServer sock outbox
+        Left (_ :: IOException) -> forever (atomically (readTQueue outbox))
 
 -- | Whether 'shuttle' reads the terminal: a lock command has it while
 -- paused.

@@ -56,6 +56,7 @@ type CapturedWindow w p =
     , HasField "key" w (Maybe Int)
     , HasField "linkOf" w (Maybe Int)
     , HasField "modal" w (Maybe ModalSnap)
+    , HasField "size" w (Maybe Size)
     , HasField "panes" w [p]
     )
 
@@ -64,19 +65,21 @@ type CapturedWindow w p =
 -- 'key', and group window maps by group name. See Note [Captured links].
 data Rebuilt = Rebuilt
     { windows :: IORef (Map.Map Int Window)
-    , groups  :: IORef (Map.Map Text (TVar (Map.Map Int Window), Size))
+    , groups  :: IORef (Map.Map Text (TVar (Map.Map Int Window)))
     }
 
 newRebuilt :: IO Rebuilt
 newRebuilt = Rebuilt <$> newIORef Map.empty <*> newIORef Map.empty
 
 -- | Rebuild one captured session in the live tree, bringing each pane back
--- with @mkPane@. The session comes up at its captured window area
--- ('capturedArea'), so the pre-attach reconcile finds every pane already at
--- its layout size. A rebuild counts as one restore; a capture without a
--- creation stamp adopts now as the session's creation time. A link entry
--- shares the window it names, and a later member of a group the group's
--- window map, both from @done@; a session left with no window is dropped.
+-- with @mkPane@. Each window comes up at its captured size — a capture
+-- predating window sizes gave every window its session's, the area its
+-- layouts were fitted to ('capturedArea') — so the pre-attach reconcile
+-- finds every pane already at its layout size. A rebuild counts as one
+-- restore; a capture without a creation stamp adopts now as the session's
+-- creation time. A link entry shares the window it names, and a later
+-- member of a group the group's window map, both from @done@; a session
+-- left with no window is dropped.
 rebuildSession
     :: CapturedSession s w p
     => ServerState
@@ -89,13 +92,14 @@ rebuildSession st done env mkPane csess = do
     shared <- case csess.group of
         Nothing -> pure Nothing
         Just g -> Map.lookup g <$> readIORef done.groups
-    (windowsVar, sz, built) <- case shared of
-        Just (var, sz) -> pure (var, sz, [])
+    (windowsVar, built) <- case shared of
+        Just var -> pure (var, [])
         Nothing -> do
             let owned = filter (not . null . (.panes)) csess.windows
-                sz = capturedArea (map (.layout) owned)
+                sessionSz = capturedArea (map (.layout) owned)
             built <- forM owned $ \cwin -> do
-                (win, panes) <- rebuildWindow st (mkPane sid) sz cwin
+                (win, panes) <- rebuildWindow st (mkPane sid)
+                    (fromMaybe sessionSz cwin.size) cwin
                 forM_ cwin.key $ \k ->
                     modifyIORef' done.windows (Map.insert k win)
                 pure (cwin.ix, win, panes)
@@ -107,8 +111,8 @@ rebuildSession st done env mkPane csess = do
             var <- newTVarIO (Map.fromList
                 ([(wix, win) | (wix, win, _) <- built] <> linked))
             forM_ csess.group $ \g ->
-                modifyIORef' done.groups (Map.insert g (var, sz))
-            pure (var, sz, built)
+                modifyIORef' done.groups (Map.insert g var)
+            pure (var, built)
     winMap <- readTVarIO windowsVar
     unless (Map.null winMap) $ do
         let curIx | Map.member csess.currentIx winMap = csess.currentIx
@@ -121,7 +125,6 @@ rebuildSession st done env mkPane csess = do
         nameVar    <- newTVarIO csess.name
         currentVar <- newTVarIO curIx
         windowHistVar <- newTVarIO winHist
-        sizeVar    <- newTVarIO sz
         environVar <- newTVarIO (environFromPairs env)
         cwdVar     <- newTVarIO (T.unpack csess.startCwd)
         optionsVar <- newOwnOptionsIO
@@ -134,7 +137,7 @@ rebuildSession st done env mkPane csess = do
                 , restores = csess.restores + 1
                 , name = nameVar, windows = windowsVar
                 , currentIx = currentVar, windowHist = windowHistVar
-                , lastSize = sizeVar, environ = environVar
+                , environ = environVar
                 , startCwd = cwdVar, options = optionsVar
                 , group = groupVar
                 , activity = activityVar, destroyHold = holdVar }
@@ -192,6 +195,9 @@ rebuildWindow st mkPane sz cwin = do
     floatsVar     <- newTVarIO noFloats { zorder, modal }
     menuVar       <- newTVarIO Nothing
     menuLastVar   <- newTVarIO (0, 0)
+    sizeVar       <- newTVarIO sz
+    manualVar     <- newTVarIO sz
+    latestVar     <- newTVarIO Nothing
     let win = Window
             { id = wid, name = nameVar, layout = layoutVar
             , layoutName = layoutNameVar
@@ -201,5 +207,6 @@ rebuildWindow st mkPane sz cwin = do
             , silenceFlag = silenceVar, activityAt = activityAtVar
             , autoRename = autoRenameVar, options = optionsVar
             , arrangeCache = arrangeVar, floats = floatsVar
-            , menu = menuVar, menuLast = menuLastVar }
+            , menu = menuVar, menuLast = menuLastVar
+            , size = sizeVar, manualSize = manualVar, latest = latestVar }
     pure (win, panes)

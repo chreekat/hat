@@ -205,9 +205,8 @@ captureSession (seenWins, seenGroups) s = do
         curIx <- readTVar s.currentIx
         winHist <- readTVar s.windowHist
         grp   <- readTVar s.group
-        eff   <- readTVar s.lastSize
         ws    <- Map.toAscList <$> readTVar s.windows
-        wstructs <- mapM (\(ix, w) -> (,) (rawWindow w.id) <$> windowStruct eff (ix, w)) ws
+        wstructs <- mapM (\(ix, w) -> (,) (rawWindow w.id) <$> windowStruct (ix, w)) ws
         pure (nm, cwd, curIx, winHist, grp, wstructs)
     let groupSeen = maybe False (`Set.member` seenGroups) grp
         owned = if groupSeen then [] else wstructs
@@ -231,7 +230,7 @@ captureSession (seenWins, seenGroups) s = do
         { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
         , active = ws.wsActive, paneHist = ws.wsLastActive
         , autoRename = ws.wsAutoRename, key = Nothing, linkOf = Nothing
-        , modal = Nothing
+        , modal = Nothing, size = Nothing
         , panes = [] }
 
 captureWindow :: WindowStruct -> IO (WindowSnap, [Pane])
@@ -260,7 +259,7 @@ captureWindow ws = do
              { ix = ws.wsIx, name = ws.wsName, layout = ws.wsLayout
              , active = ws.wsActive, paneHist = ws.wsLastActive
              , autoRename = ws.wsAutoRename, key = Nothing, linkOf = Nothing
-             , modal = ws.wsModal
+             , modal = ws.wsModal, size = Just ws.wsSize
              , panes = psnaps }
          , ws.wsPanes )
 

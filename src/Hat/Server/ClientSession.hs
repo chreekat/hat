@@ -13,7 +13,7 @@ module Hat.Server.ClientSession
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -25,7 +25,7 @@ import Hat.Server.Hooks
     (PayloadItem (..), notifyClient)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Lock (armLockTimer)
-import Hat.Server.Resize (applySessionSize)
+import Hat.Server.Resize (applySessionSize, claimLatest)
 import Hat.Transport.Wire (ServerToClient (Exited))
 
 switchClientTo :: ServerState -> Client -> Session -> IO ()
@@ -46,8 +46,7 @@ switchClientTo st client sess = do
             writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
         markActive st client
-        mwin <- currentWindow sess
-        forM_ mwin $ \w -> modifyTVar' st.windowLatest (Map.insert w.id client.id)
+        void (claimLatest st client sess)
         writeTVar client.needsFull True
         bumpDirty st
     applySessionSize st old
