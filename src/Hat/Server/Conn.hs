@@ -640,9 +640,10 @@ escWait :: Options -> Int
 escWait opts = max 1 opts.escapeTime
 
 -- | How a key arriving at @ns@ (monotonic nanoseconds) is routed, from the
--- client's session options and its active pane's mode table.
-keyContext :: Options -> Maybe Text -> Word64 -> KeyContext
-keyContext opts modeTable ns = KeyContext
+-- client's session options, its 'assumePasteFor', and its active pane's mode
+-- table.
+keyContext :: Options -> Int -> Maybe Text -> Word64 -> KeyContext
+keyContext opts pasteMs modeTable ns = KeyContext
     { prefixKeys = filter (/= "None") [opts.prefix, opts.prefix2]
     , defaultTable = case opts.keyTable of
         "" -> "root"
@@ -653,9 +654,16 @@ keyContext opts modeTable ns = KeyContext
     , initialRepeatTime = opts.initialRepeatTime
     , mouseOn = opts.mouseEnabled
     , now = fromIntegral (ns `div` 1000000)
-    , assumePasteTime = opts.assumePasteTime
+    , assumePasteTime = pasteMs
     , arrivedUs = fromIntegral (ns `div` 1000)
     }
+
+-- | @assume-paste-time@ as it applies to a client: never on a terminal that
+-- brackets its pastes (@Enbp@), as tmux has it.
+assumePasteFor :: Options -> Client -> IO Int
+assumePasteFor opts c = do
+    bracketing <- terminalHas "Enbp" c
+    pure (if bracketing then 0 else opts.assumePasteTime)
 
 monotonicMs :: IO Int
 monotonicMs = fromIntegral . (`div` 1000000) <$> getMonotonicTimeNSec
@@ -736,6 +744,7 @@ runKeys d st client keys = runInputs d st client (map Left keys)
 runInputs :: Dispatch -> ServerState -> Client -> [Either Key MouseKey] -> IO ()
 runInputs d st client keys = do
     opts <- clientOptions st client
+    pasteMs <- assumePasteFor opts client
     km <- readTVarIO st.keymap
     let loop kst [] = writeIORef client.keyState kst
         loop kst (Right mk : rest) = mouseKey kst mk rest
@@ -798,7 +807,7 @@ runInputs d st client keys = do
               else do
                 ns <- getMonotonicTimeNSec
                 let (kst', actions) =
-                        routeKey (keyContext opts modeTable ns) km kst k
+                        routeKey (keyContext opts pasteMs modeTable ns) km kst k
                 kst'' <- foldM (act mpane k0 mev) kst' actions
                 -- Arming lights the highlight; disarming clears it, unless
                 -- the command just moved the active pane — then it lingers
