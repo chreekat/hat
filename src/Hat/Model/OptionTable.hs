@@ -546,7 +546,8 @@ optionTable =
     , live $ scalar "status-right" SessionScope KString "%H:%M %d-%b-%y #H"
     , live $ scalar "status-right-length" SessionScope (KNumber 0 shrtMax) "40"
     , live $ scalar "status-right-style" SessionScope KStyle "default"
-    , live $ scalar "status-style" SessionScope KStyle "bg=themegreen,fg=themeblack"
+    -- tmux defaults to bg=themegreen,fg=themeblack.
+    , live $ scalar "status-style" SessionScope KStyle "fg=black,bg=green"
     , live $ scalar "pane-status-current-style" WindowScope KStyle "underscore"
     , live $ scalar "pane-status-style" WindowScope KStyle "default"
     , live $ scalar "prompt-cursor-colour" SessionScope KColourString ""
@@ -693,16 +694,22 @@ optionTable =
         (KChoice ["largest", "smallest", "manual", "latest"]) "latest"
     , refusing (dimmed "window-style") $ paneLocal $ live $
         scalar "window-style" WindowPaneScope KStyle "default"
-    , live $ scalar "window-status-activity-style" WindowScope KStyle "reverse"
-    , live $ scalar "window-status-bell-style" WindowScope KStyle "reverse"
-    , live $ scalar "window-status-current-format" WindowScope KString
-        "#I:#W#{?window_flags,#{window_flags}, }"
-    , live $ scalar "window-status-current-style" WindowScope KStyle "underscore"
-    , live $ scalar "window-status-format" WindowScope KString
-        "#I:#W#{?window_flags,#{window_flags}, }"
+    -- tmux defaults to reverse.
+    , live $ scalar "window-status-activity-style" WindowScope KStyle "default"
+    -- tmux defaults to reverse.
+    , live $ scalar "window-status-bell-style" WindowScope KStyle
+        "fg=black,bg=green"
+    -- tmux's default pads a window without flags with a space.
+    , live $ scalar "window-status-current-format" WindowScope KString "#I:#W#F"
+    -- tmux defaults to underscore.
+    , live $ scalar "window-status-current-style" WindowScope KStyle
+        "fg=black,bg=green,underscore"
+    -- tmux's default pads a window without flags with a space.
+    , live $ scalar "window-status-format" WindowScope KString "#I:#W#F"
     , live $ scalar "window-status-last-style" WindowScope KStyle "default"
     , live $ scalar "window-status-separator" WindowScope KString " "
-    , live $ scalar "window-status-style" WindowScope KStyle "default"
+    -- tmux leaves it default, inheriting status-style.
+    , live $ scalar "window-status-style" WindowScope KStyle "fg=black,bg=green"
     , live $ scalar "wrap-search" WindowScope KFlag "on"
     -- tmux keeps this only for compatibility: it has no effect there either.
     , live $ scalar "xterm-keys" WindowScope KFlag "on"
