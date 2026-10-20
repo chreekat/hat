@@ -189,6 +189,7 @@ library
         Hat.Server.Wanted
         Hat.Server.WindowStruct
         Hat.TextWidth
+        Hat.Term.Caps
         Hat.Term.Cell
         Hat.Term.Emulator
         Hat.Term.Emulator.History
@@ -375,6 +376,7 @@ test-suite hat-test
         Hat.Server.ResizeRenderSpec
         Hat.Server.RestoreSpec
         Hat.Server.SessionSpec
+        Hat.Term.CapsSpec
         Hat.Term.EmulatorSpec
         Hat.Term.Emulator.HistorySpec
         Hat.Term.GoldenSpec
