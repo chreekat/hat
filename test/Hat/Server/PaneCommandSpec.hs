@@ -163,6 +163,15 @@ spec = do
                 run st ["display-message", "-l", "-p", "#{session_name}"]
                     `shouldReturn` [ROutput "#{session_name}"]
 
+    describe "set-option -p" $
+        it "sets the option of a pane a session:window.pane target names" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["set-option", "-p", "-t", "S:0.0", "window-style", "fg=blue"]
+                    `shouldReturn` []
+                run st ["show-options", "-pv", "-t", "S:0.0", "window-style"]
+                    `shouldReturn` [ROutput "fg=blue"]
+
     describe "run-shell" $
         it "-t shows the output in the pane's view mode, -b too once it ends" $
             withServer $ \st -> do
