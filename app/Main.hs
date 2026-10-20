@@ -4,6 +4,7 @@ module Main (main) where
 
 import Control.Concurrent (threadDelay)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Network.Socket (Socket)
 import System.Directory (doesFileExist, findExecutable)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
@@ -20,6 +21,7 @@ import Hat.Debug (prepareDebugSocket)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
 import Hat.Transport.Socket (ConnectFailure (..), connectTo, defaultSocketPath)
+import Hat.Version (versionText)
 
 #ifdef GHC_DEBUG
 import GHC.Debug.Stub qualified
@@ -31,7 +33,13 @@ data Cli = Cli
     , configFile :: Maybe FilePath
     , controlMode :: Maybe ControlFlavour  -- ^ @-C@ once, or @-CC@
     , command :: [String]
+    , action :: CliAction
     }
+
+-- | What an invocation asks of hat.
+data CliAction
+    = RunCommand    -- ^ run 'command' against the server
+    | PrintVersion  -- ^ @-V@: print the version and exit, as tmux does
 
 -- Default config: ~/.config/hat/hat.conf, if it exists.
 resolveConfig :: Cli -> IO Cli
@@ -58,7 +66,9 @@ main = do
             in case mhandover of
                 Just h -> withServerDebug path (resumeServer path mconfig h)
                 Nothing -> withServerDebug path (runServer path mconfig)
-        _ -> clientMain =<< resolveConfig (parseCli args)
+        _ -> let cli = parseCli args in case cli.action of
+            PrintVersion -> TIO.putStrLn ("hat " <> versionText)
+            RunCommand -> clientMain =<< resolveConfig cli
 
 -- | Run the server as a ghc-debug debuggee on the socket 'prepareDebugSocket'
 -- pins, so ghc-debug-brick can attach to the live process. Only the long-lived
@@ -95,6 +105,7 @@ parseCli = go Cli
     , configFile = Nothing
     , controlMode = Nothing
     , command = []
+    , action = RunCommand
     }
   where
     go cli = \case
@@ -106,6 +117,7 @@ parseCli = go Cli
         ("-f" : path : rest) -> go cli { configFile = Just path } rest
         -- -u asks for UTF-8, which hat's client always speaks.
         ("-u" : rest) -> go cli rest
+        ("-V" : _) -> cli { action = PrintVersion }
         (arg : rest)
             | Just v <- attached "-L" arg -> go cli { socketName = v } rest
             | Just v <- attached "-S" arg ->

@@ -152,6 +152,38 @@ spot-read of each suspect consumer.
 | `popup-style` / `popup-border-style` | `popupView` (View.hs) → `popupGrid` (Popup.hs): re-read and format-expanded on every frame, the `display-popup` `-s`/`-S` colours over them | implemented ✅ tested | pure (PopupSpec) |
 | `popup-border-lines` | `cmdDisplayPopup` (Command/Popup.hs) when neither `-b` nor `-B` is given → `popupGrid`/`innerSize` (Popup.hs) | implemented ✅ tested | pure (PopupSpec) |
 
+## Hat's own defaults
+
+Where hat had a value or behaviour of its own before it took on tmux's
+option table, the option keeps hat's value; options hat did not have take
+tmux's default. These are the live options whose default differs from
+tmux's (each row's comment in `OptionTable.hs` names tmux's):
+
+| Option | Hat default | tmux default |
+|---|---|---|
+| `escape-time` | `0` | `10` |
+| `display-time` | `3000` | `750` |
+| `history-limit` | `50000` | `2000` |
+| `extended-keys` | `on` | `off` |
+| `command-alias` | `split-pane`, `splitp` | also aliases for commands hat lacks |
+| `update-environment` | the classic eight | also `MSYSTEM`, `WAYLAND_DISPLAY`, `XDG_*` |
+| `status-style` | `fg=black,bg=green` | `bg=themegreen,fg=themeblack` |
+| `status-right` | `%H:%M %d-%b-%y #H` | pane title and window offset, then the clock |
+| `window-status-format` / `-current-format` | `#I:#W#F` | `#I:#W#{?window_flags,#{window_flags}, }` |
+| `window-status-style` | `fg=black,bg=green` | `default` |
+| `window-status-current-style` | `fg=black,bg=green,underscore` | `underscore` |
+| `window-status-bell-style` | `fg=black,bg=green` | `reverse` |
+| `window-status-activity-style` | `default` | `reverse` |
+| `pane-border-style` | `default` | `fg=themelightgrey` |
+| `pane-active-border-style` | `fg=green` | a format: theme colours by pane state |
+| `display-panes-colour` / `-active-colour` | `blue` / `red` | `themeblue` / `themered` |
+| `message-style` | `bg=yellow,fg=black,…fill=yellow` | the same in `themeyellow`/`themeblack` |
+| `copy-mode-position-style` | `bg=yellow,fg=black` | `#{E:mode-style}` |
+| `mode-style` | `reverse` | `noattr,bg=themeyellow,fg=themeblack` |
+| `fill-character` | ` ` (blank) | a format: shaded inside the window, `~` outside |
+| `automatic-rename-format` | `#{pane_current_command}` | also marks panes in a mode or dead |
+| `set-titles-string` | hat's title (`hat` and the non-default names, see below) | `#S:#I:#W - "#T" #{session_alerts}` |
+
 ## Defects (the backlog)
 
 *(none open)*

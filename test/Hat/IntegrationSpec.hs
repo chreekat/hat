@@ -577,6 +577,10 @@ spec = parallel $ do
         P.callProcess "cabal" ["build", "-v0", "exe:hat"]
         init <$> readProcess "cabal" ["list-bin", "hat"] ""
 
+    it "-V prints the version without reaching for a server" $
+        P.readProcessWithExitCode hatBin ["-S", "/nonexistent/hat-sock", "-V"] ""
+            `shouldReturn` (ExitSuccess, "hat 0.0.1\n", "")
+
     it "gives every pane a canonical line discipline under concurrent spawn load" $ do
         let n = 24 :: Int
         bads <- runConcurrently

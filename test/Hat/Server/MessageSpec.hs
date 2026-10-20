@@ -9,9 +9,10 @@ import Test.Hspec
 
 import Hat.Model (Markup (..))
 import Hat.Model.Options
-import Hat.Server.Format (FormatCtx, formatCtx)
+import Hat.Server.Format (FormatCtx (..), formatCtx)
 import Hat.Server.Message
 import Hat.Term.Cell qualified as Cell
+import Hat.TestSupport (clientTheme)
 
 set :: Text -> Text -> Options -> Options
 set n v = applyEntry n (OVScalar v)
@@ -41,8 +42,9 @@ red = Cell.Indexed 1
 spec :: Spec
 spec = do
     describe "drawMessage" $ do
-        it "fills the line in the default message-style" $ do
-            let row = message defaultOptions ((,) MarkupLiteral "hi") "abcdefgh"
+        it "fills the line in hat's black on ANSI yellow under a client's theme" $ do
+            let ctx = (ctxFor defaultOptions) { theme = clientTheme defaultOptions }
+                row = drawMessage ctx defaultOptions MarkupLiteral "hi" (under "abcdefgh")
             rowText row `shouldBe` "hi      "
             (row V.! 0).style `shouldBe`
                 Cell.defaultStyle { Cell.fg = black, Cell.bg = yellow }

@@ -450,8 +450,9 @@ optionTable =
     , live $ scalar "escape-time" ServerScope (KNumber 0 intMax) "0"
     , live $ scalar "exit-empty" ServerScope KFlag "on"
     , live $ scalar "exit-unattached" ServerScope KFlag "off"
+    -- tmux defaults to off, ignoring an app's request for extended keys.
     , live $ scalar "extended-keys" ServerScope
-        (KChoice ["off", "on", "always"]) "off"
+        (KChoice ["off", "on", "always"]) "on"
     , live $ scalar "extended-keys-format" ServerScope
         (KChoice ["csi-u", "xterm"]) "xterm"
     , live $ scalar "focus-events" ServerScope KFlag "off"
@@ -532,10 +533,11 @@ optionTable =
         \#{E:message-style}}]#{message}"
     , live $ scalar "message-line" SessionScope
         (KChoice ["0", "1", "2", "3", "4"]) "0"
+    -- tmux's default draws in themeyellow and themeblack.
     , live $ scalar "message-style" SessionScope KStyle
-        "bg=themeyellow,fg=themeblack,\
+        "bg=yellow,fg=black,\
         \#{?#{m/r:(^|#,)IS(PANE|MODE)($|#,),#{prompt_flags}},,\
-        \fill=themeyellow}"
+        \fill=yellow}"
     , live $ scalar "mouse" SessionScope KFlag "off"
     , live $ scalar "prefix" SessionScope KKey "C-b"
     , live $ scalar "prefix2" SessionScope KKey "None"
@@ -569,7 +571,8 @@ optionTable =
     , live $ scalar "status-right" SessionScope KString "%H:%M %d-%b-%y #H"
     , live $ scalar "status-right-length" SessionScope (KNumber 0 shrtMax) "40"
     , live $ scalar "status-right-style" SessionScope KStyle "default"
-    , live $ scalar "status-style" SessionScope KStyle "bg=themegreen,fg=themeblack"
+    -- tmux defaults to bg=themegreen,fg=themeblack.
+    , live $ scalar "status-style" SessionScope KStyle "fg=black,bg=green"
     , live $ scalar "pane-status-current-style" WindowScope KStyle "underscore"
     , live $ scalar "pane-status-style" WindowScope KStyle "default"
     , live $ scalar "prompt-cursor-colour" SessionScope KColourString ""
@@ -605,10 +608,12 @@ optionTable =
     , live $ scalar "clock-mode-colour" WindowScope KColourString "themeblue"
     , live $ scalar "clock-mode-style" WindowScope
         (KChoice ["12", "24", "12-with-seconds", "24-with-seconds"]) "24"
-    , live $ scalar "display-panes-active-colour" WindowScope KColourString "themered"
+    -- tmux defaults to themered.
+    , live $ scalar "display-panes-active-colour" WindowScope KColourString "red"
     , notYet $ scalar "display-panes-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
-    , live $ scalar "display-panes-colour" WindowScope KColourString "themeblue"
+    -- tmux defaults to themeblue.
+    , live $ scalar "display-panes-colour" WindowScope KColourString "blue"
     , live $ scalar "display-panes-format" WindowScope KString
         "#[align=right]#{pane_unzoomed_width}x#{pane_unzoomed_height}"
     , live $ scalar "display-panes-time" WindowScope (KNumber 1 intMax) "1000"
@@ -625,8 +630,9 @@ optionTable =
         \#{?search_timed_out, (timed out),\
         \#{?search_count, (#{search_count}\
         \#{?search_count_partial,+,} results),}}"
+    -- tmux's default follows mode-style (#{E:mode-style}).
     , live $ scalar "copy-mode-position-style" WindowScope KStyle
-        "#{E:mode-style}"
+        "bg=yellow,fg=black"
     , live $ scalar "copy-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
     , live $ scalar "copy-mode-current-line-number-style" WindowScope KStyle
@@ -636,8 +642,9 @@ optionTable =
         "fg=themelightgrey,dim"
     , live $ scalar "copy-mode-line-numbers" WindowScope
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
-    , live $ scalar "fill-character" WindowScope KString
-        "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"
+    -- tmux's default shades the window's empty cells and dots those outside
+    -- it.
+    , live $ scalar "fill-character" WindowScope KString " "
     , live $ scalar "main-pane-height" WindowScope KString "24"
     , live $ scalar "main-pane-width" WindowScope KString "80"
     , live $ scalar "mode-keys" WindowScope (KChoice ["emacs", "vi"]) "emacs"
@@ -647,11 +654,10 @@ optionTable =
     , live $ scalar "monitor-silence" WindowScope (KNumber 0 intMax) "0"
     , live $ scalar "other-pane-height" WindowScope KString "0"
     , live $ scalar "other-pane-width" WindowScope KString "0"
+    -- tmux's default is a format: themegreen, or another theme colour for
+    -- a modal, marked, synchronized or in-mode pane.
     , paneLocal $ live $ scalar "pane-active-border-style" WindowPaneScope KStyle
-        "fg=#{?pane_modal_flag,themeblue,\
-        \#{?pane_marked,thememagenta,\
-        \#{?synchronize-panes,themered,\
-        \#{?pane_in_mode,themeyellow,themegreen}}}}"
+        "fg=green"
     , live $ scalar "pane-base-index" WindowScope (KNumber 0 ushrtMax) "0"
     , paneLocal $ live $ scalar "pane-border-format" WindowPaneScope KString
         "#{?pane_active,#[reverse],}#{pane_index}#[default] \"#{pane_title}\"\
@@ -666,8 +672,8 @@ optionTable =
             "single"
     , paneLocal $ live $ scalar "pane-border-status" WindowPaneScope
         (KChoice ["off", "top", "bottom", "top-floating", "bottom-floating"]) "off"
-    , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle
-        "fg=themelightgrey"
+    -- tmux defaults to fg=themelightgrey.
+    , paneLocal $ live $ scalar "pane-border-style" WindowPaneScope KStyle "default"
     , paneLocal $ live $ arrayOf "pane-colours" WindowPaneScope KColour " ," []
     , live $ scalar "pane-scrollbars" WindowScope
         (KChoice ["off", "modal", "on", "auto-hide"]) "off"
@@ -716,16 +722,22 @@ optionTable =
         (KChoice ["largest", "smallest", "manual", "latest"]) "latest"
     , refusing (dimmed "window-style") $ paneLocal $ live $
         scalar "window-style" WindowPaneScope KStyle "default"
-    , live $ scalar "window-status-activity-style" WindowScope KStyle "reverse"
-    , live $ scalar "window-status-bell-style" WindowScope KStyle "reverse"
-    , live $ scalar "window-status-current-format" WindowScope KString
-        "#I:#W#{?window_flags,#{window_flags}, }"
-    , live $ scalar "window-status-current-style" WindowScope KStyle "underscore"
-    , live $ scalar "window-status-format" WindowScope KString
-        "#I:#W#{?window_flags,#{window_flags}, }"
+    -- tmux defaults to reverse.
+    , live $ scalar "window-status-activity-style" WindowScope KStyle "default"
+    -- tmux defaults to reverse.
+    , live $ scalar "window-status-bell-style" WindowScope KStyle
+        "fg=black,bg=green"
+    -- tmux's default pads a window without flags with a space.
+    , live $ scalar "window-status-current-format" WindowScope KString "#I:#W#F"
+    -- tmux defaults to underscore.
+    , live $ scalar "window-status-current-style" WindowScope KStyle
+        "fg=black,bg=green,underscore"
+    -- tmux's default pads a window without flags with a space.
+    , live $ scalar "window-status-format" WindowScope KString "#I:#W#F"
     , live $ scalar "window-status-last-style" WindowScope KStyle "default"
     , live $ scalar "window-status-separator" WindowScope KString " "
-    , live $ scalar "window-status-style" WindowScope KStyle "default"
+    -- tmux leaves it default, inheriting status-style.
+    , live $ scalar "window-status-style" WindowScope KStyle "fg=black,bg=green"
     , live $ scalar "wrap-search" WindowScope KFlag "on"
     -- tmux keeps this only for compatibility: it has no effect there either.
     , live $ scalar "xterm-keys" WindowScope KFlag "on"

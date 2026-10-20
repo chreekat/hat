@@ -12,6 +12,7 @@ import Hat.Model.Options
 import Hat.Server.Format (FormatCtx (..), formatCtx)
 import Hat.Server.Status
 import Hat.Term.Cell qualified as Cell
+import Hat.TestSupport (clientTheme)
 
 -- | Options with a fixed status-right, so rows carry no clock.
 opts0 :: Options
@@ -67,6 +68,26 @@ spec = do
             (row V.! 4).style.underline `shouldBe` True
             (row V.! 9).style.underline `shouldBe` False
             (row V.! 10).style.underline `shouldBe` False
+        it "draws hat's black on ANSI green under a client's theme" $ do
+            let drawn = statusRows (ctxFor opts0) { theme = clientTheme opts0 } opts0 24
+                plain = Cell.defaultStyle { Cell.fg = black, Cell.bg = green }
+            map (.style) (concatMap V.toList drawn) `shouldSatisfy`
+                all (`elem` [plain, plain { Cell.underline = True }])
+        it "draws a bell or activity window like any other" $ do
+            let alerted flag = case ctxFor opts0 of
+                    ctx -> ctx { windows = [ Map.insert flag "1" w | w <- ctx.windows ] }
+                plain = Cell.defaultStyle { Cell.fg = black, Cell.bg = green }
+            [ (r V.! 10).style
+              | flag <- ["window_bell_flag", "window_activity_flag"]
+              , r <- statusRows (alerted flag) opts0 24 ]
+                `shouldBe` [plain, plain]
+        it "spells a flagless window without tmux's padding space" $ do
+            let win ix name = Map.fromList
+                    [ ("window_index", ix), ("window_name", name)
+                    , ("window_flags", ""), ("window_active", "0") ]
+                ctx = (ctxFor opts0) { windows = [win "0" "sh", win "1" "vim"] }
+            map (T.take 14 . rowText) (statusRows ctx opts0 24)
+                `shouldBe` ["[s] 0:sh 1:vim"]
 
     describe "status options read by the default format" $ do
         it "status-justify right moves the list against status-right" $ do

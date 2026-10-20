@@ -110,7 +110,11 @@ spec = do
                 run st ["kill-pane", "-a", "-t", b] `shouldReturn` []
                 paneIds st "S:0" `shouldReturn` [b]
 
-    describe "server formats" $
+    describe "server formats" $ do
+        it "#{version} is hat's package version" $
+            withServer $ \st ->
+                run st ["display-message", "-p", "#{version}"]
+                    `shouldReturn` [ROutput "0.0.1"]
         it "#{pid} is the server's process id" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
