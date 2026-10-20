@@ -22,7 +22,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (foldM, forM_, forever, unless, void, when)
+import Control.Monad (filterM, foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Functor ((<&>))
@@ -34,6 +34,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
+import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Socket qualified as N
@@ -505,25 +506,29 @@ expireKeyRepeat st client = do
         disarmFlash st client False
 
 -- | Whether @client@ already holds the largest activity stamp among the
--- clients attached to its session (so it is the one an aggressive-resize
--- window currently follows).
-isMostActive :: ServerState -> Client -> STM Bool
-isMostActive st client = do
-    sid <- readTVar client.session
-    cs <- sessionClients st sid
-    mine <- readTVar client.lastActive
-    others <- mapM (\c -> readTVar c.lastActive)
-        (filter (\c -> c.id /= client.id) cs)
-    pure (all (< mine) others)
+-- clients whose current window is its own (so it is the client a
+-- @window-size latest@ window follows; see 'sizeWindow').
+isLatestViewer :: ServerState -> Client -> STM Bool
+isLatestViewer st client = do
+    sessions <- readTVar st.sessions
+    let viewed c = do
+            sid <- readTVar c.session
+            maybe (pure Nothing) (fmap (fmap (.id)) . currentWindow)
+                (Map.lookup sid sessions)
+    mine <- viewed client
+    stamp <- readTVar client.lastActive
+    others <- Map.elems <$> readTVar st.clients
+    newer <- filterM (\c -> if c.id == client.id then pure False else do
+        w <- viewed c
+        if w == mine then (>= stamp) <$> readTVar c.lastActive else pure False) others
+    pure (null newer)
 
--- | Record activity from a client and, when it becomes the newly
--- most-recently-active one on its session, re-apply the session size so an
--- aggressive-resize window follows it. A no-op resize when nothing aggressive
--- is in play (the smallest-client size is independent of who is active).
+-- | Record activity from a client and, when it becomes the newest client
+-- viewing its window, re-derive the sizes so a @latest@ window follows it.
 noteClientActivity :: ServerState -> Client -> IO ()
 noteClientActivity st client = do
     becameActive <- atomically $ do
-        already <- isMostActive st client
+        already <- isLatestViewer st client
         markActive st client
         pure (not already)
     sid <- readTVarIO client.session
@@ -630,10 +635,11 @@ selectPaneNumber d st client template num = do
 escWait :: Options -> Int
 escWait opts = max 1 opts.escapeTime
 
--- | How a key arriving at @now@ (ms) is routed, from the client's session
--- options and its active pane's mode table.
-keyContext :: Options -> Maybe Text -> Int -> KeyContext
-keyContext opts modeTable now = KeyContext
+-- | How a key arriving at @ns@ (monotonic nanoseconds) is routed, from the
+-- client's session options, its 'assumePasteFor', and its active pane's mode
+-- table.
+keyContext :: Options -> Int -> Maybe Text -> Word64 -> KeyContext
+keyContext opts pasteMs modeTable ns = KeyContext
     { prefixKeys = filter (/= "None") [opts.prefix, opts.prefix2]
     , defaultTable = case opts.keyTable of
         "" -> "root"
@@ -643,8 +649,17 @@ keyContext opts modeTable now = KeyContext
     , repeatTime = opts.repeatTime
     , initialRepeatTime = opts.initialRepeatTime
     , mouseOn = opts.mouseEnabled
-    , now = now
+    , now = fromIntegral (ns `div` 1000000)
+    , assumePasteTime = pasteMs
+    , arrivedUs = fromIntegral (ns `div` 1000)
     }
+
+-- | @assume-paste-time@ as it applies to a client: never on a terminal that
+-- brackets its pastes (@Enbp@), as tmux has it.
+assumePasteFor :: Options -> Client -> IO Int
+assumePasteFor opts c = do
+    bracketing <- terminalHas "Enbp" c
+    pure (if bracketing then 0 else opts.assumePasteTime)
 
 monotonicMs :: IO Int
 monotonicMs = fromIntegral . (`div` 1000000) <$> getMonotonicTimeNSec
@@ -725,6 +740,7 @@ runKeys d st client keys = runInputs d st client (map Left keys)
 runInputs :: Dispatch -> ServerState -> Client -> [Either Key MouseKey] -> IO ()
 runInputs d st client keys = do
     opts <- clientOptions st client
+    pasteMs <- assumePasteFor opts client
     km <- readTVarIO st.keymap
     let loop kst [] = writeIORef client.keyState kst
         loop kst (Right mk : rest) = mouseKey kst mk rest
@@ -784,9 +800,9 @@ runInputs d st client keys = do
                         , input = T.pack (show k.raw) }
                 loop kst rest
               else do
-                now <- monotonicMs
+                ns <- getMonotonicTimeNSec
                 let (kst', actions) =
-                        routeKey (keyContext opts modeTable now) km kst k
+                        routeKey (keyContext opts pasteMs modeTable ns) km kst k
                 kst'' <- foldM (act mpane k0 mev) kst' actions
                 -- Arming lights the highlight; disarming clears it, unless
                 -- the command just moved the active pane — then it lingers

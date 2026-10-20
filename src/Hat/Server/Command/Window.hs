@@ -63,7 +63,7 @@ import Hat.Server.Pane
     , paneShell, pickActivityTarget, rehomePanes, sessionSpawnEnv, startPaneReader
     , withDefaultCommand
     , windowActivity )
-import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea)
+import Hat.Server.Resize (applySessionSize, clampWindowSize, clientWindowArea, recalculateSizes)
 import Hat.Server.FormatEnv
     (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -348,6 +348,8 @@ switchToInfo st sess ix = do
             attached <- not . null <$> sessionClients st sess.id
             wopts <- resolveForWindow st sess win
             writeTVar win.activity (not attached && wopts.monitorActivity)
+            -- See Note [Sizing per session]
+            recalculateSizes st
             bumpDirty st
             pure (Just (cur, Map.lookup cur ws, ix, win))
 

@@ -5,6 +5,7 @@
 module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
+    , recalculateSizes
     , clientWindowArea
     , clientClaim
     , windowArea
@@ -32,7 +33,9 @@ import Control.Exception (IOException, handle)
 import Control.Monad (forM, forM_, when)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
+import Data.List qualified as List
 import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -54,10 +57,7 @@ import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
 
--- | How a window is sized: @window-size@. tmux's @aggressive-resize@ only
--- narrows which clients count to those whose current window it is; hat sizes
--- all of a session's windows together from that session's own clients, so
--- the distinction has nothing to select here.
+-- | How a window is sized: @window-size@.
 resizeModeOf :: Options -> WindowSizeMode
 resizeModeOf opts = case optionText "window-size" opts of
     "largest" -> SizeLargest
@@ -65,20 +65,36 @@ resizeModeOf opts = case optionText "window-size" opts of
     "manual" -> SizeManual
     _ -> SizeLatest
 
--- | Recompute a session's effective window size from its clients (honoring
--- @window-size@) and mark the clients for a full redraw. Pane pty and
--- emulator sizes are not touched here: 'reconcileLoop' pulls them into
--- agreement with the layout off the same dirty tick this bumps, so a session
--- resized here — or a layout changed anywhere else — reconciles uniformly.
+-- | Re-derive every session's window area ('recalculateSizes') after
+-- something about @sid@ changed, and mark its clients for a full redraw.
+-- Pane pty and emulator sizes are not touched here: 'reconcileLoop' pulls
+-- them into agreement with the layout off the same dirty tick this bumps, so
+-- a session resized here — or a layout changed anywhere else — reconciles
+-- uniformly.
 applySessionSize :: ServerState -> SessionId -> IO ()
 applySessionSize st sid = atomically $ do
-    msess <- Map.lookup sid <$> readTVar st.sessions
-    forM_ msess $ \sess -> do
-        cs <- sessionClients st sid
-        eff <- sessionArea st sess Nothing
-        writeTVar sess.lastSize eff
-        forM_ cs $ \c -> writeTVar c.needsFull True
-        bumpDirty st
+    recalculateSizes st
+    cs <- sessionClients st sid
+    forM_ cs $ \c -> writeTVar c.needsFull True
+    bumpDirty st
+
+-- | tmux's @recalculate_sizes@: every session's area becomes its current
+-- window's 'windowSize', kept when no client sizes that window. A client of
+-- one session can size a window another holds, so no session is
+-- recomputed alone. Clients of a session whose area moved get a full
+-- redraw. See Note [Sizing per session].
+recalculateSizes :: ServerState -> STM ()
+recalculateSizes st = do
+    sessions <- Map.elems <$> readTVar st.sessions
+    forM_ sessions $ \sess -> do
+        old <- readTVar sess.lastSize
+        new <- currentWindow sess >>= \case
+            Just win -> fromMaybe old <$> windowSize st win
+            Nothing -> pure old
+        when (new /= old) $ do
+            writeTVar sess.lastSize new
+            cs <- sessionClients st sess.id
+            forM_ cs $ \c -> writeTVar c.needsFull True
 
 -- | The window size @mode@ derives from the session's attached clients, or
 -- @default-size@ when none is attached (tmux's @default_window_size@). Used
@@ -93,17 +109,91 @@ clientWindowArea st sess mode = do
     pure (clampWindowSize
         (sessionWindowArea mode (defaultSizeOf opts) claims))
 
--- | The area a session's clients size its windows to (@window-size@), or
--- for one window, with control clients' sizes for that window standing in
--- for their own. Without clients it keeps its last size.
-sessionArea :: ServerState -> Session -> Maybe WindowId -> STM Size
-sessionArea st sess mwid = do
-    cs <- sessionClients st sess.id
-    lastSz <- readTVar sess.lastSize
-    mwin <- currentWindow sess
-    opts <- maybe (resolveGlobal st) (resolveForWindow st sess) mwin
-    claims <- catMaybes <$> mapM (clientClaim opts.statusLines mwid) cs
-    pure (sessionWindowArea (resizeModeOf opts) lastSz claims)
+-- Note [Sizing per session]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- tmux sizes each window from the clients that can see it ('windowSize'),
+-- and a client shows its session's current window at that window's size.
+-- Hat keeps one stored area per session (@lastSize@), which renderers read
+-- as the current window's size, so it holds the current window's
+-- 'windowSize' ('recalculateSizes') and must be re-derived whenever a
+-- client, a current window, or a sizing option changes. A window no client
+-- sizes has no size of its own to keep: it keeps the session's. That is
+-- also where a @manual@ size lives, so it belongs to the session, not the
+-- window, until windows carry their own size.
+
+-- | The size tmux's @recalculate_size@ gives a window, from the clients of
+-- the sessions holding it; 'Nothing' when no client sizes it, which keeps
+-- the size it has.
+windowSize :: ServerState -> Window -> STM (Maybe Size)
+windowSize st win = do
+    wopts <- resolveWindowTables st win
+    sessions <- Map.elems <$> readTVar st.sessions
+    holders <- fmap concat . forM sessions $ \sess -> do
+        holds <- any (\w -> w.id == win.id) <$> readTVar sess.windows
+        if not holds then pure [] else do
+            viewing <- currentWindow sess >>= \case
+                Just w | w.id == win.id -> pure Viewing
+                _ -> pure Elsewhere
+            sopts <- resolveForSession st sess
+            cs <- sessionClients st sess.id
+            fmap catMaybes . forM cs $ \c -> do
+                mclaim <- clientClaim sopts.statusLines (Just win.id) c
+                own <- controlWindowSize win.id c
+                pure (fmap (\claim -> Sizer { claim, own, viewing }) mclaim)
+    let by = if wopts.aggressiveResize then ViewingSessions else HoldingSessions
+    pure (sizeWindow (resizeModeOf wopts) by holders)
+
+-- | A client of a session holding a window, as it bears on the window's
+-- size.
+data Sizer = Sizer
+    { claim   :: (Int, Size, Int)  -- ^ see 'clientClaim'
+    , own     :: Maybe Size
+        -- ^ a control client's own size for this window, which caps it
+    , viewing :: Viewing
+    }
+    deriving (Eq, Show)
+
+-- | Whether a window is its session's current window.
+data Viewing = Viewing | Elsewhere
+    deriving (Eq, Show)
+
+-- | Which clients size a window (@aggressive-resize@): those of every
+-- session holding it, or only of those whose current window it is.
+data SizedBy = HoldingSessions | ViewingSessions
+    deriving (Eq, Show)
+
+-- | tmux's @clients_calculate_size@ for one window, given every client of a
+-- session holding it. Under @latest@ with more than one such client, the
+-- window follows its most recently active viewer: tmux's per-window
+-- @latest@ client, read from activity stamps.
+sizeWindow :: WindowSizeMode -> SizedBy -> [Sizer] -> Maybe Size
+sizeWindow SizeManual _ _ = Nothing
+sizeWindow mode by holders =
+    clamp (foldl capBy (fmap (.cols) claimed, fmap (.rows) claimed) caps)
+  where
+    sizers = case by of
+        HoldingSessions -> holders
+        ViewingSessions -> filter ((== Viewing) . (.viewing)) holders
+    counted = case mode of
+        SizeLatest | length holders > 1 ->
+            take 1 (List.sortOn (Down . stamp)
+                [ s | s <- sizers, s.viewing == Viewing ])
+        _ -> sizers
+    claimed = case map (.claim) counted of
+        [] -> Nothing
+        claims@((_, sz, _) : _) -> Just (sessionWindowArea mode sz claims)
+    caps = catMaybes (map (.own) sizers)
+    capBy (mx, my) o = (cap mx o.cols, cap my o.rows)
+    cap m 0 = m
+    cap m v = Just (maybe v (min v) m)
+    clamp (mx, my) = Size <$> my <*> mx
+    stamp s = let (t, _, _) = s.claim in t
+
+-- | A control client's own size for a window (@refresh-client -C @id:WxH@).
+controlWindowSize :: WindowId -> Client -> STM (Maybe Size)
+controlWindowSize wid c = case c.control of
+    Nothing -> pure Nothing
+    Just ctl -> (>>= Map.lookup wid) <$> readTVar ctl.windowSizes
 
 -- | What a client offers toward a session's window size: its activity
 -- stamp, its size, and the status rows it draws (@statusLines@). A control
@@ -129,16 +219,6 @@ clientClaim statusLines mwid c = do
                 _ -> Just (stamp, fromMaybe (fromMaybe defaultControl msz) own, 0)
   where
     defaultControl = Size { rows = 24, cols = 80 }
-
--- | Every control client's own size for a window, among the clients of
--- the given sessions.
-windowOverrides :: ServerState -> [Session] -> WindowId -> STM [Size]
-windowOverrides st sessions wid = fmap concat . forM sessions $ \sess -> do
-    cs <- sessionClients st sess.id
-    fmap concat . forM cs $ \c -> case c.control of
-        Nothing -> pure []
-        Just ctl -> maybe [] (maybe [] pure . Map.lookup wid)
-            <$> readTVar ctl.windowSizes
 
 -- | @default-size@ read as tmux's @sscanf("%ux%u")@ does: leading digits, an
 -- @x@, digits, anything after ignored; anything else is 80x24.
@@ -278,9 +358,9 @@ windowAreas st = do
         <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
     forM wins $ \win -> (,) win <$> windowArea st win
 
--- | The area a window's panes are laid out at: that of the session holding
--- it that 'pickArea' prefers, reworked for any control client's size for
--- this window, which it never exceeds (tmux's per-window client sizes).
+-- | The area a window's panes are laid out at: its 'windowSize', read from
+-- the session holding it alone that shows it, which already holds that;
+-- without one, the area of the holder 'pickArea' prefers.
 windowArea :: ServerState -> Window -> STM Size
 windowArea st win = do
     sessions <- Map.elems <$> readTVar st.sessions
@@ -292,19 +372,13 @@ windowArea st win = do
         let latest = if null stamps then Nothing else Just (maximum stamps)
         pure [ (AreaClaim (ix == cur) latest, sess)
              | (ix, w) <- ws, w.id == win.id ]
-    case pickHolder holdings of
-        Nothing -> pure Size { rows = 24, cols = 80 }
-        Just sess -> do
-            overrides <- windowOverrides st (map snd holdings) win.id
-            if null overrides
-                then readTVar sess.lastSize
-                else do
-                    sz <- sessionArea st sess (Just win.id)
-                    pure (foldl clampTo sz overrides)
-  where
-    clampTo sz o = Size
-        { rows = if o.rows /= 0 then min sz.rows o.rows else sz.rows
-        , cols = if o.cols /= 0 then min sz.cols o.cols else sz.cols }
+    case holdings of
+        [(AreaClaim True _, sess)] -> readTVar sess.lastSize
+        _ -> windowSize st win >>= \case
+            Just sz -> pure sz
+            Nothing -> case pickHolder holdings of
+                Nothing -> pure Size { rows = 24, cols = 80 }
+                Just sess -> readTVar sess.lastSize
 
 -- | How strongly a session holding a window claims to size it: whether
 -- the window is its current one, and when its clients were last active.
