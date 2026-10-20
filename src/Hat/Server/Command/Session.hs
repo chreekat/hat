@@ -233,12 +233,12 @@ newSession st mclient opts flags pos
                 pure [ROutput out]
             else pure []
 
--- | The configuration causes still unshown, as a session is created or
--- attached once the configuration has loaded (tmux's @cfg_show_causes@).
 -- | Whether a client attaching already shows a session.
 data ClientAttach = FirstAttach | Reattach
     deriving (Eq, Show)
 
+-- | The configuration causes still unshown, as a session is created or
+-- attached once the configuration has loaded (tmux's @cfg_show_causes@).
 configCausesFor :: ServerState -> Session -> IO ()
 configCausesFor st sess = do
     phase <- readTVarIO st.startupPhase
