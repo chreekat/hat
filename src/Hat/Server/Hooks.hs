@@ -12,6 +12,7 @@ module Hat.Server.Hooks
     , notify
     , notifyPane
     , notifyWindow
+    , notifyClient
     , notifyGroupChange
     , notifyGroupDrops
     , fireMonitorHook
@@ -237,6 +238,38 @@ notifyWindow st name msid win extra = do
     notify st name
         (NotifyTarget msid (Just win.id) Nothing)
         (("window", PWindowRef win.id wname) : extra)
+
+-- | Fire a client event with tmux's client payload (@events_fire_client@):
+-- the client and, while it shows a session, that session, its current
+-- window and the window's active pane, targeted there.
+notifyClient :: ServerState -> Text -> Client -> [(Text, PayloadItem)] -> IO ()
+notifyClient st name client extra = do
+    shown <- atomically $ do
+        sid <- readTVar client.session
+        msess <- Map.lookup sid <$> readTVar st.sessions
+        case msess of
+            Nothing -> pure Nothing
+            Just sess -> do
+                sname <- readTVar sess.name
+                ix <- readTVar sess.currentIx
+                mwin <- currentWindow sess
+                mview <- case mwin of
+                    Nothing -> pure Nothing
+                    Just win -> do
+                        wname <- readTVar win.name
+                        pid <- readTVar win.activeId
+                        pure (Just (win.id, wname, pid))
+                pure (Just (sid, sname, ix, mview))
+    let clientItem = ("client", PClientRef (clientNameOf (Just client)))
+    case shown of
+        Nothing -> notify st name noTarget (clientItem : extra)
+        Just (sid, sname, ix, mview) -> notify st name
+            (NotifyTarget (Just sid) ((\(w, _, _) -> w) <$> mview) ((\(_, _, p) -> p) <$> mview))
+            ([ clientItem, ("session", PSessionRef sid sname) ]
+                <> concat [ [ ("window", PWindowRef wid wname), ("window_index", PInt ix)
+                            , ("pane", PPaneRef pid) ]
+                          | Just (wid, wname, pid) <- [mview] ]
+                <> extra)
 
 -- | Fire a user event (@set-hook -E@): waiters always wake; hooks run only
 -- for a name some @set-hook@ has registered.

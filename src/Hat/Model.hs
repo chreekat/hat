@@ -190,6 +190,9 @@ data ServerState = ServerState
     , commandDepth :: TVar Int   -- ^ open user-command batches; see
                                 --   'Hat.Server.Resize.awaitReconcileTick'
     , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
+    , windowLatest :: TVar (Map WindowId ClientId)
+        -- ^ each window's latest client (tmux's @w->latest@); see
+        --   'Hat.Server.Conn.noteLatest'
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
                                 --   'Hat.Server.serverIdle'
@@ -1076,6 +1079,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- reconciled
     <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
+    <*> newTVarIO Map.empty  -- windowLatest
     <*> newTVarIO 0      -- livePanes
     <*> newTVarIO Map.empty  -- popupJobs
     <*> newTVarIO 0      -- activeConns

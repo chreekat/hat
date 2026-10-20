@@ -53,7 +53,7 @@ import Hat.Server
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.ClientSession
     ( DetachOnDestroy (..), SessionChoice (..), destroyDestination )
-import Hat.Server.Conn (handleInput)
+import Hat.Server.Conn (clientResized, handleInput, removeClient)
 import Hat.Server.Lock
     (LockOutcome (..), lockClient, lockDeadline, lockTimerLoop, ttyHandedBack)
 import Hat.Server.Dispatch (installHooks, runArgv)
@@ -2262,6 +2262,8 @@ spec = do
                 installHooks st
                 _ <- addWindow sess 0
                 pure (st, sess)
+            record st name = runArgv st Nothing
+                ["set-hook", "-ga", name, "set -gF @h '#{@h}|#{hook}:#{hook_client}'"]
             recorded st = runArgv st Nothing ["show", "-gqv", "@h"]
         it "names the client in #{hook_client} as list-clients does" $ do
             (st, _) <- hooked
@@ -2273,6 +2275,56 @@ spec = do
             runArgv st (Just client) ["switch-client", "-t", "$1"] `shouldReturn` []
             listed <- runArgv st Nothing ["list-clients", "-F", "#{client_name}"]
             recorded st `shouldReturn` listed
+        it "attach-session fires client-attached for a client not yet attached" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId (-1)) (Size 24 80) 1
+            _ <- record st "client-attached"
+            runArgv st (Just client) ["attach-session", "-t", "work"] `shouldReturn` []
+            recorded st `shouldReturn` [ROutput "|client-attached:client1"]
+            runArgv st (Just client) ["attach-session", "-t", "work"] `shouldReturn` []
+            recorded st `shouldReturn` [ROutput "|client-attached:client1"]
+        it "switch-client fires client-session-changed with the old and new sessions" $ do
+            (st, _) <- hooked
+            other <- addSession st 1
+            _ <- addWindow other 0
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- runArgv st Nothing ["set-hook", "-g", "client-session-changed",
+                "set -gF @h '#{hook_client}:#{hook_old_session}:#{hook_new_session}:#{hook_session}'"]
+            runArgv st (Just client) ["switch-client", "-t", "$1"] `shouldReturn` []
+            recorded st `shouldReturn` [ROutput "client1:$0:$1:$1"]
+        it "a resize fires client-resized with the old and new size" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- runArgv st Nothing ["set-hook", "-g", "client-resized",
+                "set -gF @h '#{hook_client}:#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
+            clientResized st client (Size 20 70)
+            recorded st `shouldReturn` [ROutput "client1:80x24->70x20"]
+        it "focus reports fire client-focus-in and client-focus-out" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- record st "client-focus-in"
+            _ <- record st "client-focus-out"
+            handleInput dispatch st client "\ESC[O\ESC[I"
+            recorded st `shouldReturn`
+                [ROutput "|client-focus-out:client1|client-focus-in:client1"]
+        it "a key from a client the window last heard from elsewhere fires client-active" $ do
+            (st, _) <- hooked
+            a <- addClient st (SessionId 0) (Size 24 80) 1
+            b <- addClient st (SessionId 0) (Size 24 80) 2
+            _ <- record st "client-active"
+            handleInput dispatch st a "x"
+            handleInput dispatch st a "y"
+            handleInput dispatch st b "z"
+            recorded st `shouldReturn`
+                [ROutput "|client-active:client1|client-active:client2"]
+        it "a client going away fires client-detached, then client-closed" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- record st "client-detached"
+            _ <- record st "client-closed"
+            removeClient st client
+            recorded st `shouldReturn`
+                [ROutput "|client-detached:client1|client-closed:client1"]
 
     describe "input routing within a chunk" $ do
         let keyed = do

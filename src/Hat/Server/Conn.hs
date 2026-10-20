@@ -14,7 +14,9 @@ module Hat.Server.Conn
     , escWait
     , keyContext
     , reencodeKey
-    , handleInput  -- ^ exported for the display-panes key tests
+    , handleInput  -- ^ exported for the key tests
+    , clientResized
+    , removeClient
     , newClient    -- ^ exported for the source-file tests
     ) where
 
@@ -22,7 +24,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (foldM, forM_, forever, unless, void, when)
+import Control.Monad (foldM, forM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Functor ((<&>))
@@ -61,7 +63,7 @@ import Hat.Server.PopupIO (closePopup, popupKeyInput, refitClientPopup)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Startup
 import Hat.Server.Flash
-import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
+import Hat.Server.Hooks (PayloadItem (..), notifyClient)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
@@ -175,6 +177,7 @@ welcome d st re h = do
             Nothing -> sendMessage conn (ServerError "control state missing")
             Just cs -> do
                 atomically $ modifyTVar' st.clients (Map.insert client.id client)
+                notifyClient st "client-created" client []
                 sendMessage conn (Welcome "")
                 sendMessage conn (ServerVersion protocolVersion)
                 atomically $ writeTVar client.ready True
@@ -186,6 +189,7 @@ welcome d st re h = do
             -- Register early so the setup commands (new-session,
             -- attach-session -t) act on a live client and can switch it.
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
+            notifyClient st "client-created" client []
             -- Gate here, not only in ensureSession: setup commands run
             -- directly, so an autostarting `hat new` would otherwise race
             -- its own server's config load (upstream if-shell-TERM.sh).
@@ -364,6 +368,38 @@ resolveSessionNames st names = do
     let byName = Map.fromList named
     pure (nub [ sid | nm <- names, Just sid <- [Map.lookup nm byName] ])
 
+-- | Each window a lost client was the latest of passes to the most
+-- recently active client still showing it (tmux's
+-- @server_client_attached_lost@).
+passLatest :: ServerState -> Client -> IO ()
+passLatest st gone = do
+    heirs <- atomically $ do
+        ls <- readTVar st.windowLatest
+        let held = [ wid | (wid, cid) <- Map.toList ls, cid == gone.id ]
+        modifyTVar' st.windowLatest (Map.filter (/= gone.id))
+        cs <- Map.elems <$> readTVar st.clients
+        viewing <- fmap concat . forM cs $ \c -> do
+            mv <- clientView st c
+            act <- readTVar c.lastActive
+            pure [ (wid, (act, c)) | Just (_, w) <- [mv], let wid = w.id, wid `elem` held ]
+        pure (Map.elems (Map.fromListWith newer viewing))
+    mapM_ (noteLatest st . snd) heirs
+  where
+    newer a b = if fst a >= fst b then a else b
+
+-- | A client's terminal changed size (tmux's @server_client_dispatch@ on
+-- @MSG_RESIZE@).
+clientResized :: ServerState -> Client -> Size -> IO ()
+clientResized st client sz = do
+    noteLatest st client
+    old <- atomically (swapTVar client.size sz)
+    refitClientPopup st client
+    sid <- readTVarIO client.session
+    applySessionSize st sid
+    when (old /= sz) $ notifyClient st "client-resized" client
+        [ ("width", PInt (fromIntegral sz.cols)), ("height", PInt (fromIntegral sz.rows))
+        , ("old_width", PInt (fromIntegral old.cols)), ("old_height", PInt (fromIntegral old.rows)) ]
+
 removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do
     sid <- readTVarIO client.session
@@ -373,11 +409,9 @@ removeClient st client = do
     -- tmux's server_client_lost clears the overlay: the popup's command ends.
     mapM_ (closePopup st client) =<< readTVarIO client.popup
     attached <- atomically (findSessionById st sid)
-    forM_ attached $ \sess -> do
-        sname <- readTVarIO sess.name
-        notify st "client-detached" (sessionTarget sid)
-            [ ("client", PClientRef (clientNameOf (Just client)))
-            , ("session", PSessionRef sid sname) ]
+    forM_ attached $ \_ -> notifyClient st "client-detached" client []
+    when (client.role == Attached) $ notifyClient st "client-closed" client []
+    passLatest st client
     applySessionSize st sid
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
@@ -465,12 +499,7 @@ inputLoop d st re client = loop
                 Input bs -> do
                     handleInput d st client bs
                     loop
-                Resize sz -> do
-                    atomically (writeTVar client.size sz)
-                    refitClientPopup st client
-                    sid <- readTVarIO client.session
-                    applySessionSize st sid
-                    loop
+                Resize sz -> clientResized st client sz >> loop
                 Detach -> send client DetachOk
                 Command cmds -> do
                     showReplies st client =<< d.runCommands st (Just client) cmds
@@ -543,6 +572,23 @@ handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
     handleKeys d st client bs
+    -- A focus-out report says the user looked away, not that they are here.
+    unless (bs == "\ESC[O") (noteLatest st client)
+
+-- | tmux's @server_client_update_latest@: the client becomes the latest of
+-- the window it shows, which fires @client-active@ when it was not already.
+noteLatest :: ServerState -> Client -> IO ()
+noteLatest st client = do
+    changed <- atomically $ do
+        mwin <- clientView st client
+        case mwin of
+            Nothing -> pure False
+            Just (_, win) -> do
+                cur <- Map.lookup win.id <$> readTVar st.windowLatest
+                if cur == Just client.id then pure False else do
+                    modifyTVar' st.windowLatest (Map.insert win.id client.id)
+                    pure True
+    when changed $ notifyClient st "client-active" client []
 
 -- | What a client's keystrokes go to: an open overlay, else its key tables.
 data KeyOwner

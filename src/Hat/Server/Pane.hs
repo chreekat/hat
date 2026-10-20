@@ -143,7 +143,7 @@ import Hat.Server.Keys
 import Hat.Server.Floating (ModalReturn (..), Restack (..), loseModal, modalPane, noFloats, restack)
 import Hat.Server.Layout
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
@@ -953,17 +953,21 @@ markBell st sid win = do
 -- keys are ignored.
 noteOuterFocus :: ServerState -> Client -> Key -> IO ()
 noteOuterFocus st client k
-    | k.name == "FocusOut" = atomically $ writeTVar client.outerFocused False
-    | k.name == "FocusIn"  = atomically $ do
-        writeTVar client.outerFocused True
-        sid <- readTVar client.session
-        msess <- Map.lookup sid <$> readTVar st.sessions
-        forM_ msess $ \sess -> do
-            mwin <- currentWindow sess
-            forM_ mwin $ \win -> do
-                writeTVar win.activity False
-                writeTVar win.bellFlag False
-        bumpDirty st
+    | k.name == "FocusOut" = do
+        atomically $ writeTVar client.outerFocused False
+        notifyClient st "client-focus-out" client []
+    | k.name == "FocusIn"  = do
+        atomically $ do
+            writeTVar client.outerFocused True
+            sid <- readTVar client.session
+            msess <- Map.lookup sid <$> readTVar st.sessions
+            forM_ msess $ \sess -> do
+                mwin <- currentWindow sess
+                forM_ mwin $ \win -> do
+                    writeTVar win.activity False
+                    writeTVar win.bellFlag False
+            bumpDirty st
+        notifyClient st "client-focus-in" client []
     | otherwise = pure ()
 
 -- The grace a hung-up child gets before SIGKILL: long enough for a

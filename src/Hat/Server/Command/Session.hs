@@ -41,7 +41,7 @@ import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
-    ( PayloadItem (..), noTarget, notify, notifyGroupChange, sessionTarget )
+    ( PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange, sessionTarget )
 import Hat.Server.Locate (findTarget, formatClient, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
@@ -298,7 +298,9 @@ cmdAttachSession st mclient args = do
                 bumpDirty st
         case mclient of
             Just client -> do
+                shown <- atomically (readTVar client.session >>= findSessionById st)
                 attachClient st client sess
+                when (isNothing shown) (notifyClient st "client-attached" client [])
                 configCausesFor st sess
                 pure []
             Nothing
