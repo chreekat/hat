@@ -289,7 +289,6 @@ data Session = Session
         --   share one map. See 'Hat.Server.Winlink.groupMembers'.
     , currentIx :: TVar Int
     , windowHist :: TVar [Int]  -- ^ MRU window indices; see 'Hat.Server.Mru'
-    , lastSize :: TVar Size              -- ^ the window's pane area; see 'sessionWindowArea'
     , environ  :: TVar Environ           -- ^ env for new panes; refreshed on attach (update-environment)
     , startCwd :: TVar FilePath          -- ^ default working directory for new windows; @attach-session -c@ re-anchors it
     , options  :: OwnOptions      -- ^ session-scoped set-option; see 'resolveForSession'
@@ -334,6 +333,14 @@ data Window = Window
     , menu       :: TVar (Maybe WindowMenu)  -- ^ the menu shown over the window
     , menuLast   :: TVar (Int, Int)
         -- ^ where the window's last menu was placed (@-x L@\/@-y L@)
+    , size       :: TVar Size
+        -- ^ the area its panes are laid out at and every client shows it at
+        -- (tmux's @sx@\/@sy@); see Note [Sizing per window]
+    , manualSize :: TVar Size
+        -- ^ its size under @window-size manual@ (tmux's @manual_sx@\/@manual_sy@)
+    , latest     :: TVar (Maybe ClientId)
+        -- ^ the client a @window-size latest@ window follows among several
+        -- (tmux's @latest@)
     }
 
 data Pane = Pane
@@ -1116,8 +1123,7 @@ outsideCommandBatch st act = bracket leave rejoin (const act)
 
 -- | Stamp a client as the most-recently-active on its session: advance the
 -- server's activity clock and record the new value on the client and its
--- session, so 'effectiveWindowSize' under @window-size latest@ sizes a
--- window to whichever client most recently drove it.
+-- session.
 markActive :: ServerState -> Client -> STM ()
 markActive st client = do
     n <- tickActivity st

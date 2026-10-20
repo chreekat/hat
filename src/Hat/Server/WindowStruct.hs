@@ -33,11 +33,13 @@ data WindowStruct = WindowStruct
     , wsLastActive :: [Int]  -- ^ MRU pane ordinals, head first
     , wsAutoRename :: Bool
     , wsModal      :: Maybe ModalSnap
+    , wsSize       :: Size
     , wsPanes      :: [Pane]
     }
 
-windowStruct :: Size -> (Int, Window) -> STM WindowStruct
-windowStruct eff (wix, w) = do
+windowStruct :: (Int, Window) -> STM WindowStruct
+windowStruct (wix, w) = do
+    eff      <- readTVar w.size
     nm       <- readTVar w.name
     lay      <- readTVar w.layout
     activeId <- readTVar w.activeId
@@ -61,4 +63,5 @@ windowStruct eff (wix, w) = do
         , wsActive = activeOrd, wsLastActive = lastOrds
         , wsAutoRename = auto
         , wsModal = modal
+        , wsSize = eff
         , wsPanes = mapMaybe (`Map.lookup` paneMap) order }

@@ -176,7 +176,7 @@ renderOnce st client = do
                 case mwin of
                     Nothing -> pure Nothing
                     Just win -> do
-                        eff <- readTVar sess.lastSize
+                        eff <- readTVar win.size
                         (rects, _) <- windowArrange st eff win
                         floats <- windowFloats st win
                         ps <- readTVar win.panes

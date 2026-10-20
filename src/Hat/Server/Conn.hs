@@ -22,14 +22,14 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (filterM, foldM, forM_, forever, unless, void, when)
+import Control.Monad (foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Functor ((<&>))
 import Data.IORef
 import Data.List (nub, partition, sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -214,6 +214,7 @@ welcome d st re h = do
                 (_, Just sess) -> do
                     refreshSessionEnv st sess client
                     sname <- readTVarIO sess.name
+                    atomically (void (claimLatest st client sess))
                     applySessionSize st sess.id
                     armLockTimer st sess.id
                     -- Ahead of the greeting, so the client draws its very
@@ -373,6 +374,7 @@ removeClient st client = do
     sid <- readTVarIO client.session
     atomically $ do
         modifyTVar' st.clients (Map.delete client.id)
+        forgetLatest st client.id
         forgetClientRequests st client
     -- tmux's server_client_lost clears the overlay: the popup's command ends.
     mapM_ (closePopup st client) =<< readTVarIO client.popup
@@ -470,7 +472,10 @@ inputLoop d st re client = loop
                     handleInput d st client bs
                     loop
                 Resize sz -> do
-                    atomically (writeTVar client.size sz)
+                    atomically $ do
+                        writeTVar client.size sz
+                        when (isNothing client.control) $
+                            void (claimOwnLatest st client)
                     refitClientPopup st client
                     sid <- readTVarIO client.session
                     applySessionSize st sid
@@ -505,35 +510,24 @@ expireKeyRepeat st client = do
     when (prefixArmed before && not (prefixArmed after)) $
         disarmFlash st client False
 
--- | Whether @client@ already holds the largest activity stamp among the
--- clients whose current window is its own (so it is the client a
--- @window-size latest@ window follows; see 'sizeWindow').
-isLatestViewer :: ServerState -> Client -> STM Bool
-isLatestViewer st client = do
-    sessions <- readTVar st.sessions
-    let viewed c = do
-            sid <- readTVar c.session
-            maybe (pure Nothing) (fmap (fmap (.id)) . currentWindow)
-                (Map.lookup sid sessions)
-    mine <- viewed client
-    stamp <- readTVar client.lastActive
-    others <- Map.elems <$> readTVar st.clients
-    newer <- filterM (\c -> if c.id == client.id then pure False else do
-        w <- viewed c
-        if w == mine then (>= stamp) <$> readTVar c.lastActive else pure False) others
-    pure (null newer)
+-- | Make a client the latest client of the window it shows (tmux's
+-- @server_client_update_latest@); whether that moved it.
+claimOwnLatest :: ServerState -> Client -> STM Bool
+claimOwnLatest st client = do
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    maybe (pure False) (claimLatest st client) msess
 
--- | Record activity from a client and, when it becomes the newest client
--- viewing its window, re-derive the sizes so a @latest@ window follows it.
+-- | Record activity from a client and, when it becomes the latest client
+-- of its window, re-derive the sizes so a @latest@ window follows it.
 noteClientActivity :: ServerState -> Client -> IO ()
 noteClientActivity st client = do
-    becameActive <- atomically $ do
-        already <- isLatestViewer st client
+    becameLatest <- atomically $ do
         markActive st client
-        pure (not already)
+        claimOwnLatest st client
     sid <- readTVarIO client.session
     armLockTimer st sid
-    when becameActive $ applySessionSize st sid
+    when becameLatest $ applySessionSize st sid
 
 -- | Whether a key event is delivered to the focused pane's program. A sequence
 -- the tokenizer could not name is dropped, so bytes hat does not understand

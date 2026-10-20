@@ -206,10 +206,11 @@ resumeArgv :: Text -> [Text] -> [Text]
 resumeArgv "claude" (prog : _) = [prog, "--continue"]
 resumeArgv _        argv       = argv
 
+-- | A fresh window of one new pane, at a size and with a latest client.
 newWindowWithPane
     :: ServerState -> SessionId -> FilePath -> PaneStart -> PaneKind -> FilePath
-    -> [(Text, Text)] -> Size -> IO (Window, Pane)
-newWindowWithPane st sid shellCmd how kind dir environ sz = do
+    -> [(Text, Text)] -> Size -> Maybe ClientId -> IO (Window, Pane)
+newWindowWithPane st sid shellCmd how kind dir environ sz latest = do
     (wid, pid) <- atomically $
         (,) <$> freshId st.nextWindow <*> freshId st.nextPane
     pane <- case kind of
@@ -235,6 +236,9 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
     floatsVar     <- newTVarIO noFloats
     menuVar       <- newTVarIO Nothing
     menuLastVar   <- newTVarIO (0, 0)
+    sizeVar       <- newTVarIO sz
+    manualVar     <- newTVarIO sz
+    latestVar     <- newTVarIO latest
     let win = Window
             { id = WindowId wid
             , name = nameVar
@@ -254,6 +258,9 @@ newWindowWithPane st sid shellCmd how kind dir environ sz = do
             , floats = floatsVar
             , menu = menuVar
             , menuLast = menuLastVar
+            , size = sizeVar
+            , manualSize = manualVar
+            , latest = latestVar
             }
     pure (win, pane)
 
@@ -1576,9 +1583,10 @@ windowHolders st win = do
         (fmap (any (\w -> w.id == win.id) . Map.elems) . readTVar . (.windows))
         sessions
 
--- | Build a fresh single-pane window around an already-running pane.
-wrapPaneInWindow :: ServerState -> Pane -> IO Window
-wrapPaneInWindow st pane = do
+-- | Build a fresh single-pane window around an already-running pane, at
+-- a size and with a latest client.
+wrapPaneInWindow :: ServerState -> Pane -> Size -> Maybe ClientId -> IO Window
+wrapPaneInWindow st pane sz latest = do
     wid <- atomically (freshId st.nextWindow)
     name <- paneCommandName pane
     nameVar <- newTVarIO name
@@ -1598,6 +1606,9 @@ wrapPaneInWindow st pane = do
     floatsVar <- newTVarIO noFloats
     menuVar <- newTVarIO Nothing
     menuLastVar <- newTVarIO (0, 0)
+    sizeVar <- newTVarIO sz
+    manualVar <- newTVarIO sz
+    latestVar <- newTVarIO latest
     pure Window
         { id = WindowId wid
         , name = nameVar
@@ -1617,6 +1628,9 @@ wrapPaneInWindow st pane = do
         , floats = floatsVar
         , menu = menuVar
         , menuLast = menuLastVar
+        , size = sizeVar
+        , manualSize = manualVar
+        , latest = latestVar
         }
 
 -- | @-O@: whether pane output is tapped into the process's stdin.
@@ -1747,13 +1761,12 @@ createSession st mname argv environ dir sz = do
     spawnEnv <- globalSpawnEnv st environ
     shellCmd <- paneShell opts
     (win, pane) <- newWindowWithPane st (SessionId sid) shellCmd
-        (shellStart (optionText "default-command" opts) argv) ProgramPane dir spawnEnv sz
+        (shellStart (optionText "default-command" opts) argv) ProgramPane dir spawnEnv sz Nothing
     now <- getPOSIXTime
     nameVar <- newTVarIO sname0
     windowsVar <- newTVarIO (Map.singleton opts.baseIndex win)
     currentVar <- newTVarIO opts.baseIndex
     windowHistVar <- newTVarIO []
-    sizeVar <- newTVarIO sz
     environVar <- newTVarIO (environFromPairs environ)
     cwdVar <- newTVarIO dir
     optionsVar <- newOwnOptionsIO
@@ -1768,7 +1781,6 @@ createSession st mname argv environ dir sz = do
             , windows = windowsVar
             , currentIx = currentVar
             , windowHist = windowHistVar
-            , lastSize = sizeVar
             , environ = environVar
             , startCwd = cwdVar
             , options = optionsVar
@@ -1800,11 +1812,9 @@ createGroupedSession st leader mname environ dir = do
         writeTVar leader.group (Just gname)
         (sid, sname) <- freshSessionName st (Just gname) mname
         ws <- readTVar leader.windows
-        sz <- readTVar leader.lastSize
         nameVar <- newTVar sname
         currentVar <- newTVar (maybe 0 fst (Map.lookupMin ws))
         windowHistVar <- newTVar []
-        sizeVar <- newTVar sz
         environVar <- newTVar (environFromPairs environ)
         cwdVar <- newTVar dir
         optionsVar <- newOwnOptions
@@ -1819,7 +1829,6 @@ createGroupedSession st leader mname environ dir = do
                 , windows = leader.windows
                 , currentIx = currentVar
                 , windowHist = windowHistVar
-                , lastSize = sizeVar
                 , environ = environVar
                 , startCwd = cwdVar
                 , options = optionsVar

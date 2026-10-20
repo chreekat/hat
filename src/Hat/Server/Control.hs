@@ -549,8 +549,8 @@ cmdRefreshClient st mclient args
                 msess <- Map.lookup sid <$> readTVar st.sessions
                 forM_ msess $ \sess -> do
                     mwin <- currentWindow sess
-                    area <- readTVar sess.lastSize
-                    forM_ mwin $ \win ->
+                    forM_ mwin $ \win -> do
+                        area <- readTVar win.size
                         modifyTVar' tc.viewport (panViewport pan win.id area)
                 writeTVar tc.needsFull True
                 bumpDirty st

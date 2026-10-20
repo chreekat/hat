@@ -253,15 +253,11 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
   marking order, newest pane first; hat orders by pane id, which matches
   until `swap-pane`/`join-pane` reorder tmux's z-order.
 
-- **`aggressive-resize`** sizes a window only from the clients whose current
-  window it is, and without it from the clients of every session holding it,
-  as tmux does (`windowSize`). Hat still stores one area per session, its
-  current window's, so: a window no client sizes keeps a holding session's
-  area rather than its own last size; a `manual` size (`resize-window`)
-  belongs to the session, so it is lost once the session's area follows
-  another window; and `latest` follows the window's most recently active
-  *viewer* by activity stamp, where tmux tracks each window's latest client
-  (moved by `select-window` too, and still counted once it looks elsewhere).
+- **`aggressive-resize`** / **`window-size`** size each window on its own,
+  as tmux does (`recalculateSizes`), but a window resized by its clients
+  fires no `window-resized` hook (only `resize-window` fires it, where tmux
+  fires it on every resize), and a client becoming a window's latest fires
+  no `client-active`.
 
 - **`default-shell`** runs as a plain interactive shell named by its path,
   where tmux starts a login shell (`-name`) and runs `-c` commands under the

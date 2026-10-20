@@ -29,6 +29,7 @@ module Hat.Server.Persist
     , decodeSnapshotJson
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Exception (bracket)
 import Control.Monad (unless)
 import Data.Aeson
@@ -43,8 +44,10 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.POSIX (POSIXTime)
+import Data.Word (Word16)
 import Database.SQLite.Simple
 
+import Hat.Geometry (Size (..))
 import Hat.Model.PaneKind (PaneKind (..))
 
 -- | A point-in-time capture of the whole tree, in restore order:
@@ -109,6 +112,11 @@ data WindowSnap = WindowSnap
                            -- ^ the window's modal pane; carried in the window
                            --   row's @extra@ JSON. Its floating panes ride in
                            --   'layout' ('Hat.Server.LayoutString.emitLayoutZ').
+    , size       :: Maybe Size
+                           -- ^ the window's own size; carried in the window
+                           --   row's @extra@ JSON, absent in a capture that
+                           --   predates it (whose windows all took their
+                           --   session's size)
     , panes      :: [PaneSnap] -- ^ in layout order
     }
     deriving (Eq, Show)
@@ -214,19 +222,22 @@ decodeSessionExtra t = fromMaybe (SessionExtra [] Nothing 0 Nothing)
 -- the automatic-rename flag. A store written before @auto_rename@ existed
 -- omits the key; it defaults to 'False', matching the old restore behavior
 -- of pinning a restored window's name.
-data WindowExtra = WindowExtra [Int] Bool (Maybe Int) (Maybe Int) (Maybe ModalSnap)
-    -- ^ MRU pane ordinals (head first), auto-rename, key, link, modal pane
+data WindowExtra
+    = WindowExtra [Int] Bool (Maybe Int) (Maybe Int) (Maybe ModalSnap) (Maybe Size)
+    -- ^ MRU pane ordinals (head first), auto-rename, key, link, modal pane,
+    --   size
 
 -- @last_active@ mirrors the head for readers predating the stack;
 -- @last_active_stack@ carries the whole history. See 'SessionExtra'.
 instance ToJSON WindowExtra where
-    toJSON (WindowExtra hist auto k l m) =
+    toJSON (WindowExtra hist auto k l m sz) =
         object (["last_active" .= h | h <- take 1 hist]
                 ++ ["last_active_stack" .= hist | not (null hist)]
                 ++ ["auto_rename" .= auto | auto]
                 ++ ["key" .= v | Just v <- [k]]
                 ++ ["link_of" .= v | Just v <- [l]]
-                ++ ["modal" .= v | Just v <- [m]])
+                ++ ["modal" .= v | Just v <- [m]]
+                ++ sizeFields sz)
 
 instance FromJSON WindowExtra where
     parseJSON = withObject "window extra" $ \o -> do
@@ -236,15 +247,32 @@ instance FromJSON WindowExtra where
         k      <- o .:? "key"
         l      <- o .:? "link_of"
         m      <- o .:? "modal"
-        pure (WindowExtra (fromMaybe (maybeToList legacy) stack) auto k l m)
+        sz     <- parseSize o
+        pure (WindowExtra (fromMaybe (maybeToList legacy) stack) auto k l m sz)
 
 encodeWindowExtra :: WindowSnap -> Text
 encodeWindowExtra w = TE.decodeUtf8 (BL.toStrict (encode
-    (WindowExtra w.paneHist w.autoRename w.key w.linkOf w.modal)))
+    (WindowExtra w.paneHist w.autoRename w.key w.linkOf w.modal w.size)))
 
 decodeWindowExtra :: Text -> WindowExtra
-decodeWindowExtra t = fromMaybe (WindowExtra [] False Nothing Nothing Nothing)
+decodeWindowExtra t = fromMaybe (WindowExtra [] False Nothing Nothing Nothing Nothing)
     (decode (BL.fromStrict (TE.encodeUtf8 t)))
+
+-- | A window's size as JSON keys: @width@ and @height@, both or neither.
+sizeFields :: Maybe Size -> [(Key, Value)]
+sizeFields = maybe [] (\sz -> ["width" .= sz.cols, "height" .= sz.rows])
+
+-- | Read 'sizeFields' back: a size only when both keys hold a window
+-- dimension; anything else is no size, never a failure of the whole row.
+parseSize :: Object -> Parser (Maybe Size)
+parseSize o = do
+    w <- dim "width"
+    h <- dim "height"
+    pure (Size <$> h <*> w)
+  where
+    dim k = (inRange =<<) <$> (o .:? k <|> pure Nothing)
+    inRange :: Int -> Maybe Word16
+    inRange n = if n >= 1 && n <= 10000 then Just (fromIntegral n) else Nothing
 
 -- | The pane row's @extra@ JSON payload: every 'PaneSnap' field but the
 -- @cwd@ core column, as the snapshot JSON writes them ('paneFields'). Evolving,
@@ -435,11 +463,11 @@ loadSnapshot conn = do
             "SELECT cwd, extra FROM pane \
             \WHERE session_seq = ? AND window_ix = ? ORDER BY ordinal"
             (sseq, wix) :: IO [(Text, Text)]
-        let WindowExtra paneOrds auto k l m = decodeWindowExtra wex
+        let WindowExtra paneOrds auto k l m sz = decodeWindowExtra wex
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
             , paneHist = paneOrds, autoRename = auto, key = k, linkOf = l, modal = m
-            , panes = [ decodeExtra c ex | (c, ex) <- prows ] }
+            , size = sz, panes = [ decodeExtra c ex | (c, ex) <- prows ] }
 
 -- Snapshot history --------------------------------------------------------
 
@@ -579,6 +607,7 @@ instance ToJSON WindowSnap where
         <> ["key" .= k | Just k <- [w.key]]
         <> ["link_of" .= l | Just l <- [w.linkOf]]
         <> ["modal" .= m | Just m <- [w.modal]]
+        <> sizeFields w.size
         <> ["panes" .= w.panes]
 
 instance FromJSON WindowSnap where
@@ -593,11 +622,12 @@ instance FromJSON WindowSnap where
         k      <- o .:? "key"
         l      <- o .:? "link_of"
         m      <- o .:? "modal"
+        sz     <- parseSize o
         ps     <- fromMaybe [] <$> o .:? "panes"
         pure WindowSnap
             { ix = wix, name = nm, layout = lay, active = act
             , paneHist = fromMaybe (maybeToList legacy) stack, autoRename = auto
-            , key = k, linkOf = l, modal = m, panes = ps }
+            , key = k, linkOf = l, modal = m, size = sz, panes = ps }
 
 instance ToJSON PaneSnap where
     toJSON p = object (("cwd" .= p.cwd) : paneFields p)

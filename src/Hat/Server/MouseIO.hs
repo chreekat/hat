@@ -59,7 +59,7 @@ mouseViewFor st client ys = do
             sopts <- resolveForSessionIO st sess
             csize <- readTVarIO client.size
             vp <- readTVarIO client.viewport
-            eff <- readTVarIO sess.lastSize
+            eff <- readTVarIO win.size
             (boxes, modal) <- atomically $ (,) <$> windowBoxes st eff win <*> modalView win
             ws <- readTVarIO sess.windows
             let (_, mStatus) = statusLayout sopts.statusPosition sopts.statusLines
@@ -136,13 +136,13 @@ mouseEventPane st ev = do
                     case Map.lookup pid ps of
                         Nothing -> pure Nothing
                         Just pane -> do
-                            box <- paneBoxOf st sess win pid
+                            box <- paneBoxOf st win pid
                             pure (Just (sess, win, pane, box))
 
 -- | A visible pane's box in its window.
-paneBoxOf :: ServerState -> Session -> Window -> PaneId -> IO (Maybe PaneBox)
-paneBoxOf st sess win pid = do
-    eff <- readTVarIO sess.lastSize
+paneBoxOf :: ServerState -> Window -> PaneId -> IO (Maybe PaneBox)
+paneBoxOf st win pid = do
+    eff <- readTVarIO win.size
     boxes <- atomically (windowBoxes st eff win)
     pure (List.find (\b -> b.pane == pid) boxes)
 
@@ -254,7 +254,7 @@ resizeBorderTo :: ServerState -> MouseEvent -> IO ()
 resizeBorderTo st ev = do
     mp <- mouseEventPane st ev
     forM_ mp $ \(sess, win, _, _) -> do
-        eff <- readTVarIO sess.lastSize
+        eff <- readTVarIO win.size
         let (x, y) = windowPoint False ev
             (lx, ly) = windowPoint True ev
         changed <- atomically $ do

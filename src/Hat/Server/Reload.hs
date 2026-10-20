@@ -52,6 +52,7 @@ import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Vector qualified as V
 import GHC.Generics (Generic)
 
+import Hat.Geometry (Size)
 import Hat.Server.Persist
     (ModalSnap (..), PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , decodeSnapshotJson, plainPane)
@@ -211,6 +212,7 @@ data HotWindow = HotWindow
     , key        :: Maybe Int
     , linkOf     :: Maybe Int
     , modal      :: Maybe ModalSnap
+    , size       :: Maybe Size
     , panes      :: [(PaneSnap, HotPane)]
     }
     deriving (Eq, Show)
@@ -490,7 +492,7 @@ hotTree h = do
                { ix = w.ix, name = w.name, layout = w.layout, active = w.active
                , paneHist = w.paneHist, autoRename = w.autoRename
                , key = w.key, linkOf = w.linkOf, modal = w.modal
-               , panes = zip w.panes mine } )
+               , size = w.size, panes = zip w.panes mine } )
 
 -- Era ≤ 9 payload shapes, frozen: screens travelled as cell grids, which
 -- 'migrateV9' paints into today's byte rows. The decoders are verbatim what
@@ -684,7 +686,7 @@ migrateV7 (ReloadStateV7 sess cur lst) = ReloadTree
     migWindow (ReloadWindowV7 ix' nm lay act hist ar ps) = HotWindow
         { ix = ix', name = nm, layout = lay, active = act
         , paneHist = hist, autoRename = ar, key = Nothing, linkOf = Nothing
-        , modal = Nothing, panes = map migPane ps }
+        , modal = Nothing, size = Nothing, panes = map migPane ps }
     migPane (ReloadPaneV7 cwd' mfd cpid ms sc) =
         ( plainPane cwd'
         , HotPane { masterFd = mfd, childPid = cpid, modes = ms

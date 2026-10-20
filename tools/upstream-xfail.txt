@@ -21,7 +21,7 @@ prompt-keys.sh                  # C-v quote-next (a control character drawn as ^
 prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; -1/-N/-i/-k/-e prompt flags
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
-tty-draw-line.sh                # resize-window sizes the whole session, not one window, so later windows keep its width; a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused)
+tty-draw-line.sh                # a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused); the rest of the script passes
 utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (tmux: per sequence); NUL/DEL capture differs
 
 # Baseline re-recorded 2026-07-31 against the pinned tmux master corpus
