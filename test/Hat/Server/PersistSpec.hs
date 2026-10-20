@@ -12,6 +12,7 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck
 
+import Hat.Geometry (Size (..))
 import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist
 
@@ -46,10 +47,15 @@ genWindow wix = do
     k     <- genMaybeKey
     l     <- genMaybeKey
     m     <- oneof [pure Nothing, Just <$> genModal npane]
+    sz    <- oneof [pure Nothing, Just <$> genSize]
     pure WindowSnap
         { ix = wix, name = nm, layout = lay, active = act
         , paneHist = hist, autoRename = auto, key = k, linkOf = l, modal = m
-        , panes = ps }
+        , size = sz, panes = ps }
+
+-- A window size, within tmux's window bounds.
+genSize :: Gen Size
+genSize = Size <$> choose (1, 10000) <*> choose (1, 10000)
 
 -- A modal pane among a window's @n@ panes, by ordinal.
 genModal :: Int -> Gen ModalSnap
@@ -119,6 +125,7 @@ instance Arbitrary WindowSnap where
         ++ [ w { key = Nothing } | isJust w.key ]
         ++ [ w { linkOf = Nothing } | isJust w.linkOf ]
         ++ [ w { modal = Nothing } | isJust w.modal ]
+        ++ [ w { size = Nothing } | isJust w.size ]
         ++ [ w { autoRename = False } | w.autoRename ]
         ++ [ w { layout = l } | l <- shrinkText w.layout ]
 
@@ -403,6 +410,26 @@ spec = do
                 (decodeSnapshotJson js)
                 `shouldBe` Just [(Just "g", [(Just 7, Nothing), (Nothing, Just 7)])]
 
+        it "reads a window's size from its extra; a row without one, or a bad one, has none" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES \
+                    \(0, 0, 'w', 'l', 0, '{\"width\":120,\"height\":40}')"
+                execute_ conn "INSERT INTO window VALUES (0, 1, 'w', 'l', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES \
+                    \(0, 2, 'w', 'l', 0, '{\"width\":\"x\",\"height\":0,\"key\":3}')"
+                loadSnapshot conn
+            [ (w.size, w.key) | s <- got.sessions, w <- s.windows ]
+                `shouldBe` [ (Just Size { rows = 40, cols = 120 }, Nothing)
+                           , (Nothing, Nothing), (Nothing, Just 3) ]
+
+        it "decodes snapshot JSON carrying a window's size" $ do
+            let js = "{\"sessions\":[{\"name\":\"s\",\"windows\":\
+                     \[{\"ix\":0,\"width\":120,\"height\":40},{\"ix\":1}]}]}"
+            fmap (map (.size) . concatMap (.windows) . (.sessions)) (decodeSnapshotJson js)
+                `shouldBe` Just [Just Size { rows = 40, cols = 120 }, Nothing]
+
         it "reads a session row carrying created_at and restores" $ do
             got <- withRaw $ \conn -> do
                 bootstrap conn
@@ -494,11 +521,11 @@ spec = do
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
                                 , active = 1, paneHist = [0]
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing
                                 , panes =
                                     [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
                                     , PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] } ] }
@@ -513,7 +540,7 @@ spec = do
     it "round-trips each window's automatic-rename status" $ do
         let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
                 , active = 0, paneHist = [], autoRename = auto
-                , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
+                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
@@ -539,7 +566,7 @@ spec = do
                             [ WindowSnap { ix = 0, name = "w", layout = "l"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [pane True, pane False] } ] } ] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [pane True, pane False] } ] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
         paneShellSpawned got `shouldBe` [True, False]
@@ -558,7 +585,7 @@ oneSession nm cwd0 wnm lay pcwd = Snapshot
                 [ WindowSnap { ix = 0, name = wnm, layout = lay
                     , active = 0, paneHist = []
                     , autoRename = False
-                    , key = Nothing, linkOf = Nothing, modal = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
+                    , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                 ] } ] }
 
 -- Every pane's captured command, in load order.

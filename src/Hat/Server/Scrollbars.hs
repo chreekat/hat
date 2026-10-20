@@ -186,9 +186,9 @@ expireScrollbar st pane = do
 hoverScrollbars :: ServerState -> Client -> Maybe (Int, Int) -> IO ()
 hoverScrollbars st client mpoint = do
     mv <- atomically (clientView st client)
-    forM_ mv $ \(sess, win) -> do
+    forM_ mv $ \(_, win) -> do
         (panes, wopts) <- atomically $ do
-            eff <- readTVar sess.lastSize
+            eff <- readTVar win.size
             (rects, _) <- windowArrange st eff win
             ps <- readTVar win.panes
             wopts <- resolveWindowTables st win

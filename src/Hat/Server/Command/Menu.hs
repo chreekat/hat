@@ -81,9 +81,9 @@ cmdDisplayMenu st mclient args
             Right menu
                 | null menu.items -> pure []
                 | otherwise -> do
-                    (x, y) <- menuPosition sess win pane tc mev env menu
+                    (x, y) <- menuPosition win pane tc mev env menu
                     wopts <- resolveForWindowIO st sess win
-                    eff <- readTVarIO sess.lastSize
+                    eff <- readTVarIO win.size
                     let wsx = fromIntegral eff.cols
                         wsy = fromIntegral eff.rows
                         (px, py) = placeMenu wsx wsy menu (x, y)
@@ -109,9 +109,9 @@ cmdDisplayMenu st mclient args
                         bumpDirty st
                     pure []
 
-    menuPosition sess win pane tc mev env menu = do
-        (rects, _) <- atomically $ readTVar sess.lastSize >>= \eff -> windowArrange st eff win
-        eff <- readTVarIO sess.lastSize
+    menuPosition win pane tc mev env menu = do
+        (rects, _) <- atomically $ readTVar win.size >>= \eff -> windowArrange st eff win
+        eff <- readTVarIO win.size
         tsize <- readTVarIO tc.size
         lastAt <- readTVarIO win.menuLast
         mstatus <- targetStatus st tc win

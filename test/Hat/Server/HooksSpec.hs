@@ -267,7 +267,6 @@ fakeSession = do
     windowsVar <- newTVarIO Map.empty
     currentVar <- newTVarIO 0
     histVar <- newTVarIO []
-    sizeVar <- newTVarIO (Size 80 24)
     environVar <- newTVarIO emptyEnviron
     cwdVar <- newTVarIO "/"
     optionsVar <- newOwnOptionsIO
@@ -282,7 +281,6 @@ fakeSession = do
         , windows = windowsVar
         , currentIx = currentVar
         , windowHist = histVar
-        , lastSize = sizeVar
         , environ = environVar
         , startCwd = cwdVar
         , options = optionsVar

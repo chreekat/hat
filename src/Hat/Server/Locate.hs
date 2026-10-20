@@ -131,17 +131,16 @@ targetWorld :: ServerState -> Maybe Client -> IO Target.World
 targetWorld st mclient = do
     sessMap <- readTVarIO st.sessions
     entries <- forM (Map.toAscList sessMap) $ \(sid, sess) -> do
-        (nm, cur, lastIx, eff) <- atomically $ (,,,)
+        (nm, cur, lastIx) <- atomically $ (,,)
             <$> readTVar sess.name <*> readTVar sess.currentIx
-            <*> (listToMaybe <$> readTVar sess.windowHist) <*> readTVar sess.lastSize
+            <*> (listToMaybe <$> readTVar sess.windowHist)
         ws <- readTVarIO sess.windows
         wentries <- forM (Map.toAscList ws) $ \(ix, win) -> do
-            (wname, lay, act, lastP, ps) <- atomically $ (,,,,)
+            (wname, lay, act, lastP, ps, warea) <- atomically $ (,,,,,)
                 <$> readTVar win.name <*> readTVar win.layout
                 <*> readTVar win.activeId <*> (listToMaybe <$> readTVar win.paneHist)
-                <*> readTVar win.panes
-            let warea = eff
-                rects = fst (arrange (sizeRect warea) lay)
+                <*> readTVar win.panes <*> readTVar win.size
+            let rects = fst (arrange (sizeRect warea) lay)
             pure ( ix
                  , Target.WindowEntry
                      { windowId = win.id

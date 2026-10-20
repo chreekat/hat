@@ -53,6 +53,7 @@ module Hat.Server
     , reencodeKey       -- ^ exported for the key-encoding test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , awaitReconcileTick  -- ^ exported for the command-batch gate test
+    , reconcileThrough  -- ^ exported for the reconcile-pass test
     , detachPane  -- ^ exported for the pane-detach test
     , detachPanes  -- ^ exported for the multi-pane-detach test
     , detachPaneCurrent  -- ^ exported for the mobile-pane teardown test

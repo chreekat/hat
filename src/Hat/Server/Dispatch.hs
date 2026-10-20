@@ -108,6 +108,7 @@ import Hat.Server.MouseIO
 import Hat.Server.Pane
 import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
+import Hat.Server.Resize (announceResized)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -268,6 +269,7 @@ runBuiltin st mclient name0 args = case resolveCommand name0 of
         replies <- impl st mclient args
             `catch` \(e :: SomeException) ->
                 pure [RErr (name <> ": " <> T.pack (show e))]
+        announceResized st
         fireCommandHooks st mclient name args replies
         pure replies
     Right name -> pure [RErr ("unknown command: " <> name)]

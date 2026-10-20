@@ -20,7 +20,7 @@ cursor-test4.sh
 prompt-keys.sh                  # passes up to its history step: Up in the tree search prompt recalls the search history in tmux, but Hat's deliberate fuzzy tree search (Note [Fuzzy tree search]) makes Up/Down select matches and keeps no search history
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
-tty-draw-line.sh                # resize-window sizes the whole session, not one window, so later windows keep its width; a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused)
+tty-draw-line.sh                # a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused); the rest of the script passes
 utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (tmux: per sequence); NUL/DEL capture differs
 
 # Baseline re-recorded 2026-07-31 against the pinned tmux master corpus

@@ -14,6 +14,7 @@ module Hat.Server.FormatEnv
     , paneVars
     , paneEnvById
     , refreshAutoNames
+    , commitAutoName
     , autoName
     , activeClientCounts
     , sessionFormatEnv
@@ -86,7 +87,7 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (emitLayout, emitLayoutZ)
 import Hat.Server.Locate (clientOptions, locatePane, paneIndexOf)
 import Hat.Server.ControlTypes (ControlFlags (..), ControlState (..), OutputMode (..))
-import Hat.Server.Resize (unzoomedArrange, windowArea)
+import Hat.Server.Resize (unzoomedArrange)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Render (paneDefaults)
@@ -243,11 +244,11 @@ windowLayer = varLayer
              , ("automatic_rename", if auto then "1" else "0")
              , ("window_last_flag", if Just ix == mlast then "1" else "0")
              ]
-    , VarGroup ["window_width", "window_height"] $ \(st, _, _, win) -> do
-        eff <- atomically (windowArea st win)
+    , VarGroup ["window_width", "window_height"] $ \(_, _, _, win) -> do
+        eff <- readTVarIO win.size
         pure [ ("window_width", tshow eff.cols), ("window_height", tshow eff.rows) ]
-    , VarGroup ["window_layout", "window_visible_layout"] $ \(st, _, _, win) -> do
-        eff <- atomically (windowArea st win)
+    , VarGroup ["window_layout", "window_visible_layout"] $ \(_, _, _, win) -> do
+        eff <- readTVarIO win.size
         (lay, fs, zoom) <- atomically $
             (,,) <$> readTVar win.layout <*> readTVar win.floats <*> readTVar win.zoomed
         pure [ ("window_layout", emitLayoutZ (stacking fs lay) (fitLayout eff lay))
@@ -442,7 +443,7 @@ paneLayer = varLayer
         (dfg, dbg) <- paneColourVars st sess win pane
         pure [ ("pane_fg", dfg), ("pane_bg", dbg) ]
     , VarGroup ["pane_unzoomed_width", "pane_unzoomed_height"] $ \(st, _, win, _, pane) -> do
-        area <- atomically (windowArea st win)
+        area <- readTVarIO win.size
         unzoomed <- atomically (List.lookup pane.id <$> unzoomedArrange st area win)
         pure $ concat [ [ ("pane_unzoomed_width", tshow (r.endCol - r.startCol))
                         , ("pane_unzoomed_height", tshow (r.endRow - r.startRow)) ]
@@ -451,9 +452,9 @@ paneLayer = varLayer
         [ "pane_floating_flag", "pane_z", "pane_flags"
         , "pane_left", "pane_top", "pane_x", "pane_y", "pane_right", "pane_bottom"
         , "pane_at_left", "pane_at_top", "pane_at_right", "pane_at_bottom" ] $
-        \(st, _, win, _, pane) -> do
+        \(_, _, win, _, pane) -> do
         active <- readTVarIO win.activeId
-        area <- atomically (windowArea st win)
+        area <- readTVarIO win.size
         (geom, floatVars) <- atomically $ do
             zoomed <- readTVar win.zoomed
             lay <- fitLayout area <$> readTVar win.layout
@@ -564,13 +565,18 @@ refreshAutoNames st = do
             auto <- readTVarIO win.autoRename
             when auto $ do
                 mnew <- autoName st sess ix win fmt
-                forM_ mnew $ \newName -> atomically $ do
-                    cur <- readTVar win.name
-                    -- An explicit name given since the read above stands.
-                    stillAuto <- readTVar win.autoRename
-                    when (stillAuto && cur /= newName && not (T.null newName)) $ do
-                        writeTVar win.name newName
-                        bumpDirty st
+                forM_ mnew (atomically . commitAutoName st win)
+
+-- | Give a window the automatic name computed for it, outside any
+-- transaction, by 'autoName': unless it has since stopped renaming
+-- automatically, so an explicit name given meanwhile stands.
+commitAutoName :: ServerState -> Window -> Text -> STM ()
+commitAutoName st win newName = do
+    cur <- readTVar win.name
+    stillAuto <- readTVar win.autoRename
+    when (stillAuto && cur /= newName && not (T.null newName)) $ do
+        writeTVar win.name newName
+        bumpDirty st
 
 -- | The name an @automatic-rename@ window should currently take: the
 -- @automatic-rename-format@ expanded against the active pane. The default
@@ -641,8 +647,9 @@ sessionLayer = varLayer
         cs <- atomically (sessionClients st sess.id)
         pure [ ("session_attached", tshow (length cs)) ]
     , VarGroup ["window_width", "window_height"] $ \(_, sess) -> do
-        sz <- readTVarIO sess.lastSize
-        pure [ ("window_width", tshow sz.cols), ("window_height", tshow sz.rows) ]
+        msz <- atomically (currentWindow sess >>= traverse (readTVar . (.size)))
+        pure [ v | sz <- maybe [] pure msz
+                 , v <- [("window_width", tshow sz.cols), ("window_height", tshow sz.rows)] ]
     , VarGroup ["color_scheme"] $ \(st, _) -> do
         msch <- readTVarIO st.colorScheme
         pure [ ("color_scheme", maybe "" schemeName msch) ]

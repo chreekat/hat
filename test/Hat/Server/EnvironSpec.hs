@@ -8,7 +8,6 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Test.Hspec
 
-import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Server (Reply (..), cmdSetEnvironment, cmdShowEnvironment)
@@ -25,7 +24,6 @@ seedServer = do
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
         <*> newTVarIO []
-        <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
         <*> newOwnOptionsIO

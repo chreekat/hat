@@ -6,7 +6,7 @@ import Hat.Server.Outbound (backlog, newOutbound)
 import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
 import Control.Exception (finally)
-import Control.Monad (filterM)
+import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef)
@@ -44,6 +44,7 @@ import Hat.Server
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
+    , reconcileThrough
     , cmdAttachSession, cmdListClients, cmdMoveWindow, cmdRestartClient
     , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
@@ -98,10 +99,8 @@ import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
     , onlyVars, paneFormatEnv, paneModeEnv, paneVars, sessionFormatEnv
-    , clientFormatVars, windowFormatEnv )
+    , clientFormatVars, commitAutoName, windowFormatEnv, windowVars )
 import Hat.Server.ControlTypes (ControlState (..), newControlState)
-import Hat.Server.Resize
-    (AreaClaim (..), paneSizeTargets, pickArea, windowArea)
 import Hat.Server.View (awaitRenderable, renderOnce, statusCells)
 import Hat.Term.HostProtocol (defaultCursorModel)
 
@@ -113,7 +112,6 @@ addSession st n = do
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
         <*> newTVarIO []
-        <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO "/"
         <*> newOwnOptionsIO
@@ -134,7 +132,6 @@ seedSession start = do
         <*> newTVarIO Map.empty
         <*> newTVarIO 0
         <*> newTVarIO []
-        <*> newTVarIO (Size { rows = 24, cols = 80 })
         <*> newTVarIO emptyEnviron
         <*> newTVarIO start
         <*> newOwnOptionsIO
@@ -166,8 +163,22 @@ addWindow sess n = do
         <*> newTVarIO noFloats
         <*> newTVarIO Nothing
         <*> newTVarIO (0, 0)
+        <*> newTVarIO (Size { rows = 24, cols = 80 })
+        <*> newTVarIO (Size { rows = 24, cols = 80 })
+        <*> newTVarIO Nothing
     atomically $ modifyTVar' sess.windows (Map.insert n win)
     pure win
+
+-- A client types a key bound to a no-op, so it reaches no pane.
+typeKey :: ServerState -> Client -> IO ()
+typeKey st c = do
+    [] <- runArgv st Nothing ["bind", "-n", "x", "set", "-g", "@typed", "1"]
+    handleInput dispatch st c "x"
+
+-- The size of the window a session shows.
+curSize :: Session -> IO Size
+curSize sess = atomically $
+    currentWindow sess >>= maybe (error "curSize: no current window") (readTVar . (.size))
 
 -- A client attached to the given session with a fixed size and activity
 -- stamp (larger stamp = more recently active). 'applySessionSize' only reads
@@ -867,7 +878,7 @@ spec = do
                     | i <- [0 .. 19 :: Int] ]
                 atomically $ do
                     modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
-                    writeTVar sess.lastSize Size { rows = 20, cols = 60 }
+                    writeTVar win.size Size { rows = 20, cols = 60 }
                     writeOwn st.globalSessionOptions (singletonDelta "status" (OVScalar "off"))
                 (client, _peer) <- wiredClient st Attached
                 atomically $ do
@@ -1049,7 +1060,7 @@ spec = do
             _ <- addClient st (SessionId 0) big 2
             s <- addClient st (SessionId 0) small 1
             lockClient st s `shouldReturn` Locked
-            readTVarIO sess.lastSize `shouldReturn` big { rows = big.rows - 1 }
+            curSize sess `shouldReturn` big { rows = big.rows - 1 }
         it "locks a session after lock-after-time seconds idle, from its clients' last key" $ do
             lockDeadline True 5 100 `shouldBe` Just (100 + 5_000_000_000)
             lockDeadline False 5 100 `shouldBe` Nothing
@@ -1071,13 +1082,13 @@ spec = do
             small = Size { rows = 24, cols = 80 }
             -- an attached client's window area is its viewport minus the status row
             pane s = s { rows = s.rows - 1 }
-        it "follows the most-recently-active client by default (latest)" $ do
+        it "follows the client that typed last by default (latest)" $ do
             (st, sess) <- seedSession "/"
             _ <- addWindow sess 0
-            _ <- addClient st (SessionId 0) big 2      -- bigger client is newer
+            b <- addClient st (SessionId 0) big 2
             _ <- addClient st (SessionId 0) small 1
-            applySessionSize st (SessionId 0)
-            readTVarIO sess.lastSize `shouldReturn` pane big
+            typeKey st b
+            curSize sess `shouldReturn` pane big
         it "fits the smallest client under window-size smallest" $ do
             (st, sess) <- seedSession "/"
             _ <- addWindow sess 0
@@ -1086,16 +1097,16 @@ spec = do
             _ <- addClient st (SessionId 0) big 2
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
-            readTVarIO sess.lastSize `shouldReturn` pane small
+            curSize sess `shouldReturn` pane small
         it "keeps a manual size whatever the clients" $ do
             (st, sess) <- seedSession "/"
             _ <- addWindow sess 0
-            sz0 <- readTVarIO sess.lastSize
+            sz0 <- curSize sess
             atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "window-size" (OVScalar "manual"))
             _ <- addClient st (SessionId 0) big 1
             applySessionSize st (SessionId 0)
-            readTVarIO sess.lastSize `shouldReturn` sz0
+            curSize sess `shouldReturn` sz0
         it "resize-window sizes the window and pins it to manual" $ do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0
@@ -1104,10 +1115,10 @@ spec = do
             _ <- addClient st (SessionId 0) big 1
             cmdResizeWindow st Nothing ["-t", "work", "-x", "33", "-y", "7"]
                 `shouldReturn` []
-            readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 33 }
+            curSize sess `shouldReturn` Size { rows = 7, cols = 33 }
             -- a later client change no longer moves it
             applySessionSize st (SessionId 0)
-            readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 33 }
+            curSize sess `shouldReturn` Size { rows = 7, cols = 33 }
         it "resize-window rejects an out-of-range width" $ do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0
@@ -1122,7 +1133,7 @@ spec = do
                 (singletonDelta "status" (OVScalar "off"))
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
-            readTVarIO sess.lastSize `shouldReturn` small
+            curSize sess `shouldReturn` small
 
     describe "attach-session -c" $
         -- The feature behind the author's @M-c@ binding: re-anchor where
@@ -1176,7 +1187,7 @@ spec = do
                     _ <- cmdKillSession st Nothing ["-t", "a"]
                     () <$ timeout 2_000_000 (Pty.waitExit pane.pty)
             flip finally reap $ do
-                readTVarIO sess.lastSize `shouldReturn` Size { rows = 7, cols = 50 }
+                curSize sess `shouldReturn` Size { rows = 7, cols = 50 }
                 lookupDelta "default-size" <$> readOwnIO sess.options
                     `shouldReturn` Just (OVScalar "50x7")
         it "creates a named session with its first window; a duplicate name is refused" $ do
@@ -1249,6 +1260,22 @@ spec = do
             renamed "" `shouldReturn` ("", False)
         it "expands the name as a format" $
             renamed "w#{window_index}:.##(ok)" `shouldReturn` ("w0:.#(ok)", False)
+
+    describe "automatic-rename" $ do
+        it "gives a window renaming automatically the name computed for it" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            atomically (commitAutoName st win "sleep")
+            readTVarIO win.name `shouldReturn` "sleep"
+        it "keeps a name given while the poll computed one (lifecycle-deferred.sh)" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            -- new-session -n lands between the poll's compute and its commit
+            atomically $ do
+                writeTVar win.name "base"
+                writeTVar win.autoRename False
+            atomically (commitAutoName st win "sleep")
+            readTVarIO win.name `shouldReturn` "base"
 
     describe "run-shell" $ do
         it "-C runs its argument as commands" $ do
@@ -1986,18 +2013,6 @@ spec = do
             mapM (readTVarIO . (.dead)) ps `shouldReturn` [False, False]
 
     describe "shared window sizing" $ do
-        it "lays a window linked into differently-sized sessions out once" $ do
-            (st, sess) <- seedSession "/"
-            other <- addSession st 1
-            win <- addWindow sess 0
-            pa <- stubPane 0
-            atomically $ do
-                modifyTVar' win.panes (Map.insert pa.id pa)
-                modifyTVar' other.windows (Map.insert 5 win)
-                writeTVar other.lastSize Size { rows = 23, cols = 80 }
-            targets <- atomically (paneSizeTargets st)
-            map snd targets `shouldBe` [Size { rows = 24, cols = 80 }]
-
         it "sizes a window to a control client's size for it, and only that window" $ do
             (st, sess) <- seedSession "/"
             w0 <- addWindow sess 0
@@ -2009,8 +2024,8 @@ spec = do
                 writeTVar cs.windowSizes (Just (Map.singleton w0.id (Size 10 40)))
                 modifyTVar' st.clients (Map.insert plain.id plain { control = Just cs })
             applySessionSize st sess.id
-            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
-                `shouldReturn` (Size 10 40, Size 24 80)
+            mapM (readTVarIO . (.size)) [w0, w1]
+                `shouldReturn` [Size 10 40, Size 24 80]
 
         -- Two sessions sharing windows 0 and 1, @sess@ viewing 0 from a
         -- 200x50 client, @other@ viewing 1 from an 80x24 one.
@@ -2036,9 +2051,9 @@ spec = do
             (st, sess, other, w0, w1) <- sharedPair
             smallestSizing st
             applySessionSize st sess.id
-            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
-                `shouldReturn` (Size 23 80, Size 23 80)
-            mapM (readTVarIO . (.lastSize)) [sess, other]
+            mapM (readTVarIO . (.size)) [w0, w1]
+                `shouldReturn` [Size 23 80, Size 23 80]
+            mapM curSize [sess, other]
                 `shouldReturn` [Size 23 80, Size 23 80]
 
         it "sizes an aggressive-resize window only from the clients viewing it" $ do
@@ -2047,9 +2062,9 @@ spec = do
             atomically $ writeOwn w0.options
                 (singletonDelta "aggressive-resize" (OVScalar "on"))
             applySessionSize st sess.id
-            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
-                `shouldReturn` (Size 49 200, Size 23 80)
-            mapM (readTVarIO . (.lastSize)) [sess, other]
+            mapM (readTVarIO . (.size)) [w0, w1]
+                `shouldReturn` [Size 49 200, Size 23 80]
+            mapM curSize [sess, other]
                 `shouldReturn` [Size 49 200, Size 23 80]
 
         it "resizes an aggressive-resize window when a session switches to it" $ do
@@ -2059,33 +2074,98 @@ spec = do
                 (singletonDelta "aggressive-resize" (OVScalar "on"))
             applySessionSize st sess.id
             cmdSelectWindow st Nothing ["-t", "s:0"] `shouldReturn` []
-            atomically (windowArea st w0) `shouldReturn` Size 23 80
-            readTVarIO sess.lastSize `shouldReturn` Size 23 80
-            readTVarIO other.lastSize `shouldReturn` Size 23 80
+            readTVarIO w0.size `shouldReturn` Size 23 80
+            curSize sess `shouldReturn` Size 23 80
+            curSize other `shouldReturn` Size 23 80
 
-        it "sizes a shared window under latest by its newest viewer, not a newer client elsewhere" $ do
-            (st, sess, _, w0, _) <- sharedPair
-            applySessionSize st sess.id
-            atomically (windowArea st w0) `shouldReturn` Size 49 200
+        it "sizes a shared latest window by its latest client, not a client typing elsewhere" $ do
+            (st, sess, other, w0, _) <- sharedPair
+            [a] <- atomically (sessionClients st sess.id)
+            [b] <- atomically (sessionClients st other.id)
+            typeKey st a
+            typeKey st b
+            readTVarIO w0.size `shouldReturn` Size 49 200
 
-        it "resizes a shared latest window when one of its viewers becomes the newest" $ do
+        it "resizes a shared latest window when another of its viewers types" $ do
             (st, sess, other, w0, _) <- sharedPair
             atomically (writeTVar other.currentIx 0)
-            applySessionSize st sess.id
-            atomically (windowArea st w0) `shouldReturn` Size 23 80
-            [older] <- atomically (sessionClients st sess.id)
-            atomically (writeTVar st.activityClock 10)
-            handleInput dispatch st older ""
-            atomically (windowArea st w0) `shouldReturn` Size 49 200
-            mapM (readTVarIO . (.lastSize)) [sess, other]
+            [a] <- atomically (sessionClients st sess.id)
+            [b] <- atomically (sessionClients st other.id)
+            typeKey st b
+            readTVarIO w0.size `shouldReturn` Size 23 80
+            typeKey st a
+            readTVarIO w0.size `shouldReturn` Size 49 200
+            mapM curSize [sess, other]
                 `shouldReturn` [Size 49 200, Size 49 200]
 
-        it "takes the area of the session whose client last viewed the window" $
-            pickArea
-                [ (AreaClaim False (Just 9), Size 10 10)
-                , (AreaClaim True (Just 3), Size 20 20)
-                , (AreaClaim True Nothing, Size 30 30) ]
-                `shouldBe` Size 20 20
+        it "keeps a shared latest window's latest client when another reports focus-out" $ do
+            (st, sess, other, w0, _) <- sharedPair
+            atomically (writeTVar other.currentIx 0)
+            [a] <- atomically (sessionClients st sess.id)
+            [b] <- atomically (sessionClients st other.id)
+            emu <- Emu.newEmulator (Size 24 80) 10
+            atomically $ modifyTVar' w0.panes (Map.map (\p -> p { emulator = emu }))
+            typeKey st b
+            handleInput dispatch st a "\ESC[O"
+            readTVarIO w0.size `shouldReturn` Size 23 80
+
+    describe "per-window sizing" $ do
+        let -- #{window_width}x#{window_height} of window @ix@ of @sess@.
+            sizeOf st sess ix = do
+                Just w <- Map.lookup ix <$> readTVarIO sess.windows
+                env <- windowVars st sess ix w
+                    (onlyVars (Set.fromList ["window_width", "window_height"]))
+                pure (Map.findWithDefault "" "window_width" env <> "x"
+                    <> Map.findWithDefault "" "window_height" env)
+            -- A session @work@ with panes in windows 0 and 1, showing 0.
+            twoWindows = do
+                (st, sess) <- seedSession "/"
+                ws <- mapM (addWindow sess) [0, 1]
+                forM_ (zip [0 ..] ws) $ \(n, w) -> do
+                    p <- stubPane n
+                    atomically $ modifyTVar' w.panes (Map.insert p.id p)
+                pure (st, sess)
+
+        it "keeps a window no client sizes at its own last size" $ do
+            (st, sess) <- twoWindows
+            [] <- runArgv st Nothing ["set", "-g", "aggressive-resize", "on"]
+            c <- addClient st sess.id (Size 50 200) 1
+            [] <- cmdSelectWindow st Nothing ["-t", "work:1"]
+            [] <- cmdSelectWindow st Nothing ["-t", "work:0"]
+            atomically $ writeTVar c.size (Size 24 80)
+            applySessionSize st sess.id
+            sizeOf st sess 0 `shouldReturn` "80x23"
+            sizeOf st sess 1 `shouldReturn` "200x49"
+
+        it "keeps a resize-window size with its window when another is shown" $ do
+            (st, sess) <- twoWindows
+            _ <- addClient st sess.id (Size 50 200) 1
+            [] <- cmdResizeWindow st Nothing ["-t", "work:0", "-x", "30", "-y", "10"]
+            [] <- cmdSelectWindow st Nothing ["-t", "work:1"]
+            sizeOf st sess 0 `shouldReturn` "30x10"
+            sizeOf st sess 1 `shouldReturn` "200x49"
+            [] <- cmdSelectWindow st Nothing ["-t", "work:0"]
+            sizeOf st sess 0 `shouldReturn` "30x10"
+
+        it "follows the client that last selected a latest window, while it looks elsewhere" $ do
+            (st, sess) <- twoWindows
+            other <- addSession st 1
+            atomically $ writeTVar other.windows =<< readTVar sess.windows
+            a <- addClient st sess.id (Size 50 200) 1
+            _ <- addClient st other.id (Size 24 80) 2
+            [] <- cmdSelectWindow st (Just a) ["-t", "work:0"]
+            sizeOf st sess 0 `shouldReturn` "200x49"
+            [] <- cmdSelectWindow st (Just a) ["-t", "work:1"]
+            sizeOf st sess 0 `shouldReturn` "200x49"
+
+        it "resize-window -A takes the largest client of every session holding the window" $ do
+            (st, sess) <- twoWindows
+            other <- addSession st 1
+            atomically $ writeTVar other.windows =<< readTVar sess.windows
+            _ <- addClient st sess.id (Size 24 80) 1
+            _ <- addClient st other.id (Size 50 200) 2
+            [] <- cmdResizeWindow st Nothing ["-A", "-t", "work:0"]
+            sizeOf st sess 0 `shouldReturn` "200x49"
 
     describe "serverIdle" $ do
         let idle = IdleInputs
@@ -2176,6 +2256,33 @@ spec = do
             tick st (-1) `shouldReturn` Nothing
             atomically (writeTVar st.commandDepth 0)
             tick st (-1) `shouldReturn` Just 5
+
+    describe "reconcileThrough" $ do
+        let freshState = do
+                lg <- newLogger "/dev/null"
+                newServerState Map.empty lg "/tmp/hat-reconcilepass.sock" Nothing
+            -- A pass for the current generation during which a pane draws.
+            passWithOutput st = do
+                atomically (writeTVar st.dirty 5)
+                gen <- atomically (awaitReconcileTick st (-1))
+                atomically (bumpDirty st)
+                reconcileThrough st gen
+
+        -- Regression guard: steady pane output must not hold the screen
+        -- back from 'awaitRenderable' forever.
+        it "counts output drawn during a pass that left every pane sized as reconciled" $ do
+            st <- freshState
+            passWithOutput st `shouldReturn` 6
+            readTVarIO st.reconciled `shouldReturn` 6
+
+        -- Bug 66: what a command batch draws mid-change waits for the batch.
+        it "counts output drawn while a command batch is open as not reconciled" $ do
+            st <- freshState
+            atomically (writeTVar st.commandDepth 1)
+            atomically (writeTVar st.dirty 5)
+            atomically (bumpDirty st)
+            reconcileThrough st 5 `shouldReturn` 5
+            readTVarIO st.reconciled `shouldReturn` 5
 
     describe "awaitRenderable (render gate)" $ do
         let freshState = do
@@ -2445,6 +2552,38 @@ spec = do
             removeClient st client
             recorded st `shouldReturn`
                 [ROutput "|client-detached:client-1|client-closed:client-1"]
+        it "a resize that moves the window's size fires window-resized, after client-active" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 25 80) 1
+            _ <- record st "client-active"
+            _ <- runArgv st Nothing ["set-hook", "-ga", "window-resized",
+                "set -gF @h '#{@h}|#{hook}:#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
+            clientResized st client (Size 21 70)
+            clientResized st client (Size 21 70)
+            recorded st `shouldReturn`
+                [ROutput "|client-active:client-1|window-resized:80x24->70x20"]
+        it "resize-window fires window-resized once, even at the size the window has" $ do
+            (st, sess) <- hooked
+            Just win <- atomically (currentWindow sess)
+            (p, release) <- adoptedPane 0
+            emu <- Emu.newEmulator (Size 24 80) 10
+            atomically $ modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
+            flip finally release $ do
+                _ <- runArgv st Nothing ["set-hook", "-g", "window-resized",
+                    "set -gF @h '#{@h}|#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
+                [] <- runArgv st Nothing ["resize-window", "-t", "work:0", "-x", "50", "-y", "10"]
+                [] <- runArgv st Nothing ["resize-window", "-t", "work:0", "-x", "50", "-y", "10"]
+                recorded st `shouldReturn` [ROutput "|80x24->50x10|50x10->50x10"]
+        it "a latest client going away passes the window to the next, which fires client-active" $ do
+            (st, sess) <- hooked
+            a <- addClient st (SessionId 0) (Size 24 80) 1
+            b <- addClient st (SessionId 0) (Size 24 80) 2
+            handleInput dispatch st a "x"
+            _ <- record st "client-active"
+            removeClient st a
+            recorded st `shouldReturn` [ROutput "|client-active:client-2"]
+            Just win <- atomically (currentWindow sess)
+            readTVarIO win.latest `shouldReturn` Just b.id
 
     describe "input routing within a chunk" $ do
         -- Keys typed back to back here, so no paste is assumed of them.

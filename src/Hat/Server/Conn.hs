@@ -24,14 +24,14 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
+import Control.Monad (foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Functor ((<&>))
 import Data.IORef
 import Data.List (nub, partition, sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -218,6 +218,7 @@ welcome d st re h = do
                 (_, Just sess) -> do
                     refreshSessionEnv st sess client
                     sname <- readTVarIO sess.name
+                    atomically (void (claimLatest st client sess))
                     applySessionSize st sess.id
                     armLockTimer st sess.id
                     -- Ahead of the greeting, so the client draws its very
@@ -370,51 +371,42 @@ resolveSessionNames st names = do
     let byName = Map.fromList named
     pure (nub [ sid | nm <- names, Just sid <- [Map.lookup nm byName] ])
 
--- | Each window a lost client was the latest of passes to the most
--- recently active client still showing it (tmux's
--- @server_client_attached_lost@).
-passLatest :: ServerState -> Client -> IO ()
-passLatest st gone = do
-    heirs <- atomically $ do
-        ls <- readTVar st.windowLatest
-        let held = [ wid | (wid, cid) <- Map.toList ls, cid == gone.id ]
-        modifyTVar' st.windowLatest (Map.filter (/= gone.id))
-        cs <- Map.elems <$> readTVar st.clients
-        viewing <- fmap concat . forM cs $ \c -> do
-            mv <- clientView st c
-            act <- readTVar c.lastActive
-            pure [ (wid, (act, c)) | Just (_, w) <- [mv], let wid = w.id, wid `elem` held ]
-        pure (Map.elems (Map.fromListWith newer viewing))
-    mapM_ (noteLatest st . snd) heirs
-  where
-    newer a b = if fst a >= fst b then a else b
-
 -- | A client's terminal changed size (tmux's @server_client_dispatch@ on
--- @MSG_RESIZE@).
+-- @MSG_RESIZE@): a terminal client becomes the latest of the window it
+-- shows ('noteLatest') and, while it shows a session, fires
+-- @client-resized@ whether or not the size moved. A control client is
+-- sized by @refresh-client -C@ instead, so only its size is kept.
 clientResized :: ServerState -> Client -> Size -> IO ()
-clientResized st client sz = do
-    noteLatest st client
-    old <- atomically (swapTVar client.size sz)
-    refitClientPopup st client
-    sid <- readTVarIO client.session
-    applySessionSize st sid
-    when (old /= sz) $ notifyClient st "client-resized" client
-        [ ("width", PInt (fromIntegral sz.cols)), ("height", PInt (fromIntegral sz.rows))
-        , ("old_width", PInt (fromIntegral old.cols)), ("old_height", PInt (fromIntegral old.rows)) ]
+clientResized st client sz = case client.control of
+    Just _ -> do
+        atomically (writeTVar client.size sz)
+        applySessionSize st =<< readTVarIO client.session
+    Nothing -> do
+        moved <- atomically (claimOwnLatest st client)
+        when moved $ notifyClient st "client-active" client []
+        old <- atomically (swapTVar client.size sz)
+        refitClientPopup st client
+        sid <- readTVarIO client.session
+        applySessionSize st sid
+        showing <- atomically (isJust <$> findSessionById st sid)
+        when showing $ notifyClient st "client-resized" client
+            [ ("width", PInt (fromIntegral sz.cols)), ("height", PInt (fromIntegral sz.rows))
+            , ("old_width", PInt (fromIntegral old.cols)), ("old_height", PInt (fromIntegral old.rows)) ]
 
 removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do
     sid <- readTVarIO client.session
-    atomically $ do
+    heirs <- atomically $ do
         modifyTVar' st.clients (Map.delete client.id)
         forgetClientRequests st client
+        forgetLatest st client.id
     -- tmux's server_client_lost clears the overlay: the popup's command ends.
     mapM_ (closePopup st client) =<< readTVarIO client.popup
     attached <- atomically (findSessionById st sid)
     forM_ attached $ \_ -> notifyClient st "client-detached" client []
     when (client.role == Attached) $ notifyClient st "client-closed" client []
-    passLatest st client
     applySessionSize st sid
+    mapM_ (\c -> notifyClient st "client-active" c []) heirs
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
     checkUnattached st
@@ -532,35 +524,36 @@ expireKeyRepeat st client = do
     when (prefixArmed before && not (prefixArmed after)) $
         disarmFlash st client False
 
--- | Whether @client@ already holds the largest activity stamp among the
--- clients whose current window is its own (so it is the client a
--- @window-size latest@ window follows; see 'sizeWindow').
-isLatestViewer :: ServerState -> Client -> STM Bool
-isLatestViewer st client = do
-    sessions <- readTVar st.sessions
-    let viewed c = do
-            sid <- readTVar c.session
-            maybe (pure Nothing) (fmap (fmap (.id)) . currentWindow)
-                (Map.lookup sid sessions)
-    mine <- viewed client
-    stamp <- readTVar client.lastActive
-    others <- Map.elems <$> readTVar st.clients
-    newer <- filterM (\c -> if c.id == client.id then pure False else do
-        w <- viewed c
-        if w == mine then (>= stamp) <$> readTVar c.lastActive else pure False) others
-    pure (null newer)
+-- | Make a client the latest client of the window it shows (tmux's
+-- @server_client_update_latest@); whether that moved it.
+claimOwnLatest :: ServerState -> Client -> STM Bool
+claimOwnLatest st client = do
+    sid <- readTVar client.session
+    msess <- Map.lookup sid <$> readTVar st.sessions
+    maybe (pure False) (claimLatest st client) msess
 
--- | Record activity from a client and, when it becomes the newest client
--- viewing its window, re-derive the sizes so a @latest@ window follows it.
+-- | Record activity from a client.
 noteClientActivity :: ServerState -> Client -> IO ()
 noteClientActivity st client = do
-    becameActive <- atomically $ do
-        already <- isLatestViewer st client
-        markActive st client
-        pure (not already)
-    sid <- readTVarIO client.session
-    armLockTimer st sid
-    when becameActive $ applySessionSize st sid
+    atomically (markActive st client)
+    armLockTimer st =<< readTVarIO client.session
+
+-- | A client's keys, a focus-out report aside, make it the latest client of
+-- the window it shows once they have run (tmux's
+-- @server_client_update_latest@ after each key).
+noteKeysLatest :: ServerState -> Client -> [Key] -> IO ()
+noteKeysLatest st client keys =
+    when (any ((/= "FocusOut") . (.name)) keys) (noteLatest st client)
+
+-- | tmux's @server_client_update_latest@: make a client the latest of the
+-- window it shows; when that moved it, re-derive the sizes, so a @latest@
+-- window follows it, and fire @client-active@.
+noteLatest :: ServerState -> Client -> IO ()
+noteLatest st client = do
+    moved <- atomically (claimOwnLatest st client)
+    when moved $ do
+        applySessionSize st =<< readTVarIO client.session
+        notifyClient st "client-active" client []
 
 -- | Whether a key event is delivered to the focused pane's program. A sequence
 -- the tokenizer could not name is dropped, so bytes hat does not understand
@@ -578,23 +571,6 @@ handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
     handleKeys d st client bs
-    -- A focus-out report says the user looked away, not that they are here.
-    unless (bs == "\ESC[O") (noteLatest st client)
-
--- | tmux's @server_client_update_latest@: the client becomes the latest of
--- the window it shows, which fires @client-active@ when it was not already.
-noteLatest :: ServerState -> Client -> IO ()
-noteLatest st client = do
-    changed <- atomically $ do
-        mwin <- clientView st client
-        case mwin of
-            Nothing -> pure False
-            Just (_, win) -> do
-                cur <- Map.lookup win.id <$> readTVar st.windowLatest
-                if cur == Just client.id then pure False else do
-                    modifyTVar' st.windowLatest (Map.insert win.id client.id)
-                    pure True
-    when changed $ notifyClient st "client-active" client []
 
 -- | What a client's keystrokes go to: an open overlay, else its key tables.
 data KeyOwner
@@ -696,6 +672,7 @@ deliverInput d st client keys = do
     mapM_ (terminalReplied st client . B.drop 1 . (.raw)) replies
     mapM_ (identified st client . (.raw)) idents
     deliverKeys d st client typed
+    noteKeysLatest st client typed
 
 -- | A client's terminal identified itself: add the features that reveals
 -- to its terminal, and if that changes it, send the client the new one

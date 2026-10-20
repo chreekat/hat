@@ -316,33 +316,41 @@ spec = do
             scr <- Emu.snapshot e
             scr.size `shouldBe` Size 11 80
 
-    -- A reloaded session must come back at its captured window area, not a
-    -- 24x80 placeholder (bug 4b).
-    describe "reload session size" $
-        it "rebuilds a reloaded session at its captured window area" $
+    -- A reloaded window must come back at its captured size, not a 24x80
+    -- placeholder (bug 4b); one captured before windows carried a size takes
+    -- the area its session's layouts were fitted to.
+    describe "reload window size" $
+        it "rebuilds each reloaded window at its captured size" $
             withAdoptablePane $ \(m, sleeper) -> do
             st <- testState
-            let lay = emitLayout (fitLayout Size { rows = 30, cols = 100 } (singlePane (PaneId 0)))
+            let layAt sz = emitLayout (fitLayout sz (singlePane (PaneId 0)))
                 rp = HotPane
                     { masterFd = fromIntegral m, childPid = fromIntegral sleeper
                     , modes = ReloadModes False False 0 False 0 0 []
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
+                emptyHot = rp { masterFd = -1, childPid = 0 }
                 psnap = PaneSnap
                     { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
-                rw = HotWindow
-                    { ix = 0, name = "sh", layout = lay, active = 0
-                    , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, modal = Nothing, panes = [(psnap, rp)] }
+                win wix sz msz p = HotWindow
+                    { ix = wix, name = "sh", layout = layAt sz, active = 0
+                    , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing
+                    , modal = Nothing, size = msz, panes = [p] }
                 rsess = HotSession
                     { name = "0", startCwd = "/tmp", currentIx = 0
                     , windowHist = [], createdAt = Nothing, restores = 0
-                    , group = Nothing, windows = [rw] }
+                    , group = Nothing
+                    , windows =
+                        [ win 0 (Size 30 100) Nothing (psnap, rp)
+                        , win 1 (Size 10 40) (Just (Size 10 40))
+                            (psnap { kind = EmptyPane }, emptyHot) ] }
             rebuildReload st ReloadTree
                 { sessions = [rsess]
                 , currentSession = Nothing, lastSession = Nothing }
-            sessMap <- readTVarIO st.sessions
-            szs <- mapM (readTVarIO . (.lastSize)) (Map.elems sessMap)
-            szs `shouldBe` [Size { rows = 30, cols = 100 }]
+            [sess] <- Map.elems <$> readTVarIO st.sessions
+            ws <- Map.elems <$> readTVarIO sess.windows
+            mapM (readTVarIO . (.size)) ws
+                `shouldReturn` [Size { rows = 30, cols = 100 }, Size { rows = 10, cols = 40 }]
 
     -- See Note [Captured links].
     describe "reload links and groups" $
@@ -360,7 +368,7 @@ spec = do
                 win wix k l ps = HotWindow
                     { ix = wix, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = k, linkOf = l
-                    , modal = Nothing, panes = ps }
+                    , modal = Nothing, size = Nothing, panes = ps }
                 sess nm g ws = HotSession
                     { name = nm, startCwd = "/tmp", currentIx = 0
                     , windowHist = [], createdAt = Nothing, restores = 0
