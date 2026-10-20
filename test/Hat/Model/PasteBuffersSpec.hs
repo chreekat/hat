@@ -23,6 +23,13 @@ spec = do
                 `shouldBe` [(BufferDeleted, "buffer0"), (BufferChanged, "kept")]
         it "reports nothing when nothing changed" $
             pasteChanges (adds ["a"]) (adds ["a"]) `shouldBe` []
+    describe "pasteReplace" $ do
+        it "replaces a buffer's data, keeping its name and place" $
+            listing (pasteReplace "buffer0" 0 "new" (adds ["a", "b"]))
+                `shouldBe` [("buffer1", "b"), ("buffer0", "new")]
+        it "leaves a buffer remade since the stamp was taken alone" $
+            listing (pasteReplace "buffer0" 7 "new" (adds ["a"]))
+                `shouldBe` [("buffer0", "a")]
     describe "pasteAdd" $ do
         it "names buffers bufferN, most recent first" $ do
             let s = adds ["one", "two"]
