@@ -77,6 +77,13 @@ spec = do
             (.scope) <$> lookupOptionDef "cursor-colour"
                 `shouldBe` Just WindowPaneScope
 
+        it "describes every option as tmux does, with the unit of a number" $ do
+            [ d.name | d <- optionTable, d.description == Nothing ] `shouldBe` []
+            (.description) <$> lookupOptionDef "after-new-session"
+                `shouldBe` Just (Just "Run after the new-session command completes.")
+            (.unit) <$> lookupOptionDef "escape-time" `shouldBe` Just (Just "milliseconds")
+            (.unit) <$> lookupOptionDef "base-index" `shouldBe` Just Nothing
+
     describe "setOption" $ do
         it "rejects an unknown option instead of silently storing it" $
             setOption Assign defaultOptions "no-such-option" "x"
