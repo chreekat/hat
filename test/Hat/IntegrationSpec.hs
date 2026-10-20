@@ -928,6 +928,16 @@ spec = parallel $ do
         awaitTrue "the client to switch to the match" $
             (== "projects:1\n") <$> ctlOut h ["list-clients", "-F", "#{session_name}:#{window_index}"]
 
+    it "switches the client into a key table a binding names with switch-client -T" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["bind", "-T", "move", "y", "set", "-g", "@moved", "yes"]
+        typeInto c "\x02g"
+        typeInto c "y"
+        awaitTrue "the move table's binding to run" $
+            (== "yes\n") <$> ctlOut h ["show", "-gv", "@moved"]
+
     it "edits a buffer from choose-buffer in the editor option's program" $
         withHat hatBin $ \h -> do
         let editor = h.home <> "/editor.sh"

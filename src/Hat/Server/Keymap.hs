@@ -19,6 +19,9 @@ defaultKeymap = Map.fromList
     [ ("prefix", Map.fromList (map bindArgv prefixBindings <> map repeatArgv repeatBindings
         <> menusIn "prefix"))
     , ("root", Map.fromList (map once rootMouseBindings <> menusIn "root"))
+    , ("move", Map.fromList
+        [ (k, Binding { commands = parsed cmd, repeats = Once, note = Just n })
+        | (k, n, cmd) <- moveBindings ])
     , ("copy-mode", Map.fromList (map copyBind copyModeBindings <> map once copyMouseBindings))
     , ("copy-mode-vi", Map.fromList (map copyBind copyModeViBindings
         <> map once (digitBinds <> searchBinds <> copyMouseBindings)))
@@ -119,6 +122,7 @@ defaultKeymap = Map.fromList
         , ("l", ["last-window"])
         , (";", ["last-pane"])
         , ("C-b", ["send-prefix"])
+        , ("g", ["switch-client", "-Tmove"])
         , ("[", ["copy-mode"])
         , ("]", ["paste-buffer"])
         , (":", ["command-prompt"])
@@ -182,6 +186,7 @@ defaultKeymap = Map.fromList
 prefixNotes :: [(Text, Text)]
 prefixNotes =
     [ ("C-b", "Send the prefix key")
+    , ("g", "Move a floating pane")
     , ("Space", "Select next layout")
     , ("!", "Break pane to a new window")
     , ("\"", "Split window vertically")
@@ -223,6 +228,44 @@ prefixNotes =
     , ("C-Right", "Resize the pane right")
     ]
     <> [ (tshow i, "Select window " <> tshow i) | i <- [0 .. 9 :: Int] ]
+
+-- | tmux's @move@ table, which @g@ in the prefix table switches to: keys
+-- that move (and resize) a floating pane, by key, note and command.
+moveBindings :: [(Text, Text, Text)]
+moveBindings =
+    [ ("1", "Move pane to top-left corner", "move-pane -P top-left")
+    , ("2", "Move pane to top-right corner", "move-pane -P top-right")
+    , ("3", "Move pane to bottom-left corner", "move-pane -P bottom-left")
+    , ("4", "Move pane to bottom-right corner", "move-pane -P bottom-right")
+    , ("M-1", "Move pane to top-left corner and resize"
+      , "resize-pane -x50% -y50%; move-pane -P top-left")
+    , ("M-2", "Move pane to top-right corner and resize"
+      , "resize-pane -x50% -y50%; move-pane -P top-right")
+    , ("M-3", "Move pane to bottom-left corner and resize"
+      , "resize-pane -x50% -y50%; move-pane -P bottom-left")
+    , ("M-4", "Move pane to bottom-right corner and resize"
+      , "resize-pane -x50% -y50%; move-pane -P bottom-right")
+    , ("Up", "Move pane to top", "move-pane -P top-centre")
+    , ("Down", "Move pane to bottom", "move-pane -P bottom-centre")
+    , ("Left", "Move pane to left", "move-pane -P centre-left")
+    , ("Right", "Move pane to right", "move-pane -P centre-right")
+    , ("M-Up", "Move pane to top and resize"
+      , "resizep -x100% -y50%; move-pane -P top-centre")
+    , ("M-Down", "Move pane to bottom and resize"
+      , "resizep -x100% -y50%; move-pane -P bottom-centre")
+    , ("M-Left", "Move pane to left and resize"
+      , "resizep -x50% -y100%; move-pane -P centre-left")
+    , ("M-Right", "Move pane to right and resize"
+      , "resizep -x50% -y100%; move-pane -P centre-right")
+    , ("0", "Move pane to fill the window"
+      , "resize-pane -x100% -y100%; move-pane -P top-left")
+    , (",", "Display move menu"
+      , "if -F '#{pane_floating_flag}' { display-menu -xP -yP -T '#[align=centre]Move' "
+        <> moveMenu <> " }")
+    , (".", "Display move and resize menu"
+      , "if -F '#{pane_floating_flag}' { display-menu -xP -yP -T '#[align=centre]Move & Resize' "
+        <> moveResizeMenu <> " }")
+    ]
 
 -- | tmux's default bindings that open menus, by table and key, in its own
 -- command syntax.

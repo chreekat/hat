@@ -21,11 +21,13 @@ module Hat.Server.Command.Session
 
 import Control.Concurrent.STM
 import Control.Monad (filterM, forM, forM_, guard, unless, when)
+import Data.IORef (modifyIORef')
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (getEnvironment)
 
 import Hat.Geometry
@@ -42,6 +44,7 @@ import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( PayloadItem (..), noTarget, notify, notifyGroupChange, sessionTarget )
+import Hat.Server.Keys (enterTable)
 import Hat.Server.Locate (findTarget, formatClient, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
@@ -620,7 +623,7 @@ cmdListPanes st mclient args = do
 
 cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient0 args = do
-    let (opts, flags, _) = parseArgs "ct" args
+    let (opts, flags, _) = parseArgs "ctT" args
     etarget <- case lookup "-c" opts of
         Just name -> fmap Just <$> formatClient st mclient0 Nothing (Just name)
         Nothing -> pure (Right mclient0)
@@ -628,6 +631,15 @@ cmdSwitchClient st mclient0 args = do
         Left e -> pure [RErr e]
         Right Nothing -> pure [RErr "no client"]
         Right (Just client)
+            -- A client's key table is its input thread's own state, which
+            -- only a binding that client is running may change.
+            | Just table <- lookup "-T" opts ->
+                if Just client.id == fmap (.id) mclient0
+                    then do
+                        now <- fromIntegral . (`div` 1000000) <$> getMonotonicTimeNSec
+                        [] <$ modifyIORef' client.keyState (enterTable table now)
+                    else pure [RErr "switch-client -T: another client's key table \
+                        \is not yet supported by hat"]
             | "-l" `elem` flags -> do
                 hist <- readTVarIO client.sessionHist
                 sessions <- readTVarIO st.sessions
