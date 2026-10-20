@@ -711,10 +711,14 @@ Architecture:
 
 1. **`Hat.Command.Parser`** — pure, using **Megaparsec**. Tokenizes
    tmux's command syntax (semicolons, braces, single/double quotes,
-   line continuation) into `[ParsedCommand]`. Parse-time
-   `%if`/`%elif`/`%endif` is not implemented (P3 in FEATURES.md).
-   The same parser handles config files (`cfg.c` does this in tmux)
-   and the command prompt. Megaparsec also drives the format-string
+   line continuation) into `[ParsedCommand]`. A file of commands (a
+   config, a `source-file`, a `bind` block) parses as a
+   `Hat.Command.Script`: its commands, `NAME=value` assignments and
+   `%if`/`%elif`/`%else`/`%endif` conditionals, which
+   `Hat.Server.Script` runs as tmux does while parsing — conditions
+   expanded, assignments made, before any command runs. Command
+   strings (the prompt, `if-shell`'s commands) do not take
+   conditionals yet. Megaparsec also drives the format-string
    parser in `Hat.Server.Format` — one parsing toolkit across the
    project.
 2. **The command engine** lives in `Hat.Server.Dispatch` (`runCommands`

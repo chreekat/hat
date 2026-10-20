@@ -12,7 +12,8 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Test.Hspec
 
-import Hat.Command.Parser (parseConfig)
+import Hat.Command.Parser (parseScript)
+import Hat.Command.Script (Script (..), ScriptItem (..))
 import Hat.Model.Options
 import Hat.Server
     ( SetMode (..), setOption
@@ -388,10 +389,10 @@ spec = do
     describe "config-load burn-down (real ~/.tmux.conf)" $
         it "rejects exactly the not-yet-implemented options" $ do
             contents <- TIO.readFile "test/fixtures/tmux.conf"
-            case parseConfig contents of
-                Left err -> expectationFailure (T.unpack err)
-                Right cmds ->
-                    List.sort (loadSetErrors cmds)
+            case parseScript contents of
+                Script _ (Just err) -> expectationFailure (show err)
+                Script items Nothing ->
+                    List.sort (loadSetErrors [ c | (_, ScriptCommand c) <- items ])
                         `shouldBe` expectedUnimplemented
 
 -- The living burn-down list, now empty: every option in the author's

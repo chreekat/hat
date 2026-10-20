@@ -1,3 +1,5 @@
+{-# LANGUAGE RoleAnnotations #-}
+
 -- | The command language: one megaparsec tokenizer shared by the
 -- config file, the command prompt, and @hat <command>@ from a shell.
 --
@@ -6,17 +8,19 @@
 -- escapes), or balanced brace blocks (verbatim, for command blocks).
 module Hat.Command.Parser
     ( parseCommandLine
-    , parseConfig
-    , parseConfigLines
+    , parseScript
     , parseArgv
     ) where
 
-import Data.Char (isSpace)
+import Data.Char (isAlphaNum, isAscii, isDigit, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Void (Void)
 import Text.Megaparsec
 import Text.Megaparsec.Char
+
+import Hat.Command.Script (Script (..), ScriptItem (..))
+import Hat.Server.Environ (EnvVisibility (..))
 
 type Parser = Parsec Void Text
 
@@ -46,20 +50,268 @@ parseCommandLine input =
         Left err -> Left (T.pack (errorBundlePretty err))
         Right cmds -> Right (filter (not . null) cmds)
 
--- | Parse a whole config file: comments, blank lines, continuations.
-parseConfig :: Text -> Either Text [[Text]]
-parseConfig = either (Left . snd) (Right . map snd) . parseConfigLines
-
--- | 'parseConfig', each command with the line it starts on, and a parse
--- error with the line of the command it is in.
-parseConfigLines :: Text -> Either (Int, Text) [(Int, [Text])]
-parseConfigLines input = fmap concat . traverse parseChunk
-    $ filter (not . T.null . T.strip . snd)
-    $ joinBraces
-    $ map (fmap stripComment)
-    $ joinContinuations (zip [1 ..] (T.lines input))
+-- | Parse a whole file of commands (tmux's @cmd-parse.y@): comments, blank
+-- lines, continuations, assignments and conditionals, each item with the
+-- line its statement starts on. An error stops the parse at tmux's line
+-- and in its words, keeping the items before it.
+parseScript :: Text -> Script
+parseScript input = case runScriptP statementsP stream of
+    (Left err, items) -> Script items (Just err)
+    (Right (), items) -> Script items Nothing
   where
-    parseChunk (n, text) = either (Left . (n,)) (Right . map (n,)) (parseCommandLine text)
+    stream = concatMap lexChunk chunks <> [(T.count "\n" input + 1, LEnd)]
+    chunks = joinBraces
+        $ map (fmap stripComment)
+        $ joinContinuations (zip [1 ..] (T.lines input))
+    lexChunk (n, text) = case parse (tokensP <* eof) "<command>" text of
+        Left err -> [(n, LBad (T.pack (errorBundlePretty err)))]
+        Right toks -> map ((n,) . LTok) toks <> [(n, LNewline)]
+
+-- The grammar --------------------------------------------------------------
+
+-- | A word, a separator, or a directive, as tmux's lexer gives them.
+data ScriptToken
+    = TWord Text
+    | TBrace Text
+    | TSemi
+    | TFormat Text  -- ^ a @#{...}@ right after a directive
+    | TIf
+    | TElif
+    | TElse
+    | TEndif
+    | THidden
+    | TInvalid      -- ^ an unknown directive, or a format that never closes
+    deriving (Eq)
+
+-- | A token, the end of a line, the end of the file, or a chunk that
+-- would not tokenize (and why).
+data Lexeme = LTok ScriptToken | LNewline | LEnd | LBad Text
+
+-- | A parser over a file's lexemes that keeps the items it has emitted
+-- when it fails.
+type role ScriptP representational
+newtype ScriptP a = ScriptP
+    { stepP :: [(Int, Lexeme)] -> [(Int, ScriptItem)]
+            -> (Either (Int, Text) a, [(Int, Lexeme)], [(Int, ScriptItem)]) }
+
+instance Functor ScriptP where
+    fmap f p = ScriptP $ \s o -> case p.stepP s o of
+        (r, s', o') -> (fmap f r, s', o')
+
+instance Applicative ScriptP where
+    pure a = ScriptP (\s o -> (Right a, s, o))
+    pf <*> pa = pf >>= \f -> fmap f pa
+
+instance Monad ScriptP where
+    p >>= k = ScriptP $ \s o -> case p.stepP s o of
+        (Left e, s', o') -> (Left e, s', o')
+        (Right a, s', o') -> (k a).stepP s' o'
+
+runScriptP :: ScriptP () -> [(Int, Lexeme)] -> (Either (Int, Text) (), [(Int, ScriptItem)])
+runScriptP p s = case p.stepP s [] of
+    (r, _, o) -> (r, reverse o)
+
+-- | The next lexeme, with its line.
+peekP :: ScriptP (Int, Lexeme)
+peekP = ScriptP $ \s o -> case s of
+    l : _ -> (Right l, s, o)
+    [] -> (Right (0, LEnd), s, o)
+
+advanceP :: ScriptP ()
+advanceP = ScriptP (\s o -> (Right (), drop 1 s, o))
+
+emitP :: Int -> ScriptItem -> ScriptP ()
+emitP n item = ScriptP (\s o -> (Right (), s, (n, item) : o))
+
+-- | Fail at the next lexeme: tmux's @syntax error@, or why its chunk would
+-- not tokenize.
+unexpectedP :: ScriptP a
+unexpectedP = do
+    (n, l) <- peekP
+    ScriptP $ \s o -> case l of
+        LBad e -> (Left (n, e), s, o)
+        _ -> (Left (n, "syntax error"), s, o)
+
+-- | The file: statements to its end.
+statementsP :: ScriptP ()
+statementsP = peekP >>= \case
+    (_, LEnd) -> pure ()
+    _ -> statementP *> newlineP *> statementsP
+
+newlineP :: ScriptP ()
+newlineP = peekP >>= \case
+    (_, LNewline) -> advanceP
+    _ -> unexpectedP
+
+-- | One line's statement: empty, a hidden assignment, a conditional over
+-- the lines that follow, or commands.
+statementP :: ScriptP ()
+statementP = peekP >>= \case
+    (_, LNewline) -> pure ()
+    (n, LTok THidden) -> advanceP *> peekP >>= \case
+        (_, LTok (TWord w)) | Just (name, value) <- assignment w ->
+            advanceP *> emitP n (ScriptAssign EnvHidden name value)
+        _ -> unexpectedP
+    (n, LTok TIf) -> do
+        advanceP
+        fmt <- conditionP
+        peekP >>= \case
+            (_, LNewline) -> emitP n (ScriptIf fmt) *> newlineP *> linesConditionP
+            _ -> emitP n (ScriptIf fmt) *> inlineConditionP *> commandListTailP
+    _ -> commandListP
+
+-- | The format a directive tests: a @#{...}@ or a word that is not an
+-- assignment.
+conditionP :: ScriptP Text
+conditionP = peekP >>= \case
+    (_, LTok (TFormat f)) -> f <$ advanceP
+    (_, LTok (TWord w)) | Nothing <- assignment w -> w <$ advanceP
+    _ -> unexpectedP
+
+-- | A conditional's branches, each one or more lines, after its @%if@ line.
+linesConditionP :: ScriptP ()
+linesConditionP = branchLinesP *> peekP >>= \case
+    (n, LTok TElif) -> do
+        advanceP
+        fmt <- conditionP
+        emitP n (ScriptElif fmt) *> newlineP *> linesConditionP
+    (n, LTok TElse) -> do
+        advanceP *> emitP n ScriptElse *> newlineP *> branchLinesP
+        endifP
+    _ -> endifP
+  where
+    branchLinesP = statementP *> newlineP *> moreLinesP
+    moreLinesP = peekP >>= \case
+        (_, LTok d) | d `elem` [TElif, TElse, TEndif] -> pure ()
+        (_, LEnd) -> pure ()
+        _ -> branchLinesP
+
+endifP :: ScriptP ()
+endifP = peekP >>= \case
+    (n, LTok TEndif) -> advanceP *> emitP n ScriptEndif
+    _ -> unexpectedP
+
+-- | A conditional within a line, after its @%if@ and format.
+inlineConditionP :: ScriptP ()
+inlineConditionP = commandListP *> peekP >>= \case
+    (n, LTok TElif) -> do
+        advanceP
+        fmt <- conditionP
+        emitP n (ScriptElif fmt) *> inlineConditionP
+    (n, LTok TElse) -> advanceP *> emitP n ScriptElse *> commandListP *> endifP
+    _ -> endifP
+
+-- | Commands and conditionals separated by semicolons; at least one.
+commandListP :: ScriptP ()
+commandListP = elementP *> commandListTailP
+
+commandListTailP :: ScriptP ()
+commandListTailP = peekP >>= \case
+    (_, LTok TSemi) -> advanceP *> peekP >>= \case
+        (_, LTok (TWord _)) -> commandListP
+        (_, LTok TIf) -> commandListP
+        _ -> commandListTailP
+    _ -> pure ()
+
+elementP :: ScriptP ()
+elementP = peekP >>= \case
+    (n, LTok TIf) -> do
+        advanceP
+        fmt <- conditionP
+        emitP n (ScriptIf fmt) *> inlineConditionP
+    (n, LTok (TWord w))
+        | Just (name, value) <- assignment w -> do
+            advanceP *> emitP n (ScriptAssign EnvVisible name value)
+            peekP >>= \case
+                (_, LTok (TWord c)) | Nothing <- assignment c -> advanceP *> argumentsP n c
+                (_, LTok (TWord _)) -> unexpectedP
+                (_, LTok (TBrace _)) -> unexpectedP
+                _ -> pure ()
+        | otherwise -> advanceP *> argumentsP n w
+    _ -> unexpectedP
+
+-- | A command's arguments, after its name.
+argumentsP :: Int -> Text -> ScriptP ()
+argumentsP n name = go []
+  where
+    go args = peekP >>= \case
+        (_, LTok (TWord w)) -> advanceP *> go (w : args)
+        (_, LTok (TBrace b)) -> advanceP *> go (b : args)
+        _ -> emitP n (ScriptCommand (name : reverse args))
+
+-- | A word shaped @NAME=value@ (tmux's @EQUALS@ token): a name of ASCII
+-- letters, digits and underscores, not starting with a digit.
+assignment :: Text -> Maybe (Text, Text)
+assignment w = case T.breakOn "=" w of
+    (name, rest)
+        | Just value <- T.stripPrefix "=" rest
+        , Just (c, cs) <- T.uncons name
+        , isVar c && not (isDigit c)
+        , T.all isVar cs -> Just (name, value)
+    _ -> Nothing
+  where
+    isVar c = isAscii c && (isAlphaNum c || c == '_')
+
+-- The lexer ----------------------------------------------------------------
+
+-- | One chunk's tokens. The token after a directive may be a format.
+tokensP :: Parser [ScriptToken]
+tokensP = space *> go False
+  where
+    go afterDirective = option [] $ do
+        t <- tokenP afterDirective
+        space
+        (t :) <$> go (isDirective t)
+    tokenP afterDirective = choice
+        [ TSemi <$ char ';'
+        , if afterDirective then formatP else empty
+        , directiveP
+        , TBrace <$> braceBlock
+        , TWord . T.concat <$> some (choice [singleQuoted, doubleQuoted, bareWord])
+        ]
+    isDirective t = t `elem` [TIf, TElif, TElse, TEndif, THidden, TInvalid]
+
+-- | A word starting @%@, up to whitespace: a directive, unless it is only
+-- percent signs and digits.
+directiveP :: Parser ScriptToken
+directiveP = do
+    w <- lookAhead (char '%') *> takeWhile1P (Just "directive") (`notElem` (" \t\n" :: String))
+    pure $ if T.all (\c -> c == '%' || isDigit c) w then TWord w else case w of
+        "%if"     -> TIf
+        "%elif"   -> TElif
+        "%else"   -> TElse
+        "%endif"  -> TEndif
+        "%hidden" -> THidden
+        _         -> TInvalid
+
+-- | A format, or the rest of the chunk as 'TInvalid' when it never closes.
+formatP :: Parser ScriptToken
+formatP = do
+    rest <- lookAhead (string "#{" *> getInput)
+    case formatSpan ("#{" <> rest) of
+        Just (fmt, _) -> TFormat <$> string fmt
+        Nothing -> TInvalid <$ takeRest
+
+-- | The @#{...}@ at the start of the text and what follows it (tmux's
+-- @yylex_format@): nested @#{@ open further levels, any character after a
+-- @#@ is taken as is, and a line ends it unclosed.
+formatSpan :: Text -> Maybe (Text, Text)
+formatSpan t = do
+    body <- T.stripPrefix "#{" t
+    n <- go (1 :: Int) 2 body
+    pure (T.splitAt n t)
+  where
+    go depth n s = case T.uncons s of
+        Nothing -> Nothing
+        Just ('\n', _) -> Nothing
+        Just ('#', s1) -> case T.uncons s1 of
+            Nothing -> Nothing
+            Just ('\n', _) -> Nothing
+            Just (c, s2) -> go (if c == '{' then depth + 1 else depth) (n + 2) s2
+        Just ('}', s1)
+            | depth == 1 -> Just (n + 1)
+            | otherwise -> go (depth - 1) (n + 1) s1
+        Just (_, s1) -> go depth (n + 1) s1
 
 -- Blocks like @bind X { ... }@ and multi-line @"..."@ strings can span
 -- lines. Keep joining while brace depth is positive OR we're mid-quote.
@@ -106,21 +358,29 @@ joinContinuations = \case
 
 -- A # starts a comment unless it is inside a word (quoting is handled
 -- coarsely: we only strip comments that follow whitespace or start the
--- line, which matches tmux config practice).
+-- line, which matches tmux config practice), or opens the format the word
+-- after a directive may be.
 stripComment :: Text -> Text
-stripComment line = go 0 False False
+stripComment line = go 0 False False False
   where
     n = T.length line
-    go i inSingle inDouble
+    wordStart i = i == 0 || isSpace (T.index line (i - 1))
+    go i inSingle inDouble afterDirective
         | i >= n = line
         | otherwise = case T.index line i of
-            '\'' | not inDouble -> go (i + 1) (not inSingle) inDouble
-            '"' | not inSingle -> go (i + 1) inSingle (not inDouble)
-            '\\' | inDouble -> go (i + 2) inSingle inDouble
-            '#' | not inSingle && not inDouble
-                , i == 0 || isSpace (T.index line (i - 1)) ->
-                    T.take i line
-            _ -> go (i + 1) inSingle inDouble
+            '\'' | not inDouble -> go (i + 1) (not inSingle) inDouble False
+            '"' | not inSingle -> go (i + 1) inSingle (not inDouble) False
+            '\\' | inDouble -> go (i + 2) inSingle inDouble False
+            '#' | not inSingle && not inDouble, wordStart i ->
+                case formatSpan (T.drop i line) of
+                    Just (fmt, _) | afterDirective -> go (i + T.length fmt) False False False
+                    _ -> T.take i line
+            '%' | not inSingle && not inDouble, wordStart i ->
+                let w = T.takeWhile (not . isSpace) (T.drop i line)
+                in go (i + T.length w) False False
+                    (not (T.all (\c -> c == '%' || isDigit c) w))
+            c | isSpace c -> go (i + 1) inSingle inDouble afterDirective
+            _ -> go (i + 1) inSingle inDouble False
 
 commandsP :: Parser [[Text]]
 commandsP = do
