@@ -13,12 +13,14 @@ module Hat.Client.Draw
     , lockScreen
     ) where
 
+import Data.Bits (testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Vector qualified as V
 import Data.Word (Word8)
 
 import Hat.Geometry
@@ -32,10 +34,18 @@ import Hat.Transport.Wire (DrawOp (..))
 -- Cursor motion, clearing and SGR colour numbers assume a VT100-like
 -- terminal, as tmux's do where it writes them directly.
 data Dialect = Dialect
-    { depth :: ColourDepth
-    , attrs :: AttrCodes
-    , clipCorner :: Bool  -- ^ never write the bottom-right cell (no @am@)
-    , sync :: Bool        -- ^ bracket frames in DEC 2026 (@Sync@)
+    { depth :: !ColourDepth
+    , attrParams :: !(V.Vector ByteString)
+        -- ^ by 'attrIndex': the SGR parameters turning those attributes on
+    , attrRaws :: !(V.Vector ByteString)
+        -- ^ by 'attrIndex': the bytes after the SGR for those attributes
+        --   whose capability is no plain SGR
+    , rawAttrs :: !Bool   -- ^ some attribute has such bytes
+    , standardMask :: !Int
+        -- ^ the 'attrIndex' bits of the attributes the terminal has, when
+        --   each it has is its usual SGR parameter; -1 when not
+    , clipCorner :: !Bool  -- ^ never write the bottom-right cell (no @am@)
+    , sync :: !Bool        -- ^ bracket frames in DEC 2026 (@Sync@)
     , title :: Maybe (ByteString, ByteString)  -- ^ @tsl@ and @fsl@
     , altOn :: ByteString   -- ^ @smcup@
     , altOff :: ByteString  -- ^ @rmcup@
@@ -55,23 +65,58 @@ data ColourDepth = DepthRGB | Depth256 | Depth Int
 
 -- | How each attribute is turned on: an SGR parameter merged into the
 -- run's one SGR, the capability's own bytes, or not at all.
-data AttrCode = AttrSgr Int | AttrRaw ByteString | AttrNone
+data AttrCode = AttrSgr !Int | AttrRaw !ByteString | AttrNone
 
 data AttrCodes = AttrCodes
-    { bold, faint, italic, underline, blink, reverse, strike :: AttrCode }
+    { bold, faint, italic, underline, blink, reverse, strike :: !AttrCode }
+
+-- | The attributes in 'attrIndex' order.
+attrList :: AttrCodes -> [AttrCode]
+attrList a = [a.bold, a.faint, a.italic, a.underline, a.blink, a.reverse, a.strike]
+
+-- | A style's attributes as a number below 128, one bit each.
+attrIndex :: Style -> Int
+attrIndex st =
+    bit st.bold 1 + bit st.faint 2 + bit st.italic 4 + bit st.underline 8
+    + bit st.blink 16 + bit st.reverse 32 + bit st.strike 64
+  where
+    bit b n = if b then n else 0
+
+-- | Every attribute combination's SGR parameters and trailing raw bytes,
+-- rendered once per dialect so a run only looks its own up.
+withAttrs :: AttrCodes -> Dialect -> Dialect
+withAttrs a d = d
+    { attrParams = V.generate 128 (render param)
+    , attrRaws = V.generate 128 (render raw)
+    , rawAttrs = any isRaw (attrList a)
+    , standardMask = maybe (-1) sum
+        (sequence (zipWith standard [0 :: Int ..] (zip usual (attrList a))))
+    }
+  where
+    usual = [1, 2, 3, 4, 5, 7, 9]
+    standard k (n, code) = case code of
+        AttrSgr p | p == n -> Just (2 ^ k)
+        AttrNone -> Just 0
+        _ -> Nothing
+    render f i = BL.toStrict . BB.toLazyByteString $ mconcat
+        [ f code | (k, code) <- zip [0 :: Int ..] (attrList a), testBit i k ]
+    param = \case
+        AttrSgr n -> BB.char8 ';' <> BB.intDec n
+        _ -> mempty
+    raw = \case
+        AttrRaw bs -> BB.byteString bs
+        _ -> mempty
+    isRaw = \case
+        AttrRaw _ -> True
+        _ -> False
 
 dialectOf :: TtyTerm -> Dialect
-dialectOf t = Dialect
+dialectOf t = withAttrs attrs Dialect
     { depth
-    , attrs = AttrCodes
-        { bold = code "bold"
-        , faint = code "dim"
-        , italic = if hasCap "sitm" t then code "sitm" else code "smso"
-        , underline = code "smul"
-        , blink = code "blink"
-        , reverse = code "rev"
-        , strike = code "smxx"
-        }
+    , attrParams = V.empty
+    , attrRaws = V.empty
+    , rawAttrs = False
+    , standardMask = -1
     , clipCorner = noAutoMargin t
     , sync = hasCap "Sync" t
     , title = if hasCap "tsl" t && hasCap "fsl" t
@@ -87,6 +132,15 @@ dialectOf t = Dialect
     , mouseOff = if hasCap "kmous" t then mouseModesOff else ""
     }
   where
+    attrs = AttrCodes
+        { bold = code "bold"
+        , faint = code "dim"
+        , italic = if hasCap "sitm" t then code "sitm" else code "smso"
+        , underline = code "smul"
+        , blink = code "blink"
+        , reverse = code "rev"
+        , strike = code "smxx"
+        }
     depth
         | rgbColours t = DepthRGB
         | colours256 t || capNumber "colors" t >= 256 = Depth256
@@ -113,12 +167,12 @@ sgrParam s = do
 -- | The fixed xterm dialect a client draws in when its server never sent
 -- the terminal it opened (one that predates it).
 legacyDialect :: Dialect
-legacyDialect = Dialect
+legacyDialect = withAttrs standard Dialect
     { depth = DepthRGB
-    , attrs = AttrCodes
-        { bold = AttrSgr 1, faint = AttrSgr 2, italic = AttrSgr 3
-        , underline = AttrSgr 4, blink = AttrSgr 5, reverse = AttrSgr 7
-        , strike = AttrSgr 9 }
+    , attrParams = V.empty
+    , attrRaws = V.empty
+    , rawAttrs = False
+    , standardMask = -1
     , clipCorner = False
     , sync = True
     , title = Just ("\ESC]0;", "\BEL")
@@ -132,6 +186,11 @@ legacyDialect = Dialect
     , cursorStyleReset = "\ESC[0 q"
     , mouseOff = mouseModesOff
     }
+  where
+    standard = AttrCodes
+        { bold = AttrSgr 1, faint = AttrSgr 2, italic = AttrSgr 3
+        , underline = AttrSgr 4, blink = AttrSgr 5, reverse = AttrSgr 7
+        , strike = AttrSgr 9 }
 
 mouseModesOff :: ByteString
 mouseModesOff = "\ESC[?1006l\ESC[?1000l\ESC[?1002l\ESC[?1003l"
@@ -161,15 +220,13 @@ opsToAnsi d sz ops = BL.toStrict . BB.toLazyByteString $
 opBuilder :: Dialect -> Size -> DrawOp -> BB.Builder
 opBuilder d sz = \case
     ClearAll -> BB.byteString "\ESC[0m\ESC[2J\ESC[H"
-    Put pos st txt ->
-        moveTo pos <> sgrBuilder d st <> TE.encodeUtf8Builder (clip pos txt)
+    Put pos st txt
+        -- tmux's TERM_NOAM: writing the bottom-right cell would scroll.
+        | d.clipCorner, pos.row == fromIntegral sz.rows - 1 ->
+            moveTo pos <> sgrBuilder d st
+                <> TE.encodeUtf8Builder (fitColumns (fromIntegral sz.cols - 1 - pos.col) txt)
+        | otherwise -> moveTo pos <> sgrBuilder d st <> TE.encodeUtf8Builder txt
     CursorAt pos _visible -> moveTo pos
-  where
-    -- tmux's TERM_NOAM: writing the bottom-right cell would scroll.
-    clip pos txt
-        | d.clipCorner, pos.row == fromIntegral sz.rows - 1 =
-            fitColumns (fromIntegral sz.cols - 1 - pos.col) txt
-        | otherwise = txt
 
 -- | The longest prefix of a run that fits in the columns, keeping the
 -- zero-width characters that close it.
@@ -194,53 +251,105 @@ sgr :: Dialect -> Style -> ByteString
 sgr d = BL.toStrict . BB.toLazyByteString . sgrBuilder d
 
 sgrBuilder :: Dialect -> Style -> BB.Builder
-sgrBuilder d st0 =
-    BB.byteString "\ESC[0"
-    <> param st.bold a.bold
-    <> param st.faint a.faint
-    <> param st.italic a.italic
-    <> param st.underline a.underline
-    <> param st.blink a.blink
-    <> param st.reverse a.reverse
-    <> param st.strike a.strike
-    <> colourCode Fg d.depth st.fg
-    <> colourCode Bg d.depth st.bg
-    <> BB.char8 'm'
-    <> raw st.bold a.bold
-    <> raw st.faint a.faint
-    <> raw st.italic a.italic
-    <> raw st.underline a.underline
-    <> raw st.blink a.blink
-    <> raw st.reverse a.reverse
-    <> raw st.strike a.strike
+sgrBuilder d st = case d.depth of
+    DepthRGB | d.standardMask >= 0 -> sgrStandard d.standardMask st
+    Depth256 | d.standardMask >= 0 -> sgrStandard d.standardMask (nearest256 st)
+    DepthRGB -> sgrIn d st
+    Depth256 -> sgrIn d (nearest256 st)
+    Depth n -> sgrLow d n (fitColours n st)
+
+-- | A style's 24-bit colours as the nearest of the 256.
+nearest256 :: Style -> Style
+nearest256 st = case (st.fg, st.bg) of
+    (RGB {}, _) -> st { fg = near st.fg, bg = near st.bg }
+    (_, RGB {}) -> st { bg = near st.bg }
+    _ -> st
   where
-    a = d.attrs
-    st = fitColours d.depth st0
-    param on = \case
-        AttrSgr n | on -> BB.char8 ';' <> BB.intDec n
-        _ -> mempty
-    raw on = \case
-        AttrRaw bs | on -> BB.byteString bs
-        _ -> mempty
+    near = \case
+        RGB r g b -> Indexed (findRgb r g b)
+        c -> c
+
+-- | The SGR on a terminal of 256 colours or more whose attributes all
+-- take their usual parameters: the per-run hot path, kept to fixed code.
+sgrStandard :: Int -> Style -> BB.Builder
+sgrStandard m st =
+    BB.byteString "\ESC[0"
+    <> flag (st.bold && testBit m 0) 1
+    <> flag (st.faint && testBit m 1) 2
+    <> flag (st.italic && testBit m 2) 3
+    <> flag (st.underline && testBit m 3) 4
+    <> flag (st.blink && testBit m 4) 5
+    <> flag (st.reverse && testBit m 5) 7
+    <> flag (st.strike && testBit m 6) 9
+    <> fgCode st.fg
+    <> bgCode st.bg
+    <> BB.char8 'm'
+  where
+    flag :: Bool -> Int -> BB.Builder
+    flag b n = if b then BB.char8 ';' <> BB.intDec n else mempty
+
+-- | The SGR on a terminal of 256 colours or more: RGB colours as they are,
+-- or as the nearest of the 256.
+sgrIn :: Dialect -> Style -> BB.Builder
+sgrIn d st =
+    BB.byteString "\ESC[0"
+    <> BB.byteString (V.unsafeIndex d.attrParams i)
+    <> fgCode st.fg
+    <> bgCode st.bg
+    <> BB.char8 'm'
+    <> (if d.rawAttrs then BB.byteString (V.unsafeIndex d.attrRaws i) else mempty)
+  where
+    i = attrIndex st
+
+-- | The SGR on a terminal of fewer colours, its colours already fitted.
+sgrLow :: Dialect -> Int -> Style -> BB.Builder
+sgrLow d n st =
+    BB.byteString "\ESC[0"
+    <> BB.byteString (V.unsafeIndex d.attrParams i)
+    <> colourCode Fg (Depth n) st.fg
+    <> colourCode Bg (Depth n) st.bg
+    <> BB.char8 'm'
+    <> BB.byteString (V.unsafeIndex d.attrRaws i)
+  where
+    i = attrIndex st
+
+fgCode :: Color -> BB.Builder
+fgCode = \case
+    DefaultColor -> mempty
+    Indexed n
+        | n < 8 -> BB.char8 ';' <> BB.intDec (30 + fromIntegral n)
+        | otherwise -> BB.byteString ";38;5;" <> BB.intDec (fromIntegral n)
+    RGB r g b -> BB.byteString ";38;2;"
+        <> BB.intDec (fromIntegral r) <> BB.char8 ';'
+        <> BB.intDec (fromIntegral g) <> BB.char8 ';'
+        <> BB.intDec (fromIntegral b)
+
+bgCode :: Color -> BB.Builder
+bgCode = \case
+    DefaultColor -> mempty
+    Indexed n
+        | n < 8 -> BB.char8 ';' <> BB.intDec (40 + fromIntegral n)
+        | otherwise -> BB.byteString ";48;5;" <> BB.intDec (fromIntegral n)
+    RGB r g b -> BB.byteString ";48;2;"
+        <> BB.intDec (fromIntegral r) <> BB.char8 ';'
+        <> BB.intDec (fromIntegral g) <> BB.char8 ';'
+        <> BB.intDec (fromIntegral b)
 
 data Layer = Fg | Bg
 
--- | A style's colours as a terminal of the given depth can show them
--- (tmux's @tty_check_fg@ and @tty_check_bg@): 24-bit colours to the 256
--- palette, the 256 palette to the 16 colours, and bright colours to bold
+-- | A style's colours as a terminal of fewer than 256 colours can show
+-- them (tmux's @tty_check_fg@ and @tty_check_bg@): 24-bit colours by way
+-- of the 256 palette to the 16 colours, and bright colours to bold
 -- (foreground) or plain (background) on an 8-colour terminal.
-fitColours :: ColourDepth -> Style -> Style
-fitColours depth st = case depth of
-    DepthRGB -> st
-    Depth256 -> st { fg = to256 st.fg, bg = to256 st.bg }
-    Depth n ->
-        let fg16 = to16 n (to256 st.fg)
-            bg16 = to16 n (to256 st.bg)
-            (fg', boldUp) = case fg16 of
-                Bright c | n < 16 -> (Indexed c, True)
-                Converted c | n < 16 -> (Indexed (avoidSame c bg16), False)
-                other -> (plain other, False)
-        in st { fg = fg', bg = plainBg n bg16, bold = st.bold || boldUp }
+fitColours :: Int -> Style -> Style
+fitColours n st =
+    let fg16 = to16 n (to256 st.fg)
+        bg16 = to16 n (to256 st.bg)
+        (fg', boldUp) = case fg16 of
+            Bright c | n < 16 -> (Indexed c, True)
+            Converted c | n < 16 -> (Indexed (avoidSame c bg16), False)
+            other -> (plain other, False)
+    in st { fg = fg', bg = plainBg bg16, bold = st.bold || boldUp }
   where
     to256 = \case
         RGB r g b -> Indexed (findRgb r g b)
@@ -251,7 +360,7 @@ fitColours depth st = case depth of
         | c == 0, plain bg16 == Indexed 0 = 7
         | c == 7, plain bg16 == Indexed 7 = 0
         | otherwise = c
-    plainBg n = \case
+    plainBg = \case
         Bright c | n < 16 -> Indexed c
         Converted c | n < 16 -> Indexed c
         other -> plain other
@@ -287,6 +396,10 @@ colourCode layer depth = \case
         | n < 16, depth /= DepthRGB, depth /= Depth256 ->
             BB.char8 ';' <> BB.intDec (base + 60 + fromIntegral n - 8)
         | otherwise -> BB.byteString (ext "5;") <> BB.intDec (fromIntegral n)
+    -- Only a 256-colour terminal is left an RGB colour to fit; see
+    -- 'fitColours' for fewer.
+    RGB r g b | depth /= DepthRGB ->
+        BB.byteString (ext "5;") <> BB.intDec (fromIntegral (findRgb r g b))
     RGB r g b -> BB.byteString (ext "2;")
         <> BB.intDec (fromIntegral r) <> BB.char8 ';'
         <> BB.intDec (fromIntegral g) <> BB.char8 ';'
