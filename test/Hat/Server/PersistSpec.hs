@@ -133,6 +133,7 @@ instance Arbitrary PaneSnap where
     arbitrary = PaneSnap <$> genText <*> genMaybeArgv <*> arbitrary
         <*> elements [ProgramPane, EmptyPane] <*> arbitrary
         <*> oneof [pure Nothing, Just <$> genText]
+        <*> (choose (0, 3) >>= \n -> vectorOf n genText)
     shrink p =
         [ p { cwd = c } | c <- shrinkText p.cwd ]
         ++ [ p { command = mc } | mc <- shrinkMaybeArgv p.command ]
@@ -141,6 +142,7 @@ instance Arbitrary PaneSnap where
         ++ [ p { inputOff = False } | p.inputOff ]
         ++ [ p { title = t } | t <- Nothing : maybe [] (map Just . shrinkText) p.title
                              , t /= p.title ]
+        ++ [ p { titleStack = ts } | ts <- shrinkList shrinkText p.titleStack ]
 
 -- A captured command is either absent or a non-empty argv (argv[0] is the
 -- program); the empty list is not a value capture ever produces.
@@ -296,6 +298,20 @@ spec = do
             [ (p.kind, p.inputOff, p.title)
                 | s <- got.sessions, w <- s.windows, p <- w.panes ]
                 `shouldBe` [ (EmptyPane, True, Just "t"), (ProgramPane, False, Nothing) ]
+
+        -- The titles a program pushed ride the pane extra; a row written
+        -- before them has an empty stack.
+        it "reads a pane's title stack, defaulting older rows" $ do
+            got <- withRaw $ \conn -> do
+                bootstrap conn
+                execute_ conn "INSERT INTO session VALUES (0, 's', '/h', 0, '{}')"
+                execute_ conn "INSERT INTO window VALUES (0, 0, 'w', 'lay', 0, '{}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 0, '/h', \
+                    \'{\"title\":\"t\",\"title_stack\":[\"b\",\"a\"]}')"
+                execute_ conn "INSERT INTO pane VALUES (0, 0, 1, '/h', '{\"title\":\"t\"}')"
+                loadSnapshot conn
+            [ p.titleStack | s <- got.sessions, w <- s.windows, p <- w.panes ]
+                `shouldBe` [["b", "a"], []]
 
         -- A store written before the MRU stack existed carries only the
         -- single last_ix/last_active keys; each lifts to a one-deep history.
@@ -505,14 +521,14 @@ spec = do
                             [ WindowSnap { ix = 0, name = "a", layout = "l0"
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             , WindowSnap { ix = 2, name = "b", layout = "l2"
                                 , active = 1, paneHist = [0]
                                 , autoRename = False
                                 , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing
                                 , panes =
-                                    [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
-                                    , PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing } ] }
+                                    [ PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
+                                    , PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] } ] }
                             ] } ] }
         got <- withStore ":memory:" $ \conn ->
             saveSnapshot conn snap >> loadSnapshot conn
@@ -524,7 +540,7 @@ spec = do
     it "round-trips each window's automatic-rename status" $ do
         let win wix auto = WindowSnap { ix = wix, name = "w", layout = "l"
                 , active = 0, paneHist = [], autoRename = auto
-                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/h", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
@@ -539,7 +555,7 @@ spec = do
     -- d: whether a program was shell-spawned survives a save/load, so a
     -- restore knows to relaunch it through the pane's shell.
     it "round-trips a pane's shell-spawned flag" $ do
-        let pane sp = PaneSnap { cwd = "/h", command = Just ["vim"], shellSpawned = sp, kind = ProgramPane, inputOff = False, title = Nothing }
+        let pane sp = PaneSnap { cwd = "/h", command = Just ["vim"], shellSpawned = sp, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap { name = "s", startCwd = "/h", currentIx = 0
@@ -569,7 +585,7 @@ oneSession nm cwd0 wnm lay pcwd = Snapshot
                 [ WindowSnap { ix = 0, name = wnm, layout = lay
                     , active = 0, paneHist = []
                     , autoRename = False
-                    , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                    , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = pcwd, command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                 ] } ] }
 
 -- Every pane's captured command, in load order.

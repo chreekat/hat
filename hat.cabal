@@ -132,6 +132,8 @@ library
         Hat.Server.Dispatch
         Hat.Server.DisplayPanes
         Hat.Server.DisplayPos
+        Hat.Server.Customize
+        Hat.Server.Editor
         Hat.Server.Environ
         Hat.Server.Flash
         Hat.Server.Floating
@@ -164,6 +166,7 @@ library
         Hat.Server.Pane
         Hat.Server.PaneColours
         Hat.Server.PaneMode
+        Hat.Server.PanePrompt
         Hat.Server.ModeStack
         Hat.Server.ModeKey
         Hat.Server.ModeTree
@@ -370,6 +373,7 @@ test-suite hat-test
         Hat.Server.PaneCommandSpec
         Hat.Server.PaneModeSpec
         Hat.Server.ModeTreeSpec
+        Hat.Server.CustomizeSpec
         Hat.Server.PaneReaderSpec
         Hat.Server.PopupSpec
         Hat.Server.PromptSpec

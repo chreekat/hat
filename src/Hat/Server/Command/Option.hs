@@ -26,10 +26,16 @@ module Hat.Server.Command.Option
     , refreshGlobalOptions
     , statusRefreshInterval
     , applyHistoryLimit
+    , Scope (..)
+    , ownValue
+    , hookScopeOf
+    , hookEntryValue
+    , assignOption
+    , removeOption
     ) where
 
 import Control.Concurrent.STM
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
@@ -44,10 +50,10 @@ import Hat.Server.Format (FormatEnv, quoteArgsT)
 import Hat.Server.FormatEnv (paneEnvById, paneFormatEnv)
 import Hat.Server.HookTypes (HookAmbient (..), HookEntry (..), HookScope (..))
 import Hat.Server.HookMonitor (monitorsAt)
-import Hat.Server.Hooks (ambientFor, hookEntriesAt, writeHookArray)
+import Hat.Server.Hooks (ambientFor, hookEntriesAt, isRegisteredEvent, writeHookArray)
 import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
-    , targetCurrentWindow, targetPaneScoped, targetSession )
+    , targetCurrentWindow, targetPane, targetSession )
 import Hat.Server.OptionParse
 import Hat.Server.Pane (suitableShell)
 import Hat.Server.Resize (applySessionSize)
@@ -112,7 +118,7 @@ windowScope st mclient mtarget =
         <$> targetWindowScoped st mclient mtarget
 paneScope st mclient mtarget =
     maybe (Left (noSuchTarget "pane" mtarget)) (Right . PaneTable)
-        <$> targetPaneScoped st mclient mtarget
+        <$> targetPane st mclient mtarget
 
 ownOptionsAt :: ServerState -> Scope -> OwnOptions
 ownOptionsAt st = \case
@@ -315,7 +321,8 @@ runSet cmd st mclient args = do
                     Left e -> pure [RErr e]
                     Right () -> do
                         esc <- scopeFor st mclient mtarget sd flags mdef
-                        case (esc, storeRole cmd mdef) of
+                        role <- storeRole st cmd n mdef (either (const Nothing) Just esc)
+                        case (esc, role) of
                             (Left e, _) -> orQuiet e
                             (Right sc, HookOption) -> case hookScopeOf sc of
                                 Nothing -> pure [RErr (noSuchTarget "session" mtarget)]
@@ -333,6 +340,48 @@ runSet cmd st mclient args = do
                                             writeOption st sc n
                                                 (\own eff -> planSet mdef req' spelled
                                                     mkey own eff mvalue')
+
+-- | Assign a value to an option (or one array item of it) in one table's
+-- option or hook store, as customize-mode's prompts do (tmux's
+-- @options_from_string@ and @options_array_set@): checked as @set-option@
+-- checks it, a hat-unimplemented option refused.
+assignOption
+    :: ServerState -> Scope -> OptionRole -> Text -> Maybe ArrayKey -> Text
+    -> IO (Either Text ())
+assignOption st sc role n mkey v =
+    changeOption st sc role n mkey (SetRequest Assign SetValue OverwriteAny Loud) (Just v)
+
+-- | Remove an option (or one array item of it) from one table's option or
+-- hook store; a global table's registered option goes back to its default
+-- (tmux's @options_remove_or_default@).
+removeOption :: ServerState -> Scope -> OptionRole -> Text -> Maybe ArrayKey -> IO ()
+removeOption st sc role n mkey = void $
+    changeOption st sc role n mkey (SetRequest Assign UnsetValue OverwriteAny Loud) Nothing
+
+changeOption
+    :: ServerState -> Scope -> OptionRole -> Text -> Maybe ArrayKey -> SetRequest
+    -> Maybe Text -> IO (Either Text ())
+changeOption st sc role n mkey req mvalue =
+    case mapM_ requireLive mdef >> paneValuesFor role of
+        Left e -> pure (Left e)
+        Right () -> firstError <$> case role of
+            HookOption -> case hookScopeOf sc of
+                Nothing -> pure [RErr ("no hooks at this scope: " <> n)]
+                Just hs -> writeHook st hs n mdef (\own -> plan own own mvalue)
+            PlainOption -> do
+                checked <- checkValue st sc n req mvalue
+                case checked of
+                    Left e -> pure [RErr e]
+                    Right (req', mvalue') ->
+                        writeOption st sc n (\own eff -> planSet mdef req' spelled mkey own eff mvalue')
+  where
+    mdef = lookupOptionDef n
+    spelled = n <> maybe "" (\k -> "[" <> arrayKeyText k <> "]") mkey
+    plan own eff = planSet mdef req spelled mkey own eff
+    paneValuesFor = \case
+        PlainOption -> requirePaneValues sc mdef
+        HookOption -> Right ()
+    firstError rs = maybe (Right ()) Left (listToMaybe [ e | RErr e <- rs ])
 
 -- | Assign a registered option on one pane, as a command whose flags set pane
 -- options does (tmux's @options_set_string@ on @wp->options@): the value is
@@ -381,13 +430,23 @@ checkValue st sc n req mvalue = case (n, req.unsetting, mvalue) of
             else Left ("not a suitable shell: " <> new)
     _ -> pure (Right (req, mvalue))
 
--- | Which store a name addresses: the hook store for a hook row or a
--- @\@user@ name given to @set-hook@, else the option tables.
-storeRole :: SetCommand -> Maybe OptionDef -> OptionRole
-storeRole cmd = \case
-    Just d -> d.role
-    Nothing | cmd == SetHookCommand -> HookOption
-            | otherwise -> PlainOption
+-- | Which store a name addresses: the hook store for a hook row, a @\@user@
+-- name given to @set-hook@, or one a @set-hook@ made an event (tmux keeps a
+-- user hook as the user option of its name); else the option tables.
+storeRole
+    :: ServerState -> SetCommand -> Text -> Maybe OptionDef -> Maybe Scope
+    -> IO OptionRole
+storeRole st cmd n mdef msc = case mdef of
+    Just d -> pure d.role
+    Nothing | cmd == SetHookCommand -> pure HookOption
+            | otherwise -> userRole st n msc
+
+-- | A @\@user@ name's store at a table: the hook store once it is an event,
+-- at a table hooks live in.
+userRole :: ServerState -> Text -> Maybe Scope -> IO OptionRole
+userRole st n msc = do
+    event <- isRegisteredEvent st n
+    pure $ if event && isJust (hookScopeOf =<< msc) then HookOption else PlainOption
 
 -- | Decide and write one hook's commands at a hook scope. A hook row's value
 -- is its command array; a user hook's is its one command.
@@ -670,10 +729,6 @@ runShow cmd st mclient args = do
             Left (MatchError e) -> orQuiet e
             Right (n, mkey) -> do
                 let mdef = lookupOptionDef n
-                    role = case (mdef, cmd) of
-                        (Just d, _) -> d.role
-                        (Nothing, ShowHooksCommand) -> HookOption
-                        (Nothing, ShowOptionsCommand) -> PlainOption
                 case mapM_ requireLive mdef of
                     Left e -> pure [RErr e]
                     Right () -> do
@@ -681,6 +736,10 @@ runShow cmd st mclient args = do
                         case esc of
                             Left e -> orQuiet e
                             Right sc -> do
+                                role <- case (mdef, cmd) of
+                                    (Just d, _) -> pure d.role
+                                    (Nothing, ShowHooksCommand) -> pure HookOption
+                                    (Nothing, ShowOptionsCommand) -> userRole st n (Just sc)
                                 found <- lookupShown st sc role mdef n (if has "-A" then WithParents else OwnOnly)
                                 case found of
                                     Just (v, inh, extra) ->

@@ -65,7 +65,7 @@ import Hat.Server.Pane
     , windowActivity )
 import Hat.Server.Resize
     ( applySessionSize, clampWindowSize, claimLatest, clientWindowArea, newWindowSize
-    , recalculateSizes )
+    , recalculateSizes, windowResized )
 import Hat.Server.FormatEnv
     (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
 import Hat.Server.Target qualified as Target
@@ -469,13 +469,11 @@ cmdResizeWindow st mclient args
                     modifyOwn win.options
                         (insertDelta "window-size" (OVScalar "manual"))
                     writeTVar win.manualSize sz
+                    recalculateSizes st
+                    -- tmux's resize_window fires even at the size it had.
+                    now <- readTVar win.size
+                    when (now == current) $ windowResized st win current
                 applySessionSize st sess.id
-                now <- readTVarIO win.size
-                notifyWindow st "window-resized" (Just sess.id) win
-                    [ ("old_width", PInt (fromIntegral current.cols))
-                    , ("old_height", PInt (fromIntegral current.rows))
-                    , ("width", PInt (fromIntegral now.cols))
-                    , ("height", PInt (fromIntegral now.rows)) ]
                 pure []
   where
     (opts, flags, pos) = parseArgs "txy" args

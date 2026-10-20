@@ -14,7 +14,6 @@ module Hat.Server.Locate
     , markedTarget
     , currentWindowOf
     , targetCurrentWindow
-    , targetPaneScoped
     , withTargetSession
     , withCurrentWindow
     , currentResolved
@@ -334,22 +333,6 @@ targetCurrentWindow st mclient mtarget = do
     case msess of
         Nothing -> pure Nothing
         Just sess -> atomically (currentWindow sess)
-
--- | The pane a @-p@ option scope acts on: a pane id (or @!@/@~@) via
--- 'targetPane', or the active pane of the target session's current window —
--- an unresolvable @-t@ is the caller's error, never a silent fallback to
--- the current pane.
-targetPaneScoped :: ServerState -> Maybe Client -> Maybe Text -> IO (Maybe Pane)
-targetPaneScoped st mclient mtarget = case (mtarget, parsePaneTarget mtarget) of
-    (Just _, PaneCurrent) -> do
-        mwin <- targetCurrentWindow st mclient mtarget
-        case mwin of
-            Nothing -> pure Nothing
-            Just win -> atomically $ do
-                ps <- readTVar win.panes
-                a <- readTVar win.activeId
-                pure (Map.lookup a ps)
-    _ -> targetPane st mclient mtarget
 
 withTargetSession
     :: ServerState -> Maybe Client -> Maybe Text

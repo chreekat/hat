@@ -16,6 +16,7 @@ module Hat.Server.Scene
     , sceneKinds
     , BorderCell (..)
     , CellType (..)
+    , cellTypeOf
     , buildScene
     , markingOrder
     , statusAdjust

@@ -21,7 +21,7 @@ import Hat.Model
 import Hat.Model.Options (optionText)
 import Hat.Server.ClientIO (send)
 import Hat.Server.Hooks
-    (PayloadItem (..), clientNameOf, notify, sessionTarget)
+    (PayloadItem (..), notifyClient)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Lock (armLockTimer)
 import Hat.Server.Resize (applySessionSize, claimLatest)
@@ -53,9 +53,10 @@ switchClientTo st client sess = do
     armLockTimer st sess.id
     when (old /= sess.id) $ do
         sname <- readTVarIO sess.name
-        notify st "client-session-changed" (sessionTarget sess.id)
-            [ ("client", PClientRef (clientNameOf (Just client)))
-            , ("session", PSessionRef sess.id sname) ]
+        mold <- atomically (findSessionById st old)
+        oldItem <- forM mold $ \o -> ("old_session",) . PSessionRef o.id <$> readTVarIO o.name
+        notifyClient st "client-session-changed" client $
+            ("new_session", PSessionRef sess.id sname) : maybe [] pure oldItem
 
 -- | @detach-on-destroy@: where a destroyed session's clients go.
 data DetachOnDestroy

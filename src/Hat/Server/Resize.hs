@@ -6,6 +6,8 @@ module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
     , recalculateSizes
+    , windowResized
+    , announceResized
     , clientWindowArea
     , newWindowSize
     , claimLatest
@@ -22,6 +24,7 @@ module Hat.Server.Resize
     , rectSize
     , windowArrange
     , unzoomedArrange
+    , zoomHidesChrome
     , windowPaneStatus
     , windowFloats
     , paneScrollbars
@@ -31,10 +34,12 @@ module Hat.Server.Resize
 
 import Control.Concurrent.STM
 import Control.Exception (IOException, handle)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (filterM, forM, forM_, when)
+import Data.List qualified as List
+import Data.Ord (comparing)
 import Data.Word (Word16)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
@@ -45,7 +50,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ControlTypes (ControlState (..))
 import Hat.Server.Layout
-import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.Hooks (PayloadItem (..), notifyPane, notifyWindow)
 import Hat.Server.Floating (stacking)
 import Hat.Server.Menu (refitMenu)
 import Hat.Server.CopyMode (resizeCopyMode)
@@ -71,11 +76,13 @@ resizeModeOf opts = case optionText "window-size" opts of
 -- a window resized here — or a layout changed anywhere else — reconciles
 -- uniformly.
 applySessionSize :: ServerState -> SessionId -> IO ()
-applySessionSize st sid = atomically $ do
-    recalculateSizes st
-    cs <- sessionClients st sid
-    forM_ cs $ \c -> writeTVar c.needsFull True
-    bumpDirty st
+applySessionSize st sid = do
+    atomically $ do
+        recalculateSizes st
+        cs <- sessionClients st sid
+        forM_ cs $ \c -> writeTVar c.needsFull True
+        bumpDirty st
+    announceResized st
 
 -- | tmux's @recalculate_sizes@: every window takes its 'windowSize', keeping
 -- the size it has when no client sizes it. A client of one session can size
@@ -90,12 +97,37 @@ recalculateSizes st = do
         windowSize st win >>= \case
             Just new | new /= old -> do
                 writeTVar win.size new
+                windowResized st win old
                 forM_ sessions $ \sess -> do
                     shown <- maybe False (\w -> w.id == win.id) <$> currentWindow sess
                     when shown $ do
                         cs <- sessionClients st sess.id
                         forM_ cs $ \c -> writeTVar c.needsFull True
             _ -> pure ()
+
+-- | Queue @window-resized@ for @win@, which was @old@ before (tmux's
+-- @resize_window@ fires it); 'announceResized' fires it.
+windowResized :: ServerState -> Window -> Size -> STM ()
+windowResized st win old = modifyTVar' st.resizedWindows ((win, old) :)
+
+-- | Fire @window-resized@ for every window resized since it last fired,
+-- in the order they were resized, from the size each had before to the
+-- one it has now, targeted at a session holding it.
+announceResized :: ServerState -> IO ()
+announceResized st = do
+    due <- atomically $ do
+        rs <- swapTVar st.resizedWindows []
+        sessions <- Map.elems <$> readTVar st.sessions
+        forM (reverse rs) $ \(win, old) -> do
+            now <- readTVar win.size
+            holders <- filterM (fmap (any (\w -> w.id == win.id)) . readTVar . (.windows)) sessions
+            pure (win, (.id) <$> listToMaybe holders, old, now)
+    forM_ due $ \(win, msid, old, now) ->
+        notifyWindow st "window-resized" msid win
+            [ ("old_width", PInt (fromIntegral old.cols))
+            , ("old_height", PInt (fromIntegral old.rows))
+            , ("width", PInt (fromIntegral now.cols))
+            , ("height", PInt (fromIntegral now.rows)) ]
 
 -- | Every window once.
 allWindows :: [Session] -> STM [Window]
@@ -157,8 +189,8 @@ claimLatest st client sess = do
 
 -- | tmux's @server_client_attached_lost@: each window whose latest client
 -- was @gone@ passes to the most recently active client still showing it,
--- if there is one.
-forgetLatest :: ServerState -> ClientId -> STM ()
+-- if there is one; that heir, once per window it takes.
+forgetLatest :: ServerState -> ClientId -> STM [Client]
 forgetLatest st gone = do
     sessions <- readTVar st.sessions
     cs <- filter (\c -> c.id /= gone) . Map.elems <$> readTVar st.clients
@@ -166,14 +198,16 @@ forgetLatest st gone = do
         sid <- readTVar c.session
         stamp <- readTVar c.lastActive
         mwin <- maybe (pure Nothing) currentWindow (Map.lookup sid sessions)
-        pure (fmap (\w -> (w.id, (stamp, c.id))) mwin)
+        pure (fmap (\w -> (w.id, ((stamp, c.id), c))) mwin)
     wins <- allWindows (Map.elems sessions)
-    forM_ wins $ \win -> do
+    fmap catMaybes . forM wins $ \win -> do
         l <- readTVar win.latest
-        when (l == Just gone) $
-            writeTVar win.latest $ case [ v | (wid, v) <- shown, wid == win.id ] of
-                [] -> Nothing
-                vs -> Just (snd (maximum vs))
+        if l /= Just gone then pure Nothing else do
+            let heir = case [ v | (wid, v) <- shown, wid == win.id ] of
+                    [] -> Nothing
+                    vs -> Just (snd (List.maximumBy (comparing fst) vs))
+            writeTVar win.latest ((.id) <$> heir)
+            pure heir
 
 -- Note [Sizing per window]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -471,12 +505,25 @@ windowArrange st eff win = do
     ps <- readTVar win.panes
     case mz of
         Just zpid | Map.member zpid ps -> do
+            hidden <- zoomHidesChrome win
             (side, bars) <- paneScrollbars st win
             status <- windowPaneStatus st win
-            pure ( [ (zpid, scrollbarReserve side (Map.findWithDefault 0 zpid bars)
-                        (statusAdjust status (fromIntegral eff.rows) (sizeRect eff))) ]
+            pure ( [ (zpid, if hidden then sizeRect eff else
+                        scrollbarReserve side (Map.findWithDefault 0 zpid bars)
+                            (statusAdjust status (fromIntegral eff.rows) (sizeRect eff))) ]
                  , [] )
         _ -> unzoomedArrange' st eff win
+
+-- | Whether the window's zoomed pane shows a mode that leaves out its
+-- pane status line and scrollbar ('modeHidesChrome').
+zoomHidesChrome :: Window -> STM Bool
+zoomHidesChrome win = readTVar win.zoomed >>= \case
+    Nothing -> pure False
+    Just zpid -> do
+        ps <- readTVar win.panes
+        case Map.lookup zpid ps of
+            Nothing -> pure False
+            Just p -> maybe False modeHidesChrome <$> topMode p
 
 -- | Pane rects as 'windowArrange' would give them were the window not
 -- zoomed.

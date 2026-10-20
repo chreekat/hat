@@ -50,6 +50,8 @@ module Hat.Model
     , topMode
     , paneInMode
     , modeName
+    , modeStacks
+    , modeHidesChrome
     , TreeState (..)
     , TreeKind (..)
     , TreeOrigin (..)
@@ -61,6 +63,19 @@ module Hat.Model
     , GroupView (..)
     , KillConfirm (..)
     , ModeZoom (..)
+    , EditorWait (..)
+    , ItemsShown (..)
+    , GlobalsShown (..)
+    , CustomizeGroup (..)
+    , KeyPart (..)
+    , OptionTableRef (..)
+    , OptionFamily (..)
+    , OptionTarget (..)
+    , EnvScopeRef (..)
+    , EnvTarget (..)
+    , KeyTarget (..)
+    , ItemChange (..)
+    , ChangeReach (..)
     , TreePrompt (..)
     , TreePromptUse (..)
     , PromptEntry (..)
@@ -73,9 +88,12 @@ module Hat.Model
     , Markup (..)
     , Flash (..)
     , PanesKeyHold (..)
-    , DisplayPanesState (..)
+    , PanesState (..)
+    , PanesPreview (..)
     , PromptState (..)
     , PromptKind (..)
+    , PromptType (..)
+    , PromptFreeze (..)
     , PromptWaiter (..)
     , PromptKeys (..)
     , PromptMode (..)
@@ -152,13 +170,14 @@ import Hat.Path (findHome)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( ModeKeys, Options, applyDelta, defaultOptions, resolveOptions )
+import Hat.Model.OptionTable (ArrayKey)
 import Hat.Model.OwnOptions
 import Hat.Server.ColorScheme (ColorScheme, MonitorRegistry, newMonitorRegistry)
 import Hat.Server.Theme (Theme)
 import Hat.Server.ControlTypes (ControlState)
 import Hat.Server.Outbound (Outbound)
 import Hat.Server.HookTypes (HooksState, newHooksState)
-import Hat.Server.Environ (Environ, emptyEnviron)
+import Hat.Server.Environ (Environ, EnvVisibility, emptyEnviron)
 import Hat.Server.InputRequests (InputRequests, noRequests)
 import Hat.Server.Keys (EscPending, KeyState, Keymap)
 import Hat.Server.Layout (Layout, LayoutName, paneOrder)
@@ -187,6 +206,13 @@ data ServerState = ServerState
     , commandDepth :: TVar Int   -- ^ open user-command batches; see
                                 --   'Hat.Server.Resize.awaitReconcileTick'
     , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
+    , resizedWindows :: TVar [(Window, Size)]
+        -- ^ windows resized since @window-resized@ last fired, newest
+        --   first, each with its size before; see
+        --   'Hat.Server.Resize.announceResized'
+    , panePrompts :: TVar (Map PaneId PromptState)
+        -- ^ the prompts drawn over panes (@command-prompt -P@); see
+        --   "Hat.Server.PanePrompt"
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
                                 --   'Hat.Server.serverIdle'
@@ -527,6 +553,7 @@ data PaneMode
     = CopyMode !CopyModeData  -- ^ copy mode or view mode
     | ClockMode
     | TreeMode !TreeState
+    | PanesMode !PanesState  -- ^ @display-panes@
     deriving (Eq, Show)
 
 -- | The mode's name as @#{pane_mode}@ and the mode hooks report it.
@@ -540,6 +567,23 @@ modeName = \case
         SessionTree -> "tree-mode"
         BufferList -> "buffer-mode"
         ClientList -> "client-mode"
+        OptionTree -> "options-mode"
+    PanesMode _ -> "panes-mode"
+
+-- | Whether a mode may stay in its pane's stack under another (tmux's
+-- @WINDOW_MODE_NO_STACK@ unset); see 'Hat.Server.ModeStack.setPaneMode'.
+modeStacks :: PaneMode -> Bool
+modeStacks = \case
+    PanesMode _ -> False
+    _ -> True
+
+-- | Whether a mode's zoomed pane fills its whole window, its pane status
+-- line and scrollbar left out (tmux's @WINDOW_MODE_HIDE_PANE_STATUS@ and
+-- @WINDOW_MODE_HIDE_SCROLLBARS@); see 'Hat.Server.Resize.zoomHidesChrome'.
+modeHidesChrome :: PaneMode -> Bool
+modeHidesChrome = \case
+    PanesMode _ -> True
+    _ -> False
 
 -- | One entry of a pane's mode stack.
 data ModeEntry = ModeEntry
@@ -588,6 +632,10 @@ data TreeState = TreeState
     , confirm    :: !KillConfirm
     , zoom       :: !ModeZoom
     , showHelp   :: !Bool             -- ^ the key help is drawn over the list
+    , editor     :: !(Maybe EditorWait)
+        -- ^ the editor the mode's @e@ opened, while it runs
+    , itemsShown :: !ItemsShown       -- ^ customize-mode's @C@
+    , globalsShown :: !GlobalsShown   -- ^ customize-mode's @H@
     }
     deriving (Eq, Show)
 
@@ -596,6 +644,9 @@ data TreeKind
     = SessionTree  -- ^ @tree-mode@: sessions, windows, panes (choose-tree)
     | BufferList   -- ^ @buffer-mode@: paste buffers (choose-buffer)
     | ClientList   -- ^ @client-mode@: attached clients (choose-client)
+    | OptionTree
+        -- ^ @options-mode@: options, hooks, environments and key bindings
+        --   (customize-mode)
     deriving (Eq, Show)
 
 -- | The target a tree mode was entered with (tmux keeps it as a
@@ -614,7 +665,85 @@ data TreeTag
     | TagPane !PaneId
     | TagBuffer !Int     -- ^ the buffer's order stamp, stable across renames
     | TagClient !ClientId
+    | TagGroup !CustomizeGroup          -- ^ a customize-mode group heading
+    | TagOption !CustomizeGroup !Text !(Maybe ArrayKey)
+        -- ^ an option or hook as the group lists it, or one of its array items
+    | TagEnvironment !CustomizeGroup !Text
+    | TagKeyTable !Text
+    | TagKey !Text !Text                -- ^ a binding: its table and key
+    | TagKeyPart !Text !Text !KeyPart
     deriving (Eq, Ord, Show)
+
+-- | customize-mode's groups (tmux's top-level items), in its order.
+data CustomizeGroup
+    = ServerOptions | SessionOptions | WindowPaneOptions
+    | SessionHooks | WindowPaneHooks
+    | GlobalEnvironment | SessionEnvironment
+    deriving (Eq, Ord, Show, Enum, Bounded)
+
+-- | The lines customize-mode lists under a key binding.
+data KeyPart = KeyCommand | KeyNote | KeyRepeat
+    deriving (Eq, Ord, Show)
+
+-- | customize-mode's @C@: every item, or only those changed from default.
+data ItemsShown = AllItems | ChangedItems
+    deriving (Eq, Show)
+
+-- | customize-mode's @H@: whether the global tables' items are listed.
+data GlobalsShown = GlobalsShown | GlobalsHidden
+    deriving (Eq, Show)
+
+-- | An option table, by the ids of what owns it.
+data OptionTableRef
+    = ServerTableRef
+    | GlobalSessionTableRef
+    | SessionTableRef !SessionId
+    | GlobalWindowTableRef
+    | WindowTableRef !WindowId
+    | PaneTableRef !PaneId
+    deriving (Eq, Show)
+
+-- | Whether a customize-mode item is an option or a hook (tmux's
+-- @window_customize_option_type@).
+data OptionFamily = PlainFamily | HookFamily
+    deriving (Eq, Show)
+
+-- | The option (or one array item of it) a customize-mode prompt changes.
+data OptionTarget = OptionTarget
+    { table  :: !OptionTableRef
+    , family :: !OptionFamily
+    , name   :: !Text
+    , arrayKey :: !(Maybe ArrayKey)
+    }
+    deriving (Eq, Show)
+
+-- | An environment, by the id of what owns it.
+data EnvScopeRef = GlobalEnvRef | SessionEnvRef !SessionId
+    deriving (Eq, Show)
+
+-- | The variable a customize-mode prompt changes, and how it was shown when
+-- the prompt opened (a variable unset meanwhile comes back so).
+data EnvTarget = EnvTarget
+    { envScope   :: !EnvScopeRef
+    , name       :: !Text
+    , visibility :: !EnvVisibility
+    }
+    deriving (Eq, Show)
+
+-- | The binding a customize-mode prompt changes.
+data KeyTarget = KeyTarget
+    { keyTable :: !Text
+    , keyName  :: !Text
+    }
+    deriving (Eq, Show)
+
+-- | What customize-mode's @u@\/@U@ and @d@\/@D@ do.
+data ItemChange = UnsetItem | ResetItem
+    deriving (Eq, Show)
+
+-- | Whether a change acts on the selected item or the tagged ones.
+data ChangeReach = CurrentItem | TaggedItems
+    deriving (Eq, Show)
 
 -- | The list's sort (@-O@, @-r@, the @O@ and @r@ keys).
 data TreeSort = TreeSort
@@ -641,13 +770,21 @@ data PreviewView = ViewPreview | ViewInfo
 data GroupView = SquashGroups | ShowAllGroups
     deriving (Eq, Show)
 
--- | @-y@: whether the kill keys ask first.
+-- | @-y@: whether the keys that kill, unset or reset ask first.
 data KillConfirm = AskBeforeKill | KillWithoutAsking
     deriving (Eq, Show)
 
 -- | @-Z@: whether the mode zoomed its pane on entry, and so unzooms it on
 -- exit.
 data ModeZoom = ModeZoomed | ModeLeftZoom
+    deriving (Eq, Show)
+
+-- | An editor a tree mode waits on (tmux's @spawn_editor_state@): its pane,
+-- and the pid the mode's screen names while it waits.
+data EditorWait = EditorWait
+    { editorPane :: !PaneId
+    , editorPid  :: !Int
+    }
     deriving (Eq, Show)
 
 -- | A prompt drawn on the mode's own screen.
@@ -666,6 +803,16 @@ data TreePromptUse
     | PromptKill        -- ^ @x@: confirm killing the selected item
     | PromptKillTagged  -- ^ @X@: confirm killing the tagged items
     | PromptEachCommand -- ^ @:@: a command for each tagged item
+    | PromptNewOption !OptionTableRef !OptionFamily
+        -- ^ customize-mode: a new user option or hook in a table
+    | PromptOptionValue !OptionTarget
+    | PromptArrayKey !OptionTarget      -- ^ an array item's new key
+    | PromptEnvironmentValue !EnvTarget
+    | PromptNewEnvironment !EnvScopeRef
+    | PromptNewKey !Text                -- ^ a new binding in a table
+    | PromptKeyCommand !KeyTarget
+    | PromptKeyNote !KeyTarget
+    | PromptChange !ItemChange !ChangeReach
     deriving (Eq, Show)
 
 -- | Whether a prompt takes a line, or answers on its first key.
@@ -752,20 +899,34 @@ data Toast = Toast
 data Markup = MarkupStyled | MarkupLiteral
     deriving (Eq, Show)
 
--- | Whether a non-selecting key closes the @display-panes@ overlay
--- (default) or leaves it showing (@-N@); see
--- 'Hat.Server.DisplayPanes.panesKeyAction'.
+-- | Whether a key choosing no pane leaves panes-mode (default) or is
+-- ignored (@-N@); see 'Hat.Server.DisplayPanes.panesKeyAction'.
 data PanesKeyHold = PanesClose | PanesHold
     deriving (Eq, Show)
 
--- | The armed @display-panes@ overlay on one client; see
--- 'Hat.Server.DisplayPanes'.
-data DisplayPanesState = DisplayPanesState
-    { deadline :: !(Maybe Word64)
-        -- ^ monotonic ns, from 'Hat.Server.DisplayPanes.panesDeadline';
-        --   'Nothing' = until a key
-    , hold     :: !PanesKeyHold
-    , template :: !Text  -- ^ run on select, @%%@ = the chosen pane's id
+-- | @display-panes@'s panes-mode (tmux's @window-panes.c@): a picture of a
+-- window's panes, each numbered, drawn over the pane the mode holds. See
+-- "Hat.Server.DisplayPanes".
+data PanesState = PanesState
+    { sourceSession :: !SessionId
+        -- ^ the session the source window was found in; when it no longer
+        --   holds the window, 'session' is looked in instead
+    , sourceWindow  :: !WindowId   -- ^ the window drawn (@-s@, else the target's)
+    , session       :: !SessionId  -- ^ the target's session
+    , template      :: !Text       -- ^ run on a choice, @%%@ = the pane's id
+    , hold          :: !PanesKeyHold
+    , zoom          :: !ModeZoom
+    , preZoom       :: !(Maybe PanesPreview)
+    , shownAt       :: !Word64
+        -- ^ monotonic ns the mode was entered, telling this showing apart
+        --   from a later one for its timer
+    }
+    deriving (Eq, Show)
+
+-- | The mode's own pane as it looked before the mode zoomed it.
+data PanesPreview = PanesPreview
+    { cells  :: !(V.Vector (V.Vector Cell.Cell))
+    , cursor :: !(Maybe Pos)  -- ^ 'Nothing' when hidden
     }
     deriving (Eq, Show)
 
@@ -831,13 +992,36 @@ data PromptState = PromptState
     , promptKeys :: !PromptKeys  -- ^ fixed when the prompt opens
     , promptMode :: !PromptMode
     , promptKind :: !PromptKind
+    , promptType :: !PromptType
+    , freeze  :: !PromptFreeze
+    , quoteNext :: !Bool       -- ^ @C-v@ was pressed: the next key goes in as it is
+    , lastInput :: !Text
+        -- ^ an incremental prompt's initial input, which @C-r@\/@C-s@ on an
+        --   empty line bring back
+    , completions :: ![Text]
+        -- ^ the commands a @Tab@ found the word could be, none longer in
+        --   common; shown after the input until the next key
     , waiter  :: !(Maybe PromptWaiter)
         -- ^ the command that opened the prompt, waiting for what it is given
     }
     deriving (Eq, Show)
 
--- | What a prompt takes: an edited line, or one key (@command-prompt -k@).
-data PromptKind = LineEntry | KeyEntry
+-- | What a prompt takes (@command-prompt@'s flags): an edited line, one key
+-- (@-k@), one character (@-1@), digits (@-N@), a line answered as it is
+-- edited (@-i@), or a line @BSpace@ on empty abandons (@-e@).
+data PromptKind
+    = LineEntry | KeyEntry | SingleEntry | NumericEntry | IncrementalEntry
+    | BackspaceExitEntry
+    deriving (Eq, Show)
+
+-- | @command-prompt -T@: which history a prompt keeps, and whether @Tab@
+-- completes commands.
+data PromptType = CommandPrompt | SearchPrompt
+    deriving (Eq, Show, Enum, Bounded)
+
+-- | @command-prompt -C@ (tmux's @PROMPT_NOFREEZE@), shown in
+-- @#{prompt_flags}@: hat never freezes a client's screen under a prompt.
+data PromptFreeze = FreezeScreen | NoFreeze
     deriving (Eq, Show)
 
 -- | Where a prompt's answer goes: the command its answers make, or
@@ -988,7 +1172,6 @@ data Client = Client
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
-    , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
     , popup     :: TVar (Maybe Popup)  -- ^ display-popup overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see
@@ -1050,6 +1233,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- reconciled
     <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
+    <*> newTVarIO []     -- resizedWindows
+    <*> newTVarIO Map.empty  -- panePrompts
     <*> newTVarIO 0      -- livePanes
     <*> newTVarIO Map.empty  -- popupJobs
     <*> newTVarIO 0      -- activeConns
@@ -1335,9 +1520,10 @@ findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
 rawClient :: ClientId -> Int
 rawClient (ClientId n) = n
 
--- | A client's name (tmux's @c->name@), as commands target it with @-c@.
+-- | A client's name (tmux's @c->name@, which for a client without a tty
+-- is @client-@ and a number), as commands target it with @-c@.
 clientName :: Client -> Text
-clientName c = "client" <> tshow (rawClient c.id)
+clientName c = "client-" <> tshow (rawClient c.id)
 
 rawPane :: PaneId -> Int
 rawPane (PaneId n) = n

@@ -28,7 +28,8 @@ items =
   where
     node t n cs = Item
         { tag = t, name = n, text = Just "x", children = cs, startExpanded = True
-        , align = AlignNone, searchText = [n], fuzzyName = Just n }
+        , align = AlignNone, searchText = [n], fuzzyName = Just n
+        , tagging = Taggable, previewFrom = OwnPreview }
     leaf t n = (node t n []) { fuzzyName = Nothing }
 
 -- | Session @work@ holding windows @chat@ and @mail@, then session
@@ -43,7 +44,8 @@ named =
         [item (TagPane (PaneId p)) "0" Nothing []]
     item t n fz cs = Item
         { tag = t, name = n, text = Nothing, children = cs, startExpanded = True
-        , align = AlignNone, searchText = [n], fuzzyName = fz }
+        , align = AlignNone, searchText = [n], fuzzyName = fz
+        , tagging = Taggable, previewFrom = OwnPreview }
 
 -- | An item tree's tags, depth-first.
 tags :: [Item] -> [TreeTag]
@@ -65,7 +67,8 @@ fresh = TreeState
     , tagged = [], current = Nothing, currentIx = 0, offset = 0
     , modePrompt = Nothing, search = Nothing, hidePane = Nothing
     , groups = SquashGroups, confirm = AskBeforeKill, zoom = ModeLeftZoom
-    , showHelp = False
+    , showHelp = False, editor = Nothing, itemsShown = AllItems
+    , globalsShown = GlobalsShown
     }
 
 -- | The lines of a state, with tmux's default keys, settled onto them.
@@ -121,6 +124,42 @@ spec = do
                 found = searchSet items Forward hidden
             found.current `shouldBe` Just (TagSession (SessionId 1))
 
+    describe "item kinds" $ do
+        -- Heading @h@ (untaggable) over items @a@ and @b@, whose child
+        -- @c@ (untaggable) previews as @b@.
+        let heading = Item
+                { tag = TagSession (SessionId 9), name = "h", text = Nothing
+                , children = [leafI "a", (leafI "bb") { children = [part] }]
+                , startExpanded = True, align = AlignNone, searchText = []
+                , fuzzyName = Nothing, tagging = Untaggable, previewFrom = OwnPreview }
+            leafI n = heading
+                { tag = TagWinlink (SessionId 9) (T.length n), name = n, children = []
+                , tagging = Taggable }
+            part = (leafI "ccc")
+                { tag = TagPane (PaneId 9), tagging = Untaggable
+                , previewFrom = ParentPreview }
+            linesOf ts = [ l { key = defaultLineKey i } | (i, l) <- zip [0 ..] (buildLines ts [heading]) ]
+            at i = fresh { current = Just ((linesOf fresh !! i).item.tag), currentIx = i }
+            pressAt i k = treeKey 20 [] [heading] (linesOf fresh) (at i) k
+        it "t leaves an untaggable item untagged" $
+            (pressAt 0 "t").state.tagged `shouldBe` []
+        it "C-t tags the items under an untaggable heading" $
+            (pressAt 0 "C-t").state.tagged
+                `shouldBe` [TagWinlink (SessionId 9) 1, TagWinlink (SessionId 9) 2]
+        it "titles and previews a parent-previewed item as its parent" $ do
+            let drawn = drawTree DrawInput
+                    { size = Size { rows = 24, cols = 60 }, lines = linesOf fresh
+                    , noMatches = False, theme = terminalTheme
+                    , selectStyle = Cell.defaultStyle, borderStyle = Cell.defaultStyle
+                    , promptStyle = Cell.defaultStyle, promptTop = False
+                    , previewHeight = FixedPreview 12, sortShown = False
+                    , viewName = Nothing, help = [], helpWidth = 0 } (at 3)
+            fmap snd drawn.previewArea `shouldBe` Just (TagWinlink (SessionId 9) 2)
+            any ("┌ bb " `T.isPrefixOf`) (map rowText (V.toList drawn.cells)) `shouldBe` True
+        it "gives a fixed preview its rows and the list the rest" $ do
+            listHeight (FixedPreview 12) 24 100 PreviewNormal `shouldBe` 12
+            listHeight (FixedPreview 12) 24 100 PreviewOff `shouldBe` 24
+
     describe "drawTree" $ do
         let draw ts noMatches =
                 let (ls, ts') = laid ts
@@ -130,6 +169,7 @@ spec = do
                     , selectStyle = Cell.defaultStyle
                     , borderStyle = styleCell terminalTheme "bg=themedarkgrey,fg=themelightgrey"
                     , promptStyle = Cell.defaultStyle, promptTop = False
+                    , previewHeight = ProportionalPreview
                     , sortShown = True, viewName = Just "preview"
                     , help = [], helpWidth = 0 } ts'
         it "draws each line as key, tree branch, name and text" $ do
@@ -139,6 +179,18 @@ spec = do
             let rows = map rowText (V.toList (draw fresh { filter = Just "f" } True).cells)
             any ("┌ s (sort: index) (view: preview) (filter: no matches) " `T.isPrefixOf`) rows
                 `shouldBe` True
+
+        it "aligns an item's text within the rest of its line" $ do
+            let item = (items !! 0) { children = [], text = Just "#[align=right]R" }
+                ls = [ l { key = defaultLineKey i } | (i, l) <- zip [0 ..] (buildLines fresh [item]) ]
+                drawn = drawTree DrawInput
+                    { size = Size { rows = 24, cols = 60 }, lines = ls
+                    , noMatches = False, theme = terminalTheme
+                    , selectStyle = Cell.defaultStyle, borderStyle = Cell.defaultStyle
+                    , promptStyle = Cell.defaultStyle, promptTop = False
+                    , previewHeight = ProportionalPreview, sortShown = False
+                    , viewName = Nothing, help = [], helpWidth = 0 } fresh
+            T.takeEnd 2 (T.stripEnd (rowText (V.head drawn.cells))) `shouldBe` " R"
 
     describe "fuzzyView" $ do
         it "keeps the items whose path fuzzily matches, under their ancestors, the best first" $ do

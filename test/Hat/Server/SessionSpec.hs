@@ -6,7 +6,7 @@ import Hat.Server.Outbound (backlog, newOutbound)
 import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
 import Control.Exception (finally)
-import Control.Monad (forM_)
+import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef)
@@ -55,10 +55,10 @@ import Hat.Server
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.ClientSession
     ( DetachOnDestroy (..), SessionChoice (..), destroyDestination )
-import Hat.Server.Conn (handleInput)
+import Hat.Server.Conn (clientResized, handleInput, removeClient)
 import Hat.Server.Lock
     (LockOutcome (..), lockClient, lockDeadline, lockTimerLoop, ttyHandedBack)
-import Hat.Server.Dispatch (runArgv)
+import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
@@ -210,7 +210,6 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True     -- outerFocused
         <*> newTVarIO ImportEnv
@@ -261,7 +260,6 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True
         <*> newTVarIO ImportEnv
@@ -363,7 +361,8 @@ treeAt pid = TreeState
     , tagged = [], current = Nothing, currentIx = 0, offset = 0
     , modePrompt = Nothing, search = Nothing, hidePane = Nothing
     , groups = SquashGroups, confirm = AskBeforeKill, zoom = ModeLeftZoom
-    , showHelp = False
+    , showHelp = False, editor = Nothing, itemsShown = AllItems
+    , globalsShown = GlobalsShown
     }
 
 -- | A frozen grid row's text, trailing blanks trimmed.
@@ -381,12 +380,12 @@ spec = do
             client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
             [] <- runArgv st Nothing ["bind", "-n", "x", "set", "-g", "@x", "1"]
             handleInput dispatch st client "x"
-            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 key x: set-option -g @x 1"))
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client-2 key x: set-option -g @x 1"))
         it "logs a message shown to a client" $ do
             (st, sess) <- seedSession "/"
             client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
             showToast st client "hello"
-            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 message: hello"))
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client-2 message: hello"))
     describe "deadNoticeBytes" $
         it "scrolls a line and draws the styled notice, cursor hidden" $ do
             let sz = Size { rows = 3, cols = 8 }
@@ -515,9 +514,9 @@ spec = do
             vars <- clientFormatVars st c
             [ lookup n vars | n <- ["client_name", "client_session", "client_key_table"
                                    , "client_prefix", "client_flags", "client_width"] ]
-                `shouldBe` map Just ["client7", "work", "root", "0", "attached,focused,UTF-8", "80"]
+                `shouldBe` map Just ["client-7", "work", "root", "0", "attached,focused,UTF-8", "80"]
             senv <- sessionFormatEnv st sess
-            Map.lookup "session_attached_list" senv `shouldBe` Just "client7"
+            Map.lookup "session_attached_list" senv `shouldBe` Just "client-7"
 
     describe "list-clients" $
         it "shows each client in tmux's default form, -f filtering them" $ do
@@ -527,8 +526,8 @@ spec = do
             _ <- addClient st sess.id (Size { rows = 30, cols = 90 }) 2
             -- These clients' sockets have no peer, so no uid to match the server's.
             runArgv st Nothing ["list-clients"]
-                `shouldReturn` [ ROutput "client1: work [80x24 ] [user ] (attached,focused,UTF-8)"
-                               , ROutput "client2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
+                `shouldReturn` [ ROutput "client-1: work [80x24 ] [user ] (attached,focused,UTF-8)"
+                               , ROutput "client-2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
             runArgv st Nothing ["list-clients", "-f", "#{==:#{client_width},90}", "-F", "#{line}"]
                 `shouldReturn` [ROutput "1"]
 
@@ -711,13 +710,57 @@ spec = do
             runArgv st (Just cli) ["command-prompt", "-b", "-p", "one", "x"] `shouldReturn` []
             runArgv st (Just cli) ["command-prompt", "-b", "-p", "two", "x"] `shouldReturn` []
             fmap (.promptLabel) <$> readTVarIO attached.prompt `shouldReturn` Just "one "
-        it "refuses what it cannot do" $ do
+        it "refuses an unknown client or prompt type" $ do
             (st, sess) <- seedSession "/"
             _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
-            runArgv st Nothing ["command-prompt", "-1", "x"]
-                `shouldReturn` [RErr "command-prompt -1: not supported"]
+            runArgv st Nothing ["command-prompt", "-T", "shell", "x"]
+                `shouldReturn` [RErr "unknown type: shell"]
             runArgv st Nothing ["command-prompt", "-t", "nosuch", "x"]
                 `shouldReturn` [RErr "can't find client: nosuch"]
+        it "reads -1 as a flag, the flags after it too" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-1", "-p", "one", "x"] `shouldReturn` []
+            fmap (\p -> (p.promptKind, p.promptLabel)) <$> readTVarIO attached.prompt
+                `shouldReturn` Just (SingleEntry, "one ")
+        it "-i answers as the prompt opens, and as it is edited" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-i", "set -g @r '%%'"] `shouldReturn` []
+            runArgv st Nothing ["show", "-gv", "@r"] `shouldReturn` [ROutput "="]
+            handleInput dispatch st attached "ab"
+            runArgv st Nothing ["show", "-gv", "@r"] `shouldReturn` [ROutput "=ab"]
+        it "-P opens the prompt over the client's pane, one at a time" $ do
+            (st, _) <- seedSession "/"
+            runArgv st Nothing ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+            (sid, [pid]) <- atomically $ do
+                ss <- Map.elems <$> readTVar st.sessions
+                named <- filterM (fmap (== "S") . readTVar . (.name)) ss
+                case named of
+                    s : _ -> do
+                        ws <- Map.elems <$> readTVar s.windows
+                        (,) s.id . concat <$> mapM (fmap Map.keys . readTVar . (.panes)) ws
+                    [] -> pure (SessionId 0, [])
+            attached <- addClient st sid (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-P", "-p", "one", "set -g @r '%%'"]
+                `shouldReturn` []
+            runArgv st (Just attached) ["command-prompt", "-P", "-p", "two", "x"] `shouldReturn` []
+            readTVarIO attached.prompt `shouldReturn` Nothing
+            fmap (.promptLabel) . Map.lookup pid <$> readTVarIO st.panePrompts
+                `shouldReturn` Just "one "
+            handleInput dispatch st attached "hi\r"
+            runArgv st Nothing ["show", "-gv", "@r"] `shouldReturn` [ROutput "hi"]
+            readTVarIO st.panePrompts `shouldReturn` Map.empty
+            runArgv st Nothing ["kill-session", "-t", "S"] `shouldReturn` []
+        it "keeps each prompt type's own history" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "set -g @r '%%'"] `shouldReturn` []
+            handleInput dispatch st attached "alpha\r"
+            runArgv st (Just attached) ["command-prompt", "-T", "search", "x"] `shouldReturn` []
+            handleInput dispatch st attached "beta\r"
+            readTVarIO st.cmdHistory `shouldReturn` ["alpha"]
+            readTVarIO st.searchHistory `shouldReturn` ["beta"]
 
     describe "a pane's queries of the terminal (tmux's input requests)" $ do
         -- A pane whose program reads its replies on a raw pty, homed in a
@@ -980,7 +1023,7 @@ spec = do
             peerRe <- newReadEnd peer
             [] <- runArgv st Nothing ["set", "-g", "lock-command", "vlock"]
             withClientWriter client $
-                runArgv st Nothing ["lock-client", "-t", "client1"] `shouldReturn` []
+                runArgv st Nothing ["lock-client", "-t", "client-1"] `shouldReturn` []
             recvMessage peerRe `shouldReturn` Just (Known (LockClient "vlock"))
             renderable st client `shouldReturn` Nothing
             ttyHandedBack st client
@@ -992,8 +1035,8 @@ spec = do
             (client0, _peer) <- wiredClient st Attached
             let client = client0 { wireLevel = 9 }
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
-            runArgv st Nothing ["lock-client", "-t", "client1"] `shouldReturn`
-                [RErr "client1 cannot be locked: its hat is too old (protocol 9)"]
+            runArgv st Nothing ["lock-client", "-t", "client-1"] `shouldReturn`
+                [RErr "client-1 cannot be locked: its hat is too old (protocol 9)"]
             locked client `shouldReturn` False
         it "lock-session locks the session's clients, lock-server every client" $ do
             (st, _) <- seedSession "/"
@@ -2440,62 +2483,107 @@ spec = do
             ((.raw) <$> reencodeKey always (Just emu) (Key "C-a" "\SOH"))
                 `shouldReturn` "\SOH"
 
-    describe "display-panes" $ do
-        let arm :: ServerState -> Client -> [Text] -> IO [Reply]
-            arm st client args =
-                runArgv st (Just client) ("display-panes" : args)
-            -- a window of two stub panes, the first active
-            twoPanes sess = do
-                win <- addWindow sess 0
-                p0 <- stubPane 0
-                p1 <- stubPane 1
-                atomically $ writeTVar win.panes
-                    (Map.fromList [(PaneId 0, p0), (PaneId 1, p1)])
-                pure win
-        it "arms the issuing client's overlay, template defaulted" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client [] `shouldReturn` []
-            Just dp <- readTVarIO client.displayPanes
-            dp.template `shouldBe` "select-pane -t '%%'"
-            dp.hold `shouldBe` PanesClose
-            dp.deadline `shouldSatisfy` isJust
-        it "-d 0 holds until a key; -N survives non-selecting keys" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client ["-N", "-d", "0"] `shouldReturn` []
-            Just dp <- readTVarIO client.displayPanes
-            dp.deadline `shouldBe` Nothing
-            dp.hold `shouldBe` PanesHold
-        it "rejects a malformed -d delay loudly" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            [RErr e] <- arm st client ["-d", "soon"]
-            e `shouldSatisfy` T.isInfixOf "bad delay"
-        it "rejects tmux's panes-mode flags loudly" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client ["-k"]
-                `shouldReturn` [RErr "command display-panes: unknown flag -k"]
-            arm st client ["-t", "%0"]
-                `shouldReturn` [RErr "display-panes -t: not supported"]
-            readTVarIO client.displayPanes `shouldReturn` Nothing
-        it "a digit selects the pane showing that number and closes" $ do
-            (st, sess) <- seedSession "/"
-            win <- twoPanes sess
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client [] `shouldReturn` []
-            handleInput dispatch st client "1"
-            readTVarIO win.activeId `shouldReturn` PaneId 1
-            readTVarIO client.displayPanes `shouldReturn` Nothing
-        it "q dismisses without selecting" $ do
-            (st, sess) <- seedSession "/"
-            win <- twoPanes sess
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client [] `shouldReturn` []
-            handleInput dispatch st client "q"
-            readTVarIO win.activeId `shouldReturn` PaneId 0
-            readTVarIO client.displayPanes `shouldReturn` Nothing
+    describe "client hooks" $ do
+        let hooked = do
+                (st, sess) <- seedSession "/"
+                installHooks st
+                _ <- addWindow sess 0
+                pure (st, sess)
+            record st name = runArgv st Nothing
+                ["set-hook", "-ga", name, "set -gF @h '#{@h}|#{hook}:#{hook_client}'"]
+            recorded st = runArgv st Nothing ["show", "-gqv", "@h"]
+        it "names the client in #{hook_client} as list-clients does" $ do
+            (st, _) <- hooked
+            other <- addSession st 1
+            _ <- addWindow other 0
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- runArgv st Nothing ["set-hook", "-g", "client-session-changed",
+                "set -gF @h '#{hook_client}'"]
+            runArgv st (Just client) ["switch-client", "-t", "$1"] `shouldReturn` []
+            listed <- runArgv st Nothing ["list-clients", "-F", "#{client_name}"]
+            recorded st `shouldReturn` listed
+        it "attach-session fires client-attached for a client not yet attached" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId (-1)) (Size 24 80) 1
+            _ <- record st "client-attached"
+            runArgv st (Just client) ["attach-session", "-t", "work"] `shouldReturn` []
+            recorded st `shouldReturn` [ROutput "|client-attached:client-1"]
+            runArgv st (Just client) ["attach-session", "-t", "work"] `shouldReturn` []
+            recorded st `shouldReturn` [ROutput "|client-attached:client-1"]
+        it "switch-client fires client-session-changed with the old and new sessions" $ do
+            (st, _) <- hooked
+            other <- addSession st 1
+            _ <- addWindow other 0
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- runArgv st Nothing ["set-hook", "-g", "client-session-changed",
+                "set -gF @h '#{hook_client}:#{hook_old_session}:#{hook_new_session}:#{hook_session}'"]
+            runArgv st (Just client) ["switch-client", "-t", "$1"] `shouldReturn` []
+            recorded st `shouldReturn` [ROutput "client-1:$0:$1:$1"]
+        it "a resize fires client-resized with the old and new size" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- runArgv st Nothing ["set-hook", "-g", "client-resized",
+                "set -gF @h '#{hook_client}:#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
+            clientResized st client (Size 20 70)
+            recorded st `shouldReturn` [ROutput "client-1:80x24->70x20"]
+        it "focus reports fire client-focus-in and client-focus-out" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- record st "client-focus-in"
+            _ <- record st "client-focus-out"
+            handleInput dispatch st client "\ESC[O\ESC[I"
+            recorded st `shouldReturn`
+                [ROutput "|client-focus-out:client-1|client-focus-in:client-1"]
+        it "a key from a client the window last heard from elsewhere fires client-active" $ do
+            (st, _) <- hooked
+            a <- addClient st (SessionId 0) (Size 24 80) 1
+            b <- addClient st (SessionId 0) (Size 24 80) 2
+            _ <- record st "client-active"
+            handleInput dispatch st a "x"
+            handleInput dispatch st a "y"
+            handleInput dispatch st b "z"
+            recorded st `shouldReturn`
+                [ROutput "|client-active:client-1|client-active:client-2"]
+        it "a client going away fires client-detached, then client-closed" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- record st "client-detached"
+            _ <- record st "client-closed"
+            removeClient st client
+            recorded st `shouldReturn`
+                [ROutput "|client-detached:client-1|client-closed:client-1"]
+        it "a resize that moves the window's size fires window-resized, after client-active" $ do
+            (st, _) <- hooked
+            client <- addClient st (SessionId 0) (Size 25 80) 1
+            _ <- record st "client-active"
+            _ <- runArgv st Nothing ["set-hook", "-ga", "window-resized",
+                "set -gF @h '#{@h}|#{hook}:#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
+            clientResized st client (Size 21 70)
+            clientResized st client (Size 21 70)
+            recorded st `shouldReturn`
+                [ROutput "|client-active:client-1|window-resized:80x24->70x20"]
+        it "resize-window fires window-resized once, even at the size the window has" $ do
+            (st, sess) <- hooked
+            Just win <- atomically (currentWindow sess)
+            (p, release) <- adoptedPane 0
+            emu <- Emu.newEmulator (Size 24 80) 10
+            atomically $ modifyTVar' win.panes (Map.insert p.id p { emulator = emu })
+            flip finally release $ do
+                _ <- runArgv st Nothing ["set-hook", "-g", "window-resized",
+                    "set -gF @h '#{@h}|#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
+                [] <- runArgv st Nothing ["resize-window", "-t", "work:0", "-x", "50", "-y", "10"]
+                [] <- runArgv st Nothing ["resize-window", "-t", "work:0", "-x", "50", "-y", "10"]
+                recorded st `shouldReturn` [ROutput "|80x24->50x10|50x10->50x10"]
+        it "a latest client going away passes the window to the next, which fires client-active" $ do
+            (st, sess) <- hooked
+            a <- addClient st (SessionId 0) (Size 24 80) 1
+            b <- addClient st (SessionId 0) (Size 24 80) 2
+            handleInput dispatch st a "x"
+            _ <- record st "client-active"
+            removeClient st a
+            recorded st `shouldReturn` [ROutput "|client-active:client-2"]
+            Just win <- atomically (currentWindow sess)
+            readTVarIO win.latest `shouldReturn` Just b.id
 
     describe "input routing within a chunk" $ do
         -- Keys typed back to back here, so no paste is assumed of them.

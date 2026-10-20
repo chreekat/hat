@@ -13,6 +13,7 @@ module Hat.Model.PasteBuffers
     , pasteSet
     , pasteRename
     , pasteFree
+    , pasteReplace
     , BufferChange (..)
     , pasteChanges
     , cleanBufferName
@@ -141,6 +142,16 @@ pasteRename old new s
 
 pasteFree :: Text -> PasteStore -> PasteStore
 pasteFree n s = s { byName = Map.delete n s.byName }
+
+-- | tmux's @paste_replace@: new data for the buffer @n@, kept in its name and
+-- place, provided it is still the buffer stamped @order@ (not deleted and
+-- remade since).
+pasteReplace :: Text -> Int -> ByteString -> PasteStore -> PasteStore
+pasteReplace n order bytes s = s { byName = Map.adjust replace n s.byName }
+  where
+    replace pb
+        | pb.order == order = pb { body = bytes }
+        | otherwise = pb
 
 -- | How a buffer changed between two stores: tmux's paste-buffer events.
 data BufferChange = BufferDeleted | BufferChanged

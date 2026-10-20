@@ -17,8 +17,7 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-prompt-keys.sh                  # C-v quote-next (a control character drawn as ^G) in the prompt editor; then its step 7 (Up recalls history in the tree search prompt) meets Hat's deliberate fuzzy tree search, where Up/Down select and Enter chooses
-prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; -1/-N/-i/-k/-e prompt flags
+prompt-keys.sh                  # passes up to its history step: Up in the tree search prompt recalls the search history in tmux, but Hat's deliberate fuzzy tree search (Note [Fuzzy tree search]) makes Up/Down select matches and keeps no search history
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
 tty-draw-line.sh                # a clipped tab draws no written spaces (libghostty keeps no tab cells, capture -N has no cellused); the rest of the script passes
@@ -28,20 +27,9 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # (flake input tmux-src). Each reason names the unimplemented subsystem
 # the script hinges on.
 
-# hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # title stack (CSI 22/23 t) + client-* hooks
-
-# interactive mode-screens: choose-*/customize/display-panes/modal
-customize-mode.sh               # customize-mode unimplemented
-display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
-modal-pane.sh                   # mouse half passes; needs the editor option and choose-buffer's e (the buffer in an editor in a modal pane), and customize-mode
-mode-kill.sh                    # copy-mode, choose-tree and choose-buffer -k pass; display-panes -k needs display-panes as a pane mode (window-panes.c)
-mode-mutation.sh                # customize-mode unimplemented; the other modes pass
-
 # copy-mode advanced motions/options
 
 # formats: remaining gaps sit outside the modifier engine
-format-render-contexts.sh       # customize-mode contexts; the rest (choose-tree -F among them) passes
 
 # option engine breadth: flat scalar table, global-only read-back
 format-variables.sh             # #{version} is the bare number but hat -V says "hat X", so the script's sed 's/^tmux //' leaves "hat 0.0.1" to compare against

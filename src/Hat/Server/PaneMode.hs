@@ -18,7 +18,6 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (forM_, void, when)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 
 import Hat.Model
@@ -32,23 +31,9 @@ import Hat.Server.Resize (applySessionSize)
 -- | Leave the pane's top mode, resuming the one under it; a mode entered
 -- with @-k@ kills the pane as it goes.
 resetPaneMode :: ServerState -> Pane -> IO ()
-resetPaneMode st pane = do
-    popped <- atomically $ do
-        es <- readTVar pane.modes
-        case es of
-            [] -> pure Nothing
-            e : rest -> do
-                writeTVar pane.modes rest
-                bumpDirty st
-                pure (Just (e, modeName . (.mode) <$> listToMaybe rest))
-    forM_ popped $ \(e, next) -> do
-        leaveMode st pane e.mode
-        let fire = fireModeChange st pane
-        fire "pane-mode-exited" (Just (modeName e.mode)) next 0
-        fire "pane-mode-changed" (Just (modeName e.mode)) next 0
-        when (e.onExit == KillPane) $ do
-            mloc <- atomically (locatePane st pane.id)
-            forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, pane)]
+resetPaneMode st pane = popPaneMode st pane $ \p -> do
+    mloc <- atomically (locatePane st p.id)
+    forM_ mloc $ \(sid, win) -> killPaneLocs st [(sid, win, p)]
 
 -- | Leave every mode the pane holds, innermost first.
 resetPaneModeAll :: ServerState -> Pane -> IO ()
@@ -96,24 +81,6 @@ enterClockMode st pane = do
 
 holdsClock :: Pane -> STM Bool
 holdsClock pane = any ((== ClockMode) . (.mode)) <$> readTVar pane.modes
-
--- | What leaving a mode undoes: the zoom a @-Z@ tree mode made, the screen
--- view mode's text was written to.
-leaveMode :: ServerState -> Pane -> PaneMode -> IO ()
-leaveMode st pane = \case
-    CopyMode d | d.kind == ModeView -> atomically $ writeTVar pane.viewBacking Nothing
-    TreeMode t | t.zoom == ModeZoomed -> do
-        mloc <- atomically (locatePane st pane.id)
-        forM_ mloc $ \(sid, win) -> do
-            was <- atomically $ do
-                z <- readTVar win.zoomed
-                writeTVar win.zoomed Nothing
-                bumpDirty st
-                pure z
-            when (was /= Nothing) $ do
-                applySessionSize st sid
-                notifyWindow st "window-unzoomed" (Just sid) win []
-    _ -> pure ()
 
 -- | Clear every pane's modes ahead of a reload, which carries no mode state:
 -- each mode's own effect on its window (a @-Z@ zoom) is undone so the

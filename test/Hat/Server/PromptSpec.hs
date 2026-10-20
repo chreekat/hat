@@ -2,10 +2,11 @@ module Hat.Server.PromptSpec (spec) where
 
 import Control.Monad (forM_)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Test.Hspec
 
-import Hat.Model (PromptKeys (..), PromptKind (..), PromptMode (..), PromptState (..))
+import Hat.Model (PromptKeys (..), PromptKind (..), PromptMode (..), PromptState (..), PromptType (..))
 import Hat.Model.Options (ModeKeys (..))
 import Hat.Server.Keys (Key (..), tokenizeKeys)
 import Hat.Server.Prompt
@@ -16,7 +17,7 @@ typeKeys :: [Text] -> PromptState -> Text -> PromptEdit
 typeKeys history st0 raw =
     foldl step (Editing st0) (tokenizeKeys (TE.encodeUtf8 raw))
   where
-    step (Editing st) k = editPrompt history st k
+    step (Editing st) k = editPrompt noPromptEnv { history = history } st k
     step done _ = done
 
 -- | The buffer after typing, assuming the prompt stays open.
@@ -223,13 +224,72 @@ spec = do
 
     describe "a key prompt" $ do
         it "takes the next key, by name" $
-            editPrompt [] (promptFor "" "" "") { promptKind = KeyEntry }
+            editPrompt noPromptEnv (promptFor "" "" "") { promptKind = KeyEntry }
                 Key { name = "C-M-a", raw = "\ESC\x01" }
                 `shouldBe` Submit "C-M-a"
         it "asks its queued prompts for keys too" $
             case answerPrompt (promptFor "" "" "") { promptKind = KeyEntry, queued = [("two ", "")] } "a" of
                 NextPrompt nxt -> nxt.promptKind `shouldBe` KeyEntry
                 other -> expectationFailure ("expected NextPrompt: " <> show other)
+
+    describe "command-prompt's kinds of prompt" $ do
+        let key n = Key { name = n, raw = "" }
+            feedKeys st0 = foldl step (Editing st0)
+              where
+                step (Editing st) k = editPrompt noPromptEnv st (key k)
+                step done _ = done
+            kinded k = emptyPrompt { promptKind = k }
+        it "C-v puts the next key in as it is, a control key as its character" $
+            feedKeys emptyPrompt ["a", "C-v", "C-g", "b"]
+                `shouldBe` Editing emptyPrompt { input = "a\ab", cursor = 3 }
+        it "C-v waits through a key that is no character" $
+            (\case Editing st -> st.quoteNext; _ -> False)
+                (feedKeys emptyPrompt ["C-v", "F1"]) `shouldBe` True
+        it "-1 answers with the one character typed" $ do
+            feedKeys (kinded SingleEntry) ["q"] `shouldBe` Submit "q"
+            feedKeys (kinded SingleEntry) ["C-a"] `shouldBe` Submit "\SOH"
+        it "-1 with an input already closes unanswered" $
+            feedKeys (kinded SingleEntry) { input = "x", cursor = 1 } ["q"] `shouldBe` Cancel
+        it "-N takes digits, and any other key answers with them and passes on" $ do
+            feedKeys (kinded NumericEntry) { input = "5", cursor = 1 } ["7", "Enter"]
+                `shouldBe` SubmitPassing "57"
+            feedKeys (kinded NumericEntry) ["x"] `shouldBe` SubmitPassing ""
+        it "-i answers each edit with = and the line, and closes on Enter or a move" $ do
+            feedKeys (kinded IncrementalEntry) ["a"]
+                `shouldBe` Answering (kinded IncrementalEntry) { input = "a", cursor = 1 } "=a"
+            feedKeys (kinded IncrementalEntry) ["Enter"] `shouldBe` Cancel
+            feedKeys (kinded IncrementalEntry) ["Up"] `shouldBe` Cancel
+        it "-i C-s and C-r answer with + and -, or bring the first input back" $ do
+            let typed = (kinded IncrementalEntry) { input = "ab", cursor = 2 }
+            feedKeys typed ["C-s"] `shouldBe` Answering typed "+ab"
+            feedKeys typed ["C-r"] `shouldBe` Answering typed "-ab"
+            feedKeys (kinded IncrementalEntry) { lastInput = "old" } ["C-s"]
+                `shouldBe` Answering (kinded IncrementalEntry)
+                    { lastInput = "old", input = "old", cursor = 3 } "=old"
+        it "-e closes unanswered on BSpace with nothing typed" $ do
+            feedKeys (kinded BackspaceExitEntry) ["BSpace"] `shouldBe` Cancel
+            feedKeys (kinded BackspaceExitEntry) ["a", "BSpace", "BSpace"] `shouldBe` Cancel
+
+    describe "Tab" $ do
+        let cmds = ["new-window", "new-session", "next-window", "kill-pane"]
+            env = noPromptEnv { commands = cmds }
+            tab st = editPrompt env st Key { name = "Tab", raw = "\t" }
+            typed t = emptyPrompt { input = t, cursor = T.length t }
+        it "completes a command's name, a space after it" $
+            tab (typed "new-w") `shouldBe` Editing (typed "new-window ")
+        it "completes as far as the commands it could be agree" $
+            tab (typed "new") `shouldBe` Editing (typed "new-")
+        it "shows the commands it could be when they agree no further" $
+            tab (typed "ne") `shouldBe` Editing (typed "ne") { completions = ["new-session", "new-window", "next-window"] }
+        it "completes only a command prompt's first word" $ do
+            tab (typed "new-w") { promptType = SearchPrompt }
+                `shouldBe` Editing (typed "new-w") { promptType = SearchPrompt }
+            tab (typed "kill-pane new-w") `shouldBe` Editing (typed "kill-pane new-w")
+
+    describe "#{prompt_flags}" $
+        it "names the prompt's kind and state, comma-separated" $
+            promptFlagsText True emptyPrompt { promptKind = NumericEntry, quoteNext = True }
+                `shouldBe` "NUMERIC,QUOTENEXT,ISPANE"
 
     describe "status-keys vi" $ do
         let viPrompt = emptyPrompt
@@ -241,7 +301,7 @@ spec = do
                 step (Editing st) raw = foldl step1 (Editing st)
                     (tokenizeKeys (TE.encodeUtf8 raw))
                 step done _ = done
-                step1 (Editing st) k = editPrompt [] st k
+                step1 (Editing st) k = editPrompt noPromptEnv st k
                 step1 done _ = done
             viState chunks = case typeVi chunks of
                 Editing st -> st

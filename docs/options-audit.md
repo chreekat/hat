@@ -62,6 +62,7 @@ spot-read of each suspect consumer.
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `wrap-search` | `findMatch` (CopyMode.hs): a search past the last match starts over from the other end only when on | implemented ✅ tested | pure (CopyModeSpec) |
 | `copy-command` | `pipeCommand` (CopyMode.hs): what `copy-pipe` runs when given no command | implemented ✅ tested | pure (CopyModeSpec) |
+| `editor` | `spawnEditor` (Editor.hs): the program a mode's `e` opens in a modal floating pane (`cmdNewEditorPane`), as choose-buffer's buffer edit | implemented ✅ tested | integration |
 | `status-left` | `#{T:status-left}` in `status-format[0]` (`statusRows`, Status.hs) | implemented ✅ tested | pure (StatusSpec) |
 | `status-left-length` | `#{=/…:status-left}` in `status-format[0]` | implemented ✅ tested | rendered (FormatSpec) |
 | `status-right` | `#{T:status-right}` in `status-format[0]` (`statusRows`, Status.hs) | implemented ✅ tested | pure (StatusSpec) |
@@ -104,8 +105,9 @@ spot-read of each suspect consumer.
 | `pane-scrollbars-timeout` | `revealScrollbar`/`hoverScrollbars` (Scrollbars.hs): a revealed overlay scrollbar hides this many ms after it was revealed, a mouse move anywhere over the window restarting the count | implemented ✅ tested | integration |
 | `pane-scrollbars-position` | `scrollbarReserve` (Resize.hs), `buildScene` (Scene.hs) | implemented ✅ tested | pure (OptionEffectSpec) |
 | `pane-scrollbars-style` | `scrollbarStyle` (Scene.hs): colours, `width=`, `pad=`; each pane's own value | implemented ✅ tested | pure (SceneSpec) |
-| `display-panes-format` | `panesStamp` (DisplayPanes.hs) via the overlay in `renderOnce` (View.hs): drawn on each pane's top row | implemented ✅ tested | pure (DisplayPanesSpec) |
-| `display-panes-colour` / `display-panes-active-colour` | `panesStamp` via `renderOnce` (View.hs): the window's values, theme colours resolved | implemented ✅ tested | pure (DisplayPanesSpec) |
+| `display-panes-format` | `panesNumber` (DisplayPanes.hs) via `panesScreen`: panes-mode draws it on each pane's top row, the mode's window's value expanded per pane | implemented ✅ tested | pure (DisplayPanesSpec) + model (PaneModeSpec) + regress `display-panes` |
+| `display-panes-colour` / `display-panes-active-colour` | `panesNumber` via `panesScreen` (DisplayPanes.hs): the mode's window's values, theme colours resolved | implemented ✅ tested | pure (DisplayPanesSpec) |
+| `display-panes-border-style` | `panesPicture` via `panesScreen` (DisplayPanes.hs): panes-mode's dividers and floating frames | implemented ✅ tested | model (PaneModeSpec) |
 | `pane-colours` | `panePalette` → `paintPalette` (View.hs, Render.hs): each pane's own value under its program's OSC 4 colours; also the emulator's palette defaults (`setPaletteDefaults`) and the answer to an OSC 4 query (`queryPaletteColour`, PaneColours.hs; an unset entry is asked of the terminal, `askTerminal`) | implemented ✅ tested | pure (RenderSpec) + model (SessionSpec) |
 | `cursor-colour` | `cursorColourOf` via `renderOnce` (View.hs): the program's OSC 12 colour, else the active pane's value, theme colours resolved, sent as `rgb:` | implemented ✅ tested | pure (OptionEffectSpec) |
 | `cursor-style` | `terminalCursor` via `renderOnce` (View.hs): the program's DECSCUSR style, else the shown screen's option (the active pane's own; the global value in a mode or popup, as tmux sets those screens from `global_w_options`), its blink standing until DEC mode 12 sets one; sent as tmux's `cnorm` then DECSCUSR (`terminalCursorBytes`); also the DECRQSS and DECRQM 12 answers with no style set (`statusReply`, `cursorBlinkReport`) | implemented ✅ tested | pure (OptionEffectSpec, EmulatorSpec) + integration |
@@ -252,12 +254,6 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
 - **Border ownership** where several panes' borders meet follows tmux's
   marking order, newest pane first; hat orders by pane id, which matches
   until `swap-pane`/`join-pane` reorder tmux's z-order.
-
-- **`aggressive-resize`** / **`window-size`** size each window on its own,
-  as tmux does (`recalculateSizes`), but a window resized by its clients
-  fires no `window-resized` hook (only `resize-window` fires it, where tmux
-  fires it on every resize), and a client becoming a window's latest fires
-  no `client-active`.
 
 - **`default-shell`** runs as a plain interactive shell named by its path,
   where tmux starts a login shell (`-name`) and runs `-c` commands under the

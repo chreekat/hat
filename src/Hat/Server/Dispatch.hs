@@ -34,6 +34,7 @@ import Control.Concurrent (forkIO, myThreadId, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (filterM, forM, forM_, replicateM, unless, void, when)
+import Data.IORef (readIORef)
 import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
@@ -77,6 +78,7 @@ import Hat.Server.Command.Menu (cmdDisplayMenu)
 import Hat.Server.Command.Popup (cmdDisplayPopup)
 import Hat.Server.PopupIO (closeAllPopups)
 import Hat.Server.Command.Interact
+import Hat.Server.DisplayPanes (cmdDisplayPanes, panesModeMouse)
 import Hat.Server.Command.Layout
 import Hat.Server.Command.Option
 import Hat.Server.Command.Pane
@@ -95,16 +97,18 @@ import Hat.Glob (globPaths)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd, viewToClient)
 import Hat.Server.Keys
 import Hat.Server.PaneMode (dropModesForReload)
-import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree)
+import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree, cmdCustomizeMode)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Locate
 import Hat.Server.Format (FormatEnv)
+import Hat.Server.Mouse (mouseAt)
 import Hat.Server.MouseIO
     (clientMouseEvent, mouseEventPane, mouseFormatVars, moveCopyCursor, sendMouse
     , startSelectionDrag)
 import Hat.Server.Pane
 import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
+import Hat.Server.Resize (announceResized)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Emulator qualified as Emu
 import Hat.Transport.Wire
@@ -124,7 +128,8 @@ dispatch = Dispatch
     { runArgv = runArgv
     , runCommands = runCommands
     , runCommandText = runCommandText
-    , unknownCommand = unknownCommand }
+    , unknownCommand = unknownCommand
+    , newEditorPane = cmdNewEditorPane }
 
 unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
 unknownCommand _ [] = pure Nothing
@@ -264,6 +269,7 @@ runBuiltin st mclient name0 args = case resolveCommand name0 of
         replies <- impl st mclient args
             `catch` \(e :: SomeException) ->
                 pure [RErr (name <> ": " <> T.pack (show e))]
+        announceResized st
         fireCommandHooks st mclient name args replies
         pure replies
     Right name -> pure [RErr ("unknown command: " <> name)]
@@ -348,7 +354,7 @@ hookArgSpec = \case
     "bind-key" -> "TN"
     "unbind-key" -> "T"
     "command-prompt" -> "IpTt"
-    "display-panes" -> "d"
+    "display-panes" -> "dst"
     "set-hook" -> "tB"
     "show-hooks" -> "tF"
     "wait-for" -> "Fw"
@@ -471,6 +477,7 @@ commandSpecs =
     , (["choose-tree"], cmdChooseTree)
     , (["choose-buffer"], cmdChooseBuffer)
     , (["choose-client"], cmdChooseClient)
+    , (["customize-mode"], cmdCustomizeMode)
     , (["display-panes", "displayp"], cmdDisplayPanes)
     , (["display-menu", "menu"], cmdDisplayMenu)
     , (["display-popup", "popup"], cmdDisplayPopup)
@@ -1056,8 +1063,8 @@ shutDownServer st missuer = do
 
 cmdSendKeys :: CommandImpl
 cmdSendKeys st mclient args
-    -- -M passes the mouse event being acted on to the pane under it,
-    -- unless a mode holds that pane.
+    -- -M passes the mouse event being acted on to the pane under it: to
+    -- its program, or to panes-mode; any other mode holding it drops it.
     | "-M" `elem` flags = do
         mev <- clientMouseEvent mclient
         case mev of
@@ -1066,9 +1073,16 @@ cmdSendKeys st mclient args
                 mp <- mouseEventPane st ev
                 case mp of
                     Nothing -> pure [RErr "no mouse target"]
-                    Just (_, _, pane, _) -> do
-                        inMode <- atomically (paneInMode pane)
-                        [] <$ unless inMode (sendMouse st ev)
+                    Just (_, _, pane, mbox) -> atomically (topMode pane) >>= \case
+                        Nothing -> [] <$ sendMouse st ev
+                        Just (PanesMode ps) -> do
+                            firing <- maybe (pure Nothing)
+                                (fmap (.firingKey) . readIORef . (.keyState)) mclient
+                            [] <$ sequence_
+                                [ panesModeMouse dispatch st mclient pane ps key at
+                                | Just key <- [firing], Just box <- [mbox]
+                                , Just at <- [mouseAt False ev box] ]
+                        Just _ -> pure []
     | otherwise = do
         -- A full pane target (sess:win.N) resolves through cmd-find;
         -- the special pane tokens (%N, !, {marked}) keep the old path.

@@ -877,6 +877,21 @@ spec = parallel $ do
         _ <- awaitExit c
         pure ()
 
+    it "runs display-panes' template on the pane clicked in panes-mode" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "mouse", "on"]
+        _ <- hatCtl h ["split-window", "-h"]
+        _ <- hatCtl h ["display-panes", "-d", "0", "set -g @picked %%"]
+        awaitTrue "panes-mode" $ do
+            (_, out, _) <- hatCtl h ["display-message", "-p", "#{pane_mode}"]
+            pure (out == "panes-mode\n")
+        typeInto c "\ESC[<0;5;5M"
+        awaitTrue "the clicked pane's template" $ do
+            (_, out, _) <- hatCtl h ["show", "-gv", "@picked"]
+            pure (out == "%0\n")
+
     it "opens a display-menu over the client's window and runs the item its key picks" $
         withHat hatBin $ \h -> do
         c <- startClient h
@@ -927,6 +942,49 @@ spec = parallel $ do
         typeInto c "\r"
         awaitTrue "the client to switch to the match" $
             (== "projects:1\n") <$> ctlOut h ["list-clients", "-F", "#{session_name}:#{window_index}"]
+
+    it "switches the client into a key table a binding names with switch-client -T" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["bind", "-T", "move", "y", "set", "-g", "@moved", "yes"]
+        typeInto c "\x02g"
+        typeInto c "y"
+        awaitTrue "the move table's binding to run" $
+            (== "yes\n") <$> ctlOut h ["show", "-gv", "@moved"]
+
+    it "adds a user option from customize-mode's Server Options, then edits it in the editor" $
+        withHat hatBin $ \h -> do
+        let editor = h.home <> "/editor.sh"
+        writeExecutable editor "#!/bin/sh\nprintf edited > \"$1\"\n"
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "editor", editor]
+        _ <- hatCtl h ["customize-mode"]
+        awaitScreen c "Server Options"
+        ctlOut h ["display", "-p", "#{pane_mode}"] `shouldReturn` "options-mode\n"
+        typeInto c "\r"
+        awaitScreen c "New user option: @"
+        typeInto c "cm added\r"
+        awaitTrue "the option to be set" $
+            (== "added\n") <$> ctlOut h ["show", "-sv", "@cm"]
+        typeInto c "lje"
+        awaitTrue "the editor's text to become the value" $
+            (== "edited\n") <$> ctlOut h ["show", "-sv", "@cm"]
+
+    it "edits a buffer from choose-buffer in the editor option's program" $
+        withHat hatBin $ \h -> do
+        let editor = h.home <> "/editor.sh"
+        writeExecutable editor "#!/bin/sh\nprintf edited > \"$1\"\n"
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "editor", editor]
+        _ <- hatCtl h ["set-buffer", "-b", "b1", "old"]
+        _ <- hatCtl h ["choose-buffer"]
+        awaitScreen c "b1"
+        typeInto c "e"
+        awaitTrue "the buffer to hold what the editor saved" $
+            (== "edited") <$> ctlOut h ["show-buffer", "-b", "b1"]
 
     it "ends a popup's command across restart-server, leaving nothing behind" $
         withHat hatBin $ \h -> do
@@ -1097,12 +1155,12 @@ spec = parallel $ do
                             [ WindowSnap { ix = 0, name = "one", layout = lay1
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             , WindowSnap { ix = 1, name = "two", layout = lay2
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
-                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
+                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1133,7 +1191,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1160,7 +1218,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
@@ -1238,7 +1296,7 @@ spec = parallel $ do
                                 { ix = 0, name = "one", layout = lay
                                 , active = 0, paneHist = []
                                 , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }] }
+                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap

@@ -6,6 +6,7 @@ module Hat.Server.Command.Types
     , CommandImpl
     , Dispatch (..)
     , parseArgs
+    , parseArgsDigits
     , unknownFlag
     , strtonum
     , templateReplace
@@ -16,7 +17,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
-import Hat.Model (Client, ServerState)
+import Hat.Model (Client, Pane, ServerState)
 import Hat.Server.ArgNumber (strtonum)
 
 -- | A single line of command output: normal text or an error; or raw
@@ -39,6 +40,9 @@ data Dispatch = Dispatch
     , unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
         -- ^ the error for a command whose name resolves to nothing, which
         --   tmux reports when parsing, before anything runs
+    , newEditorPane :: (Pane -> IO ()) -> CommandImpl
+        -- ^ 'Hat.Server.Command.Pane.cmdNewEditorPane', for the modes that
+        --   open an editor
     }
 
 -- getopt-style flag parser: @spec@ lists the letters that take a
@@ -46,7 +50,13 @@ data Dispatch = Dispatch
 -- Returns (value flags as ("-s", value), boolean flags as "-d",
 -- positional args).
 parseArgs :: [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
-parseArgs spec = go [] []
+parseArgs spec = parseArgsDigits spec []
+
+-- | 'parseArgs' for a command whose flags include the digits @digits@
+-- (@command-prompt -1@): an argument of those digits alone is flags, not
+-- the number it otherwise reads as.
+parseArgsDigits :: [Char] -> [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
+parseArgsDigits spec digits = go [] []
   where
     go opts flags = \case
         [] -> (opts, flags, [])
@@ -54,7 +64,7 @@ parseArgs spec = go [] []
         (a : rest)
             | Just bundle <- T.stripPrefix "-" a
             , not (T.null bundle)
-            , not (isNumber a) ->
+            , not (isNumber a) || T.all (`elem` digits) bundle ->
                 let (opts', flags', rest') = scanBundle bundle rest
                 in go (opts' <> opts) (flags' <> flags) rest'
             | otherwise -> (opts, flags, a : rest)

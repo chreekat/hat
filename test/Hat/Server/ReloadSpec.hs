@@ -263,7 +263,7 @@ treeWith mlast ms sc = ReloadTree
                     , panes =
                         [ ( PaneSnap
                               { cwd = "/tmp", command = Nothing
-                              , shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+                              , shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
                           , HotPane
                               { masterFd = 7, childPid = 100
                               , modes = ms, screen = sc
@@ -302,7 +302,7 @@ currentTree = ReloadTree
     , currentSession = Just "work"
     , lastSession = Just "prev" }
   where
-    snap = PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+    snap = PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
 
 -- The current-era representative: 'currentTree' with a third, empty pane —
 -- no fd or child, a stored launch command, its input off and a title — to

@@ -17,6 +17,7 @@ module Hat.Server.Keys
     , Repeating (..)
     , initialKeyState
     , prefixArmed
+    , enterTable
     , expireRepeat
     , KeyContext (..)
     , KeyAction (..)
@@ -675,6 +676,10 @@ initialKeyState = KeyState
     , bracketPasting = False, lastKeyAt = 0, pasteGuess = Typing
     , mouse = initialMouseState, mouseEvent = Nothing
     , drag = Nothing, commandState = Nothing, firingKey = Nothing }
+
+-- | Switch the client into a key table (@switch-client -T@), at @now@.
+enterTable :: Text -> Int -> KeyState -> KeyState
+enterTable t now ks = ks { table = Just t, tableSince = now, repeating = Nothing }
 
 -- | Whether the client is in the prefix table.
 prefixArmed :: KeyState -> Bool

@@ -143,7 +143,7 @@ import Hat.Server.Keys
 import Hat.Server.Floating (ModalReturn (..), Restack (..), loseModal, modalPane, noFloats, restack)
 import Hat.Server.Layout
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyGroupChange
+    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
@@ -663,6 +663,10 @@ runPaneReader st pane = do
                         changed <- Emu.setTitle pane.emulator t
                         when changed $ notifyPane st "pane-title-changed" pane
                             [ ("new_title", PText t) ]
+                Emu.TitlePush -> Emu.pushTitle pane.emulator
+                Emu.TitlePop -> do
+                    t <- Emu.popTitle pane.emulator
+                    notifyPane st "pane-title-changed" pane [ ("new_title", PText t) ]
                 Emu.RenameRequest raw -> when (allowed "allow-rename") $
                     forM_ (cleanName raw) (renameFromApp st pane)
                 Emu.ClipboardRequest param term -> forM_ mopts $ \o ->
@@ -956,17 +960,21 @@ markBell st sid win = do
 -- keys are ignored.
 noteOuterFocus :: ServerState -> Client -> Key -> IO ()
 noteOuterFocus st client k
-    | k.name == "FocusOut" = atomically $ writeTVar client.outerFocused False
-    | k.name == "FocusIn"  = atomically $ do
-        writeTVar client.outerFocused True
-        sid <- readTVar client.session
-        msess <- Map.lookup sid <$> readTVar st.sessions
-        forM_ msess $ \sess -> do
-            mwin <- currentWindow sess
-            forM_ mwin $ \win -> do
-                writeTVar win.activity False
-                writeTVar win.bellFlag False
-        bumpDirty st
+    | k.name == "FocusOut" = do
+        atomically $ writeTVar client.outerFocused False
+        notifyClient st "client-focus-out" client []
+    | k.name == "FocusIn"  = do
+        atomically $ do
+            writeTVar client.outerFocused True
+            sid <- readTVar client.session
+            msess <- Map.lookup sid <$> readTVar st.sessions
+            forM_ msess $ \sess -> do
+                mwin <- currentWindow sess
+                forM_ mwin $ \win -> do
+                    writeTVar win.activity False
+                    writeTVar win.bellFlag False
+            bumpDirty st
+        notifyClient st "client-focus-in" client []
     | otherwise = pure ()
 
 -- The grace a hung-up child gets before SIGKILL: long enough for a
@@ -980,11 +988,13 @@ setScreenTitle :: Pane -> Text -> IO ()
 setScreenTitle pane t =
     void (Emu.setTitle pane.emulator t)
 
--- | Give a rebuilt pane the input state and title it was captured with.
-restorePaneState :: Pane -> Bool -> Maybe Text -> IO ()
-restorePaneState pane off mtitle = do
+-- | Give a rebuilt pane the input state, title and title stack it was
+-- captured with.
+restorePaneState :: Pane -> Bool -> Maybe Text -> [Text] -> IO ()
+restorePaneState pane off mtitle stack = do
     atomically (writeTVar pane.inputOff off)
     forM_ mtitle (setScreenTitle pane)
+    Emu.setTitleStack pane.emulator stack
 
 -- | Write keyboard input — typed, sent or pasted — to a pane's program,
 -- unless @select-pane -d@ turned its input off.
@@ -1322,6 +1332,7 @@ detachPane st win pane = do
     claimed <- claimPane pane
     if not claimed then pure AlreadyDetached else do
         modifyTVar' win.panes (Map.delete pane.id)
+        modifyTVar' st.panePrompts (Map.delete pane.id)
         releaseModal win pane.id
         lay <- readTVar win.layout
         mz <- readTVar win.zoomed

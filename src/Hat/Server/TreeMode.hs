@@ -7,9 +7,12 @@ module Hat.Server.TreeMode
     ( cmdChooseTree
     , cmdChooseBuffer
     , cmdChooseClient
+    , cmdCustomizeMode
     , treeModeKey
     , drawTreeMode
     , modeClient
+    , previewCells
+    , styleIn
     ) where
 
 import Control.Applicative ((<|>))
@@ -28,12 +31,14 @@ import Data.Vector qualified as V
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
 import Hat.Model.Options (Options (..), StatusPosition (..), optionText)
-import Hat.Model.PasteBuffers (PasteBuffer (..), pasteWalk)
-import Hat.Server.Command.Buffer (bufferEnv, formatTrue)
+import Hat.Model.PasteBuffers (PasteBuffer (..), pasteReplace, pasteWalk)
+import Hat.Server.Command.Buffer (bufferEnv, formatTrue, modifyStore_)
 import Hat.Server.Command.Types
     (CommandImpl, Dispatch (..), Reply (..), parseArgs, templateReplace, unknownFlag)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.FormatDraw (FormatColours (..), formatTrimLeft, formatWidth, styleCell)
+import Hat.Server.Customize
+import Hat.Server.Editor (spawnEditor)
 import Hat.Server.FormatEnv
     ( clientFormatEnv, clientTheme, expandFormat, paneFormatEnv, sessionFormatEnv
     , windowFormatEnv )
@@ -41,7 +46,7 @@ import Hat.Server.Keys (Key (..))
 import Hat.Server.Locate (findTarget, paneIndexOf)
 import Hat.Server.ModeTree
 import Hat.Server.PaneMode (modifyTopMode, resetPaneMode, setPaneMode, zoomForMode)
-import Hat.Server.Prompt (PromptEdit (..), editPrompt, promptFor)
+import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Render (overlayGrid)
 import Hat.Server.Toast (showToast)
@@ -68,6 +73,10 @@ cmdChooseBuffer = enterTreeMode "choose-buffer" "kNryZ" BufferList
 cmdChooseClient :: CommandImpl
 cmdChooseClient = enterTreeMode "choose-client" "hikNryZ" ClientList
 
+-- | @customize-mode [-kNZ] [-F format] [-f filter] [-t target-pane]@.
+cmdCustomizeMode :: CommandImpl
+cmdCustomizeMode = enterTreeMode "customize-mode" "kNyZ" OptionTree
+
 enterTreeMode :: Text -> [Char] -> TreeKind -> CommandImpl
 enterTreeMode cmdName allowed kind st mclient args
     | Just e <- unknownFlag cmdName allowed flags = pure [RErr e]
@@ -80,6 +89,7 @@ enterTreeMode cmdName allowed kind st mclient args
             Right (sess, wix, win, pane) -> do
                 empty <- case kind of
                     SessionTree -> pure False
+                    OptionTree -> pure False
                     BufferList -> null . pasteWalk <$> readTVarIO st.buffers
                     ClientList -> null <$> attachedClients st
                 if empty then pure [] else do
@@ -124,6 +134,9 @@ enterTreeMode cmdName allowed kind st mclient args
                 , confirm = if has "-y" then KillWithoutAsking else AskBeforeKill
                 , zoom = zoomed
                 , showHelp = False
+                , editor = Nothing
+                , itemsShown = AllItems
+                , globalsShown = GlobalsShown
                 }
         (items, _) <- buildItems st st0
         pure (startSelection items st0)
@@ -156,6 +169,7 @@ kindName = \case
     SessionTree -> "tree-mode"
     BufferList -> "buffer-mode"
     ClientList -> "client-mode"
+    OptionTree -> "options-mode"
 
 defaultFormat :: TreeKind -> Text
 defaultFormat = \case
@@ -176,12 +190,14 @@ defaultFormat = \case
     BufferList -> "#{t/p:buffer_created}: #{buffer_sample}"
     ClientList ->
         "#[fg=themelightgrey]#{t/p:client_activity}: session #[default]#{session_name}"
+    OptionTree -> customizeFormat
 
 defaultCommand :: TreeKind -> Text
 defaultCommand = \case
     SessionTree -> "switch-client -Zt '%%'"
     BufferList -> "paste-buffer -p -b '%%'"
     ClientList -> "detach-client -t '%%'"
+    OptionTree -> ""
 
 -- | The order a kind's list starts in: the first its @O@ key cycles.
 defaultSort :: TreeKind -> SortOrder
@@ -194,9 +210,17 @@ sortSequence = \case
     SessionTree -> [SortIndex, SortName, SortActivity, SortZ]
     BufferList -> [SortCreation, SortName, SortSize]
     ClientList -> [SortName, SortSize, SortCreation, SortActivity]
+    OptionTree -> []
+
+-- | How a kind divides its screen between list and preview.
+previewHeightOf :: TreeKind -> PreviewHeight
+previewHeightOf = \case
+    OptionTree -> FixedPreview 12
+    _ -> ProportionalPreview
 
 helpText :: TreeKind -> HelpText
 helpText = \case
+    OptionTree -> HelpText "item" 52 customizeHelp
     SessionTree -> HelpText "item" 51 $ map ("#[fg=themelightgrey]" <>)
         [ "      Enter #[#{E:tree-mode-border-style},acs]x#[default] Choose selected item"
         , "       S-Up #[#{E:tree-mode-border-style},acs]x#[default] Swap current and previous window"
@@ -249,6 +273,7 @@ itemsFor st ts mfilter = case ts.kind of
     SessionTree -> sessionItems st ts mfilter
     BufferList -> bufferItems st ts mfilter
     ClientList -> clientItems st ts mfilter
+    OptionTree -> customizeItems st ts mfilter
 
 -- | Whether a filter keeps an item with this environment.
 keeps :: ServerState -> Maybe Text -> FormatEnv -> IO Bool
@@ -308,7 +333,8 @@ sessionItems st ts mfilter = do
             pure $ Just Item
                 { tag = TagSession sess.id, name = nm, text = Just text
                 , children = wins, startExpanded = True, align = AlignNone
-                , searchText = [nm], fuzzyName = Just nm }
+                , searchText = [nm], fuzzyName = Just nm
+                , tagging = Taggable, previewFrom = OwnPreview }
     windowItem sess ix win = do
         panes <- atomically (windowPanes win)
         pinfos <- forM panes $ \p -> do
@@ -332,14 +358,16 @@ sessionItems st ts mfilter = do
                         { tag = TagPane p.id, name = tshow pix, text = Just text
                         , children = [], startExpanded = True, align = AlignRight
                         , searchText = [Map.findWithDefault "" "pane_current_command" env]
-                        , fuzzyName = Nothing }
+                        , fuzzyName = Nothing
+                        , tagging = Taggable, previewFrom = OwnPreview }
             wenv <- windowFormatEnv st sess ix win
             text <- expandFormat st (Map.union (levelVars WindowLevel) wenv) ts.itemFormat
             wname <- readTVarIO win.name
             pure $ Just Item
                 { tag = TagWinlink sess.id ix, name = tshow ix, text = Just text
                 , children = paneItems, startExpanded = True, align = AlignRight
-                , searchText = [wname], fuzzyName = Just wname }
+                , searchText = [wname], fuzzyName = Just wname
+                , tagging = Taggable, previewFrom = OwnPreview }
 
 -- | Which level of the session tree an item stands for.
 data ItemLevel = SessionLevel | WindowLevel | PaneLevel
@@ -372,7 +400,8 @@ bufferItems st ts mfilter = do
                 { tag = TagBuffer pb.order, name = pb.name, text = Just text
                 , children = [], startExpanded = True, align = AlignNone
                 , searchText = [pb.name, TE.decodeUtf8Lenient pb.body]
-                , fuzzyName = Just pb.name }
+                , fuzzyName = Just pb.name
+                , tagging = Taggable, previewFrom = OwnPreview }
 
 clientItems :: ServerState -> TreeState -> Maybe Text -> IO [Item]
 clientItems st ts mfilter = do
@@ -397,7 +426,8 @@ clientItems st ts mfilter = do
                     pure $ Just Item
                         { tag = TagClient c.id, name = nm, text = Just text
                         , children = [], startExpanded = True, align = AlignNone
-                        , searchText = [nm], fuzzyName = Just nm }
+                        , searchText = [nm], fuzzyName = Just nm
+                        , tagging = Taggable, previewFrom = OwnPreview }
 
 -- | Clients attached to a live session, the ones client-mode lists.
 attachedClients :: ServerState -> IO [Client]
@@ -440,7 +470,7 @@ layoutTree st size ts = do
     ls <- forM (zip [0 ..] ls0) $ \(i, l) -> do
         k <- lineKey i l
         pure l { key = k }
-    let h = listHeight (fromIntegral size.rows) (length ls) ts.preview
+    let h = listHeight (previewHeightOf ts.kind) (fromIntegral size.rows) (length ls) ts.preview
     pure (items, ls, noMatches, h, settle h ls ts)
   where
     lineKey i l = case ts.keyFormat of
@@ -476,6 +506,7 @@ itemEnv st = \case
     TagClient cid -> do
         mc <- Map.lookup cid <$> readTVarIO st.clients
         maybe (pure Map.empty) (fmap (fromMaybe Map.empty) . clientFormatEnv st) mc
+    _ -> pure Map.empty
 
 -- Drawing ---------------------------------------------------------------
 
@@ -501,9 +532,11 @@ drawTreeMode st ts size = do
             , promptStyle = Cell.defaultStyle
                 { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
             , promptTop = opts.statusPosition == StatusTop
-            , sortShown = True
+            , previewHeight = (previewHeightOf ts.kind)
+            , sortShown = ts.kind /= OptionTree
             , viewName = case (ts.kind, ts.view) of
                 (BufferList, _) -> Nothing
+                (OptionTree, _) -> Nothing
                 (_, ViewPreview) -> Just "preview"
                 (_, ViewInfo) -> Just "info"
             , help = help
@@ -516,7 +549,31 @@ drawTreeMode st ts size = do
                             , cols = fromIntegral (rect.endCol - rect.startCol) }
             pv <- previewOf look st ts tag area
             pure (overlayGrid drawn.cells rect pv)
-    pure (cells, drawn.cursor)
+    pure (waitingBox ts.editor cells, drawn.cursor)
+
+-- | tmux's @window_buffer_draw_waiting@: while the mode waits on an editor,
+-- a box saying so over the middle of its screen.
+waitingBox
+    :: Maybe EditorWait -> V.Vector (V.Vector Cell.Cell)
+    -> V.Vector (V.Vector Cell.Cell)
+waitingBox mwait g = case mwait of
+    Just w | sx >= boxW, sy >= 3 ->
+        let label = "WAITING FOR EDITOR (PID " <> tshow w.editorPid <> ")"
+            x = (sx - boxW) `div` 2
+            y = (sy - 3) `div` 2
+            glyph c = Cell.glyphCell c Cell.defaultStyle
+            edge a b c = [glyph a] <> replicate (boxW - 2) (glyph b) <> [glyph c]
+            middle = [glyph '│'] <> map glyph (" " <> T.unpack label <> " ") <> [glyph '│']
+            put r cs acc = case acc V.!? r of
+                Nothing -> acc
+                Just row -> acc V.// [(r, row V.// zip [x ..] cs)]
+        in put y (edge '┌' '─' '┐') (put (y + 1) middle (put (y + 2) (edge '└' '─' '┘') g))
+      where
+        boxW = T.length ("WAITING FOR EDITOR (PID " <> tshow w.editorPid <> ")") + 4
+    _ -> g
+  where
+    sy = V.length g
+    sx = maybe 0 V.length (g V.!? 0)
 
 -- | What the preview box shows for an item (tmux's @window_tree_draw@,
 -- @window_buffer_draw@, @window_client_draw@).
@@ -524,6 +581,7 @@ previewOf
     :: TreeLook -> ServerState -> TreeState -> TreeTag -> Size
     -> IO (V.Vector (V.Vector Cell.Cell))
 previewOf look st ts tag size = case (ts.view, tag) of
+    _ | ts.kind == OptionTree -> customizePreview st look.theme ts tag size
     (ViewInfo, _) | ts.kind == SessionTree -> do
         env <- itemEnv st tag
         let groups = case tag of
@@ -596,6 +654,7 @@ previewOf look st ts tag size = case (ts.view, tag) of
             _ -> pure []
         let rule = replicate w (Cell.glyphCell '─' look.border)
         pure (fitGrid size (take (h - 1) (rows <> repeat []) <> [rule]))
+    _ -> pure blank
   where
     w = fromIntegral size.cols
     h = fromIntegral size.rows
@@ -722,22 +781,27 @@ styleIn th expand raw
 -- | tmux's @screen_write_preview@: an @nx@ by @ny@ window of a screen,
 -- around its cursor when that shows (marked in reverse), else the top left.
 screenPreview :: Emu.Screen -> Int -> Int -> [[Cell.Cell]]
-screenPreview scr nx ny
+screenPreview scr = previewCells scr.cells
+    (if scr.cursorVisible then Just scr.cursor else Nothing)
+
+-- | 'screenPreview' over a screen's cells and its cursor, if shown.
+previewCells :: V.Vector (V.Vector Cell.Cell) -> Maybe Pos -> Int -> Int -> [[Cell.Cell]]
+previewCells cells mcursor nx ny
     | nx <= 0 || ny <= 0 = []
     | otherwise =
         [ [ cellAt (px + x) (py + y) | x <- [0 .. nx - 1] ] | y <- [0 .. ny - 1] ]
   where
-    sx = fromIntegral scr.size.cols
-    sy = fromIntegral scr.size.rows
-    (px, py)
-        | scr.cursorVisible = (origin scr.cursor.col nx sx, origin scr.cursor.row ny sy)
-        | otherwise = (0, 0)
+    sy = V.length cells
+    sx = maybe 0 V.length (cells V.!? 0)
+    (px, py) = case mcursor of
+        Just c -> (origin c.col nx sx, origin c.row ny sy)
+        Nothing -> (0, 0)
     origin c n total =
         let o = if c < n `div` 3 then 0 else c - n `div` 3
         in if o + n > total then (if n > total then 0 else total - n) else o
     cellAt x y =
-        let c = fromMaybe Cell.blankCell (scr.cells V.!? y >>= (V.!? x))
-        in if scr.cursorVisible && x == scr.cursor.col && y == scr.cursor.row
+        let c = fromMaybe Cell.blankCell (cells V.!? y >>= (V.!? x))
+        in if mcursor == Just (Pos y x)
             then c { Cell.style = c.style { Cell.reverse = True } }
             else c
 
@@ -827,7 +891,10 @@ treeModeKey :: Dispatch -> ServerState -> Maybe Client -> Pane -> Key -> IO ()
 treeModeKey d st mclient pane key = do
     mmode <- atomically (topMode pane)
     case mmode of
-        Just (TreeMode ts0) -> do
+        Just (TreeMode ts0)
+          | Just _ <- ts0.editor ->
+            when (key.name `elem` ["q", "Escape", "C-c"]) (resetPaneMode st pane)
+          | otherwise -> do
             size <- readTVarIO pane.size
             (items, ls, _, h, ts) <- layoutTree st size ts0
             case ts.modePrompt of
@@ -836,45 +903,78 @@ treeModeKey d st mclient pane key = do
                 Nothing -> do
                     let r = treeKey h (sortSequence ts.kind) items ls ts key.name
                     put r.state
-                    forM_ r.unhandled $ \k -> kindKey ls r.state k
+                    -- customize-mode's keys act on the selected item, so
+                    -- none acts once it has gone from the list (tmux acts on
+                    -- the gone item, which changes nothing).
+                    let vanished = maybe False
+                            (\t -> all ((/= t) . (.item.tag)) ls) ts0.current
+                    forM_ r.unhandled $ \k ->
+                        unless (vanished && ts.kind == OptionTree) (kindKey ls r.state k)
                     when r.finished (resetPaneMode st pane)
         _ -> pure ()
   where
+    -- The editor a mode waits on is the editor's own to clear ('endEdit'),
+    -- whatever the key handling read before it ended.
     put ts = atomically $ modifyTopMode st pane $ \case
-        TreeMode _ -> TreeMode ts
+        TreeMode now -> TreeMode ts { editor = now.editor }
         other -> other
+    -- Settle the selection on the list a change left (tmux's
+    -- @mode_tree_build@ after a change).
+    rebuilt = atomically (topMode pane) >>= \case
+        Just (TreeMode ts) -> do
+            size <- readTVarIO pane.size
+            (_, _, _, _, settled) <- layoutTree st size ts
+            -- Unless the mode changed meanwhile (an editor ending).
+            atomically $ modifyTopMode st pane $ \case
+                TreeMode now | now == ts -> TreeMode settled
+                other -> other
+        _ -> pure ()
     client = modeClient st mclient pane
     runFor template name = do
         mc <- client
         out <- d.runCommandText st mc (templateReplace template name 1)
         forM_ mc $ \c -> forM_ [ e | RErr e <- out ] (showToast st c)
     toast msg = client >>= mapM_ (\c -> showToast st c msg)
+    customizeCtx = CustomizeCtx
+        { dispatch = d, client = client, pane = pane, put = put, message = toast }
     current ls ts = listToMaybe (drop ts.currentIx ls)
 
     promptKey ls ts p = case p.entry of
         PromptSingleKey
             | T.length key.name == 1 -> answer ls ts p (Just key.name)
             | otherwise -> answer ls ts p Nothing
-        PromptLine -> case editPrompt [] p.edit key of
+        PromptLine -> case editPrompt noPromptEnv p.edit key of
             Editing e -> put ts { modePrompt = Just p { edit = e } }
-            Submit line -> answer ls ts p (if T.null line then Nothing else Just line)
+            Answering e _ -> put ts { modePrompt = Just p { edit = e } }
+            Submit line -> submitted line
+            SubmitPassing line -> submitted line
             Cancel -> answer ls ts p Nothing
+          where
+            submitted line
+                -- An environment variable may be set empty.
+                | PromptEnvironmentValue _ <- p.use = answer ls ts p (Just line)
+                | otherwise = answer ls ts p (if T.null line then Nothing else Just line)
     -- See Note [Fuzzy tree search].
     searchKey items ls h ts p
         | key.name `elem` ["Up", "C-p", "Down", "C-n"] =
             let moved = treeKey h (sortSequence ts.kind) items ls ts { modePrompt = Nothing } key.name
             in put moved.state { modePrompt = Just p }
-        | otherwise = case editPrompt [] p.edit key of
-            Editing e -> put ts
-                { modePrompt = Just p { edit = e }
-                , current = (fuzzyView e.input items).best <|> ts.current }
-            Submit line -> do
-                let chosen = ts
-                        { modePrompt = Nothing
-                        , search = if T.null line then Nothing else Just line }
-                put chosen
-                unless (null ls) $ kindKey ls chosen "Enter"
+        | otherwise = case editPrompt noPromptEnv p.edit key of
+            Editing e -> edited e
+            Answering e _ -> edited e
+            Submit line -> submitted line
+            SubmitPassing line -> submitted line
             Cancel -> answer ls ts p Nothing
+      where
+        edited e = put ts
+            { modePrompt = Just p { edit = e }
+            , current = (fuzzyView e.input items).best <|> ts.current }
+        submitted line = do
+            let chosen = ts
+                    { modePrompt = Nothing
+                    , search = if T.null line then Nothing else Just line }
+            put chosen
+            unless (null ls) $ kindKey ls chosen "Enter"
     answer ls ts p mline = do
         let closed = ts { modePrompt = Nothing }
         case p.use of
@@ -890,6 +990,10 @@ treeModeKey d st mclient pane key = do
                 put closed
                 forM_ mline $ \c -> forEachTagged ls ts $ \t ->
                     itemTarget st t >>= mapM_ (runFor c)
+            use -> do
+                put closed
+                customizeAnswer customizeCtx st ls closed use mline
+                rebuilt
     yes = \case
         Just a -> T.toLower a == "y"
         Nothing -> False
@@ -902,6 +1006,7 @@ treeModeKey d st mclient pane key = do
         SessionTree -> treeKindKey ls ts k
         BufferList -> bufferKindKey ls ts k
         ClientList -> clientKindKey ls ts k
+        OptionTree -> customizeKey customizeCtx st ls ts k >> rebuilt
 
     treeKindKey ls ts k = case k of
         "Enter" -> do
@@ -999,7 +1104,7 @@ treeModeKey d st mclient pane key = do
 
     bufferKindKey ls ts k = do
         case k of
-            "e" -> toast "choose-buffer: e (edit buffer) is not supported"
+            "e" -> forM_ (current ls ts) $ \l -> editBuffer l.item
             "d" -> forM_ (current ls ts) $ \l -> do
                 put (stepOff ls ts)
                 deleteBuffer l.item
@@ -1015,6 +1120,23 @@ treeModeKey d st mclient pane key = do
         none <- null . pasteWalk <$> readTVarIO st.buffers
         stillHere <- isTreeTop
         when (none && stillHere) (resetPaneMode st pane)
+    -- tmux's @window_buffer_start_edit@: the buffer in an editor, its text
+    -- replaced by what the editor saves, unless the buffer went meanwhile.
+    editBuffer i = do
+        mpb <- listToMaybe . filter ((== i.name) . (.name)) . pasteWalk
+            <$> readTVarIO st.buffers
+        mc <- client
+        forM_ ((,) <$> mpb <*> mc) $ \(pb, c) -> do
+            let finish w mbytes = do
+                    mine <- endEdit st pane w
+                    forM_ (if mine then mbytes else Nothing) $ \bytes -> do
+                        let trimmed
+                                | not (B.null pb.body), B.last pb.body /= 10
+                                , B.last bytes == 10 = B.init bytes
+                                | otherwise = bytes
+                        unless (B.null trimmed) $
+                            modifyStore_ st (pasteReplace pb.name pb.order trimmed)
+            spawnEditor d st c pb.body (beginEdit st pane) finish
     deleteBuffer i = do
         mc <- client
         _ <- d.runArgv st mc ["delete-buffer", "-b", i.name]
@@ -1054,6 +1176,24 @@ treeModeKey d st mclient pane key = do
         Just (TreeMode _) -> pure True
         _ -> pure False
 
+-- | The pane's tree mode waits on an editor it opened.
+beginEdit :: ServerState -> Pane -> EditorWait -> IO ()
+beginEdit st pane w = atomically $ modifyTopMode st pane $ \case
+    TreeMode t -> TreeMode t { editor = Just w }
+    other -> other
+
+-- | An editor the pane's tree mode waited on has ended: 'True' when the mode
+-- is still there waiting on it, which then stops waiting (tmux cancels an
+-- editor its mode left behind).
+endEdit :: ServerState -> Pane -> EditorWait -> IO Bool
+endEdit st pane w = atomically $ do
+    es <- readTVar pane.modes
+    case es of
+        e@ModeEntry { mode = TreeMode t } : rest | t.editor == Just w -> do
+            writeTVar pane.modes (e { mode = TreeMode t { editor = Nothing } } : rest)
+            True <$ bumpDirty st
+        _ -> pure False
+
 blankPrompt :: Text -> PromptState
 blankPrompt label = promptFor label "" ""
 
@@ -1086,6 +1226,7 @@ itemTarget st = \case
     TagClient cid -> do
         mc <- Map.lookup cid <$> readTVarIO st.clients
         pure (clientName <$> mc)
+    _ -> pure Nothing
 
 -- | The pane an item stands for: a session's or window's active pane.
 itemPane :: ServerState -> TreeTag -> IO (Maybe PaneId)

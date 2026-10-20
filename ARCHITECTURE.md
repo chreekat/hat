@@ -280,7 +280,8 @@ keys→commands cycle.
   |  Hat.Server.PaneMode / .ModeKey         | -- a pane's mode stack; keys to a mode
   |  Hat.Server.CopyMode / .ViewMode        | -- copy mode over a frozen snapshot
   |  Hat.Server.ModeTree / .TreeMode        | -- tmux's list screens: choose-tree,
-  |                                         |    -buffer, -client
+  |    / .Customize                         |    -buffer, -client, customize-mode
+  |  Hat.Server.Editor                      | -- text in the editor option's program
   |  Hat.Server.Format / .FormatEnv         | -- #{...} engine; env construction
   |  Hat.Server.Layout / .LayoutString      | -- pane geometry + layout-string codec
   |  Hat.Server.Keys / .Keymap /            | -- key names; default binds;
@@ -355,6 +356,8 @@ Handy when cross-referencing behavior against upstream:
 | `Hat.Server.Environ`               | `environ.c`                                   |
 | `Hat.Server.PaneMode`              | `window.c` (`window_pane_set_mode` et al.)    |
 | `Hat.Server.ModeTree` / `.TreeMode` | `mode-tree.c`, `window-{tree,buffer,client}.c` |
+| `Hat.Server.Customize`             | `window-customize.c`                          |
+| `Hat.Server.Editor`                | `spawn.c` (`spawn_editor`)                    |
 | `Hat.Server.Snapshot` / `.Persist` | (no tmux analogue — native, vs. resurrect)    |
 | `Hat.Model` / `.Options`           | `session.c`, `window.c`, `options.c`          |
 | `Hat.Term.Emulator`                | `input.c`, `grid.c`, `grid-view.c`            |

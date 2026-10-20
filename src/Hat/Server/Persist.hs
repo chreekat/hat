@@ -181,6 +181,8 @@ data PaneSnap = PaneSnap
                                --   JSON, absent meaning 'False'
     , title    :: Maybe Text    -- ^ the pane title, when one was set; @extra@
                                --   JSON
+    , titleStack :: [Text]      -- ^ the titles the program pushed, top first;
+                               --   @extra@ JSON, absent meaning none
     }
     deriving (Eq, Show)
 
@@ -290,7 +292,7 @@ decodeExtra c t = fromMaybe (plainPane c) $ do
 plainPane :: Text -> PaneSnap
 plainPane c = PaneSnap
     { cwd = c, command = Nothing, shellSpawned = False, kind = ProgramPane
-    , inputOff = False, title = Nothing }
+    , inputOff = False, title = Nothing, titleStack = [] }
 
 -- | The evolving pane fields, as JSON keys; a default is left out.
 paneFields :: PaneSnap -> [(Key, Value)]
@@ -300,6 +302,7 @@ paneFields p =
     <> ["empty" .= True | p.kind == EmptyPane]
     <> ["input_off" .= True | p.inputOff]
     <> maybe [] (\t -> ["title" .= t]) p.title
+    <> ["title_stack" .= p.titleStack | not (null p.titleStack)]
 
 -- | Read 'paneFields' back, defaulting any key a writer predates. A command
 -- may be a bare string, as a store written by an older binary that persisted
@@ -312,10 +315,11 @@ parsePaneFields c o = do
     emptyP <- fromMaybe False <$> o .:? "empty"
     off <- fromMaybe False <$> o .:? "input_off"
     t <- o .:? "title"
+    ts <- fromMaybe [] <$> o .:? "title_stack"
     pure PaneSnap
         { cwd = c, command = mc, shellSpawned = shellSp
         , kind = if emptyP then EmptyPane else ProgramPane
-        , inputOff = off, title = t }
+        , inputOff = off, title = t, titleStack = ts }
   where
     parseArgv (String s) = pure [s]
     parseArgv v          = parseJSON v
