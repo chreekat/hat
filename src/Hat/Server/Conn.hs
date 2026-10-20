@@ -46,6 +46,7 @@ import Hat.Server.Environ
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.ClientSession (adoptServerAlternate)
 import Hat.Server.Command.Session (checkUnattached)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send, withClientWriter)
@@ -263,11 +264,7 @@ attachSetup _ st client [] = do
     atomically $ do
         writeTVar client.session sess.id
         writeTVar st.lastActiveSession (Just sess.id)
-        -- Adopt the server-wide alternate (e.g. one carried across a reload) so
-        -- @switch-client -l@ still returns to it. See 'switchClientTo'.
-        gLast <- readTVar st.lastSession
-        forM_ gLast $ \g -> when (g /= sess.id) $
-            writeTVar client.sessionHist [g]
+        adoptServerAlternate st client sess.id
     pure Nothing
 attachSetup d st client cmds = do
     replies <- d.runCommands st (Just client) cmds
@@ -437,23 +434,11 @@ ensureSession st client = do
     -- Let startup land first, so we attach to the configured, restored tree
     -- rather than racing it and creating a redundant fresh session.
     atomically $ readTVar st.startupPhase >>= \p -> when (p /= Ready) retry
-    (existing, laId) <- atomically $
-        (,) <$> readTVar st.sessions <*> readTVar st.lastActiveSession
-    case pickAttachSession laId existing of
-        Just (_, sess) -> pure sess
+    existing <- atomically (defaultAttachSession st)
+    case existing of
+        Just sess -> pure sess
         Nothing -> createSession st Nothing [] client.env
             (T.unpack client.cwd) =<< readTVarIO client.size
-
--- | Which existing session a fresh client attaches to: the last-active one
--- if it still exists, else the first-created (lowest-id) session. After a
--- restore 'lastActiveSession' names the session that was focused, so a reboot
--- returns there rather than always landing on @$1@.
-pickAttachSession
-    :: Ord k => Maybe k -> Map.Map k v -> Maybe (k, v)
-pickAttachSession lastActive m =
-    case lastActive >>= \k -> (,) k <$> Map.lookup k m of
-        Just kv -> Just kv
-        Nothing -> Map.lookupMin m
 
 -- Input ---------------------------------------------------------------------
 

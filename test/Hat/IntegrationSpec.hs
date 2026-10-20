@@ -1734,6 +1734,13 @@ spec = parallel $ do
         (code, err) `shouldBe` (ExitSuccess, "")
         ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
 
+    it "new-session -A attaches a fresh client to the session a bare attach picks" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "-s", "first"]
+        _ <- hatCtl h ["new-session", "-d", "-s", "second"]
+        c <- startClientArgs h ["new-session", "-A"]
+        awaitScreen c "[first]"
+
     it "remain-on-exit keeps an exited pane, dead, with its status" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h

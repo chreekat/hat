@@ -40,12 +40,14 @@ import Hat.Server.Command.Types
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (send)
 import Hat.Server.ConfigCauses (showConfigCauses)
-import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
+import Hat.Server.ClientSession (adoptServerAlternate, sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange, sessionTarget )
 import Hat.Server.Keys (enterTable)
-import Hat.Server.Locate (findTarget, formatClient, paneIndexOf, targetSession, withTargetSession)
+import Hat.Server.Locate
+    ( defaultAttachSession, findTarget, formatClient, paneIndexOf, targetSession
+    , withTargetSession )
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , switchActive, windowHolders )
@@ -86,9 +88,12 @@ newSession st mclient opts flags pos
         <> ": not supported")]
     | otherwise = do
         existing <- if "-A" `elem` flags
-            then case lookup "-s" opts of
-                Just nm -> sessionNamed nm
-                Nothing -> targetSession st mclient (lookup "-t" opts)
+            then case (lookup "-s" opts, lookup "-t" opts, mclient) of
+                (Just nm, _, _) -> sessionNamed nm
+                (Nothing, Nothing, Just client) -> sessionless client >>= \case
+                    FirstAttach -> atomically (defaultAttachSession st)
+                    Reattach -> targetSession st mclient Nothing
+                (Nothing, mt, _) -> targetSession st mclient mt
             else pure Nothing
         case existing of
             Just sess -> attachExisting sess
@@ -115,10 +120,23 @@ newSession st mclient opts flags pos
                     forM_ (lookup "-c" opts) $ \d -> atomically $ do
                         writeTVar sess.startCwd (T.unpack d)
                         bumpDirty st
-                    attachClient st client sess
+                    attachAs client sess
                     configCausesFor st sess
                     pure []
         _ -> pure [RErr "open terminal failed: not a terminal"]
+    -- A bare @-A@ brings a client with no session in as a bare attach
+    -- would ('Hat.Server.Conn.attachSetup').
+    attachAs client sess = do
+        how <- sessionless client
+        attachClient st client sess
+        when (bareAttach && how == FirstAttach) $
+            atomically (adoptServerAlternate st client sess.id)
+    bareAttach = "-A" `elem` flags
+        && isNothing (lookup "-s" opts) && isNothing (lookup "-t" opts)
+    sessionless client = atomically $ do
+        sid <- readTVar client.session
+        known <- Map.member sid <$> readTVar st.sessions
+        pure (if known then Reattach else FirstAttach)
     detachOthers client sess = do
         cs <- Map.elems <$> readTVarIO st.clients
         forM_ cs $ \c -> do
@@ -196,7 +214,7 @@ newSession st mclient opts flags pos
             finish sess
     finish sess = do
         unless ("-d" `elem` flags) $
-            forM_ mclient $ \client -> attachClient st client sess
+            forM_ mclient $ \client -> attachAs client sess
         configCausesFor st sess
         if "-P" `elem` flags
             then do
@@ -217,6 +235,10 @@ newSession st mclient opts flags pos
 
 -- | The configuration causes still unshown, as a session is created or
 -- attached once the configuration has loaded (tmux's @cfg_show_causes@).
+-- | Whether a client attaching already shows a session.
+data ClientAttach = FirstAttach | Reattach
+    deriving (Eq, Show)
+
 configCausesFor :: ServerState -> Session -> IO ()
 configCausesFor st sess = do
     phase <- readTVarIO st.startupPhase

@@ -4,6 +4,7 @@
 -- where its clients go when a session is destroyed under them.
 module Hat.Server.ClientSession
     ( switchClientTo
+    , adoptServerAlternate
     , DetachOnDestroy (..)
     , detachOnDestroy
     , SessionChoice (..)
@@ -58,6 +59,15 @@ switchClientTo st client sess = do
         oldItem <- forM mold $ \o -> ("old_session",) . PSessionRef o.id <$> readTVarIO o.name
         notifyClient st "client-session-changed" client $
             ("new_session", PSessionRef sess.id sname) : maybe [] pure oldItem
+
+-- | Give a freshly attached client the server-wide alternate session (e.g.
+-- one carried across a reload) as its own, so @switch-client -l@ still
+-- returns to it.
+adoptServerAlternate :: ServerState -> Client -> SessionId -> STM ()
+adoptServerAlternate st client sid = do
+    gLast <- readTVar st.lastSession
+    forM_ gLast $ \g -> when (g /= sid) $
+        writeTVar client.sessionHist [g]
 
 -- | @detach-on-destroy@: where a destroyed session's clients go.
 data DetachOnDestroy

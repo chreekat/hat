@@ -6,6 +6,8 @@ module Hat.Server.Locate
     ( clientView
     , clientActivePane
     , targetSession
+    , defaultAttachSession
+    , pickAttachSession
     , targetWorld
     , findTarget
     , findWindowIndexTarget
@@ -92,6 +94,24 @@ targetSession st mclient mtarget = do
             Nothing -> case mambSid >>= (`Map.lookup` sessions) of
                 Just sess -> pure (Just sess)
                 Nothing -> bestSession st
+
+-- | The session a client with none attaches to by default; see
+-- 'pickAttachSession'.
+defaultAttachSession :: ServerState -> STM (Maybe Session)
+defaultAttachSession st = do
+    (existing, laId) <- (,) <$> readTVar st.sessions <*> readTVar st.lastActiveSession
+    pure (snd <$> pickAttachSession laId existing)
+
+-- | Which existing session a fresh client attaches to: the last-active one
+-- if it still exists, else the first-created (lowest-id) session. After a
+-- restore 'lastActiveSession' names the session that was focused, so a reboot
+-- returns there rather than always landing on @$1@.
+pickAttachSession
+    :: Ord k => Maybe k -> Map.Map k v -> Maybe (k, v)
+pickAttachSession lastActive m =
+    case lastActive >>= \k -> (,) k <$> Map.lookup k m of
+        Just kv -> Just kv
+        Nothing -> Map.lookupMin m
 
 -- | tmux's @cmd_find_best_session@: the most recently active session, the
 -- first by name among equals.
