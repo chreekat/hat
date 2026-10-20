@@ -22,7 +22,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (foldM, forM_, forever, unless, void, when)
+import Control.Monad (filterM, foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.IORef
@@ -477,25 +477,29 @@ expireKeyRepeat st client = do
         disarmFlash st client False
 
 -- | Whether @client@ already holds the largest activity stamp among the
--- clients attached to its session (so it is the one an aggressive-resize
--- window currently follows).
-isMostActive :: ServerState -> Client -> STM Bool
-isMostActive st client = do
-    sid <- readTVar client.session
-    cs <- sessionClients st sid
-    mine <- readTVar client.lastActive
-    others <- mapM (\c -> readTVar c.lastActive)
-        (filter (\c -> c.id /= client.id) cs)
-    pure (all (< mine) others)
+-- clients whose current window is its own (so it is the client a
+-- @window-size latest@ window follows; see 'sizeWindow').
+isLatestViewer :: ServerState -> Client -> STM Bool
+isLatestViewer st client = do
+    sessions <- readTVar st.sessions
+    let viewed c = do
+            sid <- readTVar c.session
+            maybe (pure Nothing) (fmap (fmap (.id)) . currentWindow)
+                (Map.lookup sid sessions)
+    mine <- viewed client
+    stamp <- readTVar client.lastActive
+    others <- Map.elems <$> readTVar st.clients
+    newer <- filterM (\c -> if c.id == client.id then pure False else do
+        w <- viewed c
+        if w == mine then (>= stamp) <$> readTVar c.lastActive else pure False) others
+    pure (null newer)
 
--- | Record activity from a client and, when it becomes the newly
--- most-recently-active one on its session, re-apply the session size so an
--- aggressive-resize window follows it. A no-op resize when nothing aggressive
--- is in play (the smallest-client size is independent of who is active).
+-- | Record activity from a client and, when it becomes the newest client
+-- viewing its window, re-derive the sizes so a @latest@ window follows it.
 noteClientActivity :: ServerState -> Client -> IO ()
 noteClientActivity st client = do
     becameActive <- atomically $ do
-        already <- isMostActive st client
+        already <- isLatestViewer st client
         markActive st client
         pure (not already)
     sid <- readTVarIO client.session

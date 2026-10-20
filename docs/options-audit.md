@@ -207,10 +207,15 @@ spot-read of each suspect consumer.
   marking order, newest pane first; hat orders by pane id, which matches
   until `swap-pane`/`join-pane` reorder tmux's z-order.
 
-- **`aggressive-resize`** is accepted but read by nothing. tmux uses it to
-  size a window only from clients whose *current* window it is; hat sizes all
-  of a session's windows together from that session's own clients, so the
-  option could only matter for a window linked into several sessions.
+- **`aggressive-resize`** sizes a window only from the clients whose current
+  window it is, and without it from the clients of every session holding it,
+  as tmux does (`windowSize`). Hat still stores one area per session, its
+  current window's, so: a window no client sizes keeps a holding session's
+  area rather than its own last size; a `manual` size (`resize-window`)
+  belongs to the session, so it is lost once the session's area follows
+  another window; and `latest` follows the window's most recently active
+  *viewer* by activity stamp, where tmux tracks each window's latest client
+  (moved by `select-window` too, and still counted once it looks elsewhere).
 
 - **`default-shell`** runs as a plain interactive shell named by its path,
   where tmux starts a login shell (`-name`) and runs `-c` commands under the
