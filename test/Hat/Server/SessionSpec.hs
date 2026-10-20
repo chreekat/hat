@@ -366,12 +366,12 @@ spec = do
             client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
             [] <- runArgv st Nothing ["bind", "-n", "x", "set", "-g", "@x", "1"]
             handleInput dispatch st client "x"
-            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 key x: set-option -g @x 1"))
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client-2 key x: set-option -g @x 1"))
         it "logs a message shown to a client" $ do
             (st, sess) <- seedSession "/"
             client <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
             showToast st client "hello"
-            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client2 message: hello"))
+            logged st >>= (`shouldSatisfy` any (T.isSuffixOf ": client-2 message: hello"))
     describe "deadNoticeBytes" $
         it "scrolls a line and draws the styled notice, cursor hidden" $ do
             let sz = Size { rows = 3, cols = 8 }
@@ -500,9 +500,9 @@ spec = do
             vars <- clientFormatVars st c
             [ lookup n vars | n <- ["client_name", "client_session", "client_key_table"
                                    , "client_prefix", "client_flags", "client_width"] ]
-                `shouldBe` map Just ["client7", "work", "root", "0", "attached,focused,UTF-8", "80"]
+                `shouldBe` map Just ["client-7", "work", "root", "0", "attached,focused,UTF-8", "80"]
             senv <- sessionFormatEnv st sess
-            Map.lookup "session_attached_list" senv `shouldBe` Just "client7"
+            Map.lookup "session_attached_list" senv `shouldBe` Just "client-7"
 
     describe "list-clients" $
         it "shows each client in tmux's default form, -f filtering them" $ do
@@ -512,8 +512,8 @@ spec = do
             _ <- addClient st sess.id (Size { rows = 30, cols = 90 }) 2
             -- These clients' sockets have no peer, so no uid to match the server's.
             runArgv st Nothing ["list-clients"]
-                `shouldReturn` [ ROutput "client1: work [80x24 ] [user ] (attached,focused,UTF-8)"
-                               , ROutput "client2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
+                `shouldReturn` [ ROutput "client-1: work [80x24 ] [user ] (attached,focused,UTF-8)"
+                               , ROutput "client-2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
             runArgv st Nothing ["list-clients", "-f", "#{==:#{client_width},90}", "-F", "#{line}"]
                 `shouldReturn` [ROutput "1"]
 
@@ -965,7 +965,7 @@ spec = do
             peerRe <- newReadEnd peer
             [] <- runArgv st Nothing ["set", "-g", "lock-command", "vlock"]
             withClientWriter client $
-                runArgv st Nothing ["lock-client", "-t", "client1"] `shouldReturn` []
+                runArgv st Nothing ["lock-client", "-t", "client-1"] `shouldReturn` []
             recvMessage peerRe `shouldReturn` Just (Known (LockClient "vlock"))
             renderable st client `shouldReturn` Nothing
             ttyHandedBack st client
@@ -977,8 +977,8 @@ spec = do
             (client0, _peer) <- wiredClient st Attached
             let client = client0 { wireLevel = 9 }
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
-            runArgv st Nothing ["lock-client", "-t", "client1"] `shouldReturn`
-                [RErr "client1 cannot be locked: its hat is too old (protocol 9)"]
+            runArgv st Nothing ["lock-client", "-t", "client-1"] `shouldReturn`
+                [RErr "client-1 cannot be locked: its hat is too old (protocol 9)"]
             locked client `shouldReturn` False
         it "lock-session locks the session's clients, lock-server every client" $ do
             (st, _) <- seedSession "/"
@@ -2280,9 +2280,9 @@ spec = do
             client <- addClient st (SessionId (-1)) (Size 24 80) 1
             _ <- record st "client-attached"
             runArgv st (Just client) ["attach-session", "-t", "work"] `shouldReturn` []
-            recorded st `shouldReturn` [ROutput "|client-attached:client1"]
+            recorded st `shouldReturn` [ROutput "|client-attached:client-1"]
             runArgv st (Just client) ["attach-session", "-t", "work"] `shouldReturn` []
-            recorded st `shouldReturn` [ROutput "|client-attached:client1"]
+            recorded st `shouldReturn` [ROutput "|client-attached:client-1"]
         it "switch-client fires client-session-changed with the old and new sessions" $ do
             (st, _) <- hooked
             other <- addSession st 1
@@ -2291,14 +2291,14 @@ spec = do
             _ <- runArgv st Nothing ["set-hook", "-g", "client-session-changed",
                 "set -gF @h '#{hook_client}:#{hook_old_session}:#{hook_new_session}:#{hook_session}'"]
             runArgv st (Just client) ["switch-client", "-t", "$1"] `shouldReturn` []
-            recorded st `shouldReturn` [ROutput "client1:$0:$1:$1"]
+            recorded st `shouldReturn` [ROutput "client-1:$0:$1:$1"]
         it "a resize fires client-resized with the old and new size" $ do
             (st, _) <- hooked
             client <- addClient st (SessionId 0) (Size 24 80) 1
             _ <- runArgv st Nothing ["set-hook", "-g", "client-resized",
                 "set -gF @h '#{hook_client}:#{hook_old_width}x#{hook_old_height}->#{hook_width}x#{hook_height}'"]
             clientResized st client (Size 20 70)
-            recorded st `shouldReturn` [ROutput "client1:80x24->70x20"]
+            recorded st `shouldReturn` [ROutput "client-1:80x24->70x20"]
         it "focus reports fire client-focus-in and client-focus-out" $ do
             (st, _) <- hooked
             client <- addClient st (SessionId 0) (Size 24 80) 1
@@ -2306,7 +2306,7 @@ spec = do
             _ <- record st "client-focus-out"
             handleInput dispatch st client "\ESC[O\ESC[I"
             recorded st `shouldReturn`
-                [ROutput "|client-focus-out:client1|client-focus-in:client1"]
+                [ROutput "|client-focus-out:client-1|client-focus-in:client-1"]
         it "a key from a client the window last heard from elsewhere fires client-active" $ do
             (st, _) <- hooked
             a <- addClient st (SessionId 0) (Size 24 80) 1
@@ -2316,7 +2316,7 @@ spec = do
             handleInput dispatch st a "y"
             handleInput dispatch st b "z"
             recorded st `shouldReturn`
-                [ROutput "|client-active:client1|client-active:client2"]
+                [ROutput "|client-active:client-1|client-active:client-2"]
         it "a client going away fires client-detached, then client-closed" $ do
             (st, _) <- hooked
             client <- addClient st (SessionId 0) (Size 24 80) 1
@@ -2324,7 +2324,7 @@ spec = do
             _ <- record st "client-closed"
             removeClient st client
             recorded st `shouldReturn`
-                [ROutput "|client-detached:client1|client-closed:client1"]
+                [ROutput "|client-detached:client-1|client-closed:client-1"]
 
     describe "input routing within a chunk" $ do
         let keyed = do

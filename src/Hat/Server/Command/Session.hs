@@ -528,8 +528,7 @@ sortClients morder reversed cs = case morder of
     Just order -> List.sortBy (\a b -> flipIf (compareBy order a b <> byName a b)) cs
   where
     flipIf r = if reversed then compare EQ r else r
-    byName (a, _, _, _) (b, _, _, _) = compare (name a) (name b)
-    name c = "client" <> tshow (rawClient c.id)
+    byName (a, _, _, _) (b, _, _, _) = compare (clientName a) (clientName b)
     compareBy order (a, _, actA, szA) (b, _, actB, szB) = case order of
         ClientsBySize -> compare (szA.cols, szA.rows) (szB.cols, szB.rows)
         ClientsByCreation -> compare a.createdAt b.createdAt

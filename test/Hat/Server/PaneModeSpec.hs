@@ -335,12 +335,12 @@ spec = do
         it "switch-client -c names an unknown client loudly" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
-                run st ["switch-client", "-c", "client99", "-t", "S"]
-                    `shouldReturn` [RErr "can't find client: client99"]
+                run st ["switch-client", "-c", "client-99", "-t", "S"]
+                    `shouldReturn` [RErr "can't find client: client-99"]
         it "detach-client -t names an unknown client loudly" $
             withServer $ \st ->
-                run st ["detach-client", "-t", "client99"]
-                    `shouldReturn` [RErr "can't find client: client99"]
+                run st ["detach-client", "-t", "client-99"]
+                    `shouldReturn` [RErr "can't find client: client-99"]
 
 -- | Sessions @work@ (windows @chat@, @mail@) and @projects@ (@notes@,
 -- @hat@), and a choose-tree -w on @work:0.0@ whose choice sets @\@chosen@.

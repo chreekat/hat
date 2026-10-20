@@ -1366,9 +1366,10 @@ findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
 rawClient :: ClientId -> Int
 rawClient (ClientId n) = n
 
--- | A client's name (tmux's @c->name@), as commands target it with @-c@.
+-- | A client's name (tmux's @c->name@, which for a client without a tty
+-- is @client-@ and a number), as commands target it with @-c@.
 clientName :: Client -> Text
-clientName c = "client" <> tshow (rawClient c.id)
+clientName c = "client-" <> tshow (rawClient c.id)
 
 rawPane :: PaneId -> Int
 rawPane (PaneId n) = n
