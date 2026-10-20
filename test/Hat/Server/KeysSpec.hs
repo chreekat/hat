@@ -427,6 +427,25 @@ spec = do
                 snd (routeKeys ctx0 km st1 (tokenizeKeys "\x00\ESC[201~"))
                     `shouldBe` [Paste, Paste]
 
+        describe "assume-paste-time" $ do
+            -- Each key routed alone at its arrival time, in microseconds.
+            let typedAt pasteMs = go initialKeyState
+                  where
+                    go _ [] = []
+                    go st ((t, bs) : rest) =
+                        let ctx = ctx0 { assumePasteTime = pasteMs, arrivedUs = t }
+                            (st', as) = routeKeys ctx km st (tokenizeKeys bs)
+                        in as : go st' rest
+                burst = [(10_000_000, "x"), (10_000_100, "\x00"), (10_000_200, "d")]
+            it "pastes a key that follows two others within it" $
+                typedAt 1 burst `shouldBe` [[Passthrough "x"], [], [Paste]]
+            it "looks a key up again after a pause" $
+                typedAt 1 (burst ++ [(10_005_000, "d")]) `shouldBe`
+                    [[Passthrough "x"], [], [Paste], [RunCommands [["detach-client"]]]]
+            it "assumes no paste at 0" $
+                typedAt 0 burst `shouldBe`
+                    [[Passthrough "x"], [], [RunCommands [["detach-client"]]]]
+
     describe "routeKeys in copy mode" $ do
         let km = Map.fromList
                 [ ("prefix", Map.fromList
@@ -562,13 +581,13 @@ isExtended bs =
     "\ESC[27;" `B.isPrefixOf` bs
     || ("\ESC[" `B.isPrefixOf` bs && "u" `B.isSuffixOf` bs)
 
--- Routing at time 0 with only C-Space as the prefix and tmux's default
--- repeat-time.
+-- Routing at time 0 with only C-Space as the prefix, tmux's default
+-- repeat-time, and no paste assumed.
 ctx0 :: KeyContext
 ctx0 = KeyContext
     { prefixKeys = ["C-Space"], defaultTable = "root", modeTable = Nothing
     , prefixTimeout = 0, repeatTime = 500, initialRepeatTime = 0, mouseOn = True
-    , now = 0 }
+    , now = 0, assumePasteTime = 0, arrivedUs = 0 }
 
 bindOnce, bindRepeat :: [[Text]] -> Binding
 bindOnce cmds = Binding { commands = cmds, repeats = Once, note = Nothing }

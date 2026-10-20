@@ -32,6 +32,7 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Socket qualified as N
@@ -610,10 +611,10 @@ selectPaneNumber d st client template num = do
 escWait :: Options -> Int
 escWait opts = max 1 opts.escapeTime
 
--- | How a key arriving at @now@ (ms) is routed, from the client's session
--- options and its active pane's mode table.
-keyContext :: Options -> Maybe Text -> Int -> KeyContext
-keyContext opts modeTable now = KeyContext
+-- | How a key arriving at @ns@ (monotonic nanoseconds) is routed, from the
+-- client's session options and its active pane's mode table.
+keyContext :: Options -> Maybe Text -> Word64 -> KeyContext
+keyContext opts modeTable ns = KeyContext
     { prefixKeys = filter (/= "None") [opts.prefix, opts.prefix2]
     , defaultTable = case opts.keyTable of
         "" -> "root"
@@ -623,7 +624,9 @@ keyContext opts modeTable now = KeyContext
     , repeatTime = opts.repeatTime
     , initialRepeatTime = opts.initialRepeatTime
     , mouseOn = opts.mouseEnabled
-    , now = now
+    , now = fromIntegral (ns `div` 1000000)
+    , assumePasteTime = opts.assumePasteTime
+    , arrivedUs = fromIntegral (ns `div` 1000)
     }
 
 monotonicMs :: IO Int
@@ -747,9 +750,9 @@ runInputs d st client keys = do
                         , input = T.pack (show k.raw) }
                 loop kst rest
               else do
-                now <- monotonicMs
+                ns <- getMonotonicTimeNSec
                 let (kst', actions) =
-                        routeKey (keyContext opts modeTable now) km kst k
+                        routeKey (keyContext opts modeTable ns) km kst k
                 kst'' <- foldM (act mpane k0 mev) kst' actions
                 -- Arming lights the highlight; disarming clears it, unless
                 -- the command just moved the active pane — then it lingers

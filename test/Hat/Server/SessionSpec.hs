@@ -2336,12 +2336,24 @@ spec = do
             readTVarIO client.displayPanes `shouldReturn` Nothing
 
     describe "input routing within a chunk" $ do
+        -- Keys typed back to back here, so no paste is assumed of them.
         let keyed = do
                 (st, sess) <- seedSession "/"
-                atomically $ writeTVar st.keymap defaultKeymap
+                atomically $ do
+                    writeTVar st.keymap defaultKeymap
+                    writeOwn st.globalSessionOptions
+                        (singletonDelta "assume-paste-time" (OVScalar "0"))
                 _ <- addWindow sess 0
                 client <- addClient st sess.id (Size 24 80) 1
                 pure (st, client)
+        it "keys arriving within assume-paste-time skip the key tables" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            client <- addClient st sess.id (Size 24 80) 1
+            [] <- runArgv st Nothing ["bind", "-n", "y", "set", "-g", "@x", "1"]
+            [] <- runArgv st Nothing ["set", "-g", "assume-paste-time", "10000"]
+            handleInput dispatch st client "aby"
+            Map.lookup "@x" . (.user) <$> readTVarIO st.options `shouldReturn` Nothing
         it "keys after the key that opens the prompt are typed into it" $ do
             (st, client) <- keyed
             handleInput dispatch st client "\x02:abc"

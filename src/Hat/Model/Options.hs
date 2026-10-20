@@ -139,6 +139,7 @@ data Options = Options
     , setTitles              :: Bool
     , setTitlesString        :: Text  -- ^ the desktop title's format
     , escapeTime             :: Int   -- ^ ms; 0 is hat's native behavior
+    , assumePasteTime        :: Int   -- ^ ms; 0 assumes no paste
     , displayTime            :: Int   -- ^ toast duration, ms
     , displayPanesTime       :: Int   -- ^ pane-number overlay duration, ms
     , displayPanesColour     :: Text  -- ^ tmux colour text
@@ -208,6 +209,7 @@ defaultOptions = foldl (\o d -> applyEntry d.name d.defaultValue o) unbound
         , cursorStyle = missing "cursor-style"
         , inputBufferSize = missing "input-buffer-size"
         , setTitles = missing "set-titles", escapeTime = missing "escape-time"
+        , assumePasteTime = missing "assume-paste-time"
         , setTitlesString = missing "set-titles-string"
         , displayTime = missing "display-time"
         , displayPanesTime = missing "display-panes-time"
@@ -305,6 +307,7 @@ fieldBindings = Map.fromList
     , ("set-titles", flag (\v o -> o { setTitles = v }))
     , ("set-titles-string", text (\v o -> o { setTitlesString = v }))
     , ("escape-time", int (\v o -> o { escapeTime = v }))
+    , ("assume-paste-time", int (\v o -> o { assumePasteTime = v }))
     , ("display-time", int (\v o -> o { displayTime = v }))
     , ("display-panes-time", int (\v o -> o { displayPanesTime = v }))
     , ("display-panes-colour", text (\v o -> o { displayPanesColour = v }))

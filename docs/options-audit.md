@@ -38,7 +38,7 @@ spot-read of each suspect consumer.
 | `prefix` / `prefix2` | `keyContext` → `routeKey` (Conn.hs, Keys.hs); `send-prefix [-2]`; `None` is no key | implemented ✅ tested | pure (KeysSpec) |
 | `key-table` | `keyContext` → `routeKey`: the client's default table | implemented ✅ tested | pure (KeysSpec) |
 | `repeat-time` / `initial-repeat-time` | `routeKey` (a `bind -r` binding keeps its table open), `expireKeyRepeat` timer in `inputLoop` (Conn.hs) | implemented ✅ tested | pure (KeysSpec) |
-| `assume-paste-time` | none — tmux skips paste detection when the client terminal has bracketed paste, and every hat client enables it (`enterAltScreen`); pastes arrive bracketed and bypass the key tables (`routeKey`) | implemented (by design) | — |
+| `assume-paste-time` | `assumedPaste` → `routeKey` (Keys.hs): from the second key in a row arriving within it of the one before, keys skip the key tables and go to the pane as pasted; a bracketed paste takes precedence. tmux skips the guess on a terminal advertising bracketed paste (`Enbp`); hat has no terminal capability model, so it guesses on every terminal | implemented ✅ tested | pure (KeysSpec) |
 | `allow-set-title` | pane reader `TitleRequest` (Pane.hs): OSC 0/2 and APC, cleaned by `cleanName` | implemented ✅ tested | integration (check-names) |
 | `allow-rename` | pane reader `RenameRequest` → `renameFromApp` (Pane.hs): `ESC k` names the window | implemented ✅ tested | integration (check-names) |
 | `alternate-screen` | `hostPolicyOf` → `scrubHost` drops ?47/?1047/?1049 (HostProtocol.hs) | implemented ✅ tested | pure (EmulatorSpec) |
