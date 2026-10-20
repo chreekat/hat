@@ -146,6 +146,7 @@ instance Arbitrary ServerToClient where
             <*> elements [ExitNow, AwaitEmptyLine] <*> arbitrary
         , LockClient <$> genText
         , OpenedTerminal <$> listOf genText <*> listOf genText
+        , ExitStatus <$> arbitrary
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -173,6 +174,7 @@ instance Arbitrary ServerToClient where
         OpenedTerminal caps feats ->
             [ OpenedTerminal cs feats | cs <- shrinkList (const []) caps ]
             ++ [ OpenedTerminal caps fs | fs <- shrinkList (const []) feats ]
+        ExitStatus n -> ExitStatus <$> shrink n
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -283,6 +285,7 @@ spec = do
             , ( "OpenedTerminal"
               , encodeMessage (OpenedTerminal ["am=1"] ["title"])
               , "83119f64616d3d31ff9f657469746c65ff" )
+            , ( "ExitStatus", encodeMessage (ExitStatus 3), "821203" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -365,6 +368,10 @@ spec = do
         it "downgrades LockClient to a Message below level 10" $
             hex (encodeServerMessageAt 9 (LockClient "lock -np"))
                 `shouldBe` "820578256c6f636b696e673a206e6f7420737570706f72746564206279207468697320636c69656e74"
+        -- The level-11 corpus vector for tag 18: a pre-12 peer gets the tag
+        -- as it is, skips it as unknown, and exits 0 as it always did.
+        it "sends ExitStatus unchanged below level 12" $
+            hex (encodeServerMessageAt 11 (ExitStatus 3)) `shouldBe` "821203"
         it "reads a level-6 name-only RestartClientTo as empty history" $
             (decodeMessage (B.pack (hexBytes "820c646d61696e"))
                 :: Inbound ServerToClient)
@@ -410,6 +417,13 @@ spec = do
                 , frameOf (encodeMessage CommandDone)
                 ]
             reason `shouldBe` SessionEnded
+        it "finishes with the exit status the server named" $ do
+            reason <- withFakeServer
+                [ frameOf (encodeMessage (Welcome ""))
+                , frameOf (encodeMessage (ExitStatus 3))
+                , frameOf (encodeMessage CommandDone)
+                ]
+            reason `shouldBe` CommandsFinished 3
         it "returns the fatal error on a malformed frame" $ do
             reason <- withFakeServer
                 [ frameOf (encodeMessage (Welcome ""))
@@ -419,7 +433,7 @@ spec = do
         it "reports a connection reset before the greeting as ServerDied" $ do
             (clientSock, serverSock) <- socketPair AF_UNIX Stream 0
             (reason, _) <- concurrently
-                (runControl clientSock Joined [["list-sessions"]]
+                (runControl clientSock Joined (pure ()) [["list-sessions"]]
                     <* close clientSock)
                 -- Closing with the hello still unread resets the connection.
                 (SBL.recv serverSock 1 >> close serverSock)
@@ -445,7 +459,7 @@ withFakeServer frames = do
     pure reason
   where
     client sock = do
-        r <- runControl sock Joined [["kill-server"]]
+        r <- runControl sock Joined (pure ()) [["kill-server"]]
         close sock
         pure r
     server sock = do

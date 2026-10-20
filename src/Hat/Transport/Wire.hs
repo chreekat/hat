@@ -91,7 +91,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 11
+protocolVersion = 12
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -233,6 +233,9 @@ data ServerToClient
         --   capabilities and applied features, as 'Hat.Term.Caps.capList'
         --   and 'Hat.Term.Caps.featureName' give them. Sent ahead of
         --   'Welcome', so only to a level-11-and-up peer.
+    | ExitStatus Int
+        -- ^ the status a command client exits with once its commands are
+        --   done (level 12 and up; an older peer skips the tag and exits 0)
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -313,6 +316,7 @@ instance WireMessage ClientToServer where
 --   ControlExit   = 15
 --   LockClient    = 16
 --   OpenedTerminal = 17
+--   ExitStatus    = 18
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -340,6 +344,7 @@ instance WireMessage ServerToClient where
         LockClient cmd -> encodeListLen 2 <> encodeWord 16 <> encode cmd
         OpenedTerminal caps feats ->
             encodeListLen 3 <> encodeWord 17 <> encode caps <> encode feats
+        ExitStatus n  -> encodeListLen 2 <> encodeWord 18 <> encode n
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -377,6 +382,7 @@ instance WireMessage ServerToClient where
             3 -> Known <$> (OpenedTerminal <$> decode <*> decode)
             _ -> pure (Malformed
                 ("OpenedTerminal: expected 2 fields, got " <> show (len - 1)))
+        18 -> field len (Known . ExitStatus <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.

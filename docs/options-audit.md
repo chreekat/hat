@@ -59,6 +59,7 @@ spot-read of each suspect consumer.
 | `mode-keys` | CopyMode motions (830,839,875), table (Server.hs:3265) | implemented ✅ tested | pure |
 | `history-limit` | the emulator's history (`Hat.Term.Emulator.History`): tmux's grid trimming as rows scroll in, kept across reflows, over libghostty's scrollback; a live set trims as `session_update_history` does (`setScrollbackLimit`) | implemented ✅ tested | pure (HistorySpec) + emulator (EmulatorSpec) + integration |
 | `default-terminal` | `$TERM` for new panes (Server.hs) | implemented ✅ tested | integration |
+| `default-client-command` | what a bare `hat` runs: the client asks the server for it (`defaultClientCommand`, app/Main.hs) | implemented ✅ tested | integration |
 | `word-separators` | `CopyMode.runMotion` (830,831) | implemented ✅ tested | pure |
 | `wrap-search` | `findMatch` (CopyMode.hs): a search past the last match starts over from the other end only when on | implemented ✅ tested | pure (CopyModeSpec) |
 | `copy-command` | `pipeCommand` (CopyMode.hs): what `copy-pipe` runs when given no command | implemented ✅ tested | pure (CopyModeSpec) |
@@ -184,6 +185,7 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
 | `mode-style` | `reverse` | `noattr,bg=themeyellow,fg=themeblack` |
 | `fill-character` | ` ` (blank) | a format: shaded inside the window, `~` outside |
 | `automatic-rename-format` | `#{pane_current_command}` | also marks panes in a mode or dead |
+| `default-client-command` | `new-session -A` | `new-session` |
 | `set-titles-string` | hat's title (`hat` and the non-default names, see below) | `#S:#I:#W - "#T" #{session_alerts}` |
 
 ## Defects (the backlog)

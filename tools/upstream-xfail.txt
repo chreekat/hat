@@ -32,8 +32,8 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # formats: remaining gaps sit outside the modifier engine
 
 # option engine breadth: flat scalar table, global-only read-back
+conf-syntax.sh                  # %if/%elif/%else/%endif config directives are not parsed (unknown command: %if), so source -n fails as tmux's would on a bad file
 format-variables.sh             # #{version} is the bare number but hat -V says "hat X", so the script's sed 's/^tmux //' leaves "hat 0.0.1" to compare against
-options-values.sh               # needs default-client-command (not yet live)
 
 # capture-pane (-p/-N/-e/-L/-S/-E/-J/-F/-H/-R) is implemented. A script that
 # asserts a tmux grid-storage detail libghostty-vt does not record stays

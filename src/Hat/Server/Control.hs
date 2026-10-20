@@ -138,6 +138,7 @@ replyLines = \case
     ROutput t -> [TE.encodeUtf8 t]
     RErr e -> [TE.encodeUtf8 e]
     RData bytes -> B8.lines bytes
+    RExitStatus _ -> []
 
 -- | Split input into its complete lines and the unterminated rest.
 splitInputLines :: ByteString -> ([ByteString], ByteString)

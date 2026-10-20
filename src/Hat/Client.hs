@@ -5,6 +5,7 @@ module Hat.Client
     , Autostart (..)  -- ^ re-exported for 'Main.connectOrStart'
     , runClient
     , runControl
+    , captureControl
     , ControlFlavour (..)
     , runControlMode
     , awaitEmptyLine
@@ -23,7 +24,7 @@ import Control.Exception
 import Control.Monad (forever, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Word (Word16)
 import Data.Text qualified as T
@@ -55,6 +56,7 @@ data ExitReason
         -- ^ server asked us to re-exec in place, naming the session to
         --   rejoin (when it knows it) and the MRU session history to carry
         --   back; see 'Main.attach'
+    | CommandsFinished Int  -- ^ the commands ran; exit with this status
     deriving (Eq, Show)
 
 versionMismatch :: Text
@@ -119,29 +121,34 @@ withHello v origin intent hist refuse body = do
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
 -- shell) run server-side to establish which session we render. @hist@ seeds
 -- @switch-client -l@ across a restart and is empty for a fresh attach.
-runClient :: Socket -> Autostart -> [[Text]] -> [Text] -> IO ExitReason
-runClient sock origin setup hist = do
+-- @answered@ runs once the server first answers.
+runClient :: Socket -> Autostart -> IO () -> [[Text]] -> [Text] -> IO ExitReason
+runClient sock origin answered setup hist = do
     inp <- probeTerminal stdInput
     out <- probeTerminal stdOutput
     case diagnoseTerminal inp out of
         Just msg -> pure (Rejected msg)
-        Nothing -> attachClient protocolVersion sock origin setup hist
+        Nothing -> attachClient protocolVersion sock origin answered setup hist
 
-attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> [Text] -> IO ExitReason
-attachClient v sock origin setup hist =
+attachClient
+    :: Word16 -> Socket -> Autostart -> IO () -> [[Text]] -> [Text] -> IO ExitReason
+attachClient v sock origin answered setup hist =
     withHello v origin (AttachIntent setup) hist Rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
-    awaitWelcome sock re legacyDialect
+    greeting <- recvMessage re
+    answered
+    awaitWelcome sock re legacyDialect greeting
 
 -- | Read the greeting, drawing in the dialect of the terminal the server
 -- says it opened ahead of it; a server that predates that says nothing.
-awaitWelcome :: Socket -> ReadEnd -> Dialect -> IO ExitReason
-awaitWelcome sock re d = do
-    greeting <- recvMessage re
+awaitWelcome
+    :: Socket -> ReadEnd -> Dialect -> Maybe (Inbound ServerToClient) -> IO ExitReason
+awaitWelcome sock re d greeting =
     case greeting of
         Just (Known (OpenedTerminal caps feats)) ->
             awaitWelcome sock re (dialectOf (termFromWire "" caps feats))
+                =<< recvMessage re
         Just (Known (Welcome _)) -> do
             dialect <- newIORef d
             -- withRawMode also owns the stdio buffering switch; see the
@@ -217,6 +224,7 @@ shuttle dialect cooked sock re = do
                 ReadStdin -> next
                 WriteStdout _ -> next
                 ControlExit {} -> pure SessionEnded
+                ExitStatus _ -> next
                 LockClient cmd -> do
                     d <- readIORef dialect
                     pausingInput pump (lockTerminal d cooked cmd)
@@ -376,40 +384,69 @@ sendStdin sock = do
         hPutStrLn stderr ("hat: reading standard input: " <> show e)
     sendMessage sock StdinEnd
 
--- | Send one command line and print the responses until the server
--- closes or answers. Used by @hat <command>@ from a shell.
-runControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
-runControl sock origin cmds = controlAt protocolVersion sock origin cmds
+-- | Where a command client's output goes: its text lines, and its raw
+-- standard-output bytes.
+data Output = Output
+    { line :: Text -> IO ()
+    , bytes :: B.ByteString -> IO ()
+    }
 
-controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
-controlAt v sock origin cmds =
+-- | Send one command line and print the responses until the server
+-- closes or answers. Used by @hat <command>@ from a shell. @answered@ runs
+-- once the server first answers.
+runControl :: Socket -> Autostart -> IO () -> [[Text]] -> IO ExitReason
+runControl sock origin answered =
+    controlAt protocolVersion sock origin answered Output
+        { line = B8.putStrLn . TE.encodeUtf8
+        , bytes = B.hPut stdout
+        }
+
+-- | 'runControl', handing back the commands' output instead of printing it.
+captureControl :: Socket -> Autostart -> [[Text]] -> IO (Either ExitReason B.ByteString)
+captureControl sock origin cmds = do
+    acc <- newIORef []
+    let keep bs = modifyIORef' acc (bs :)
+    r <- controlAt protocolVersion sock origin (pure ()) Output
+        { line = keep . (<> "\n") . TE.encodeUtf8
+        , bytes = keep
+        } cmds
+    case r of
+        SessionEnded -> Right . B.concat . reverse <$> readIORef acc
+        other -> pure (Left other)
+
+controlAt :: Word16 -> Socket -> Autostart -> IO () -> Output -> [[Text]] -> IO ExitReason
+controlAt v sock origin answered out cmds =
     withHello v origin ControlIntent [] Rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     -- A server exiting as we connect resets the connection: it never saw us.
     greeting <- recvMessage re `catch` \(_ :: IOException) -> pure Nothing
+    answered
     case greeting of
         Just (Known (Welcome _)) -> do
             sendMessage sock (Command cmds)
-            drain re
+            drain Nothing re
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
   where
-    drain re = do
+    drain status re = do
+        let next = drain status re
+            done = pure (maybe SessionEnded CommandsFinished status)
         m <- recvMessage re
         case m of
-            Nothing -> pure SessionEnded
-            Just (Known (Message t)) -> B8.putStrLn (TE.encodeUtf8 t) >> drain re
-            Just (Known (WriteStdout bs)) -> B.hPut stdout bs >> drain re
-            Just (Known ReadStdin) -> sendStdin re.sock >> drain re
+            Nothing -> done
+            Just (Known (Message t)) -> out.line t >> next
+            Just (Known (WriteStdout bs)) -> out.bytes bs >> next
+            Just (Known ReadStdin) -> sendStdin re.sock >> next
+            Just (Known (ExitStatus n)) -> drain (Just n) re
             Just (Known (ServerError e)) -> pure (Rejected e)
-            Just (Known CommandDone) -> pure SessionEnded
-            Just (Known Exited) -> pure SessionEnded
-            Just (Known _) -> drain re
-            Just (UnknownTag _) -> drain re
+            Just (Known CommandDone) -> done
+            Just (Known Exited) -> done
+            Just (Known _) -> next
+            Just (UnknownTag _) -> next
             Just (Malformed err) ->
                 pure (Rejected ("wire protocol error: " <> T.pack err
                     <> " — mismatched hat versions?"))

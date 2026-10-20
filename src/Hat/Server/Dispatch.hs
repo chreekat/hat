@@ -193,12 +193,12 @@ withCommandSource st path n act = do
 -- whose output goes nowhere. Under 'ParseOnly' nothing runs.
 loadCommandFile :: ServerState -> Maybe Client -> FileLoad -> FilePath -> Text -> IO [Reply]
 loadCommandFile st mclient load path contents = case parseConfigLines contents of
-    Left (n, err) -> [] <$ cause n (parseErrorLine err)
+    Left (n, err) -> [RExitStatus 1] <$ cause n (parseErrorLine err)
     Right cmds -> do
         bad <- listToMaybe . catMaybes <$>
             mapM (\(n, argv) -> fmap (n,) <$> unknownCommand st argv) cmds
         case (bad, load) of
-            (Just (n, e), _) -> [] <$ cause n e
+            (Just (n, e), _) -> [RExitStatus 1] <$ cause n e
             (Nothing, ParseOnly) -> pure []
             (Nothing, RunFile) -> fmap concat . forM cmds $ \(n, argv) -> do
                 replies <- withCommandSource st path n (runArgv st mclient argv)
@@ -936,15 +936,16 @@ cmdRunShell st mclient args
         let job = runShellJob cmd dir ("-E" `elem` flags)
         if waits
             then do
-                ls <- outsideCommandBatch st (pause >> job)
-                case (mpane, mclient) of
+                (ls, status) <- outsideCommandBatch st (pause >> job)
+                shown <- case (mpane, mclient) of
                     (Just p, _) -> [] <$ unless (null ls) (viewModeAdd st p ViewParsed ls)
                     (Nothing, Just c)
                         | c.role == Control || isJust c.control -> pure (map ROutput ls)
                         | otherwise -> [] <$ unless (null ls) (viewToClient st c ViewParsed ls)
                     (Nothing, Nothing) -> pure []
+                pure (shown <> [RExitStatus status])
             else [] <$ forkIO (do
-                ls <- pause >> job
+                (ls, _) <- pause >> job
                 unless (null ls) $ do
                     mp <- maybe (backgroundPane st mclient) (pure . Just) mpane
                     forM_ mp $ \p -> viewModeAdd st p ViewParsed ls)
@@ -959,8 +960,9 @@ cmdRunShell st mclient args
         _ -> Nothing
 
 -- | Run a @run-shell@ command to its end: its output lines (its errors too
--- under @-E@), then tmux's word on a failure.
-runShellJob :: Text -> FilePath -> Bool -> IO [Text]
+-- under @-E@), then tmux's word on a failure; and its exit status, a
+-- signal's as 128 plus its number.
+runShellJob :: Text -> FilePath -> Bool -> IO ([Text], Int)
 runShellJob cmd dir withStderr = do
     (r, w) <- createPipe
     devnull <- openFile "/dev/null" ReadWriteMode
@@ -975,12 +977,12 @@ runShellJob cmd dir withStderr = do
     let text = TE.decodeUtf8With TEE.lenientDecode out
         -- a last line with no newline is a line too
         ls = if T.null text then [] else T.splitOn "\n" (fromMaybe text (T.stripSuffix "\n" text))
-        failure = case code of
-            ExitSuccess -> []
+        (failure, status) = case code of
+            ExitSuccess -> ([], 0)
             ExitFailure n
-                | n < 0 -> ["'" <> cmd <> "' terminated by signal " <> tshow (negate n)]
-                | otherwise -> ["'" <> cmd <> "' returned " <> tshow n]
-    pure (ls <> failure)
+                | n < 0 -> (["'" <> cmd <> "' terminated by signal " <> tshow (negate n)], 128 - n)
+                | otherwise -> (["'" <> cmd <> "' returned " <> tshow n], n)
+    pure (ls <> failure, status)
 
 -- | Where a job runs (tmux's @server_client_get_cwd@): a command client's
 -- own directory, else the target session's.

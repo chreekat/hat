@@ -1734,6 +1734,41 @@ spec = parallel $ do
         (code, err) `shouldBe` (ExitSuccess, "")
         ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
 
+    it "new-session -A attaches a fresh client to the session a bare attach picks" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "-s", "first"]
+        _ <- hatCtl h ["new-session", "-d", "-s", "second"]
+        c <- startClientArgs h ["new-session", "-A"]
+        awaitScreen c "[first]"
+
+    it "a bare hat runs default-client-command" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "-s", "first"]
+        _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F #S"]
+        hatCtl h [] `shouldReturn` (ExitSuccess, "first\n", "")
+
+    it "a bare hat that starts the server runs its config's default-client-command" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "set -g default-client-command 'new-session -s fromconf'\n"
+        c <- startClientArgs h ["-f", confPath]
+        awaitScreen c "[fromconf]"
+
+    it "a command client exits with run-shell's status, a source-file failure's, and a popup's" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        hatCtl h ["run-shell", "exit 3"]
+            `shouldReturn` (ExitFailure 3, "'exit 3' returned 3\n", "")
+        hatCtl h ["run-shell", "exit 3", ";", "run-shell", "true"]
+            `shouldReturn` (ExitSuccess, "'exit 3' returned 3\n", "")
+        let confPath = h.home <> "/bad.conf"
+        writeFile confPath "no-such-command\n"
+        (code, _, _) <- hatCtl h ["source-file", confPath]
+        code `shouldBe` ExitFailure 1
+        (popupCode, _, _) <- hatCtl h ["display-popup", "-E", "exit 4"]
+        popupCode `shouldBe` ExitFailure 4
+
     it "remain-on-exit keeps an exited pane, dead, with its status" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h

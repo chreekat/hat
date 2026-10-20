@@ -4,8 +4,9 @@ module Main (main) where
 
 import Control.Concurrent (threadDelay)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import Network.Socket (Socket)
+import Network.Socket (Socket, close)
 import System.Directory (doesFileExist, findExecutable)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
@@ -16,7 +17,7 @@ import System.Process
     , getProcessExitCode, proc )
 
 import Hat.Client
-import Hat.Command.Parser (parseArgv)
+import Hat.Command.Parser (parseArgv, parseCommandLine)
 import Hat.Debug (prepareDebugSocket)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
@@ -137,13 +138,45 @@ clientMain cli = do
     case cli.controlMode of
         Just flavour -> controlMode path cli.configFile flavour
             (if null cmds then [["new-session"]] else cmds)
-        Nothing -> case cmdArgs of
-            [] -> attach path cli.configFile [] hist
-            ["attach"] -> attach path cli.configFile [] hist
-            ["attach-session"] -> attach path cli.configFile [] hist
-            _ -> case terminalMode cmds of
-                GrabsTerminal -> attach path cli.configFile cmds hist
-                FireAndForget -> control path cli.configFile cmds
+        Nothing
+            | null cmdArgs -> defaultClientCommand path cli.configFile
+            | otherwise -> runCommandLine path cli.configFile (pure ()) hist cmds
+
+-- | Run a command line from the shell: attach for one that grabs the
+-- terminal, else run it as a command client. @answered@ runs once the
+-- server first answers.
+runCommandLine :: FilePath -> Maybe FilePath -> IO () -> [T.Text] -> [[T.Text]] -> IO ()
+runCommandLine path mconfig answered hist cmds = case cmds of
+    [[verb]] | verb `elem` ["attach", "attach-session"] ->
+        attach path mconfig answered [] hist
+    _ -> case terminalMode cmds of
+        GrabsTerminal -> attach path mconfig answered cmds hist
+        FireAndForget -> control path mconfig answered cmds
+
+-- | A bare @hat@: run the server's @default-client-command@, as tmux's
+-- server does for a client that sent no command. The client asks for it
+-- itself, since its hello cannot say the command was left out, and asks as
+-- a command client the server holds until its config has loaded, so even a
+-- server this starts answers with its config's value. That connection
+-- stays open until the server answers the next, so a server it started
+-- cannot exit idle in between. A server too old to know the option is
+-- attached to as a bare @hat@ always did.
+defaultClientCommand :: FilePath -> Maybe FilePath -> IO ()
+defaultClientCommand path mconfig = do
+    (sock, origin) <- connectOrStart path mconfig
+    r <- captureControl sock origin
+        [["show-options", "-gv", "default-client-command"]]
+    let release = close sock
+    case r of
+        Right out -> case parseCommandLine (TE.decodeUtf8Lenient out) of
+            Right cmds -> runCommandLine path mconfig release [] cmds
+            Left e -> do
+                hPutStrLn stderr ("hat: default-client-command: " <> T.unpack e)
+                exitFailure
+        Left (Rejected _) -> attach path mconfig release [] []
+        Left _ -> do
+            hPutStrLn stderr "hat: server exited unexpectedly"
+            exitFailure
 
 -- | Pull the internal @--reattach-hist NAME@ flags (repeated, one per MRU
 -- session) out of a restarting client's argv, returning the names
@@ -173,8 +206,8 @@ controlMode path mconfig flavour setup = do
             exitWith (ExitFailure 1)
         Left _ -> exitWith (ExitFailure 1)
 
-attach :: FilePath -> Maybe FilePath -> [[T.Text]] -> [T.Text] -> IO ()
-attach path mconfig setup hist = do
+attach :: FilePath -> Maybe FilePath -> IO () -> [[T.Text]] -> [T.Text] -> IO ()
+attach path mconfig answered setup hist = do
     -- Attaching from inside a pane of the *same* server ($TMUX names its
     -- socket) would render the session inside itself. Refuse, like tmux.
     -- Attaching to a different server, and control commands (list-sessions,
@@ -187,10 +220,12 @@ attach path mconfig setup hist = do
             exitFailure
         _ -> pure ()
     (sock, origin) <- connectOrStart path mconfig
-    reason <- runClient sock origin setup hist
+    reason <- runClient sock origin answered setup hist
     case reason of
         Detached -> putStrLn "[detached]"
         SessionEnded -> putStrLn "[exited]"
+        -- Only a command client's commands finish.
+        CommandsFinished _ -> putStrLn "[exited]"
         RestartRequested target hist' -> restartClient path mconfig target hist'
         ServerDied -> do
             hPutStrLn stderr "hat: server connection lost"
@@ -216,8 +251,8 @@ restartClient path mconfig msess hist = do
             <> concatMap (\n -> ["--reattach-hist", T.unpack n]) hist
     executeFile target False argv Nothing
 
-control :: FilePath -> Maybe FilePath -> [[T.Text]] -> IO ()
-control path mconfig cmds = do
+control :: FilePath -> Maybe FilePath -> IO () -> [[T.Text]] -> IO ()
+control path mconfig answered cmds = do
     -- A list holding any session-creating command starts the server, like
     -- tmux (so @set -g … \; new -d@ works); anything else against a dead
     -- server is an error.
@@ -235,7 +270,7 @@ control path mconfig cmds = do
             exitFailure
         Left (ConnectFailed why) -> unreachable path why
         Right (sock, origin) -> do
-            reason <- runControl sock origin cmds
+            reason <- runControl sock origin answered cmds
             case reason of
                 -- Bare, like tmux: scripts match on the exact error text
                 -- (e.g. @duplicate session: NAME@), so no @hat: @ prefix.
@@ -245,6 +280,7 @@ control path mconfig cmds = do
                 ServerDied -> do
                     hPutStrLn stderr "hat: server exited unexpectedly"
                     exitFailure
+                CommandsFinished n | n /= 0 -> exitWith (ExitFailure n)
                 _ -> pure ()
 
 -- | Connect, spawning the server first if none is running. The origin says
