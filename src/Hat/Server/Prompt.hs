@@ -219,7 +219,7 @@ emacsKey _history st key = case key.name of
     "M-b"    -> Editing (moveTo (backwardWordIx st.input st.cursor) st)
     "M-f"    -> Editing (moveTo (forwardWordIx st.input st.cursor) st)
     "C-k"    -> Editing (killToEnd st)
-    "C-u"    -> Editing (killToStart st)
+    "C-u"    -> Editing st { input = "", cursor = 0 }
     "C-w"    -> Editing (killWordBack st)
     "M-d"    -> Editing (killWordForward st)
     "C-y"    -> Editing (insert st.killed st)
@@ -368,13 +368,6 @@ killToEnd st
     (before, after) = T.splitAt st.cursor st.input
 
 -- | Delete from the start of the line to the cursor, saving the kill.
-killToStart :: PromptState -> PromptState
-killToStart st
-    | st.cursor <= 0 = st
-    | otherwise = st { input = after, killed = before, cursor = 0 }
-  where
-    (before, after) = T.splitAt st.cursor st.input
-
 -- | Kill from the previous word boundary to the cursor.
 killWordBack :: PromptState -> PromptState
 killWordBack st
