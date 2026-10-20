@@ -6,6 +6,9 @@
 module Hat.Server.ModeTree
     ( Item (..)
     , NameAlign (..)
+    , Tagging (..)
+    , PreviewFrom (..)
+    , PreviewHeight (..)
     , Line (..)
     , buildLines
     , listHeight
@@ -58,7 +61,24 @@ data Item = Item
     , fuzzyName     :: !(Maybe Text)
         -- ^ its part of the path @/@ fuzzily matches; 'Nothing' for an item
         --   shown only around its matching neighbours
+    , tagging       :: !Tagging
+    , previewFrom   :: !PreviewFrom
     }
+    deriving (Eq, Show)
+
+-- | Whether @t@ tags an item (tmux's @mode_tree_no_tag@).
+data Tagging = Taggable | Untaggable
+    deriving (Eq, Show)
+
+-- | Whose preview and title the box shows while an item is selected: its
+-- own, or its parent's (tmux's @mode_tree_draw_as_parent@).
+data PreviewFrom = OwnPreview | ParentPreview
+    deriving (Eq, Show)
+
+-- | How a mode divides its screen between the list and the preview: in
+-- proportion (tmux's default), or with the preview a fixed number of rows
+-- (a mode's height callback).
+data PreviewHeight = ProportionalPreview | FixedPreview !Int
     deriving (Eq, Show)
 
 -- | How an item's name lines up with its siblings' (tmux's @mode_tree_align@).
@@ -102,14 +122,15 @@ buildLines st = go 0 [] False
 
 -- | The list's height on a screen @sy@ rows tall holding @n@ lines (tmux's
 -- @mode_tree_set_height@): the rest goes to the preview.
-listHeight :: Int -> Int -> PreviewSize -> Int
-listHeight sy n preview = keepTwo $ case preview of
-    PreviewOff -> sy
-    PreviewNormal ->
+listHeight :: PreviewHeight -> Int -> Int -> PreviewSize -> Int
+listHeight how sy n preview = keepTwo $ case (preview, how) of
+    (PreviewOff, _) -> sy
+    (_, FixedPreview rows) -> if rows < sy then sy - rows else sy
+    (PreviewNormal, _) ->
         let h0 = (sy `div` 3) * 2
             h1 = if h0 > n then sy `div` 2 else h0
         in if h1 < 10 then sy else h1
-    PreviewBig ->
+    (PreviewBig, _) ->
         let h0 = sy `div` 4
         in max 2 (if h0 > n then n else h0)
   where
@@ -174,10 +195,11 @@ treeKey height sortSeq roots ls st key
           | key `elem` ["?", "/", "C-s"] ->
               stay st { modePrompt = Just (linePrompt "(search) " "" (PromptSearch st.current)) }
           | key `elem` ["K", "S-Up", "J", "S-Down"] -> pass
-        "t" -> stay toggleTag
+        "t" | cur.item.tagging == Untaggable -> stay st
+            | otherwise -> stay toggleTag
         "T" -> stay st { tagged = filter (`notElem` visibleTags) st.tagged }
         "C-t" -> stay st
-            { tagged = [ l.item.tag | l <- ls, l.depth == 0 ]
+            { tagged = [ l.item.tag | l <- ls, tagAll l ]
                 <> filter (`notElem` visibleTags) st.tagged }
         "O" -> stay st { sort = st.sort { order = nextOrder st.sort.order } }
         "r" -> stay st { sort = st.sort { reversed = not st.sort.reversed } }
@@ -226,6 +248,10 @@ treeKey height sortSeq roots ls st key
         | otherwise = st
             { tagged = cur.item.tag : filter (`notElem` (cur.ancestors <> subtree cur.item)) st.tagged }
     subtree i = concatMap (\c -> c.tag : subtree c) i.children
+    -- tmux's C-t: the top items, or those under an untaggable parent.
+    tagAll l = case l.ancestors of
+        [] -> l.item.tagging == Taggable
+        p : _ -> any (\pl -> pl.item.tag == p && pl.item.tagging == Untaggable) ls
     nextOrder o = case dropWhile (/= o) sortSeq of
         _ : o' : _ -> o'
         _ -> fromMaybe o (listToMaybe sortSeq)
@@ -391,6 +417,7 @@ data DrawInput = DrawInput
     , borderStyle :: !Cell.Style   -- ^ @tree-mode-border-style@
     , promptStyle :: !Cell.Style   -- ^ @message-style@
     , promptTop   :: !Bool         -- ^ the prompt sits on the top row
+    , previewHeight :: !PreviewHeight
     , sortShown   :: !Bool         -- ^ the mode sorts (shows its order)
     , viewName    :: !(Maybe Text)
     , help        :: ![Text]       -- ^ the key help's lines, expanded ('helpFormats')
@@ -421,7 +448,7 @@ drawTree inp st = TreeDraw
     w = fromIntegral inp.size.cols
     sy = fromIntegral inp.size.rows
     ls = inp.lines
-    h = listHeight sy (length ls) st.preview
+    h = listHeight inp.previewHeight sy (length ls) st.preview
     blankRow = V.replicate w Cell.blankCell
     grid0 = V.replicate sy blankRow
     keylen = maximum (0 : [ T.length k + 3 | Just k <- map (.key) ls ])
@@ -476,7 +503,10 @@ drawTree inp st = TreeDraw
     boxRows = sy - h
     showBox = st.preview /= PreviewOff && not (null ls)
         && sy > 4 && h >= 2 && boxRows > 4 && w > 4
-    selectedItem = (ls !! st.currentIx).item
+    selectedLine = ls !! st.currentIx
+    selectedItem = case (selectedLine.item.previewFrom, selectedLine.ancestors) of
+        (ParentPreview, p : _) | pl : _ <- filter ((== p) . (.item.tag)) ls -> pl.item
+        _ -> selectedLine.item
     withBox g
         | not showBox = g
         | otherwise = stamp h 1 titleCells

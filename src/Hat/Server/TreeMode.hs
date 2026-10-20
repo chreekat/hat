@@ -310,7 +310,8 @@ sessionItems st ts mfilter = do
             pure $ Just Item
                 { tag = TagSession sess.id, name = nm, text = Just text
                 , children = wins, startExpanded = True, align = AlignNone
-                , searchText = [nm], fuzzyName = Just nm }
+                , searchText = [nm], fuzzyName = Just nm
+                , tagging = Taggable, previewFrom = OwnPreview }
     windowItem sess ix win = do
         panes <- atomically (windowPanes win)
         pinfos <- forM panes $ \p -> do
@@ -334,14 +335,16 @@ sessionItems st ts mfilter = do
                         { tag = TagPane p.id, name = tshow pix, text = Just text
                         , children = [], startExpanded = True, align = AlignRight
                         , searchText = [Map.findWithDefault "" "pane_current_command" env]
-                        , fuzzyName = Nothing }
+                        , fuzzyName = Nothing
+                        , tagging = Taggable, previewFrom = OwnPreview }
             wenv <- windowFormatEnv st sess ix win
             text <- expandFormat st (Map.union (levelVars WindowLevel) wenv) ts.itemFormat
             wname <- readTVarIO win.name
             pure $ Just Item
                 { tag = TagWinlink sess.id ix, name = tshow ix, text = Just text
                 , children = paneItems, startExpanded = True, align = AlignRight
-                , searchText = [wname], fuzzyName = Just wname }
+                , searchText = [wname], fuzzyName = Just wname
+                , tagging = Taggable, previewFrom = OwnPreview }
 
 -- | Which level of the session tree an item stands for.
 data ItemLevel = SessionLevel | WindowLevel | PaneLevel
@@ -374,7 +377,8 @@ bufferItems st ts mfilter = do
                 { tag = TagBuffer pb.order, name = pb.name, text = Just text
                 , children = [], startExpanded = True, align = AlignNone
                 , searchText = [pb.name, TE.decodeUtf8Lenient pb.body]
-                , fuzzyName = Just pb.name }
+                , fuzzyName = Just pb.name
+                , tagging = Taggable, previewFrom = OwnPreview }
 
 clientItems :: ServerState -> TreeState -> Maybe Text -> IO [Item]
 clientItems st ts mfilter = do
@@ -399,7 +403,8 @@ clientItems st ts mfilter = do
                     pure $ Just Item
                         { tag = TagClient c.id, name = nm, text = Just text
                         , children = [], startExpanded = True, align = AlignNone
-                        , searchText = [nm], fuzzyName = Just nm }
+                        , searchText = [nm], fuzzyName = Just nm
+                        , tagging = Taggable, previewFrom = OwnPreview }
 
 -- | Clients attached to a live session, the ones client-mode lists.
 attachedClients :: ServerState -> IO [Client]
@@ -442,7 +447,7 @@ layoutTree st size ts = do
     ls <- forM (zip [0 ..] ls0) $ \(i, l) -> do
         k <- lineKey i l
         pure l { key = k }
-    let h = listHeight (fromIntegral size.rows) (length ls) ts.preview
+    let h = listHeight ProportionalPreview (fromIntegral size.rows) (length ls) ts.preview
     pure (items, ls, noMatches, h, settle h ls ts)
   where
     lineKey i l = case ts.keyFormat of
@@ -503,6 +508,7 @@ drawTreeMode st ts size = do
             , promptStyle = Cell.defaultStyle
                 { Cell.fg = Cell.Indexed 0, Cell.bg = Cell.Indexed 3 }
             , promptTop = opts.statusPosition == StatusTop
+            , previewHeight = ProportionalPreview
             , sortShown = True
             , viewName = case (ts.kind, ts.view) of
                 (BufferList, _) -> Nothing
