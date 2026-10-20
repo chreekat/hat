@@ -11,6 +11,7 @@ import Hat.Bench.RtsStatsSpec qualified
 import Hat.Client.DrawSpec qualified
 import Hat.Client.TerminfoSpec qualified
 import Hat.Client.TtySpec qualified
+import Hat.ClientSpec qualified
 import Hat.Command.ParserSpec qualified
 import Hat.DebugSpec qualified
 import Hat.FuzzyMatchSpec qualified
@@ -123,6 +124,7 @@ main = hspec $ parallel $ do
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
     describe "Hat.Client.Terminfo" Hat.Client.TerminfoSpec.spec
     describe "Hat.Client.Tty" Hat.Client.TtySpec.spec
+    describe "Hat.Client" Hat.ClientSpec.spec
     describe "Hat.Server.Restore" Hat.Server.RestoreSpec.spec
     describe "Hat.Server.Session" Hat.Server.SessionSpec.spec
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
