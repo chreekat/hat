@@ -287,7 +287,7 @@ parseMods ctx depth = go []
     singles = "labdnwETSWPOVL!<>A" :: String
     doubles = ["||", "&&", "!!", "!=", "==", "<=", ">="] :: [Text]
     -- tmux's, then hat's own (see Note [Hat's format modifiers])
-    argful = "ImCLNPSOVst=pReqWcA" <> "~" :: String
+    argful = "ImCLNPSOVst=pReqWcA" <> "~J" :: String
     isEndT t = case T.uncons t of
         Just (c, _) -> c == ';' || c == ':'
         Nothing -> False
@@ -371,6 +371,7 @@ data ModState = ModState
     , clientQ :: Maybe Text  -- ^ @I@: which of @c@, @f@, @e@ it asks
     , cycleCount :: Maybe Int  -- ^ @A@: periods per animation frame
     , homeDir :: Maybe Text  -- ^ @~@: the home directory to abbreviate
+    , collapse :: Maybe (Int, Text)  -- ^ @J@: the width and separator
     , unimpl :: Maybe Text
     }
 
@@ -383,7 +384,7 @@ emptyModState = ModState
     , timeM = Nothing, quoteM = Nothing, expandF = False, expandTimeF = False
     , nameK = Nothing, loopK = Nothing, sortO = OrderList, sortR = False
     , repeatF = False, clientQ = Nothing, cycleCount = Nothing
-    , homeDir = Nothing, unimpl = Nothing
+    , homeDir = Nothing, collapse = Nothing, unimpl = Nothing
     }
 
 collectMods :: [Mod] -> ModState
@@ -416,6 +417,9 @@ collectMods = List.foldl' step emptyModState
             (a1 : _) -> numDefault 1 100 1 a1
             [] -> 1) }
         "~" -> st { homeDir = Just (arg0 m) }
+        "J" -> st { collapse = Just (case m.margs of
+            (w : restA) -> (numDefault 0 10000 0 w, fromMaybe "" (listToMaybe restA))
+            [] -> (0, "")) }
         "O" -> st { unimpl = Just "O" }
         "V" -> st { unimpl = Just "V" }
         "w" -> st { widF = True }
@@ -603,6 +607,8 @@ replaceKey ctx depth key = postOps <$> value
         | Just nm <- ms.unimpl =
             Just ("<format modifier '" <> nm <> "' unimplemented>")
         | Just periods <- ms.cycleCount = Just (cycleVal periods)
+        | Just (width, sep) <- ms.collapse =
+            Just (collapseJoin width sep (filter (not . T.null) (map exp1 (splitAllTop copy))))
         | ms.literalF = Just (unescape copy)
         | ms.charF = Just charVal
         | Just cm <- ms.colourM = Just (colourVal cm)
@@ -800,6 +806,8 @@ replaceKey ctx depth key = postOps <$> value
 --
 --   #{~/home:key}       the value with a leading home directory as ~
 --                       ('abbreviateHome')
+--   #{J/width/sep:a,b}  the expanded, non-empty parts joined by sep,
+--                       collapsed from the left to fit ('collapseJoin')
 
 -- | The path with @home@ (exactly, or as a leading directory) written as
 -- @~@. An empty @home@ abbreviates nothing.
@@ -809,6 +817,29 @@ abbreviateHome home path
     | path == home = "~"
     | Just rest <- T.stripPrefix (home <> "/") path = "~/" <> rest
     | otherwise = path
+
+-- | The parts joined by the separator, within @width@ characters: the
+-- leftmost parts drop one at a time; the one before the last first
+-- shortens from the left at @/@ (@…\/b\/c@) before it drops; the last
+-- stands whole even over the width.
+collapseJoin :: Int -> Text -> [Text] -> Text
+collapseJoin _ _ [] = ""
+collapseJoin width sep parts =
+    case filter ((<= width) . T.length) candidates of
+        (t : _) -> t
+        [] -> final
+  where
+    final = last parts
+    leading = init parts
+    candidates =
+        [ T.intercalate sep (ps <> [final]) | ps <- List.tails leading, not (null ps) ]
+            <> [ s <> sep <> final | s <- shortenings ]
+    shortenings = case reverse leading of
+        [] -> []
+        (nearest : _) ->
+            [ "…/" <> T.intercalate "/" segs
+            | segs <- drop 1 (List.tails (T.splitOn "/" nearest))
+            , not (null segs) ]
 
 exprOps :: [(Text, Double -> Double -> Double)]
 exprOps =
