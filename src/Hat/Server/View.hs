@@ -51,7 +51,7 @@ import Hat.Server.FormatEnv
      clientTheme, demanding, expandAt, formatCtxFor, frameMemo, keepMemo,
      memoExpander, Expand (..), sessionFormatEnv, sessionVars, windowOwnEnv, windowOwnVars)
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
-import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus)
+import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus, zoomHidesChrome)
 import Hat.Server.Locate (locatePane, paneIndexOf)
 import Hat.Server.PaneColours (cursorColourOf, paneDefaultColours, panePalette, paneStyleOption)
 import Hat.Server.Scene
@@ -188,11 +188,11 @@ renderOnce st client = do
     let (rowOff, mStatusRowIx) =
             statusLayout sopts.statusPosition sopts.statusLines
                 (fromIntegral csize.rows)
-    (frame, origins, cursor, viewOrigin, panned) <- case view of
+    (frame, origins, cursor, panned) <- case view of
         Nothing -> pure
             ( blankFrame csize
             , V.replicate (fromIntegral csize.rows) VolatileRow
-            , (Pos 0 0, False), Pos 0 0, False )
+            , (Pos 0 0, False), False )
         Just (sess, win, rects, (eff, floats), ps, active) -> do
             -- Snapshot each visible pane once; its cells and its cursor both
             -- come from that one read.
@@ -310,40 +310,7 @@ renderOnce st client = do
                             ( let q = toView p in q { row = q.row + rowOff }
                             , visible && not (underOverlay local) )
                     _ -> (Pos 0 0, False)
-            pure (withStatus, statusOrigins, cur, o, moved)
-    -- The display-panes overlay stamps each pane's number over its rect.
-    mdpanes <- readTVarIO client.displayPanes
-    (frame'', origins'') <- case (mdpanes, view) of
-        (Just _, Just (sess, win, rects, _, ps, active)) -> do
-            th <- clientTheme st
-            wopts <- resolveForWindowIO st sess win
-            wix <- atomically (readTVar sess.currentIx)
-            let shiftR r = r { startRow = r.startRow + rowOff - viewOrigin.row
-                             , endRow = r.endRow + rowOff - viewOrigin.row
-                             , startCol = r.startCol - viewOrigin.col
-                             , endCol = r.endCol - viewOrigin.col }
-                colourFor pid = fromMaybe Cell.DefaultColor $ join $ colourValue th $
-                    optionText (if pid == active then "display-panes-active-colour"
-                                else "display-panes-colour") wopts
-                fmt = optionText "display-panes-format" wopts
-            stamps <- fmap concat $ forM rects $ \(pid, rect0) -> case Map.lookup pid ps of
-                Nothing -> pure []
-                Just pane -> do
-                    n <- paneIndexOf st win pane
-                    let r = shiftR rect0
-                        sx = r.endCol - r.startCol
-                        fgc = Cell.defaultStyle { Cell.fg = colourFor pid }
-                    mformat <- if T.null fmt then pure Nothing else do
-                        expanded <- expand.format
-                            (FormatTarget (InPane sess wix win n pane) Map.empty) fmt
-                        pure (Just (drawnCells (formatDraw th fgc expanded) sx))
-                    pure [ (Pos (p.row + r.startRow) (p.col + r.startCol), cell)
-                         | (p, cell) <- DisplayPanes.panesStamp (colourFor pid) n
-                             mformat sx (r.endRow - r.startRow) ]
-            pure ( DisplayPanes.stampCells stamps frame
-                 , List.foldl' (\o (_, rect0) -> volatileRows (shiftR rect0) o)
-                     origins rects )
-        _ -> pure (frame, origins)
+            pure (withStatus, statusOrigins, cur, moved)
     -- A menu's screen has no cursor.
     menuShown <- case view of
         Just (_, win, _, _, _, _) -> isJust <$> readTVarIO win.menu
@@ -354,8 +321,8 @@ renderOnce st client = do
     (frame3, origins3, cursor'') <- case (mpopup, view) of
         (Just p, Just (sess, win, _, _, _, _)) -> do
             (grid, rect, cur) <- popupView st expand sess win p
-            pure (overlayGrid frame'' rect grid, volatileRows rect origins'', cur)
-        _ -> pure (frame'', origins'', if menuShown then (fst cursor, False) else cursor)
+            pure (overlayGrid frame rect grid, volatileRows rect origins, cur)
+        _ -> pure (frame, origins, if menuShown then (fst cursor, False) else cursor)
     keepMemo client memo
     old <- readIORef client.lastFrame
     oldOrigins <- readIORef client.lastOrigins
@@ -456,15 +423,6 @@ popupView st expand sess win p = do
                     , startCol = ps.px, endCol = ps.px + ps.sx }
         (cx, cy) = popupCursor ps (scr.cursor.col, scr.cursor.row)
     pure (grid, rect, (Pos { row = cy, col = cx }, scr.cursorVisible))
-
--- | The cells a drawing writes into an @n@-cell row, by column: what it
--- leaves untouched is no cell at all.
-drawnCells :: (V.Vector Cell.Cell -> V.Vector Cell.Cell) -> Int -> [(Int, Cell.Cell)]
-drawnCells draw n =
-    [ (c, cell) | (c, cell) <- zip [0 ..] (V.toList (draw untouched)), cell /= hole ]
-  where
-    hole = Cell.glyphCell '\0' Cell.defaultStyle
-    untouched = V.replicate n hole
 
 -- | The cursor of an open prompt: its command-mode one in vi command mode.
 promptCursorOf :: PromptState -> PromptCursor
@@ -638,8 +596,9 @@ chromeInputs
     -> Maybe WindowMenu -> STM (SceneInput, ChromeLook, [ChromePane])
 chromeInputs st windowStyle sess win eff sceneArea rects floats paneOpts overlayStyles active mmenu = do
     wopts <- resolveForWindow st sess win
-    status <- windowPaneStatus st win
-    (side, bars) <- paneScrollbars st win
+    hidden <- zoomHidesChrome win
+    status <- if hidden then pure PaneStatusOff else windowPaneStatus st win
+    (side, bars) <- (if hidden then fmap (const Map.empty) else id) <$> paneScrollbars st win
     lay <- readTVar win.layout
     ps <- readTVar win.panes
     marked <- readTVar st.markedPane
@@ -836,6 +795,10 @@ paneView st pane = do
                 , cursor = cur
                 , cursorVisible = isJust cur
                 }
+        Just (PanesMode ps) -> do
+            cells <- DisplayPanes.drawPanesMode st pane ps
+            pure PaneView
+                { cells, rowGens = Nothing, cursor = Nothing, cursorVisible = False }
         Just (CopyMode pm) -> do
             look <- copyLook st pane
             let (cells, cur) = CopyMode.copyView look pm

@@ -197,7 +197,6 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True     -- outerFocused
         <*> newTVarIO ImportEnv
@@ -248,7 +247,6 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True
         <*> newTVarIO ImportEnv
@@ -2257,63 +2255,6 @@ spec = do
                 `shouldReturn` "\ESC[27;5;9~"
             ((.raw) <$> reencodeKey always (Just emu) (Key "C-a" "\SOH"))
                 `shouldReturn` "\SOH"
-
-    describe "display-panes" $ do
-        let arm :: ServerState -> Client -> [Text] -> IO [Reply]
-            arm st client args =
-                runArgv st (Just client) ("display-panes" : args)
-            -- a window of two stub panes, the first active
-            twoPanes sess = do
-                win <- addWindow sess 0
-                p0 <- stubPane 0
-                p1 <- stubPane 1
-                atomically $ writeTVar win.panes
-                    (Map.fromList [(PaneId 0, p0), (PaneId 1, p1)])
-                pure win
-        it "arms the issuing client's overlay, template defaulted" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client [] `shouldReturn` []
-            Just dp <- readTVarIO client.displayPanes
-            dp.template `shouldBe` "select-pane -t '%%'"
-            dp.hold `shouldBe` PanesClose
-            dp.deadline `shouldSatisfy` isJust
-        it "-d 0 holds until a key; -N survives non-selecting keys" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client ["-N", "-d", "0"] `shouldReturn` []
-            Just dp <- readTVarIO client.displayPanes
-            dp.deadline `shouldBe` Nothing
-            dp.hold `shouldBe` PanesHold
-        it "rejects a malformed -d delay loudly" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            [RErr e] <- arm st client ["-d", "soon"]
-            e `shouldSatisfy` T.isInfixOf "bad delay"
-        it "rejects tmux's panes-mode flags loudly" $ do
-            (st, sess) <- seedSession "/"
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client ["-k"]
-                `shouldReturn` [RErr "command display-panes: unknown flag -k"]
-            arm st client ["-t", "%0"]
-                `shouldReturn` [RErr "display-panes -t: not supported"]
-            readTVarIO client.displayPanes `shouldReturn` Nothing
-        it "a digit selects the pane showing that number and closes" $ do
-            (st, sess) <- seedSession "/"
-            win <- twoPanes sess
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client [] `shouldReturn` []
-            handleInput dispatch st client "1"
-            readTVarIO win.activeId `shouldReturn` PaneId 1
-            readTVarIO client.displayPanes `shouldReturn` Nothing
-        it "q dismisses without selecting" $ do
-            (st, sess) <- seedSession "/"
-            win <- twoPanes sess
-            client <- addClient st sess.id (Size 24 80) 1
-            arm st client [] `shouldReturn` []
-            handleInput dispatch st client "q"
-            readTVarIO win.activeId `shouldReturn` PaneId 0
-            readTVarIO client.displayPanes `shouldReturn` Nothing
 
     describe "input routing within a chunk" $ do
         let keyed = do

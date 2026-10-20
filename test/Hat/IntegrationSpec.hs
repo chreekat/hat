@@ -877,6 +877,21 @@ spec = parallel $ do
         _ <- awaitExit c
         pure ()
 
+    it "runs display-panes' template on the pane clicked in panes-mode" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        _ <- hatCtl h ["set", "-g", "mouse", "on"]
+        _ <- hatCtl h ["split-window", "-h"]
+        _ <- hatCtl h ["display-panes", "-d", "0", "set -g @picked %%"]
+        awaitTrue "panes-mode" $ do
+            (_, out, _) <- hatCtl h ["display-message", "-p", "#{pane_mode}"]
+            pure (out == "panes-mode\n")
+        typeInto c "\ESC[<0;5;5M"
+        awaitTrue "the clicked pane's template" $ do
+            (_, out, _) <- hatCtl h ["show", "-gv", "@picked"]
+            pure (out == "%0\n")
+
     it "opens a display-menu over the client's window and runs the item its key picks" $
         withHat hatBin $ \h -> do
         c <- startClient h

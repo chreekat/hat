@@ -307,7 +307,6 @@ fakeClient _ = do
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     popupVar <- newTVarIO Nothing
-    displayPanesVar <- newTVarIO Nothing
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
@@ -342,7 +341,6 @@ fakeClient _ = do
         , flash = flashVar
         , prompt = promptVar
         , popup = popupVar
-        , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
         , env = []

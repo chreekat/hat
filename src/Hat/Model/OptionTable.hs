@@ -610,7 +610,7 @@ optionTable =
         (KChoice ["12", "24", "12-with-seconds", "24-with-seconds"]) "24"
     -- tmux defaults to themered.
     , live $ scalar "display-panes-active-colour" WindowScope KColourString "red"
-    , notYet $ scalar "display-panes-border-style" WindowScope KStyle
+    , live $ scalar "display-panes-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
     -- tmux defaults to themeblue.
     , live $ scalar "display-panes-colour" WindowScope KColourString "blue"

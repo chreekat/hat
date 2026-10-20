@@ -50,6 +50,8 @@ module Hat.Model
     , topMode
     , paneInMode
     , modeName
+    , modeStacks
+    , modeHidesChrome
     , TreeState (..)
     , TreeKind (..)
     , TreeOrigin (..)
@@ -73,7 +75,8 @@ module Hat.Model
     , Markup (..)
     , Flash (..)
     , PanesKeyHold (..)
-    , DisplayPanesState (..)
+    , PanesState (..)
+    , PanesPreview (..)
     , PromptState (..)
     , PromptKind (..)
     , PromptWaiter (..)
@@ -520,6 +523,7 @@ data PaneMode
     = CopyMode !CopyModeData  -- ^ copy mode or view mode
     | ClockMode
     | TreeMode !TreeState
+    | PanesMode !PanesState  -- ^ @display-panes@
     deriving (Eq, Show)
 
 -- | The mode's name as @#{pane_mode}@ and the mode hooks report it.
@@ -533,6 +537,22 @@ modeName = \case
         SessionTree -> "tree-mode"
         BufferList -> "buffer-mode"
         ClientList -> "client-mode"
+    PanesMode _ -> "panes-mode"
+
+-- | Whether a mode may stay in its pane's stack under another (tmux's
+-- @WINDOW_MODE_NO_STACK@ unset); see 'Hat.Server.ModeStack.setPaneMode'.
+modeStacks :: PaneMode -> Bool
+modeStacks = \case
+    PanesMode _ -> False
+    _ -> True
+
+-- | Whether a mode's zoomed pane fills its whole window, its pane status
+-- line and scrollbar left out (tmux's @WINDOW_MODE_HIDE_PANE_STATUS@ and
+-- @WINDOW_MODE_HIDE_SCROLLBARS@); see 'Hat.Server.Resize.zoomHidesChrome'.
+modeHidesChrome :: PaneMode -> Bool
+modeHidesChrome = \case
+    PanesMode _ -> True
+    _ -> False
 
 -- | One entry of a pane's mode stack.
 data ModeEntry = ModeEntry
@@ -745,20 +765,34 @@ data Toast = Toast
 data Markup = MarkupStyled | MarkupLiteral
     deriving (Eq, Show)
 
--- | Whether a non-selecting key closes the @display-panes@ overlay
--- (default) or leaves it showing (@-N@); see
--- 'Hat.Server.DisplayPanes.panesKeyAction'.
+-- | Whether a key choosing no pane leaves panes-mode (default) or is
+-- ignored (@-N@); see 'Hat.Server.DisplayPanes.panesKeyAction'.
 data PanesKeyHold = PanesClose | PanesHold
     deriving (Eq, Show)
 
--- | The armed @display-panes@ overlay on one client; see
--- 'Hat.Server.DisplayPanes'.
-data DisplayPanesState = DisplayPanesState
-    { deadline :: !(Maybe Word64)
-        -- ^ monotonic ns, from 'Hat.Server.DisplayPanes.panesDeadline';
-        --   'Nothing' = until a key
-    , hold     :: !PanesKeyHold
-    , template :: !Text  -- ^ run on select, @%%@ = the chosen pane's id
+-- | @display-panes@'s panes-mode (tmux's @window-panes.c@): a picture of a
+-- window's panes, each numbered, drawn over the pane the mode holds. See
+-- "Hat.Server.DisplayPanes".
+data PanesState = PanesState
+    { sourceSession :: !SessionId
+        -- ^ the session the source window was found in; when it no longer
+        --   holds the window, 'session' is looked in instead
+    , sourceWindow  :: !WindowId   -- ^ the window drawn (@-s@, else the target's)
+    , session       :: !SessionId  -- ^ the target's session
+    , template      :: !Text       -- ^ run on a choice, @%%@ = the pane's id
+    , hold          :: !PanesKeyHold
+    , zoom          :: !ModeZoom
+    , preZoom       :: !(Maybe PanesPreview)
+    , shownAt       :: !Word64
+        -- ^ monotonic ns the mode was entered, telling this showing apart
+        --   from a later one for its timer
+    }
+    deriving (Eq, Show)
+
+-- | The mode's own pane as it looked before the mode zoomed it.
+data PanesPreview = PanesPreview
+    { cells  :: !(V.Vector (V.Vector Cell.Cell))
+    , cursor :: !(Maybe Pos)  -- ^ 'Nothing' when hidden
     }
     deriving (Eq, Show)
 
@@ -981,7 +1015,6 @@ data Client = Client
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
-    , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
     , popup     :: TVar (Maybe Popup)  -- ^ display-popup overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see

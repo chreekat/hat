@@ -61,7 +61,6 @@ mkClientWith cid = do
     flashV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
     popupV  <- newTVarIO Nothing
-    dpanesV <- newTVarIO Nothing
     focusV  <- newTVarIO True
     envImpV <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
@@ -82,7 +81,7 @@ mkClientWith cid = do
             , lastMouseMode = mouseModeVar
             , lastCursorColour = colourV, lastCursorShape = shapeVar
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
-            , popup = popupV, displayPanes = dpanesV
+            , popup = popupV
             , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "", term = "", ttyTerm = termV, createdAt = 0
             , stdinSource = NoStdin, control = Nothing

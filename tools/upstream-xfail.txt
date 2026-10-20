@@ -31,11 +31,9 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # hooks / set-hook / wait-for: gaps beyond the hook engine
 hooks-notify.sh                 # title stack (CSI 22/23 t) + client-* hooks
 
-# interactive mode-screens: choose-*/customize/display-panes/modal
+# interactive mode-screens: customize/modal
 customize-mode.sh               # customize-mode unimplemented
-display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
 modal-pane.sh                   # mouse half passes; needs the editor option and choose-buffer's e (the buffer in an editor in a modal pane), and customize-mode
-mode-kill.sh                    # copy-mode, choose-tree and choose-buffer -k pass; display-panes -k needs display-panes as a pane mode (window-panes.c)
 mode-mutation.sh                # customize-mode unimplemented; the other modes pass
 
 # copy-mode advanced motions/options

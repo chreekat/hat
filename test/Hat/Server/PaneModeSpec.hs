@@ -2,6 +2,7 @@
 -- real command table against an in-process server with real ptys.
 module Hat.Server.PaneModeSpec (spec) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad (forM_, void)
@@ -19,6 +20,7 @@ import Hat.Server (Reply (..))
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.PaneMode (dropModesForReload)
+import Hat.Server.DisplayPanes (drawPanesMode)
 import Hat.Server.TreeMode (drawTreeMode)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Pty qualified as Pty
@@ -191,6 +193,131 @@ spec = do
                     Just Cell.defaultStyle
                         { Cell.fg = Cell.Indexed 2, Cell.bg = Cell.Indexed 0 }
 
+    describe "panes-mode" $ do
+        let twoPanes st = do
+                run st ["new-session", "-d", "-s", "S", "-x", "80", "-y", "24", "cat"]
+                    `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "cat"] `shouldReturn` []
+                paneIds st "S:0"
+        it "display-panes zooms its pane into panes-mode until q" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                display st a "#{pane_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "panes-mode 1"]
+                run st ["send-keys", "-t", a, "q"] `shouldReturn` []
+                display st a "#{pane_in_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "0 0"]
+        it "-Z leaves the window unzoomed" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["display-panes", "-Z", "-d", "0", "-t", a] `shouldReturn` []
+                display st a "#{pane_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "panes-mode 0"]
+        it "a zoom the window already had outlives the mode" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["resize-pane", "-Z", "-t", a] `shouldReturn` []
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                run st ["send-keys", "-t", a, "q"] `shouldReturn` []
+                display st a "#{pane_in_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "0 1"]
+        it "a pane's number runs the template on it and leaves the mode" $
+            withServer $ \st -> do
+                [a, b] <- twoPanes st
+                run st ["display-panes", "-d", "0", "-t", a, "set -g @picked %%"]
+                    `shouldReturn` []
+                run st ["send-keys", "-t", a, "1"] `shouldReturn` []
+                display st a "#{pane_in_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "0 0"]
+                run st ["show", "-gv", "@picked"] `shouldReturn` [ROutput b]
+        it "selects the pane by default" $
+            withServer $ \st -> do
+                [a, b] <- twoPanes st
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                run st ["send-keys", "-t", a, "1"] `shouldReturn` []
+                display st "S:0" "#{pane_id}" `shouldReturn` [ROutput b]
+        it "any other key leaves the mode, unless -N" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["display-panes", "-N", "-d", "0", "-t", a] `shouldReturn` []
+                run st ["send-keys", "-t", a, "x", "7"] `shouldReturn` []
+                display st a "#{pane_mode}" `shouldReturn` [ROutput "panes-mode"]
+                run st ["send-keys", "-t", a, "Escape"] `shouldReturn` []
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                run st ["send-keys", "-t", a, "x"] `shouldReturn` []
+                display st a "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+        it "ends once its duration passes" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["display-panes", "-d", "50", "-t", a] `shouldReturn` []
+                display st a "#{pane_mode}" `shouldReturn` [ROutput "panes-mode"]
+                awaitOutput st a "#{pane_in_mode} #{window_zoomed_flag}" "0 0"
+        it "rejects a malformed duration" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["display-panes", "-d", "soon", "-t", a]
+                    `shouldReturn` [RErr "delay invalid"]
+                display st a "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+        it "stacks over copy mode and returns to it" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["copy-mode", "-t", a] `shouldReturn` []
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                run st ["send-keys", "-t", a, "1"] `shouldReturn` []
+                display st a "#{pane_mode}" `shouldReturn` [ROutput "copy-mode"]
+        it "is not kept under another mode" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                run st ["copy-mode", "-t", a] `shouldReturn` []
+                run st ["send-keys", "-t", a, "-X", "cancel"] `shouldReturn` []
+                display st a "#{pane_in_mode} #{window_zoomed_flag}"
+                    `shouldReturn` [ROutput "0 0"]
+        it "-k kills the pane when the mode exits" $
+            withServer $ \st -> do
+                [a, b] <- twoPanes st
+                run st ["display-panes", "-k", "-d", "0", "-t", b] `shouldReturn` []
+                run st ["send-keys", "-t", b, "q"] `shouldReturn` []
+                paneIds st "S:0" `shouldReturn` [a]
+        it "-k kills the pane when another mode replaces it" $
+            withServer $ \st -> do
+                [a, b] <- twoPanes st
+                run st ["display-panes", "-k", "-d", "0", "-t", b] `shouldReturn` []
+                run st ["copy-mode", "-t", b] `shouldReturn` []
+                paneIds st "S:0" `shouldReturn` [a]
+        it "-s numbers the panes of another window" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["new-window", "-d", "-t", "S:1", "cat"] `shouldReturn` []
+                run st ["split-window", "-t", "S:1", "cat"] `shouldReturn` []
+                [_, d] <- paneIds st "S:1"
+                run st ["display-panes", "-d", "0", "-s", "S:1", "-t", a, "set -g @picked %%"]
+                    `shouldReturn` []
+                run st ["send-keys", "-t", a, "1"] `shouldReturn` []
+                run st ["show", "-gv", "@picked"] `shouldReturn` [ROutput d]
+        it "draws the window's panes, numbered, between display-panes-border-style borders" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["set", "-g", "display-panes-format", "P#{pane_index}"] `shouldReturn` []
+                run st ["set", "-g", "display-panes-border-style", "fg=green"] `shouldReturn` []
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                rows <- panesRows st a
+                map (T.take 2 . rowText) [rows !! 0, rows !! 13] `shouldBe` ["P0", "P1"]
+                map Cell.baseChar (take 3 (rows !! 12)) `shouldBe` "───"
+                (.style.fg) <$> listToMaybe (rows !! 12)
+                    `shouldBe` Just (Cell.Indexed 2)
+        it "frames a floating pane" $
+            withServer $ \st -> do
+                [a, _] <- twoPanes st
+                run st ["new-pane", "-d", "-B", "none", "-x", "30", "-y", "8", "-X", "8", "-Y", "3"
+                       , "-t", "S:0", "cat"] `shouldReturn` []
+                run st ["set", "-g", "display-panes-format", ""] `shouldReturn` []
+                run st ["display-panes", "-d", "0", "-t", a] `shouldReturn` []
+                rows <- panesRows st a
+                T.unpack (T.take 3 (T.drop 7 (rowText (rows !! 2)))) `shouldBe` "┌──"
+                Cell.baseChar (rows !! 11 !! 38) `shouldBe` '┘'
+
     describe "dropModesForReload" $
         it "clears every mode and undoes a -Z zoom, keeping -k panes" $
             withServer $ \st -> do
@@ -233,6 +360,28 @@ treeCells st = do
     size <- readTVarIO p.size
     (cells, _) <- drawTreeMode st ts size
     pure (map V.toList (V.toList cells))
+
+-- | What a pane's panes-mode draws, row by row.
+panesRows :: ServerState -> Text -> IO [[Cell.Cell]]
+panesRows st pid = do
+    ps <- allPanes st
+    [p] <- pure [ p | p <- ps, "%" <> T.pack (show (rawPane p.id)) == pid ]
+    Just (PanesMode ps') <- atomically (topMode p)
+    cells <- drawPanesMode st p ps'
+    pure (map V.toList (V.toList cells))
+
+-- | Poll a format on a target until it expands to @want@, for up to two
+-- seconds.
+awaitOutput :: ServerState -> Text -> Text -> Text -> IO ()
+awaitOutput st tgt fmt want = do
+    r <- timeout 2_000_000 loop
+    case r of
+        Just () -> pure ()
+        Nothing -> display st tgt fmt `shouldReturn` [ROutput want]
+  where
+    loop = do
+        got <- display st tgt fmt
+        if got == [ROutput want] then pure () else threadDelay 10_000 >> loop
 
 -- | The style of the first cell drawing a character.
 styleOf :: Char -> [[Cell.Cell]] -> Maybe Cell.Style

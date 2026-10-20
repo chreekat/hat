@@ -224,7 +224,7 @@ Tmux-resurrect-equivalent save/restore — and a future native `hat save` /
 - **Layout strings** (the cryptic `f5e1,200x50,0,0{...}` form) for
   save/restore.
 - **`confirm-before`** wrapper for destructive commands.
-- **`display-panes`** (`q`) — overlay pane indexes briefly. Handy.
+- **`display-panes`** (`q`) — number the panes briefly (tmux's panes-mode); a digit picks one. Handy.
 - **Control mode** (`tmux -C`). Used by iTerm2's native tmux integration. I
   don't use it personally.
 - **`pipe-pane`** in the output direction (not just `-I`). Useful for logging.

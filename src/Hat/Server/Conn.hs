@@ -60,7 +60,6 @@ import Hat.Server.Overlay
 import Hat.Server.PopupIO (closePopup, popupKeyInput, refitClientPopup)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Startup
-import Hat.Server.DisplayPanes
 import Hat.Server.Flash
 import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
 import Hat.Server.Toast
@@ -299,7 +298,6 @@ newClient st conn h = do
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     popupVar <- newTVarIO Nothing
-    displayPanesVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
@@ -343,7 +341,6 @@ newClient st conn h = do
         , flash = flashVar
         , prompt = promptVar
         , popup = popupVar
-        , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
         , env = h.env
@@ -551,7 +548,6 @@ handleInput d st client bs = do
 data KeyOwner
     = PopupOverlay Popup
     | MenuOverlay Window
-    | PanesOverlay DisplayPanesState
     | PromptOverlay PromptState
     | KeyTables
 
@@ -560,15 +556,13 @@ keyOwner st client = do
     menuWin <- atomically $ clientView st client >>= \case
         Just (_, win) -> (\m -> win <$ m) <$> readTVar win.menu
         Nothing -> pure Nothing
-    mpanes <- readTVarIO client.displayPanes
     mprompt <- readTVarIO client.prompt
     mpopup <- readTVarIO client.popup
-    pure $ case (menuWin, mpanes, mprompt) of
+    pure $ case (menuWin, mprompt) of
         _ | Just p <- mpopup -> PopupOverlay p
-        (Just win, _, _) -> MenuOverlay win
-        (_, Just dp, _) -> PanesOverlay dp
-        (_, _, Just pr) -> PromptOverlay pr
-        _               -> KeyTables
+        (Just win, _) -> MenuOverlay win
+        (_, Just pr) -> PromptOverlay pr
+        _            -> KeyTables
 
 -- | Hand each key to whatever owns the keyboard once the keys before it
 -- have run.
@@ -581,49 +575,8 @@ deliverKeys d st client keys@(k : ks) = keyOwner st client >>= \case
     MenuOverlay win -> do
         handleMenuInput d st client win k
         deliverKeys d st client ks
-    PanesOverlay dp -> handlePanesInput d st client dp keys
     PromptOverlay pr -> deliverKeys d st client =<< handlePromptInput d st client pr keys
     KeyTables -> runKeys d st client keys
-
--- | Keys while the @display-panes@ overlay shows: each key is decided by
--- 'panesKeyAction'; once the overlay closes, the rest of the chunk flows
--- through normal key handling.
-handlePanesInput
-    :: Dispatch -> ServerState -> Client -> DisplayPanesState -> [Key] -> IO ()
-handlePanesInput d st client dp = go
-  where
-    go [] = pure ()
-    go (k : ks) = case panesKeyAction dp.hold k.name of
-        PanesSelect num -> do
-            dismissPanes st client
-            selectPaneNumber d st client dp.template num
-            deliverKeys d st client ks
-        PanesDismiss -> do
-            dismissPanes st client
-            deliverKeys d st client ks
-        PanesDismissForward -> do
-            dismissPanes st client
-            deliverKeys d st client (k : ks)
-        PanesForward -> do
-            runKeys d st client [k]
-            go ks
-
--- | Run the overlay's template against the pane showing @num@ in the
--- client's current window (@%%@ = that pane's id); showing no such
--- number, the digit just closes the overlay.
-selectPaneNumber
-    :: Dispatch -> ServerState -> Client -> Text -> Int -> IO ()
-selectPaneNumber d st client template num = do
-    opts <- clientOptions st client
-    mwin <- currentWindowOf st (Just client)
-    forM_ mwin $ \win -> do
-        order <- atomically (map (.id) <$> windowPanes win)
-        let numbered = zip [opts.paneBaseIndex ..] order
-        forM_ (lookup num numbered) $ \pid -> do
-            let target = "%" <> tshow (rawPane pid)
-            showReplies st client
-                =<< d.runCommandText st (Just client)
-                    (T.replace "%%" target template)
 
 -- | How long, in ms, input held for @escape-time@ waits for the rest of its
 -- sequence: tmux waits a millisecond even at 0.

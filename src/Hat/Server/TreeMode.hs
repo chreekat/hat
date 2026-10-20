@@ -10,6 +10,8 @@ module Hat.Server.TreeMode
     , treeModeKey
     , drawTreeMode
     , modeClient
+    , previewCells
+    , styleIn
     ) where
 
 import Control.Applicative ((<|>))
@@ -722,22 +724,27 @@ styleIn th expand raw
 -- | tmux's @screen_write_preview@: an @nx@ by @ny@ window of a screen,
 -- around its cursor when that shows (marked in reverse), else the top left.
 screenPreview :: Emu.Screen -> Int -> Int -> [[Cell.Cell]]
-screenPreview scr nx ny
+screenPreview scr = previewCells scr.cells
+    (if scr.cursorVisible then Just scr.cursor else Nothing)
+
+-- | 'screenPreview' over a screen's cells and its cursor, if shown.
+previewCells :: V.Vector (V.Vector Cell.Cell) -> Maybe Pos -> Int -> Int -> [[Cell.Cell]]
+previewCells cells mcursor nx ny
     | nx <= 0 || ny <= 0 = []
     | otherwise =
         [ [ cellAt (px + x) (py + y) | x <- [0 .. nx - 1] ] | y <- [0 .. ny - 1] ]
   where
-    sx = fromIntegral scr.size.cols
-    sy = fromIntegral scr.size.rows
-    (px, py)
-        | scr.cursorVisible = (origin scr.cursor.col nx sx, origin scr.cursor.row ny sy)
-        | otherwise = (0, 0)
+    sy = V.length cells
+    sx = maybe 0 V.length (cells V.!? 0)
+    (px, py) = case mcursor of
+        Just c -> (origin c.col nx sx, origin c.row ny sy)
+        Nothing -> (0, 0)
     origin c n total =
         let o = if c < n `div` 3 then 0 else c - n `div` 3
         in if o + n > total then (if n > total then 0 else total - n) else o
     cellAt x y =
-        let c = fromMaybe Cell.blankCell (scr.cells V.!? y >>= (V.!? x))
-        in if scr.cursorVisible && x == scr.cursor.col && y == scr.cursor.row
+        let c = fromMaybe Cell.blankCell (cells V.!? y >>= (V.!? x))
+        in if mcursor == Just (Pos y x)
             then c { Cell.style = c.style { Cell.reverse = True } }
             else c
 

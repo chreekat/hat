@@ -20,6 +20,7 @@ module Hat.Server.Resize
     , rectSize
     , windowArrange
     , unzoomedArrange
+    , zoomHidesChrome
     , windowPaneStatus
     , windowFloats
     , paneScrollbars
@@ -358,12 +359,25 @@ windowArrange st eff win = do
     ps <- readTVar win.panes
     case mz of
         Just zpid | Map.member zpid ps -> do
+            hidden <- zoomHidesChrome win
             (side, bars) <- paneScrollbars st win
             status <- windowPaneStatus st win
-            pure ( [ (zpid, scrollbarReserve side (Map.findWithDefault 0 zpid bars)
-                        (statusAdjust status (fromIntegral eff.rows) (sizeRect eff))) ]
+            pure ( [ (zpid, if hidden then sizeRect eff else
+                        scrollbarReserve side (Map.findWithDefault 0 zpid bars)
+                            (statusAdjust status (fromIntegral eff.rows) (sizeRect eff))) ]
                  , [] )
         _ -> unzoomedArrange' st eff win
+
+-- | Whether the window's zoomed pane shows a mode that leaves out its
+-- pane status line and scrollbar ('modeHidesChrome').
+zoomHidesChrome :: Window -> STM Bool
+zoomHidesChrome win = readTVar win.zoomed >>= \case
+    Nothing -> pure False
+    Just zpid -> do
+        ps <- readTVar win.panes
+        case Map.lookup zpid ps of
+            Nothing -> pure False
+            Just p -> maybe False modeHidesChrome <$> topMode p
 
 -- | Pane rects as 'windowArrange' would give them were the window not
 -- zoomed.
