@@ -606,8 +606,9 @@ optionTable =
         \#{?search_timed_out, (timed out),\
         \#{?search_count, (#{search_count}\
         \#{?search_count_partial,+,} results),}}"
+    -- tmux's default follows mode-style (#{E:mode-style}).
     , live $ scalar "copy-mode-position-style" WindowScope KStyle
-        "#{E:mode-style}"
+        "bg=yellow,fg=black"
     , live $ scalar "copy-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
     , live $ scalar "copy-mode-current-line-number-style" WindowScope KStyle
