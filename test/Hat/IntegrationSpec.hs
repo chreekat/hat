@@ -577,6 +577,10 @@ spec = parallel $ do
         P.callProcess "cabal" ["build", "-v0", "exe:hat"]
         init <$> readProcess "cabal" ["list-bin", "hat"] ""
 
+    it "-V prints the version without reaching for a server" $
+        P.readProcessWithExitCode hatBin ["-S", "/nonexistent/hat-sock", "-V"] ""
+            `shouldReturn` (ExitSuccess, "hat 0.0.1\n", "")
+
     it "gives every pane a canonical line discipline under concurrent spawn load" $ do
         let n = 24 :: Int
         bads <- runConcurrently
@@ -833,6 +837,19 @@ spec = parallel $ do
         outerStyle HP.StyleBar
         typeInto c "printf '\\033[4 q'\r"
         outerStyle HP.StyleUnderline
+        typeInto c "exit\r"
+        _ <- awaitExit c
+        pure ()
+
+    it "titles the terminal with set-titles-string under set-titles" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        let outerTitle t = awaitTrue (show t) (B8.isInfixOf ("\ESC]0;" <> t) <$> readIORef c.transcript)
+        _ <- hatCtl h ["set", "-g", "set-titles", "on"]
+        outerTitle "hat: "
+        _ <- hatCtl h ["set", "-g", "set-titles-string", "T:#{window_index}"]
+        outerTitle "T:0\BEL"
         typeInto c "exit\r"
         _ <- awaitExit c
         pure ()

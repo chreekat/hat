@@ -71,3 +71,11 @@ lifecycle-deferred.sh           # needs choose-tree as a pane mode (#{pane_mode}
 
 # screen redraw / theme
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report
+
+# Hat defaults that differ from tmux's (docs/options-audit.md "Hat's own
+# defaults"): the goldens draw tmux's defaults.
+screen-redraw-floating.sh       # Hat default differs: fill-character is blank, where tmux dots the outside of a window
+screen-redraw-outside.sh        # Hat default differs: fill-character is blank, where tmux dots the outside of a window
+screen-redraw-menus.sh          # Hat default differs: pane-border-style is default, where tmux's is fg=themelightgrey
+screen-redraw-scrollbars.sh     # Hat default differs: pane-active-border-style is fg=green, where tmux's is themegreen
+screen-redraw-window-style.sh   # Hat default differs: pane-active-border-style is fg=green, where tmux's is themegreen

@@ -516,6 +516,35 @@ spec = do
             at 0.15 "#{A/x:a,b}" `shouldBe` "b"
             at 0 "#{A:}" `shouldBe` ""
 
+    describe "the ~ home modifier (a hat extension)" $ do
+        it "abbreviates a leading home directory to ~" $ do
+            eval "#{~|/usr/local|:@path}" `shouldBe` "~/bin/foo"
+            eval "#{~|/usr/local/bin/foo|:@path}" `shouldBe` "~"
+        it "abbreviates only at a directory boundary" $
+            eval "#{~|/usr/loc|:@path}" `shouldBe` "/usr/local/bin/foo"
+        it "leaves the value alone with no home" $ do
+            eval "#{~||:@path}" `shouldBe` "/usr/local/bin/foo"
+            eval "#{~:@path}" `shouldBe` "/usr/local/bin/foo"
+        it "expands its home" $
+            eval "#{~/#{@path}:@path}" `shouldBe` "~"
+
+    describe "the J collapsing-join modifier (a hat extension)" $ do
+        it "joins its parts with the separator when they fit" $
+            eval "#{J|20|, :a,bb,ccc}" `shouldBe` "a, bb, ccc"
+        it "expands each part and skips the empty ones" $
+            eval "#{J|20|-:#S,#{empty},#{window_name}}" `shouldBe` "work-vim"
+        it "drops parts from the left until the join fits" $ do
+            eval "#{J|8|-:a,bb,ccc}" `shouldBe` "a-bb-ccc"
+            eval "#{J|7|-:a,bb,ccc}" `shouldBe` "bb-ccc"
+            eval "#{J|5|-:a,bb,ccc}" `shouldBe` "ccc"
+        it "shortens the part before the last from the left at / first" $ do
+            eval "#{J|10|-:x,/usr/local/bin,foo}" `shouldBe` "…/bin-foo"
+            eval "#{J|15|-:x,/usr/local/bin,foo}" `shouldBe` "…/local/bin-foo"
+        it "never cuts the last part" $
+            eval "#{J|2|-:a,toolong}" `shouldBe` "toolong"
+        it "takes an escaped colon in its separator" $
+            eval "#{J|20|#: :a,b}" `shouldBe` "a: b"
+
     describe "formatNames" $ do
         prop "names every variable an expansion reads, through the values it expands" $
             \f -> withMaxSuccess 1000 $ ioProperty $ do
@@ -588,6 +617,7 @@ data Fmt
     | CondFmt Fmt Fmt Fmt
     | Compare Fmt Fmt
     | Loop Char Fmt
+    | Collapse [Fmt]
     | Cat [Fmt]
     deriving (Show)
 
@@ -601,6 +631,7 @@ renderFmt = \case
     CondFmt c a b -> "#{?" <> renderFmt c <> "," <> renderFmt a <> "," <> renderFmt b <> "}"
     Compare a b -> "#{==:" <> renderFmt a <> "," <> renderFmt b <> "}"
     Loop l body -> "#{" <> T.singleton l <> ":" <> renderFmt body <> "}"
+    Collapse fs -> "#{J|6|-:" <> T.intercalate "," (map renderFmt fs) <> "}"
     Cat fs -> T.concat (map renderFmt fs)
 
 instance Arbitrary Fmt where
@@ -614,6 +645,7 @@ instance Arbitrary Fmt where
                 , CondFmt <$> sub <*> sub <*> sub
                 , Compare <$> sub <*> sub
                 , Loop <$> elements "SWP" <*> sub
+                , Collapse <$> resize 3 (listOf sub)
                 , Cat <$> resize 3 (listOf sub)
                 ]
           where
@@ -622,7 +654,8 @@ instance Arbitrary Fmt where
             [ Lit <$> elements ["", "x", " ", "1", "[", "]", "%H:%M", "%S", "%", "%%", "%d", "%-H", "%p"]
             , Key <$> name
             , Short <$> elements "DFHIPSTWh"
-            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/", "t", "t/r"] <*> name
+            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/", "t", "t/r"
+                , "~|/usr|", "~/#{session_name}"] <*> name
             ]
         name = elements
             [ "session_name", "session_id", "window_name", "window_flags", "window_index"
@@ -638,4 +671,5 @@ instance Arbitrary Fmt where
             <> [ CondFmt c a' b | a' <- shrink a ] <> [ CondFmt c a b' | b' <- shrink b ]
         Compare a b -> [a, b] <> [ Compare a' b | a' <- shrink a ] <> [ Compare a b' | b' <- shrink b ]
         Loop l body -> body : [ Loop l b | b <- shrink body ]
+        Collapse fs -> fs <> map Collapse (shrinkList shrink fs)
         Cat fs -> fs <> map Cat (shrinkList shrink fs)

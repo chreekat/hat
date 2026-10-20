@@ -18,10 +18,12 @@ import Hat.Model
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.OptionTable (OptionValue (..))
 import Hat.Model.Options
-    (ModeKeys (..), Options (..), applyDelta, defaultOptions, singletonDelta)
+    (ModeKeys (..), Options (..), applyDelta, defaultOptions, optionText, singletonDelta)
 import Hat.Server (defaultKeymap)
 import Hat.Server.Keys (Binding (..))
 import Hat.Server.CopyMode
+import Hat.Server.FormatDraw (styleCell)
+import Hat.TestSupport (clientTheme)
 import Hat.Term.Cell
     ( Cell (..), Color (..), Content (..), Style (..), Width (..), defaultStyle
     , glyphCell )
@@ -564,6 +566,10 @@ spec = do
         it "draws the position format over the first row unless hidden" $ do
             text look (at 1 0) { hidePosition = False } 0 `shouldBe` "Plpha beta  "
             text look (at 1 0) 0 `shouldBe` "alpha beta  "
+        it "draws the position in hat's black on ANSI yellow by default" $
+            styleCell (clientTheme defaultOptions)
+                (optionText "copy-mode-position-style" defaultOptions)
+                `shouldBe` defaultStyle { fg = Indexed 0, bg = Indexed 3 }
         it "numbers the lines beside the text, which moves over" $ do
             let numbered = look { numbers = NumbersAbsolute }
             map (text numbered (at 1 0)) [0, 1] `shouldBe` ["  1 alpha be", "  2 gamma al"]

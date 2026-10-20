@@ -90,6 +90,7 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Render (paneDefaults)
 import Hat.Server.Theme (Theme, clientColours, resolveTheme)
+import Hat.Version (versionText)
 import Hat.Server.Wanted
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
@@ -837,7 +838,7 @@ serverNames :: [Text]
 serverNames =
     [ "host", "host_short", "pid", "socket_path", "start_time", "uid", "user"
     , "next_session_id", "server_sessions", "config_files", "sixel_support"
-    , "buffer_mode_format", "client_mode_format", "tree_mode_format" ]
+    , "buffer_mode_format", "client_mode_format", "tree_mode_format", "version" ]
 
 -- | The formats that describe the server process itself.
 serverFormatVars :: ServerState -> IO [(Text, Text)]
@@ -866,6 +867,7 @@ serverFormatVars st = do
         , ("client_mode_format"
           , "#[fg=themelightgrey]#{t/p:client_activity}: session #[default]#{session_name}")
         , ("tree_mode_format", treeModeFormat)
+        , ("version", versionText)
         ]
         <> [ ("user", u) | Just u <- [user] ]
 

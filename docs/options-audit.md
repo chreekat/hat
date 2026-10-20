@@ -115,7 +115,7 @@ spot-read of each suspect consumer.
 | `clock-mode-colour` / `clock-mode-style` | `clockCells`/`clockText` (Clock.hs) via `clockView` (View.hs): the `clock-mode` screen, each pane's window's values, theme colours resolved | implemented ✅ tested | pure (ClockSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
-| `set-titles` | `refreshTitles` gate (Server.hs) | implemented ✅ tested | integration |
+| `set-titles` / `set-titles-string` | `refreshTitles` (Server.hs): each session with `set-titles` titles its clients with its `set-titles-string` expanded at the current pane | implemented ✅ tested | integration + rendered (TitleSpec) |
 | `escape-time` | `escTiming`/`feedKeys`/`flushEscape` (Server.hs, Keys.hs) | implemented ✅ tested | pure |
 | `display-time` | `toastDeadline`/`toastExpired` (Server.hs) | implemented ✅ tested | pure |
 | `focus-events` | `deliversKey` (Server.hs:1595) | implemented ✅ tested | pure |
@@ -149,6 +149,38 @@ spot-read of each suspect consumer.
 | `menu-border-lines` | `cmdDisplayMenu` (Command/Menu.hs) when `-b` is not given → `drawBox`/`drawHLine` (Box.hs) | implemented ✅ tested | pure (MenuSpec) |
 | `popup-style` / `popup-border-style` | `popupView` (View.hs) → `popupGrid` (Popup.hs): re-read and format-expanded on every frame, the `display-popup` `-s`/`-S` colours over them | implemented ✅ tested | pure (PopupSpec) |
 | `popup-border-lines` | `cmdDisplayPopup` (Command/Popup.hs) when neither `-b` nor `-B` is given → `popupGrid`/`innerSize` (Popup.hs) | implemented ✅ tested | pure (PopupSpec) |
+
+## Hat's own defaults
+
+Where hat had a value or behaviour of its own before it took on tmux's
+option table, the option keeps hat's value; options hat did not have take
+tmux's default. These are the live options whose default differs from
+tmux's (each row's comment in `OptionTable.hs` names tmux's):
+
+| Option | Hat default | tmux default |
+|---|---|---|
+| `escape-time` | `0` | `10` |
+| `display-time` | `3000` | `750` |
+| `history-limit` | `50000` | `2000` |
+| `extended-keys` | `on` | `off` |
+| `command-alias` | `split-pane`, `splitp` | also aliases for commands hat lacks |
+| `update-environment` | the classic eight | also `MSYSTEM`, `WAYLAND_DISPLAY`, `XDG_*` |
+| `status-style` | `fg=black,bg=green` | `bg=themegreen,fg=themeblack` |
+| `status-right` | `%H:%M %d-%b-%y #H` | pane title and window offset, then the clock |
+| `window-status-format` / `-current-format` | `#I:#W#F` | `#I:#W#{?window_flags,#{window_flags}, }` |
+| `window-status-style` | `fg=black,bg=green` | `default` |
+| `window-status-current-style` | `fg=black,bg=green,underscore` | `underscore` |
+| `window-status-bell-style` | `fg=black,bg=green` | `reverse` |
+| `window-status-activity-style` | `default` | `reverse` |
+| `pane-border-style` | `default` | `fg=themelightgrey` |
+| `pane-active-border-style` | `fg=green` | a format: theme colours by pane state |
+| `display-panes-colour` / `-active-colour` | `blue` / `red` | `themeblue` / `themered` |
+| `message-style` | `bg=yellow,fg=black,…fill=yellow` | the same in `themeyellow`/`themeblack` |
+| `copy-mode-position-style` | `bg=yellow,fg=black` | `#{E:mode-style}` |
+| `mode-style` | `reverse` | `noattr,bg=themeyellow,fg=themeblack` |
+| `fill-character` | ` ` (blank) | a format: shaded inside the window, `~` outside |
+| `automatic-rename-format` | `#{pane_current_command}` | also marks panes in a mode or dead |
+| `set-titles-string` | hat's title (`hat` and the non-default names, see below) | `#S:#I:#W - "#T" #{session_alerts}` |
 
 ## Defects (the backlog)
 
@@ -239,6 +271,27 @@ spot-read of each suspect consumer.
 - **`history-file`**: hat has no search prompt, so a file's `search:`
   entries are only carried through to the next save. Entries are text: a byte that is
   not UTF-8 in a tmux-written entry is rewritten as U+FFFD.
+
+## Hat extensions (deliberate, beyond tmux)
+
+- **`pane-border-indicators`** also takes `color` for `colour` (the
+  registry's `aliasing`); `show-options` prints the canonical `colour`.
+
+- **`set-titles-string`** defaults to hat's own title rather than tmux's
+  `#S:#I:#W - "#T" #{session_alerts}`: `hat: <session>: <window>: <path>:
+  <program>`, skipping numeric session and window names and an
+  automatic-rename window's, the path with `$HOME` as `~`, the program the
+  pane's own title when it set one, else its command; collapsed from the
+  left to 80 characters. It is an ordinary format, so a user can write it
+  (or tmux's) in a config. It needs two format modifiers tmux lacks, in
+  characters tmux's `format.c` leaves unused:
+  - `#{~/home:key}` — the value with `home` (exactly, or as a leading
+    directory) written as `~`; an empty `home` changes nothing.
+  - `#{J/width/separator:part,part,…}` — each part expanded, the empty ones
+    skipped, joined by the separator (`#:` escapes a colon in it). While the
+    join is wider than `width` characters, parts drop from the left; the one
+    before the last first shortens from the left at `/` (`…/b/c`, then
+    `…/c`) before it drops; the last part stands whole even over the width.
 
 ## The effect-test sweep
 

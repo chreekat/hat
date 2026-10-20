@@ -7,11 +7,15 @@ import Data.Vector qualified as V
 
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model.Ids (PaneId (..))
-import Hat.Model.Options (BorderLines (..))
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time.LocalTime (utc, utcToZonedTime)
+import Hat.Model.Options (BorderLines (..), defaultOptions, optionText)
+import Hat.Server.Format (renderFormat)
 import Hat.Server.Layout (Orientation (..))
 import Hat.Server.Scene
 import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Cell qualified as Cell
+import Hat.TestSupport (clientTheme)
 
 -- | A scene's chrome as text rows, pane cells as @.@.
 picture :: ChromeLook -> Scene -> [String]
@@ -219,6 +223,13 @@ spec = do
             (Cell.baseChar c, c.style) `shouldBe` ('x', border { Cell.bg = Cell.Indexed 4 })
         it "an empty fill is a blank" $
             Cell.baseChar (fillCell terminalTheme border "") `shouldBe` ' '
+        it "hat's default fill leaves the cells blank, inside the window or out" $ do
+            let fillAt inside = fillCell (clientTheme defaultOptions) Cell.defaultStyle
+                    (renderFormat (Map.fromList [("is_inside", inside)]) (const "")
+                        (utcToZonedTime utc (posixSecondsToUTCTime 0))
+                        (optionText "fill-character" defaultOptions))
+            [ (Cell.baseChar c, c.style) | c <- map fillAt ["1", "0"] ]
+                `shouldBe` replicate 2 (' ', Cell.defaultStyle)
         it "a fill too wide for its cell is a blank" $
             Cell.baseChar (fillCell terminalTheme border "中") `shouldBe` ' '
     describe "borderGlyph" $ do
