@@ -180,6 +180,7 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
 | `mode-style` | `reverse` | `noattr,bg=themeyellow,fg=themeblack` |
 | `fill-character` | ` ` (blank) | a format: shaded inside the window, `~` outside |
 | `automatic-rename-format` | `#{pane_current_command}` | also marks panes in a mode or dead |
+| `set-titles-string` | hat's title (`hat` and the non-default names, see below) | `#S:#I:#W - "#T" #{session_alerts}` |
 
 ## Defects (the backlog)
 
