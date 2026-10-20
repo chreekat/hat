@@ -14,6 +14,7 @@ module Hat.Server.Resize
     , defaultSizeOf
     , clampWindowSize
     , reconcileLoop
+    , reconcileThrough
     , awaitReconcileTick
     , awaitReconciled
     , reconcilePaneSizes
@@ -327,11 +328,24 @@ clampWindowSize s = Size { rows = clampDim s.rows, cols = clampDim s.cols }
 reconcileLoop :: ServerState -> IO ()
 reconcileLoop st = loop (-1)
   where
-    loop lastGen = do
-        gen <- atomically (awaitReconcileTick st lastGen)
-        reconcilePaneSizes st
-        atomically (writeTVar st.reconciled gen)
-        loop gen
+    loop lastGen =
+        loop =<< reconcileThrough st =<< atomically (awaitReconcileTick st lastGen)
+
+-- | One pass of 'reconcileLoop' for the dirty generation @gen@: size the
+-- panes, then record (in @reconciled@) and return the generation they are
+-- now sized through. That is the current one when every pane has its
+-- layout's size and no command batch is open, so what panes draw during a
+-- pass reaches the screen however often they draw; else @gen@.
+reconcileThrough :: ServerState -> Int -> IO Int
+reconcileThrough st gen = do
+    reconcilePaneSizes st
+    atomically $ do
+        now <- readTVar st.dirty
+        depth <- readTVar st.commandDepth
+        targets <- paneSizeTargets st
+        sized <- and <$> mapM (\(p, sz) -> (== sz) <$> readTVar p.size) targets
+        let through = if sized && depth == 0 then now else gen
+        through <$ writeTVar st.reconciled through
 
 -- | The next dirty generation 'reconcileLoop' sizes panes for: a newer one,
 -- but only once no user-command batch is open (@commandDepth@ back to zero), so

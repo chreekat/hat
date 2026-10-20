@@ -44,6 +44,7 @@ import Hat.Server
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
+    , reconcileThrough
     , cmdAttachSession, cmdListClients, cmdMoveWindow, cmdRestartClient
     , cmdRestart
     , deliversKey, detachPane, detachPaneCurrent, detachPanes, markActivity
@@ -2212,6 +2213,33 @@ spec = do
             tick st (-1) `shouldReturn` Nothing
             atomically (writeTVar st.commandDepth 0)
             tick st (-1) `shouldReturn` Just 5
+
+    describe "reconcileThrough" $ do
+        let freshState = do
+                lg <- newLogger "/dev/null"
+                newServerState Map.empty lg "/tmp/hat-reconcilepass.sock" Nothing
+            -- A pass for the current generation during which a pane draws.
+            passWithOutput st = do
+                atomically (writeTVar st.dirty 5)
+                gen <- atomically (awaitReconcileTick st (-1))
+                atomically (bumpDirty st)
+                reconcileThrough st gen
+
+        -- Regression guard: steady pane output must not hold the screen
+        -- back from 'awaitRenderable' forever.
+        it "counts output drawn during a pass that left every pane sized as reconciled" $ do
+            st <- freshState
+            passWithOutput st `shouldReturn` 6
+            readTVarIO st.reconciled `shouldReturn` 6
+
+        -- Bug 66: what a command batch draws mid-change waits for the batch.
+        it "counts output drawn while a command batch is open as not reconciled" $ do
+            st <- freshState
+            atomically (writeTVar st.commandDepth 1)
+            atomically (writeTVar st.dirty 5)
+            atomically (bumpDirty st)
+            reconcileThrough st 5 `shouldReturn` 5
+            readTVarIO st.reconciled `shouldReturn` 5
 
     describe "awaitRenderable (render gate)" $ do
         let freshState = do
