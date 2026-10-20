@@ -243,7 +243,7 @@ opsToAnsi d sz ops = BL.toStrict . BB.toLazyByteString $
            | otherwise -> mempty
     go prev = \case
         [] -> mempty
-        op : rest -> opBuilder d sz (continues prev op) op <> go op rest
+        op : rest -> opBuilder d sz prev op <> go op rest
 
 -- | Whether a run starts with a zero-width character right where the
 -- previous run ended, so it must follow on with no cursor move: a
@@ -256,15 +256,16 @@ continues (Put p _ t) (Put q _ u)
         q.row == p.row && q.col == p.col + textWidth t
 continues _ _ = False
 
-opBuilder :: Dialect -> Size -> Bool -> DrawOp -> BB.Builder
-opBuilder d sz contiguous = \case
+opBuilder :: Dialect -> Size -> DrawOp -> DrawOp -> BB.Builder
+opBuilder d sz prev = \case
     ClearAll -> BB.byteString "\ESC[0m\ESC[2J\ESC[H"
-    Put pos st txt
-        -- tmux's TERM_NOAM: writing the bottom-right cell would scroll.
-        | d.clipCorner, pos.row == fromIntegral sz.rows - 1 ->
-            runHead d contiguous pos st
+    op@(Put pos st txt) ->
+        let !contiguous = continues prev op
+        in if d.clipCorner && pos.row == fromIntegral sz.rows - 1
+            -- tmux's TERM_NOAM: writing the bottom-right cell would scroll.
+            then runHead d contiguous pos st
                 <> TE.encodeUtf8Builder (fitColumns (fromIntegral sz.cols - 1 - pos.col) txt)
-        | otherwise -> runHead d contiguous pos st <> TE.encodeUtf8Builder txt
+            else runHead d contiguous pos st <> TE.encodeUtf8Builder txt
     CursorAt pos _visible -> moveTo pos
 
 -- | A run's cursor move, unless it follows straight on, and its SGR, in
