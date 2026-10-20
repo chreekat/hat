@@ -351,7 +351,7 @@ hookArgSpec = \case
     "bind-key" -> "TN"
     "unbind-key" -> "T"
     "command-prompt" -> "IpTt"
-    "display-panes" -> "d"
+    "display-panes" -> "dst"
     "set-hook" -> "tB"
     "show-hooks" -> "tF"
     "wait-for" -> "Fw"
