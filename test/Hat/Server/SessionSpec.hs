@@ -62,8 +62,9 @@ import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
 import Hat.Server.Toast (showReplies, showToast)
 import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
-import Hat.Server.Pane
-    (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, keyEncoding, syncTargets)
+import Hat.Server.Pane (coalesceWrites, deadNoticeBytes, keyEncoding, syncTargets)
+import Hat.Server.ModeKey (paneModeKey)
+import Hat.Server.PaneMode (enterClockMode, resetPaneMode, setPaneMode)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
@@ -197,7 +198,6 @@ addClient st sid sz stamp = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing
         <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True     -- outerFocused
@@ -249,7 +249,6 @@ wiredClientEnv st clientRole clientEnv = do
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
         <*> newTVarIO Nothing
-        <*> newTVarIO Nothing
         <*> newTVarIO Nothing  -- displayPanes
         <*> newTVarIO Nothing  -- popup
         <*> newTVarIO True
@@ -274,7 +273,7 @@ stubPane :: Int -> IO Pane
 stubPane n = do
     sizeV <- newTVarIO (Size { rows = 24, cols = 80 })
     deadV <- newTVarIO False
-    modeV <- newTVarIO Nothing
+    modeV <- newTVarIO []
     pipeV <- newTVarIO Nothing
     tidV  <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
@@ -284,7 +283,6 @@ stubPane n = do
     alternateV <- newTVarIO False
     scrollbarV <- newTVarIO Nothing
     syncV <- newTVarIO noOutputSync
-    clockV <- newTVarIO NoClock
     viewV <- newTVarIO Nothing
     replyV <- newMVar ()
     pure Pane
@@ -294,7 +292,7 @@ stubPane n = do
         , size = sizeV
         , dead = deadV
         , startCwd = "/"
-        , mode = modeV
+        , modes = modeV
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV
@@ -307,7 +305,6 @@ stubPane n = do
         , onAlternate = alternateV
         , scrollbarShown = scrollbarV
         , outputSync = syncV
-        , clock = clockV
         , viewBacking = viewV
         , replyLock = replyV
         }
@@ -318,26 +315,47 @@ homeOf p = fmap (\(sid, w) -> (sid, w.id)) <$> readTVarIO p.home
 
 -- A 'stubPane' whose pty is a real pty pair adopted around this very process,
 -- for paths that probe the pty (break-pane's window-name sniff). The release
--- closes only the slave: 'closePty' would SIGHUP the adopted pid — us.
+-- closes both ends itself: 'closePty' would SIGHUP the adopted pid — us.
 adoptedPane :: Int -> IO (Pane, IO ())
 adoptedPane n = do
     (master, slave) <- openPseudoTerminal
     ptyH <- Pty.adopt master =<< getProcessID
     p <- stubPane n
-    pure (p { pty = ptyH }, closeFd slave)
+    pure (p { pty = ptyH }, Pty.closeMaster ptyH >> closeFd slave)
 
 -- An open copy mode over a blank frozen 24x80 grid with @hsize@ scrollback
 -- lines, viewing the bottom.
 blankCopyMode :: Int -> PaneMode
-blankCopyMode hsize = PaneMode
+blankCopyMode hsize = CopyMode (blankCopyData hsize)
+
+blankCopyData :: Int -> CopyModeData
+blankCopyData hsize = CopyModeData
     { kind = ModeCopy
     , frozen = FrozenGrid
         { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty, fgWrapped = V.empty }
     , copyState = copyModeAt "copy-mode" hsize 0
     }
 
+-- A pane's mode stack holding just 'blankCopyMode'.
+copyStack :: Int -> [ModeEntry]
+copyStack hsize = [ModeEntry { mode = blankCopyMode hsize, onExit = KeepPane }]
+
+-- An open choose-tree started on the given pane, with nothing yet seen.
+treeAt :: PaneId -> TreeState
+treeAt pid = TreeState
+    { kind = SessionTree
+    , origin = TreeOrigin { fromSession = SessionId 0, fromWinlink = 0, fromPane = pid }
+    , itemFormat = "", keyFormat = Nothing, command = "", filter = Nothing
+    , sort = TreeSort { order = SortIndex, reversed = False }
+    , preview = PreviewNormal, view = ViewPreview, expanded = Map.empty
+    , tagged = [], current = Nothing, currentIx = 0, offset = 0
+    , modePrompt = Nothing, search = Nothing, hidePane = Nothing
+    , groups = SquashGroups, confirm = AskBeforeKill, zoom = ModeLeftZoom
+    , showHelp = False
+    }
+
 -- | A frozen grid row's text, trailing blanks trimmed.
-rowOf :: PaneMode -> Int -> Text
+rowOf :: CopyModeData -> Int -> Text
 rowOf pm r = T.stripEnd (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V.! r))))
 
 spec :: Spec
@@ -509,7 +527,7 @@ spec = do
             env0 <- paneModeEnv st p
             lookup "pane_in_mode" env0 `shouldBe` Just "0"
             lookup "pane_mode" env0 `shouldBe` Just ""
-            atomically $ writeTVar p.mode (Just (blankCopyMode 3))
+            atomically $ writeTVar p.modes (copyStack 3)
             env1 <- paneModeEnv st p
             lookup "pane_in_mode" env1 `shouldBe` Just "1"
             lookup "pane_mode" env1 `shouldBe` Just "copy-mode"
@@ -519,12 +537,12 @@ spec = do
             (st, _) <- seedSession "/"
             p <- stubPane 0
             viewModeAdd st p ViewParsed ["foo", "\ESC[1mbar"]
-            Just pm <- readTVarIO p.mode
+            Just (CopyMode pm) <- atomically (topMode p)
             map (rowOf pm) [0, 1] `shouldBe` ["foo", "bar"]
             env <- paneModeEnv st p
             lookup "pane_mode" env `shouldBe` Just "view-mode"
             viewModeAdd st p ViewParsed [ tshow n | n <- [1 .. 30 :: Int] ]
-            Just pm' <- readTVarIO p.mode
+            Just (CopyMode pm') <- atomically (topMode p)
             pm'.frozen.fgHsize `shouldSatisfy` (> 0)
             pm'.copyState.viewportOffY `shouldBe` pm'.frozen.fgHsize
             rowOf pm' 2 `shouldBe` "1"
@@ -532,10 +550,10 @@ spec = do
             (st, _) <- seedSession "/"
             p <- stubPane 0
             viewModeAdd st p ViewLiteral ["x\ESC"]
-            Just pm <- readTVarIO p.mode
+            Just (CopyMode pm) <- atomically (topMode p)
             rowOf pm 0 `shouldBe` "x"
             _ <- runCopyModeCommand st p "cancel" []
-            readTVarIO p.mode `shouldReturn` Nothing
+            atomically (topMode p) `shouldReturn` Nothing
             isJust <$> readTVarIO p.viewBacking `shouldReturn` False
 
     describe "an attached client's command output" $
@@ -546,7 +564,7 @@ spec = do
             atomically $ modifyTVar' win.panes (Map.insert p.id p)
             c <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
             showReplies st c [ROutput "one", RErr "bad", ROutput "two"]
-            Just pm <- readTVarIO p.mode
+            Just (CopyMode pm) <- atomically (topMode p)
             (pm.kind, map (rowOf pm) [0, 1]) `shouldBe` (ModeView, ["one", "two"])
             fmap (.text) <$> readTVarIO c.toast `shouldReturn` Just "error: bad"
 
@@ -563,8 +581,19 @@ spec = do
             _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
             showConfigCauses st (Just sess)
             readTVarIO st.configCauses `shouldReturn` []
-            Just pm <- readTVarIO p.mode
+            Just (CopyMode pm) <- atomically (topMode p)
             (pm.kind, rowOf pm 0) `shouldBe` (ModeView, "c.conf:1: unknown command: x")
+
+    describe "switch-client -c" $
+        it "names a control-mode client too (lifecycle-deferred.sh)" $ do
+            (st, sess) <- seedSession "/"
+            other <- addSession st 1
+            c <- addClient st sess.id (Size 24 80) 1
+            cs <- newControlState
+            atomically $ modifyTVar' st.clients (Map.insert c.id c { control = Just cs })
+            runArgv st Nothing ["switch-client", "-c", clientName c, "-t", "s"]
+                `shouldReturn` []
+            readTVarIO c.session `shouldReturn` other.id
 
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do
@@ -572,13 +601,17 @@ spec = do
             p <- stubPane 0
             enterClockMode st p
             (lookup "pane_mode" <$> paneModeEnv st p) `shouldReturn` Just "clock-mode"
-            clockModeKey st p `shouldReturn` True
+            paneModeKey dispatch st Nothing p (Key { name = "q", raw = "q" }) `shouldReturn` True
             (lookup "pane_in_mode" <$> paneModeEnv st p) `shouldReturn` Just "0"
-            clockModeKey st p `shouldReturn` False
+            paneModeKey dispatch st Nothing p (Key { name = "q", raw = "q" }) `shouldReturn` False
         it "under copy mode, shows again once copy mode ends" $ do
-            clockOnTop ClockUnderCopy (Just (blankCopyMode 0)) `shouldBe` False
-            clockOnTop ClockUnderCopy Nothing `shouldBe` True
-            clockOnTop ClockOnTop (Just (blankCopyMode 0)) `shouldBe` True
+            (st, _) <- seedSession "/"
+            p <- stubPane 0
+            enterClockMode st p
+            _ <- setPaneMode st p "copy-mode" (pure (blankCopyMode 0)) KeepPane
+            (lookup "pane_mode" <$> paneModeEnv st p) `shouldReturn` Just "copy-mode"
+            resetPaneMode st p
+            (lookup "pane_mode" <$> paneModeEnv st p) `shouldReturn` Just "clock-mode"
 
     describe "copy-mode position indicator" $
         it "stamps [scroll/history] on the pane's top-right row" $ do
@@ -590,7 +623,7 @@ spec = do
             let p = p0 { emulator = emu }
             atomically $ do
                 modifyTVar' win.panes (Map.insert p.id p)
-                writeTVar p.mode (Just (blankCopyMode 3))
+                writeTVar p.modes (copyStack 3)
                 -- status off: statusCells would touch the stub pane
                 writeOwn st.globalSessionOptions
                     (singletonDelta "status" (OVScalar "off"))
@@ -697,7 +730,7 @@ spec = do
                 peerRe <- newReadEnd peer
                 -- What the program reads back, once @n@ bytes have come.
                 let programReads n = timeout 5_000_000 (readExactly slave n)
-                pure (st, p, client, peerRe, programReads, closeFd slave)
+                pure (st, p, client, peerRe, programReads, Pty.closeMaster ptyH >> closeFd slave)
             readExactly fd n
                 | n <= 0 = pure B.empty
                 | otherwise = do
@@ -722,6 +755,8 @@ spec = do
             withClientWriter client (askTerminal st p (AskPalette 99) TermSt)
             recvMessage peerRe `shouldReturn` Just (Known (Notify "\ESC]4;99;?\ESC\\"))
             handleInput dispatch st client "\ESC]4;99;rgb:0101/0202/0303\ESC\\"
+            -- the pty stays the test's until release, a collection or not
+            performGC
             programReads 27 `shouldReturn` Just "\ESC]4;99;rgb:0101/0202/0303\ESC\\"
             release
         it "holds the pane's other replies until the terminal's answer, in order" $ do
@@ -1637,7 +1672,7 @@ spec = do
         it "a pane in a mode or hidden by a zoom is skipped" $ do
             (st, win, pa, pb, pc) <- syncWindow
             mapM_ syncOn [pa, pb, pc]
-            atomically $ writeTVar pb.mode (Just (blankCopyMode 0))
+            atomically $ writeTVar pb.modes (copyStack 0)
             targetIds st pa `shouldReturn` [pc.id]
             atomically $ writeTVar win.zoomed (Just pa.id)
             targetIds st pa `shouldReturn` []
@@ -2192,11 +2227,13 @@ spec = do
             windowActivity st (SessionId 0) back
             readTVarIO st.dirty `shouldReturn` gen'
 
-        it "keeps a chooser's live preview fresh" $ do
-            (st, _, back, client) <- watchedPair
-            atomically $ writeTVar client.picker $ Just PickerState
-                { title = "choose", roots = [], cursor = 0
-                , query = "", search = "", mode = Browsing, fill = PaneRegion }
+        it "keeps a tree mode's live preview fresh" $ do
+            (st, front, back, _) <- watchedPair
+            p <- stubPane 0
+            atomically $ do
+                modifyTVar' front.panes (Map.insert p.id p)
+                writeTVar p.modes
+                    [ModeEntry { mode = TreeMode (treeAt p.id), onExit = KeepPane }]
             gen <- readTVarIO st.dirty
             windowActivity st (SessionId 0) back
             readTVarIO st.dirty `shouldNotReturn` gen
@@ -2327,6 +2364,14 @@ spec = do
             client <- addClient st sess.id (Size 24 80) 1
             [RErr e] <- arm st client ["-d", "soon"]
             e `shouldSatisfy` T.isInfixOf "bad delay"
+        it "rejects tmux's panes-mode flags loudly" $ do
+            (st, sess) <- seedSession "/"
+            client <- addClient st sess.id (Size 24 80) 1
+            arm st client ["-k"]
+                `shouldReturn` [RErr "command display-panes: unknown flag -k"]
+            arm st client ["-t", "%0"]
+                `shouldReturn` [RErr "display-panes -t: not supported"]
+            readTVarIO client.displayPanes `shouldReturn` Nothing
         it "a digit selects the pane showing that number and closes" $ do
             (st, sess) <- seedSession "/"
             win <- twoPanes sess

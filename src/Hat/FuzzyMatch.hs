@@ -1,7 +1,7 @@
 -- | A small fzf-style fuzzy matcher: score a query against a candidate string
 -- and rank a collection by the result. Standalone (no @Hat.Server@ deps, no
--- external libraries) — 'Hat.Server.Picker' uses it to order choose-tree
--- matches.
+-- external libraries) — 'Hat.Server.ModeTree' uses it for the tree modes'
+-- search.
 module Hat.FuzzyMatch
     ( score
     ) where

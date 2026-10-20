@@ -173,9 +173,9 @@ spec = do
                 run st ["run-shell", "-b", "-t", "S:0.0", "echo later"] `shouldReturn` []
                 [p] <- allPanes st
                 shown <- timeout 5_000_000 $ untilM $ do
-                    mpm <- readTVarIO p.mode
+                    mpm <- atomically (topMode p)
                     pure $ case mpm of
-                        Just pm | pm.frozen.fgSy > 1 ->
+                        Just (CopyMode pm) | pm.frozen.fgSy > 1 ->
                             T.isPrefixOf "later" (T.pack (map Cell.baseChar (V.toList (pm.frozen.fgRows V.! 1))))
                         _ -> False
                 shown `shouldBe` Just ()

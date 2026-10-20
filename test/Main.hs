@@ -49,8 +49,9 @@ import Hat.Server.OptionEffectSpec qualified
 import Hat.Server.OptionParseSpec qualified
 import Hat.Server.OptionsSpec qualified
 import Hat.Server.PaneCommandSpec qualified
+import Hat.Server.PaneModeSpec qualified
+import Hat.Server.ModeTreeSpec qualified
 import Hat.Server.PaneReaderSpec qualified
-import Hat.Server.PickerSpec qualified
 import Hat.Server.PopupSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.PromptHistorySpec qualified
@@ -131,6 +132,8 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Winlink" Hat.Server.WinlinkSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
     describe "Hat.Server.PaneCommand" Hat.Server.PaneCommandSpec.spec
+    describe "Hat.Server.PaneMode" Hat.Server.PaneModeSpec.spec
+    describe "Hat.Server.ModeTree" Hat.Server.ModeTreeSpec.spec
     describe "Hat.Server.OptionEffect" Hat.Server.OptionEffectSpec.spec
     describe "Hat.Server.Environ" Hat.Server.EnvironSpec.spec
     describe "Hat.Server.Alerts" Hat.Server.AlertsSpec.spec
@@ -139,7 +142,6 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Clipboard" Hat.Server.ClipboardSpec.spec
     describe "Hat.Server.Clock" Hat.Server.ClockSpec.spec
     describe "Hat.Server.PaneReader" Hat.Server.PaneReaderSpec.spec
-    describe "Hat.Server.Picker" Hat.Server.PickerSpec.spec
     describe "Hat.Server.Popup" Hat.Server.PopupSpec.spec
     describe "Hat.Server.Status" Hat.Server.StatusSpec.spec
     describe "Hat.Server.Menu" Hat.Server.MenuSpec.spec

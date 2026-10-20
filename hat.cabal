@@ -163,8 +163,12 @@ library
         Hat.Server.Overlay
         Hat.Server.Pane
         Hat.Server.PaneColours
+        Hat.Server.PaneMode
+        Hat.Server.ModeStack
+        Hat.Server.ModeKey
+        Hat.Server.ModeTree
+        Hat.Server.TreeMode
         Hat.Server.Persist
-        Hat.Server.Picker
         Hat.Server.Popup
         Hat.Server.PopupIO
         Hat.Server.Prompt
@@ -363,8 +367,9 @@ test-suite hat-test
         Hat.Server.OptionParseSpec
         Hat.Server.OptionsSpec
         Hat.Server.PaneCommandSpec
+        Hat.Server.PaneModeSpec
+        Hat.Server.ModeTreeSpec
         Hat.Server.PaneReaderSpec
-        Hat.Server.PickerSpec
         Hat.Server.PopupSpec
         Hat.Server.PromptSpec
         Hat.Server.PromptHistorySpec

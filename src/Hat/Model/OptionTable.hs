@@ -436,7 +436,8 @@ optionTable =
     , live $ scalar "buffer-limit" ServerScope (KNumber 1 intMax) "50"
     -- hat's default omits tmux's aliases for commands hat lacks.
     , live $ arrayOf "command-alias" ServerScope KString ","
-        ["split-pane=split-window", "splitp=split-window"]
+        [ "split-pane=split-window", "splitp=split-window"
+        , "choose-window=choose-tree -w", "choose-session=choose-tree -s" ]
     , notYet $ arrayOf "codepoint-widths" ServerScope KString "," []
     , live $ scalar "copy-command" ServerScope KString ""
     , paneLocal $ live $
@@ -701,15 +702,15 @@ optionTable =
     , paneLocal $ live $ scalar "synchronize-panes" WindowPaneScope KFlag "off"
     , live $ scalar "tiled-layout-max-columns" WindowScope
         (KNumber 0 ushrtMax) "0"
-    , notYet $ scalar "tree-mode-border-style" WindowScope KStyle
+    , live $ scalar "tree-mode-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
-    , notYet $ scalar "tree-mode-preview-format" WindowPaneScope KString
+    , paneLocal $ live $ scalar "tree-mode-preview-format" WindowPaneScope KString
         "#{?pane_format,#{pane_index}:#{pane_title},\
         \#{window_index}:#{window_name}}"
-    , notYet $ scalar "tree-mode-preview-style" WindowScope KStyle
+    , live $ scalar "tree-mode-preview-style" WindowScope KStyle
         "fg=#{?#{||:#{&&:#{pane_format},#{pane_active}},\
         \#{&&:#{window_format},#{window_active}}},themered,themeblue}"
-    , notYet $ scalar "tree-mode-selection-style" WindowScope KStyle
+    , live $ scalar "tree-mode-selection-style" WindowScope KStyle
         "#{E:mode-style}"
     , refusing (dimmed "window-active-style") $ paneLocal $ live $
         scalar "window-active-style" WindowPaneScope KStyle "default"

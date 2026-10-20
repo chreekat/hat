@@ -114,7 +114,7 @@ scrollShowsScrollbar name before after = before /= after || name `elem` pages
         , "halfpage-up", "halfpage-down", "halfpage-down-and-cancel" ]
 
 paneScreen :: Pane -> STM PaneScreen
-paneScreen p = PaneScreen <$> readTVar p.onAlternate <*> (isJust <$> readTVar p.mode)
+paneScreen p = PaneScreen <$> readTVar p.onAlternate <*> paneInMode p
 
 -- | Each pane of a window showing its overlay scrollbar, with its style's
 -- width and padding.

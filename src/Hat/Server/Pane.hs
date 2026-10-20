@@ -45,8 +45,6 @@ module Hat.Server.Pane
     , pumpPipeOutput
     , stopPipe
     , isCurrentWindow
-    , enterClockMode
-    , clockModeKey
     , attentionSeen
     , windowSeen
     , markActivity
@@ -94,7 +92,7 @@ module Hat.Server.Pane
     ) where
 
 import Control.Concurrent
-    (forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
+    (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.Async (Async, async, cancel, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar)
 import Control.Applicative ((<|>))
@@ -414,7 +412,7 @@ newPane
 newPane pid pty emu sz dir pending start kind = do
     sizeVar <- newTVarIO sz
     deadVar <- newTVarIO False
-    modeVar <- newTVarIO Nothing
+    modeVar <- newTVarIO []
     pipeVar <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
     homeVar <- newTVarIO Nothing
@@ -427,7 +425,6 @@ newPane pid pty emu sz dir pending start kind = do
     _ <- Emu.setTitle emu (T.pack host)
     alternateVar <- newTVarIO False
     scrollbarVar <- newTVarIO Nothing
-    clockVar <- newTVarIO NoClock
     viewVar <- newTVarIO Nothing
     replyVar <- newMVar ()
     pure Pane
@@ -437,7 +434,7 @@ newPane pid pty emu sz dir pending start kind = do
         , size = sizeVar
         , dead = deadVar
         , startCwd = dir
-        , mode = modeVar
+        , modes = modeVar
         , options = optionsVar
         , pipe = pipeVar
         , readerTid = readerVar
@@ -450,7 +447,6 @@ newPane pid pty emu sz dir pending start kind = do
         , onAlternate = alternateVar
         , scrollbarShown = scrollbarVar
         , outputSync = syncVar
-        , clock = clockVar
         , viewBacking = viewVar
         , replyLock = replyVar
         }
@@ -793,41 +789,6 @@ propKindLabel = \case
     Emu.PropStr  -> "str"
 
 -- | Whether @win@ is the session's current (foreground) window.
--- | @clock-mode@: clock mode becomes the pane's top mode, redrawn each
--- second while the pane keeps it.
-enterClockMode :: ServerState -> Pane -> IO ()
-enterClockMode st pane = do
-    was <- atomically $ do
-        c <- readTVar pane.clock
-        writeTVar pane.clock ClockOnTop
-        bumpDirty st
-        pure c
-    unless (was == ClockOnTop) $ notifyPane st "pane-mode-changed" pane []
-    when (was == NoClock) $ void $ forkIO tick
-  where
-    tick = do
-        now <- getPOSIXTime
-        let toNext = 1 - (realToFrac now - fromIntegral (floor now :: Integer)) :: Double
-        threadDelay (max 1000 (round (toNext * 1_000_000)))
-        on <- atomically $ do
-            c <- readTVar pane.clock
-            when (c /= NoClock) (bumpDirty st)
-            pure (c /= NoClock)
-        when on tick
-
--- | A key reaching a pane whose top mode is clock mode ends it, as tmux's
--- @window_clock_key@ does; 'True' when the key was spent so.
-clockModeKey :: ServerState -> Pane -> IO Bool
-clockModeKey st pane = do
-    ended <- atomically $ do
-        top <- paneClockOnTop pane
-        when top $ do
-            writeTVar pane.clock NoClock
-            bumpDirty st
-        pure top
-    when ended $ notifyPane st "pane-mode-changed" pane []
-    pure ended
-
 isCurrentWindow :: Session -> Window -> STM Bool
 isCurrentWindow sess win = do
     cur <- readTVar sess.currentIx
@@ -853,18 +814,25 @@ windowSeen st sess win = do
     pure (attentionSeen current anyFocused)
 
 -- | Whether some attached client has @win@ on screen: it is the current
--- window of the client's session, or the client has a chooser open (whose
+-- window of the client's session, or that window shows a tree mode (whose
 -- live preview can show any window).
 windowDisplayed :: ServerState -> Window -> STM Bool
 windowDisplayed st win = do
     sessions <- readTVar st.sessions
     cs <- Map.elems <$> readTVar st.clients
-    let displays c = readTVar c.picker >>= \case
-            Just _ -> pure True
-            Nothing -> do
-                sid <- readTVar c.session
-                maybe (pure False) (\sess -> isCurrentWindow sess win)
-                    (Map.lookup sid sessions)
+    let displays c = do
+            sid <- readTVar c.session
+            case Map.lookup sid sessions of
+                Nothing -> pure False
+                Just sess -> do
+                    here <- isCurrentWindow sess win
+                    if here then pure True else do
+                        mcur <- currentWindow sess
+                        panes <- maybe (pure []) (fmap Map.elems . readTVar . (.panes)) mcur
+                        or <$> mapM (fmap isTree . topMode) panes
+        isTree = \case
+            Just (TreeMode _) -> True
+            _ -> False
     or <$> mapM displays [c | c <- cs, c.role == Attached]
 
 -- | Register activity on a window: restart its silence timer, raise the
@@ -1035,7 +1003,7 @@ syncTargets st pane = do
                 active <- readTVar win.activeId
                 others <- filter (\p -> p.id /= pane.id) <$> windowPanes win
                 flip filterM others $ \p -> do
-                    inMode <- isJust <$> readTVar p.mode
+                    inMode <- paneInMode p
                     gone <- isJust <$> readTVar p.exited
                     let visible = isNothing zoom || p.id == active
                     if inMode || gone || not visible then pure False else synced p

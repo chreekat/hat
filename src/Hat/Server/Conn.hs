@@ -25,10 +25,11 @@ import Control.Exception
 import Control.Monad (filterM, foldM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
+import Data.Functor ((<&>))
 import Data.IORef
 import Data.List (nub, partition, sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust, listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -58,6 +59,7 @@ import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Overlay
 import Hat.Server.PopupIO (closePopup, popupKeyInput, refitClientPopup)
+import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Startup
 import Hat.Server.DisplayPanes
 import Hat.Server.Flash
@@ -297,7 +299,6 @@ newClient st conn h = do
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
-    pickerVar <- newTVarIO Nothing
     popupVar <- newTVarIO Nothing
     displayPanesVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
@@ -342,7 +343,6 @@ newClient st conn h = do
         , toast = toastVar
         , flash = flashVar
         , prompt = promptVar
-        , picker = pickerVar
         , popup = popupVar
         , displayPanes = displayPanesVar
         , outerFocused = focusVar
@@ -557,7 +557,6 @@ data KeyOwner
     = PopupOverlay Popup
     | MenuOverlay Window
     | PanesOverlay DisplayPanesState
-    | PickerOverlay PickerState
     | PromptOverlay PromptState
     | KeyTables
 
@@ -567,15 +566,13 @@ keyOwner st client = do
         Just (_, win) -> (\m -> win <$ m) <$> readTVar win.menu
         Nothing -> pure Nothing
     mpanes <- readTVarIO client.displayPanes
-    mpicker <- readTVarIO client.picker
     mprompt <- readTVarIO client.prompt
     mpopup <- readTVarIO client.popup
-    pure $ case (menuWin, mpanes, mpicker, mprompt) of
+    pure $ case (menuWin, mpanes, mprompt) of
         _ | Just p <- mpopup -> PopupOverlay p
-        (Just win, _, _, _) -> MenuOverlay win
-        (_, Just dp, _, _) -> PanesOverlay dp
-        (_, _, Just pk, _) -> PickerOverlay pk
-        (_, _, _, Just pr) -> PromptOverlay pr
+        (Just win, _, _) -> MenuOverlay win
+        (_, Just dp, _) -> PanesOverlay dp
+        (_, _, Just pr) -> PromptOverlay pr
         _               -> KeyTables
 
 -- | Hand each key to whatever owns the keyboard once the keys before it
@@ -590,7 +587,6 @@ deliverKeys d st client keys@(k : ks) = keyOwner st client >>= \case
         handleMenuInput d st client win k
         deliverKeys d st client ks
     PanesOverlay dp -> handlePanesInput d st client dp keys
-    PickerOverlay pk -> deliverKeys d st client =<< handlePickerInput d st client pk keys
     PromptOverlay pr -> deliverKeys d st client =<< handlePromptInput d st client pr keys
     KeyTables -> runKeys d st client keys
 
@@ -785,11 +781,10 @@ runInputs d st client keys = do
         -- under a mouse event.
         routed kst mpane k0 mev rest = do
             modeTable <- case mpane of
-                Just pane -> atomically $ do
-                    top <- paneClockOnTop pane
-                    -- clock mode has no key table of its own
-                    if top then pure Nothing
-                        else fmap (.copyState.keyTable) <$> readTVar pane.mode
+                Just pane -> atomically (topMode pane) <&> \case
+                    Just (CopyMode cm) -> Just cm.copyState.keyTable
+                    -- no other mode has a key table of its own
+                    _ -> Nothing
                 Nothing -> pure Nothing
             k <- reencodeKey (keyEncoding opts) (fmap (.emulator) mpane) k0
             -- The outer terminal's ?1004 focus reports track whether the
@@ -824,17 +819,17 @@ runInputs d st client keys = do
             Passthrough _
                 | Just ev <- mev -> kst <$ do
                     spent <- if "MouseMove" `T.isInfixOf` k0.name then pure False
-                        else maybe (pure False) (clockModeKey st) mpane
+                        else maybe (pure False) (\p -> paneModeKey d st (Just client) p k0) mpane
                     unless spent (sendMouse st ev)
                 | otherwise -> kst <$ forM_ mpane (\pane -> do
                     spent <- if k0.name `elem` ["FocusIn", "FocusOut"]
                         then pure False
-                        else clockModeKey st pane >>= \case
+                        else paneModeKey d st (Just client) pane k0 >>= \case
                             True -> pure True
                             False -> dismissDeadPane st pane
                     unless spent $ typeKeyIntoPane st pane k0)
             Paste -> kst <$ forM_ mpane (\pane -> do
-                inMode <- isJust <$> readTVarIO pane.mode
+                inMode <- atomically (paneInMode pane)
                 -- The brackets reach only an app that asked for them
                 -- (?2004).
                 bracketsOk <- if k0.name `elem` ["PasteStart", "PasteEnd"]
@@ -891,9 +886,9 @@ runInputs d st client keys = do
     -- else (Escape, Enter, an arrow) cancels it. Returns whether it was
     -- consumed here.
     feedPendingSearch key pane = do
-        mmode <- readTVarIO pane.mode
+        mmode <- atomically (topMode pane)
         case mmode of
-            Just s | Just _ <- s.copyState.pendingSearch -> do
+            Just (CopyMode s) | Just _ <- s.copyState.pendingSearch -> do
                 -- Neither command can fail, so the replies are empty.
                 void $ if T.length key.name == 1
                     then runCopyModeCommand st pane "apply-search" [key.name]

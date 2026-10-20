@@ -1,11 +1,9 @@
 -- | The overlays that take over a client's keyboard while they are open:
--- the window's menu, the chooser and the command prompt. Each edits its own
--- state until the keystroke that runs a command or cancels.
+-- the window's menu and the command prompt. Each edits its own state until
+-- the keystroke that runs a command or cancels.
 module Hat.Server.Overlay
     ( handleMenuInput
-    , handlePickerInput
     , handlePromptInput
-    , closePicker
     ) where
 
 import Control.Concurrent.STM
@@ -25,7 +23,6 @@ import Hat.Server.Menu
     (MenuInput (..), MenuItem (..), MenuOutcome (..), WindowMenu (event, target), menuKey)
 import Hat.Server.Mouse (MouseInput (..), MouseState (..), parseMouseInput)
 import Hat.Server.View (statusLayout)
-import Hat.Server.Picker qualified as Picker
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.Toast (showReplies)
 
@@ -82,33 +79,6 @@ runMenuCommand d st client wm cmd = do
         `finally` modifyIORef' client.keyState
             (\after -> after { mouseEvent = Nothing, commandState = Nothing })
     showReplies st client replies
-
--- | While a chooser is open it owns every keystroke: navigate/search
--- until Enter (run the item's command and close) or Escape (close). The
--- keys after the one that closed it are returned unread.
-handlePickerInput
-    :: Dispatch -> ServerState -> Client -> PickerState -> [Key] -> IO [Key]
-handlePickerInput _ _ _ _ [] = pure []
-handlePickerInput d st client pk0 keys = do
-    let go pk = \case
-            [] -> (Picker.PickerStay pk, [])
-            k : ks -> case Picker.editPicker pk k of
-                Picker.PickerStay pk' -> go pk' ks
-                done -> (done, ks)
-        (result, rest) = go pk0 keys
-    rest <$ case result of
-        Picker.PickerStay pk -> atomically $ do
-            writeTVar client.picker (Just pk)
-            bumpDirty st
-        Picker.PickerCancel -> closePicker st client
-        Picker.PickerRun line -> do
-            closePicker st client
-            showReplies st client =<< d.runCommandText st (Just client) line
-
-closePicker :: ServerState -> Client -> IO ()
-closePicker st client = atomically $ do
-    writeTVar client.picker Nothing
-    bumpDirty st
 
 -- | While the command prompt is open it owns every keystroke: the line
 -- editor consumes them until Enter (run and close) or Escape (close). The

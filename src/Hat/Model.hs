@@ -37,9 +37,6 @@ module Hat.Model
     , copyModeAt
     , Recentre (..)
     , SelAnchor (..)
-    , PaneClock (..)
-    , clockOnTop
-    , paneClockOnTop
     , PromptCursor (..)
     , CursorShape (..)
     , LineNumbers (..)
@@ -47,7 +44,26 @@ module Hat.Model
     , FrozenGrid (..)
     , PaneMode (..)
     , ModeKind (..)
+    , CopyModeData (..)
+    , ModeEntry (..)
+    , ModeExit (..)
+    , topMode
+    , paneInMode
     , modeName
+    , TreeState (..)
+    , TreeKind (..)
+    , TreeOrigin (..)
+    , TreeTag (..)
+    , TreeSort (..)
+    , SortOrder (..)
+    , PreviewSize (..)
+    , PreviewView (..)
+    , GroupView (..)
+    , KillConfirm (..)
+    , ModeZoom (..)
+    , TreePrompt (..)
+    , TreePromptUse (..)
+    , PromptEntry (..)
     , SearchDirection (..)
     , SearchKind (..)
     , flipDirection
@@ -63,13 +79,7 @@ module Hat.Model
     , PromptWaiter (..)
     , PromptKeys (..)
     , PromptMode (..)
-    , PickerState (..)
     , Popup (..)
-    , PickerNode (..)
-    , Expansion (..)
-    , PickerMode (..)
-    , PickerFill (..)
-    , PreviewTarget (..)
     , SelKind (..)
     , newServerState
     , bumpDirty
@@ -116,7 +126,7 @@ import Control.Monad (forM, forM_, when)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.List qualified as List
-import Data.Maybe (fromMaybe, isNothing, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import System.IO (Handle)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -334,10 +344,9 @@ data Pane = Pane
     , dead     :: TVar Bool
     , startCwd :: FilePath
     , options  :: OwnOptions  -- ^ pane-scoped set-option; see 'resolveForPane'
-    , mode     :: TVar (Maybe PaneMode)
-        -- ^ 'Nothing' = normal shell input; 'Just' = copy mode holding
-        -- its own cursor/selection over a frozen snapshot of the pane's
-        -- scrollback + screen.
+    , modes    :: TVar [ModeEntry]
+        -- ^ the pane's mode stack, innermost (the one shown and fed keys)
+        -- first; empty = normal shell input. See "Hat.Server.PaneMode".
     , pipe     :: TVar (Maybe PipeHandle)
         -- ^ an active @pipe-pane@ subprocess, if any.
     , readerTid :: TVar (Maybe ThreadId)
@@ -366,7 +375,6 @@ data Pane = Pane
     , outputSync :: TVar OutputSync
         -- ^ requests that the reader catch up on pending output; see
         -- 'Hat.Server.Pane.syncPanes'.
-    , clock :: TVar PaneClock
     , viewBacking :: TVar (Maybe Emu.Emulator)
         -- ^ the screen view mode's text is written to, while the pane is
         --   in view mode; see 'Hat.Server.ViewMode.viewModeAdd'
@@ -383,23 +391,6 @@ data OutputSync = OutputSync
 
 noOutputSync :: OutputSync
 noOutputSync = OutputSync { requested = 0, answered = 0 }
-
--- | A pane's clock mode, and whether it was entered over its copy mode or
--- under it (tmux keeps a pane's modes as a stack, the top one shown).
-data PaneClock = NoClock | ClockOnTop | ClockUnderCopy
-    deriving (Eq, Show)
-
--- | Whether clock mode is the pane's top mode: the one shown, and given
--- the keys.
-clockOnTop :: PaneClock -> Maybe PaneMode -> Bool
-clockOnTop c copy = case c of
-    ClockOnTop -> True
-    ClockUnderCopy -> isNothing copy
-    NoClock -> False
-
--- | 'clockOnTop' for a pane now.
-paneClockOnTop :: Pane -> STM Bool
-paneClockOnTop pane = clockOnTop <$> readTVar pane.clock <*> readTVar pane.mode
 
 -- | How a freshly-spawned pane chooses its process.
 data PaneStart
@@ -523,28 +514,173 @@ data SelAnchor = AnchorAtStart | AnchorAtEnd
 data Recentre = RecentreMiddle | RecentreTop | RecentreBottom
     deriving (Eq, Show)
 
+-- | A mode a pane can be in (tmux's @window_mode@): what it draws over the
+-- pane's screen and how it takes keys.
+data PaneMode
+    = CopyMode !CopyModeData  -- ^ copy mode or view mode
+    | ClockMode
+    | TreeMode !TreeState
+    deriving (Eq, Show)
+
+-- | The mode's name as @#{pane_mode}@ and the mode hooks report it.
+modeName :: PaneMode -> Text
+modeName = \case
+    CopyMode d -> case d.kind of
+        ModeCopy -> "copy-mode"
+        ModeView -> "view-mode"
+    ClockMode -> "clock-mode"
+    TreeMode t -> case t.kind of
+        SessionTree -> "tree-mode"
+        BufferList -> "buffer-mode"
+        ClientList -> "client-mode"
+
+-- | One entry of a pane's mode stack.
+data ModeEntry = ModeEntry
+    { mode   :: !PaneMode
+    , onExit :: !ModeExit
+    }
+    deriving (Eq, Show)
+
+-- | What leaving a mode does to its pane: @-k@ on the mode-entering
+-- commands kills it.
+data ModeExit = KeepPane | KillPane
+    deriving (Eq, Show)
+
+-- | The mode a pane shows and feeds keys to, if any.
+topMode :: Pane -> STM (Maybe PaneMode)
+topMode pane = fmap (.mode) . listToMaybe <$> readTVar pane.modes
+
+-- | Whether the pane shows a mode's screen rather than its program's.
+paneInMode :: Pane -> STM Bool
+paneInMode pane = not . null <$> readTVar pane.modes
+
+-- | A mode-tree screen (tmux's @mode-tree.c@ with one of its list
+-- providers): the browsing state over a list rebuilt from the live server
+-- on every draw and key, so items vanish and appear as the tree changes.
+-- See "Hat.Server.ModeTree" and "Hat.Server.TreeMode".
+data TreeState = TreeState
+    { kind       :: !TreeKind
+    , origin     :: !TreeOrigin
+    , itemFormat :: !Text          -- ^ @-F@: each item's text
+    , keyFormat  :: !(Maybe Text)  -- ^ @-K@; 'Nothing' = tmux's default keys
+    , command    :: !Text          -- ^ the template Enter runs, @%%@ = the item
+    , filter     :: !(Maybe Text)  -- ^ @-f@ or the @f@ prompt
+    , sort       :: !TreeSort
+    , preview    :: !PreviewSize
+    , view       :: !PreviewView
+    , expanded   :: !(Map TreeTag Bool)
+        -- ^ per item, once it has been seen; an unseen item expands
+    , tagged     :: ![TreeTag]
+    , current    :: !(Maybe TreeTag)  -- ^ the selected item
+    , currentIx  :: !Int              -- ^ its line, kept when it vanishes
+    , offset     :: !Int              -- ^ the first line on screen
+    , modePrompt :: !(Maybe TreePrompt)
+    , search     :: !(Maybe Text)
+    , hidePane   :: !(Maybe PaneId)   -- ^ @-h@: the pane left out of the list
+    , groups     :: !GroupView
+    , confirm    :: !KillConfirm
+    , zoom       :: !ModeZoom
+    , showHelp   :: !Bool             -- ^ the key help is drawn over the list
+    }
+    deriving (Eq, Show)
+
+-- | Which list a tree mode browses.
+data TreeKind
+    = SessionTree  -- ^ @tree-mode@: sessions, windows, panes (choose-tree)
+    | BufferList   -- ^ @buffer-mode@: paste buffers (choose-buffer)
+    | ClientList   -- ^ @client-mode@: attached clients (choose-client)
+    deriving (Eq, Show)
+
+-- | The target a tree mode was entered with (tmux keeps it as a
+-- @cmd_find_state@).
+data TreeOrigin = TreeOrigin
+    { fromSession :: !SessionId
+    , fromWinlink :: !Int
+    , fromPane    :: !PaneId
+    }
+    deriving (Eq, Show)
+
+-- | A tree item's identity across rebuilds.
+data TreeTag
+    = TagSession !SessionId
+    | TagWinlink !SessionId !Int
+    | TagPane !PaneId
+    | TagBuffer !Int     -- ^ the buffer's order stamp, stable across renames
+    | TagClient !ClientId
+    deriving (Eq, Ord, Show)
+
+-- | The list's sort (@-O@, @-r@, the @O@ and @r@ keys).
+data TreeSort = TreeSort
+    { order    :: !SortOrder
+    , reversed :: !Bool
+    }
+    deriving (Eq, Show)
+
+-- | tmux's @sort_order@.
+data SortOrder
+    = SortActivity | SortCreation | SortIndex | SortModifier | SortName
+    | SortNatural | SortSize | SortZ
+    deriving (Eq, Show)
+
+-- | How much of the screen the preview below the list takes (@-N@, @v@).
+data PreviewSize = PreviewOff | PreviewNormal | PreviewBig
+    deriving (Eq, Show)
+
+-- | What the preview shows: the item's screens, or its details (@i@).
+data PreviewView = ViewPreview | ViewInfo
+    deriving (Eq, Show)
+
+-- | @-G@: whether grouped sessions are each listed, or squashed to one.
+data GroupView = SquashGroups | ShowAllGroups
+    deriving (Eq, Show)
+
+-- | @-y@: whether the kill keys ask first.
+data KillConfirm = AskBeforeKill | KillWithoutAsking
+    deriving (Eq, Show)
+
+-- | @-Z@: whether the mode zoomed its pane on entry, and so unzooms it on
+-- exit.
+data ModeZoom = ModeZoomed | ModeLeftZoom
+    deriving (Eq, Show)
+
+-- | A prompt drawn on the mode's own screen.
+data TreePrompt = TreePrompt
+    { edit  :: !PromptState
+    , use   :: !TreePromptUse
+    , entry :: !PromptEntry
+    }
+    deriving (Eq, Show)
+
+-- | What a tree mode's prompt answers.
+data TreePromptUse
+    = PromptFilter      -- ^ @f@: the new filter
+    | PromptSearch !(Maybe TreeTag)
+        -- ^ @/@: a fuzzy search, and the selection Escape returns to
+    | PromptKill        -- ^ @x@: confirm killing the selected item
+    | PromptKillTagged  -- ^ @X@: confirm killing the tagged items
+    | PromptEachCommand -- ^ @:@: a command for each tagged item
+    deriving (Eq, Show)
+
+-- | Whether a prompt takes a line, or answers on its first key.
+data PromptEntry = PromptLine | PromptSingleKey
+    deriving (Eq, Show)
+
 -- | A pane's active copy mode: a frozen snapshot of the pane's grid
 -- captured on entry, plus the navigation state ('CopyModeState') that
 -- browses it. The snapshot never changes while the mode is open, so
 -- program output produced during copy mode stays invisible until exit.
-data PaneMode = PaneMode
+data CopyModeData = CopyModeData
     { kind      :: !ModeKind
     , frozen    :: !FrozenGrid
     , copyState :: !CopyModeState
     }
     deriving (Eq, Show)
 
--- | What a 'PaneMode' browses: the pane's own grid (tmux's copy mode) or
--- the text shown in the pane apart from it (tmux's view mode, over the
+-- | What a 'CopyModeData' browses: the pane's own grid (tmux's copy mode)
+-- or the text shown in the pane apart from it (tmux's view mode, over the
 -- pane's 'viewBacking').
 data ModeKind = ModeCopy | ModeView
     deriving (Eq, Show)
-
--- | tmux's name for a mode, as @#{pane_mode}@ shows it.
-modeName :: ModeKind -> Text
-modeName = \case
-    ModeCopy -> "copy-mode"
-    ModeView -> "view-mode"
 
 -- | An immutable capture of a pane's absolute grid (oldest scrollback
 -- line first, then the live screen) taken when copy mode is entered.
@@ -704,60 +840,6 @@ newtype PromptWaiter = PromptWaiter (TMVar (Maybe Text))
 
 instance Show PromptWaiter where
     show _ = "PromptWaiter"
-
--- | A modal chooser overlay (@choose-tree@ / @choose-window@): a
--- filterable tree of sessions, windows and panes where each node carries
--- the command to run when selected. Opens in 'Browsing' mode; @/@ switches
--- to 'Searching', where keys type into 'query' instead of navigating.
-data PickerState = PickerState
-    { title     :: !Text
-    , roots     :: ![PickerNode]
-    , cursor    :: !Int    -- ^ index into the /visible/ (flattened) rows
-    , query     :: !Text
-    , search    :: !Text  -- ^ committed search term; see 'Hat.Server.Picker.editPicker'
-    , mode      :: !PickerMode
-    , fill      :: !PickerFill
-    }
-    deriving (Eq, Show)
-
--- | Whether the picker is navigating its menu or typing a search query.
-data PickerMode
-    = Browsing   -- ^ keys navigate and expand\/collapse the tree
-    | Searching  -- ^ keys type into 'query'
-    deriving (Eq, Show)
-
--- | @-Z@: how much of the screen the overlay paints over.
-data PickerFill
-    = FillWindow  -- ^ the whole content area, not just the active pane
-    | PaneRegion  -- ^ only the active pane's rectangle
-    deriving (Eq, Show)
-
--- | What the preview column shows for a node: a single pane's contents, a
--- whole window composited in its split layout, or a session as a stack of
--- its windows' thumbnails.
-data PreviewTarget
-    = PreviewPane !PaneId
-    | PreviewWindow !WindowId
-    | PreviewSession !SessionId
-    deriving (Eq, Show)
-
--- | One node in the chooser tree. Sessions hold window nodes, which hold
--- pane nodes; a childless node (e.g. @choose-window@) is a plain leaf.
-data PickerNode = PickerNode
-    { label    :: !Text  -- ^ shown, and matched against 'query'
-    , command  :: !Text  -- ^ command line run when the node is chosen
-    , preview  :: !(Maybe PreviewTarget)  -- ^ what to show beside the list
-    , children :: ![PickerNode]
-    , expanded :: !Expansion  -- ^ whether 'children' are shown
-    }
-    deriving (Eq, Show)
-
--- | Whether a tree node's children are revealed.
-data Expansion
-    = Expanded
-    | Collapsed
-    deriving (Eq, Show)
-
 -- | Whether a connected client renders a session or is a bare control
 -- connection (@hat \<command\>@ from a shell). See 'Hat.Server.restartClientAction'.
 data ClientRole = Attached | Control
@@ -900,7 +982,6 @@ data Client = Client
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
     , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
-    , picker    :: TVar (Maybe PickerState)  -- ^ choose-tree/window overlay
     , popup     :: TVar (Maybe Popup)  -- ^ display-popup overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see

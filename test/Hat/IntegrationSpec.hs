@@ -910,6 +910,24 @@ spec = parallel $ do
         typeInto c "\r"
         awaitWith "the popup to close" (fmap (not . T.isInfixOf "POP-42") . screenText) c
 
+    it "runs a choose-tree -GZw \\; send-keys / binding into a fuzzy search that typing narrows and Enter chooses" $
+        withHat hatBin $ \h -> do
+        writeFile (h.home <> "/hat.conf") "bind / choose-tree -GZw \\; send-keys /\n"
+        c <- startClientArgs h ["-f", h.home <> "/hat.conf"]
+        awaitScreen c "$"
+        _ <- hatCtl h ["new-session", "-d", "-s", "projects", "-n", "notes"]
+        _ <- hatCtl h ["new-window", "-d", "-t", "projects:1", "-n", "hat-dev"]
+        typeInto c "\x02/"
+        awaitScreen c "(search) "
+        awaitScreen c "notes"
+        typeInto c "hd"
+        awaitScreen c "(search) hd"
+        awaitWith "the list to narrow to the match"
+            (fmap (\t -> "hat-dev" `T.isInfixOf` t && not ("notes" `T.isInfixOf` t)) . screenText) c
+        typeInto c "\r"
+        awaitTrue "the client to switch to the match" $
+            (== "projects:1\n") <$> ctlOut h ["list-clients", "-F", "#{session_name}:#{window_index}"]
+
     it "ends a popup's command across restart-server, leaving nothing behind" $
         withHat hatBin $ \h -> do
         let pidFile = h.home <> "/popup.pid"

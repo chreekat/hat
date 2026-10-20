@@ -306,7 +306,6 @@ fakeClient _ = do
     toastVar <- newTVarIO Nothing
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
-    pickerVar <- newTVarIO Nothing
     popupVar <- newTVarIO Nothing
     displayPanesVar <- newTVarIO Nothing
     focusVar <- newTVarIO True
@@ -342,7 +341,6 @@ fakeClient _ = do
         , toast = toastVar
         , flash = flashVar
         , prompt = promptVar
-        , picker = pickerVar
         , popup = popupVar
         , displayPanes = displayPanesVar
         , outerFocused = focusVar

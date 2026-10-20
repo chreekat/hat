@@ -27,6 +27,7 @@ module Hat.Term.Pty
     , signalTerm
     , closeOnExec
     , closePty
+    , closeMaster
     , pid
     , foregroundCommand
     , foregroundArgv
@@ -427,5 +428,10 @@ signalKill pty = do
 closePty :: PtyHandle -> IO ()
 closePty pty = do
     signalHangup pty
+    closeMaster pty
+
+-- | Close the master side, signalling no one.
+closeMaster :: PtyHandle -> IO ()
+closeMaster pty = do
     atomicWriteIORef pty.closed True
     hClose pty.handle `catch` \(_ :: IOException) -> pure ()

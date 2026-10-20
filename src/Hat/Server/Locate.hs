@@ -25,11 +25,13 @@ module Hat.Server.Locate
     , findTargetClient
     , formatClient
     , setCurrentPane
+    , withCommandState
     ) where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.STM
+import Control.Exception (finally)
 import Control.Monad (forM, forM_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -432,8 +434,8 @@ findTargetClient
 findTargetClient = findClientWhere (\c -> c.role == Attached && isNothing c.control)
 
 -- | 'findTargetClient' among every client with a session, control-mode ones
--- too: the client a command's formats expand for (tmux's @ft->c@), and
--- that @display-message -c@ names.
+-- too: the client a command's formats expand for (tmux's @ft->c@), and any
+-- client a command names by @-c@ or a target-client @-t@.
 formatClient
     :: ServerState -> Maybe Client -> Maybe SessionId -> Maybe Text -> IO (Either Text Client)
 formatClient = findClientWhere (\c -> c.role == Attached)
@@ -472,3 +474,16 @@ setCurrentPane mclient sid wid pid = forM_ mclient $ \c ->
         if isJust ks.commandState || isJust ks.mouseEvent
             then ks { commandState = Just (sid, wid, pid) }
             else ks
+
+-- | Run commands as a key binding dispatched at a pane (tmux's
+-- @key_bindings_dispatch@ with a target): they start from that pane, as
+-- 'setCurrentPane' moves the client's command state.
+withCommandState :: ServerState -> Maybe Client -> Pane -> IO a -> IO a
+withCommandState st mclient pane act = do
+    mloc <- atomically (locatePane st pane.id)
+    case (mclient, mloc) of
+        (Just c, Just (sid, win)) -> do
+            old <- (.commandState) <$> readIORef c.keyState
+            modifyIORef' c.keyState $ \ks -> ks { commandState = Just (sid, win.id, pane.id) }
+            act `finally` modifyIORef' c.keyState (\ks -> ks { commandState = old })
+        _ -> act

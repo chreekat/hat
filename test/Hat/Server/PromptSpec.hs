@@ -95,8 +95,8 @@ spec = do
         it "C-k kills to the end of the line" $
             bufferAfter "foo bar\SOH\ESCf\v" `shouldBe` "foo"
 
-        it "C-u kills to the start of the line" $
-            bufferAfter "foo bar\ESCb\NAK" `shouldBe` "bar"
+        it "C-u clears the whole line, wherever the cursor is (prompt-keys.sh)" $
+            bufferAfter "foo bar\ESCb\NAKx" `shouldBe` "x"
 
         it "C-w kills the previous whitespace-delimited word" $
             bufferAfter "foo bar\ETB" `shouldBe` "foo "

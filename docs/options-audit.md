@@ -113,6 +113,8 @@ spot-read of each suspect consumer.
 | `fill-character` | `withFills` (View.hs) through `fillCell` (Scene.hs), for scene cells outside the window or no pane reaches | implemented ✅ tested | pure (SceneSpec) + regress `screen-redraw-outside` scenes |
 | `theme` / `dark-theme-*` / `light-theme-*` | `resolveTheme` (Theme.hs) via `clientTheme` (FormatEnv.hs): theme colours in every drawn style (`styleParse`, `formatDraw`) | implemented ✅ tested | pure (ThemeSpec) |
 | `clock-mode-colour` / `clock-mode-style` | `clockCells`/`clockText` (Clock.hs) via `clockView` (View.hs): the `clock-mode` screen, each pane's window's values, theme colours resolved | implemented ✅ tested | pure (ClockSpec) |
+| `tree-mode-selection-style` / `tree-mode-border-style` | `treeLook` (TreeMode.hs) → `drawTree` (ModeTree.hs): the selected line, the preview box, help and info rules; the mode's window's values, formats expanded in its pane (`#{E:tree-mode-border-style}` in the info and help lines too) | implemented ✅ tested | model (PaneModeSpec) |
+| `tree-mode-preview-format` / `tree-mode-preview-style` | `previewOf` (TreeMode.hs): each previewed window's or pane's boxed label, in its own options and context, over its border's background | implemented ✅ tested | model (PaneModeSpec) |
 | `pane-border-lines` | `borderGlyph` (Scene.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `pane-border-indicators` | two-pane split in `buildScene` (Scene.hs); arrows `edgeArrows` (View.hs) | implemented ✅ tested | pure (SceneSpec) |
 | `set-titles` / `set-titles-string` | `refreshTitles` (Server.hs): each session with `set-titles` titles its clients with its `set-titles-string` expanded at the current pane | implemented ✅ tested | integration + rendered (TitleSpec) |
@@ -208,6 +210,18 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
   integration test.
 
 ## Minor divergences (not defects)
+
+- **`tree-mode-selection-style`** and **`tree-mode-border-style`** expand
+  their formats in the mode's pane, as `copy-mode-selection-style` does;
+  tmux expands them with no pane, so `#{E:mode-style}` reads the global
+  `mode-style` there even where a window sets its own.
+
+- **Tree-mode search** (`/`, `?`, `C-s` in choose-tree, choose-buffer and
+  choose-client) is a deliberate divergence: Hat's fuzzy finder narrows and
+  ranks the list as the query is typed and Enter chooses the selected match,
+  where tmux jumps to the next substring match and Enter only ends the
+  search (see Note [Fuzzy tree search] in `Hat.Server.ModeTree`). `n` and
+  `N` still repeat a search tmux's way.
 
 - **`theme`** `detect` reads the desktop colour scheme hat already follows
   (`Hat.Server.ColorScheme`), not each client terminal's own report, so
