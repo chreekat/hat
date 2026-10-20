@@ -18,8 +18,8 @@ copy-mode-test-emacs.sh
 cursor-test1.sh
 cursor-test2.sh
 cursor-test4.sh
-prompt-keys.sh                  # choose-tree as a tree-mode pane mode with its search prompt (#{pane_mode} = tree-mode)
-prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; choose-tree tree-mode search/filter prompts; -1/-N/-i/-k/-e prompt flags
+prompt-keys.sh                  # C-v quote-next (a control character drawn as ^G) in the prompt editor; then its step 7 (Up recalls history in the tree search prompt) meets Hat's deliberate fuzzy tree search, where Up/Down select and Enter chooses
+prompt-mechanics.sh             # command-prompt -P pane prompts + pane-prompt-opened/closed hooks; -1/-N/-i/-k/-e prompt flags
 screen-redraw-bidi.sh           # terminal-overrides unimplemented, and the client has no terminfo capabilities (Bidi) to wrap spans in isolates
 screen-redraw-cache.sh          # rotate-window into a narrower cell: the emulator reflows wrapped lines top-anchored, tmux keeps the cursor row
 screen-redraw-indicators.sh     # pane-border-indicators arrows: hat deliberately draws triangles (see border-arrows.sh)
@@ -31,19 +31,19 @@ utf8-test.sh                    # emulator: malformed UTF-8 replaced per byte (t
 # the script hinges on.
 
 # hooks / set-hook / wait-for: gaps beyond the hook engine
-hooks-notify.sh                 # title stack (CSI 22/23 t) + default-shell option + client-* hooks
+hooks-notify.sh                 # title stack (CSI 22/23 t) + client-* hooks
 
 # interactive mode-screens: choose-*/customize/display-panes/modal
 customize-mode.sh               # customize-mode unimplemented
 display-panes.sh                # display-panes as a pane mode (panes-mode: -Z, -s, stacking under copy mode, floating panes) unimplemented; hat draws a client overlay
-modal-pane.sh                   # mouse half passes; needs choose-buffer (editor as a modal pane) and customize-mode
-mode-kill.sh                    # mode -k (kill-pane-on-exit) for copy-mode/choose-tree/choose-buffer/display-panes
-mode-mutation.sh                # needs client attach tracking + choose-client/customize modes
+modal-pane.sh                   # mouse half passes; needs the editor option and choose-buffer's e (the buffer in an editor in a modal pane), and customize-mode
+mode-kill.sh                    # copy-mode, choose-tree and choose-buffer -k pass; display-panes -k needs display-panes as a pane mode (window-panes.c)
+mode-mutation.sh                # customize-mode unimplemented; the other modes pass
 
 # copy-mode advanced motions/options
 
 # formats: remaining gaps sit outside the modifier engine
-format-render-contexts.sh       # choose-tree -F (tree mode) and customize-mode contexts, awaiting the mode-stack decision; the rest passes
+format-render-contexts.sh       # customize-mode contexts; the rest (choose-tree -F among them) passes
 format-variables.sh             # #{I/c:...}: hat's client has no terminfo capability model (a terminfo reader is a new dependency)
 
 # option engine breadth: flat scalar table, global-only read-back
