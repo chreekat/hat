@@ -312,13 +312,13 @@ homeOf p = fmap (\(sid, w) -> (sid, w.id)) <$> readTVarIO p.home
 
 -- A 'stubPane' whose pty is a real pty pair adopted around this very process,
 -- for paths that probe the pty (break-pane's window-name sniff). The release
--- closes only the slave: 'closePty' would SIGHUP the adopted pid — us.
+-- closes both ends itself: 'closePty' would SIGHUP the adopted pid — us.
 adoptedPane :: Int -> IO (Pane, IO ())
 adoptedPane n = do
     (master, slave) <- openPseudoTerminal
     ptyH <- Pty.adopt master =<< getProcessID
     p <- stubPane n
-    pure (p { pty = ptyH }, closeFd slave)
+    pure (p { pty = ptyH }, Pty.closeMaster ptyH >> closeFd slave)
 
 -- An open copy mode over a blank frozen 24x80 grid with @hsize@ scrollback
 -- lines, viewing the bottom.
@@ -727,7 +727,7 @@ spec = do
                 peerRe <- newReadEnd peer
                 -- What the program reads back, once @n@ bytes have come.
                 let programReads n = timeout 5_000_000 (readExactly slave n)
-                pure (st, p, client, peerRe, programReads, closeFd slave)
+                pure (st, p, client, peerRe, programReads, Pty.closeMaster ptyH >> closeFd slave)
             readExactly fd n
                 | n <= 0 = pure B.empty
                 | otherwise = do
@@ -752,6 +752,8 @@ spec = do
             withClientWriter client (askTerminal st p (AskPalette 99) TermSt)
             recvMessage peerRe `shouldReturn` Just (Known (Notify "\ESC]4;99;?\ESC\\"))
             handleInput dispatch st client "\ESC]4;99;rgb:0101/0202/0303\ESC\\"
+            -- the pty stays the test's until release, a collection or not
+            performGC
             programReads 27 `shouldReturn` Just "\ESC]4;99;rgb:0101/0202/0303\ESC\\"
             release
         it "holds the pane's other replies until the terminal's answer, in order" $ do
