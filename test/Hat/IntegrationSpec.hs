@@ -1744,7 +1744,7 @@ spec = parallel $ do
     it "a bare hat runs default-client-command" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h ["new-session", "-d", "-s", "first"]
-        _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F #S"]
+        _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F '#S'"]
         hatCtl h [] `shouldReturn` (ExitSuccess, "first\n", "")
 
     it "a bare hat that starts the server runs its config's default-client-command" $

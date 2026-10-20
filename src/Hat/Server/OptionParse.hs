@@ -17,7 +17,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
-import Hat.Command.Parser (parseCommandLine)
+import Hat.Command.Parser (parseScript)
+import Hat.Command.Script (Script (..))
 import Hat.Model.OptionTable
 import Hat.Colour (colourFromText, colourToText)
 import Hat.Server.Keys (Key (..), parseKeyName)
@@ -169,9 +170,9 @@ arrayEntry d v = case d.kind of
 -- | A command option's value must parse as a command list; tmux reports
 -- any malformed one as a syntax error.
 commandValue :: Text -> Either Text Text
-commandValue v = case parseCommandLine v of
-    Right _ -> Right v
-    Left _ -> Left "syntax error"
+commandValue v = case (parseScript v).failure of
+    Nothing -> Right v
+    Just _ -> Left "syntax error"
 
 -- | tmux's @options_array_assign@: split on the option's separator
 -- characters (skipping empty pieces) and place each piece at the first free

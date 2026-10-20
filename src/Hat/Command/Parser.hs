@@ -1,14 +1,14 @@
 {-# LANGUAGE RoleAnnotations #-}
 
--- | The command language: one megaparsec tokenizer shared by the
--- config file, the command prompt, and @hat <command>@ from a shell.
+-- | The command language: one grammar ('parseScript') for files of
+-- commands and command strings alike, and tmux's splitting of a shell's
+-- argv into commands ('parseArgv').
 --
 -- A line holds one or more commands separated by unescaped semicolons.
 -- Words quote with single quotes (literal), double quotes (backslash
 -- escapes), or balanced brace blocks (verbatim, for command blocks).
 module Hat.Command.Parser
-    ( parseCommandLine
-    , parseScript
+    ( parseScript
     , parseArgv
     ) where
 
@@ -43,16 +43,9 @@ parseArgv = finish . foldl step ([], [])
         ';' : rest        -> (reverse rest, True)
         _                 -> (s, False)
 
--- | Parse a single command line (possibly @;@-separated).
-parseCommandLine :: Text -> Either Text [[Text]]
-parseCommandLine input =
-    case parse (commandsP <* eof) "<command>" input of
-        Left err -> Left (T.pack (errorBundlePretty err))
-        Right cmds -> Right (filter (not . null) cmds)
-
--- | Parse a whole file of commands (tmux's @cmd-parse.y@): comments, blank
--- lines, continuations, assignments and conditionals, each item with the
--- line its statement starts on. An error stops the parse at tmux's line
+-- | Parse a file of commands or a command string (tmux's @cmd-parse.y@):
+-- comments, blank lines, continuations, assignments and conditionals, each
+-- item with the line its statement starts on. An error stops the parse at tmux's line
 -- and in its words, keeping the items before it.
 parseScript :: Text -> Script
 parseScript input = case runScriptP statementsP stream of
@@ -406,18 +399,6 @@ stripLine q0 line0
                     _ | c == ' ' || c == '\t' -> go (i + 1) Free True afterDirective
                       | c `elem` [';', '{', '}'] -> go (i + 1) Free True False
                       | otherwise -> go (i + 1) Free False False
-
-commandsP :: Parser [[Text]]
-commandsP = do
-    space
-    sepBy commandP (char ';' *> space)
-
-commandP :: Parser [Text]
-commandP = many (wordP <* space)
-
--- | A brace block, or a word: adjacent quoted and bare pieces, joined.
-wordP :: Parser Text
-wordP = braceBlock <|> (T.concat <$> some (choice [singleQuoted, doubleQuoted, bareWord]))
 
 singleQuoted :: Parser Text
 singleQuoted = do

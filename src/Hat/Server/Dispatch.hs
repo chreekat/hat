@@ -56,8 +56,8 @@ import System.IO (IOMode (..), openFile)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Process
 import Text.Read (readMaybe)
-import Hat.Command.Parser (parseCommandLine, parseScript)
-import Hat.Server.Script (FileLoad (..), resolveScript)
+import Hat.Command.Parser (parseScript)
+import Hat.Server.Script (FileLoad (..), parseErrorLine, resolveCommandText, resolveScript)
 import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
@@ -142,25 +142,23 @@ unknownCommand st argv@(name : _)
             Just _ -> Nothing
             Nothing -> either Just (const Nothing) (resolveCommand name)
 
--- | Parse a command line and run it, as tmux's @cmd_parse_from_string@
--- does: a command no name resolves fails the whole line before any of it
--- runs. Run for a command read from a file, its errors name that file and
--- line (see 'loadCommandFile').
+-- | Parse a command string and run it, as tmux's @cmd_parse_from_string@
+-- does: with a file's grammar (see 'resolveScript'), and a command no name
+-- resolves failing the whole string before any of it runs. Run for a
+-- command read from a file, its errors name that file and the line of the
+-- string's own lines counted from the command's (see 'loadCommandFile').
 runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
 runCommandText st mclient input = do
     msource <- currentCommandSource st
-    let located e = maybe e (\(path, n) -> sourceLocated path n e) msource
-    case parseCommandLine input of
-        Left err -> pure [RErr (located err)]
+    let located k e = maybe e (\(path, n) -> sourceLocated path (n + k - 1) e) msource
+    resolveScript st mclient RunFile (parseScript input) >>= \case
+        Left (k, err) -> pure [RErr (located k (parseErrorLine err))]
         Right cmds -> do
-            bad <- firstUnknown st cmds
+            bad <- listToMaybe . catMaybes <$>
+                mapM (\(k, argv) -> fmap (k,) <$> unknownCommand st argv) cmds
             case bad of
-                Just e -> pure [RErr (located e)]
-                Nothing -> runCommands st mclient cmds
-
--- | The first command among @cmds@ no name resolves, as its error.
-firstUnknown :: ServerState -> [[Text]] -> IO (Maybe Text)
-firstUnknown st cmds = listToMaybe . catMaybes <$> mapM (unknownCommand st) cmds
+                Just (k, e) -> pure [RErr (located k e)]
+                Nothing -> runCommands st mclient (map snd cmds)
 
 -- | An error at a file's line, as tmux words it.
 sourceLocated :: FilePath -> Int -> Text -> Text
@@ -211,15 +209,6 @@ loadCommandFile st mclient load path contents = resolveScript st mclient load sc
     script = parseScript contents
     cause n e = atomically (addConfigCause st (sourceLocated path n e))
 
--- | A parse error, on one line: the parser's own words without its picture
--- of the input.
-parseErrorLine :: Text -> Text
-parseErrorLine err = case filter keep (T.lines err) of
-    [] -> T.strip err
-    ls -> T.intercalate ", " (map T.strip ls)
-  where
-    keep l = not (T.null (T.strip l)) && not ("|" `T.isInfixOf` l) && not ("<command>" `T.isPrefixOf` l)
-
 runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
 runCommands st mclient cmds =
     withCommandBatch st (concat <$> mapM (runArgv st mclient) cmds)
@@ -247,7 +236,7 @@ runArgv st mclient (name : args) = do
 -- invocation's own arguments append to its last command, and the expanded
 -- names resolve as builtins only, so an alias never recurses.
 runAlias :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
-runAlias st mclient body args = case parseCommandLine body of
+runAlias st mclient body args = resolveCommandText st mclient body >>= \case
     Left err -> pure [RErr err]
     Right [] -> pure []
     Right cmds -> do

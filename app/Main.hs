@@ -17,7 +17,8 @@ import System.Process
     , getProcessExitCode, proc )
 
 import Hat.Client
-import Hat.Command.Parser (parseArgv, parseCommandLine)
+import Hat.Command.Parser (parseArgv, parseScript)
+import Hat.Command.Script (Script (..), ScriptItem (..))
 import Hat.Debug (prepareDebugSocket)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
@@ -168,15 +169,23 @@ defaultClientCommand path mconfig = do
         [["show-options", "-gv", "default-client-command"]]
     let release = close sock
     case r of
-        Right out -> case parseCommandLine (TE.decodeUtf8Lenient out) of
-            Right cmds -> runCommandLine path mconfig release [] cmds
-            Left e -> do
-                hPutStrLn stderr ("hat: default-client-command: " <> T.unpack e)
-                exitFailure
+        Right out -> case parseScript (TE.decodeUtf8Lenient out) of
+            Script items Nothing
+                | Just cmds <- traverse (commandOf . snd) items ->
+                    runCommandLine path mconfig release [] cmds
+                | otherwise -> failWith "conditionals and assignments are not supported here"
+            Script _ (Just (_, e)) -> failWith e
         Left (Rejected _) -> attach path mconfig release [] []
         Left _ -> do
             hPutStrLn stderr "hat: server exited unexpectedly"
             exitFailure
+  where
+    commandOf = \case
+        ScriptCommand argv -> Just argv
+        _ -> Nothing
+    failWith e = do
+        hPutStrLn stderr ("hat: default-client-command: " <> T.unpack e)
+        exitFailure
 
 -- | Pull the internal @--reattach-hist NAME@ flags (repeated, one per MRU
 -- session) out of a restarting client's argv, returning the names

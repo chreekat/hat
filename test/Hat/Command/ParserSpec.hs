@@ -2,6 +2,7 @@ module Hat.Command.ParserSpec (spec) where
 
 import Test.Hspec
 
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -10,7 +11,7 @@ import Hat.Command.Script
 import Hat.Server.Environ (EnvVisibility (..))
 
 parses :: Text -> [[Text]] -> Expectation
-parses input expected = parseCommandLine input `shouldBe` Right expected
+parses input expected = commands input `shouldBe` expected
 
 -- | The commands of a script that parses whole, conditionals aside.
 commands :: Text -> [[Text]]
@@ -137,9 +138,7 @@ spec = do
             (parseScript "X=1\n%foo\n").items `shouldBe` [(1, ScriptAssign EnvVisible "X" "1")]
 
     it "reports parse errors" $
-        parseCommandLine "echo 'unterminated" `shouldSatisfy` \case
-            Left _ -> True
-            Right _ -> False
+        (parseScript "echo 'unterminated").failure `shouldSatisfy` isJust
 
     -- argv splitter for the CLI wire path: each argv is one word except
     -- when it ends in an unescaped ';' (command boundary) or in "\;"

@@ -1,12 +1,14 @@
 module Hat.Server.MenuSpec (spec) where
 
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Test.Hspec
 
-import Hat.Command.Parser (parseCommandLine)
+import Hat.Command.Parser (parseScript)
+import Hat.Command.Script (Script (..))
 import Hat.Model.Ids (PaneId (..), SessionId (..), WindowId (..))
 import Hat.Server.Box (BoxLines (..), Grid)
 import Hat.Server.DisplayPos
@@ -158,7 +160,7 @@ spec = do
 
     describe "the default menu bindings" $ do
         it "all parse" $
-            [ k | (_, k, cmd) <- menuBindings, either (const True) (const False) (parseCommandLine cmd) ]
+            [ k | (_, k, cmd) <- menuBindings, isJust (parseScript cmd).failure ]
                 `shouldBe` []
         it "open a menu on a right click in the empty area" $
             fmap (map (take 1) . (.commands)) (Map.lookup "root" defaultKeymap >>= Map.lookup "MouseDown3Empty")

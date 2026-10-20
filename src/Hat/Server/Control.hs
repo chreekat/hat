@@ -46,7 +46,6 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 
-import Hat.Command.Parser (parseCommandLine)
 import Hat.Geometry
 import Hat.Model
 import Hat.Server.ClientIO (hasRoom, sendDirect, sendFinal)
@@ -55,6 +54,7 @@ import Hat.Server.ControlQueue
 import Hat.Server.ControlTypes
 import Hat.Server.FormatEnv
     (expandFormat, paneFormatEnv, sessionFormatEnv, windowFormatEnv)
+import Hat.Server.Script (resolveCommandText)
 import Hat.Server.HookMonitor (parseMonitorSpec)
 import Hat.Server.HookTypes (MonitorTarget (..))
 import Hat.Server.Locate (findTargetClient, paneIndexOf)
@@ -169,7 +169,7 @@ feedControlInput d st client cs pendingRef chunk = do
                 Exiting _ -> pure ()
                 Running -> do
                     runControlCommands d st client cs ClientLine
-                        (parseCommandLine (TE.decodeUtf8Lenient l))
+                        =<< resolveCommandText st Nothing (TE.decodeUtf8Lenient l)
                     run more
 
 -- Output ----------------------------------------------------------------

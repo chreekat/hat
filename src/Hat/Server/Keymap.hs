@@ -10,7 +10,8 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 
-import Hat.Command.Parser (parseCommandLine)
+import Hat.Command.Parser (parseScript)
+import Hat.Command.Script (Script (..), ScriptItem (..))
 import Hat.Model (tshow)
 import Hat.Server.Keys (Binding (..), Keymap, Repeat (..))
 
@@ -31,7 +32,12 @@ defaultKeymap = Map.fromList
         [ (k, Binding { commands = parsed cmd, repeats = Once
                       , note = if table == "prefix" then lookup k prefixNotes else Nothing })
         | (t, k, cmd) <- menuBindings, t == table ]
-    parsed cmd = either (error . T.unpack) id (parseCommandLine cmd)
+    parsed cmd = case parseScript cmd of
+        Script items Nothing | Just cmds <- traverse (commandOf . snd) items -> cmds
+        bad -> error (show bad)
+    commandOf = \case
+        ScriptCommand argv -> Just argv
+        _ -> Nothing
     -- tmux's default mouse bindings, less those whose commands Hat lacks
     -- (the scrollbars); those opening menus are 'menuBindings'.
     inModeOrTracking = "#{||:#{pane_in_mode},#{mouse_any_flag}}"

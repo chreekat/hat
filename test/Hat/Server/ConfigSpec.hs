@@ -17,7 +17,7 @@ import Hat.Model.Options (Options (..), optionText)
 import Hat.Server (cmdSourceFile, readConfigUtf8)
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Conn (newClient)
-import Hat.Server.Dispatch (FileLoad (..), loadCommandFile)
+import Hat.Server.Dispatch (FileLoad (..), loadCommandFile, runCommandText)
 import Hat.Server.Keys (Binding (..))
 import Hat.Transport.Wire (Hello (..), Intent (..), protocolVersion)
 import Network.Socket (Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socketPair)
@@ -172,6 +172,38 @@ spec = do
                 km <- readTVarIO st.keymap
                 ((.commands) <$> (Map.lookup "prefix" km >>= Map.lookup "x"))
                     `shouldBe` Just [["set", "-g", "@a", "2"]]
+
+    describe "command strings" $ do
+        it "parse as files do: conditionals, assignments, a line per command" $
+            withDir "/tmp/hat-str-" $ \_ st -> do
+                runCommandText st Nothing (T.unlines
+                    [ "STRX=1", "%if #{@unset}", "set -g @a 1", "%elif #{STRX}", "set -g @a 2"
+                    , "%endif", "set -g @b 1 ; %if 1 set -g @c 1 %endif", "set -g @d 1" ])
+                    `shouldReturn` []
+                opts <- readTVarIO st.options
+                map (`Map.lookup` opts.user) ["@a", "@b", "@c", "@d"]
+                    `shouldBe` map Just ["2", "1", "1", "1"]
+                environFind "STRX" <$> readTVarIO st.globalEnviron
+                    `shouldReturn` Just (EnvEntry (Just "1") EnvVisible)
+        it "take a # that starts a word as a comment, to the end of its line" $
+            withDir "/tmp/hat-str-" $ \_ st -> do
+                runCommandText st Nothing
+                    "set -g @a x#y ; set -g @b '#y' ; set -g @c \"#{l:z}\" ;#; set -g @d w\nset -g @e v"
+                    `shouldReturn` []
+                opts <- readTVarIO st.options
+                map (`Map.lookup` opts.user) ["@a", "@b", "@c", "@d", "@e"]
+                    `shouldBe` [Just "x#y", Just "#y", Just "#{l:z}", Nothing, Just "v"]
+        it "fail at their own line, counted from their command's" $
+            withDir "/tmp/hat-str-" $ \dir st -> do
+                let p = dir <> "/c.conf"
+                _ <- loadCommandFile st Nothing RunFile p
+                    "set -g @a 1\nif -F 1 'set -g @b 1\n%foo'\nif -F 1 'set -g @c 1\nwibble'\n"
+                readTVarIO st.configCauses `shouldReturn`
+                    [ T.pack p <> ":2: " <> T.pack p <> ":3: syntax error"
+                    , T.pack p <> ":4: " <> T.pack p <> ":5: unknown command: wibble" ]
+                opts <- readTVarIO st.options
+                map (`Map.lookup` opts.user) ["@a", "@b", "@c"]
+                    `shouldBe` [Just "1", Nothing, Nothing]
 
     -- tmux's config assignment forms (environ_put): a bare NAME=value line
     -- sets a global environment variable, %hidden NAME=value a hidden one.

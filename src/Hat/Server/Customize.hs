@@ -34,7 +34,6 @@ import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Vector qualified as V
 
-import Hat.Command.Parser (parseCommandLine)
 import Hat.Geometry (Size (..))
 import Hat.Model
 import Hat.Model.OptionTable
@@ -49,6 +48,7 @@ import Hat.Server.Environ
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
+import Hat.Server.Script (resolveCommandText)
 import Hat.Server.HookMonitor (monitorTargetText, monitorsAt)
 import Hat.Server.HookTypes (HookEntry (..), Monitor (..))
 import Hat.Server.Hooks (hookEntriesAt, isRegisteredEvent)
@@ -1006,7 +1006,7 @@ startEdit ctx st target = do
 -- | Replace a binding's commands with a command line; the error when it does
 -- not parse or names no command.
 setKeyCommand :: Dispatch -> ServerState -> KeyTarget -> Text -> IO (Either Text ())
-setKeyCommand d st kt line = case parseCommandLine line of
+setKeyCommand d st kt line = resolveCommandText st Nothing line >>= \case
     Left e -> pure (Left e)
     Right cmds -> do
         bad <- catMaybes <$> mapM (d.unknownCommand st) cmds
@@ -1080,7 +1080,7 @@ customizeAnswer ctx st ls ts use manswer = hereOf st ts >>= mapM_ (\h -> case (u
             then ctx.message "Key binding must be key command"
             else case parseKeyName keyName of
                 Nothing -> ctx.message ("Unknown key: " <> keyName)
-                Just key -> case parseCommandLine command of
+                Just key -> resolveCommandText st Nothing command >>= \case
                     Left e -> ctx.message (capitalise e)
                     Right cmds -> do
                         bad <- catMaybes <$> mapM (ctx.dispatch.unknownCommand st) cmds
