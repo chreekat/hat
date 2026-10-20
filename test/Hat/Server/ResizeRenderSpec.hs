@@ -53,7 +53,6 @@ mkClient sz lastFrame = do
     toastV  <- newTVarIO Nothing
     flashV  <- newTVarIO Nothing
     promptV <- newTVarIO Nothing
-    pickV   <- newTVarIO Nothing
     popupV  <- newTVarIO Nothing
     dpanesV <- newTVarIO Nothing
     focusV  <- newTVarIO True
@@ -74,7 +73,7 @@ mkClient sz lastFrame = do
             , lastMouseMode = mouseModeVar
             , lastCursor = curV, lastCursorColour = colourV, lastCursorShape = shapeVar
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
-            , picker = pickV, popup = popupV, displayPanes = dpanesV
+            , popup = popupV, displayPanes = dpanesV
             , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "", term = "", createdAt = 0
             , stdinSource = NoStdin, control = Nothing

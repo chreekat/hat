@@ -117,7 +117,7 @@ flashStubPane :: PaneId -> IO Pane
 flashStubPane pid = do
     sizeV <- newTVarIO (Size { rows = 24, cols = 80 })
     deadV <- newTVarIO False
-    modeV <- newTVarIO Nothing
+    modeV <- newTVarIO []
     pipeV <- newTVarIO Nothing
     tidV <- newTVarIO Nothing
     homeV <- newTVarIO Nothing
@@ -127,7 +127,6 @@ flashStubPane pid = do
     alternateV <- newTVarIO False
     scrollbarV <- newTVarIO Nothing
     syncV <- newTVarIO noOutputSync
-    clockV <- newTVarIO NoClock
     viewV <- newTVarIO Nothing
     replyV <- newMVar ()
     pure Pane
@@ -137,7 +136,7 @@ flashStubPane pid = do
         , size = sizeV
         , dead = deadV
         , startCwd = "/"
-        , mode = modeV
+        , modes = modeV
         , options = optsV
         , pipe = pipeV
         , readerTid = tidV
@@ -150,7 +149,6 @@ flashStubPane pid = do
         , onAlternate = alternateV
         , scrollbarShown = scrollbarV
         , outputSync = syncV
-        , clock = clockV
         , viewBacking = viewV
         , replyLock = replyV
         }

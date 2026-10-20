@@ -94,7 +94,9 @@ import Hat.Server.ConfigCauses (addConfigCause, printConfigCauses)
 import Hat.Glob (globPaths)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd, viewToClient)
 import Hat.Server.Keys
-import Hat.Server.Overlay (handlePickerInput)
+import Hat.Server.PaneMode (dropModesForReload)
+import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree)
+import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Locate
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.MouseIO
@@ -467,7 +469,8 @@ commandSpecs =
     , (["clock-mode"], cmdClockMode)
     , (["command-prompt"], cmdCommandPrompt dispatch)
     , (["choose-tree"], cmdChooseTree)
-    , (["choose-window", "choosew"], cmdChooseWindow)
+    , (["choose-buffer"], cmdChooseBuffer)
+    , (["choose-client"], cmdChooseClient)
     , (["display-panes", "displayp"], cmdDisplayPanes)
     , (["display-menu", "menu"], cmdDisplayMenu)
     , (["display-popup", "popup"], cmdDisplayPopup)
@@ -650,7 +653,8 @@ cmdReload' scope st mclient args =
                 -- A failure anywhere past the capture reopens what the
                 -- reload closed — the parked readers and the accept gate —
                 -- so a failed reload keeps serving instead of freezing.
-                (do (cleanup, tree) <- captureReload req.carry st
+                (do dropModesForReload st
+                    (cleanup, tree) <- captureReload req.carry st
                     let blobPath = st.sockPath <> ".reload"
                     B.writeFile blobPath (encodeHandover cleanup tree)
                     keepOpenAcrossExec cleanup
@@ -1051,49 +1055,41 @@ shutDownServer st missuer = do
     atomically $ writeTVar st.sessions Map.empty
 
 cmdSendKeys :: CommandImpl
-cmdSendKeys st mclient args = do
-    mpicker <- maybe (pure Nothing) (readTVarIO . (.picker)) mclient
-    case (mpicker, mclient) of
-        -- An open chooser owns send-keys: they drive its navigation/search
-        -- (this is how the config's @… \; send-keys /@ enters search).
-        (Just pk, Just client) | not modeCmd -> do
-            _ <- handlePickerInput dispatch st client pk
-                (concatMap (tokenizeKeys . argBytes literal) pos)
-            pure []
-        -- -M passes the mouse event being acted on to the pane under it,
-        -- unless a mode holds that pane.
-        _ | "-M" `elem` flags -> do
-            mev <- clientMouseEvent mclient
-            case mev of
-                Nothing -> pure [RErr "no mouse target"]
-                Just ev -> do
-                    mp <- mouseEventPane st ev
-                    case mp of
-                        Nothing -> pure [RErr "no mouse target"]
-                        Just (_, _, pane, _) -> do
-                            inMode <- isJust <$> readTVarIO pane.mode
-                            [] <$ unless inMode (sendMouse st ev)
-        _ -> do
-            -- A full pane target (sess:win.N) resolves through cmd-find;
-            -- the special pane tokens (%N, !, {marked}) keep the old path.
-            let mtok = lookup "-t" opts
-            mpane <- case Target.parsePaneTarget mtok of
-                Target.PaneCurrent | Just t <- mtok -> do
-                    res <- findTarget st mclient Target.FindPane (Just t)
-                    pure $ case res of
-                        Right (_, _, _, p) -> Just p
-                        Left _ -> Nothing
-                _ -> targetPane st mclient mtok
-            case mpane of
-                Nothing -> pure []
-                Just pane -> do
-                    -- -R: reset the pane's terminal state, as RIS does.
-                    when ("-R" `elem` flags) $ do
-                        _ <- Emu.feed pane.emulator "\ESCc"
-                        atomically (bumpDirty st)
-                    case repeatCount of
-                        Left e -> pure [RErr e]
-                        Right n -> concat <$> replicateM n (keysInto pane)
+cmdSendKeys st mclient args
+    -- -M passes the mouse event being acted on to the pane under it,
+    -- unless a mode holds that pane.
+    | "-M" `elem` flags = do
+        mev <- clientMouseEvent mclient
+        case mev of
+            Nothing -> pure [RErr "no mouse target"]
+            Just ev -> do
+                mp <- mouseEventPane st ev
+                case mp of
+                    Nothing -> pure [RErr "no mouse target"]
+                    Just (_, _, pane, _) -> do
+                        inMode <- atomically (paneInMode pane)
+                        [] <$ unless inMode (sendMouse st ev)
+    | otherwise = do
+        -- A full pane target (sess:win.N) resolves through cmd-find;
+        -- the special pane tokens (%N, !, {marked}) keep the old path.
+        let mtok = lookup "-t" opts
+        mpane <- case Target.parsePaneTarget mtok of
+            Target.PaneCurrent | Just t <- mtok -> do
+                res <- findTarget st mclient Target.FindPane (Just t)
+                pure $ case res of
+                    Right (_, _, _, p) -> Just p
+                    Left _ -> Nothing
+            _ -> targetPane st mclient mtok
+        case mpane of
+            Nothing -> pure []
+            Just pane -> do
+                -- -R: reset the pane's terminal state, as RIS does.
+                when ("-R" `elem` flags) $ do
+                    _ <- Emu.feed pane.emulator "\ESCc"
+                    atomically (bumpDirty st)
+                case repeatCount of
+                    Left e -> pure [RErr e]
+                    Right n -> concat <$> replicateM n (keysInto pane)
   where
     -- -N: send the keys, or run the mode command, that many times.
     repeatCount = case lookup "-N" opts of
@@ -1113,24 +1109,49 @@ cmdSendKeys st mclient args = do
                         [] -> pure []
                     -- -H: each argument is one hex byte.
                     | hexBytes = case mapM hexByte pos of
-                        Just bytes ->
-                            [] <$ typeIntoPaneSynced st pane (B.pack bytes)
+                        Just bytes -> injectAll pane (map (SendBytes . B.singleton) bytes)
                         Nothing -> pure [RErr "send-keys -H: bad hex byte"]
-                    | otherwise = fmap (const []) . typeWrites . concat =<< forM pos (\a -> do
-                        -- a key sent to a pane in clock mode ends it instead
-                        spent <- clockModeKey st pane
-                        if spent then pure [] else case parseKeyName a of
-                            Just k | not literal -> keyWrites st pane k
-                            _ -> syncedWrites st pane (TE.encodeUtf8 a))
+                    | otherwise = injectAll pane (map sendInput pos)
+    sendInput a = case parseKeyName a of
+        Just k | not literal -> SendKey k
+        _ -> SendBytes (TE.encodeUtf8 a)
+    -- tmux's cmd_send_keys_inject_key over the arguments in turn: a pane in
+    -- no mode takes their bytes, written together; a mode takes each key
+    -- as it comes, so the keys after one that leaves the mode reach the
+    -- program.
+    injectAll pane = go []
+      where
+        go acc [] = [] <$ typeWrites (concat (reverse acc))
+        go acc (i : is) = atomically (topMode pane) >>= \case
+            Nothing -> do
+                ws <- case i of
+                    SendKey k -> keyWrites st pane k
+                    SendBytes bs -> syncedWrites st pane bs
+                go (ws : acc) is
+            Just m -> case i of
+                SendBytes bs -> go acc (map SendKey (tokenizeKeys bs) <> is)
+                SendKey k -> do
+                    typeWrites (concat (reverse acc))
+                    rs <- injectKey pane m k
+                    (rs <>) <$> go [] is
+    -- A mode with a key table runs the key's binding there against the
+    -- pane; any other mode takes the key itself.
+    injectKey pane m k = case m of
+        CopyMode cm -> do
+            km <- readTVarIO st.keymap
+            case Map.lookup k.name =<< Map.lookup cm.copyState.keyTable km of
+                Nothing -> pure []
+                Just b -> withCommandState st mclient pane $
+                    concat <$> mapM (runArgv st mclient) b.commands
+        _ -> [] <$ paneModeKey dispatch st mclient pane k
     (opts, flags, pos) = parseArgs "tN" args
     literal = "-l" `elem` flags
     hexBytes = "-H" `elem` flags
     modeCmd = "-X" `elem` flags
-    argBytes True a = TE.encodeUtf8 a
-    argBytes False a = case parseKeyName a of
-        Just k -> k.raw
-        Nothing -> TE.encodeUtf8 a
     hexByte t = case TR.hexadecimal t of
         Right (n, rest) | T.null rest, n >= 0, n <= 255 ->
             Just (fromIntegral (n :: Int))
         _ -> Nothing
+
+-- | One send-keys argument: a named key, or text sent as its bytes.
+data SendInput = SendKey Key | SendBytes B.ByteString

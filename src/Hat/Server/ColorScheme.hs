@@ -10,7 +10,6 @@ module Hat.Server.ColorScheme
     , schemeReport
     , applyPalette
     , flashStyle
-    , previewLabelStyle
     , WatcherFault (..)
     , watcherFault
     , MonitorRegistry
@@ -187,7 +186,6 @@ data Palette = Palette
     , activeBorder :: Cell.Style
     , flash        :: Cell.Style
     , mode         :: Cell.Style
-    , previewLabel :: Cell.Style
     }
 
 palette :: ColorScheme -> Palette
@@ -199,7 +197,6 @@ palette SchemeDark = Palette
     , activeBorder = (onlyFg 10) { Cell.bold = True }
     , flash        = fgBg 0 153
     , mode         = fgBg 0 179
-    , previewLabel = (fgBg 153 24) { Cell.bold = True }
     }
 palette SchemeLight = Palette
     { bar          = fgBg 22 151
@@ -209,21 +206,11 @@ palette SchemeLight = Palette
     , activeBorder = (onlyFg 22) { Cell.bold = True }
     , flash        = fgBg 255 25
     , mode         = fgBg 0 222
-    , previewLabel = (fgBg 24 153) { Cell.bold = True }
     }
 
--- | The bar heading each window in a chooser's stacked session preview, for
--- the scheme in force. Blue: the one accent the green\/amber chrome leaves
--- free, so a bar dividing two thumbnails never reads as a status bar or a
--- copy-mode selection. With no scheme detected it falls back to basic blue,
--- the palette a bare terminal still has.
-previewLabelStyle :: Maybe ColorScheme -> Cell.Style
-previewLabelStyle (Just scheme) = (palette scheme).previewLabel
-previewLabelStyle Nothing = (fgBg 15 4) { Cell.bold = True }
-
--- | The prefix flash's tint, for the scheme in force: blue again (see
--- 'previewLabelStyle'), as a background wash with a contrasting
--- foreground so the glyphs it covers stay readable — pale blue on dark,
+-- | The prefix flash's tint, for the scheme in force: blue, the one accent
+-- the green\/amber chrome leaves free, as a background wash with a
+-- contrasting foreground so the glyphs it covers stay readable — pale blue on dark,
 -- deep blue on light. Without a scheme, basic bright blue.
 flashStyle :: Maybe ColorScheme -> Cell.Style
 flashStyle (Just scheme) = (palette scheme).flash

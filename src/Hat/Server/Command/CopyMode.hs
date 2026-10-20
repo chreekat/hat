@@ -7,7 +7,6 @@ module Hat.Server.Command.CopyMode
 
 import Control.Concurrent.STM
 import Control.Monad (when)
-import Data.Maybe (isNothing)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -16,23 +15,19 @@ import Hat.Model
 import Hat.Model.Options (ModeKeys (..), Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.CopyMode qualified as CopyMode
-import Hat.Server.Hooks (PayloadItem (..), notifyPane)
+import Hat.Server.PaneMode (modifyTopMode, resetPaneMode)
 import Hat.Server.Scrollbars (revealScrollbar, scrollShowsScrollbar)
-import Hat.Server.ViewMode (leaveViewMode)
 
 runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
 runCopyModeCommand st pane name cmdArgs = do
-    mmode <- readTVarIO pane.mode
+    mmode <- atomically (topMode pane)
     case mmode of
-        Nothing -> pure []  -- not in copy mode; -X is a no-op
-        Just pm
+        Just (CopyMode pm)
             -- A digit key builds the @[count]@ prefix rather than running
             -- a motion; @0@ with no count pending is @start-of-line@.
             | name == "digit", Just d <- readDigit cmdArgs -> do
-                atomically $ do
-                    writeTVar pane.mode
-                        (Just (reMode (CopyMode.pushDigit d state)))
-                    bumpDirty st
+                atomically $ modifyTopMode st pane
+                    (reMode (CopyMode.pushDigit d state))
                 pure []
             | otherwise -> case Map.lookup name CopyMode.handlers of
                 Nothing -> pure []
@@ -50,25 +45,20 @@ runCopyModeCommand st pane name cmdArgs = do
                     case fmap (fmap unmarked) result of
                         -- A failed command leaves the mode untouched.
                         Left err -> pure [RErr err]
-                        Right r -> do
-                            r' <- traverse (scrollPaneToCursor pane) r
-                            atomically $ do
-                                writeTVar pane.mode (reMode <$> r')
-                                when (isNothing r') (leaveViewMode pane)
-                                bumpDirty st
-                            case r' of
-                                Nothing -> do
-                                    notifyPane st "pane-mode-changed" pane []
-                                    notifyPane st "pane-mode-exited" pane
-                                        [ ("mode_entered", PInt 0)
-                                        , ("current_mode", PText "")
-                                        , ("previous_mode", PText (modeName pm.kind)) ]
-                                Just s -> when (scrollShowsScrollbar name state.viewportOffY s.viewportOffY) $
-                                    revealScrollbar st pane
+                        Right Nothing -> [] <$ resetPaneMode st pane
+                        Right (Just r) -> do
+                            r' <- scrollPaneToCursor pane r
+                            atomically $ modifyTopMode st pane (reMode r')
+                            when (scrollShowsScrollbar name state.viewportOffY r'.viewportOffY) $
+                                revealScrollbar st pane
                             pure []
           where
             state = pm.copyState
-            reMode s = pm { copyState = s }
+            reMode s = \case
+                CopyMode cm -> CopyMode cm { copyState = s }
+                other -> other
+        -- not in copy mode; -X is a no-op
+        _ -> pure []
   where
     readDigit (a : _) = case TR.decimal a of
         Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
@@ -88,7 +78,7 @@ runCopyModeCommand st pane name cmdArgs = do
 -- over the pane's frozen snapshot (a no-op when not in copy mode).
 scrollPaneToCursor :: Pane -> CopyModeState -> IO CopyModeState
 scrollPaneToCursor pane s = do
-    mmode <- readTVarIO pane.mode
+    mmode <- atomically (topMode pane)
     pure $ case mmode of
-        Just pm -> CopyMode.scrollToCursor pm.frozen.fgHsize pm.frozen.fgSy s
-        Nothing -> s
+        Just (CopyMode pm) -> CopyMode.scrollToCursor pm.frozen.fgHsize pm.frozen.fgSy s
+        _ -> s

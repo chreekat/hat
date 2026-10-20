@@ -14,7 +14,7 @@ import Test.Hspec
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
     ( CharSearch (..), CharStop (..), CopyModeState (..), FrozenGrid (..)
-    , copyModeAt, ModeKind (..), PaneMode (..), LineNumbers (..), MarkShown (..)
+    , copyModeAt, ModeKind (..), CopyModeData (..), LineNumbers (..), MarkShown (..)
     , SearchDirection (..), SearchKind (..), SelKind (SelChar, SelLine, SelRect) )
 import Hat.Model.OptionTable (OptionValue (..))
 import Hat.Model.Options
@@ -441,7 +441,7 @@ spec = do
             baseChar c = case c.content of
                 Glyph ch _ _ -> ch
                 Continuation -> ' '
-            resized sz fg st = resizeCopyMode sz PaneMode { kind = ModeCopy, frozen = fg, copyState = st }
+            resized sz fg st = resizeCopyMode sz CopyModeData { kind = ModeCopy, frozen = fg, copyState = st }
             cursorAt r c = (copyModeAt "copy-mode" r c)
         it "rewraps the lines at the new width" $ do
             let pm = resized (Size { rows = 3, cols = 3 })
@@ -481,7 +481,7 @@ spec = do
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
                     | r <- rows ], fgWrapped = V.empty }
-            varsUnder n st = Map.fromList (copyModeFormats " " n PaneMode { kind = ModeCopy, frozen = frozen, copyState = st })
+            varsUnder n st = Map.fromList (copyModeFormats " " n CopyModeData { kind = ModeCopy, frozen = frozen, copyState = st })
             vars = varsUnder NumbersOff
             at = copyModeAt "copy-mode" 2 5
             look k st = Map.lookup k (vars st)
@@ -551,7 +551,7 @@ spec = do
                 , lineNumberStyle = fgOf 7, currentLineNumberStyle = fgOf 8
                 , drawPosition = \area -> area V.// [(0, glyphCell 'P' (fgOf 9))]
                 , searchPattern = Nothing }
-            view l st = copyView l PaneMode { kind = ModeCopy, frozen = frozen, copyState = st }
+            view l st = copyView l CopyModeData { kind = ModeCopy, frozen = frozen, copyState = st }
             at r c = (copyModeAt "copy-mode-vi" r c) { hidePosition = True }
             text l st r = T.pack [ baseChar' cell | cell <- V.toList (fst (view l st) V.! r) ]
             baseChar' cell = case cell.content of

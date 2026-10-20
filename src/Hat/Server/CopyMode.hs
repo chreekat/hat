@@ -190,7 +190,7 @@ freezeGrid e = do
 -- in the history, and the cursor kept on its character — on the screen's
 -- top row when that is in the history. Positions the state holds follow
 -- their characters too.
-resizeCopyMode :: Size -> PaneMode -> PaneMode
+resizeCopyMode :: Size -> CopyModeData -> CopyModeData
 resizeCopyMode sz pm
     | sx == fg.fgSx && sy == fg.fgSy = pm
     | otherwise = pm
@@ -1054,7 +1054,7 @@ cursorUnoffset width sx vx
     | otherwise = min (vx - width) (contentWidth width sx - 1)
 
 -- | The text column shown at pane column @px@ under the line numbering.
-textColumn :: LineNumberMode -> PaneMode -> Int -> Int
+textColumn :: LineNumberMode -> CopyModeData -> Int -> Int
 textColumn numbering pm = cursorUnoffset width pm.frozen.fgSx
   where
     width = lineNumberWidth (effectiveNumbers numbering pm.copyState.lineNumbers) pm.frozen
@@ -1079,7 +1079,7 @@ data CopyLook = CopyLook
 -- | tmux's @window_copy_write_line@ over every row, with the selection on
 -- top as the terminal draws it: the cells copy mode shows and where its
 -- cursor sits ('Nothing' when scrolled off).
-copyView :: CopyLook -> PaneMode -> (V.Vector (V.Vector Cell.Cell), Maybe Pos)
+copyView :: CopyLook -> CopyModeData -> (V.Vector (V.Vector Cell.Cell), Maybe Pos)
 copyView look pm = (V.generate sy screenRow, cursor)
   where
     fg = pm.frozen
@@ -1233,7 +1233,7 @@ copyModeNames =
 
 -- | tmux's @window_copy_formats@: the copy-mode variables of a pane in the
 -- mode, words split by the given separators.
-copyModeFormats :: Text -> LineNumberMode -> PaneMode -> [(Text, Text)]
+copyModeFormats :: Text -> LineNumberMode -> CopyModeData -> [(Text, Text)]
 copyModeFormats seps numbering pm =
     [ ("scroll_position", tshow s.viewportOffY)
     -- lines carry no time they entered the history: tmux's value for those
@@ -1312,10 +1312,10 @@ scrollToCursor hsize sy st =
 -- this while a mode is active).
 paneGrid :: Pane -> IO (Grid IO)
 paneGrid pane = do
-    mmode <- readTVarIO pane.mode
+    mmode <- atomically (topMode pane)
     pure $ case mmode of
-        Just pm -> frozenGrid pm.frozen
-        Nothing -> frozenGrid emptyFrozen
+        Just (CopyMode pm) -> frozenGrid pm.frozen
+        _ -> frozenGrid emptyFrozen
   where
     emptyFrozen = FrozenGrid
         { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty, fgWrapped = V.empty }
@@ -1625,14 +1625,14 @@ recentreTopBottom g st = (towards target) { recentre = Just (st.cursorRow, next)
 
 -- | tmux's @window_copy_start_drag@: the cursor to a pane position, with a
 -- character selection starting there.
-startDragSelection :: Int -> Int -> PaneMode -> PaneMode
+startDragSelection :: Int -> Int -> CopyModeData -> CopyModeData
 startDragSelection px py pm =
     let pm' = cursorToScreen px py pm
     in pm' { copyState = beginSelection pm'.copyState }
 
 -- | tmux's @window_copy_drag_update@: the cursor follows the mouse, the
 -- view scrolling a line when it reaches the top or bottom row.
-dragSelectionTo :: Int -> Int -> PaneMode -> PaneMode
+dragSelectionTo :: Int -> Int -> CopyModeData -> CopyModeData
 dragSelectionTo px py pm = cursorToScreen px py pm { copyState = s { viewportOffY = off } }
   where
     s = pm.copyState
@@ -1641,7 +1641,7 @@ dragSelectionTo px py pm = cursorToScreen px py pm { copyState = s { viewportOff
         | otherwise = s.viewportOffY
 
 -- | The copy-mode cursor at a position on the pane's screen.
-cursorToScreen :: Int -> Int -> PaneMode -> PaneMode
+cursorToScreen :: Int -> Int -> CopyModeData -> CopyModeData
 cursorToScreen px py pm = pm { copyState = s
     { cursorRow = pm.frozen.fgHsize - s.viewportOffY + py, cursorCol = px } }
   where

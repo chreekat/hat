@@ -157,7 +157,7 @@ spec = do
         it "keeps a string key alongside numeric ones" $
             fmap (Map.keys . (.commandAlias))
                 (setOption Assign defaultOptions "command-alias[zoom]" "z=x")
-                `shouldBe` Right [idx 0, idx 1, KeyName "zoom"]
+                `shouldBe` Right [idx 0, idx 1, idx 2, idx 3, KeyName "zoom"]
 
         it "appends onto one array key with -a" $ do
             let opts0 = set Assign defaultOptions
@@ -172,7 +172,7 @@ spec = do
                 `shouldBe` Right (Map.fromList [(idx 0, "a=b"), (idx 1, "c=d")])
 
         it "whole-array append fills the next free index" $
-            fmap (Map.lookup (idx 2) . (.commandAlias))
+            fmap (Map.lookup (idx 4) . (.commandAlias))
                 (setOption Append defaultOptions "command-alias" "x=y")
                 `shouldBe` Right (Just "x=y")
 
@@ -268,7 +268,7 @@ spec = do
             Map.lookup "focus-events" fmts `shouldBe` Just "0"
             Map.lookup "status-left" fmts `shouldBe` Just "[#{session_name}] "
             Map.lookup "command-alias" fmts
-                `shouldBe` Just "split-pane=split-window splitp=split-window"
+                `shouldBe` Just "split-pane=split-window splitp=split-window choose-window=choose-tree -w choose-session=choose-tree -s"
             Map.lookup "@x" fmts `shouldBe` Just "y"
         it "leaves out options hat does not implement" $
             Map.member "codepoint-widths" (optionFormats defaultOptions)

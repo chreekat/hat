@@ -13,6 +13,8 @@ module Hat.Server.Command.Buffer
     , cmdPipePane
     , storeBuffer
     , readClientStdin
+    , bufferEnv
+    , formatTrue
     ) where
 
 import Control.Concurrent.STM

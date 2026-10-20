@@ -419,7 +419,8 @@ optionTable =
     , live $ scalar "buffer-limit" ServerScope (KNumber 1 intMax) "50"
     -- hat's default omits tmux's aliases for commands hat lacks.
     , live $ arrayOf "command-alias" ServerScope KString ","
-        ["split-pane=split-window", "splitp=split-window"]
+        [ "split-pane=split-window", "splitp=split-window"
+        , "choose-window=choose-tree -w", "choose-session=choose-tree -s" ]
     , notYet $ arrayOf "codepoint-widths" ServerScope KString "," []
     , live $ scalar "copy-command" ServerScope KString ""
     , paneLocal $ live $

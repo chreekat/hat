@@ -18,6 +18,8 @@ module Hat.Server.FormatDraw
     , acsGlyph
       -- * Drawing
     , formatDraw
+    , FormatColours (..)
+    , formatDrawIn
     , DrawRange (..)
     , formatRanges
       -- * Style-aware measuring
@@ -269,6 +271,7 @@ data Walk = Walk
     , listAlign :: Align
     , fillColour :: Maybe Cell.Color
     , alignMap :: Map Align Section
+    , pinned :: Maybe Cell.Style  -- ^ the colours every cell keeps, if any
     }
 
 data ListState = NoList | InList | AfterList
@@ -280,19 +283,31 @@ type Tagged = (Cell.Cell, DrawRange)
 -- | tmux's @format_draw@: draw an expanded format over a row (the area,
 -- already holding whatever lies beneath), in @base@ style.
 formatDraw :: Theme -> Cell.Style -> Text -> V.Vector Cell.Cell -> V.Vector Cell.Cell
-formatDraw th base expanded area =
-    V.map fst (drawTagged th base expanded (V.map (, RangeNone) area))
+formatDraw = formatDrawIn OwnColours
+
+-- | Whether a drawn format's own colours show, or every cell keeps the
+-- base style's (tmux's @default_colours@).
+data FormatColours = OwnColours | BaseColours
+    deriving (Eq, Show)
+
+-- | 'formatDraw', its colours as 'FormatColours' says.
+formatDrawIn
+    :: FormatColours -> Theme -> Cell.Style -> Text -> V.Vector Cell.Cell
+    -> V.Vector Cell.Cell
+formatDrawIn use th base expanded area =
+    V.map fst (drawTagged use th base expanded (V.map (, RangeNone) area))
 
 -- | The ranges @format_draw@ leaves across a row @width@ cells wide: the
 -- range each column's text was drawn under, as a mouse click there finds
 -- it.
 formatRanges :: Theme -> Cell.Style -> Text -> Int -> V.Vector DrawRange
 formatRanges th base expanded width =
-    V.map snd (drawTagged th base expanded
+    V.map snd (drawTagged OwnColours th base expanded
         (V.replicate width (Cell.glyphCell ' ' base, RangeNone)))
 
-drawTagged :: Theme -> Cell.Style -> Text -> V.Vector Tagged -> V.Vector Tagged
-drawTagged th base expanded area = case walk start (T.unpack expanded) of
+drawTagged
+    :: FormatColours -> Theme -> Cell.Style -> Text -> V.Vector Tagged -> V.Vector Tagged
+drawTagged use th base expanded area = case walk start (T.unpack expanded) of
     Nothing -> area  -- an unterminated #[ draws nothing
     Just w -> arrange w (filled w)
   where
@@ -306,7 +321,10 @@ drawTagged th base expanded area = case walk start (T.unpack expanded) of
         , fillColour = Nothing
         , alignMap = Map.fromList
             [ (AlignDefault, SLeft), (AlignLeft, SLeft), (AlignCentre, SCentre)
-            , (AlignRight, SRight), (AlignAbsCentre, SAbsCentre) ] }
+            , (AlignRight, SRight), (AlignAbsCentre, SAbsCentre) ]
+        , pinned = case use of
+            OwnColours -> Nothing
+            BaseColours -> Just base }
     filled w = case w.fillColour of
         Just c -> V.replicate available
             (Cell.glyphCell ' ' Cell.defaultStyle { Cell.bg = c }, RangeNone)
@@ -383,8 +401,11 @@ directive body w = case styleParse w.currentDefault w.sy body of
     Nothing -> w
     Just parsed ->
         let saved = w.sy.cell
+            kept = case w.pinned of
+                Nothing -> parsed.cell
+                Just b -> parsed.cell { Cell.fg = b.fg, Cell.bg = b.bg }
             w1 = w { fillColour = maybe w.fillColour Just parsed.fill
-                   , sy = parsed { defaultType = DefaultBase } }
+                   , sy = parsed { defaultType = DefaultBase, cell = kept } }
             w2 = case parsed.defaultType of
                 DefaultPush -> w1 { currentDefault = saved }
                 DefaultPop -> w1 { currentDefault = w1.baseDefault }

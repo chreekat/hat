@@ -279,7 +279,7 @@ adoptPane st histLimit pid (psnap, rp) = do
     logEvent st.logger ReloadAdopt { pane = rawPane pid, phase = "ready" }
     sizeVar   <- newTVarIO esz
     deadVar   <- newTVarIO False
-    modeVar   <- newTVarIO Nothing
+    modeVar   <- newTVarIO []
     pipeVar   <- newTVarIO Nothing
     readerVar <- newTVarIO Nothing
     homeVar   <- newTVarIO Nothing
@@ -289,12 +289,11 @@ adoptPane st histLimit pid (psnap, rp) = do
     alternateVar <- newTVarIO rp.screen.altScreen
     scrollbarVar <- newTVarIO Nothing
     syncVar <- newTVarIO noOutputSync
-    clockVar <- newTVarIO NoClock
     viewVar <- newTVarIO Nothing
     replyVar <- newMVar ()
     let pane = Pane
             { id = pid, pty = pty, emulator = emu, size = sizeVar
-            , dead = deadVar, startCwd = T.unpack psnap.cwd, mode = modeVar
+            , dead = deadVar, startCwd = T.unpack psnap.cwd, modes = modeVar
             , options = optionsVar, home = homeVar
             , pipe = pipeVar, readerTid = readerVar, pendingInput = Nothing
             , start = case rp.start of
@@ -302,7 +301,7 @@ adoptPane st histLimit pid (psnap, rp) = do
                 StartCommand t -> ShellCommand t
                 StartArgv argv -> ExecArgv argv
             , exited = exitedVar, kind = psnap.kind, inputOff = inputOffVar
-            , onAlternate = alternateVar, scrollbarShown = scrollbarVar, outputSync = syncVar, clock = clockVar
+            , onAlternate = alternateVar, scrollbarShown = scrollbarVar, outputSync = syncVar
             , viewBacking = viewVar, replyLock = replyVar }
     -- A surviving app that held the ?2031 subscription never re-emits it across
     -- the reload, so re-push the current scheme once — otherwise it renders the

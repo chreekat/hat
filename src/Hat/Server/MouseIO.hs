@@ -239,11 +239,14 @@ reshapeFloat st ev pid reshape = do
 -- beside any line numbers.
 onText
     :: ServerState -> Session -> Window -> Pane -> Int
-    -> (Int -> PaneMode -> PaneMode) -> STM ()
+    -> (Int -> CopyModeData -> CopyModeData) -> STM ()
 onText st sess win pane px f = do
     opts <- resolveForPane st sess win pane
     let numbering = CopyMode.lineNumberModeOf (optionText "copy-mode-line-numbers" opts)
-    modifyTVar' pane.mode $ fmap $ \pm -> f (CopyMode.textColumn numbering pm px) pm
+    modifyTVar' pane.modes $ \case
+        e : rest | CopyMode pm <- e.mode ->
+            e { mode = CopyMode (f (CopyMode.textColumn numbering pm px) pm) } : rest
+        es -> es
 
 -- | tmux's @cmd_resize_pane_mouse_resize_tiled@: the borders next to where
 -- the drag was move to where it is now.
@@ -314,12 +317,12 @@ mouseFormatVars st client ev = do
         Nothing -> pure []
         Just (pane, (x, y)) -> do
             seps <- (.wordSeparators) <$> readTVarIO st.options
-            mmode <- readTVarIO pane.mode
+            mmode <- atomically (topMode pane)
             (g, row) <- case mmode of
-                Just pm -> pure
+                Just (CopyMode pm) -> pure
                     ( CopyMode.frozenGrid pm.frozen
                     , pm.frozen.fgHsize - pm.copyState.viewportOffY + y )
-                Nothing -> do
+                _ -> do
                     scr <- Emu.snapshot pane.emulator
                     pure (CopyMode.frozenGrid FrozenGrid
                         { fgHsize = 0, fgSy = V.length scr.cells

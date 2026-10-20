@@ -235,7 +235,9 @@ reconcilePaneSizes st = do
                 Hat.Term.Pty.resize pane.pty sz
                 atomically $ do
                     writeTVar pane.size sz
-                    modifyTVar' pane.mode (fmap (resizeCopyMode sz))
+                    modifyTVar' pane.modes $ map $ \e -> case e.mode of
+                        CopyMode d -> e { mode = CopyMode (resizeCopyMode sz d) }
+                        _ -> e
                     bumpDirty st
                 notifyPane st "pane-resized" pane
                     [ ("old_width", PInt (fromIntegral old.cols))
