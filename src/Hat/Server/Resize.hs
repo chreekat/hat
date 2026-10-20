@@ -6,11 +6,6 @@ module Hat.Server.Resize
     ( resizeModeOf
     , applySessionSize
     , recalculateSizes
-    , windowSize
-    , Sizer (..)
-    , Viewing (..)
-    , SizedBy (..)
-    , sizeWindow
     , clientWindowArea
     , clientClaim
     , windowArea

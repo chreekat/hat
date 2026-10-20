@@ -348,6 +348,7 @@ switchToInfo st sess ix = do
             attached <- not . null <$> sessionClients st sess.id
             wopts <- resolveForWindow st sess win
             writeTVar win.activity (not attached && wopts.monitorActivity)
+            -- See Note [Sizing per session]
             recalculateSizes st
             bumpDirty st
             pure (Just (cur, Map.lookup cur ws, ix, win))
