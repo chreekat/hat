@@ -177,6 +177,11 @@ data Hello = Hello
                               --   carries across a restart; absent in a
                               --   seven-field hello -> @[]@. See
                               --   'Hat.Server.Conn.newClient'.
+    , termCaps     :: Maybe [Text]
+        -- ^ the terminfo capabilities read for @term@, as
+        --   'Hat.Client.Terminfo.readTermCaps' lists them (@[]@ when the
+        --   client has no terminal or no @TERM@); 'Nothing' from an
+        --   eight-field hello, whose client predates them.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -376,7 +381,7 @@ nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 -- >= 6 and ignores extras, so fields can be appended compatibly.
 encodeHello :: Hello -> Encoding
 encodeHello h =
-       encodeListLen 8
+       encodeListLen (maybe 8 (const 9) h.termCaps)
     <> encodeWord16 h.protoVersion
     <> encode h.term
     <> encode h.env
@@ -385,6 +390,7 @@ encodeHello h =
     <> encode h.intent
     <> encode h.autostarted
     <> encode h.sessionHist
+    <> foldMap encode h.termCaps
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -403,7 +409,8 @@ decodeHello = do
                 -- absent; any the decoder doesn't know yet are skipped.
                 <*> (if n >= 7 then decode else pure False)
                 <*> (if n >= 8 then decode else pure [])
-            replicateM_ (max 0 (n - 8)) skipField
+                <*> (if n >= 9 then Just <$> decode else pure Nothing)
+            replicateM_ (max 0 (n - 9)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).

@@ -845,7 +845,7 @@ spec = do
                     { protoVersion = protocolVersion + 1
                     , term = "xterm", env = [], size = Size 24 80
                     , cwd = "/", intent = ControlIntent
-                    , autostarted = False, sessionHist = [] }
+                    , autostarted = False, sessionHist = [], termCaps = Nothing }
             serverRe <- newReadEnd server
             clientRe <- newReadEnd client
             withAsync (welcome dispatch st serverRe h) $ \_ -> do

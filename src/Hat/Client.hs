@@ -32,9 +32,11 @@ import System.Environment (getEnvironment, lookupEnv)
 import System.IO
 import System.Posix.IO (stdInput, stdOutput)
 import System.Posix.Signals (Handler (Catch), installHandler)
+import System.Posix.Terminal (queryTerminal)
 import System.Process (CreateProcess (..), createProcess, shell, waitForProcess)
 
 import Hat.Client.Draw
+import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
 import Hat.Server.Command.Session (newSessionValueFlags)
 import Hat.Server.Command.Types (parseArgs)
@@ -81,22 +83,34 @@ terminalMode [verb : args]
     | verb `elem` ["attach-session", "attach"] = GrabsTerminal
 terminalMode _ = FireAndForget
 
-hello :: Word16 -> Autostart -> Intent -> [Text] -> IO ClientToServer
-hello v origin intent hist = do
-    term <- maybe "xterm" T.pack <$> lookupEnv "TERM"
+-- | Run with the hello, or answer why this terminal cannot be used: as in
+-- tmux, a client whose standard input is a terminal reads its @TERM@'s
+-- terminfo entry first, and fails if there is none.
+withHello
+    :: Word16 -> Autostart -> Intent -> [Text] -> (Text -> r)
+    -> (ClientToServer -> IO r) -> IO r
+withHello v origin intent hist refuse body = do
+    mterm <- lookupEnv "TERM"
+    tty <- queryTerminal stdInput
+    ecaps <- case mterm of
+        Just t | tty, not (null t) -> readTermCaps (T.pack t)
+        _ -> pure (Right [])
     env0 <- getEnvironment
     sz <- ttySize
     dir <- getCurrentDirectory
-    pure $ ClientHello Hello
-        { protoVersion = v
-        , term = term
-        , env = [(T.pack k, T.pack v') | (k, v') <- env0]
-        , size = sz
-        , cwd = T.pack dir
-        , intent = intent
-        , autostarted = origin == Autostarted
-        , sessionHist = hist
-        }
+    case ecaps of
+        Left e -> pure (refuse e)
+        Right caps -> body $ ClientHello Hello
+            { protoVersion = v
+            , term = maybe "xterm" T.pack mterm
+            , env = [(T.pack k, T.pack v') | (k, v') <- env0]
+            , size = sz
+            , cwd = T.pack dir
+            , intent = intent
+            , autostarted = origin == Autostarted
+            , sessionHist = hist
+            , termCaps = Just caps
+            }
 
 -- | Attach to the server and shuttle bytes until detach or death. The
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
@@ -111,9 +125,10 @@ runClient sock origin setup hist = do
         Nothing -> attachClient protocolVersion sock origin setup hist
 
 attachClient :: Word16 -> Socket -> Autostart -> [[Text]] -> [Text] -> IO ExitReason
-attachClient v sock origin setup hist = do
+attachClient v sock origin setup hist =
+    withHello v origin (AttachIntent setup) hist Rejected $ \h -> do
     re <- newReadEnd sock
-    sendMessage sock =<< hello v origin (AttachIntent setup) hist
+    sendMessage sock h
     greeting <- recvMessage re
     case greeting of
         Just (Known (Welcome _)) ->
@@ -241,9 +256,10 @@ data ControlFlavour = ControlLines | ControlDcs
 -- empty input line. Returns the exit status the server gave.
 runControlMode
     :: Socket -> Autostart -> ControlFlavour -> [[Text]] -> IO (Either ExitReason Int)
-runControlMode sock origin flavour setup = do
+runControlMode sock origin flavour setup =
+    withHello protocolVersion origin (ControlModeIntent setup) [] (Left . Rejected) $ \h -> do
     re <- newReadEnd sock
-    sendMessage sock =<< hello protocolVersion origin (ControlModeIntent setup) []
+    sendMessage sock h
     greeting <- recvMessage re
     case greeting of
         Just (Known (Welcome _)) -> do
@@ -330,9 +346,10 @@ runControl :: Socket -> Autostart -> [[Text]] -> IO ExitReason
 runControl sock origin cmds = controlAt protocolVersion sock origin cmds
 
 controlAt :: Word16 -> Socket -> Autostart -> [[Text]] -> IO ExitReason
-controlAt v sock origin cmds = do
+controlAt v sock origin cmds =
+    withHello v origin ControlIntent [] Rejected $ \h -> do
     re <- newReadEnd sock
-    sendMessage sock =<< hello v origin ControlIntent []
+    sendMessage sock h
     -- A server exiting as we connect resets the connection: it never saw us.
     greeting <- recvMessage re `catch` \(_ :: IOException) -> pure Nothing
     case greeting of
