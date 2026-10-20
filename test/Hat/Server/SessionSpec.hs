@@ -68,7 +68,7 @@ import Hat.Server.PaneMode (enterClockMode, resetPaneMode, setPaneMode)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
-import Hat.Server.Command.Window (cmdRenameWindow, cmdResizeWindow, cmdUnlinkWindow)
+import Hat.Server.Command.Window (cmdRenameWindow, cmdResizeWindow, cmdSelectWindow, cmdUnlinkWindow)
 import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), emptyEnviron, environFind
     , environSet )
@@ -89,6 +89,7 @@ import Hat.Server.InputRequests (Asked (..))
 import Hat.Model.PasteBuffers (PasteBuffer (..), pasteTop)
 import Hat.Server.InputRequestsIO (askTerminal, paneReply)
 import Hat.Term.HostProtocol (OscTerm (..))
+import Hat.Term.Caps (CapValue (..), TtyTerm (..))
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
@@ -997,6 +998,7 @@ spec = do
             locked a `shouldReturn` False
         it "sizes the session from its unlocked clients only" $ do
             (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
             [] <- runArgv st Nothing ["set", "-g", "window-size", "smallest"]
             _ <- addClient st (SessionId 0) big 2
             s <- addClient st (SessionId 0) small 1
@@ -1025,12 +1027,14 @@ spec = do
             pane s = s { rows = s.rows - 1 }
         it "follows the most-recently-active client by default (latest)" $ do
             (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
             _ <- addClient st (SessionId 0) big 2      -- bigger client is newer
             _ <- addClient st (SessionId 0) small 1
             applySessionSize st (SessionId 0)
             readTVarIO sess.lastSize `shouldReturn` pane big
         it "fits the smallest client under window-size smallest" $ do
             (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
             atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "window-size" (OVScalar "smallest"))
             _ <- addClient st (SessionId 0) big 2
@@ -1039,6 +1043,7 @@ spec = do
             readTVarIO sess.lastSize `shouldReturn` pane small
         it "keeps a manual size whatever the clients" $ do
             (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
             sz0 <- readTVarIO sess.lastSize
             atomically $ writeOwn st.globalWindowOptions
                 (singletonDelta "window-size" (OVScalar "manual"))
@@ -1066,6 +1071,7 @@ spec = do
                 `shouldReturn` [RErr "width too small"]
         it "carves no status row when status is off" $ do
             (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
             atomically $ writeOwn st.globalSessionOptions
                 (singletonDelta "status" (OVScalar "off"))
             _ <- addClient st (SessionId 0) small 1
@@ -1960,6 +1966,74 @@ spec = do
             atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
                 `shouldReturn` (Size 10 40, Size 24 80)
 
+        -- Two sessions sharing windows 0 and 1, @sess@ viewing 0 from a
+        -- 200x50 client, @other@ viewing 1 from an 80x24 one.
+        let sharedPair = do
+                (st, sess) <- seedSession "/"
+                other <- addSession st 1
+                w0 <- addWindow sess 0
+                w1 <- addWindow sess 1
+                p0 <- stubPane 0
+                p1 <- stubPane 1
+                atomically $ do
+                    modifyTVar' w0.panes (Map.insert p0.id p0)
+                    modifyTVar' w1.panes (Map.insert p1.id p1)
+                    modifyTVar' other.windows (Map.insert 0 w0 . Map.insert 1 w1)
+                    writeTVar other.currentIx 1
+                _ <- addClient st sess.id (Size 50 200) 1
+                _ <- addClient st other.id (Size 24 80) 2
+                pure (st, sess, other, w0, w1)
+            smallestSizing st = atomically $ writeOwn st.globalWindowOptions
+                (singletonDelta "window-size" (OVScalar "smallest"))
+
+        it "sizes a shared window from the clients of every session holding it" $ do
+            (st, sess, other, w0, w1) <- sharedPair
+            smallestSizing st
+            applySessionSize st sess.id
+            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
+                `shouldReturn` (Size 23 80, Size 23 80)
+            mapM (readTVarIO . (.lastSize)) [sess, other]
+                `shouldReturn` [Size 23 80, Size 23 80]
+
+        it "sizes an aggressive-resize window only from the clients viewing it" $ do
+            (st, sess, other, w0, w1) <- sharedPair
+            smallestSizing st
+            atomically $ writeOwn w0.options
+                (singletonDelta "aggressive-resize" (OVScalar "on"))
+            applySessionSize st sess.id
+            atomically ((,) <$> windowArea st w0 <*> windowArea st w1)
+                `shouldReturn` (Size 49 200, Size 23 80)
+            mapM (readTVarIO . (.lastSize)) [sess, other]
+                `shouldReturn` [Size 49 200, Size 23 80]
+
+        it "resizes an aggressive-resize window when a session switches to it" $ do
+            (st, sess, other, w0, _) <- sharedPair
+            smallestSizing st
+            atomically $ writeOwn w0.options
+                (singletonDelta "aggressive-resize" (OVScalar "on"))
+            applySessionSize st sess.id
+            cmdSelectWindow st Nothing ["-t", "s:0"] `shouldReturn` []
+            atomically (windowArea st w0) `shouldReturn` Size 23 80
+            readTVarIO sess.lastSize `shouldReturn` Size 23 80
+            readTVarIO other.lastSize `shouldReturn` Size 23 80
+
+        it "sizes a shared window under latest by its newest viewer, not a newer client elsewhere" $ do
+            (st, sess, _, w0, _) <- sharedPair
+            applySessionSize st sess.id
+            atomically (windowArea st w0) `shouldReturn` Size 49 200
+
+        it "resizes a shared latest window when one of its viewers becomes the newest" $ do
+            (st, sess, other, w0, _) <- sharedPair
+            atomically (writeTVar other.currentIx 0)
+            applySessionSize st sess.id
+            atomically (windowArea st w0) `shouldReturn` Size 23 80
+            [older] <- atomically (sessionClients st sess.id)
+            atomically (writeTVar st.activityClock 10)
+            handleInput dispatch st older ""
+            atomically (windowArea st w0) `shouldReturn` Size 49 200
+            mapM (readTVarIO . (.lastSize)) [sess, other]
+                `shouldReturn` [Size 49 200, Size 49 200]
+
         it "takes the area of the session whose client last viewed the window" $
             pickArea
                 [ (AreaClaim False (Just 9), Size 10 10)
@@ -2327,12 +2401,33 @@ spec = do
                 [ROutput "|client-detached:client-1|client-closed:client-1"]
 
     describe "input routing within a chunk" $ do
+        -- Keys typed back to back here, so no paste is assumed of them.
         let keyed = do
                 (st, sess) <- seedSession "/"
-                atomically $ writeTVar st.keymap defaultKeymap
+                atomically $ do
+                    writeTVar st.keymap defaultKeymap
+                    writeOwn st.globalSessionOptions
+                        (singletonDelta "assume-paste-time" (OVScalar "0"))
                 _ <- addWindow sess 0
                 client <- addClient st sess.id (Size 24 80) 1
                 pure (st, client)
+        -- "aby" from a terminal with the given capabilities, under a 10s
+        -- assume-paste-time and with y bound: what @x is left at.
+        let fastKeys caps = do
+                (st, sess) <- seedSession "/"
+                _ <- addWindow sess 0
+                client <- addClient st sess.id (Size 24 80) 1
+                atomically $ writeTVar client.ttyTerm $ Just TtyTerm
+                    { name = "dumb", caps = Map.fromList caps
+                    , features = Set.empty, termType = "" }
+                [] <- runArgv st Nothing ["bind", "-n", "y", "set", "-g", "@x", "1"]
+                [] <- runArgv st Nothing ["set", "-g", "assume-paste-time", "10000"]
+                handleInput dispatch st client "aby"
+                Map.lookup "@x" . (.user) <$> readTVarIO st.options
+        it "keys arriving within assume-paste-time skip the key tables" $
+            fastKeys [] `shouldReturn` Nothing
+        it "assumes no paste from a terminal that brackets its pastes" $
+            fastKeys [("Enbp", StrCap "\\E[?2004h")] `shouldReturn` Just "1"
         it "keys after the key that opens the prompt are typed into it" $ do
             (st, client) <- keyed
             handleInput dispatch st client "\x02:abc"

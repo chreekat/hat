@@ -38,7 +38,7 @@ spot-read of each suspect consumer.
 | `prefix` / `prefix2` | `keyContext` → `routeKey` (Conn.hs, Keys.hs); `send-prefix [-2]`; `None` is no key | implemented ✅ tested | pure (KeysSpec) |
 | `key-table` | `keyContext` → `routeKey`: the client's default table | implemented ✅ tested | pure (KeysSpec) |
 | `repeat-time` / `initial-repeat-time` | `routeKey` (a `bind -r` binding keeps its table open), `expireKeyRepeat` timer in `inputLoop` (Conn.hs) | implemented ✅ tested | pure (KeysSpec) |
-| `assume-paste-time` | none — tmux skips paste detection when the client terminal has bracketed paste, and every hat client enables it (`enterAltScreen`); pastes arrive bracketed and bypass the key tables (`routeKey`) | implemented (by design) | — |
+| `assume-paste-time` | `assumedPaste` → `routeKey` (Keys.hs): from the second key in a row arriving within it of the one before, keys skip the key tables and go to the pane as pasted; a bracketed paste takes precedence. never on a terminal whose capabilities include `Enbp` (`assumePasteFor`, Conn.hs), as in tmux | implemented ✅ tested | pure (KeysSpec) |
 | `allow-set-title` | pane reader `TitleRequest` (Pane.hs): OSC 0/2 and APC, cleaned by `cleanName` | implemented ✅ tested | integration (check-names) |
 | `allow-rename` | pane reader `RenameRequest` → `renameFromApp` (Pane.hs): `ESC k` names the window | implemented ✅ tested | integration (check-names) |
 | `alternate-screen` | `hostPolicyOf` → `scrubHost` drops ?47/?1047/?1049 (HostProtocol.hs) | implemented ✅ tested | pure (EmulatorSpec) |
@@ -254,10 +254,15 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
   marking order, newest pane first; hat orders by pane id, which matches
   until `swap-pane`/`join-pane` reorder tmux's z-order.
 
-- **`aggressive-resize`** is accepted but read by nothing. tmux uses it to
-  size a window only from clients whose *current* window it is; hat sizes all
-  of a session's windows together from that session's own clients, so the
-  option could only matter for a window linked into several sessions.
+- **`aggressive-resize`** sizes a window only from the clients whose current
+  window it is, and without it from the clients of every session holding it,
+  as tmux does (`windowSize`). Hat still stores one area per session, its
+  current window's, so: a window no client sizes keeps a holding session's
+  area rather than its own last size; a `manual` size (`resize-window`)
+  belongs to the session, so it is lost once the session's area follows
+  another window; and `latest` follows the window's most recently active
+  *viewer* by activity stamp, where tmux tracks each window's latest client
+  (moved by `select-window` too, and still counted once it looks elsewhere).
 
 - **`default-shell`** runs as a plain interactive shell named by its path,
   where tmux starts a login shell (`-name`) and runs `-c` commands under the

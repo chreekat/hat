@@ -566,7 +566,9 @@ refreshAutoNames st = do
                 mnew <- autoName st sess ix win fmt
                 forM_ mnew $ \newName -> atomically $ do
                     cur <- readTVar win.name
-                    when (cur /= newName && not (T.null newName)) $ do
+                    -- An explicit name given since the read above stands.
+                    stillAuto <- readTVar win.autoRename
+                    when (stillAuto && cur /= newName && not (T.null newName)) $ do
                         writeTVar win.name newName
                         bumpDirty st
 
