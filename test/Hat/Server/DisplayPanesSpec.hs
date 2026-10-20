@@ -5,8 +5,11 @@ import Test.Hspec
 
 import Hat.Geometry (Pos (..))
 import Hat.Model (PanesKeyHold (..))
+import Hat.Model.Options (Options (..), defaultOptions)
 import Hat.Server.DisplayPanes
+import Hat.Server.FormatDraw (colourValue)
 import Hat.Term.Cell qualified as Cell
+import Hat.TestSupport (clientTheme)
 
 blue :: Cell.Color
 blue = Cell.Indexed 4
@@ -21,6 +24,13 @@ textOf stamps = sort [ (p, Cell.baseChar c) | (p, c) <- stamps, c.style.fg == bl
 
 spec :: Spec
 spec = do
+    describe "the default colours" $
+        it "are hat's ANSI blue, and red for the active pane, under a client's theme" $ do
+            let th = clientTheme defaultOptions
+            colourValue th defaultOptions.displayPanesColour `shouldBe` Just (Just blue)
+            colourValue th defaultOptions.displayPanesActiveColour
+                `shouldBe` Just (Just (Cell.Indexed 1))
+
     describe "panesStamp" $ do
         let label = Just [ (i, Cell.glyphCell ch Cell.defaultStyle { Cell.fg = blue })
                          | (i, ch) <- zip [7 ..] "11x7" ]

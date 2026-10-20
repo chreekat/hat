@@ -62,7 +62,8 @@ import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
 import Hat.Server.Toast (showReplies, showToast)
 import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
-import Hat.Server.Pane (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, syncTargets)
+import Hat.Server.Pane
+    (clockModeKey, coalesceWrites, deadNoticeBytes, enterClockMode, keyEncoding, syncTargets)
 import Hat.Server.Command.Session
     ( DestroyUnattached (..), checkUnattached, cmdKillSession, cmdNewSession
     , cmdRenameSession, destroysUnattached )
@@ -2273,6 +2274,11 @@ spec = do
                 `shouldReturn` "\ESC[27;5;13~"
             ((.raw) <$> reencodeKey on { format = FormatCsiU } (Just emu) cEnter)
                 `shouldReturn` "\ESC[13;5u"
+        it "honours the app's request under hat's default extended-keys" $ do
+            emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
+            _ <- Emu.feed emu "\ESC[>4;2m"
+            ((.raw) <$> reencodeKey (keyEncoding defaultOptions) (Just emu) (Key "C-Enter" "\r"))
+                `shouldReturn` "\ESC[27;5;13~"
         it "extended-keys off ignores the app's request" $ do
             emu <- Emu.newEmulator Size { rows = 4, cols = 10 } 100
             _ <- Emu.feed emu "\ESC[>4;2m"

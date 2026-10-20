@@ -39,9 +39,11 @@ import Hat.Term.HostProtocol
     ( CursorChange (..), HostPolicy (..), OscTerm (..), applyCursorChange
     , defaultCursorModel, terminalCursor, terminalCursorBytes )
 import Hat.Server.Scene
+import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.View (messageLine, promptCursorOf, statusLayout)
 import Hat.Term.Cell qualified as Cell
+import Hat.TestSupport (clientTheme)
 
 spec :: Spec
 spec = do
@@ -139,6 +141,11 @@ spec = do
                 (Cell.baseChar . snd <$> List.find ((== Pos 1 2) . fst)
                     (sceneChrome (look (Map.singleton (Pos 1 2) '\x25b6')) (buildScene input)))
                     `shouldBe` Just '\x25b6'
+            it "hat's defaults: plain borders, the active pane's in ANSI green" $ do
+                let th = clientTheme defaultOptions
+                styleCell th defaultOptions.paneBorderStyle `shouldBe` Cell.defaultStyle
+                styleCell th defaultOptions.paneActiveBorderStyle
+                    `shouldBe` Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
 
         -- pane-scrollbars-position: a reserved scrollbar takes its
         -- columns from that side of the pane, leaving at least one.

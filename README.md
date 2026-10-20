@@ -111,7 +111,7 @@ options, and formats; this section covers where Hat differs or adds.
 | Session store | `$XDG_DATA_HOME/hat/<socket>.db` (default `~/.local/share/hat/`), one per socket name. Override the directory with `HAT_STORE_DIR`. |
 | In a pane | `TMUX` and `TMUX_PANE` are set as tmux sets them, so tmux-aware tools work; `HAT` and `HAT_PANE` mirror them. |
 
-Invocation flags are `-f`, `-L`, `-S`, and `-C` (control mode, partial).
+Invocation flags are `-f`, `-L`, `-S`, `-C` (control mode, partial) and `-V` (print the version).
 
 ### Upgrading in place
 
