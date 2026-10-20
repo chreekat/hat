@@ -31,6 +31,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -74,7 +75,8 @@ import Hat.Server.Pane
 import Hat.Server.Render
 import Hat.Server.Resize
 import Hat.Server.View
-import Hat.Term.Caps (appliedFeatures, capList, createTerm)
+import Hat.Term.Caps
+    (appliedFeatures, capList, createTerm, identificationQueries, identify, parseIdentification)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel)
 import Hat.Transport.Wire
@@ -219,6 +221,8 @@ welcome d st re h = do
                     sendMessage conn (Welcome sname)
                     sendMessage conn (ServerVersion protocolVersion)
                     atomically $ writeTVar client.ready True
+                    forM_ mterm $ \t ->
+                        send client (Notify (TE.encodeUtf8 (identificationQueries t)))
                     logEvent st.logger ClientConnected
                         { client = rawClient client.id, term = h.term }
                     -- Linked: a dying render loop must end the connection
@@ -674,9 +678,27 @@ flushHeldEscape d st client = do
 -- keyboard.
 deliverInput :: Dispatch -> ServerState -> Client -> [Key] -> IO ()
 deliverInput d st client keys = do
-    let (replies, typed) = partition isTerminalReply keys
+    let (replies, keys') = partition isTerminalReply keys
+        (idents, typed) = partition isIdentification keys'
     mapM_ (terminalReplied st client . B.drop 1 . (.raw)) replies
+    mapM_ (identified st client . (.raw)) idents
     deliverKeys d st client typed
+
+-- | A client's terminal identified itself: add the features that reveals
+-- to its terminal, and if that changes it, send the client the new one
+-- and redraw it in full (tmux's @tty_update_features@).
+identified :: ServerState -> Client -> ByteString -> IO ()
+identified st client raw = forM_ (parseIdentification (TE.decodeUtf8Lenient raw)) $ \ident -> do
+    overrides <- optionArray "terminal-overrides" <$> readTVarIO st.options
+    changed <- atomically $ readTVar client.ttyTerm >>= \case
+        Just t | t' <- identify overrides ident t, t' /= t -> do
+            writeTVar client.ttyTerm (Just t')
+            writeTVar client.needsFull True
+            bumpDirty st
+            pure (Just t')
+        _ -> pure Nothing
+    forM_ changed $ \t -> when (client.wireLevel >= 11) $
+        send client (OpenedTerminal (capList t) (appliedFeatures t))
 
 -- | A client's terminal replied to a query forwarded for a pane: the pane
 -- that asked gets its answer — a clipboard's only under @get-clipboard@

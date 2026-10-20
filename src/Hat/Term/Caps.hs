@@ -22,6 +22,12 @@ module Hat.Term.Caps
     , appliedFeatures
       -- * Resolving
     , createTerm
+    , vt100Like
+      -- * Identifying
+    , Identification (..)
+    , identificationQueries
+    , parseIdentification
+    , identify
     , overrideEntries
     , unvis
       -- * Derived flags (tmux's @TERM_*@)
@@ -115,6 +121,7 @@ data TtyTerm = TtyTerm
     { name :: Text
     , caps :: Map Text CapValue
     , features :: Set Feature
+    , termType :: Text  -- ^ the name and version the terminal gave for itself
     }
     deriving (Eq, Show)
 
@@ -407,7 +414,7 @@ createTerm nm raw overrides featureOpt colorterm
     | not (hasCap "cup" t1) = Left "terminal does not support cup"
     | otherwise = Right (applyFeatures feat2 t1)
   where
-    t0 = TtyTerm { name = nm, caps = readCaps raw, features = Set.empty }
+    t0 = TtyTerm { name = nm, caps = readCaps raw, features = Set.empty, termType = "" }
     fromOpt = List.foldl' (\fs o -> case overrideEntries o of
                     pat : rest | globMatch False pat nm -> addFeatures rest fs
                     _ -> fs)
@@ -418,19 +425,95 @@ createTerm nm raw overrides featureOpt colorterm
         _ -> id
     feat0 = fromColorterm fromOpt
     t1 = applyOverrides overrides t0
-    vt100Like = capFlag "XT" t1 || "\ESC[" `T.isPrefixOf` capString "clear" t1
-    feat1 | vt100Like = Set.union (Set.fromList [FBpaste, FFocus, FTitle]) feat0
+    feat1 | vt100Like t1 = Set.union (Set.fromList [FBpaste, FFocus, FTitle]) feat0
           | otherwise = feat0
     feat2 | (capFlag "Tc" t1 || hasCap "RGB" t1)
             && not (hasCap "setrgbf" t1 && hasCap "setrgbb" t1) = Set.insert FRGB feat1
           | otherwise = feat1
-    -- tmux's tty_apply_features, then the overrides again so they win.
-    applyFeatures fs t
-        | Set.null fs = t
-        | otherwise = applyOverrides overrides t
-            { caps = List.foldl' (\m f -> applyCaps (featureCaps f) m) t.caps
-                (Set.toAscList fs)
-            , features = fs }
+    applyFeatures fs = addTermFeatures overrides (Set.toAscList fs)
+
+-- | Apply the features a term does not have yet, then the overrides again
+-- so they win (tmux's @tty_apply_features@ and @tty_term_apply_overrides@).
+addTermFeatures :: [Text] -> [Feature] -> TtyTerm -> TtyTerm
+addTermFeatures overrides fs t = case Set.toAscList fresh of
+    [] -> t
+    new -> applyOverrides overrides t
+        { caps = List.foldl' (\m f -> applyCaps (featureCaps f) m) t.caps new
+        , features = Set.union t.features fresh }
+  where
+    fresh = Set.fromList fs `Set.difference` t.features
+
+-- | tmux's @TERM_VT100LIKE@: the terminal claims xterm descent, or clears
+-- with a CSI sequence.
+vt100Like :: TtyTerm -> Bool
+vt100Like t = capFlag "XT" t || "\ESC[" `T.isPrefixOf` capString "clear" t
+
+-- | A terminal's answer to the queries 'identificationQueries' sends:
+-- primary or secondary device attributes, or its name and version
+-- (XTVERSION).
+data Identification = PrimaryDA [Int] | SecondaryDA [Int] | TerminalVersion Text
+    deriving (Eq, Show)
+
+-- | What tmux asks a VT100-like terminal when it attaches (tmux's
+-- @tty_send_requests@): DA, DA2 and XTVERSION; nothing for any other.
+identificationQueries :: TtyTerm -> Text
+identificationQueries t
+    | vt100Like t = "\ESC[c\ESC[>c\ESC[>q"
+    | otherwise = ""
+
+-- | Read a reply to 'identificationQueries': @ESC [ ? Ps c@, @ESC [ > Ps c@
+-- or @ESC P > | text ESC \\@.
+parseIdentification :: Text -> Maybe Identification
+parseIdentification s
+    | Just body <- T.stripPrefix "\ESC[?" s >>= T.stripSuffix "c" = Just (PrimaryDA (params body))
+    | Just body <- T.stripPrefix "\ESC[>" s >>= T.stripSuffix "c" = Just (SecondaryDA (params body))
+    | Just body <- T.stripPrefix "\ESCP>|" s >>= T.stripSuffix "\ESC\\" = Just (TerminalVersion body)
+    | otherwise = Nothing
+  where
+    -- A parameter that is not a number counts as 0, as tmux's strtoul.
+    params = map (\p -> fromMaybe 0 (number p)) . T.splitOn ";"
+
+-- | Add the features an identification reveals (tmux's
+-- @tty_keys_device_attributes@, @tty_keys_device_attributes2@ and
+-- @tty_keys_extended_device_attributes@, then @tty_update_features@).
+identify :: [Text] -> Identification -> TtyTerm -> TtyTerm
+identify overrides ident t = case ident of
+    PrimaryDA (level : ps) | level >= 61, level <= 65 ->
+        addTermFeatures overrides (mapMaybe (`lookup` daFeatures) ps) t
+    PrimaryDA _ -> t
+    SecondaryDA (kind : _) -> addTermFeatures overrides (knownFeatures (case kind of
+        77 -> "mintty"
+        84 -> "tmux"
+        85 -> "rxvt-unicode"
+        _ -> "")) t
+    SecondaryDA [] -> t
+    TerminalVersion v -> (addTermFeatures overrides (knownFeatures (versionName v)) t)
+        { termType = v }
+  where
+    daFeatures = [(4, FSixel), (21, FMargins), (28, FRectfill), (52, FClipboard)]
+    versionName v = maybe "" snd $ List.find ((`T.isPrefixOf` v) . fst)
+        [ ("iTerm2 ", "iTerm2"), ("tmux ", "tmux"), ("XTerm(", "XTerm")
+        , ("mintty ", "mintty"), ("foot(", "foot"), ("WezTerm ", "WezTerm")
+        , ("ghostty ", "ghostty") ]
+
+-- | The features tmux knows a recognised terminal has (tmux's
+-- @tty_default_features@).
+knownFeatures :: Text -> [Feature]
+knownFeatures = \case
+    "mintty" -> base <> [FCcolour, FCstyle, FExtkeys, FMargins, FOverline, FUsstyle]
+    "tmux" -> base <> [FCcolour, FCstyle, FExtkeys, FFocus, FOverline, FUsstyle
+        , FHyperlinks, FProgressbar]
+    "rxvt-unicode" -> [F256, FBpaste, FCcolour, FCstyle, FMouse, FTitle, FIgnorefkeys]
+    "iTerm2" -> base <> [FCstyle, FExtkeys, FMargins, FUsstyle, FSync, FOsc7
+        , FHyperlinks, FProgressbar]
+    "foot" -> base <> [FCcolour, FCstyle, FExtkeys, FUsstyle, FSync, FOsc7, FHyperlinks]
+    "WezTerm" -> base <> [FCcolour, FCstyle, FExtkeys, FFocus, FHyperlinks, FUsstyle]
+    "ghostty" -> base <> [FCcolour, FCstyle, FExtkeys, FFocus, FOverline, FHyperlinks
+        , FOsc7, FSync, FUsstyle, FProgressbar]
+    "XTerm" -> base <> [FCcolour, FCstyle, FExtkeys, FFocus]
+    _ -> []
+  where
+    base = [F256, FRGB, FBpaste, FClipboard, FMouse, FStrikethrough, FTitle]
 
 -- | A term's capabilities as @name=value@ entries, the form 'termFromWire'
 -- reads back: numbers in decimal, flags as @1@ or @0@.
@@ -448,6 +531,7 @@ capList t =
 termFromWire :: Text -> [Text] -> [Text] -> TtyTerm
 termFromWire nm cs fs = TtyTerm
     { name = nm
+    , termType = ""
     , caps = Map.fromList (mapMaybe exact cs)
     , features = Set.fromList
         [ f | n <- fs, f <- allFeatures, featureName f == n ]

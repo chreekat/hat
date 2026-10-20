@@ -81,6 +81,29 @@ spec = do
             featurePresent "strikethrough" (term "vt100" ("smxx=\ESC[9m" : vt100) [] Nothing)
                 `shouldBe` True
 
+    describe "identifying a terminal" $ do
+        let t0 = term "xterm-256color" vt100 [] Nothing
+        it "asks only a VT100-like terminal" $ do
+            identificationQueries t0 `shouldBe` "\ESC[c\ESC[>c\ESC[>q"
+            identificationQueries (term "dumb" ["clear=\f", "cup=x"] [] Nothing)
+                `shouldBe` ""
+        it "reads the three replies" $ do
+            parseIdentification "\ESC[?62;4;52c" `shouldBe` Just (PrimaryDA [62, 4, 52])
+            parseIdentification "\ESC[>84;0;0c" `shouldBe` Just (SecondaryDA [84, 0, 0])
+            parseIdentification "\ESCP>|XTerm(388)\ESC\\"
+                `shouldBe` Just (TerminalVersion "XTerm(388)")
+        it "adds the features device attributes name" $
+            featureNames (identify [] (PrimaryDA [62, 4, 52]) t0)
+                `shouldBe` "bpaste,ccolour,clipboard,cstyle,focus,sixel,title"
+        it "adds the features tmux knows a recognised terminal has" $ do
+            let t = identify [] (TerminalVersion "XTerm(388)") t0
+            rgbColours t `shouldBe` True
+            t.termType `shouldBe` "XTerm(388)"
+            rgbColours (identify [] (SecondaryDA [84, 0, 0]) t0) `shouldBe` True
+        it "keeps the overrides winning" $
+            hasCap "AX" (identify defaultOverrides (SecondaryDA [84])
+                (term "linux" vt100 defaultOverrides Nothing)) `shouldBe` False
+
     describe "capList and termFromWire" $
         it "carry a resolved term across" $ do
             let t = term "xterm-256color" ("Tc=1" : "U8=1" : vt100) ["*:am@"] Nothing

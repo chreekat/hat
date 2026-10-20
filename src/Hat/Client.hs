@@ -22,7 +22,7 @@ import Control.Exception
 import Control.Monad (forever, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Word (Word16)
 import Data.Text qualified as T
@@ -141,22 +141,23 @@ awaitWelcome sock re d = do
     case greeting of
         Just (Known (OpenedTerminal caps feats)) ->
             awaitWelcome sock re (dialectOf (termFromWire "" caps feats))
-        Just (Known (Welcome _)) ->
+        Just (Known (Welcome _)) -> do
+            dialect <- newIORef d
             -- withRawMode also owns the stdio buffering switch; see the
             -- ordering note there.
             withRawMode $ \cooked ->
                 bracket_
                     (B.hPut stdout (enterAltScreen d))
-                    (B.hPut stdout (leaveAltScreen d))
-                    (shuttle d cooked sock re)
+                    (B.hPut stdout . leaveAltScreen =<< readIORef dialect)
+                    (shuttle dialect cooked sock re)
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
         Just (UnknownTag _) -> pure (Rejected versionMismatch)
         Just (Malformed _) -> pure (Rejected versionMismatch)
         Nothing -> pure ServerDied
 
-shuttle :: Dialect -> CookedMode -> Socket -> ReadEnd -> IO ExitReason
-shuttle d cooked sock re = do
+shuttle :: IORef Dialect -> CookedMode -> Socket -> ReadEnd -> IO ExitReason
+shuttle dialect cooked sock re = do
     outbox <- newTQueueIO
     pump <- newTVarIO Pumping
     size <- newIORef =<< ttySize
@@ -182,10 +183,14 @@ shuttle d cooked sock re = do
             Just (UnknownTag _) -> next
             Just (Known msg) -> case msg of
                 Draw ops -> do
+                    d <- readIORef dialect
                     sz <- readIORef size
                     B.hPut stdout (opsToAnsi d sz ops)
                     next
-                SetTitle t -> B.hPut stdout (titleBytes d t) >> next
+                SetTitle t -> do
+                    d <- readIORef dialect
+                    B.hPut stdout (titleBytes d t)
+                    next
                 RingBell -> B.hPut stdout "\BEL" >> next
                 Notify raw -> B.hPut stdout raw >> next
                 Message _ -> next  -- server renders toasts into frames
@@ -196,7 +201,13 @@ shuttle d cooked sock re = do
                 Exited -> pure SessionEnded
                 ServerError e -> pure (Rejected e)
                 Welcome _ -> next
-                OpenedTerminal {} -> next
+                -- The terminal identified itself after attach and the
+                -- server learned more of what it can do.
+                OpenedTerminal caps feats -> do
+                    let d = dialectOf (termFromWire "" caps feats)
+                    writeIORef dialect d
+                    B.hPut stdout (featuresOn d)
+                    next
                 -- Informational: our decoder already reads every dialect
                 -- ≤ ours, and nothing we send upstream is dialect-sensitive.
                 ServerVersion _ -> next
@@ -206,6 +217,7 @@ shuttle d cooked sock re = do
                 WriteStdout _ -> next
                 ControlExit {} -> pure SessionEnded
                 LockClient cmd -> do
+                    d <- readIORef dialect
                     pausingInput pump (lockTerminal d cooked cmd)
                     atomically (writeTQueue outbox LockDone)
                     next

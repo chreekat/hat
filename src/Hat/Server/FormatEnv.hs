@@ -93,7 +93,7 @@ import Hat.Server.Theme (Theme, clientColours, resolveTheme)
 import Hat.Server.Wanted
 import Hat.Transport.Wire (ExitWait (..))
 import Hat.Server.Winlink (windowLinks)
-import Hat.Term.Caps (clientColourCount, featureNames)
+import Hat.Term.Caps (TtyTerm (..), clientColourCount, featureNames)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified
@@ -1212,7 +1212,7 @@ clientFormatVars st c = do
         , ("client_readonly", "0")
         , ("client_utf8", "1")
         , ("client_termname", c.term)
-        , ("client_termtype", "")
+        , ("client_termtype", maybe "" (.termType) mterm)
         , ("client_termfeatures", maybe "" featureNames mterm)
         , ("client_width", tshow sz.cols)
         , ("client_created", tshow (floor c.createdAt :: Integer))

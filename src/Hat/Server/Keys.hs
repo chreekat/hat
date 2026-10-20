@@ -26,6 +26,7 @@ module Hat.Server.Keys
     , tokenizeKeys
     , feedKeys
     , isTerminalReply
+    , isIdentification
     , UserKeys
     , userKeys
     , isUserKey
@@ -318,6 +319,18 @@ tokenize timing users = go
                 cons (mkKey terminalReply ("\ESC" <> B.take n rest)) (go (B.drop n rest))
             | b2 == 0x5d, ReplyCut <- scanReply rest ->
                 held (fst (asMeta (go rest)))
+            -- The terminal's name and version, answering XTVERSION.
+            | b2 == 0x50, rest2 `B.isPrefixOf` ">|" -> held (fst (asMeta (go rest)))
+            | b2 == 0x50, ">|" `B.isPrefixOf` rest2 ->
+                case B.breakSubstring "\ESC\\" rest of
+                    (body, end) | not (B.null end) ->
+                        let n = B.length body + 2
+                        in cons (mkKey identification ("\ESC" <> B.take n rest))
+                            (go (B.drop n rest))
+                    _ -> held (fst (asMeta (go rest)))
+            -- Its device attributes, answering DA or DA2.
+            | b2 == 0x5b, Just n <- deviceAttributes rest ->
+                cons (mkKey identification ("\ESC" <> B.take n rest)) (go (B.drop n rest))
             -- A legacy mouse report: ESC [ M and three raw bytes.
             | "[M" `B.isPrefixOf` rest, B.length rest >= 5 ->
                 cons (mkKey "Mouse" ("\ESC" <> B.take 5 rest)) (go (B.drop 5 rest))
@@ -377,6 +390,15 @@ tokenize timing users = go
             ((nm, len) : _) -> Just (nm, len)
             [] -> Nothing
 
+    -- The length of a CSI ? or CSI > sequence whose final byte is c.
+    deviceAttributes rest = case B.unpack (B.take 2 rest) of
+        [_, m] | m == 0x3f || m == 0x3e ->
+            let (ps, fin) = B.span (\b -> b < 0x40 || b > 0x7e) (B.drop 2 rest)
+            in case B.uncons fin of
+                Just (0x63, _) -> Just (2 + B.length ps + 1)
+                _ -> Nothing
+        _ -> Nothing
+
     -- CSI: parameters then a final byte in 0x40-0x7e.
     spanCsi rest = case B.uncons rest of
         Nothing -> (rest, B.empty)
@@ -407,6 +429,16 @@ terminalReply = "TerminalReply"
 -- to the pane that asked rather than to the key tables.
 isTerminalReply :: Key -> Bool
 isTerminalReply k = k.name == terminalReply
+
+-- | The name 'tokenize' gives a terminal's answer to the queries that
+-- identify it ('Hat.Term.Caps.identificationQueries'); no key is spelled so.
+identification :: Text
+identification = "TerminalIdentification"
+
+-- | Whether a "key" is a terminal identifying itself, which goes to the
+-- client's terminal model rather than to the key tables.
+isIdentification :: Key -> Bool
+isIdentification k = k.name == identification
 
 -- | Name a swallowed CSI sequence as an extended key, or leave it 'Unknown'.
 -- An 'Unknown' key is never delivered (see 'Hat.Server.Conn.deliversKey'), so

@@ -8,6 +8,7 @@ module Hat.Client.Draw
     , sgr
     , titleBytes
     , enterAltScreen
+    , featuresOn
     , leaveAltScreen
     , lockScreen
     ) where
@@ -351,7 +352,11 @@ titleBytes d t = case d.title of
 -- @focus-events@ is on. And bracketed paste, so a paste reaches the pane
 -- whole rather than through the key tables.
 enterAltScreen :: Dialect -> ByteString
-enterAltScreen d = d.altOn <> d.focusOn <> d.pasteOn <> "\ESC[2J\ESC[H"
+enterAltScreen d = d.altOn <> featuresOn d <> "\ESC[2J\ESC[H"
+
+-- | The modes 'enterAltScreen' turns on besides the alternate screen.
+featuresOn :: Dialect -> ByteString
+featuresOn d = d.focusOn <> d.pasteOn
 
 -- Also resets the cursor colour and style in case a pane's were mirrored
 -- onto the outer terminal, and any mouse tracking the server asked for.
