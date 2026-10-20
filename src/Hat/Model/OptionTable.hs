@@ -618,8 +618,9 @@ optionTable =
         "fg=themelightgrey,dim"
     , live $ scalar "copy-mode-line-numbers" WindowScope
         (KChoice ["off", "default", "absolute", "relative", "hybrid"]) "off"
-    , live $ scalar "fill-character" WindowScope KString
-        "#{?is_inside,#[bg=themedarkgrey] ,#[fg=themelightgrey]#[acs]~}"
+    -- tmux's default shades the window's empty cells and dots those outside
+    -- it.
+    , live $ scalar "fill-character" WindowScope KString " "
     , live $ scalar "main-pane-height" WindowScope KString "24"
     , live $ scalar "main-pane-width" WindowScope KString "80"
     , live $ scalar "mode-keys" WindowScope (KChoice ["emacs", "vi"]) "emacs"
