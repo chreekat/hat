@@ -419,7 +419,7 @@ spec = do
         it "reports a connection reset before the greeting as ServerDied" $ do
             (clientSock, serverSock) <- socketPair AF_UNIX Stream 0
             (reason, _) <- concurrently
-                (runControl clientSock Joined [["list-sessions"]]
+                (runControl clientSock Joined (pure ()) [["list-sessions"]]
                     <* close clientSock)
                 -- Closing with the hello still unread resets the connection.
                 (SBL.recv serverSock 1 >> close serverSock)
@@ -445,7 +445,7 @@ withFakeServer frames = do
     pure reason
   where
     client sock = do
-        r <- runControl sock Joined [["kill-server"]]
+        r <- runControl sock Joined (pure ()) [["kill-server"]]
         close sock
         pure r
     server sock = do

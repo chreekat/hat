@@ -1741,6 +1741,19 @@ spec = parallel $ do
         c <- startClientArgs h ["new-session", "-A"]
         awaitScreen c "[first]"
 
+    it "a bare hat runs default-client-command" $
+        withHat hatBin $ \h -> do
+        _ <- hatCtl h ["new-session", "-d", "-s", "first"]
+        _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F #S"]
+        hatCtl h [] `shouldReturn` (ExitSuccess, "first\n", "")
+
+    it "a bare hat that starts the server runs its config's default-client-command" $
+        withHat hatBin $ \h -> do
+        let confPath = h.home <> "/hat.conf"
+        writeFile confPath "set -g default-client-command 'new-session -s fromconf'\n"
+        c <- startClientArgs h ["-f", confPath]
+        awaitScreen c "[fromconf]"
+
     it "remain-on-exit keeps an exited pane, dead, with its status" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h

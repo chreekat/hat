@@ -470,7 +470,9 @@ optionTable =
         `described` "Colour of the cursor."
     , paneLocal $ live $ scalar "cursor-style" WindowPaneScope (KChoice cursorStyles) "default"
         `described` "Style of the cursor."
-    , notYet $ scalar "default-client-command" ServerScope KCommand "new-session"
+    -- tmux defaults to new-session; a bare hat attaches to a session when
+    -- there is one.
+    , live $ scalar "default-client-command" ServerScope KCommand "new-session -A"
         `described` "Default command to run when tmux is run without a command."
     , live $ scalar "default-terminal" ServerScope KString "tmux-256color"
         `described` "Default for the 'TERM' environment variable."
