@@ -367,13 +367,18 @@ cmdNewPane = spawnInWindow NewPaneEntry
 
 -- | tmux's @spawn_editor@ pane: a modal floating pane nine tenths of the
 -- window's size, centred, that closes when its program ends. It takes
--- @new-pane@'s arguments, less the geometry.
-cmdNewEditorPane :: CommandImpl
-cmdNewEditorPane = spawnInWindow EditorEntry
+-- @new-pane@'s arguments, less the geometry; @opened@ sees the pane before
+-- its program's output (or its end) is read.
+cmdNewEditorPane :: (Pane -> IO ()) -> CommandImpl
+cmdNewEditorPane opened = spawnInWindow (EditorEntry opened)
 
 -- | Which command is spawning the pane; they share @cmd_split_window_exec@.
-data SpawnEntry = SplitEntry | NewPaneEntry | EditorEntry
-    deriving (Eq)
+data SpawnEntry = SplitEntry | NewPaneEntry | EditorEntry (Pane -> IO ())
+
+isEditorEntry :: SpawnEntry -> Bool
+isEditorEntry = \case
+    EditorEntry _ -> True
+    _ -> False
 
 spawnInWindow :: SpawnEntry -> CommandImpl
 spawnInWindow entry st mclient args
@@ -423,7 +428,7 @@ spawnInWindow entry st mclient args
         SplitEntry -> ("split-window", "bdEfhIkPvWZ", "BceFlmpRsStT")
         _ -> ("new-pane", "bCdEfhIkLMOPvWZ", "BceFlmpRsStTxXyY")
     (opts, flags, pos) = parseArgs valueFlags args
-    modalFlag = "-O" `elem` flags || entry == EditorEntry
+    modalFlag = "-O" `elem` flags || isEditorEntry entry
     -- A floating pane's border, which its geometry counts: -B's, else the
     -- window's pane-border-lines.
     borderFor sess win = case lookup "-B" opts of
@@ -455,7 +460,7 @@ spawnInWindow entry st mclient args
                 <*> traverse expand (lookup "-Y" opts)
             pure $ (\(g, cascade) -> (Nothing, g, cascade))
                 <$> floatingGeom eff border Nothing fs.lastNew geomArgs
-        EditorEntry ->
+        EditorEntry _ ->
             let wsx = fromIntegral eff.cols
                 wsy = fromIntegral eff.rows
                 sx = wsx * 9 `div` 10
@@ -481,7 +486,7 @@ spawnInWindow entry st mclient args
         <> [ ("pane-border-lines", v) | Just v <- [lookup "-B" opts] ]
         <> [ ("remain-on-exit", "key") | "-k" `elem` flags || isJust (lookup "-m" opts) ]
         <> [ ("remain-on-exit-format", v) | Just v <- [lookup "-m" opts] ]
-        <> [ ("remain-on-exit", "off") | entry == EditorEntry ]
+        <> [ ("remain-on-exit", "off") | isEditorEntry entry ]
     firstError = \case
         [] -> pure Nothing
         act : rest -> act >>= either (pure . Just) (const (firstError rest))
@@ -571,6 +576,9 @@ spawnInWindow entry st mclient args
                         forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
                         when ("-d" `notElem` flags) $
                             setCurrentPane mclient sess.id win.id pane.id
+                        case entry of
+                            EditorEntry opened -> opened pane
+                            _ -> pure ()
                         startPaneReader st sess.id win pane
                         when ("-I" `elem` flags) $ feedStdin pane
                         when ("-M" `elem` flags) $ do

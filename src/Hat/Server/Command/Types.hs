@@ -16,7 +16,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 
-import Hat.Model (Client, ServerState)
+import Hat.Model (Client, Pane, ServerState)
 import Hat.Server.ArgNumber (strtonum)
 
 -- | A single line of command output: normal text or an error; or raw
@@ -39,7 +39,7 @@ data Dispatch = Dispatch
     , unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
         -- ^ the error for a command whose name resolves to nothing, which
         --   tmux reports when parsing, before anything runs
-    , newEditorPane :: CommandImpl
+    , newEditorPane :: (Pane -> IO ()) -> CommandImpl
         -- ^ 'Hat.Server.Command.Pane.cmdNewEditorPane', for the modes that
         --   open an editor
     }

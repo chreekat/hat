@@ -6,13 +6,13 @@ module Hat.Server.Editor
     ) where
 
 import Control.Concurrent (forkIOWithUnmask)
-import Control.Concurrent.STM (atomically, readTVarIO)
+import Control.Concurrent.STM (readTVarIO)
 import Control.Exception (IOException, finally, mask_, try)
-import Control.Monad (void)
+import Control.Monad (unless, void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Text qualified as T
-import Data.Text.Read qualified as TR
+import Data.IORef (newIORef, readIORef, writeIORef)
 import System.Directory (removeFile)
 import System.Exit (ExitCode (..))
 import System.IO (hClose, openBinaryTempFile)
@@ -20,7 +20,7 @@ import System.Posix.Process (ProcessStatus (..))
 
 import Hat.Model
 import Hat.Model.Options (optionText)
-import Hat.Server.Command.Types (Dispatch (..), Reply (..))
+import Hat.Server.Command.Types (Dispatch (..))
 import Hat.Term.Pty qualified as Pty
 
 -- | Open @text@ in an editor for @client@: @begin@ runs once it is open, and
@@ -34,20 +34,18 @@ spawnEditor d st client text begin finish = do
     editor <- optionText "editor" <$> readTVarIO st.options
     (path, h) <- openBinaryTempFile "/tmp" "hat.edit"
     B.hPut h text `finally` hClose h
-    out <- d.newEditorPane st (Just client)
-        ["-P", "-F", "#{pane_id}", "-c", "/tmp", editor <> " " <> T.pack path]
-    mpane <- case [ t | ROutput t <- out ] of
-        [t] | Just n <- T.stripPrefix "%" t, Right (i, "") <- TR.decimal n ->
-            atomically (findPaneById st i)
-        _ -> pure Nothing
-    case mpane of
-        Nothing -> removeQuietly path
-        Just pane -> do
+    opened <- newIORef False
+    let watch pane = do
+            writeIORef opened True
             let wait = EditorWait
                     { editorPane = pane.id, editorPid = fromIntegral (Pty.pid pane.pty) }
             begin wait
             void $ mask_ $ forkIOWithUnmask $ \unmask ->
                 unmask (awaitEdit wait pane path) `finally` removeQuietly path
+    _ <- d.newEditorPane watch st (Just client)
+        ["-c", "/tmp", editor <> " " <> T.pack path]
+    watched <- readIORef opened
+    unless watched (removeQuietly path)
   where
     awaitEdit wait pane path = do
         status <- Pty.waitExit pane.pty
