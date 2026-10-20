@@ -23,6 +23,7 @@ import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
 import Hat.Server.Snapshot (captureSnapshot, restoreSnapshot)
 import Hat.Term.Cell qualified as Cell
+import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified as Pty
 import Data.Vector qualified as V
 
@@ -79,6 +80,15 @@ geometry st tgt = do
 
 spec :: Spec
 spec = do
+    describe "set-option -p" $
+        it "sets the option on the pane a full -t target names" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                run st ["set", "-p", "-t", "S:0.0", "@where", "first"] `shouldReturn` []
+                run st ["show", "-pv", "-t", "S:0.0", "@where"] `shouldReturn` [ROutput "first"]
+                run st ["show", "-pqv", "-t", "S:0.1", "@where"] `shouldReturn` []
+
     describe "kill-pane" $ do
         it "kills the pane a full -t target names, not the current one" $
             withServer $ \st -> do
@@ -162,15 +172,6 @@ spec = do
                     `shouldReturn` [RErr "display-message -v: not supported"]
                 run st ["display-message", "-l", "-p", "#{session_name}"]
                     `shouldReturn` [ROutput "#{session_name}"]
-
-    describe "set-option -p" $
-        it "sets the option of a pane a session:window.pane target names" $
-            withServer $ \st -> do
-                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                run st ["set-option", "-p", "-t", "S:0.0", "window-style", "fg=blue"]
-                    `shouldReturn` []
-                run st ["show-options", "-pv", "-t", "S:0.0", "window-style"]
-                    `shouldReturn` [ROutput "fg=blue"]
 
     describe "run-shell" $
         it "-t shows the output in the pane's view mode, -b too once it ends" $
@@ -389,6 +390,40 @@ spec = do
                 fmt "#{pane_input_off}" `shouldReturn` [ROutput "0"]
                 run st ["select-pane", "-T", "named", "-t", "S:0.0"] `shouldReturn` []
                 fmt "#{pane_title}" `shouldReturn` [ROutput "named"]
+
+    describe "the title stack" $ do
+        let stacked = "printf '\\033]2;base\\007\\033[22;0t\\033]2;temp\\007\\033[23;0t'; sleep 30"
+        it "CSI 22/23 t push and pop the pane title, each pop a pane-title-changed" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["set", "-g", "@t", "0"] `shouldReturn` []
+                run st ["set-hook", "-g", "pane-title-changed", "set -gF @t '#{@t}|#{hook_new_title}'"]
+                    `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", stacked] `shouldReturn` []
+                got <- timeout 5_000_000 $ untilM $
+                    (== [ROutput "0|base|temp|base"]) <$> run st ["show", "-gv", "@t"]
+                got `shouldBe` Just ()
+                run st ["display-message", "-p", "-t", "S:0.1", "#{pane_title}"]
+                    `shouldReturn` [ROutput "base"]
+        it "the stack survives a snapshot round trip" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S",
+                        "printf '\\033]2;under\\007\\033[22;2t\\033]2;over\\007'; sleep 30"]
+                    `shouldReturn` []
+                let title s = run s ["display-message", "-p", "-t", "S:0.0", "#{pane_title}"]
+                got <- timeout 5_000_000 $ untilM ((== [ROutput "over"]) <$> title st)
+                got `shouldBe` Just ()
+                snap <- captureSnapshot st
+                withServer $ \st' -> do
+                    restoreSnapshot st' (fromMaybe snap (decodeSnapshotJson (encodeSnapshotJson snap)))
+                    [p] <- paneIds st' "S:0"
+                    pane <- atomically $ do
+                        sessions <- Map.elems <$> readTVar st'.sessions
+                        wins <- concat <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
+                        ps <- concat <$> mapM (fmap Map.elems . readTVar . (.panes)) wins
+                        pure [ x | x <- ps, "%" <> T.pack (show (rawPane x.id)) == p ]
+                    stacks <- mapM (Emu.titleStack . (.emulator)) pane
+                    stacks `shouldBe` [["under"]]
 
     describe "join-pane" $
         it "refuses to join a pane to itself" $

@@ -11,6 +11,8 @@ module Hat.Server.TreeMode
     , treeModeKey
     , drawTreeMode
     , modeClient
+    , previewCells
+    , styleIn
     ) where
 
 import Control.Applicative ((<|>))
@@ -44,7 +46,7 @@ import Hat.Server.Keys (Key (..))
 import Hat.Server.Locate (findTarget, paneIndexOf)
 import Hat.Server.ModeTree
 import Hat.Server.PaneMode (modifyTopMode, resetPaneMode, setPaneMode, zoomForMode)
-import Hat.Server.Prompt (PromptEdit (..), editPrompt, promptFor)
+import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Render (overlayGrid)
 import Hat.Server.Toast (showToast)
@@ -779,22 +781,27 @@ styleIn th expand raw
 -- | tmux's @screen_write_preview@: an @nx@ by @ny@ window of a screen,
 -- around its cursor when that shows (marked in reverse), else the top left.
 screenPreview :: Emu.Screen -> Int -> Int -> [[Cell.Cell]]
-screenPreview scr nx ny
+screenPreview scr = previewCells scr.cells
+    (if scr.cursorVisible then Just scr.cursor else Nothing)
+
+-- | 'screenPreview' over a screen's cells and its cursor, if shown.
+previewCells :: V.Vector (V.Vector Cell.Cell) -> Maybe Pos -> Int -> Int -> [[Cell.Cell]]
+previewCells cells mcursor nx ny
     | nx <= 0 || ny <= 0 = []
     | otherwise =
         [ [ cellAt (px + x) (py + y) | x <- [0 .. nx - 1] ] | y <- [0 .. ny - 1] ]
   where
-    sx = fromIntegral scr.size.cols
-    sy = fromIntegral scr.size.rows
-    (px, py)
-        | scr.cursorVisible = (origin scr.cursor.col nx sx, origin scr.cursor.row ny sy)
-        | otherwise = (0, 0)
+    sy = V.length cells
+    sx = maybe 0 V.length (cells V.!? 0)
+    (px, py) = case mcursor of
+        Just c -> (origin c.col nx sx, origin c.row ny sy)
+        Nothing -> (0, 0)
     origin c n total =
         let o = if c < n `div` 3 then 0 else c - n `div` 3
         in if o + n > total then (if n > total then 0 else total - n) else o
     cellAt x y =
-        let c = fromMaybe Cell.blankCell (scr.cells V.!? y >>= (V.!? x))
-        in if scr.cursorVisible && x == scr.cursor.col && y == scr.cursor.row
+        let c = fromMaybe Cell.blankCell (cells V.!? y >>= (V.!? x))
+        in if mcursor == Just (Pos y x)
             then c { Cell.style = c.style { Cell.reverse = True } }
             else c
 
@@ -936,28 +943,38 @@ treeModeKey d st mclient pane key = do
         PromptSingleKey
             | T.length key.name == 1 -> answer ls ts p (Just key.name)
             | otherwise -> answer ls ts p Nothing
-        PromptLine -> case editPrompt [] p.edit key of
+        PromptLine -> case editPrompt noPromptEnv p.edit key of
             Editing e -> put ts { modePrompt = Just p { edit = e } }
-            -- An environment variable may be set empty.
-            Submit line | PromptEnvironmentValue _ <- p.use -> answer ls ts p (Just line)
-            Submit line -> answer ls ts p (if T.null line then Nothing else Just line)
+            Answering e _ -> put ts { modePrompt = Just p { edit = e } }
+            Submit line -> submitted line
+            SubmitPassing line -> submitted line
             Cancel -> answer ls ts p Nothing
+          where
+            submitted line
+                -- An environment variable may be set empty.
+                | PromptEnvironmentValue _ <- p.use = answer ls ts p (Just line)
+                | otherwise = answer ls ts p (if T.null line then Nothing else Just line)
     -- See Note [Fuzzy tree search].
     searchKey items ls h ts p
         | key.name `elem` ["Up", "C-p", "Down", "C-n"] =
             let moved = treeKey h (sortSequence ts.kind) items ls ts { modePrompt = Nothing } key.name
             in put moved.state { modePrompt = Just p }
-        | otherwise = case editPrompt [] p.edit key of
-            Editing e -> put ts
-                { modePrompt = Just p { edit = e }
-                , current = (fuzzyView e.input items).best <|> ts.current }
-            Submit line -> do
-                let chosen = ts
-                        { modePrompt = Nothing
-                        , search = if T.null line then Nothing else Just line }
-                put chosen
-                unless (null ls) $ kindKey ls chosen "Enter"
+        | otherwise = case editPrompt noPromptEnv p.edit key of
+            Editing e -> edited e
+            Answering e _ -> edited e
+            Submit line -> submitted line
+            SubmitPassing line -> submitted line
             Cancel -> answer ls ts p Nothing
+      where
+        edited e = put ts
+            { modePrompt = Just p { edit = e }
+            , current = (fuzzyView e.input items).best <|> ts.current }
+        submitted line = do
+            let chosen = ts
+                    { modePrompt = Nothing
+                    , search = if T.null line then Nothing else Just line }
+            put chosen
+            unless (null ls) $ kindKey ls chosen "Enter"
     answer ls ts p mline = do
         let closed = ts { modePrompt = Nothing }
         case p.use of

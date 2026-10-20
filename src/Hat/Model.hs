@@ -50,6 +50,8 @@ module Hat.Model
     , topMode
     , paneInMode
     , modeName
+    , modeStacks
+    , modeHidesChrome
     , TreeState (..)
     , TreeKind (..)
     , TreeOrigin (..)
@@ -86,9 +88,12 @@ module Hat.Model
     , Markup (..)
     , Flash (..)
     , PanesKeyHold (..)
-    , DisplayPanesState (..)
+    , PanesState (..)
+    , PanesPreview (..)
     , PromptState (..)
     , PromptKind (..)
+    , PromptType (..)
+    , PromptFreeze (..)
     , PromptWaiter (..)
     , PromptKeys (..)
     , PromptMode (..)
@@ -201,6 +206,12 @@ data ServerState = ServerState
     , commandDepth :: TVar Int   -- ^ open user-command batches; see
                                 --   'Hat.Server.Resize.awaitReconcileTick'
     , activityClock :: TVar Int  -- ^ monotonic stamp source; see 'markActive'
+    , windowLatest :: TVar (Map WindowId ClientId)
+        -- ^ each window's latest client (tmux's @w->latest@); see
+        --   'Hat.Server.Conn.noteLatest'
+    , panePrompts :: TVar (Map PaneId PromptState)
+        -- ^ the prompts drawn over panes (@command-prompt -P@); see
+        --   "Hat.Server.PanePrompt"
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
                                 --   'Hat.Server.serverIdle'
@@ -534,6 +545,7 @@ data PaneMode
     = CopyMode !CopyModeData  -- ^ copy mode or view mode
     | ClockMode
     | TreeMode !TreeState
+    | PanesMode !PanesState  -- ^ @display-panes@
     deriving (Eq, Show)
 
 -- | The mode's name as @#{pane_mode}@ and the mode hooks report it.
@@ -548,6 +560,22 @@ modeName = \case
         BufferList -> "buffer-mode"
         ClientList -> "client-mode"
         OptionTree -> "options-mode"
+    PanesMode _ -> "panes-mode"
+
+-- | Whether a mode may stay in its pane's stack under another (tmux's
+-- @WINDOW_MODE_NO_STACK@ unset); see 'Hat.Server.ModeStack.setPaneMode'.
+modeStacks :: PaneMode -> Bool
+modeStacks = \case
+    PanesMode _ -> False
+    _ -> True
+
+-- | Whether a mode's zoomed pane fills its whole window, its pane status
+-- line and scrollbar left out (tmux's @WINDOW_MODE_HIDE_PANE_STATUS@ and
+-- @WINDOW_MODE_HIDE_SCROLLBARS@); see 'Hat.Server.Resize.zoomHidesChrome'.
+modeHidesChrome :: PaneMode -> Bool
+modeHidesChrome = \case
+    PanesMode _ -> True
+    _ -> False
 
 -- | One entry of a pane's mode stack.
 data ModeEntry = ModeEntry
@@ -863,20 +891,34 @@ data Toast = Toast
 data Markup = MarkupStyled | MarkupLiteral
     deriving (Eq, Show)
 
--- | Whether a non-selecting key closes the @display-panes@ overlay
--- (default) or leaves it showing (@-N@); see
--- 'Hat.Server.DisplayPanes.panesKeyAction'.
+-- | Whether a key choosing no pane leaves panes-mode (default) or is
+-- ignored (@-N@); see 'Hat.Server.DisplayPanes.panesKeyAction'.
 data PanesKeyHold = PanesClose | PanesHold
     deriving (Eq, Show)
 
--- | The armed @display-panes@ overlay on one client; see
--- 'Hat.Server.DisplayPanes'.
-data DisplayPanesState = DisplayPanesState
-    { deadline :: !(Maybe Word64)
-        -- ^ monotonic ns, from 'Hat.Server.DisplayPanes.panesDeadline';
-        --   'Nothing' = until a key
-    , hold     :: !PanesKeyHold
-    , template :: !Text  -- ^ run on select, @%%@ = the chosen pane's id
+-- | @display-panes@'s panes-mode (tmux's @window-panes.c@): a picture of a
+-- window's panes, each numbered, drawn over the pane the mode holds. See
+-- "Hat.Server.DisplayPanes".
+data PanesState = PanesState
+    { sourceSession :: !SessionId
+        -- ^ the session the source window was found in; when it no longer
+        --   holds the window, 'session' is looked in instead
+    , sourceWindow  :: !WindowId   -- ^ the window drawn (@-s@, else the target's)
+    , session       :: !SessionId  -- ^ the target's session
+    , template      :: !Text       -- ^ run on a choice, @%%@ = the pane's id
+    , hold          :: !PanesKeyHold
+    , zoom          :: !ModeZoom
+    , preZoom       :: !(Maybe PanesPreview)
+    , shownAt       :: !Word64
+        -- ^ monotonic ns the mode was entered, telling this showing apart
+        --   from a later one for its timer
+    }
+    deriving (Eq, Show)
+
+-- | The mode's own pane as it looked before the mode zoomed it.
+data PanesPreview = PanesPreview
+    { cells  :: !(V.Vector (V.Vector Cell.Cell))
+    , cursor :: !(Maybe Pos)  -- ^ 'Nothing' when hidden
     }
     deriving (Eq, Show)
 
@@ -942,13 +984,36 @@ data PromptState = PromptState
     , promptKeys :: !PromptKeys  -- ^ fixed when the prompt opens
     , promptMode :: !PromptMode
     , promptKind :: !PromptKind
+    , promptType :: !PromptType
+    , freeze  :: !PromptFreeze
+    , quoteNext :: !Bool       -- ^ @C-v@ was pressed: the next key goes in as it is
+    , lastInput :: !Text
+        -- ^ an incremental prompt's initial input, which @C-r@\/@C-s@ on an
+        --   empty line bring back
+    , completions :: ![Text]
+        -- ^ the commands a @Tab@ found the word could be, none longer in
+        --   common; shown after the input until the next key
     , waiter  :: !(Maybe PromptWaiter)
         -- ^ the command that opened the prompt, waiting for what it is given
     }
     deriving (Eq, Show)
 
--- | What a prompt takes: an edited line, or one key (@command-prompt -k@).
-data PromptKind = LineEntry | KeyEntry
+-- | What a prompt takes (@command-prompt@'s flags): an edited line, one key
+-- (@-k@), one character (@-1@), digits (@-N@), a line answered as it is
+-- edited (@-i@), or a line @BSpace@ on empty abandons (@-e@).
+data PromptKind
+    = LineEntry | KeyEntry | SingleEntry | NumericEntry | IncrementalEntry
+    | BackspaceExitEntry
+    deriving (Eq, Show)
+
+-- | @command-prompt -T@: which history a prompt keeps, and whether @Tab@
+-- completes commands.
+data PromptType = CommandPrompt | SearchPrompt
+    deriving (Eq, Show, Enum, Bounded)
+
+-- | @command-prompt -C@ (tmux's @PROMPT_NOFREEZE@), shown in
+-- @#{prompt_flags}@: hat never freezes a client's screen under a prompt.
+data PromptFreeze = FreezeScreen | NoFreeze
     deriving (Eq, Show)
 
 -- | Where a prompt's answer goes: the command its answers make, or
@@ -1099,7 +1164,6 @@ data Client = Client
     , toast     :: TVar (Maybe Toast)  -- ^ display-message overlay
     , flash     :: TVar (Maybe Flash)  -- ^ prefix flash of the active pane
     , prompt    :: TVar (Maybe PromptState)  -- ^ command-prompt line editor
-    , displayPanes :: TVar (Maybe DisplayPanesState)  -- ^ pane-number overlay
     , popup     :: TVar (Maybe Popup)  -- ^ display-popup overlay
     , outerFocused :: TVar Bool
         -- ^ whether the client's outer terminal has OS focus (?1004); see
@@ -1161,6 +1225,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- reconciled
     <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
+    <*> newTVarIO Map.empty  -- windowLatest
+    <*> newTVarIO Map.empty  -- panePrompts
     <*> newTVarIO 0      -- livePanes
     <*> newTVarIO Map.empty  -- popupJobs
     <*> newTVarIO 0      -- activeConns
@@ -1447,9 +1513,10 @@ findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
 rawClient :: ClientId -> Int
 rawClient (ClientId n) = n
 
--- | A client's name (tmux's @c->name@), as commands target it with @-c@.
+-- | A client's name (tmux's @c->name@, which for a client without a tty
+-- is @client-@ and a number), as commands target it with @-c@.
 clientName :: Client -> Text
-clientName c = "client" <> tshow (rawClient c.id)
+clientName c = "client-" <> tshow (rawClient c.id)
 
 rawPane :: PaneId -> Int
 rawPane (PaneId n) = n

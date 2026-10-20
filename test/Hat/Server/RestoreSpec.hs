@@ -329,7 +329,7 @@ spec = do
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
-                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
                 rw = HotWindow
                     { ix = 0, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = Nothing, linkOf = Nothing, modal = Nothing, panes = [(psnap, rp)] }
@@ -356,7 +356,7 @@ spec = do
                     , screen = emptyReloadScreen
                     , start = StartShell, death = Nothing }
                 psnap = PaneSnap
-                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing }
+                    { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
                 win wix k l ps = HotWindow
                     { ix = wix, name = "sh", layout = lay, active = 0
                     , paneHist = [], autoRename = True, key = k, linkOf = l

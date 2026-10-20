@@ -35,6 +35,10 @@ module Hat.Term.Emulator
     , defaultHostPolicy
     , setHostPolicy
     , setTitle
+    , pushTitle
+    , popTitle
+    , titleStack
+    , setTitleStack
     , encodeKey
     , encodeKeyPress
     , keyModes
@@ -223,6 +227,7 @@ data EmulatorState = EmulatorState
     { colorSub    :: Bool
     , cursorModel :: CursorModel
     , title       :: Text
+    , titles      :: [Text]  -- ^ the title stack, top first; see 'pushTitle'
     , keyRequest  :: Int  -- ^ the app's last @CSI > 4 ; n m@: 0, 1 or 2
     , policy      :: HostPolicy
     , passthrough :: PassState
@@ -254,6 +259,7 @@ newEmulator sz limit = do
         { colorSub = False
         , cursorModel = defaultCursorModel
         , title = ""
+        , titles = []
         , keyRequest = 0
         , policy = defaultHostPolicy
         , passthrough = Outside ""
@@ -334,6 +340,26 @@ setTitle :: Emulator -> Text -> IO Bool
 setTitle e t = atomicModifyIORef' e.state $ \s ->
     (s { title = t }, t /= s.title)
 
+-- | tmux's @screen_push_title@: push the title, the stack keeping the
+-- latest ten.
+pushTitle :: Emulator -> IO ()
+pushTitle e = modifyIORef' e.state $ \s -> s { titles = take 10 (s.title : s.titles) }
+
+-- | tmux's @screen_pop_title@: the title from the top of the stack, if any,
+-- becomes the title; the title after.
+popTitle :: Emulator -> IO Text
+popTitle e = atomicModifyIORef' e.state $ \s -> case s.titles of
+    t : rest -> (s { title = t, titles = rest }, t)
+    [] -> (s, s.title)
+
+-- | The title stack, top first.
+titleStack :: Emulator -> IO [Text]
+titleStack e = (.titles) <$> readIORef e.state
+
+-- | Replace the title stack (a restore).
+setTitleStack :: Emulator -> [Text] -> IO ()
+setTitleStack e ts = modifyIORef' e.state $ \s -> s { titles = take 10 ts }
+
 -- | Act on one piece of scrubbed output, in stream order.
 feedPiece :: Emulator -> Ptr CTerm -> HostPiece -> IO [Event]
 feedPiece e t = \case
@@ -347,6 +373,9 @@ feedPiece e t = \case
             pol <- (.policy) <$> readIORef e.state
             when pol.scrollOnClear (scrollScreenIntoHistory t n)
             feedSegments e t raw
+        HostTitleStack ops raw -> do
+            evs <- feedSegments e t raw
+            pure (evs <> map (\case PushTitle -> TitlePush; PopTitle -> TitlePop) ops)
         HostCursor change raw -> do
             -- RIS resets every mode, the ?2031 subscription with them.
             modifyIORef' e.state $ \s -> s

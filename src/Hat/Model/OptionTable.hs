@@ -811,7 +811,7 @@ optionTable =
     -- tmux defaults to themered.
     , live $ scalar "display-panes-active-colour" WindowScope KColourString "red"
         `described` "Colour of the active pane for 'display-panes'."
-    , notYet $ scalar "display-panes-border-style" WindowScope KStyle
+    , live $ scalar "display-panes-border-style" WindowScope KStyle
         "bg=themedarkgrey,fg=themelightgrey"
         `described` "Style of the pane borders in 'display-panes'."
     -- tmux defaults to themeblue.

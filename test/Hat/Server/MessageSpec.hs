@@ -68,7 +68,8 @@ spec = do
 
     describe "drawPrompt" $ do
         let pv = PromptView { label = ":", input = "abc", cursor = 1
-                            , commandMode = False }
+                            , commandMode = False, typeName = "command", flags = ""
+                            , quoted = False, completions = [] }
         it "draws the label then the input, placing the cursor" $ do
             let (row, cx) = prompt defaultOptions pv "          "
             rowText row `shouldBe` ":abc      "
@@ -79,6 +80,14 @@ spec = do
                     pv { input = "abcdefgh", cursor = 8 } "     "
             rowText row `shouldBe` ":fgh "
             cx `shouldBe` 4
+        it "shows a C-v waiting for its key as ^ at the cursor" $
+            rowText (fst (prompt defaultOptions pv { quoted = True } "          "))
+                `shouldBe` ":a^bc     "
+        it "shows Tab's matches after the input, underlined" $ do
+            let (row, _) = prompt defaultOptions
+                    pv { input = "ne", cursor = 2, completions = ["new", "next"] } "            "
+            rowText row `shouldBe` ":ne new next"
+            (row V.! 4).style.underline `shouldBe` True
         it "uses message-command-style in vi command mode" $ do
             let (row, _) = prompt defaultOptions pv { commandMode = True } "     "
             (row V.! 1).style `shouldBe`

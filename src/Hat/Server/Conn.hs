@@ -14,7 +14,9 @@ module Hat.Server.Conn
     , escWait
     , keyContext
     , reencodeKey
-    , handleInput  -- ^ exported for the display-panes key tests
+    , handleInput  -- ^ exported for the key tests
+    , clientResized
+    , removeClient
     , newClient    -- ^ exported for the source-file tests
     ) where
 
@@ -22,7 +24,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (filterM, foldM, forM_, forever, unless, void, when)
+import Control.Monad (filterM, foldM, forM, forM_, forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Functor ((<&>))
@@ -58,12 +60,12 @@ import Hat.Server.ControlQueue (requestExit)
 import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Overlay
+import Hat.Server.PanePrompt (windowPanePrompt)
 import Hat.Server.PopupIO (closePopup, popupKeyInput, refitClientPopup)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Startup
-import Hat.Server.DisplayPanes
 import Hat.Server.Flash
-import Hat.Server.Hooks (PayloadItem (..), clientNameOf, notify, sessionTarget)
+import Hat.Server.Hooks (PayloadItem (..), notifyClient)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
@@ -177,6 +179,7 @@ welcome d st re h = do
             Nothing -> sendMessage conn (ServerError "control state missing")
             Just cs -> do
                 atomically $ modifyTVar' st.clients (Map.insert client.id client)
+                notifyClient st "client-created" client []
                 sendMessage conn (Welcome "")
                 sendMessage conn (ServerVersion protocolVersion)
                 atomically $ writeTVar client.ready True
@@ -188,6 +191,7 @@ welcome d st re h = do
             -- Register early so the setup commands (new-session,
             -- attach-session -t) act on a live client and can switch it.
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
+            notifyClient st "client-created" client []
             -- Gate here, not only in ensureSession: setup commands run
             -- directly, so an autostarting `hat new` would otherwise race
             -- its own server's config load (upstream if-shell-TERM.sh).
@@ -300,7 +304,6 @@ newClient st conn h = do
     flashVar <- newTVarIO Nothing
     promptVar <- newTVarIO Nothing
     popupVar <- newTVarIO Nothing
-    displayPanesVar <- newTVarIO Nothing
     readyVar <- newTVarIO False
     focusVar <- newTVarIO True
     envImportVar <- newTVarIO ImportEnv
@@ -344,7 +347,6 @@ newClient st conn h = do
         , flash = flashVar
         , prompt = promptVar
         , popup = popupVar
-        , displayPanes = displayPanesVar
         , outerFocused = focusVar
         , envImport = envImportVar
         , env = h.env
@@ -368,6 +370,38 @@ resolveSessionNames st names = do
     let byName = Map.fromList named
     pure (nub [ sid | nm <- names, Just sid <- [Map.lookup nm byName] ])
 
+-- | Each window a lost client was the latest of passes to the most
+-- recently active client still showing it (tmux's
+-- @server_client_attached_lost@).
+passLatest :: ServerState -> Client -> IO ()
+passLatest st gone = do
+    heirs <- atomically $ do
+        ls <- readTVar st.windowLatest
+        let held = [ wid | (wid, cid) <- Map.toList ls, cid == gone.id ]
+        modifyTVar' st.windowLatest (Map.filter (/= gone.id))
+        cs <- Map.elems <$> readTVar st.clients
+        viewing <- fmap concat . forM cs $ \c -> do
+            mv <- clientView st c
+            act <- readTVar c.lastActive
+            pure [ (wid, (act, c)) | Just (_, w) <- [mv], let wid = w.id, wid `elem` held ]
+        pure (Map.elems (Map.fromListWith newer viewing))
+    mapM_ (noteLatest st . snd) heirs
+  where
+    newer a b = if fst a >= fst b then a else b
+
+-- | A client's terminal changed size (tmux's @server_client_dispatch@ on
+-- @MSG_RESIZE@).
+clientResized :: ServerState -> Client -> Size -> IO ()
+clientResized st client sz = do
+    noteLatest st client
+    old <- atomically (swapTVar client.size sz)
+    refitClientPopup st client
+    sid <- readTVarIO client.session
+    applySessionSize st sid
+    when (old /= sz) $ notifyClient st "client-resized" client
+        [ ("width", PInt (fromIntegral sz.cols)), ("height", PInt (fromIntegral sz.rows))
+        , ("old_width", PInt (fromIntegral old.cols)), ("old_height", PInt (fromIntegral old.rows)) ]
+
 removeClient :: ServerState -> Client -> IO ()
 removeClient st client = do
     sid <- readTVarIO client.session
@@ -377,11 +411,9 @@ removeClient st client = do
     -- tmux's server_client_lost clears the overlay: the popup's command ends.
     mapM_ (closePopup st client) =<< readTVarIO client.popup
     attached <- atomically (findSessionById st sid)
-    forM_ attached $ \sess -> do
-        sname <- readTVarIO sess.name
-        notify st "client-detached" (sessionTarget sid)
-            [ ("client", PClientRef (clientNameOf (Just client)))
-            , ("session", PSessionRef sid sname) ]
+    forM_ attached $ \_ -> notifyClient st "client-detached" client []
+    when (client.role == Attached) $ notifyClient st "client-closed" client []
+    passLatest st client
     applySessionSize st sid
     logEvent st.logger ClientDetached
         { client = rawClient client.id, reason = "gone" }
@@ -469,12 +501,7 @@ inputLoop d st re client = loop
                 Input bs -> do
                     handleInput d st client bs
                     loop
-                Resize sz -> do
-                    atomically (writeTVar client.size sz)
-                    refitClientPopup st client
-                    sid <- readTVarIO client.session
-                    applySessionSize st sid
-                    loop
+                Resize sz -> clientResized st client sz >> loop
                 Detach -> send client DetachOk
                 Command cmds -> do
                     showReplies st client =<< d.runCommands st (Just client) cmds
@@ -551,29 +578,45 @@ handleInput :: Dispatch -> ServerState -> Client -> B.ByteString -> IO ()
 handleInput d st client bs = do
     noteClientActivity st client
     handleKeys d st client bs
+    -- A focus-out report says the user looked away, not that they are here.
+    unless (bs == "\ESC[O") (noteLatest st client)
+
+-- | tmux's @server_client_update_latest@: the client becomes the latest of
+-- the window it shows, which fires @client-active@ when it was not already.
+noteLatest :: ServerState -> Client -> IO ()
+noteLatest st client = do
+    changed <- atomically $ do
+        mwin <- clientView st client
+        case mwin of
+            Nothing -> pure False
+            Just (_, win) -> do
+                cur <- Map.lookup win.id <$> readTVar st.windowLatest
+                if cur == Just client.id then pure False else do
+                    modifyTVar' st.windowLatest (Map.insert win.id client.id)
+                    pure True
+    when changed $ notifyClient st "client-active" client []
 
 -- | What a client's keystrokes go to: an open overlay, else its key tables.
 data KeyOwner
     = PopupOverlay Popup
     | MenuOverlay Window
-    | PanesOverlay DisplayPanesState
-    | PromptOverlay PromptState
+    | PromptOverlay PromptHome PromptState
     | KeyTables
 
 keyOwner :: ServerState -> Client -> IO KeyOwner
 keyOwner st client = do
-    menuWin <- atomically $ clientView st client >>= \case
-        Just (_, win) -> (\m -> win <$ m) <$> readTVar win.menu
-        Nothing -> pure Nothing
-    mpanes <- readTVarIO client.displayPanes
+    (menuWin, mpane) <- atomically $ clientView st client >>= \case
+        Just (_, win) -> (,) <$> ((\m -> win <$ m) <$> readTVar win.menu)
+            <*> windowPanePrompt st win
+        Nothing -> pure (Nothing, Nothing)
     mprompt <- readTVarIO client.prompt
     mpopup <- readTVarIO client.popup
-    pure $ case (menuWin, mpanes, mprompt) of
+    pure $ case (menuWin, mprompt, mpane) of
         _ | Just p <- mpopup -> PopupOverlay p
         (Just win, _, _) -> MenuOverlay win
-        (_, Just dp, _) -> PanesOverlay dp
-        (_, _, Just pr) -> PromptOverlay pr
-        _               -> KeyTables
+        (_, Just pr, _) -> PromptOverlay OnStatusLine pr
+        (_, _, Just (pane, pr)) -> PromptOverlay (OverPane pane) pr
+        _ -> KeyTables
 
 -- | Hand each key to whatever owns the keyboard once the keys before it
 -- have run.
@@ -586,49 +629,8 @@ deliverKeys d st client keys@(k : ks) = keyOwner st client >>= \case
     MenuOverlay win -> do
         handleMenuInput d st client win k
         deliverKeys d st client ks
-    PanesOverlay dp -> handlePanesInput d st client dp keys
-    PromptOverlay pr -> deliverKeys d st client =<< handlePromptInput d st client pr keys
+    PromptOverlay home pr -> deliverKeys d st client =<< handlePromptInput d st client home pr keys
     KeyTables -> runKeys d st client keys
-
--- | Keys while the @display-panes@ overlay shows: each key is decided by
--- 'panesKeyAction'; once the overlay closes, the rest of the chunk flows
--- through normal key handling.
-handlePanesInput
-    :: Dispatch -> ServerState -> Client -> DisplayPanesState -> [Key] -> IO ()
-handlePanesInput d st client dp = go
-  where
-    go [] = pure ()
-    go (k : ks) = case panesKeyAction dp.hold k.name of
-        PanesSelect num -> do
-            dismissPanes st client
-            selectPaneNumber d st client dp.template num
-            deliverKeys d st client ks
-        PanesDismiss -> do
-            dismissPanes st client
-            deliverKeys d st client ks
-        PanesDismissForward -> do
-            dismissPanes st client
-            deliverKeys d st client (k : ks)
-        PanesForward -> do
-            runKeys d st client [k]
-            go ks
-
--- | Run the overlay's template against the pane showing @num@ in the
--- client's current window (@%%@ = that pane's id); showing no such
--- number, the digit just closes the overlay.
-selectPaneNumber
-    :: Dispatch -> ServerState -> Client -> Text -> Int -> IO ()
-selectPaneNumber d st client template num = do
-    opts <- clientOptions st client
-    mwin <- currentWindowOf st (Just client)
-    forM_ mwin $ \win -> do
-        order <- atomically (map (.id) <$> windowPanes win)
-        let numbered = zip [opts.paneBaseIndex ..] order
-        forM_ (lookup num numbered) $ \pid -> do
-            let target = "%" <> tshow (rawPane pid)
-            showReplies st client
-                =<< d.runCommandText st (Just client)
-                    (T.replace "%%" target template)
 
 -- | How long, in ms, input held for @escape-time@ waits for the rest of its
 -- sequence: tmux waits a millisecond even at 0.

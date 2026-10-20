@@ -6,6 +6,7 @@ module Hat.Server.Command.Types
     , CommandImpl
     , Dispatch (..)
     , parseArgs
+    , parseArgsDigits
     , unknownFlag
     , strtonum
     , templateReplace
@@ -49,7 +50,13 @@ data Dispatch = Dispatch
 -- Returns (value flags as ("-s", value), boolean flags as "-d",
 -- positional args).
 parseArgs :: [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
-parseArgs spec = go [] []
+parseArgs spec = parseArgsDigits spec []
+
+-- | 'parseArgs' for a command whose flags include the digits @digits@
+-- (@command-prompt -1@): an argument of those digits alone is flags, not
+-- the number it otherwise reads as.
+parseArgsDigits :: [Char] -> [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
+parseArgsDigits spec digits = go [] []
   where
     go opts flags = \case
         [] -> (opts, flags, [])
@@ -57,7 +64,7 @@ parseArgs spec = go [] []
         (a : rest)
             | Just bundle <- T.stripPrefix "-" a
             , not (T.null bundle)
-            , not (isNumber a) ->
+            , not (isNumber a) || T.all (`elem` digits) bundle ->
                 let (opts', flags', rest') = scanBundle bundle rest
                 in go (opts' <> opts) (flags' <> flags) rest'
             | otherwise -> (opts, flags, a : rest)

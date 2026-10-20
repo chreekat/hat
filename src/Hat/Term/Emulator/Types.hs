@@ -51,6 +51,10 @@ data Event
     = TitleRequest B.ByteString
         -- ^ the app set its title (OSC 0\/2 or APC), raw; the server decides
         --   whether and how to take it
+    | TitlePush
+        -- ^ the app pushed its title on its title stack (@CSI 22 ; 0 t@)
+    | TitlePop
+        -- ^ the app popped its title stack (@CSI 23 ; 0 t@)
     | RenameRequest B.ByteString
         -- ^ the app renamed its window (@ESC k … ST@), raw
     | ClipboardRequest B.ByteString OscTerm

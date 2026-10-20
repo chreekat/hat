@@ -43,7 +43,7 @@ import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.ClientSession (sendClientsAway, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
-    ( PayloadItem (..), noTarget, notify, notifyGroupChange, sessionTarget )
+    ( PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange, sessionTarget )
 import Hat.Server.Keys (enterTable)
 import Hat.Server.Locate (findTarget, formatClient, paneIndexOf, targetSession, withTargetSession)
 import Hat.Server.Pane
@@ -301,7 +301,9 @@ cmdAttachSession st mclient args = do
                 bumpDirty st
         case mclient of
             Just client -> do
+                shown <- atomically (readTVar client.session >>= findSessionById st)
                 attachClient st client sess
+                when (isNothing shown) (notifyClient st "client-attached" client [])
                 configCausesFor st sess
                 pure []
             Nothing
@@ -529,8 +531,7 @@ sortClients morder reversed cs = case morder of
     Just order -> List.sortBy (\a b -> flipIf (compareBy order a b <> byName a b)) cs
   where
     flipIf r = if reversed then compare EQ r else r
-    byName (a, _, _, _) (b, _, _, _) = compare (name a) (name b)
-    name c = "client" <> tshow (rawClient c.id)
+    byName (a, _, _, _) (b, _, _, _) = compare (clientName a) (clientName b)
     compareBy order (a, _, actA, szA) (b, _, actB, szB) = case order of
         ClientsBySize -> compare (szA.cols, szA.rows) (szB.cols, szB.rows)
         ClientsByCreation -> compare a.createdAt b.createdAt

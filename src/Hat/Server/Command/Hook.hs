@@ -20,7 +20,7 @@ import Hat.Server.HookMonitor
     (addMonitor, monitorTargetText, monitorsAt, parseMonitorSpec, removeMonitor)
 import Hat.Server.HookTypes
 import Hat.Server.Hooks
-import Hat.Server.Locate (findTarget, targetPaneScoped, targetSession)
+import Hat.Server.Locate (findTarget, targetPane, targetSession)
 import Hat.Server.Target qualified as Target
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 
@@ -45,7 +45,7 @@ hookScopeOf
 hookScopeOf st mclient flags mtarget
     | "-g" `elem` flags = pure (Right HookGlobal)
     | "-p" `elem` flags = do
-        mpane <- targetPaneScoped st mclient mtarget
+        mpane <- targetPane st mclient mtarget
         pure $ maybe (Left "no such pane") (Right . HookPane . (.id)) mpane
     | "-w" `elem` flags = do
         res <- findTarget st mclient Target.FindWindow mtarget

@@ -4,6 +4,11 @@
 -- execution live in "Hat.Server".
 module Hat.Server.Prompt
     ( PromptEdit (..)
+    , PromptEnv (..)
+    , noPromptEnv
+    , promptTypeName
+    , parsePromptType
+    , promptFlagsText
     , emptyPrompt
     , promptFor
     , PromptAnswered (..)
@@ -15,14 +20,14 @@ module Hat.Server.Prompt
     , addHistory
     ) where
 
-import Data.Char (digitToInt, isAlphaNum, isDigit, isSpace)
+import Data.Char (chr, digitToInt, isAlphaNum, isDigit, isSpace, ord, toUpper)
 import Data.List qualified as List
 import Data.Text (Text)
 import Data.Text qualified as T
 
 import Hat.Model
-    ( CursorShape (..), PromptCursor (..), PromptKeys (..), PromptKind (..), PromptMode (..)
-    , PromptState (..) )
+    ( CursorShape (..), PromptCursor (..), PromptFreeze (..), PromptKeys (..), PromptKind (..)
+    , PromptMode (..), PromptState (..), PromptType (..) )
 import Hat.Model.Options (ModeKeys (..), Options (..), defaultOptions)
 import Hat.Server.Keys (Key (..))
 
@@ -31,7 +36,47 @@ data PromptEdit
     = Editing PromptState  -- ^ keep the prompt open with this new state
     | Submit Text          -- ^ run this line and close the prompt
     | Cancel               -- ^ close the prompt, running nothing
+    | SubmitPassing Text
+        -- ^ run this line and close the prompt, the key then handled as if
+        --   no prompt were open (a @-N@ prompt's non-digit)
+    | Answering PromptState Text
+        -- ^ keep the prompt open with this new state, running this answer
+        --   now (an incremental prompt's edit)
     deriving (Eq, Show)
+
+-- | What a prompt's keys draw on: its type's history, most-recent first,
+-- and the command names @Tab@ completes.
+data PromptEnv = PromptEnv
+    { history :: [Text]
+    , commands :: [Text]
+    }
+
+-- | No history and nothing to complete.
+noPromptEnv :: PromptEnv
+noPromptEnv = PromptEnv { history = [], commands = [] }
+
+-- | A prompt type's name (tmux's @prompt_type_string@).
+promptTypeName :: PromptType -> Text
+promptTypeName = \case
+    CommandPrompt -> "command"
+    SearchPrompt -> "search"
+
+-- | A prompt type by its name (tmux's @prompt_type@).
+parsePromptType :: Text -> Maybe PromptType
+parsePromptType t = lookup t [ (promptTypeName p, p) | p <- [minBound .. maxBound] ]
+
+-- | @#{prompt_flags}@ (tmux's @prompt_flags_to_string@).
+promptFlagsText :: Bool -> PromptState -> Text
+promptFlagsText inPane pr = T.intercalate "," $ concat
+    [ [ "SINGLE" | pr.promptKind == SingleEntry ]
+    , [ "NUMERIC" | pr.promptKind == NumericEntry ]
+    , [ "INCREMENTAL" | pr.promptKind == IncrementalEntry ]
+    , [ "KEY" | pr.promptKind == KeyEntry ]
+    , [ "QUOTENEXT" | pr.quoteNext ]
+    , [ "BSPACE_EXIT" | pr.promptKind == BackspaceExitEntry ]
+    , [ "NOFREEZE" | pr.freeze == NoFreeze ]
+    , [ "COMMANDMODE" | pr.promptMode == PromptCommand ]
+    , [ "ISPANE" | inPane ] ]
 
 -- | A fresh, empty prompt: the bare @:@ command line.
 emptyPrompt :: PromptState
@@ -52,6 +97,11 @@ emptyPrompt = PromptState
         , commandCursor = PromptCursor "" CursorDefault }
     , promptMode = PromptInsert
     , promptKind = LineEntry
+    , promptType = CommandPrompt
+    , freeze = FreezeScreen
+    , quoteNext = False
+    , lastInput = ""
+    , completions = []
     , waiter = Nothing
     }
 
@@ -78,7 +128,8 @@ answerPrompt :: PromptState -> Text -> PromptAnswered
 answerPrompt pr line = case pr.queued of
     (label, initial) : rest -> NextPrompt (promptFor label initial pr.template)
         { answers = answers', queued = rest, promptKeys = pr.promptKeys
-        , promptKind = pr.promptKind, waiter = pr.waiter }
+        , promptKind = pr.promptKind, promptType = pr.promptType, freeze = pr.freeze
+        , waiter = pr.waiter }
     [] -> AnswersDone (applyTemplate pr.template answers')
   where
     answers' = pr.answers <> [line]
@@ -118,27 +169,73 @@ templateReplace tmpl s idx
 -- marker in the template.
 data Quoting = NoQuote | SingleQuoted | DoubleQuoted
 
--- | Apply one key to the prompt, read as its @status-keys@ say. @history@
--- is the command history, most-recent first, used by the Up/Down keys.
-editPrompt :: [Text] -> PromptState -> Key -> PromptEdit
-editPrompt _ st key
-    | st.promptKind == KeyEntry =
-        -- A mouse report, or bytes no key is named for, is not a key press.
-        if key.name `elem` ["Mouse", "Unknown"] then Editing st else Submit key.name
-editPrompt history st key = case st.promptKeys.statusKeys of
-    KeysEmacs -> emacsKey history st key
+-- | Apply one key to the prompt (tmux's @prompt_key@): a one-key, one
+-- character or digits-only prompt takes it its own way, a quoted key goes
+-- in as it is, and any other is an edit read as the prompt's
+-- @status-keys@ say.
+editPrompt :: PromptEnv -> PromptState -> Key -> PromptEdit
+editPrompt env st0 key = case st.promptKind of
+    -- A mouse report, or bytes no key is named for, is not a key press.
+    KeyEntry
+        | key.name `elem` ["Mouse", "Unknown"] -> Editing st
+        | otherwise -> Submit key.name
+    NumericEntry -> case T.unpack key.name of
+        [c] | isDigit c -> Editing (insert (T.singleton c) st)
+        _ -> SubmitPassing st.input
+    SingleEntry -> case literalChar key of
+        Nothing -> Editing st
+        Just c
+            | T.length (insert (T.singleton c) st).input == 1 -> Submit (T.singleton c)
+            | otherwise -> Cancel
+    _ | st.quoteNext -> case literalChar key of
+        Nothing -> Editing st
+        Just c -> Editing (insert (T.singleton c) st) { quoteNext = False }
+    IncrementalEntry
+        | key.name `elem` ["Up", "Down", "PPage", "NPage", "Left", "Right", "Enter"] -> Cancel
+        | key.name `elem` ["C-r", "C-s"] -> if T.null st.input
+            then Answering (setLine st.lastInput st) ("=" <> st.lastInput)
+            else Answering st ((if key.name == "C-r" then "-" else "+") <> st.input)
+        | otherwise -> case lineEdit env st key of
+            Editing st' | st'.input /= st.input -> Answering st' ("=" <> st'.input)
+            edit -> edit
+    BackspaceExitEntry | key.name `elem` ["BSpace", "C-h"], T.null st.input -> Cancel
+    _ -> lineEdit env st key
+  where
+    -- The matches a Tab showed go with the next key.
+    st = st0 { completions = [] }
+
+-- | A key as the character it puts in a one-character prompt or after
+-- @C-v@: a control key as its control character, @BSpace@ as DEL; a key
+-- that is no character puts in nothing.
+literalChar :: Key -> Maybe Char
+literalChar key = case T.unpack key.name of
+    [c] -> Just c
+    "Space" -> Just ' '
+    "BSpace" -> Just '\DEL'
+    "Enter" -> Just '\r'
+    "Tab" -> Just '\t'
+    "Escape" -> Just '\ESC'
+    ['C', '-', c]
+        | c == '?' -> Just '\DEL'
+        | toUpper c >= '@' && toUpper c <= '_' -> Just (chr (ord (toUpper c) - 64))
+    _ -> Nothing
+
+-- | An edit to the line, read as its @status-keys@ say.
+lineEdit :: PromptEnv -> PromptState -> Key -> PromptEdit
+lineEdit env st key = case st.promptKeys.statusKeys of
+    KeysEmacs -> emacsKey env st key
     KeysVi -> case st.promptMode of
-        PromptInsert -> viInsertKey history st key
-        PromptCommand -> viCommandKey history st key
+        PromptInsert -> viInsertKey env st key
+        PromptCommand -> viCommandKey env st key
 
 -- | A vi-keys prompt in insert mode (tmux's @prompt_translate_key@):
 -- Escape enters command mode, the line-editing keys they share act as in
 -- emacs mode, and any other key inserts itself if it is a character.
-viInsertKey :: [Text] -> PromptState -> Key -> PromptEdit
-viInsertKey history st key
+viInsertKey :: PromptEnv -> PromptState -> Key -> PromptEdit
+viInsertKey env st key
     | key.name `elem` ["Escape", "C-["] = Editing
         (moveTo (st.cursor - 1) st) { promptMode = PromptCommand }
-    | key.name `elem` shared = emacsKey history st key
+    | key.name `elem` shared = emacsKey env st key
     | otherwise = Editing (maybe st (`insert` st) (insertText key))
   where
     shared =
@@ -147,8 +244,8 @@ viInsertKey history st key
         , "BSpace", "Delete", "Down", "End", "Home", "Left", "Right", "Up" ]
 
 -- | A vi-keys prompt in command mode (tmux's @prompt_translate_key@).
-viCommandKey :: [Text] -> PromptState -> Key -> PromptEdit
-viCommandKey history st key = case key.name of
+viCommandKey :: PromptEnv -> PromptState -> Key -> PromptEdit
+viCommandKey env st key = case key.name of
     "BSpace" -> as "Left"
     "A" -> inserting (as "End")
     "I" -> inserting (as "Home")
@@ -187,7 +284,7 @@ viCommandKey history st key = case key.name of
     _ -> Editing st
   where
     seps = st.promptKeys.wordSeparators
-    as name = emacsKey history st key { name = name }
+    as name = emacsKey env st key { name = name }
     move f = Editing (moveTo (f st.input st.cursor) st)
     inserting = \case
         Editing st' -> Editing st' { promptMode = PromptInsert }
@@ -198,8 +295,8 @@ clearLine :: PromptState -> PromptState
 clearLine st = st { input = "", cursor = 0 }
 
 -- | The emacs-keys prompt (and the keys vi mode shares with it).
-emacsKey :: [Text] -> PromptState -> Key -> PromptEdit
-emacsKey _history st key = case key.name of
+emacsKey :: PromptEnv -> PromptState -> Key -> PromptEdit
+emacsKey env st key = case key.name of
     "Enter"  -> Submit st.input
     "Escape" -> Cancel
     "C-c"    -> Cancel
@@ -223,11 +320,42 @@ emacsKey _history st key = case key.name of
     "C-w"    -> Editing (killWordBack st)
     "M-d"    -> Editing (killWordForward st)
     "C-y"    -> Editing (insert st.killed st)
-    "Up"     -> Editing (historyBack _history st)
-    "Down"   -> Editing (historyForward _history st)
+    "Up"     -> Editing (historyBack env.history st)
+    "Down"   -> Editing (historyForward env.history st)
+    "C-v"    -> Editing st { quoteNext = True }
+    "Tab"    -> Editing (complete env.commands st)
     _        -> case insertText key of
         Just t  -> Editing (insert t st)
         Nothing -> Editing st  -- unhandled key: swallowed, no change
+
+-- | tmux's @prompt_replace_complete@: a command prompt's first word, the
+-- cursor in or just after it, becomes the one command it begins, a space
+-- after it, else the longest start the commands it begins share; with
+-- nothing longer to put in, those commands are shown instead.
+complete :: [Text] -> PromptState -> PromptState
+complete commands st
+    | st.promptType /= CommandPrompt || start /= 0 || T.null word = st
+    | otherwise = case matches of
+        [] -> st
+        [one] -> replaceWith (one <> " ")
+        m : ms
+            | common m ms /= word -> replaceWith (common m ms)
+            | otherwise -> st { completions = matches }
+  where
+    n = T.length st.input
+    at = max 0 (min (n - 1) (if st.cursor == 0 then 0 else st.cursor - 1))
+    spaceAt i = i < n && isSpace (T.index st.input i)
+    back i = if i > 0 && not (spaceAt i) then back (i - 1) else i
+    fwd i = if spaceAt i then fwd (i + 1) else i
+    start = fwd (back at)
+    end = let go i = if i < n && not (spaceAt i) then go (i + 1) else i in go at
+    word = T.take (end - start) (T.drop start st.input)
+    matches = List.sort (List.nub (filter (word `T.isPrefixOf`) commands))
+    common m ms = List.foldl' commonPrefix m ms
+    commonPrefix a b = maybe "" (\(p, _, _) -> p) (T.commonPrefixes a b)
+    replaceWith t = st
+        { input = T.take start st.input <> t <> T.drop end st.input
+        , cursor = start + T.length t }
 
 -- | Recall an older command. On first step the in-progress line is
 -- stashed in 'pending' so 'historyForward' can restore it.

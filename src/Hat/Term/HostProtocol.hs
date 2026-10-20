@@ -40,6 +40,7 @@ module Hat.Term.HostProtocol
     , HostSignal (..)
     , HostPolicy (..)
     , HostQuery (..)
+    , TitleStackOp (..)
     , inputStringLimit
     , ModeSpace (..)
     , CursorChange (..)
@@ -223,6 +224,13 @@ data HostSignal
     | HostCursor CursorChange ByteString
         -- ^ a change to the cursor state tmux reports, and the sequence
         --   itself, which the grid engine still takes
+    | HostTitleStack [TitleStackOp] ByteString
+        -- ^ the window-title stack operations of an XTWINOPS @CSI … t@, in
+        --   order, and the sequence itself, which the grid engine still takes
+    deriving (Eq, Show)
+
+-- | An operation on a pane's title stack.
+data TitleStackOp = PushTitle | PopTitle
     deriving (Eq, Show)
 
 -- | A query about the terminal itself.
@@ -368,6 +376,9 @@ scrubHost pol carry0 chunk = case carry0 of
                     (Just 0x3f, "$", 0x70, ns) -> modeQuery end DecMode ns
                     (Nothing, " ", 0x71, ns) | headOr 0 ns >= 0 ->
                         Found end (HostSignal (HostCursor (CursorStyleSet (headOr 0 ns)) raw))
+                    (Nothing, "", 0x74, _)
+                        | ops@(_ : _) <- titleStackOps (map optParam (B.split 0x3b params)) ->
+                            Found end (HostSignal (HostTitleStack ops raw))
                     _ -> Skip (end - p)
         modeQuery end space ns
             | m > 0 = Found end (HostSignal (HostQuery (ModeQuery space m)))
@@ -402,7 +413,34 @@ scrubHost pol carry0 chunk = case carry0 of
         readParam f = case B8.readInt f of
             Just (n, "") -> n
             _ -> if B.null f then 0 else -1
+        optParam f = case B8.readInt f of
+            Just (n, "") -> Just (max 0 n)
+            _ -> Nothing
     isDigitB b = b >= 0x30 && b <= 0x39
+
+-- | The title-stack operations in an XTWINOPS parameter list (tmux's
+-- @input_csi_dispatch_winops@): @22@ pushes and @23@ pops when the next
+-- parameter is @0@ or @2@ (both titles, or the window title); the
+-- operations that take arguments skip them; a missing parameter ends the
+-- list.
+titleStackOps :: [Maybe Int] -> [TitleStackOp]
+titleStackOps = \case
+    Just n : rest
+        | n == 4 || n == 8 -> args 2 rest
+        | n == 9 || n == 10 -> args 1 rest
+        | n == 22 -> stack PushTitle rest
+        | n == 23 -> stack PopTitle rest
+        | otherwise -> titleStackOps rest
+    _ -> []
+  where
+    args k rest
+        | length (takeWhile (/= Nothing) (take k rest)) == k = titleStackOps (drop k rest)
+        | otherwise = []
+    stack op = \case
+        Just w : rest
+            | w == 0 || w == 2 -> op : titleStackOps rest
+            | otherwise -> titleStackOps rest
+        _ -> []
 
 -- | tmux's @clean_name@ for a title or window name an app sent: refused
 -- unless valid UTF-8; @#(@ defused to @_(@ so no format ever runs a command
