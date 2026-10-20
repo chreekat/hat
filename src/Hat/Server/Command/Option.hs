@@ -44,7 +44,7 @@ import Hat.Server.Format (FormatEnv, quoteArgsT)
 import Hat.Server.FormatEnv (paneEnvById, paneFormatEnv)
 import Hat.Server.HookTypes (HookAmbient (..), HookEntry (..), HookScope (..))
 import Hat.Server.HookMonitor (monitorsAt)
-import Hat.Server.Hooks (ambientFor, hookEntriesAt, writeHookArray)
+import Hat.Server.Hooks (ambientFor, hookEntriesAt, isRegisteredEvent, writeHookArray)
 import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPaneScoped, targetSession )
@@ -315,7 +315,8 @@ runSet cmd st mclient args = do
                     Left e -> pure [RErr e]
                     Right () -> do
                         esc <- scopeFor st mclient mtarget sd flags mdef
-                        case (esc, storeRole cmd mdef) of
+                        role <- storeRole st cmd n mdef (either (const Nothing) Just esc)
+                        case (esc, role) of
                             (Left e, _) -> orQuiet e
                             (Right sc, HookOption) -> case hookScopeOf sc of
                                 Nothing -> pure [RErr (noSuchTarget "session" mtarget)]
@@ -381,13 +382,23 @@ checkValue st sc n req mvalue = case (n, req.unsetting, mvalue) of
             else Left ("not a suitable shell: " <> new)
     _ -> pure (Right (req, mvalue))
 
--- | Which store a name addresses: the hook store for a hook row or a
--- @\@user@ name given to @set-hook@, else the option tables.
-storeRole :: SetCommand -> Maybe OptionDef -> OptionRole
-storeRole cmd = \case
-    Just d -> d.role
-    Nothing | cmd == SetHookCommand -> HookOption
-            | otherwise -> PlainOption
+-- | Which store a name addresses: the hook store for a hook row, a @\@user@
+-- name given to @set-hook@, or one a @set-hook@ made an event (tmux keeps a
+-- user hook as the user option of its name); else the option tables.
+storeRole
+    :: ServerState -> SetCommand -> Text -> Maybe OptionDef -> Maybe Scope
+    -> IO OptionRole
+storeRole st cmd n mdef msc = case mdef of
+    Just d -> pure d.role
+    Nothing | cmd == SetHookCommand -> pure HookOption
+            | otherwise -> userRole st n msc
+
+-- | A @\@user@ name's store at a table: the hook store once it is an event,
+-- at a table hooks live in.
+userRole :: ServerState -> Text -> Maybe Scope -> IO OptionRole
+userRole st n msc = do
+    event <- isRegisteredEvent st n
+    pure $ if event && isJust (hookScopeOf =<< msc) then HookOption else PlainOption
 
 -- | Decide and write one hook's commands at a hook scope. A hook row's value
 -- is its command array; a user hook's is its one command.
@@ -670,10 +681,6 @@ runShow cmd st mclient args = do
             Left (MatchError e) -> orQuiet e
             Right (n, mkey) -> do
                 let mdef = lookupOptionDef n
-                    role = case (mdef, cmd) of
-                        (Just d, _) -> d.role
-                        (Nothing, ShowHooksCommand) -> HookOption
-                        (Nothing, ShowOptionsCommand) -> PlainOption
                 case mapM_ requireLive mdef of
                     Left e -> pure [RErr e]
                     Right () -> do
@@ -681,6 +688,10 @@ runShow cmd st mclient args = do
                         case esc of
                             Left e -> orQuiet e
                             Right sc -> do
+                                role <- case (mdef, cmd) of
+                                    (Just d, _) -> pure d.role
+                                    (Nothing, ShowHooksCommand) -> pure HookOption
+                                    (Nothing, ShowOptionsCommand) -> userRole st n (Just sc)
                                 found <- lookupShown st sc role mdef n (if has "-A" then WithParents else OwnOnly)
                                 case found of
                                     Just (v, inh, extra) ->

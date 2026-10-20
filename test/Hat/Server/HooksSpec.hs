@@ -144,6 +144,17 @@ spec = describe "hooks engine" $ do
         fireUserEvent st "@manual" noTarget []
         userOpt st "@seen" `shouldReturn` Just "1"
 
+    it "set-option and show-options address a user hook as the user option of its name" $ do
+        st <- newState
+        _ <- cmdSetHook st Nothing ["-g", "@manual", "set -g @seen 1"]
+        runCommandText st Nothing "show-options -gv @manual"
+            `shouldReturn` [ROutput "set -g @seen 1"]
+        _ <- runCommandText st Nothing "set-option -g @manual 'set -g @seen 2'"
+        fireUserEvent st "@manual" noTarget []
+        userOpt st "@seen" `shouldReturn` Just "2"
+        _ <- runCommandText st Nothing "set-option -gu @manual"
+        runCommandText st Nothing "show-hooks -gq @manual" `shouldReturn` []
+
     it "an unregistered user event fires no hooks but succeeds" $ do
         st <- newState
         fireUserEvent st "@nobody" noTarget []
