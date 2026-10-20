@@ -164,6 +164,7 @@ library
         Hat.Server.Pane
         Hat.Server.PaneColours
         Hat.Server.PaneMode
+        Hat.Server.PanePrompt
         Hat.Server.ModeStack
         Hat.Server.ModeKey
         Hat.Server.ModeTree

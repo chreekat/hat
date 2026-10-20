@@ -11,7 +11,7 @@ module Hat.Server.Command.Interact
 
 import Control.Concurrent.STM
 import Control.Monad (forM_, void, when)
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -20,13 +20,15 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ClientIO (send)
-import Hat.Server.Command.Types (CommandImpl, Dispatch (..), Reply (..), parseArgs, unknownFlag)
+import Hat.Server.Command.Types (CommandImpl, Dispatch (..), Reply (..), parseArgs, parseArgsDigits, unknownFlag)
 import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.FormatEnv (windowFormatEnv)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Keys
 import Hat.Server.Locate (clientOptions, clientView, findTarget, findTargetClient, formatClient)
 import Hat.Server.Pane (typeKeyIntoPane)
+import Hat.Server.PanePrompt (openPanePrompt)
+import Hat.Server.Toast (showReplies)
 import Hat.Server.PaneMode (enterClockMode, modifyTopMode, resetPaneModeAll, setPaneMode)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
@@ -142,63 +144,53 @@ cmdClockMode st mclient args = do
         Left e -> pure [RErr e]
         Right (_, _, _, pane) -> [] <$ enterClockMode st pane
 
--- | @command-prompt [-bFkl] [-I inputs] [-p prompts] [-t target-client]
--- [template]@. Opens the line editor on the target client, asking each
--- comma-separated prompt in turn (@-l@: one prompt, commas and all); @-I@
--- pre-fills each (format-expanded, so @#W@ is the window name), the answers
--- are spliced into the @template@ (see 'Prompt.applyTemplate'; expanded
--- first under @-F@), and @-k@ takes one key, by name, instead of a line. A
--- command from another client waits for the answers and runs the template
--- itself, unless @-b@. Backs the @,@ rename binding:
--- @command-prompt -I "#W" "rename-window '%%'"@.
+-- | @command-prompt [-1bCeFiklNP] [-I inputs] [-p prompts] [-t
+-- target-client] [-T prompt-type] [template]@. Opens the line editor on the
+-- target client's status line, or with @-P@ over its current pane, asking
+-- each comma-separated prompt in turn (@-l@: one prompt, commas and all);
+-- @-I@ pre-fills each (format-expanded, so @#W@ is the window name), the
+-- answers are spliced into the @template@ (see 'Prompt.applyTemplate';
+-- expanded first under @-F@). The prompt takes one key by name (@-k@), one
+-- character (@-1@), digits (@-N@), a line answered as it is edited (@-i@),
+-- or a line @BSpace@ on empty abandons (@-e@). A command from another
+-- client waits for the answers and runs the template itself, unless @-b@
+-- (or @-i@). Backs the @,@ rename binding: @command-prompt -I "#W"
+-- "rename-window '%%'"@.
 cmdCommandPrompt :: Dispatch -> CommandImpl
 cmdCommandPrompt d st mclient args
-    | Just e <- unknownFlag "command-prompt" "1CbeFiklINPptT" flags = pure [RErr e]
-    | bad : _ <- [ f | f <- flags, f `notElem` ["-b", "-F", "-k", "-l"] ]
-        <> [ "-T" | Just _ <- [lookup "-T" opts] ]
-        -- a bare -1 parses as a number
-        <> [ "-1" | "-1" `elem` takeWhile ("-" `T.isPrefixOf`) args ] =
-        pure [RErr ("command-prompt " <> bad <> ": not supported")]
+    | Just e <- unknownFlag "command-prompt" "1CbeFiklNP" flags = pure [RErr e]
+    | Just t <- lookup "-T" opts, Nothing <- Prompt.parsePromptType t =
+        pure [RErr ("unknown type: " <> t)]
     | otherwise = findTargetClient st mclient Nothing (lookup "-t" opts) >>= \case
         Left e -> pure [RErr e]
         Right client -> do
-            env <- clientPromptEnv st client
-            inputs <- case lookup "-I" opts of
+            mhome <- if has "-P"
+                then atomically $ clientView st client >>= \case
+                    Nothing -> pure Nothing
+                    Just (_, win) -> do
+                        mpane <- activePane win
+                        prompts <- readTVar st.panePrompts
+                        pure $ case mpane of
+                            Just pane | not (Map.member pane.id prompts) -> Just (Just pane)
+                            _ -> Nothing
+                else (\shown -> if shown then Nothing else Just Nothing) . isJust
+                    <$> readTVarIO client.prompt
+            case mhome of
+                -- The prompt it would open is open already.
                 Nothing -> pure []
-                Just raw -> mapM (expandFormat st env)
-                    (if literal then [raw] else T.splitOn "," raw)
-            tmpl <- if "-F" `elem` flags then expandFormat st env tmpl0 else pure tmpl0
-            copts <- clientOptions st client
-            let waiting = "-b" `notElem` flags && fmap (.id) mclient `notElem` [Nothing, Just client.id]
-            mw <- if waiting then Just . PromptWaiter <$> newEmptyTMVarIO else pure Nothing
-            let keys = PromptKeys
-                    { statusKeys = if optionText "status-keys" copts == "vi"
-                        then KeysVi else KeysEmacs
-                    , wordSeparators = copts.wordSeparators
-                    , insertCursor = promptCursor "prompt-cursor" copts
-                    , commandCursor = promptCursor "prompt-command-cursor" copts }
-                prompts = zip labels (inputs <> repeat "")
-            -- A client already prompting keeps its prompt.
-            opened <- atomically $ readTVar client.prompt >>= \case
-                Just _ -> pure False
-                Nothing -> case prompts of
-                    [] -> pure False
-                    (label, initial) : rest -> True <$ do
-                        writeTVar client.prompt $ Just (Prompt.promptFor label initial tmpl)
-                            { promptKeys = keys, queued = rest
-                            , promptKind = if "-k" `elem` flags then KeyEntry else LineEntry
-                            , waiter = mw }
-                        bumpDirty st
-            case mw of
-                Just (PromptWaiter w) | opened -> do
-                    cmd <- outsideCommandBatch st
-                        (atomically (takeTMVar w `orElse` abandoned client mw))
-                    maybe (pure []) (d.runCommandText st mclient) cmd
-                _ -> pure []
+                Just mpane -> open client mpane
   where
-    (opts, flags, pos) = parseArgs "IpTt" args
+    (opts, flags, pos) = parseArgsDigits "IpTt" "1" args
+    has f = f `elem` flags
     tmpl0 = T.unwords pos
-    literal = "-l" `elem` flags
+    literal = has "-l"
+    kind
+        | has "-1" = SingleEntry
+        | has "-N" = NumericEntry
+        | has "-i" = IncrementalEntry
+        | has "-k" = KeyEntry
+        | has "-e" = BackspaceExitEntry
+        | otherwise = LineEntry
     labels = case lookup "-p" opts of
         Just p
             | literal -> [p]
@@ -206,11 +198,62 @@ cmdCommandPrompt d st mclient args
         Nothing
             | T.null tmpl0 -> [":"]
             | otherwise -> ["(" <> T.takeWhile (/= ' ') tmpl0 <> ") "]
-    -- The prompt closed without answering: its client went, or another
-    -- prompt replaced it.
-    abandoned client mw = do
+    open client mpane = do
+        env <- clientPromptEnv st client
+        inputs <- case lookup "-I" opts of
+            Nothing -> pure []
+            Just raw -> mapM (expandFormat st env)
+                (if literal then [raw] else T.splitOn "," raw)
+        tmpl <- if has "-F" then expandFormat st env tmpl0 else pure tmpl0
+        copts <- clientOptions st client
+        let waiting = not (has "-b" || has "-i")
+                && fmap (.id) mclient `notElem` [Nothing, Just client.id]
+        mw <- if waiting then Just . PromptWaiter <$> newEmptyTMVarIO else pure Nothing
+        let keys = PromptKeys
+                { statusKeys = if optionText "status-keys" copts == "vi"
+                    then KeysVi else KeysEmacs
+                , wordSeparators = copts.wordSeparators
+                , insertCursor = promptCursor "prompt-cursor" copts
+                , commandCursor = promptCursor "prompt-command-cursor" copts }
+            prompts = zip labels (inputs <> repeat "")
+            ptype = fromMaybe CommandPrompt (lookup "-T" opts >>= Prompt.parsePromptType)
+            fresh (label, initial) rest = (Prompt.promptFor label initial tmpl)
+                { promptKeys = keys, queued = rest, promptKind = kind, promptType = ptype
+                , freeze = if has "-C" then NoFreeze else FreezeScreen
+                , waiter = mw }
+            -- An incremental prompt starts empty, its input kept for C-r and
+            -- C-s to bring back.
+            started pr
+                | kind == IncrementalEntry = pr { input = "", cursor = 0, lastInput = pr.input }
+                | otherwise = pr
+        case prompts of
+            [] -> pure []
+            first : rest -> do
+                let pr = started (fresh first rest)
+                opened <- case mpane of
+                    Nothing -> atomically $ readTVar client.prompt >>= \case
+                        Just _ -> pure False
+                        Nothing -> True <$ do
+                            writeTVar client.prompt (Just pr)
+                            bumpDirty st
+                    Just pane -> openPanePrompt st pane pr
+                -- tmux's prompt_incremental_start.
+                when (opened && kind == IncrementalEntry) $
+                    showReplies st client =<< d.runCommandText st (Just client)
+                        (Prompt.applyTemplate tmpl ["=" <> pr.input])
+                case mw of
+                    Just (PromptWaiter w) | opened -> do
+                        cmd <- outsideCommandBatch st
+                            (atomically (takeTMVar w `orElse` abandoned client mpane mw))
+                        maybe (pure []) (d.runCommandText st mclient) cmd
+                    _ -> pure []
+    -- The prompt closed without answering: its client or pane went, or
+    -- another prompt replaced it.
+    abandoned client mpane mw = do
         live <- Map.member client.id <$> readTVar st.clients
-        cur <- readTVar client.prompt
+        cur <- case mpane of
+            Nothing -> readTVar client.prompt
+            Just pane -> Map.lookup pane.id <$> readTVar st.panePrompts
         if live && fmap (.waiter) cur == Just mw then retry else pure Nothing
 
 -- | A prompt's cursor from its @…-colour@ and @…-style@ options.

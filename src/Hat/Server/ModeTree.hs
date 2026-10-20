@@ -43,7 +43,9 @@ import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
 import Hat.Server.FormatDraw (FormatColours (..), formatDrawIn, formatWidth)
 import Hat.Server.Prompt (promptFor)
+import Hat.Server.Message (inputCells, quotedInput)
 import Hat.Server.Theme (Theme)
+import Hat.TextWidth (textWidth)
 import Hat.Term.Cell qualified as Cell
 
 -- | One list item as a mode's builder produced it.
@@ -530,16 +532,21 @@ drawTree inp st = TreeDraw
     promptRow = if inp.promptTop then 0 else sy - 1
     withPrompt g = case st.modePrompt of
         Just p | sy > 0 ->
-            let txt = p.edit.promptLabel <> p.edit.input
-                row = V.fromList (take w ([ Cell.glyphCell c inp.promptStyle | c <- T.unpack txt ]
+            let label = [ Cell.glyphCell c inp.promptStyle | c <- T.unpack p.edit.promptLabel ]
+                shown = quotedInput p.edit.quoteNext p.edit.cursor p.edit.input
+                input = inputCells inp.promptStyle 0 (max 0 (w - length label)) shown
+                row = V.fromList (take w (label <> input
                     <> repeat (Cell.glyphCell ' ' inp.promptStyle)))
             in g V.// [(promptRow, row)]
         _ -> g
     promptCursor = case st.modePrompt of
         Just p | sy > 0 -> Just Pos
             { row = promptRow
-            , col = min (w - 1) (T.length p.edit.promptLabel + p.edit.cursor) }
+            , col = min (w - 1) (T.length p.edit.promptLabel
+                + textWidth (T.concatMap shownChar (T.take p.edit.cursor p.edit.input))) }
         _ -> Nothing
+    -- A control character draws as two cells, ^ and its letter.
+    shownChar c = if c <= '\x1f' || c == '\DEL' then "^?" else T.singleton c
 
 -- | Overwrite the cells of @g@ from @(row, col)@ rightwards with @cs@,
 -- clipped to the grid.

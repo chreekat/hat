@@ -79,6 +79,8 @@ module Hat.Model
     , PanesPreview (..)
     , PromptState (..)
     , PromptKind (..)
+    , PromptType (..)
+    , PromptFreeze (..)
     , PromptWaiter (..)
     , PromptKeys (..)
     , PromptMode (..)
@@ -193,6 +195,9 @@ data ServerState = ServerState
     , windowLatest :: TVar (Map WindowId ClientId)
         -- ^ each window's latest client (tmux's @w->latest@); see
         --   'Hat.Server.Conn.noteLatest'
+    , panePrompts :: TVar (Map PaneId PromptState)
+        -- ^ the prompts drawn over panes (@command-prompt -P@); see
+        --   "Hat.Server.PanePrompt"
     , livePanes   :: TVar Int    -- ^ panes whose reader thread is still alive
                                 --   (running or reaping its child); see
                                 --   'Hat.Server.serverIdle'
@@ -861,13 +866,36 @@ data PromptState = PromptState
     , promptKeys :: !PromptKeys  -- ^ fixed when the prompt opens
     , promptMode :: !PromptMode
     , promptKind :: !PromptKind
+    , promptType :: !PromptType
+    , freeze  :: !PromptFreeze
+    , quoteNext :: !Bool       -- ^ @C-v@ was pressed: the next key goes in as it is
+    , lastInput :: !Text
+        -- ^ an incremental prompt's initial input, which @C-r@\/@C-s@ on an
+        --   empty line bring back
+    , completions :: ![Text]
+        -- ^ the commands a @Tab@ found the word could be, none longer in
+        --   common; shown after the input until the next key
     , waiter  :: !(Maybe PromptWaiter)
         -- ^ the command that opened the prompt, waiting for what it is given
     }
     deriving (Eq, Show)
 
--- | What a prompt takes: an edited line, or one key (@command-prompt -k@).
-data PromptKind = LineEntry | KeyEntry
+-- | What a prompt takes (@command-prompt@'s flags): an edited line, one key
+-- (@-k@), one character (@-1@), digits (@-N@), a line answered as it is
+-- edited (@-i@), or a line @BSpace@ on empty abandons (@-e@).
+data PromptKind
+    = LineEntry | KeyEntry | SingleEntry | NumericEntry | IncrementalEntry
+    | BackspaceExitEntry
+    deriving (Eq, Show)
+
+-- | @command-prompt -T@: which history a prompt keeps, and whether @Tab@
+-- completes commands.
+data PromptType = CommandPrompt | SearchPrompt
+    deriving (Eq, Show, Enum, Bounded)
+
+-- | @command-prompt -C@ (tmux's @PROMPT_NOFREEZE@), shown in
+-- @#{prompt_flags}@: hat never freezes a client's screen under a prompt.
+data PromptFreeze = FreezeScreen | NoFreeze
     deriving (Eq, Show)
 
 -- | Where a prompt's answer goes: the command its answers make, or
@@ -1080,6 +1108,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- commandDepth
     <*> newTVarIO 0      -- activityClock
     <*> newTVarIO Map.empty  -- windowLatest
+    <*> newTVarIO Map.empty  -- panePrompts
     <*> newTVarIO 0      -- livePanes
     <*> newTVarIO Map.empty  -- popupJobs
     <*> newTVarIO 0      -- activeConns

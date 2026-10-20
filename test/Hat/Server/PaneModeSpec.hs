@@ -157,6 +157,13 @@ spec = do
                 display st "work:0.0" "#{pane_mode}" `shouldReturn` [ROutput "tree-mode"]
                 run st ["send-keys", "-t", "work:0.0", "Enter"] `shouldReturn` []
                 run st ["show", "-gv", "@chosen"] `shouldReturn` [ROutput "=work:0."]
+        it "the search prompt shows a quoted control key as ^ and its letter" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                run st ["choose-tree", "-t", "S:0.0"] `shouldReturn` []
+                run st ["send-keys", "-t", "S:0.0", "/", "a", "C-v", "C-g", "b"] `shouldReturn` []
+                cells <- treeCells st
+                any (T.isInfixOf "a^Gb" . rowText) cells `shouldBe` True
         it "choose-client has nothing to show without a client" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []

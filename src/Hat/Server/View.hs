@@ -65,6 +65,7 @@ import Hat.Server.Menu
     (MenuLook (..), MenuMouse (..), WindowMenu (..), menuGrid, menuHeight, menuWidth
     , overrideColours)
 import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
+import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.Popup (PopupState (..), popupCursor, popupGrid)
 import Hat.Server.Mouse qualified as Mouse
 import Hat.Server.FormatDraw (DrawRange)
@@ -188,6 +189,23 @@ renderOnce st client = do
     let (rowOff, mStatusRowIx) =
             statusLayout sopts.statusPosition sopts.statusLines
                 (fromIntegral csize.rows)
+        -- A prompt open over a pane takes the pane's last row (its first,
+        -- the status line being at the top) and its cursor.
+        withPanePrompt sess pane pv = do
+            mpr <- Map.lookup pane.id <$> readTVarIO st.panePrompts
+            case mpr of
+                Nothing -> pure pv
+                Just pr -> do
+                    ctx <- messageCtx st sess
+                    let ix = if mStatusRowIx == Just 0 then 0 else V.length pv.cells - 1
+                    case pv.cells V.!? ix of
+                        Just under | not (V.null under) -> do
+                            let (row, cx) = drawPrompt ctx sopts (promptView OverPane pr) under
+                            pure pv
+                                { cells = pv.cells V.// [(ix, row)], rowGens = Nothing
+                                , cursor = Just (Pos ix (min (V.length under - 1) cx))
+                                , cursorVisible = True }
+                        _ -> pure pv
     (frame, origins, cursor, panned) <- case view of
         Nothing -> pure
             ( blankFrame csize
@@ -201,7 +219,7 @@ renderOnce st client = do
                 case Map.lookup pidL ps of
                     Nothing -> pure []
                     Just pane -> do
-                        pv <- paneView st pane
+                        pv <- withPanePrompt sess pane =<< paneView st pane
                         popts <- resolveForPaneIO st sess win pane
                         dflt <- paneDefaultColours st expand th sess win pane popts
                         palette <- panePalette th pane popts
@@ -280,7 +298,7 @@ renderOnce st client = do
                 _ | not fits -> pure []
                 (Just pr, _) -> do
                     ctx <- messageCtx st sess
-                    let (row, cx) = drawPrompt ctx sopts (promptView pr) under
+                    let (row, cx) = drawPrompt ctx sopts (promptView OnStatus pr) under
                     pure [(msgIx, row, Just cx)]
                 (Nothing, Just t) -> do
                     ctx <- messageCtx st sess
@@ -894,11 +912,18 @@ messageCtx st sess = do
     env <- sessionFormatEnv st sess
     formatCtxFor st env
 
+-- | Where a prompt is drawn, as @#{prompt_flags}@ tells.
+data PromptPlace = OnStatus | OverPane
+
 -- | What the prompt draws: see 'drawPrompt'.
-promptView :: PromptState -> PromptView
-promptView pr = PromptView
+promptView :: PromptPlace -> PromptState -> PromptView
+promptView place pr = PromptView
     { label = pr.promptLabel, input = pr.input, cursor = pr.cursor
-    , commandMode = pr.promptMode == PromptCommand }
+    , commandMode = pr.promptMode == PromptCommand
+    , typeName = Prompt.promptTypeName pr.promptType
+    , flags = Prompt.promptFlagsText (case place of OnStatus -> False; OverPane -> True) pr
+    , quoted = pr.quoteNext
+    , completions = pr.completions }
 
 -- | The status line's rows for a session at @width@ cells (see
 -- 'Hat.Server.Status.statusRows').

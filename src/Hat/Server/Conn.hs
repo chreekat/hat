@@ -60,6 +60,7 @@ import Hat.Server.ControlQueue (requestExit)
 import Hat.Server.ControlTypes (ControlState, newControlState)
 import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Overlay
+import Hat.Server.PanePrompt (windowPanePrompt)
 import Hat.Server.PopupIO (closePopup, popupKeyInput, refitClientPopup)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Startup
@@ -599,21 +600,23 @@ noteLatest st client = do
 data KeyOwner
     = PopupOverlay Popup
     | MenuOverlay Window
-    | PromptOverlay PromptState
+    | PromptOverlay PromptHome PromptState
     | KeyTables
 
 keyOwner :: ServerState -> Client -> IO KeyOwner
 keyOwner st client = do
-    menuWin <- atomically $ clientView st client >>= \case
-        Just (_, win) -> (\m -> win <$ m) <$> readTVar win.menu
-        Nothing -> pure Nothing
+    (menuWin, mpane) <- atomically $ clientView st client >>= \case
+        Just (_, win) -> (,) <$> ((\m -> win <$ m) <$> readTVar win.menu)
+            <*> windowPanePrompt st win
+        Nothing -> pure (Nothing, Nothing)
     mprompt <- readTVarIO client.prompt
     mpopup <- readTVarIO client.popup
-    pure $ case (menuWin, mprompt) of
+    pure $ case (menuWin, mprompt, mpane) of
         _ | Just p <- mpopup -> PopupOverlay p
-        (Just win, _) -> MenuOverlay win
-        (_, Just pr) -> PromptOverlay pr
-        _            -> KeyTables
+        (Just win, _, _) -> MenuOverlay win
+        (_, Just pr, _) -> PromptOverlay OnStatusLine pr
+        (_, _, Just (pane, pr)) -> PromptOverlay (OverPane pane) pr
+        _ -> KeyTables
 
 -- | Hand each key to whatever owns the keyboard once the keys before it
 -- have run.
@@ -626,7 +629,7 @@ deliverKeys d st client keys@(k : ks) = keyOwner st client >>= \case
     MenuOverlay win -> do
         handleMenuInput d st client win k
         deliverKeys d st client ks
-    PromptOverlay pr -> deliverKeys d st client =<< handlePromptInput d st client pr keys
+    PromptOverlay home pr -> deliverKeys d st client =<< handlePromptInput d st client home pr keys
     KeyTables -> runKeys d st client keys
 
 -- | How long, in ms, input held for @escape-time@ waits for the rest of its

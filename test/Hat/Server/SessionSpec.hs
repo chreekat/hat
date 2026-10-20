@@ -6,6 +6,7 @@ import Hat.Server.Outbound (backlog, newOutbound)
 import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
 import Control.Exception (finally)
+import Control.Monad (filterM)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef)
@@ -697,13 +698,57 @@ spec = do
             runArgv st (Just cli) ["command-prompt", "-b", "-p", "one", "x"] `shouldReturn` []
             runArgv st (Just cli) ["command-prompt", "-b", "-p", "two", "x"] `shouldReturn` []
             fmap (.promptLabel) <$> readTVarIO attached.prompt `shouldReturn` Just "one "
-        it "refuses what it cannot do" $ do
+        it "refuses an unknown client or prompt type" $ do
             (st, sess) <- seedSession "/"
             _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
-            runArgv st Nothing ["command-prompt", "-1", "x"]
-                `shouldReturn` [RErr "command-prompt -1: not supported"]
+            runArgv st Nothing ["command-prompt", "-T", "shell", "x"]
+                `shouldReturn` [RErr "unknown type: shell"]
             runArgv st Nothing ["command-prompt", "-t", "nosuch", "x"]
                 `shouldReturn` [RErr "can't find client: nosuch"]
+        it "reads -1 as a flag, the flags after it too" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-1", "-p", "one", "x"] `shouldReturn` []
+            fmap (\p -> (p.promptKind, p.promptLabel)) <$> readTVarIO attached.prompt
+                `shouldReturn` Just (SingleEntry, "one ")
+        it "-i answers as the prompt opens, and as it is edited" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-i", "set -g @r '%%'"] `shouldReturn` []
+            runArgv st Nothing ["show", "-gv", "@r"] `shouldReturn` [ROutput "="]
+            handleInput dispatch st attached "ab"
+            runArgv st Nothing ["show", "-gv", "@r"] `shouldReturn` [ROutput "=ab"]
+        it "-P opens the prompt over the client's pane, one at a time" $ do
+            (st, _) <- seedSession "/"
+            runArgv st Nothing ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+            (sid, [pid]) <- atomically $ do
+                ss <- Map.elems <$> readTVar st.sessions
+                named <- filterM (fmap (== "S") . readTVar . (.name)) ss
+                case named of
+                    s : _ -> do
+                        ws <- Map.elems <$> readTVar s.windows
+                        (,) s.id . concat <$> mapM (fmap Map.keys . readTVar . (.panes)) ws
+                    [] -> pure (SessionId 0, [])
+            attached <- addClient st sid (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-P", "-p", "one", "set -g @r '%%'"]
+                `shouldReturn` []
+            runArgv st (Just attached) ["command-prompt", "-P", "-p", "two", "x"] `shouldReturn` []
+            readTVarIO attached.prompt `shouldReturn` Nothing
+            fmap (.promptLabel) . Map.lookup pid <$> readTVarIO st.panePrompts
+                `shouldReturn` Just "one "
+            handleInput dispatch st attached "hi\r"
+            runArgv st Nothing ["show", "-gv", "@r"] `shouldReturn` [ROutput "hi"]
+            readTVarIO st.panePrompts `shouldReturn` Map.empty
+            runArgv st Nothing ["kill-session", "-t", "S"] `shouldReturn` []
+        it "keeps each prompt type's own history" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "set -g @r '%%'"] `shouldReturn` []
+            handleInput dispatch st attached "alpha\r"
+            runArgv st (Just attached) ["command-prompt", "-T", "search", "x"] `shouldReturn` []
+            handleInput dispatch st attached "beta\r"
+            readTVarIO st.cmdHistory `shouldReturn` ["alpha"]
+            readTVarIO st.searchHistory `shouldReturn` ["beta"]
 
     describe "a pane's queries of the terminal (tmux's input requests)" $ do
         -- A pane whose program reads its replies on a raw pty, homed in a

@@ -1325,6 +1325,7 @@ detachPane st win pane = do
     claimed <- claimPane pane
     if not claimed then pure AlreadyDetached else do
         modifyTVar' win.panes (Map.delete pane.id)
+        modifyTVar' st.panePrompts (Map.delete pane.id)
         releaseModal win pane.id
         lay <- readTVar win.layout
         mz <- readTVar win.zoomed

@@ -43,7 +43,7 @@ import Hat.Server.Keys (Key (..))
 import Hat.Server.Locate (findTarget, paneIndexOf)
 import Hat.Server.ModeTree
 import Hat.Server.PaneMode (modifyTopMode, resetPaneMode, setPaneMode, zoomForMode)
-import Hat.Server.Prompt (PromptEdit (..), editPrompt, promptFor)
+import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Render (overlayGrid)
 import Hat.Server.Toast (showToast)
@@ -862,26 +862,35 @@ treeModeKey d st mclient pane key = do
         PromptSingleKey
             | T.length key.name == 1 -> answer ls ts p (Just key.name)
             | otherwise -> answer ls ts p Nothing
-        PromptLine -> case editPrompt [] p.edit key of
+        PromptLine -> case editPrompt noPromptEnv p.edit key of
             Editing e -> put ts { modePrompt = Just p { edit = e } }
-            Submit line -> answer ls ts p (if T.null line then Nothing else Just line)
+            Answering e _ -> put ts { modePrompt = Just p { edit = e } }
+            Submit line -> submitted line
+            SubmitPassing line -> submitted line
             Cancel -> answer ls ts p Nothing
+          where
+            submitted line = answer ls ts p (if T.null line then Nothing else Just line)
     -- See Note [Fuzzy tree search].
     searchKey items ls h ts p
         | key.name `elem` ["Up", "C-p", "Down", "C-n"] =
             let moved = treeKey h (sortSequence ts.kind) items ls ts { modePrompt = Nothing } key.name
             in put moved.state { modePrompt = Just p }
-        | otherwise = case editPrompt [] p.edit key of
-            Editing e -> put ts
-                { modePrompt = Just p { edit = e }
-                , current = (fuzzyView e.input items).best <|> ts.current }
-            Submit line -> do
-                let chosen = ts
-                        { modePrompt = Nothing
-                        , search = if T.null line then Nothing else Just line }
-                put chosen
-                unless (null ls) $ kindKey ls chosen "Enter"
+        | otherwise = case editPrompt noPromptEnv p.edit key of
+            Editing e -> edited e
+            Answering e _ -> edited e
+            Submit line -> submitted line
+            SubmitPassing line -> submitted line
             Cancel -> answer ls ts p Nothing
+      where
+        edited e = put ts
+            { modePrompt = Just p { edit = e }
+            , current = (fuzzyView e.input items).best <|> ts.current }
+        submitted line = do
+            let chosen = ts
+                    { modePrompt = Nothing
+                    , search = if T.null line then Nothing else Just line }
+            put chosen
+            unless (null ls) $ kindKey ls chosen "Enter"
     answer ls ts p mline = do
         let closed = ts { modePrompt = Nothing }
         case p.use of

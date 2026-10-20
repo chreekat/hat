@@ -8,6 +8,8 @@ module Hat.Server.Message
     , drawMessage
     , PromptView (..)
     , drawPrompt
+    , inputCells
+    , quotedInput
     ) where
 
 import Data.Map.Strict qualified as Map
@@ -67,6 +69,10 @@ data PromptView = PromptView
     , input :: Text
     , cursor :: Int
     , commandMode :: Bool
+    , typeName :: Text  -- ^ @#{prompt_type}@
+    , flags :: Text     -- ^ @#{prompt_flags}@
+    , quoted :: Bool    -- ^ a @C-v@ waits for its key, shown as @^@ at the cursor
+    , completions :: [Text]  -- ^ what a @Tab@ found the word could be
     }
 
 -- | tmux's @prompt_draw@ (with @prompt_layout@): the label through
@@ -83,8 +89,8 @@ drawPrompt ctx0 opts pv row = (drawn, cursorX)
         | otherwise = "message-style"
     ctx1 = withVars
         [ ("prompt_input", pv.input)
-        , ("prompt_flags", if pv.commandMode then "COMMANDMODE," else "")
-        , ("prompt_type", "command")
+        , ("prompt_flags", pv.flags)
+        , ("prompt_type", pv.typeName)
         , ("command_prompt", if pv.commandMode then "1" else "0") ] ctx0
     staticCell = case styleParse Cell.defaultStyle (themedDrawStyle ctx0.theme)
             (optionText styleName opts) of
@@ -99,8 +105,9 @@ drawPrompt ctx0 opts pv row = (drawn, cursorX)
 
     labelW = min aw (formatWidth expanded)
     before = T.take pv.cursor pv.input
+    shown = quotedInput pv.quoted pv.cursor pv.input
     pcursor = textWidth before
-    pwidth = textWidth pv.input
+    pwidth = textWidth shown
     avail = aw - labelW
     (offset, inputW, cursorRel)
         | avail == 0 = (0, 0, labelW)
@@ -108,7 +115,13 @@ drawPrompt ctx0 opts pv row = (drawn, cursorX)
             let o = pcursor - avail + 1
             in (o, avail, labelW + pcursor - o)
         | otherwise = (0, min pwidth avail, labelW + pcursor)
-    contentW = min aw (labelW + inputW)
+    -- tmux's prompt_draw_complete: the matches after the cursor, when it
+    -- ends the input.
+    matches = T.concat [ " " <> m | m <- pv.completions ]
+    matchesW
+        | T.null matches || pv.cursor /= T.length pv.input || cursorRel >= aw = 0
+        | otherwise = min (textWidth matches) (aw - cursorRel)
+    contentW = min aw (max (labelW + inputW) (cursorRel + matchesW))
     contentX = case sy.align of
         AlignCentre -> ax + (aw - contentW) `div` 2
         AlignAbsCentre -> ax + (aw - contentW) `div` 2
@@ -124,9 +137,18 @@ drawPrompt ctx0 opts pv row = (drawn, cursorX)
     drawn
         | contentW == 0 = filled
         | otherwise =
-            overArea inputX inputW
-                (overArea contentX labelW filled (formatDraw ctx.theme gc expanded))
-                (const (V.fromList (inputCells gc offset inputW pv.input)))
+            overArea cursorX matchesW
+                (overArea inputX inputW
+                    (overArea contentX labelW filled (formatDraw ctx.theme gc expanded))
+                    (const (V.fromList (inputCells gc offset inputW shown))))
+                (const (V.fromList (inputCells gc { Cell.underline = True } 0 matchesW matches)))
+
+-- | The input as drawn: a @C-v@ waiting for its key shows as @^@ at the
+-- cursor (tmux's @prompt_redraw_quote@).
+quotedInput :: Bool -> Int -> Text -> Text
+quotedInput quoted cursor input
+    | quoted = T.take cursor input <> "^" <> T.drop cursor input
+    | otherwise = input
 
 -- | The input's cells from column @offset@ for @width@ columns, control
 -- characters shown as @^X@ (tmux's @prompt_redraw_character@).
