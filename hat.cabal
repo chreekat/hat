@@ -75,6 +75,7 @@ library
         Hat.Bench.RtsStats
         Hat.Client
         Hat.Client.Draw
+        Hat.Client.Terminfo
         Hat.Command.Parser
         Hat.Client.Tty
         Hat.Base64
@@ -225,6 +226,7 @@ library
         serialise   ^>= 0.2.6.1,
         sqlite-simple ^>= 0.4.19.0,
         stm         ^>= 2.5.3.1,
+        terminfo    ^>= 0.4.1.7,
         text        ^>= 2.1.3,
         time        ^>= 1.12.2,
         unix        ^>= 2.8.7.0,
@@ -310,6 +312,7 @@ test-suite hat-test
         Hat.Bench.ResidencySpec
         Hat.Bench.RtsStatsSpec
         Hat.Client.DrawSpec
+        Hat.Client.TerminfoSpec
         Hat.Client.TtySpec
         Hat.Command.ParserSpec
         Hat.DebugSpec
