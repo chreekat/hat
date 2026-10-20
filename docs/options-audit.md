@@ -177,6 +177,13 @@ spot-read of each suspect consumer.
 
 ## Minor divergences (not defects)
 
+- **Tree-mode search** (`/`, `?`, `C-s` in choose-tree, choose-buffer and
+  choose-client) is a deliberate divergence: Hat's fuzzy finder narrows and
+  ranks the list as the query is typed and Enter chooses the selected match,
+  where tmux jumps to the next substring match and Enter only ends the
+  search (see Note [Fuzzy tree search] in `Hat.Server.ModeTree`). `n` and
+  `N` still repeat a search tmux's way.
+
 - **`theme`** `detect` reads the desktop colour scheme hat already follows
   (`Hat.Server.ColorScheme`), not each client terminal's own report, so
   every client shares one theme. Hat clients draw RGB directly, so

@@ -308,7 +308,7 @@ sessionItems st ts mfilter = do
             pure $ Just Item
                 { tag = TagSession sess.id, name = nm, text = Just text
                 , children = wins, startExpanded = True, align = AlignNone
-                , searchText = [nm] }
+                , searchText = [nm], fuzzyName = Just nm }
     windowItem sess ix win = do
         panes <- atomically (windowPanes win)
         pinfos <- forM panes $ \p -> do
@@ -331,14 +331,15 @@ sessionItems st ts mfilter = do
                     pure Item
                         { tag = TagPane p.id, name = tshow pix, text = Just text
                         , children = [], startExpanded = True, align = AlignRight
-                        , searchText = [Map.findWithDefault "" "pane_current_command" env] }
+                        , searchText = [Map.findWithDefault "" "pane_current_command" env]
+                        , fuzzyName = Nothing }
             wenv <- windowFormatEnv st sess ix win
             text <- expandFormat st (Map.union (levelVars WindowLevel) wenv) ts.itemFormat
             wname <- readTVarIO win.name
             pure $ Just Item
                 { tag = TagWinlink sess.id ix, name = tshow ix, text = Just text
                 , children = paneItems, startExpanded = True, align = AlignRight
-                , searchText = [wname] }
+                , searchText = [wname], fuzzyName = Just wname }
 
 -- | Which level of the session tree an item stands for.
 data ItemLevel = SessionLevel | WindowLevel | PaneLevel
@@ -370,7 +371,8 @@ bufferItems st ts mfilter = do
             pure $ Just Item
                 { tag = TagBuffer pb.order, name = pb.name, text = Just text
                 , children = [], startExpanded = True, align = AlignNone
-                , searchText = [pb.name, TE.decodeUtf8Lenient pb.body] }
+                , searchText = [pb.name, TE.decodeUtf8Lenient pb.body]
+                , fuzzyName = Just pb.name }
 
 clientItems :: ServerState -> TreeState -> Maybe Text -> IO [Item]
 clientItems st ts mfilter = do
@@ -395,7 +397,7 @@ clientItems st ts mfilter = do
                     pure $ Just Item
                         { tag = TagClient c.id, name = nm, text = Just text
                         , children = [], startExpanded = True, align = AlignNone
-                        , searchText = [nm] }
+                        , searchText = [nm], fuzzyName = Just nm }
 
 -- | Clients attached to a live session, the ones client-mode lists.
 attachedClients :: ServerState -> IO [Client]
@@ -433,7 +435,8 @@ layoutTree
     :: ServerState -> Size -> TreeState -> IO ([Item], [Line], Bool, Int, TreeState)
 layoutTree st size ts = do
     (items, noMatches) <- buildItems st ts
-    let ls0 = buildLines ts items
+    let (shown, lts) = shownItems ts items
+        ls0 = buildLines lts shown
     ls <- forM (zip [0 ..] ls0) $ \(i, l) -> do
         k <- lineKey i l
         pure l { key = k }
@@ -772,6 +775,7 @@ treeModeKey d st mclient pane key = do
             size <- readTVarIO pane.size
             (items, ls, _, h, ts) <- layoutTree st size ts0
             case ts.modePrompt of
+                Just p | PromptSearch _ <- p.use -> searchKey items ls h ts p
                 Just p -> promptKey ls ts p
                 Nothing -> do
                     let r = treeKey h (sortSequence ts.kind) items ls ts key.name
@@ -799,13 +803,27 @@ treeModeKey d st mclient pane key = do
             Editing e -> put ts { modePrompt = Just p { edit = e } }
             Submit line -> answer ls ts p (if T.null line then Nothing else Just line)
             Cancel -> answer ls ts p Nothing
+    -- See Note [Fuzzy tree search].
+    searchKey items ls h ts p
+        | key.name `elem` ["Up", "C-p", "Down", "C-n"] =
+            let moved = treeKey h (sortSequence ts.kind) items ls ts { modePrompt = Nothing } key.name
+            in put moved.state { modePrompt = Just p }
+        | otherwise = case editPrompt [] p.edit key of
+            Editing e -> put ts
+                { modePrompt = Just p { edit = e }
+                , current = (fuzzyView e.input items).best <|> ts.current }
+            Submit line -> do
+                let chosen = ts
+                        { modePrompt = Nothing
+                        , search = if T.null line then Nothing else Just line }
+                put chosen
+                unless (null ls) $ kindKey ls chosen "Enter"
+            Cancel -> answer ls ts p Nothing
     answer ls ts p mline = do
         let closed = ts { modePrompt = Nothing }
         case p.use of
             PromptFilter -> put closed { filter = mline }
-            PromptSearch -> do
-                (items, _) <- buildItems st closed
-                put (searchSet items Forward closed { search = mline })
+            PromptSearch back -> put closed { current = back }
             PromptKill -> do
                 put closed
                 when (yes mline) $ forM_ (current ls ts) (killItem . (.item.tag))

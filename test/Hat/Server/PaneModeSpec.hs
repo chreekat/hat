@@ -131,6 +131,25 @@ spec = do
                 run st ["list-buffers", "-F", "#{buffer_name}"]
                     `shouldReturn` [ROutput "two"]
                 display st "S:0.0" "#{pane_mode}" `shouldReturn` [ROutput "buffer-mode"]
+        it "/ narrows the tree to fuzzy matches as typed, and Enter chooses the best" $
+            withServer $ \st -> do
+                searchable st
+                run st ["send-keys", "-t", "work:0.0", "/", "hat", "Enter"] `shouldReturn` []
+                run st ["show", "-gv", "@chosen"] `shouldReturn` [ROutput "=projects:1."]
+                display st "work:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
+        it "Up and Down move through the matches while the search is typed" $
+            withServer $ \st -> do
+                searchable st
+                run st ["send-keys", "-t", "work:0.0", "/", "hat", "Down", "Enter"]
+                    `shouldReturn` []
+                run st ["show", "-gv", "@chosen"] `shouldReturn` [ROutput "=work:"]
+        it "Escape leaves the search for the whole tree, selected where it was" $
+            withServer $ \st -> do
+                searchable st
+                run st ["send-keys", "-t", "work:0.0", "/", "hat", "Escape"] `shouldReturn` []
+                display st "work:0.0" "#{pane_mode}" `shouldReturn` [ROutput "tree-mode"]
+                run st ["send-keys", "-t", "work:0.0", "Enter"] `shouldReturn` []
+                run st ["show", "-gv", "@chosen"] `shouldReturn` [ROutput "=work:0."]
         it "choose-client has nothing to show without a client" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
@@ -160,6 +179,16 @@ spec = do
             withServer $ \st ->
                 run st ["detach-client", "-t", "client99"]
                     `shouldReturn` [RErr "can't find client: client99"]
+
+-- | Sessions @work@ (windows @chat@, @mail@) and @projects@ (@notes@,
+-- @hat@), and a choose-tree -w on @work:0.0@ whose choice sets @\@chosen@.
+searchable :: ServerState -> IO ()
+searchable st = do
+    run st ["new-session", "-d", "-s", "work", "-n", "chat", "cat"] `shouldReturn` []
+    run st ["new-window", "-d", "-t", "work:1", "-n", "mail", "cat"] `shouldReturn` []
+    run st ["new-session", "-d", "-s", "projects", "-n", "notes", "cat"] `shouldReturn` []
+    run st ["new-window", "-d", "-t", "projects:1", "-n", "hat", "cat"] `shouldReturn` []
+    run st ["choose-tree", "-w", "-t", "work:0.0", "set -g @chosen '%%'"] `shouldReturn` []
 
 -- | A window's pane ids, in pane-index order.
 paneIds :: ServerState -> Text -> IO [Text]

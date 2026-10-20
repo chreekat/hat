@@ -75,7 +75,9 @@ These are the load-bearing architectural features. Everything else assumes them.
 - **`switch-client -l`** (last session). I have this on both `b` and `C-s`.
 - **`choose-tree`** — interactive session/window picker with type-to-search.
   Mine has `/` opening it pre-typed in search mode (`choose-tree -GZw` then
-  `send-keys /`).
+  `send-keys /`). The tree is tmux's mode-tree, but its search is Hat's own,
+  on purpose: a fuzzy finder that narrows and ranks the list as I type, Enter
+  choosing the best match, where tmux jumps to the next substring match.
 - **`attach-session -c <path>`** — change the session's default working
   directory.
 

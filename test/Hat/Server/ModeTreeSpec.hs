@@ -11,6 +11,7 @@ import Hat.Model
 import Hat.Server.Command.Types (templateReplace)
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.ModeTree
+import Hat.Server.Prompt (promptFor)
 import Hat.Server.Theme (terminalTheme)
 import Hat.Term.Cell qualified as Cell
 
@@ -27,8 +28,32 @@ items =
   where
     node t n cs = Item
         { tag = t, name = n, text = Just "x", children = cs, startExpanded = True
-        , align = AlignNone, searchText = [n] }
-    leaf t n = node t n []
+        , align = AlignNone, searchText = [n], fuzzyName = Just n }
+    leaf t n = (node t n []) { fuzzyName = Nothing }
+
+-- | Session @work@ holding windows @chat@ and @mail@, then session
+-- @projects@ holding windows @notes@ and @hat@; one pane in each window.
+named :: [Item]
+named =
+    [ session 0 "work" [window 0 0 "chat" 1, window 0 1 "mail" 2]
+    , session 1 "projects" [window 1 0 "notes" 3, window 1 1 "hat" 4] ]
+  where
+    session i n = item (TagSession (SessionId i)) n (Just n)
+    window s i n p = item (TagWinlink (SessionId s) i) (T.pack (show i)) (Just n)
+        [item (TagPane (PaneId p)) "0" Nothing []]
+    item t n fz cs = Item
+        { tag = t, name = n, text = Nothing, children = cs, startExpanded = True
+        , align = AlignNone, searchText = [n], fuzzyName = fz }
+
+-- | An item tree's tags, depth-first.
+tags :: [Item] -> [TreeTag]
+tags = concatMap (\i -> i.tag : tags i.children)
+
+-- | 'fresh' with its search prompt open on a query.
+searching :: Text -> TreeState
+searching q = fresh
+    { modePrompt = Just TreePrompt
+        { edit = promptFor "(search) " q "", use = PromptSearch Nothing, entry = PromptLine } }
 
 fresh :: TreeState
 fresh = TreeState
@@ -114,6 +139,31 @@ spec = do
             let rows = map rowText (V.toList (draw fresh { filter = Just "f" } True).cells)
             any ("┌ s (sort: index) (view: preview) (filter: no matches) " `T.isPrefixOf`) rows
                 `shouldBe` True
+
+    describe "fuzzyView" $ do
+        it "keeps the items whose path fuzzily matches, under their ancestors, the best first" $ do
+            let v = fuzzyView "hat" named
+            tags v.kept `shouldBe`
+                [ TagSession (SessionId 1), TagWinlink (SessionId 1) 1, TagPane (PaneId 4)
+                , TagSession (SessionId 0), TagWinlink (SessionId 0) 0, TagPane (PaneId 1) ]
+            v.best `shouldBe` Just (TagWinlink (SessionId 1) 1)
+            v.opened `shouldMatchList` [TagSession (SessionId 1), TagSession (SessionId 0)]
+        it "matches a query across an item's ancestors" $
+            (fuzzyView "projhat" named).best `shouldBe` Just (TagWinlink (SessionId 1) 1)
+        it "never matches an item without a fuzzy name" $
+            tags (fuzzyView "0" named).kept `shouldBe` []
+        it "keeps every item for an empty query, matching none" $ do
+            let v = fuzzyView "" named
+            (tags v.kept, v.best) `shouldBe` (tags named, Nothing)
+
+    describe "shownItems" $ do
+        it "lays out a live search's matches with their ancestors opened" $ do
+            let closed = (searching "hat")
+                    { expanded = Map.fromList [(TagSession (SessionId 1), False)] }
+                (shown, lts) = shownItems closed named
+            map (.item.tag) (buildLines lts shown) `shouldBe` tags (fuzzyView "hat" named).kept
+        it "lays out every item while no query is typed" $
+            tags (fst (shownItems (searching "") named)) `shouldBe` tags named
 
     describe "templateReplace" $ do
         it "puts the item in for %% with single quotes escaped" $

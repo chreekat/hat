@@ -13,6 +13,10 @@ module Hat.Server.ModeTree
     , KeyResult (..)
     , treeKey
     , searchSet
+    , FuzzyView (..)
+    , fuzzyView
+    , fuzzyQuery
+    , shownItems
     , taggedLines
     , SortSequence
     , sortOrderFromText
@@ -25,13 +29,15 @@ module Hat.Server.ModeTree
     , drawFormat
     ) where
 
-import Data.List (findIndex)
+import Data.List (findIndex, sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 
+import Hat.FuzzyMatch (score)
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
 import Hat.Server.FormatDraw (FormatColours (..), formatDrawIn, formatWidth)
@@ -47,7 +53,10 @@ data Item = Item
     , children      :: ![Item]
     , startExpanded :: !Bool          -- ^ the expansion of an item not seen before
     , align         :: !NameAlign
-    , searchText    :: ![Text]        -- ^ what @/@ matches against
+    , searchText    :: ![Text]        -- ^ what @n@ and @N@ match against
+    , fuzzyName     :: !(Maybe Text)
+        -- ^ its part of the path @/@ fuzzily matches; 'Nothing' for an item
+        --   shown only around its matching neighbours
     }
     deriving (Eq, Show)
 
@@ -162,7 +171,7 @@ treeKey height sortSeq roots ls st key
           | key `elem` ["Left", "h", "-"] -> stay collapse
           | key `elem` ["Right", "l", "+"] -> stay expand
           | key `elem` ["?", "/", "C-s"] ->
-              stay st { modePrompt = Just (linePrompt "(search) " "" PromptSearch) }
+              stay st { modePrompt = Just (linePrompt "(search) " "" (PromptSearch st.current)) }
           | key `elem` ["K", "S-Up", "J", "S-Down"] -> pass
         "t" -> stay toggleTag
         "T" -> stay st { tagged = filter (`notElem` visibleTags) st.tagged }
@@ -252,6 +261,78 @@ searchSet roots dir st = case st.search of
     matches term t
         | T.toLower term == term = term `T.isInfixOf` T.toLower t
         | otherwise = term `T.isInfixOf` t
+
+-- Note [Fuzzy tree search]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Hat's tree modes search as its old chooser did, not as tmux's mode-tree
+-- does (an incremental jump to the next substring match). While the @/@
+-- prompt holds a query, the list shows only the items whose path -- their
+-- ancestors' fuzzy names and their own, space-joined -- the query fuzzily
+-- matches ('Hat.FuzzyMatch.score'), under their ancestors for context,
+-- with siblings ordered by the best score in their subtree so the best
+-- match comes first, selected. Each key typed narrows and re-ranks the list
+-- at once; Up and Down move through it, Enter chooses the selected item, and
+-- Escape returns to the whole tree, selected where it was before the search.
+-- An item with no fuzzy name (a pane) is context only, never a match; a
+-- matching item keeps its other children.
+
+-- | What a fuzzy search keeps of a mode's items. See Note [Fuzzy tree search].
+data FuzzyView = FuzzyView
+    { kept   :: ![Item]           -- ^ the matches under their ancestors, best first
+    , opened :: ![TreeTag]        -- ^ the ancestors opened to show a match
+    , best   :: !(Maybe TreeTag)  -- ^ the best match
+    }
+
+-- | An item with its search scores: its own, and its subtree's best.
+data Ranked = Ranked
+    { item    :: !Item
+    , own     :: !(Maybe Int)
+    , subtree :: !Int
+    , matched :: ![Ranked]  -- ^ the children with a match in their subtree, ranked
+    }
+
+-- | The items a fuzzy query keeps. See Note [Fuzzy tree search].
+fuzzyView :: Text -> [Item] -> FuzzyView
+fuzzyView q items
+    | T.null q = FuzzyView { kept = items, opened = [], best = Nothing }
+    | otherwise = FuzzyView
+        { kept = map keep ranked
+        , opened = concatMap ancestors ranked
+        , best = listToMaybe
+            [ r.item.tag | r <- concatMap flatten ranked, r.own == Just top ]
+        }
+  where
+    ranked = rankAll "" items
+    top = maximum (minBound : map (.subtree) ranked)
+    rankAll prefix = sortOn (Down . (.subtree)) . concatMap (rank prefix)
+    rank prefix i =
+        let ownScore = i.fuzzyName >>= \n -> score q (prefix <> n)
+            kids = rankAll (maybe prefix (\n -> prefix <> n <> " ") i.fuzzyName) i.children
+            scores = maybe [] pure ownScore <> map (.subtree) kids
+        in [ Ranked { item = i, own = ownScore, subtree = maximum scores, matched = kids }
+           | not (null scores) ]
+    keep r = r.item
+        { children = map keep r.matched <> case r.own of
+            Just _ -> [ c | c <- r.item.children, c.tag `notElem` map (.item.tag) r.matched ]
+            Nothing -> [] }
+    ancestors r = [ r.item.tag | not (null r.matched) ] <> concatMap ancestors r.matched
+    flatten r = r : concatMap flatten r.matched
+
+-- | The query a mode's open search prompt holds, if any.
+fuzzyQuery :: TreeState -> Maybe Text
+fuzzyQuery ts = case ts.modePrompt of
+    Just p | PromptSearch _ <- p.use, not (T.null p.edit.input) -> Just p.edit.input
+    _ -> Nothing
+
+-- | The items a mode lays out, and the state whose expansion it lays them
+-- out under: while a fuzzy search holds a query, its matches with their
+-- ancestors opened; else every item.
+shownItems :: TreeState -> [Item] -> ([Item], TreeState)
+shownItems ts items = case fuzzyQuery ts of
+    Nothing -> (items, ts)
+    Just q ->
+        let v = fuzzyView q items
+        in (v.kept, ts { expanded = foldr (`Map.insert` True) ts.expanded v.opened })
 
 -- | The tagged items among the visible lines (tmux only acts on those).
 taggedLines :: TreeState -> [Line] -> [Line]

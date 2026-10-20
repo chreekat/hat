@@ -652,7 +652,8 @@ data TreePrompt = TreePrompt
 -- | What a tree mode's prompt answers.
 data TreePromptUse
     = PromptFilter      -- ^ @f@: the new filter
-    | PromptSearch      -- ^ @/@: a search term
+    | PromptSearch !(Maybe TreeTag)
+        -- ^ @/@: a fuzzy search, and the selection Escape returns to
     | PromptKill        -- ^ @x@: confirm killing the selected item
     | PromptKillTagged  -- ^ @X@: confirm killing the tagged items
     | PromptEachCommand -- ^ @:@: a command for each tagged item
