@@ -104,3 +104,4 @@ showReplies st client replies = do
         ROutput _ -> pure ()
         RErr e -> showToast st client ("error: " <> e)
         RData bytes -> showToast st client (TE.decodeUtf8Lenient bytes)
+        RExitStatus _ -> pure ()

@@ -901,6 +901,9 @@ controlLoop d st re client = do
                     send client (ServerError e)
                 RData bytes -> forM_ (chunksOf stdoutChunk bytes) $
                     send client . WriteStdout
+                RExitStatus _ -> pure ()
+            forM_ (listToMaybe (reverse [ n | RExitStatus n <- replies ])) $
+                send client . ExitStatus
             -- Report done only once any layout change the command made has
             -- been reconciled into the panes, so a caller that immediately
             -- inspects a pane's size never races the pty resize.

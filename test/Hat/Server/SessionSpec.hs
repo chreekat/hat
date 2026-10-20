@@ -1256,15 +1256,17 @@ spec = do
             _ <- runArgv st Nothing ["run-shell", "-C", "set -g @ran yes; set -g @also too"]
             o <- readTVarIO st.options
             map (`Map.lookup` o.user) ["@ran", "@also"] `shouldBe` [Just "yes", Just "too"]
-        it "prints a command client its output, its arguments as #{1}…, and a failure" $ do
+        it "prints a command client its output, its arguments as #{1}…, a failure, and its status" $ do
             (st, _) <- seedSession "/"
             (c, _) <- wiredClient st Control
             runArgv st (Just c) ["run-shell", "printf 'a\\nb'; echo #{1}-#{2} >&2", "x", "y"]
-                `shouldReturn` [ROutput "a", ROutput "b"]
+                `shouldReturn` [ROutput "a", ROutput "b", RExitStatus 0]
             runArgv st (Just c) ["run-shell", "-E", "echo #{1}-#{2} >&2", "x", "y"]
-                `shouldReturn` [ROutput "x-y"]
+                `shouldReturn` [ROutput "x-y", RExitStatus 0]
             runArgv st (Just c) ["run-shell", "exit 3"]
-                `shouldReturn` [ROutput "'exit 3' returned 3"]
+                `shouldReturn` [ROutput "'exit 3' returned 3", RExitStatus 3]
+            runArgv st (Just c) ["run-shell", "kill -TERM $$"]
+                `shouldReturn` [ROutput "'kill -TERM $$' terminated by signal 15", RExitStatus 143]
             runArgv st (Just c) ["run-shell", "-d", "x", "true"]
                 `shouldReturn` [RErr "invalid delay time: x"]
     describe "snapshot commands without persistence" $

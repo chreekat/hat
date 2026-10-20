@@ -21,8 +21,9 @@ import Hat.Model (Client, Pane, ServerState)
 import Hat.Server.ArgNumber (strtonum)
 
 -- | A single line of command output: normal text or an error; or raw
--- bytes for the issuing command client's standard output.
-data Reply = ROutput Text | RErr Text | RData ByteString
+-- bytes for the issuing command client's standard output; or the status
+-- that client exits with (tmux's @c->retval@), the last one given winning.
+data Reply = ROutput Text | RErr Text | RData ByteString | RExitStatus Int
     deriving (Eq, Show)
 
 -- | A command handler: the server, the issuing client (if any), and the

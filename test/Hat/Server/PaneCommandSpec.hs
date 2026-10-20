@@ -177,7 +177,7 @@ spec = do
         it "-t shows the output in the pane's view mode, -b too once it ends" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
-                run st ["run-shell", "-t", "S:0.0", "echo out"] `shouldReturn` []
+                run st ["run-shell", "-t", "S:0.0", "echo out"] `shouldReturn` [RExitStatus 0]
                 run st ["display-message", "-p", "-t", "S:0.0", "#{pane_mode}"]
                     `shouldReturn` [ROutput "view-mode"]
                 run st ["run-shell", "-b", "-t", "S:0.0", "echo later"] `shouldReturn` []

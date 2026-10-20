@@ -1754,6 +1754,21 @@ spec = parallel $ do
         c <- startClientArgs h ["-f", confPath]
         awaitScreen c "[fromconf]"
 
+    it "a command client exits with run-shell's status, a source-file failure's, and a popup's" $
+        withHat hatBin $ \h -> do
+        c <- startClient h
+        awaitScreen c "$"
+        hatCtl h ["run-shell", "exit 3"]
+            `shouldReturn` (ExitFailure 3, "'exit 3' returned 3\n", "")
+        hatCtl h ["run-shell", "exit 3", ";", "run-shell", "true"]
+            `shouldReturn` (ExitSuccess, "'exit 3' returned 3\n", "")
+        let confPath = h.home <> "/bad.conf"
+        writeFile confPath "no-such-command\n"
+        (code, _, _) <- hatCtl h ["source-file", confPath]
+        code `shouldBe` ExitFailure 1
+        (popupCode, _, _) <- hatCtl h ["display-popup", "-E", "exit 4"]
+        popupCode `shouldBe` ExitFailure 4
+
     it "remain-on-exit keeps an exited pane, dead, with its status" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h

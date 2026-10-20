@@ -175,7 +175,8 @@ cmdDisplayPopup st mclient args
         case opened of
             Left (_ :: IOException) -> pure []
             Right p
-                | waits -> [] <$ outsideCommandBatch st (atomically (awaitPopupClosed p))
+                | waits -> pure . RExitStatus
+                    <$> outsideCommandBatch st (atomically (awaitPopupClosed p))
                 | otherwise -> pure []
     -- Only a command client can wait: an attached client's input drives the
     -- popup it would wait on.

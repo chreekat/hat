@@ -79,17 +79,18 @@ spec = do
             withDir "/tmp/hat-cause-" $ \dir st -> do
                 let p = dir <> "/c.conf"
                 loadCommandFile st Nothing RunFile p "set -g @a 1\nwibble wobble\n"
-                    `shouldReturn` []
+                    `shouldReturn` [RExitStatus 1]
                 opts <- readTVarIO st.options
                 Map.lookup "@a" opts.user `shouldBe` Nothing
                 readTVarIO st.configCauses `shouldReturn` [T.pack p <> ":2: unknown command: wibble"]
-        it "print their causes to the client that sourced them" $
+        it "print their causes to the client that sourced them, and fail it" $
             withDir "/tmp/hat-cause-" $ \dir st -> do
                 let p = dir <> "/c.conf"
                 writeFile p "wibble\n"
                 (c, _) <- commandClient st
                 cmdSourceFile st (Just c) [T.pack p]
-                    `shouldReturn` [ROutput (T.pack p <> ":1: unknown command: wibble")]
+                    `shouldReturn`
+                        [RExitStatus 1, ROutput (T.pack p <> ":1: unknown command: wibble")]
                 readTVarIO st.configCauses `shouldReturn` []
         it "make a clientless command's errors causes, a nested command's naming its line" $
             withDir "/tmp/hat-cause-" $ \dir st -> do
