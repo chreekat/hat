@@ -286,7 +286,8 @@ parseMods ctx depth = go []
     ex = expand1 ctx depth . unescape
     singles = "labdnwETSWPOVL!<>A" :: String
     doubles = ["||", "&&", "!!", "!=", "==", "<=", ">="] :: [Text]
-    argful = "ImCLNPSOVst=pReqWcA" :: String
+    -- tmux's, then hat's own (see Note [Hat's format modifiers])
+    argful = "ImCLNPSOVst=pReqWcA" <> "~" :: String
     isEndT t = case T.uncons t of
         Just (c, _) -> c == ';' || c == ':'
         Nothing -> False
@@ -369,6 +370,7 @@ data ModState = ModState
     , repeatF :: Bool
     , clientQ :: Maybe Text  -- ^ @I@: which of @c@, @f@, @e@ it asks
     , cycleCount :: Maybe Int  -- ^ @A@: periods per animation frame
+    , homeDir :: Maybe Text  -- ^ @~@: the home directory to abbreviate
     , unimpl :: Maybe Text
     }
 
@@ -380,7 +382,8 @@ emptyModState = ModState
     , baseF = False, dirF = False, lenF = False, widF = False
     , timeM = Nothing, quoteM = Nothing, expandF = False, expandTimeF = False
     , nameK = Nothing, loopK = Nothing, sortO = OrderList, sortR = False
-    , repeatF = False, clientQ = Nothing, cycleCount = Nothing, unimpl = Nothing
+    , repeatF = False, clientQ = Nothing, cycleCount = Nothing
+    , homeDir = Nothing, unimpl = Nothing
     }
 
 collectMods :: [Mod] -> ModState
@@ -412,6 +415,7 @@ collectMods = List.foldl' step emptyModState
         "A" -> st { cycleCount = Just (case m.margs of
             (a1 : _) -> numDefault 1 100 1 a1
             [] -> 1) }
+        "~" -> st { homeDir = Just (arg0 m) }
         "O" -> st { unimpl = Just "O" }
         "V" -> st { unimpl = Just "V" }
         "w" -> st { widF = True }
@@ -619,7 +623,8 @@ replaceKey ctx depth key = postOps <$> value
         let v1 | ms.expandF = exp1 v0
                | ms.expandTimeF = exp1 (strftimePass ctx v0)
                | otherwise = v0
-            v2 = List.foldl' applySub v1 ms.subs
+            v1' = maybe v1 (`abbreviateHome` v1) ms.homeDir
+            v2 = List.foldl' applySub v1' ms.subs
             v3 | ms.limit > 0 =
                     let trimmed = formatTrimLeft ms.limit v2
                     in case ms.marker of
@@ -787,6 +792,23 @@ replaceKey ctx depth key = postOps <$> value
             then ""
             else formatFixed prec (if useFp then res else truncDouble res)
     truncDouble d = fromIntegral (truncate d :: Integer)
+
+-- Note [Hat's format modifiers]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Hat extends tmux's modifier set with characters tmux's format.c leaves
+-- unused, so a format written for tmux reads the same in hat:
+--
+--   #{~/home:key}       the value with a leading home directory as ~
+--                       ('abbreviateHome')
+
+-- | The path with @home@ (exactly, or as a leading directory) written as
+-- @~@. An empty @home@ abbreviates nothing.
+abbreviateHome :: Text -> Text -> Text
+abbreviateHome home path
+    | T.null home = path
+    | path == home = "~"
+    | Just rest <- T.stripPrefix (home <> "/") path = "~/" <> rest
+    | otherwise = path
 
 exprOps :: [(Text, Double -> Double -> Double)]
 exprOps =

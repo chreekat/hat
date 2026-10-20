@@ -512,6 +512,18 @@ spec = do
             at 0.15 "#{A/x:a,b}" `shouldBe` "b"
             at 0 "#{A:}" `shouldBe` ""
 
+    describe "the ~ home modifier (a hat extension)" $ do
+        it "abbreviates a leading home directory to ~" $ do
+            eval "#{~|/usr/local|:@path}" `shouldBe` "~/bin/foo"
+            eval "#{~|/usr/local/bin/foo|:@path}" `shouldBe` "~"
+        it "abbreviates only at a directory boundary" $
+            eval "#{~|/usr/loc|:@path}" `shouldBe` "/usr/local/bin/foo"
+        it "leaves the value alone with no home" $ do
+            eval "#{~||:@path}" `shouldBe` "/usr/local/bin/foo"
+            eval "#{~:@path}" `shouldBe` "/usr/local/bin/foo"
+        it "expands its home" $
+            eval "#{~/#{@path}:@path}" `shouldBe` "~"
+
     describe "formatNames" $ do
         prop "names every variable an expansion reads, through the values it expands" $
             \f -> withMaxSuccess 1000 $ ioProperty $ do
@@ -618,7 +630,8 @@ instance Arbitrary Fmt where
             [ Lit <$> elements ["", "x", " ", "1", "[", "]", "%H:%M", "%S", "%", "%%", "%d", "%-H", "%p"]
             , Key <$> name
             , Short <$> elements "DFHIPSTWh"
-            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/", "t", "t/r"] <*> name
+            , Modified <$> elements ["E", "T", "=2", "b", "n", "l", "s/a/b/", "t", "t/r"
+                , "~|/usr|", "~/#{session_name}"] <*> name
             ]
         name = elements
             [ "session_name", "session_id", "window_name", "window_flags", "window_index"
