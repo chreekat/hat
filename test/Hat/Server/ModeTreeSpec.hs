@@ -179,6 +179,18 @@ spec = do
             any ("┌ s (sort: index) (view: preview) (filter: no matches) " `T.isPrefixOf`) rows
                 `shouldBe` True
 
+        it "aligns an item's text within the rest of its line" $ do
+            let item = (items !! 0) { children = [], text = Just "#[align=right]R" }
+                ls = [ l { key = defaultLineKey i } | (i, l) <- zip [0 ..] (buildLines fresh [item]) ]
+                drawn = drawTree DrawInput
+                    { size = Size { rows = 24, cols = 60 }, lines = ls
+                    , noMatches = False, theme = terminalTheme
+                    , selectStyle = Cell.defaultStyle, borderStyle = Cell.defaultStyle
+                    , promptStyle = Cell.defaultStyle, promptTop = False
+                    , previewHeight = ProportionalPreview, sortShown = False
+                    , viewName = Nothing, help = [], helpWidth = 0 } fresh
+            T.takeEnd 2 (T.stripEnd (rowText (V.head drawn.cells))) `shouldBe` " R"
+
     describe "fuzzyView" $ do
         it "keeps the items whose path fuzzily matches, under their ancestors, the best first" $ do
             let v = fuzzyView "hat" named

@@ -437,6 +437,11 @@ drawFormat :: Theme -> FormatColours -> Cell.Style -> Text -> [Cell.Cell]
 drawFormat th use base t = V.toList
     (formatDrawIn use th base t (V.replicate (formatWidth t) (Cell.glyphCell ' ' base)))
 
+-- | The cells a format draws across @width@, from the @base@ style.
+drawFormatIn :: Theme -> FormatColours -> Cell.Style -> Int -> Text -> [Cell.Cell]
+drawFormatIn th use base width t = V.toList
+    (formatDrawIn use th base t (V.replicate width (Cell.glyphCell ' ' base)))
+
 -- | Draw the mode's screen (tmux's @mode_tree_draw@).
 drawTree :: DrawInput -> TreeState -> TreeDraw
 drawTree inp st = TreeDraw
@@ -470,11 +475,15 @@ drawTree inp st = TreeDraw
             nm = padName l
             label = nm <> (if tagged then "*" else "")
                 <> (if isJust l.item.text then "#[fg=themelightgrey]: #[default]" else "")
-            labelCells = take left (drawFormat inp.theme use base label)
-            textCells = case l.item.text of
-                Just t -> take (left - length labelCells) (drawFormat inp.theme use base t)
-                Nothing -> []
-            body = prefix <> labelCells <> textCells
+            -- tmux draws the label across the rest of the line and the text
+            -- over it after the label's own width, each aligning within the
+            -- width it is drawn in.
+            labelWidth = min left (formatWidth label)
+            labelCells = drawFormatIn inp.theme use base (max 0 left) label
+            body = prefix <> case l.item.text of
+                Just t -> take labelWidth labelCells
+                    <> drawFormatIn inp.theme use base (max 0 (left - labelWidth)) t
+                Nothing -> labelCells
             fill = Cell.glyphCell ' ' (if selected then base else Cell.defaultStyle)
         in V.fromList (take w (body <> repeat fill))
     padName l =
