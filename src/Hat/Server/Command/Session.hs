@@ -3,12 +3,14 @@
 -- @kill-server@.
 module Hat.Server.Command.Session
     ( cmdNewSession
+    , argvNewSession
     , newSessionValueFlags
     , cmdAttachSession
     , cmdKillSession
     , cmdHasSession
     , cmdStartServer
     , cmdRenameSession
+    , argvRenameSession
     , cmdListClients
     , cmdListSessions
     , cmdListWindows
@@ -37,7 +39,7 @@ import Hat.Server.Command.Pane (noteActiveChange)
 import Hat.Server.Command.Window (switchToWindow)
 import Hat.Command.Arg (Arg (..))
 import Hat.Server.Command.Types
-    (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+    (ArgvImpl, CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (send)
 import Hat.Server.ConfigCauses (showConfigCauses)
@@ -49,7 +51,7 @@ import Hat.Server.Keys (enterTable)
 import Hat.Server.Locate
     ( defaultAttachSession, findTarget, formatClient, paneIndexOf, targetSession
     , withTargetSession )
-import Hat.Server.Name (NameKind (..), admitName)
+import Hat.Server.Name (NameKind (..), NameSlot (..), admitName, admittingNames)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , switchActive, windowHolders )
@@ -78,6 +80,12 @@ cmdNewSession st mclient args = do
     expandName env (k, v)
         | k `elem` ["-s", "-n"] = (,) k <$> expandFormat st env v
         | otherwise = pure (k, v)
+
+-- | 'cmdNewSession', its names as they arrived.
+argvNewSession :: ArgvImpl
+argvNewSession = admittingNames "new-session" newSessionValueFlags
+    [NameFlag "-n" WindowName, NameFlag "-s" SessionName, NameFlag "-t" SessionGroupName]
+    cmdNewSession
 
 newSession
     :: ServerState -> Maybe Client -> [(T.Text, T.Text)] -> [T.Text] -> [T.Text]
@@ -473,6 +481,11 @@ cmdRenameSession st mclient args
                         , ("old_name", PText old)
                         , ("new_name", PText nm) ]
                     pure []
+
+-- | 'cmdRenameSession', its name as it arrived.
+argvRenameSession :: ArgvImpl
+argvRenameSession =
+    admittingNames "rename-session" "t" [NamePositional SessionName] cmdRenameSession
 
 -- | tmux @list-clients [-r] [-F format] [-f filter] [-O order] [-t
 -- target-session]@: one line per attached client (control connections are

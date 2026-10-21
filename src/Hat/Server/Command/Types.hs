@@ -96,6 +96,10 @@ textOnly name impl st mclient args = case traverse text args of
 data Dispatch = Dispatch
     { runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
     , runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
+    , runArgArgv :: ArgvImpl
+        -- ^ 'runArgv' for words as a client's argv gave them
+    , runArgCommands :: ServerState -> Maybe Client -> [[Arg]] -> IO [Reply]
+        -- ^ 'runCommands' for words as a client's argv gave them
     , runCommandText :: ServerState -> Maybe Client -> Text -> IO [Reply]
     , unknownCommand :: ServerState -> [Text] -> IO (Maybe Text)
         -- ^ the error for a command whose name resolves to nothing, which

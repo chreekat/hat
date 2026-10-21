@@ -5,6 +5,7 @@
 -- @previous-layout@ (rearranging a window's panes).
 module Hat.Server.Command.Layout
     ( cmdBreakPane
+    , argvBreakPane
     , cmdJoinPane
     , cmdMovePane
     , cmdSelectLayout
@@ -25,7 +26,7 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.ArgNumber (stringPercentage, strtonum)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, unknownFlag)
+import Hat.Server.Command.Types (ArgvImpl, CommandImpl, Reply (..), parseArgs, unknownFlag)
 import Hat.Server.Command.Window
     ( SourceLink (..), applyShifts, closeSessions, linkWindow, nextFreeWindowIndex
     , switchToWindow )
@@ -38,13 +39,22 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, formatClient, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Name (NameKind (..), admitName)
+import Hat.Server.Name (NameKind (..), NameSlot (..), admitName, admittingNames)
 import Hat.Server.Mouse (Drag (..))
 import Hat.Server.MouseIO (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag)
 import Hat.Server.Pane (rehomePanes, removePaneFromTree, switchActive, wrapPaneInWindow)
 import Hat.Server.Resize (applySessionSize, windowLayoutAt)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Winlink (attachWindow, shuffleUp)
+
+-- | 'cmdBreakPane', its name as it arrived.
+argvBreakPane :: ArgvImpl
+argvBreakPane =
+    admittingNames "break-pane" breakPaneValueFlags [NameFlag "-n" WindowName] cmdBreakPane
+
+-- | The @break-pane@ flags that take a value.
+breakPaneValueFlags :: [Char]
+breakPaneValueFlags = "FnstxXyY"
 
 -- | @break-pane@ (@cmd-break-pane.c@): move the source pane (@-s@, default
 -- the current one) into a new window at the @-t@ index — after (@-a@) or
@@ -73,7 +83,7 @@ cmdBreakPane st mclient args
                     then breakWholeWindow ssess swix swin pane dst
                     else breakOut ssess swix swin pane dst mix
   where
-    (opts, flags, _) = parseArgs "FnstxXyY" args
+    (opts, flags, _) = parseArgs breakPaneValueFlags args
     detached = "-d" `elem` flags
     -- -W: float the pane where it is (@cmd_break_pane_float@), at the
     -- -x/-y/-X/-Y geometry with the window's border.
