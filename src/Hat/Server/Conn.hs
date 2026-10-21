@@ -6,7 +6,6 @@ module Hat.Server.Conn
     ( acceptLoop
     , welcome
     , controlLoop
-    , twinArgs
     , currentSession
     , refreshSessionEnv
     , ensureSession

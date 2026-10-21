@@ -310,7 +310,7 @@ keys→commands cycle.
   |  Hat.Transport.Socket                   | -- Unix socket open/listen/accept
   |  Hat.Client / .Draw / .Tty              | -- client loop; DrawOps -> escapes; raw mode
   +-----------------------------------------+
-  |  Hat.Command.Parser                     | -- pure (megaparsec)
+  |  Hat.Command.Parser / .Arg              | -- pure (megaparsec); argv words, UTF-8 or raw
   |  Hat.Geometry / .Path / .Intern         | -- Size/Pos; path building; interning
   |  Hat.TextWidth / .Glob / .PtrEq         | -- wcwidth; fnmatch; identity equality
   |  Hat.Colour / .X11                      | -- tmux colour names, palette, escapes
@@ -726,7 +726,10 @@ Architecture:
    impl function), with the implementations grouped by area under
    `Hat.Server.Command.*`. No giant case statement; a name lookup
    dispatches. **(shipped as a lookup table, close to how tmux registers
-   commands.)**
+   commands.)** A client's argv runs as `Hat.Command.Arg` words
+   (`runArgCommands`), so a word that is not UTF-8 arrives intact: a
+   command taking a name refuses it in tmux's words (`Hat.Server.Name`),
+   and any other command refuses it outright (`textOnly`).
 3. **Execution is inline within a flow; startup ordering is the gate.**
    The socket-reader thread calls `runCommands` and blocks until they
    finish; `if-shell` runs its chosen branch in the same call. Per-flow

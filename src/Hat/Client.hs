@@ -39,9 +39,9 @@ import System.Posix.Terminal (queryTerminal)
 import System.Process (CreateProcess (..), createProcess, shell, waitForProcess)
 
 import Hat.Client.Draw
-import Hat.Command.Arg (Arg (..), argBytes, argLossy)
 import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
+import Hat.Command.Arg (Arg (..), argBytes, argLossy)
 import Hat.Server.Command.Session (newSessionValueFlags)
 import Hat.Server.Command.Types (parseArgs)
 import Hat.Term.Caps (termFromWire)
