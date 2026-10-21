@@ -453,9 +453,12 @@ findClientWhere eligible st mclient msid mname = atomically $ do
         stamp <- readTVar c.lastActive
         pure [ (c, sid, stamp) | Map.member sid live ]
     pure $ case mname of
-        Just n -> case [ c | (c, _, _) <- attached, clientName c == n ] of
-            c : _ -> Right c
-            [] -> Left ("can't find client: " <> n)
+        Just n0 ->
+            let n = fromMaybe n0 (T.stripSuffix ":" n0)
+                names c = clientName c : maybe [] (\t -> t : maybe [] pure (T.stripPrefix "/dev/" t)) c.ttyName
+            in case [ c | (c, _, _) <- attached, n `elem` names c ] of
+                c : _ -> Right c
+                [] -> Left ("can't find client: " <> n)
         Nothing
             | Just c <- mclient, any (\(a, _, _) -> a.id == c.id) attached -> Right c
             | otherwise ->

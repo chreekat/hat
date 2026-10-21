@@ -182,6 +182,10 @@ data Hello = Hello
         --   'Hat.Client.Terminfo.readTermCaps' lists them (@[]@ when the
         --   client has no terminal or no @TERM@); 'Nothing' from an
         --   eight-field hello, whose client predates them.
+    , ttyName      :: Maybe Text
+        -- ^ the path of the client's terminal (its standard input's
+        --   @ttyname@); 'Nothing' without one, and from a nine-field hello,
+        --   whose client predates it. Carried only beside 'termCaps'.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -400,7 +404,10 @@ nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 -- >= 6 and ignores extras, so fields can be appended compatibly.
 encodeHello :: Hello -> Encoding
 encodeHello h =
-       encodeListLen (maybe 8 (const 9) h.termCaps)
+       encodeListLen (case (h.termCaps, h.ttyName) of
+            (Nothing, _) -> 8
+            (Just _, Nothing) -> 9
+            (Just _, Just _) -> 10)
     <> encodeWord16 h.protoVersion
     <> encode h.term
     <> encode h.env
@@ -409,7 +416,7 @@ encodeHello h =
     <> encode h.intent
     <> encode h.autostarted
     <> encode h.sessionHist
-    <> foldMap encode h.termCaps
+    <> foldMap (\caps -> encode caps <> foldMap encode h.ttyName) h.termCaps
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -429,7 +436,8 @@ decodeHello = do
                 <*> (if n >= 7 then decode else pure False)
                 <*> (if n >= 8 then decode else pure [])
                 <*> (if n >= 9 then Just <$> decode else pure Nothing)
-            replicateM_ (max 0 (n - 9)) skipField
+                <*> (if n >= 10 then Just <$> decode else pure Nothing)
+            replicateM_ (max 0 (n - 10)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).

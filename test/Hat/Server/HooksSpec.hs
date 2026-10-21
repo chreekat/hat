@@ -353,7 +353,7 @@ fakeClient _ = do
         , envImport = envImportVar
         , env = []
         , cwd = "/"
-        , term = "", ttyTerm = termV
+        , term = "", ttyName = Nothing, ttyTerm = termV
         , createdAt = 0
         , stdinSource = NoStdin
         , control = Nothing

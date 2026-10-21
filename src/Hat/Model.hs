@@ -1177,6 +1177,7 @@ data Client = Client
     , env       :: [(Text, Text)]
     , cwd       :: Text
     , term      :: Text  -- ^ the client's @TERM@, from its hello
+    , ttyName   :: Maybe Text  -- ^ its terminal's path, from its hello
     , ttyTerm   :: TVar (Maybe TtyTerm)
         -- ^ its terminal once opened at attach (tmux's @tty.term@);
         --   'Nothing' for a control client, or one whose hello carried no
@@ -1508,10 +1509,10 @@ findSessionById st sid = Map.lookup sid <$> readTVar st.sessions
 rawClient :: ClientId -> Int
 rawClient (ClientId n) = n
 
--- | A client's name (tmux's @c->name@, which for a client without a tty
--- is @client-@ and a number), as commands target it with @-c@.
+-- | A client's name (tmux's @c->name@): its terminal's path, or for a
+-- client without one @client-@ and a number.
 clientName :: Client -> Text
-clientName c = "client-" <> tshow (rawClient c.id)
+clientName c = fromMaybe ("client-" <> tshow (rawClient c.id)) c.ttyName
 
 rawPane :: PaneId -> Int
 rawPane (PaneId n) = n

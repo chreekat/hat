@@ -74,7 +74,7 @@ mkClient sz lastFrame = do
             , needsFull = fullV, toast = toastV, flash = flashV, prompt = promptV
             , popup = popupV
             , outerFocused = focusV, envImport = envImpV
-            , env = [], cwd = "", term = "", ttyTerm = termV, createdAt = 0
+            , env = [], cwd = "", term = "", ttyName = Nothing, ttyTerm = termV, createdAt = 0
             , stdinSource = NoStdin, control = Nothing
             , viewport = viewportV, lastViewOrigin = viewOriginV
              }

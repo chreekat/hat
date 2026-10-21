@@ -54,7 +54,7 @@ import Control.Monad (filterM, forM, forM_, void, when)
 import Data.Functor ((<&>))
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -1239,6 +1239,7 @@ clientFormatVars st c = do
         , ("client_readonly", "0")
         , ("client_utf8", "1")
         , ("client_termname", c.term)
+        , ("client_tty", fromMaybe "" c.ttyName)
         , ("client_termtype", maybe "" (.termType) mterm)
         , ("client_termfeatures", maybe "" featureNames mterm)
         , ("client_width", tshow sz.cols)

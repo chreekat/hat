@@ -95,6 +95,11 @@ genHello = Hello
     <*> arbitrary
     <*> listOf genText
     <*> oneof [pure Nothing, Just <$> listOf genText]
+    <*> pure Nothing
+    >>= \h -> case h.termCaps of
+        -- A hello names its terminal's path only beside its capabilities.
+        Just _ -> (\t -> h { ttyName = t }) <$> oneof [pure Nothing, Just <$> genText]
+        Nothing -> pure h
 
 instance Arbitrary ClientToServer where
     arbitrary = oneof
@@ -114,7 +119,8 @@ instance Arbitrary ClientToServer where
             ++ [ ClientHello h { autostarted = False } | h.autostarted ]
             ++ [ ClientHello h { sessionHist = hs }
                | hs <- shrinkList (const []) h.sessionHist ]
-            ++ [ ClientHello h { termCaps = Nothing } | Just _ <- [h.termCaps] ]
+            ++ [ ClientHello h { termCaps = Nothing, ttyName = Nothing } | Just _ <- [h.termCaps] ]
+            ++ [ ClientHello h { ttyName = Nothing } | Just _ <- [h.ttyName] ]
             ++ [ ClientHello h { termCaps = Just cs }
                | Just cs0 <- [h.termCaps], cs <- shrinkList (const []) cs0 ]
         Input bs -> Input . B.pack <$> shrink (B.unpack bs)
@@ -221,24 +227,30 @@ spec = do
         forM_
             [ ( "ClientHello"
               , encodeMessage (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False [] Nothing))
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False [] Nothing Nothing))
               , "8200880465787465726d9f8261416142ff830018181850642f746d708101f480" )
             , ( "ClientHello (terminfo capabilities)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
-                        (Just ["am=1"])))
+                        (Just ["am=1"]) Nothing))
               , "8200890465787465726d9f8261416142ff830018181850642f746d708101f480\
                 \9f64616d3d31ff" )
+            , ( "ClientHello (terminal path)"
+              , encodeMessage (ClientHello
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
+                        (Just ["am=1"]) (Just "/dev/pts/3")))
+              , "82008a0465787465726d9f8261416142ff830018181850642f746d708101f480\
+                \9f64616d3d31ff6a2f6465762f7074732f33" )
             , ( "ClientHello (attach intent)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        (AttachIntent [["new"]]) False [] Nothing))
+                        (AttachIntent [["new"]]) False [] Nothing Nothing))
               , "8200880465787465726d9f8261416142ff830018181850642f746d70\
                 \82009f9f636e6577fffff480" )
             , ( "ClientHello (control-mode intent)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        (ControlModeIntent [["attach"]]) False [] Nothing))
+                        (ControlModeIntent [["attach"]]) False [] Nothing Nothing))
               , "8200880465787465726d9f8261416142ff830018181850642f746d70\
                 \82029f9f66617474616368fffff480" )
             , ( "Input", encodeMessage (Input "hi"), "8201426869" )
@@ -324,7 +336,7 @@ spec = do
                     :: Inbound ClientToServer)
                     `shouldBe` Known (ClientHello
                         (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                            ControlIntent autostarted hist Nothing))
+                            ControlIntent autostarted hist Nothing Nothing))
 
     describe "negotiate" $ do
         it "meets an older client at its version" $

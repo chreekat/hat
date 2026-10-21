@@ -215,6 +215,7 @@ addClient st sid sz stamp = do
         <*> pure []
         <*> pure ""
         <*> pure ""  -- term
+        <*> pure Nothing  -- ttyName
         <*> newTVarIO Nothing  -- ttyTerm
         <*> pure 0   -- createdAt
         <*> pure NoStdin
@@ -264,6 +265,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure clientEnv
         <*> pure ""
         <*> pure ""  -- term
+        <*> pure Nothing  -- ttyName
         <*> newTVarIO Nothing  -- ttyTerm
         <*> pure 0   -- createdAt
         <*> pure NoStdin
@@ -548,6 +550,22 @@ spec = do
                                , ROutput "client-2: work [90x30 ] [user ] (attached,focused,UTF-8)" ]
             runArgv st Nothing ["list-clients", "-f", "#{==:#{client_width},90}", "-F", "#{line}"]
                 `shouldReturn` [ROutput "1"]
+
+    describe "client names" $
+        it "names a client with a terminal by its path, as tmux does, and finds it by it" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            c0 <- addClient st sess.id (Size { rows = 24, cols = 80 }) 1
+            let c = c0 { Hat.Model.ttyName = Just "/dev/pts/3" }
+            atomically $ modifyTVar' st.clients (Map.insert c.id c)
+            _ <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st Nothing ["list-clients", "-F", "#{client_name} #{client_tty}"]
+                `shouldReturn` [ROutput "/dev/pts/3 /dev/pts/3", ROutput "client-2 "]
+            forM_ ["/dev/pts/3", "pts/3", "/dev/pts/3:"] $ \t ->
+                runArgv st Nothing ["display-message", "-p", "-c", t, "#{client_name}"]
+                    `shouldReturn` [ROutput "/dev/pts/3"]
+            runArgv st Nothing ["display-message", "-p", "-c", "client-1", "x"]
+                `shouldReturn` [RErr "can't find client: client-1"]
 
     describe "pane_in_mode" $
         it "is 1 while copy mode is open, 0 otherwise" $ do
@@ -964,7 +982,8 @@ spec = do
                     { protoVersion = protocolVersion + 1
                     , term = "xterm", env = [], size = Size 24 80
                     , cwd = "/", intent = ControlIntent
-                    , autostarted = False, sessionHist = [], termCaps = Nothing }
+                    , autostarted = False, sessionHist = [], termCaps = Nothing
+                    , ttyName = Nothing }
             serverRe <- newReadEnd server
             clientRe <- newReadEnd client
             withAsync (welcome dispatch st serverRe h) $ \_ -> do

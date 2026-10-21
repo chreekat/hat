@@ -346,6 +346,7 @@ newClient st conn h = do
         , env = h.env
         , cwd = h.cwd
         , term = if T.null h.term then "unknown" else h.term
+        , ttyName = h.ttyName
         , ttyTerm = ttyTermVar
         , createdAt = created
         , stdinSource = NoStdin

@@ -35,7 +35,7 @@ import System.Environment (getEnvironment, lookupEnv)
 import System.IO
 import System.Posix.IO (stdInput, stdOutput)
 import System.Posix.Signals (Handler (Catch), installHandler)
-import System.Posix.Terminal (queryTerminal)
+import System.Posix.Terminal (getTerminalName, queryTerminal)
 
 import Hat.Client.Draw
 import Hat.Client.Terminfo (readTermCaps)
@@ -103,6 +103,7 @@ withHello v origin intent hist refuse body = do
     env0 <- getEnvironment
     sz <- ttySize
     dir <- getCurrentDirectory
+    mtty <- if tty then Just <$> getTerminalName stdInput else pure Nothing
     case ecaps of
         Left e -> pure (refuse e)
         Right caps -> body $ ClientHello Hello
@@ -115,6 +116,7 @@ withHello v origin intent hist refuse body = do
             , autostarted = origin == Autostarted
             , sessionHist = hist
             , termCaps = Just caps
+            , ttyName = T.pack <$> mtty
             }
 
 -- | Attach to the server and shuttle bytes until detach or death. The
