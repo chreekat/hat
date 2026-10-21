@@ -121,7 +121,8 @@ handlePromptInput d st client home pr0 keys0 = do
             -- A blank submission cancels: never rename a window to "".
             blank = T.null (T.strip line)
         runNow <- atomically $ do
-            when (remember && pr.promptKind `elem` [LineEntry, BackspaceExitEntry]) $ do
+            when (remember && pr.promptKind `elem` [LineEntry, BackspaceExitEntry]
+                    && not (templatedCommand pr)) $ do
                 limit <- optionNumber "prompt-history-limit" <$> readTVar st.options
                 modifyTVar' (historyOf pr.promptType) (Prompt.pushHistory limit line)
             case answered of
@@ -147,6 +148,9 @@ handlePromptInput d st client home pr0 keys0 = do
         OnStatusLine -> pure ()
         OverPane pane -> notifyPane st "pane-prompt-closed" pane
             [ ("prompt_type", PText (Prompt.promptTypeName pr0.promptType)) ]
+    -- The command history keeps only command lines typed whole; a
+    -- template's answers (a rename's new name) stay out of it.
+    templatedCommand pr = pr.promptType == CommandPrompt && not (T.null pr.template)
     historyOf = \case
         CommandPrompt -> st.cmdHistory
         SearchPrompt -> st.searchHistory

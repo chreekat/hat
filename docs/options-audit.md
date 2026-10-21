@@ -301,6 +301,10 @@ arrive.
   so the wheel bindings and `copy-mode -u` too) reveal an overlay
   scrollbar, not a mouse drag's scrolling.
 
+- **Command history** keeps only command lines typed whole: the answers to
+  a templated `command-prompt` (the `,` rename's new name) stay out of it,
+  where tmux remembers every answered line.
+
 - **`history-file`**: hat has no search prompt, so a file's `search:`
   entries are only carried through to the next save. Entries are text: a byte that is
   not UTF-8 in a tmux-written entry is rewritten as U+FFFD.

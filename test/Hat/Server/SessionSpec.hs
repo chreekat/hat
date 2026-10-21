@@ -773,12 +773,19 @@ spec = do
         it "keeps each prompt type's own history" $ do
             (st, sess) <- seedSession "/"
             attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
-            runArgv st (Just attached) ["command-prompt", "set -g @r '%%'"] `shouldReturn` []
-            handleInput dispatch st attached "alpha\r"
+            runArgv st (Just attached) ["command-prompt"] `shouldReturn` []
+            handleInput dispatch st attached "set -g @r alpha\r"
             runArgv st (Just attached) ["command-prompt", "-T", "search", "x"] `shouldReturn` []
             handleInput dispatch st attached "beta\r"
-            readTVarIO st.cmdHistory `shouldReturn` ["alpha"]
+            readTVarIO st.cmdHistory `shouldReturn` ["set -g @r alpha"]
             readTVarIO st.searchHistory `shouldReturn` ["beta"]
+        it "keeps a templated command prompt's answers out of the command history" $ do
+            (st, sess) <- seedSession "/"
+            attached <- addClient st sess.id (Size { rows = 24, cols = 80 }) 2
+            runArgv st (Just attached) ["command-prompt", "-I", "#S", "rename-session '%%'"]
+                `shouldReturn` []
+            handleInput dispatch st attached "\x7fx\r"
+            readTVarIO st.cmdHistory `shouldReturn` []
 
     describe "a pane's queries of the terminal (tmux's input requests)" $ do
         -- A pane whose program reads its replies on a raw pty, homed in a
