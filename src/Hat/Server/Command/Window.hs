@@ -44,8 +44,10 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
+import Hat.Command.Arg (Arg (..))
 import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Server.Name (NameKind (..), admitName)
 import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
@@ -157,6 +159,8 @@ cmdNewWindow st mclient args
             Right (sess, requested) -> do
                 env <- sessionFormatEnv st sess
                 opts <- mapM (expandName env) opts0
+                let refused = [ r | Just nm <- [lookup "-n" opts]
+                                  , Left r <- [admitName WindowName (Utf8Arg nm)] ]
                 reuse <- case (lookup "-n" opts, requested) of
                     (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
                         ws <- readTVar sess.windows
@@ -165,6 +169,7 @@ cmdNewWindow st mclient args
                         pure (selectNamed nm named)
                     _ -> pure (Right Nothing)
                 case reuse of
+                    _ | r : _ <- refused -> pure [r]
                     Left e -> pure [RErr e]
                     Right (Just ix) -> do
                         unless ("-d" `elem` flags) $ switchToWindow st sess ix
@@ -542,13 +547,16 @@ cmdRenameWindow st mclient args = do
                 Right (sess, wix, win, pane) -> do
                     pix <- paneIndexOf st win pane
                     env <- paneFormatEnv st sess wix win pix pane
-                    name <- expandFormat st env nm
-                    atomically $ do
-                        writeTVar win.name name
-                        writeTVar win.autoRename False
-                        bumpDirty st
-                    notifyWindow st "window-renamed" (Just sess.id) win []
-                    pure []
+                    expanded <- expandFormat st env nm
+                    case admitName WindowName (Utf8Arg expanded) of
+                      Left r -> pure [r]
+                      Right name -> do
+                        atomically $ do
+                            writeTVar win.name name
+                            writeTVar win.autoRename False
+                            bumpDirty st
+                        notifyWindow st "window-renamed" (Just sess.id) win []
+                        pure []
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
 

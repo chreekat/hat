@@ -35,6 +35,7 @@ import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Command.Pane (noteActiveChange)
 import Hat.Server.Command.Window (switchToWindow)
+import Hat.Command.Arg (Arg (..))
 import Hat.Server.Command.Types
     (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
@@ -48,6 +49,7 @@ import Hat.Server.Keys (enterTable)
 import Hat.Server.Locate
     ( defaultAttachSession, findTarget, formatClient, paneIndexOf, targetSession
     , withTargetSession )
+import Hat.Server.Name (NameKind (..), admitName)
 import Hat.Server.Pane
     ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
     , switchActive, windowHolders )
@@ -86,6 +88,7 @@ newSession st mclient opts flags pos
         pure [RErr "command or window name given with target"]
     | Just f <- firstOf ["-e", "-f"] = pure [RErr ("new-session " <> f
         <> ": not supported")]
+    | r : _ <- refusedNames = pure [r]
     | otherwise = do
         existing <- if "-A" `elem` flags
             then case (lookup "-s" opts, lookup "-t" opts, mclient) of
@@ -106,6 +109,10 @@ newSession st mclient opts flags pos
                         Nothing -> createNew Nothing
   where
     firstOf fs = listToMaybe [f | f <- fs, isJust (lookup f opts)]
+    refusedNames =
+        [ r | (flag, kind) <- [("-n", WindowName), ("-s", SessionName)]
+            , Just nm <- [lookup flag opts]
+            , Left r <- [admitName kind (Utf8Arg nm)] ]
     sessionNamed nm = atomically $ do
         ss <- Map.elems <$> readTVar st.sessions
         named <- mapM (\s -> (,) s <$> readTVar s.name) ss
@@ -155,7 +162,8 @@ newSession st mclient opts flags pos
                 grouped <- mapM (\s -> (,) s <$> readTVar s.group) ss
                 pure (listToMaybe [s | (s, Just g) <- grouped, g == t])
         case mleader of
-            Nothing -> createNew (Just t)
+            Nothing -> either (pure . pure) (createNew . Just)
+                (admitName SessionGroupName (Utf8Arg t))
             Just leader -> do
                 (environ, dir, _) <- clientContext
                 sess <- createGroupedSession st leader (lookup "-s" opts)
@@ -435,9 +443,14 @@ cmdRenameSession st mclient args
         case res of
           Left e -> pure [RErr e]
           Right (sess, _, _, _) -> do
-            nm <- if "#" `T.isInfixOf` nm0
+            expanded <- if "#" `T.isInfixOf` nm0
                 then flip (expandFormat st) nm0 =<< sessionFormatEnv st sess
                 else pure nm0
+            either (pure . pure) (rename sess) (admitName SessionName (Utf8Arg expanded))
+    | otherwise = pure [RErr "usage: rename-session [-t target] new-name"]
+  where
+    (opts, flags, pos) = parseArgs "t" args
+    rename sess nm = do
             out <- atomically $ do
                 old <- readTVar sess.name
                 sessions <- readTVar st.sessions
@@ -460,9 +473,6 @@ cmdRenameSession st mclient args
                         , ("old_name", PText old)
                         , ("new_name", PText nm) ]
                     pure []
-    | otherwise = pure [RErr "usage: rename-session [-t target] new-name"]
-  where
-    (opts, flags, pos) = parseArgs "t" args
 
 -- | tmux @list-clients [-r] [-F format] [-f filter] [-O order] [-t
 -- target-session]@: one line per attached client (control connections are

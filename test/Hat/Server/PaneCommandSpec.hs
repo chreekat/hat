@@ -425,6 +425,26 @@ spec = do
                     stacks <- mapM (Emu.titleStack . (.emulator)) pane
                     stacks `shouldBe` [["under"]]
 
+    describe "names" $
+        it "refuses a name holding a control character, in tmux's words" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [_, b] <- paneIds st "S:0"
+                forM_
+                    [ (["rename-session", "-t", "S", "a\tb"], "session")
+                    , (["new-session", "-d", "-s", "a\tb"], "session")
+                    , (["rename-window", "-t", "S:0", "a\tb"], "window")
+                    , (["new-session", "-d", "-n", "a\tb"], "window")
+                    , (["new-window", "-d", "-t", "S:", "-n", "a\tb"], "window")
+                    , (["break-pane", "-d", "-s", b, "-n", "a\tb"], "window")
+                    , (["new-session", "-d", "-t", "a\tb"], "session group")
+                    , (["set-buffer", "-b", "a\tb", "data"], "buffer") ]
+                    $ \(argv, kind) -> run st argv
+                        `shouldReturn` [RErr ("invalid " <> kind <> " name: a\tb")]
+                run st ["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]
+                    `shouldReturn` [ROutput "S:sleep"]
+
     describe "join-pane" $
         it "refuses to join a pane to itself" $
             withServer $ \st -> do

@@ -20,6 +20,7 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 
+import Hat.Command.Arg (Arg (..))
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
@@ -37,6 +38,7 @@ import Hat.Server.Layout
 import Hat.Server.LayoutString (layoutFromString)
 import Hat.Server.Locate (findTarget, findWindowIndexTarget, formatClient, markedTarget, paneIndexOf)
 import Hat.Server.Mru (recordVisit)
+import Hat.Server.Name (NameKind (..), admitName)
 import Hat.Server.Mouse (Drag (..))
 import Hat.Server.MouseIO (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag)
 import Hat.Server.Pane (rehomePanes, removePaneFromTree, switchActive, wrapPaneInWindow)
@@ -62,6 +64,8 @@ cmdBreakPane st mclient args
             (Right (_, _, _, pane), _) | modal == Just pane.id -> pure [RErr "pane is modal"]
             (Right (ssess, _, swin, pane), _) | "-W" `elem` flags -> floatOut ssess swin pane
             (_, Left e) -> pure [RErr e]
+            _ | Just nm <- lookup "-n" opts
+              , Left r <- admitName WindowName (Utf8Arg nm) -> pure [r]
             (Right (ssess, swix, swin, pane), Right (dst, mix)) -> do
                 atomically $ writeTVar swin.zoomed Nothing
                 npanes <- Map.size <$> readTVarIO swin.panes
