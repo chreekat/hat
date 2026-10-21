@@ -39,6 +39,7 @@ import System.Posix.Terminal (queryTerminal)
 import System.Process (CreateProcess (..), createProcess, shell, waitForProcess)
 
 import Hat.Client.Draw
+import Hat.Command.Arg (Arg (..), argLossy)
 import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
 import Hat.Server.Command.Session (newSessionValueFlags)
@@ -122,7 +123,7 @@ withHello v origin intent hist refuse body = do
 -- shell) run server-side to establish which session we render. @hist@ seeds
 -- @switch-client -l@ across a restart and is empty for a fresh attach.
 -- @answered@ runs once the server first answers.
-runClient :: Socket -> Autostart -> IO () -> [[Text]] -> [Text] -> IO ExitReason
+runClient :: Socket -> Autostart -> IO () -> [[Arg]] -> [Text] -> IO ExitReason
 runClient sock origin answered setup hist = do
     inp <- probeTerminal stdInput
     out <- probeTerminal stdOutput
@@ -131,9 +132,9 @@ runClient sock origin answered setup hist = do
         Nothing -> attachClient protocolVersion sock origin answered setup hist
 
 attachClient
-    :: Word16 -> Socket -> Autostart -> IO () -> [[Text]] -> [Text] -> IO ExitReason
+    :: Word16 -> Socket -> Autostart -> IO () -> [[Arg]] -> [Text] -> IO ExitReason
 attachClient v sock origin answered setup hist =
-    withHello v origin (AttachIntent setup) hist Rejected $ \h -> do
+    withHello v origin (AttachIntent (lossy setup)) hist Rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     greeting <- recvMessage re
@@ -299,9 +300,9 @@ data ControlFlavour = ControlLines | ControlDcs
 -- the server's farewell; then print @%exit@ and, if asked, linger for an
 -- empty input line. Returns the exit status the server gave.
 runControlMode
-    :: Socket -> Autostart -> ControlFlavour -> [[Text]] -> IO (Either ExitReason Int)
+    :: Socket -> Autostart -> ControlFlavour -> [[Arg]] -> IO (Either ExitReason Int)
 runControlMode sock origin flavour setup =
-    withHello protocolVersion origin (ControlModeIntent setup) [] (Left . Rejected) $ \h -> do
+    withHello protocolVersion origin (ControlModeIntent (lossy setup)) [] (Left . Rejected) $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     greeting <- recvMessage re
@@ -394,7 +395,7 @@ data Output = Output
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell. @answered@ runs
 -- once the server first answers.
-runControl :: Socket -> Autostart -> IO () -> [[Text]] -> IO ExitReason
+runControl :: Socket -> Autostart -> IO () -> [[Arg]] -> IO ExitReason
 runControl sock origin answered =
     controlAt protocolVersion sock origin answered Output
         { line = B8.putStrLn . TE.encodeUtf8
@@ -409,12 +410,12 @@ captureControl sock origin cmds = do
     r <- controlAt protocolVersion sock origin (pure ()) Output
         { line = keep . (<> "\n") . TE.encodeUtf8
         , bytes = keep
-        } cmds
+        } (map (map Utf8Arg) cmds)
     case r of
         SessionEnded -> Right . B.concat . reverse <$> readIORef acc
         other -> pure (Left other)
 
-controlAt :: Word16 -> Socket -> Autostart -> IO () -> Output -> [[Text]] -> IO ExitReason
+controlAt :: Word16 -> Socket -> Autostart -> IO () -> Output -> [[Arg]] -> IO ExitReason
 controlAt v sock origin answered out cmds =
     withHello v origin ControlIntent [] Rejected $ \h -> do
     re <- newReadEnd sock
@@ -424,7 +425,7 @@ controlAt v sock origin answered out cmds =
     answered
     case greeting of
         Just (Known (Welcome _)) -> do
-            sendMessage sock (Command cmds)
+            sendMessage sock (Command (lossy cmds))
             drain Nothing re
         Just (Known (ServerError e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
@@ -450,3 +451,7 @@ controlAt v sock origin answered out cmds =
             Just (Malformed err) ->
                 pure (Rejected ("wire protocol error: " <> T.pack err
                     <> " — mismatched hat versions?"))
+
+-- | The commands as the wire's text carriers hold them.
+lossy :: [[Arg]] -> [[Text]]
+lossy = map (map argLossy)

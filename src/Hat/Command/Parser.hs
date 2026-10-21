@@ -12,6 +12,8 @@ module Hat.Command.Parser
     , parseArgv
     ) where
 
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as B
 import Data.Char (isAlphaNum, isAscii, isDigit, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -24,24 +26,25 @@ import Hat.Server.Environ (EnvVisibility (..))
 
 type Parser = Parsec Void Text
 
--- | Split argv (from @getArgs@) into a list of commands, using tmux's
--- convention: a trailing unescaped @;@ on a token is a command boundary,
--- a trailing @\;@ is a literal @;@, and semicolons in the middle of a
--- token are literal. Empty commands are dropped.
-parseArgv :: [String] -> [[Text]]
+-- | Split argv into a list of commands, using tmux's convention: a
+-- trailing unescaped @;@ on a token is a command boundary, a trailing @\;@
+-- is a literal @;@, and semicolons in the middle of a token are literal.
+-- Empty commands are dropped. The split is over bytes, so a word that is
+-- not UTF-8 survives it.
+parseArgv :: [ByteString] -> [[ByteString]]
 parseArgv = finish . foldl step ([], [])
   where
     step (cmds, cur) arg = case classify arg of
         (arg', True)
-            | null arg' -> (reverse cur : cmds, [])
-            | otherwise -> (reverse (T.pack arg' : cur) : cmds, [])
-        (arg', False) -> (cmds, T.pack arg' : cur)
+            | B.null arg' -> (reverse cur : cmds, [])
+            | otherwise -> (reverse (arg' : cur) : cmds, [])
+        (arg', False) -> (cmds, arg' : cur)
     finish (cmds, cur) =
         filter (not . null) . reverse $ reverse cur : cmds
-    classify s = case reverse s of
-        ';' : '\\' : rest -> (reverse rest ++ ";", False)
-        ';' : rest        -> (reverse rest, True)
-        _                 -> (s, False)
+    classify s
+        | Just rest <- B.stripSuffix "\\;" s = (rest <> ";", False)
+        | Just rest <- B.stripSuffix ";" s = (rest, True)
+        | otherwise = (s, False)
 
 -- | Parse a file of commands or a command string (tmux's @cmd-parse.y@):
 -- comments, blank lines, continuations, assignments and conditionals, each

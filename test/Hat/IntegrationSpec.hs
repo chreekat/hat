@@ -2,7 +2,7 @@
 module Hat.IntegrationSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.Async (Async, async, cancel, link)
+import Control.Concurrent.Async (Async, async, cancel, concurrently, link)
 import Control.Concurrent.STM
     (TVar, atomically, modifyTVar', newTVarIO, readTVar, readTVarIO, retry,
      writeTVar)
@@ -11,6 +11,7 @@ import Control.Exception
     (IOException, SomeException, bracket, catch, evaluate, finally, throwIO,
      try)
 import Control.Monad (forM, forM_, unless, void, when)
+import Data.Char (chr)
 import Data.List qualified as List
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -200,6 +201,31 @@ hatBytes h args input = do
         pure (code, out)
     maybe (expectationFailure ("hat " <> unwords args <> ": no reply in 30s")
             >> pure (ExitFailure 1, ""))
+          pure r
+
+-- | 'hatCtl' with argv, stdout and stderr as bytes, in the C locale. The
+-- words reach @hat@ through a shell's @printf@, so each byte arrives as it is.
+hatRaw :: Hat -> [B.ByteString] -> IO (ExitCode, B.ByteString, B.ByteString)
+hatRaw h args = do
+    path <- testPath
+    sh <- bashPath
+    let octal w = ['\\', d (w `div` 64), d (w `div` 8 `mod` 8), d (w `mod` 8)]
+        d n = chr (fromEnum '0' + fromIntegral n)
+        word b = "\"$(printf '" <> concatMap octal (B.unpack b) <> "')\""
+        script = unwords (map word ([B8.pack h.bin, "-S", B8.pack h.sock] <> args))
+    r <- timeout 30_000_000 $ do
+        (Just hin, Just hout, Just herr, ph) <- P.createProcess
+            (P.proc sh ["-c", script])
+                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+                , P.close_fds = True
+                , P.std_in = P.CreatePipe, P.std_out = P.CreatePipe
+                , P.std_err = P.CreatePipe }
+        hClose hin
+        (out, err) <- concurrently (B.hGetContents hout) (B.hGetContents herr)
+        code <- P.waitForProcess ph
+        pure (code, out, err)
+    maybe (expectationFailure ("hat " <> show args <> ": no reply in 30s")
+            >> pure (ExitFailure 1, "", ""))
           pure r
 
 -- Stdout of a hat control command.
@@ -826,6 +852,14 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         _ <- awaitExit c1
         pure ()
+
+    it "keeps a UTF-8 argument intact from a C-locale client" $
+        withHat hatBin $ \h -> do
+        _ <- hatRaw h ["new-session", "-d", "-s", "x"]
+        (code, _, _) <- hatRaw h ["rename-session", "-t", "x", "caf\xc3\xa9"]
+        code `shouldBe` ExitSuccess
+        (_, out, _) <- hatRaw h ["display-message", "-p", "#{session_name}"]
+        out `shouldBe` "caf\xc3\xa9\n"
 
     it "gives the terminal the cursor-style option's shape, the program's over it" $
         withHat hatBin $ \h -> do

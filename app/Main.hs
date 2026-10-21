@@ -3,6 +3,7 @@
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
+import Data.ByteString (ByteString)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -11,12 +12,14 @@ import System.Directory (doesFileExist, findExecutable)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO
+import System.Posix.Env.ByteString qualified as PB
 import System.Posix.Process (executeFile)
 import System.Process
     ( CreateProcess (..), ProcessHandle, StdStream (..), createProcess
     , getProcessExitCode, proc )
 
 import Hat.Client
+import Hat.Command.Arg (Arg (..), argFromBytes, argLossy)
 import Hat.Command.Parser (parseArgv, parseScript)
 import Hat.Command.Script (Script (..), ScriptItem (..))
 import Hat.Debug (prepareDebugSocket)
@@ -34,7 +37,7 @@ data Cli = Cli
     , socketPathOverride :: Maybe FilePath
     , configFile :: Maybe FilePath
     , controlMode :: Maybe ControlFlavour  -- ^ @-C@ once, or @-CC@
-    , command :: [String]
+    , command :: [ByteString]  -- ^ the command words, as argv gave them
     , action :: CliAction
     }
 
@@ -68,9 +71,13 @@ main = do
             in case mhandover of
                 Just h -> withServerDebug path (resumeServer path mconfig h)
                 Nothing -> withServerDebug path (runServer path mconfig)
-        _ -> let cli = parseCli args in case cli.action of
-            PrintVersion -> TIO.putStrLn ("hat " <> versionText)
-            RunCommand -> clientMain =<< resolveConfig cli
+        _ -> do
+            -- The same words twice: decoded for the flags, raw for the command.
+            raw <- PB.getArgs
+            let cli = parseCli (zip args raw)
+            case cli.action of
+                PrintVersion -> TIO.putStrLn ("hat " <> versionText)
+                RunCommand -> clientMain =<< resolveConfig cli
 
 -- | Run the server as a ghc-debug debuggee on the socket 'prepareDebugSocket'
 -- pins, so ghc-debug-brick can attach to the live process. Only the long-lived
@@ -100,7 +107,7 @@ takeReloadHandover = go (Nothing, [])
         (a : rest) -> go (mh, keep <> [a]) rest
         [] -> (mh, keep)
 
-parseCli :: [String] -> Cli
+parseCli :: [(String, ByteString)] -> Cli
 parseCli = go Cli
     { socketName = "default"
     , socketPathOverride = Nothing
@@ -110,22 +117,22 @@ parseCli = go Cli
     , action = RunCommand
     }
   where
-    go cli = \case
+    go cli ws = case map fst ws of
         [] -> cli
-        ("-C" : rest) -> go cli { controlMode = Just (moreControl cli) } rest
-        ("-CC" : rest) -> go cli { controlMode = Just ControlDcs } rest
-        ("-L" : name : rest) -> go cli { socketName = name } rest
-        ("-S" : path : rest) -> go cli { socketPathOverride = Just path } rest
-        ("-f" : path : rest) -> go cli { configFile = Just path } rest
+        ("-C" : _) -> go cli { controlMode = Just (moreControl cli) } (drop 1 ws)
+        ("-CC" : _) -> go cli { controlMode = Just ControlDcs } (drop 1 ws)
+        ("-L" : name : _) -> go cli { socketName = name } (drop 2 ws)
+        ("-S" : path : _) -> go cli { socketPathOverride = Just path } (drop 2 ws)
+        ("-f" : path : _) -> go cli { configFile = Just path } (drop 2 ws)
         -- -u asks for UTF-8, which hat's client always speaks.
-        ("-u" : rest) -> go cli rest
+        ("-u" : _) -> go cli (drop 1 ws)
         ("-V" : _) -> cli { action = PrintVersion }
-        (arg : rest)
-            | Just v <- attached "-L" arg -> go cli { socketName = v } rest
+        (arg : _)
+            | Just v <- attached "-L" arg -> go cli { socketName = v } (drop 1 ws)
             | Just v <- attached "-S" arg ->
-                go cli { socketPathOverride = Just v } rest
-            | Just v <- attached "-f" arg -> go cli { configFile = Just v } rest
-        rest -> cli { command = rest }
+                go cli { socketPathOverride = Just v } (drop 1 ws)
+            | Just v <- attached "-f" arg -> go cli { configFile = Just v } (drop 1 ws)
+        _ -> cli { command = map snd ws }
     moreControl cli = maybe ControlLines (const ControlDcs) cli.controlMode
     attached flag arg = case splitAt 2 arg of
         (pre, v) | pre == flag && not (null v) -> Just v
@@ -135,10 +142,10 @@ clientMain :: Cli -> IO ()
 clientMain cli = do
     path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
     let (hist, cmdArgs) = takeReattachHist cli.command
-        cmds = parseArgv cmdArgs
+        cmds = map (map argFromBytes) (parseArgv cmdArgs)
     case cli.controlMode of
         Just flavour -> controlMode path cli.configFile flavour
-            (if null cmds then [["new-session"]] else cmds)
+            (if null cmds then [[Utf8Arg "new-session"]] else cmds)
         Nothing
             | null cmdArgs -> defaultClientCommand path cli.configFile
             | otherwise -> runCommandLine path cli.configFile (pure ()) hist cmds
@@ -146,11 +153,11 @@ clientMain cli = do
 -- | Run a command line from the shell: attach for one that grabs the
 -- terminal, else run it as a command client. @answered@ runs once the
 -- server first answers.
-runCommandLine :: FilePath -> Maybe FilePath -> IO () -> [T.Text] -> [[T.Text]] -> IO ()
+runCommandLine :: FilePath -> Maybe FilePath -> IO () -> [T.Text] -> [[Arg]] -> IO ()
 runCommandLine path mconfig answered hist cmds = case cmds of
-    [[verb]] | verb `elem` ["attach", "attach-session"] ->
+    [[Utf8Arg verb]] | verb `elem` ["attach", "attach-session"] ->
         attach path mconfig answered [] hist
-    _ -> case terminalMode cmds of
+    _ -> case terminalMode (map (map argLossy) cmds) of
         GrabsTerminal -> attach path mconfig answered cmds hist
         FireAndForget -> control path mconfig answered cmds
 
@@ -172,7 +179,7 @@ defaultClientCommand path mconfig = do
         Right out -> case parseScript (TE.decodeUtf8Lenient out) of
             Script items Nothing
                 | Just cmds <- traverse (commandOf . snd) items ->
-                    runCommandLine path mconfig release [] cmds
+                    runCommandLine path mconfig release [] (map (map Utf8Arg) cmds)
                 | otherwise -> failWith "conditionals and assignments are not supported here"
             Script _ (Just (_, e)) -> failWith e
         Left (Rejected _) -> attach path mconfig release [] []
@@ -190,17 +197,17 @@ defaultClientCommand path mconfig = do
 -- | Pull the internal @--reattach-hist NAME@ flags (repeated, one per MRU
 -- session) out of a restarting client's argv, returning the names
 -- most-recent-first and the argv without them. See 'restartClient'.
-takeReattachHist :: [String] -> ([T.Text], [String])
+takeReattachHist :: [ByteString] -> ([T.Text], [ByteString])
 takeReattachHist = go ([], [])
   where
     go (hist, keep) = \case
-        ("--reattach-hist" : n : rest) -> go (hist <> [T.pack n], keep) rest
+        ("--reattach-hist" : n : rest) -> go (hist <> [TE.decodeUtf8Lenient n], keep) rest
         (a : rest) -> go (hist, keep <> [a]) rest
         [] -> (hist, keep)
 
 -- | @-C@: tmux control mode, started by the given command (a bare @-C@
 -- starts a new session, as plain @hat@ does). See 'Hat.Client.runControlMode'.
-controlMode :: FilePath -> Maybe FilePath -> ControlFlavour -> [[T.Text]] -> IO ()
+controlMode :: FilePath -> Maybe FilePath -> ControlFlavour -> [[Arg]] -> IO ()
 controlMode path mconfig flavour setup = do
     (sock, origin) <- connectOrStart path mconfig
     r <- runControlMode sock origin flavour setup
@@ -215,7 +222,7 @@ controlMode path mconfig flavour setup = do
             exitWith (ExitFailure 1)
         Left _ -> exitWith (ExitFailure 1)
 
-attach :: FilePath -> Maybe FilePath -> IO () -> [[T.Text]] -> [T.Text] -> IO ()
+attach :: FilePath -> Maybe FilePath -> IO () -> [[Arg]] -> [T.Text] -> IO ()
 attach path mconfig answered setup hist = do
     -- Attaching from inside a pane of the *same* server ($TMUX names its
     -- socket) would render the session inside itself. Refuse, like tmux.
@@ -260,7 +267,7 @@ restartClient path mconfig msess hist = do
             <> concatMap (\n -> ["--reattach-hist", T.unpack n]) hist
     executeFile target False argv Nothing
 
-control :: FilePath -> Maybe FilePath -> IO () -> [[T.Text]] -> IO ()
+control :: FilePath -> Maybe FilePath -> IO () -> [[Arg]] -> IO ()
 control path mconfig answered cmds = do
     -- A list holding any session-creating command starts the server, like
     -- tmux (so @set -g … \; new -d@ works); anything else against a dead
@@ -268,7 +275,7 @@ control path mconfig answered cmds = do
     let starters = ["new-session", "new", "start-server", "start",
                     "attach-session", "attach"] :: [T.Text]
         starts = \case
-            (w : _) -> w `elem` starters
+            (w : _) -> argLossy w `elem` starters
             [] -> False
     msock <- if any starts cmds
         then Right <$> connectOrStart path mconfig
