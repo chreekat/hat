@@ -153,12 +153,12 @@ strtonum lo hi v = case TR.signed TR.decimal (T.dropWhile isSpace v) of
 -- and any value of an option that is not live at all.
 supportedValue :: OptionDef -> Text -> Either Text ()
 supportedValue d v = case d.gate of
-    NotYet -> Left (notYetError d.name)
     Live s
         | Just cs <- s.onlyChoices, v `notElem` cs ->
             Left (d.name <> ": value not yet supported by hat: " <> v)
         | Just why <- s.refuse v -> Left why
         | otherwise -> Right ()
+    _ -> maybe (Right ()) Left (gateRefusal d)
 
 -- | One array entry, validated and canonicalised by the option's kind.
 arrayEntry :: OptionDef -> Text -> Either Text Text

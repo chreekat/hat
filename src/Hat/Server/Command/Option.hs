@@ -179,9 +179,7 @@ inheritedValue st sc n = do
 
 -- | Refuse an option the registry knows but hat does not implement.
 requireLive :: OptionDef -> Either Text ()
-requireLive d = case d.gate of
-    NotYet -> Left (notYetError d.name)
-    Live _ -> Right ()
+requireLive d = maybe (Right ()) Left (gateRefusal d)
 
 -- | Refuse a pane-scope value of an option whose consumer reads only the
 -- window's.

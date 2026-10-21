@@ -114,7 +114,6 @@ library
         Hat.Server.Command.Hook
         Hat.Server.Command.Interact
         Hat.Server.Command.Layout
-        Hat.Server.Command.Lock
         Hat.Server.Command.Menu
         Hat.Server.Command.ListKeys
         Hat.Server.Command.Option
@@ -158,7 +157,6 @@ library
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
-        Hat.Server.Lock
         Hat.Server.Mru
         Hat.Server.OptionParse
         Hat.Server.Outbound

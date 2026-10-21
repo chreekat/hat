@@ -23,7 +23,7 @@ module Hat.Model.OptionTable
     , optionTable
     , lookupOptionDef
     , isLive
-    , notYetError
+    , gateRefusal
     , refusing
     , choicesOnly
     , aliasing
@@ -72,6 +72,8 @@ data OptionKind
 -- | How much of an option hat honours.
 data Gate
     = NotYet  -- ^ registered so names match as tmux's do, but set/show fail loud
+    | Unsupported
+        -- ^ as 'NotYet', for a feature hat leaves out by design
     | Live LiveSupport
 
 -- | The part of a live option's value space hat honours; anything outside
@@ -161,11 +163,14 @@ valueText = \case
 isLive :: OptionDef -> Bool
 isLive d = case d.gate of
     Live _ -> True
-    NotYet -> False
+    _ -> False
 
--- | The loud refusal for a registered option hat has not implemented.
-notYetError :: Text -> Text
-notYetError n = n <> ": option not yet supported by hat"
+-- | The loud refusal for a registered option hat does not implement.
+gateRefusal :: OptionDef -> Maybe Text
+gateRefusal d = case d.gate of
+    NotYet -> Just (d.name <> ": option not yet supported by hat")
+    Unsupported -> Just (d.name <> ": option not supported by hat")
+    Live _ -> Nothing
 
 lookupOptionDef :: Text -> Maybe OptionDef
 lookupOptionDef n = Map.lookup n byName
@@ -275,6 +280,10 @@ measuredIn d u = d { unit = Just u }
 notYet :: OptionDef -> OptionDef
 notYet d = d { gate = NotYet }
 
+-- | Mark a row hat leaves out by design.
+unsupported :: OptionDef -> OptionDef
+unsupported d = d { gate = Unsupported }
+
 -- | Mark a row implemented over tmux's whole value space.
 live :: OptionDef -> OptionDef
 live d = d { gate = Live fullSupport }
@@ -310,7 +319,7 @@ refusing f = adjustSupport (\s -> s { refuse = f })
 adjustSupport :: (LiveSupport -> LiveSupport) -> OptionDef -> OptionDef
 adjustSupport f d = case d.gate of
     Live s -> d { gate = Live (f s) }
-    NotYet -> d { gate = Live (f fullSupport) }
+    _ -> d { gate = Live (f fullSupport) }
 
 cursorStyles, popupLines, bellActions, visualBell :: [Text]
 cursorStyles =
@@ -640,10 +649,11 @@ optionTable =
     , live $ scalar "key-table" SessionScope KString "root"
         `described` "Default key table. Key presses are first looked up in \
             \this table."
-    , live $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
+    -- Locking is left out of hat.
+    , unsupported $ scalar "lock-after-time" SessionScope (KNumber 0 intMax) "0"
         `described` "Time after which a client is locked if not used."
         `measuredIn` "seconds"
-    , live $ scalar "lock-command" SessionScope KString "lock -np"
+    , unsupported $ scalar "lock-command" SessionScope KString "lock -np"
         `described` "Shell command to run to lock a client."
     , live $ scalar "message-command-style" SessionScope KStyle
         "bg=themeblack,fg=themeyellow,\
@@ -1048,7 +1058,7 @@ optionTable =
     , hook "after-list-sessions" SessionScope
     , hook "after-list-windows" SessionScope
     , hook "after-load-buffer" SessionScope
-    , hook "after-lock-server" SessionScope
+    , unsupported $ hook "after-lock-server" SessionScope
     , hook "after-new-session" SessionScope
     , hook "after-new-window" SessionScope
     , hook "after-paste-buffer" SessionScope

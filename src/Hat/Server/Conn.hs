@@ -70,7 +70,6 @@ import Hat.Server.Hooks (PayloadItem (..), notifyClient)
 import Hat.Server.Toast
 import Hat.Server.Keys
 import Hat.Server.Locate
-import Hat.Server.Lock (armLockTimer, ttyHandedBack)
 import Hat.Server.MessageLog (logShownMessage)
 import Hat.Server.Mouse
     (Click (..), ClickStart (..), MouseInput (..), MouseKey (..), MouseState (..), Placement (..), checkMouse, clickExpired, scrollbarHover
@@ -221,7 +220,6 @@ welcome d st re h = do
                     sname <- readTVarIO sess.name
                     atomically (void (claimLatest st client sess))
                     applySessionSize st sess.id
-                    armLockTimer st sess.id
                     -- Ahead of the greeting, so the client draws its very
                     -- first bytes in its terminal's dialect.
                     mterm <- readTVarIO client.ttyTerm
@@ -307,7 +305,6 @@ newClient st conn h = do
     envImportVar <- newTVarIO ImportEnv
     viewportVar <- newTVarIO unpannedViewport
     viewOriginVar <- newIORef (Pos 0 0)
-    ttyVar <- newTVarIO TtyStarted
     ttyTermVar <- newTVarIO Nothing
     created <- getPOSIXTime
     controlState <- case h.intent of
@@ -356,7 +353,6 @@ newClient st conn h = do
         , control = controlState
         , viewport = viewportVar
         , lastViewOrigin = viewOriginVar
-        , ttyState = ttyVar
         }
 
 -- | Resolve MRU session names to the ids of the sessions that still exist,
@@ -483,7 +479,8 @@ inputLoop d st re client = loop
                 Command cmds -> do
                     showReplies st client =<< d.runCommands st (Just client) cmds
                     loop
-                LockDone -> ttyHandedBack st client >> loop
+                -- Retired: answers a lock this server never asks for.
+                LockDone -> loop
                 ClientHello {} -> pure ()
                 -- Never requested of an attached client.
                 StdinData _ -> loop
@@ -521,7 +518,6 @@ claimOwnLatest st client = do
 noteClientActivity :: ServerState -> Client -> IO ()
 noteClientActivity st client = do
     atomically (markActive st client)
-    armLockTimer st =<< readTVarIO client.session
 
 -- | A client's keys, a focus-out report aside, make it the latest client of
 -- the window it shows once they have run (tmux's

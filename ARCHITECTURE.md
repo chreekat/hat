@@ -125,14 +125,6 @@ A client is *thin*: put the terminal in raw mode, register `SIGWINCH`,
 shuttle bytes between the socket and `stdin`/`stdout`, exit on detach.
 Almost no logic lives there. **(inferred.)**
 
-The one exception is locking (`lock-client` and friends, `lock-after-time`;
-`Hat.Server.Lock`). tmux's server owns the client's tty and stops it itself;
-hat's server never sees the tty, so it asks the client (`LockClient`) to stop
-reading its input, put the terminal back in its own mode, run
-`lock-command`, and restore raw mode however the command ends. The client
-answers `LockDone`, and the server, which drew nothing to it meanwhile,
-redraws it in full.
-
 ### Why one process per role
 
 - We want detach/reattach for free: if clients hold any state, reattach
@@ -516,10 +508,12 @@ Explicit non-goals — and where reality went further:
   new readers default what shorter lists omit, the server writes each
   client's negotiated level (`encodeServerMessageAt`), and every
   historical level's bytes stay pinned in the `WireSpec` dialect corpus.
-  A request an older peer cannot carry out is never sent to it: the server
-  checks the client's level first (a `lock-client` of a pre-level-10 client
-  is an error to whoever issued it), and `encodeServerMessageAt` still maps
-  it to a harmless older message.
+  A retired message keeps its tag, its codec and its corpus vectors
+  forever, and a build still answers it safely: hat no longer locks
+  clients, but a client hands the terminal a `LockClient` from an older
+  server asks for straight back (`LockDone`) and says why
+  (`Hat.Client.declinedLock`), so it never sits waiting for a lock that
+  does not run.
   The forward/backward-compat substrate promised under "Stability and
   compatibility" is in the wire from day one, not deferred.
 

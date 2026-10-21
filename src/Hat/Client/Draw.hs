@@ -10,7 +10,6 @@ module Hat.Client.Draw
     , enterAltScreen
     , featuresOn
     , leaveAltScreen
-    , lockScreen
     ) where
 
 import Data.Bits (testBit, (.|.))
@@ -531,8 +530,3 @@ featuresOn d = d.focusOn <> d.pasteOn
 leaveAltScreen :: Dialect -> ByteString
 leaveAltScreen d = d.mouseOff <> d.pasteOff <> d.focusOff <> d.altOff
     <> "\ESC[0m\ESC[?25h" <> d.cursorColourReset <> "\ESC[?12l" <> d.cursorStyleReset
-
--- | Where a lock command runs (tmux's @server_lock_client@): a cleared
--- alternate screen, its scrollback too, under the terminal's own cursor.
-lockScreen :: ByteString
-lockScreen = "\ESC[ q\ESC[?1049h\ESC[H\ESC[2J\ESC[3J"

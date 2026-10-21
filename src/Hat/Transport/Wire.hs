@@ -195,8 +195,8 @@ data ClientToServer
     | StdinData ByteString  -- ^ a chunk of the client's standard input,
                             --   answering 'ReadStdin'
     | StdinEnd              -- ^ the client's standard input is exhausted
-    | LockDone              -- ^ the command a 'LockClient' ran has exited;
-                            --   the terminal is the server's again
+    | LockDone              -- ^ retired: the terminal a 'LockClient'
+                            --   asked for is the server's again
     deriving (Eq, Show, Generic)
 
 data ServerToClient
@@ -226,8 +226,9 @@ data ServerToClient
         --   (if any), linger per 'ExitWait', and exit with the status
         --   (level 9 and up)
     | LockClient Text
-        -- ^ hand the terminal to this shell command (@lock-command@), then
-        --   answer 'LockDone' once it exits (level 10 and up)
+        -- ^ retired: hand the terminal to this shell command
+        --   (@lock-command@), then answer 'LockDone' (sent only by a
+        --   level-10-to-12 server, which locked clients)
     | OpenedTerminal [Text] [Text]
         -- ^ the terminal the server opened for an attaching client: its
         --   capabilities and applied features, as 'Hat.Term.Caps.capList'
@@ -275,7 +276,7 @@ class WireMessage a where
 --   Detach      = 4
 --   StdinData   = 5
 --   StdinEnd    = 6
---   LockDone    = 7
+--   LockDone    = 7  (retired; hat no longer locks clients)
 instance WireMessage ClientToServer where
     encodeWire = \case
         ClientHello h -> encodeListLen 2 <> encodeWord 0 <> encodeHello h
@@ -314,7 +315,7 @@ instance WireMessage ClientToServer where
 --   ReadStdin     = 13
 --   WriteStdout   = 14
 --   ControlExit   = 15
---   LockClient    = 16
+--   LockClient    = 16  (retired; hat no longer locks clients)
 --   OpenedTerminal = 17
 --   ExitStatus    = 18
 instance WireMessage ServerToClient where
@@ -454,8 +455,7 @@ encodeServerMessageAt lvl = \case
     -- Only a control-mode client (level 9 and up) is ever sent this; an
     -- older peer would only know its session ended.
     ControlExit {} | lvl < 9 -> encodeMessage Exited
-    -- A pre-10 peer cannot hand over its terminal; the server never asks it
-    -- to (see 'Hat.Server.Lock.lockClient').
+    -- Retired, and never sent; a pre-10 peer would be told it cannot lock.
     LockClient _ | lvl < 10 ->
         encodeMessage (Message "locking: not supported by this client")
     msg -> encodeMessage msg

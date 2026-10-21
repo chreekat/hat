@@ -153,7 +153,6 @@ import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.HookMonitor (monitorLoop)
 import Hat.Server.InputRequestsIO (expireLoop)
 import Hat.Server.Startup
-import Hat.Server.Lock (lockTimerLoop)
 import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.Pane
@@ -278,7 +277,6 @@ runServerWith path mconfig mhandover = do
                 , watchColorScheme st             -- follow the desktop theme
                 , monitorLoop st                  -- set-hook -B format monitors
                 , expireLoop st                   -- lapse unanswered terminal queries
-                , lockTimerLoop st                -- lock-after-time
                 ] <> [ persistLoop st p | p <- maybe [] pure mstore ]
         -- Last-resort trace: an exception escaping the accept loop or a linked
         -- daemon takes the process down (e.g. a reload's resume fault), and

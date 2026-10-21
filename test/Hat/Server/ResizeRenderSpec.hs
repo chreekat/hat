@@ -58,7 +58,6 @@ mkClient sz lastFrame = do
     envImpV <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
     viewOriginV <- newIORef (Pos 0 0)
-    ttyV <- newTVarIO TtyStarted
     termV <- newTVarIO Nothing
     let client = Client
             { id = ClientId 0, role = Attached, autostart = Joined, sock = a
@@ -78,7 +77,7 @@ mkClient sz lastFrame = do
             , env = [], cwd = "", term = "", ttyTerm = termV, createdAt = 0
             , stdinSource = NoStdin, control = Nothing
             , viewport = viewportV, lastViewOrigin = viewOriginV
-            , ttyState = ttyV }
+             }
     re <- newReadEnd b
     pure (client, re)
 

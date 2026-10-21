@@ -20,8 +20,9 @@ pure function takes the value, tested prefix-style in `OptionEffectSpec`;
 string the FormatSpec-verified `renderFormat` expands.
 
 Which options exist and which hat implements is not tracked here: that is
-the registry's gate (`live`/`notYet` rows in `src/Hat/Model/OptionTable.hs`),
-which `set`/`show` enforce. This catalog covers the live rows.
+the registry's gate (`live`/`notYet`/`unsupported` rows in
+`src/Hat/Model/OptionTable.hs`), which `set`/`show` enforce. This catalog
+covers the live rows; "Left out of hat" lists the `unsupported` ones.
 
 ## Method
 
@@ -137,8 +138,6 @@ spot-read of each suspect consumer.
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
 | `prompt-history-limit` | `pushHistory` (Prompt.hs) on each submitted line, `restoreHistory` (PromptHistory.hs) as the `history-file` loads: the newest entries of each type are kept | implemented ✅ tested | pure (PromptSpec, PromptHistorySpec) |
 | `message-limit` | `logMessage` (MessageLog.hs) trims the message log as each message is added (tmux's `server_add_message`); `show-messages` lists what is left | implemented ✅ tested | pure + model (MessageLogSpec, SessionSpec) |
-| `lock-after-time` | `armLockTimer` (Lock.hs) on each key, attach and unlock (tmux's `session_update_activity`); `lockTimerLoop` locks the idle session's clients | implemented ✅ tested | model (SessionSpec) |
-| `lock-command` | `lockClient` (Lock.hs) sends it to the client as `LockClient`; the client runs it in its own cooked terminal (`lockTerminal`, Client.hs); empty passes over the client, as tmux | implemented ✅ tested | model (SessionSpec) + integration |
 | `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
@@ -187,6 +186,17 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
 | `automatic-rename-format` | `#{pane_current_command}` | also marks panes in a mode or dead |
 | `default-client-command` | `new-session -A` | `new-session` |
 | `set-titles-string` | hat's title (`hat` and the non-default names, see below) | `#S:#I:#W - "#T" #{session_alerts}` |
+
+## Left out of hat
+
+tmux features hat leaves out by design. Their options are `unsupported` rows,
+so `set` and `show` refuse them (`option not supported by hat`). Their
+commands still parse, so a config that binds one loads, but running one
+fails (`not supported by hat`).
+
+| Feature | Options | Commands |
+|---|---|---|
+| Locking clients | `lock-after-time`, `lock-command`, the `after-lock-server` hook | `lock-server`, `lock-session`, `lock-client` |
 
 ## Defects (the backlog)
 

@@ -24,7 +24,6 @@ import Hat.Server.ClientIO (send)
 import Hat.Server.Hooks
     (PayloadItem (..), notifyClient)
 import Hat.Server.Mru (recordVisit)
-import Hat.Server.Lock (armLockTimer)
 import Hat.Server.Resize (applySessionSize, claimLatest)
 import Hat.Transport.Wire (ServerToClient (Exited))
 
@@ -51,7 +50,6 @@ switchClientTo st client sess = do
         bumpDirty st
     applySessionSize st old
     applySessionSize st sess.id
-    armLockTimer st sess.id
     when (old /= sess.id) $ do
         sname <- readTVarIO sess.name
         mold <- atomically (findSessionById st old)

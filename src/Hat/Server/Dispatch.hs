@@ -67,7 +67,6 @@ import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.ListKeys (cmdListKeys, printCommands)
 import Hat.Server.Command.ShowMessages (cmdShowMessages)
-import Hat.Server.Command.Lock (cmdLockClient, cmdLockServer, cmdLockSession)
 import Hat.Server.MessageLog (logCommand)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
@@ -502,12 +501,17 @@ commandSpecs =
     , (["show-hooks"], cmdShowHooks)
     , (["wait-for", "wait"], cmdWaitFor)
     , (["show-messages", "showmsgs"], cmdShowMessages)
-    , (["lock-server", "lock"], cmdLockServer)
-    , (["lock-session", "locks"], cmdLockSession)
-    , (["lock-client", "lockc"], cmdLockClient)
+    , (["lock-server", "lock"], unsupportedCommand "lock-server")
+    , (["lock-session", "locks"], unsupportedCommand "lock-session")
+    , (["lock-client", "lockc"], unsupportedCommand "lock-client")
     ]
 
 -- Command implementations.
+
+-- | A tmux command hat leaves out: it parses, so a config that names it
+-- still loads, and it fails loudly when run.
+unsupportedCommand :: Text -> CommandImpl
+unsupportedCommand name _ _ _ = pure [RErr (name <> ": not supported by hat")]
 
 -- | Whether @set@\/@set-option@ (session) or @setw@\/@set-window-option@
 -- (window) invoked the set: the default scope when no @-g@\/@-s@\/@-w@ picks

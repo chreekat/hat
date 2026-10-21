@@ -320,7 +320,6 @@ fakeClient _ = do
     envImportVar <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
     viewOriginV <- newIORef (Pos 0 0)
-    ttyV <- newTVarIO TtyStarted
     termV <- newTVarIO Nothing
     pure Client
         { id = ClientId 0
@@ -360,7 +359,6 @@ fakeClient _ = do
         , control = Nothing
         , viewport = viewportV
         , lastViewOrigin = viewOriginV
-        , ttyState = ttyV
         }
 
 -- Wait (bounded) until a channel waiter registers.

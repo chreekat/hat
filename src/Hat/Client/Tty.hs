@@ -1,16 +1,13 @@
 -- | The client's own terminal: raw mode discipline and size queries.
 module Hat.Client.Tty
     ( withRawMode
-    , withRawModeOn
-    , CookedMode
-    , withCookedMode
     , ttySize
     , TermProbe (..)
     , probeTerminal
     , diagnoseTerminal
     ) where
 
-import Control.Exception (bracket, bracket_, displayException, try)
+import Control.Exception (bracket, displayException, try)
 import Data.Bifunctor (bimap)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -78,34 +75,15 @@ diagnoseTerminal inp out = case inp.canTermios of
 -- that RTS snapshot equal to the state we must leave behind; setting it
 -- after the raw switch made the RTS restore raw mode over our own
 -- restore on every exit.
-withRawMode :: (CookedMode -> IO a) -> IO a
+withRawMode :: IO a -> IO a
 withRawMode body = do
     saved <- getTerminalAttributes stdInput
     hSetBuffering stdin NoBuffering
     hSetBuffering stdout NoBuffering
-    withRawFrom stdInput saved body
-
--- | 'withRawMode' on any terminal, leaving stdio's buffering alone.
-withRawModeOn :: Fd -> (CookedMode -> IO a) -> IO a
-withRawModeOn fd body = do
-    saved <- getTerminalAttributes fd
-    withRawFrom fd saved body
-
-withRawFrom :: Fd -> TerminalAttributes -> (CookedMode -> IO a) -> IO a
-withRawFrom fd saved body = bracket
-    (setTerminalAttributes fd (rawAttributes saved) Immediately)
-    (\_ -> setTerminalAttributes fd saved Immediately)
-    (\_ -> body (CookedMode fd saved))
-
--- | A terminal in raw mode and the attributes it had before.
-data CookedMode = CookedMode Fd TerminalAttributes
-
--- | Run an action with the terminal back in the mode it had before raw
--- mode, raw again afterwards no matter what.
-withCookedMode :: CookedMode -> IO a -> IO a
-withCookedMode (CookedMode fd saved) = bracket_
-    (setTerminalAttributes fd saved Immediately)
-    (setTerminalAttributes fd (rawAttributes saved) Immediately)
+    bracket
+        (setTerminalAttributes stdInput (rawAttributes saved) Immediately)
+        (\_ -> setTerminalAttributes stdInput saved Immediately)
+        (\_ -> body)
 
 rawAttributes :: TerminalAttributes -> TerminalAttributes
 rawAttributes attrs =

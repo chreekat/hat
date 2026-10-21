@@ -1,12 +1,7 @@
 module Hat.Client.TtySpec (spec) where
 
-import Control.Exception (ErrorCall (..), finally, throwIO, try)
-import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as T
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
-import System.Posix.Terminal
-    ( TerminalMode (ProcessInput), getTerminalAttributes, openPseudoTerminal
-    , terminalMode )
 import Test.Hspec
 
 import Hat.Client.Tty
@@ -22,21 +17,6 @@ spec = do
             closeFd fd
             probe.isTty `shouldBe` False
             probe.canTermios `shouldSatisfy` isLeft
-
-    describe "withCookedMode" $
-        it "hands back the cooked terminal and makes it raw again, even on failure" $ do
-            (master, slave) <- openPseudoTerminal
-            let cooked = terminalMode ProcessInput <$> getTerminalAttributes slave
-            flip finally (closeFd master >> closeFd slave) $ do
-                withRawModeOn slave $ \mode -> do
-                    cooked `shouldReturn` False
-                    seen <- newIORef False
-                    r <- try (withCookedMode mode
-                        (cooked >>= writeIORef seen >> throwIO (ErrorCall "lock failed")))
-                    r `shouldBe` (Left (ErrorCall "lock failed") :: Either ErrorCall ())
-                    readIORef seen `shouldReturn` True
-                    cooked `shouldReturn` False
-                cooked `shouldReturn` True
 
     describe "diagnoseTerminal" $ do
         it "accepts stdin whose termios works, whatever isatty says" $ do
