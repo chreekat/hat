@@ -159,6 +159,7 @@ library
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
+        Hat.Server.Name
         Hat.Server.Lock
         Hat.Server.Mru
         Hat.Server.OptionParse
@@ -372,6 +373,7 @@ test-suite hat-test
         Hat.Server.MessageLogSpec
         Hat.Server.MouseSpec
         Hat.Server.MruSpec
+        Hat.Server.NameSpec
         Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionParseSpec

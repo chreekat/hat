@@ -1,8 +1,13 @@
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
+
 -- | The shared vocabulary every command implementation speaks: the
 -- reply a command yields, the handler signature the dispatch table maps
 -- names to, and the getopt-style argument parser they all reach for.
 module Hat.Server.Command.Types
-    ( Reply (..)
+    ( Reply (ROutput, RErr, RData, RExitStatus)
+    , errQuoting
+    , replyErrorBytes
     , CommandImpl
     , Dispatch (..)
     , parseArgs
@@ -15,16 +20,49 @@ module Hat.Server.Command.Types
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Text.Read qualified as TR
 
+import Hat.Command.Arg (Arg (..))
 import Hat.Model (Client, Pane, ServerState)
 import Hat.Server.ArgNumber (strtonum)
 
 -- | A single line of command output: normal text or an error; or raw
 -- bytes for the issuing command client's standard output; or the status
 -- that client exits with (tmux's @c->retval@), the last one given winning.
-data Reply = ROutput Text | RErr Text | RData ByteString | RExitStatus Int
+data Reply
+    = ROutput Text
+    | RErrText Text
+    | RErrQuoting Text ByteString
+        -- ^ an error's prose and the argument it quotes, never valid UTF-8;
+        --   see 'errQuoting'
+    | RData ByteString
+    | RExitStatus Int
     deriving (Eq, Show)
+
+-- | Any error as text, a quoted argument's invalid bytes as U+FFFD.
+pattern RErr :: Text -> Reply
+pattern RErr e <- (errorText -> Just e)
+  where RErr e = RErrText e
+{-# COMPLETE ROutput, RErr, RData, RExitStatus #-}
+
+errorText :: Reply -> Maybe Text
+errorText = \case
+    RErrText e -> Just e
+    RErrQuoting prose bytes -> Just (prose <> TE.decodeUtf8Lenient bytes)
+    _ -> Nothing
+
+-- | An error quoting an argument verbatim, as tmux's @cmdq_error@ does.
+errQuoting :: Text -> Arg -> Reply
+errQuoting prose = \case
+    Utf8Arg t -> RErr (prose <> t)
+    RawArg bytes -> RErrQuoting prose bytes
+
+-- | An error's bytes when they are not UTF-8: a quoted argument's verbatim.
+replyErrorBytes :: Reply -> Maybe ByteString
+replyErrorBytes = \case
+    RErrQuoting prose bytes -> Just (TE.encodeUtf8 prose <> bytes)
+    _ -> Nothing
 
 -- | A command handler: the server, the issuing client (if any), and the
 -- command's argument words, producing reply lines.
