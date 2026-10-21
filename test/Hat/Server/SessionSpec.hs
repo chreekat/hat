@@ -949,6 +949,58 @@ spec = do
                 v `shouldBe` protocolVersion
                 sendMessage client Detach
 
+    -- A hello's raw argv stands in for the text of the commands it came with.
+    describe "a hello's raw argv" $ do
+        let hello intent raw = Hello
+                { protoVersion = protocolVersion, term = "xterm", env = []
+                , size = Size 24 80, cwd = "/", intent = intent
+                , autostarted = False, sessionHist = [], termCaps = Nothing
+                , argvBytes = raw }
+            bad = RawArgv [["rename-session", "-t", "work", "bad\xc2name"]]
+            badText = [["rename-session", "-t", "work", "bad\xFFFDname"]]
+            refusal = "invalid session name: bad\xc2name"
+            connect h act = do
+                (st, _) <- seedSession "/"
+                (server, client) <- socketPair AF_UNIX Stream defaultProtocol
+                serverRe <- newReadEnd server
+                clientRe <- newReadEnd client
+                withAsync (welcome dispatch st serverRe h) (act client clientRe)
+            greeted re = do
+                Just (Known (Welcome _)) <- recvMessage re
+                Just (Known (ServerVersion _)) <- recvMessage re
+                pure ()
+        it "runs a command client's first command, then the rest from their text" $
+            connect (hello ControlIntent bad) $ \client re _ -> do
+                greeted re
+                sendMessage client (Command badText)
+                recvMessage re `shouldReturn` Just (Known (ServerErrorBytes refusal))
+                recvMessage re `shouldReturn` Just (Known CommandDone)
+                sendMessage client (Command [["new-session", "-d", "-s", "a\tb"]])
+                recvMessage re `shouldReturn`
+                    Just (Known (ServerError "invalid session name: a\tb"))
+                recvMessage re `shouldReturn` Just (Known CommandDone)
+                sendMessage client Detach
+        it "ends a connection whose command text is not its argv's" $
+            connect (hello ControlIntent (RawArgv [["rename-session", "x"]])) $ \client re conn -> do
+                greeted re
+                sendMessage client (Command [["rename-session", "y"]])
+                Just (Known (ServerError _)) <- recvMessage re
+                timeout 2_000_000 (wait conn) `shouldReturn` Just ()
+        it "runs a control-mode client's command list from it" $
+            connect (hello (ControlModeIntent badText) bad) $ \_ re _ -> do
+                greeted re
+                let collect acc = recvMessage re >>= \case
+                        Just (Known (WriteStdout bs)) -> collect (acc <> bs)
+                        Just (Known (ControlExit {})) -> pure acc
+                        _ -> collect acc
+                out <- timeout 2_000_000 (collect "")
+                fmap (B.isInfixOf ("\n" <> refusal <> "\n")) out `shouldBe` Just True
+        it "refuses an attach in the error's bytes, lossy for an older client" $
+            forM_ [ (protocolVersion, ServerErrorBytes refusal)
+                  , (12, ServerError "invalid session name: bad\xFFFDname") ] $ \(v, msg) ->
+                connect (hello (AttachIntent badText) bad) { protoVersion = v } $ \_ re _ ->
+                    recvMessage re `shouldReturn` Just (Known msg)
+
     -- restart-client tells the attached client to re-exec in place; issued
     -- from a bare control connection there is nothing rendering, so it is a
     -- no-op. The role decides which.

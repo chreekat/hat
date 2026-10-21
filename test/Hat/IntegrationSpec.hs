@@ -861,6 +861,25 @@ spec = parallel $ do
         (_, out, _) <- hatRaw h ["display-message", "-p", "#{session_name}"]
         out `shouldBe` "caf\xc3\xa9\n"
 
+    it "refuses a name that is not UTF-8 as tmux does, quoting its bytes" $
+        withHat hatBin $ \h -> do
+        _ <- hatRaw h ["new-session", "-d", "-s", "x"]
+        forM_
+            [ (["rename-session", "-t", "x"], "session")
+            , (["new-session", "-d", "-s"], "session")
+            , (["new-session", "-d", "-n"], "window")
+            , (["new-window", "-d", "-t", "x:", "-n"], "window")
+            , (["set-buffer", "-b"], "buffer") ]
+            $ \(argv, kind) ->
+                hatRaw h (argv <> ["a\xff\&b", "data"]) `shouldReturn`
+                    (ExitFailure 1, "", "invalid " <> kind <> " name: a\xff\&b\n")
+
+    it "fails a command any other word that is not UTF-8 reaches" $
+        withHat hatBin $ \h -> do
+        _ <- hatRaw h ["new-session", "-d", "-s", "x"]
+        hatRaw h ["display-message", "-p", "\xff"] `shouldReturn`
+            (ExitFailure 1, "", "display-message: argument is not valid UTF-8: \xff\n")
+
     it "gives the terminal the cursor-style option's shape, the program's over it" $
         withHat hatBin $ \h -> do
         c <- startClient h

@@ -46,6 +46,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 
+import Hat.Command.Arg (Arg (..), argLossy)
 import Hat.Geometry
 import Hat.Model
 import Hat.Server.ClientIO (hasRoom, sendDirect, sendFinal)
@@ -89,11 +90,11 @@ guardLine guard t n origin = B8.pack $ concat
 -- command, runs nothing: it fails as one parse-error block.
 runControlCommands
     :: Dispatch -> ServerState -> Client -> ControlState -> BlockOrigin
-    -> Either Text [[Text]] -> IO ()
+    -> Either Text [[Arg]] -> IO ()
 runControlCommands d st client cs origin = \case
     Left e -> parseError e
     Right cmds -> do
-        unknown <- mapM (d.unknownCommand st) cmds
+        unknown <- mapM (d.unknownCommand st . map argLossy) cmds
         case [ e | Just e <- unknown ] of
             e : _ -> parseError e
             [] -> go cmds
@@ -102,7 +103,7 @@ runControlCommands d st client cs origin = \case
     go (argv : rest) = do
         (t, n) <- begin
         syncAllPanes st
-        replies <- withCommandBatch st (d.runArgv st (Just client) argv)
+        replies <- withCommandBatch st (d.runArgArgv st (Just client) argv)
         -- Report only once any layout change the command made reached the
         -- panes, so the next command observes their new sizes.
         awaitReconciled st
@@ -168,7 +169,7 @@ feedControlInput d st client cs pendingRef chunk = do
             case live of
                 Exiting _ -> pure ()
                 Running -> do
-                    runControlCommands d st client cs ClientLine
+                    runControlCommands d st client cs ClientLine . fmap (map (map Utf8Arg))
                         =<< resolveCommandText st Nothing (TE.decodeUtf8Lenient l)
                     run more
 
