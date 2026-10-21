@@ -185,6 +185,7 @@ tmux's (each row's comment in `OptionTable.hs` names tmux's):
 | `automatic-rename-format` | `#{pane_current_command}` | also marks panes in a mode or dead |
 | `default-client-command` | `new-session -A` | `new-session` |
 | `set-titles-string` | hat's title (`hat` and the non-default names, see below) | `#S:#I:#W - "#T" #{session_alerts}` |
+| `theme` | `terminal`: every theme colour an ANSI colour | `detect` |
 | `terminal-features` | tmux's, plus `*:RGB`: every terminal is drawn in RGB | without `*:RGB` |
 
 ## Left out of hat

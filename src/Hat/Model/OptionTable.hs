@@ -553,8 +553,9 @@ optionTable =
         , "rxvt*:ignorefkeys", "*:RGB" ]
         `described` "List of terminal features, used if they cannot be \
             \automatically detected."
+    -- tmux defaults to detect.
     , live $ scalar "theme" ServerScope
-        (KChoice ["detect", "terminal", "light", "dark"]) "detect"
+        (KChoice ["detect", "terminal", "light", "dark"]) "terminal"
         `described` "Whether tmux should detect the terminal theme, use \
             \terminal ANSI colours, or force the light or dark theme."
     , live $ themeColour "dark-theme-black" "gray5" "black"

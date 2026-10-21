@@ -435,12 +435,12 @@ spec = do
     describe "clientTheme" $
         it "follows the options and the desktop's scheme" $ do
             (st, _) <- seedSession "/"
+            clientTheme st `shouldReturn` terminalTheme
+            _ <- runArgv st Nothing ["set-option", "-g", "theme", "detect"]
             dark <- clientTheme st
             atomically (writeTVar st.colorScheme (Just SchemeLight))
             light <- clientTheme st
             light `shouldNotBe` dark
-            _ <- runArgv st Nothing ["set-option", "-g", "theme", "terminal"]
-            clientTheme st `shouldReturn` terminalTheme
 
     describe "a frame's kept expansions" $
         it "are redone when a variable or environment entry they read changes, and never kept when volatile" $ do
