@@ -44,6 +44,7 @@ module Hat.Transport.Wire
     , Intent (..)
     , ExitWait (..)
     , Autostart (..)
+    , ArgvBytes (..)
     , Hello (..)
     , ClientToServer (..)
     , ServerToClient (..)
@@ -74,6 +75,7 @@ import Control.Exception (mask_)
 import Control.Monad (replicateM_, unless)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
@@ -91,7 +93,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 12
+protocolVersion = 13
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -162,6 +164,15 @@ data ExitWait = ExitNow | AwaitEmptyLine
 data Autostart = Autostarted | Joined
     deriving (Eq, Show)
 
+-- | The argv behind the commands a connection carries (its intent's, or
+-- its first 'Command''s), when their text is not exact. See
+-- 'Hat.Server.Conn.twinArgs'.
+data ArgvBytes
+    = TextIsExact             -- ^ every word was UTF-8
+    | RawArgv [[ByteString]]  -- ^ each command's words, verbatim
+    deriving (Eq, Show, Generic)
+    deriving anyclass (Serialise)
+
 -- | The client's opening handshake. A standalone single-constructor
 -- record so its field selectors are total.
 data Hello = Hello
@@ -182,10 +193,13 @@ data Hello = Hello
         --   'Hat.Client.Terminfo.readTermCaps' lists them (@[]@ when the
         --   client has no terminal or no @TERM@); 'Nothing' from an
         --   eight-field hello, whose client predates them.
+    , argvBytes    :: ArgvBytes
+        -- ^ 'TextIsExact' from a hello of nine fields or fewer
     , ttyName      :: Maybe Text
         -- ^ the path of the client's terminal (its standard input's
-        --   @ttyname@); 'Nothing' without one, and from a nine-field hello,
-        --   whose client predates it. Carried only beside 'termCaps'.
+        --   @ttyname@); 'Nothing' without one, and from a hello of ten
+        --   fields or fewer, whose client predates it. It travels only
+        --   beside 'RawArgv', so a client with a terminal sends its argv raw.
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -241,6 +255,9 @@ data ServerToClient
     | ExitStatus Int
         -- ^ the status a command client exits with once its commands are
         --   done (level 12 and up; an older peer skips the tag and exits 0)
+    | ServerErrorBytes ByteString
+        -- ^ a 'ServerError' whose text is not UTF-8, for standard error
+        --   verbatim (level 13 and up)
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -322,6 +339,7 @@ instance WireMessage ClientToServer where
 --   LockClient    = 16  (retired; hat no longer locks clients)
 --   OpenedTerminal = 17
 --   ExitStatus    = 18
+--   ServerErrorBytes = 19
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -350,6 +368,7 @@ instance WireMessage ServerToClient where
         OpenedTerminal caps feats ->
             encodeListLen 3 <> encodeWord 17 <> encode caps <> encode feats
         ExitStatus n  -> encodeListLen 2 <> encodeWord 18 <> encode n
+        ServerErrorBytes e -> encodeListLen 2 <> encodeWord 19 <> encode e
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -388,6 +407,7 @@ instance WireMessage ServerToClient where
             _ -> pure (Malformed
                 ("OpenedTerminal: expected 2 fields, got " <> show (len - 1)))
         18 -> field len (Known . ExitStatus <$> decode)
+        19 -> field len (Known . ServerErrorBytes <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -401,22 +421,31 @@ nullary 1 v = pure v
 nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 
 -- | 'Hello' as a definite list of its fields. Decoding accepts any length
--- >= 6 and ignores extras, so fields can be appended compatibly.
+-- >= 6 and ignores extras, so fields can be appended compatibly. A field
+-- present only when it says something ends the list: raw argv, when there
+-- is any, behind capabilities ('Nothing' is spelt by absence, so raw argv
+-- carries 'Nothing' as @[]@), and the terminal's path behind raw argv.
 encodeHello :: Hello -> Encoding
-encodeHello h =
-       encodeListLen (case (h.termCaps, h.ttyName) of
-            (Nothing, _) -> 8
-            (Just _, Nothing) -> 9
-            (Just _, Just _) -> 10)
-    <> encodeWord16 h.protoVersion
-    <> encode h.term
-    <> encode h.env
-    <> encode h.size
-    <> encode h.cwd
-    <> encode h.intent
-    <> encode h.autostarted
-    <> encode h.sessionHist
-    <> foldMap (\caps -> encode caps <> foldMap encode h.ttyName) h.termCaps
+encodeHello h = case h.argvBytes of
+    TextIsExact ->
+           encodeListLen (maybe 8 (const 9) h.termCaps)
+        <> core
+        <> foldMap encode h.termCaps
+    RawArgv raw ->
+           encodeListLen (maybe 10 (const 11) h.ttyName)
+        <> core
+        <> encode (fromMaybe [] h.termCaps)
+        <> encode raw
+        <> foldMap encode h.ttyName
+  where
+    core = encodeWord16 h.protoVersion
+        <> encode h.term
+        <> encode h.env
+        <> encode h.size
+        <> encode h.cwd
+        <> encode h.intent
+        <> encode h.autostarted
+        <> encode h.sessionHist
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -436,8 +465,9 @@ decodeHello = do
                 <*> (if n >= 7 then decode else pure False)
                 <*> (if n >= 8 then decode else pure [])
                 <*> (if n >= 9 then Just <$> decode else pure Nothing)
-                <*> (if n >= 10 then Just <$> decode else pure Nothing)
-            replicateM_ (max 0 (n - 10)) skipField
+                <*> (if n >= 10 then RawArgv <$> decode else pure TextIsExact)
+                <*> (if n >= 11 then Just <$> decode else pure Nothing)
+            replicateM_ (max 0 (n - 11)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).
@@ -466,6 +496,7 @@ encodeServerMessageAt lvl = \case
     -- Retired, and never sent; a pre-10 peer would be told it cannot lock.
     LockClient _ | lvl < 10 ->
         encodeMessage (Message "locking: not supported by this client")
+    ServerErrorBytes e | lvl < 13 -> encodeMessage (ServerError (TE.decodeUtf8Lenient e))
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

@@ -19,7 +19,7 @@ import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.Conn (newClient)
 import Hat.Server.Dispatch (FileLoad (..), loadCommandFile, runCommandText)
 import Hat.Server.Keys (Binding (..))
-import Hat.Transport.Wire (Hello (..), Intent (..), protocolVersion)
+import Hat.Transport.Wire (ArgvBytes (..), Hello (..), Intent (..), protocolVersion)
 import Network.Socket (Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socketPair)
 import Hat.Server.Environ
     (EnvEntry (..), EnvVisibility (..), environFind)
@@ -37,8 +37,8 @@ commandClient st = do
     (server, peer) <- socketPair AF_UNIX Stream defaultProtocol
     c <- newClient st server Hello
         { protoVersion = protocolVersion, term = "", env = [], size = Size 24 80
-        , cwd = "/", intent = ControlIntent, autostarted = False, sessionHist = []
-        , termCaps = Nothing, ttyName = Nothing }
+        , cwd = "/", intent = ControlIntent, autostarted = False, sessionHist = [], termCaps = Nothing
+        , argvBytes = TextIsExact, ttyName = Nothing }
     pure (c, peer)
 
 spec :: Spec

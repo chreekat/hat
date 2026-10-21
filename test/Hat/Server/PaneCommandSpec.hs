@@ -13,13 +13,16 @@ import Data.Text qualified as T
 import System.Posix.Process (getProcessID)
 import System.Posix.Unistd (getSystemID, nodeName)
 import System.Timeout (timeout)
-import Test.Hspec
+import Test.Hspec hiding (Arg)
+
+import Hat.Command.Arg (Arg (..))
 
 import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options (Options (..))
 import Hat.Server (Reply (..))
-import Hat.Server.Dispatch (installHooks, runArgv)
+import Hat.Server.Command.Types (errQuoting)
+import Hat.Server.Dispatch (installHooks, runArgArgv, runArgv)
 import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
 import Hat.Server.Snapshot (captureSnapshot, restoreSnapshot)
 import Hat.Term.Cell qualified as Cell
@@ -424,6 +427,57 @@ spec = do
                         pure [ x | x <- ps, "%" <> T.pack (show (rawPane x.id)) == p ]
                     stacks <- mapM (Emu.titleStack . (.emulator)) pane
                     stacks `shouldBe` [["under"]]
+
+    describe "names" $ do
+        it "refuses a name holding a control character, in tmux's words" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [_, b] <- paneIds st "S:0"
+                forM_
+                    [ (["rename-session", "-t", "S", "a\tb"], "session")
+                    , (["new-session", "-d", "-s", "a\tb"], "session")
+                    , (["rename-window", "-t", "S:0", "a\tb"], "window")
+                    , (["new-session", "-d", "-n", "a\tb"], "window")
+                    , (["new-window", "-d", "-t", "S:", "-n", "a\tb"], "window")
+                    , (["break-pane", "-d", "-s", b, "-n", "a\tb"], "window")
+                    , (["new-session", "-d", "-t", "a\tb"], "session group")
+                    , (["set-buffer", "-b", "a\tb", "data"], "buffer") ]
+                    $ \(argv, kind) -> run st argv
+                        `shouldReturn` [RErr ("invalid " <> kind <> " name: a\tb")]
+                run st ["select-pane", "-t", b, "-T", "a\tb"]
+                    `shouldReturn` [RErr "invalid pane title: a\tb"]
+                run st ["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]
+                    `shouldReturn` [ROutput "S:sleep"]
+
+        it "refuses a name that is not UTF-8, quoting its bytes" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [_, b] <- paneIds st "S:0"
+                let bad = RawArg "a\xff\&b"
+                forM_
+                    [ (["rename-session", "-t", "S"], bad, "session")
+                    , (["new-session", "-d", "-s"], bad, "session")
+                    , (["rename-window", "-t", "S:0"], bad, "window")
+                    , (["new-session", "-d", "-n"], bad, "window")
+                    , (["new-window", "-d", "-t", "S:", "-n"], bad, "window")
+                    , (["break-pane", "-d", "-s", b, "-n"], bad, "window")
+                    , (["new-session", "-d", "-t"], bad, "session group")
+                    , (["set-buffer", "-b"], bad, "buffer") ]
+                    $ \(argv, name, kind) ->
+                        runArgArgv st Nothing (map Utf8Arg argv <> [name, Utf8Arg "x"])
+                            `shouldReturn` [errQuoting ("invalid " <> kind <> " name: ") bad]
+                runArgArgv st Nothing [Utf8Arg "select-pane", Utf8Arg "-t", Utf8Arg b, Utf8Arg "-T", bad]
+                    `shouldReturn` [errQuoting "invalid pane title: " bad]
+                run st ["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]
+                    `shouldReturn` [ROutput "S:sleep"]
+
+        it "fails any other command a word that is not UTF-8 reaches, quoting it" $
+            withServer $ \st ->
+                runArgArgv st Nothing [Utf8Arg "display", Utf8Arg "-p", RawArg "\xff"]
+                    `shouldReturn`
+                        [errQuoting "display-message: argument is not valid UTF-8: " (RawArg "\xff")]
 
     describe "join-pane" $
         it "refuses to join a pane to itself" $

@@ -76,6 +76,7 @@ library
         Hat.Client
         Hat.Client.Draw
         Hat.Client.Terminfo
+        Hat.Command.Arg
         Hat.Command.Parser
         Hat.Command.Script
         Hat.Client.Tty
@@ -157,6 +158,7 @@ library
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
+        Hat.Server.Name
         Hat.Server.Mru
         Hat.Server.OptionParse
         Hat.Server.Outbound
@@ -250,6 +252,7 @@ executable hat
     ghc-options:        -threaded -rtsopts "-with-rtsopts=-N2"
     build-depends:
         base        ^>= 4.20.2.0,
+        bytestring  ^>= 0.12.2.0,
         directory   ^>= 1.3.8.5,
         hat,
         network     ^>= 3.2.8.0,
@@ -326,6 +329,7 @@ test-suite hat-test
         Hat.Client.TerminfoSpec
         Hat.Client.TtySpec
         Hat.ClientSpec
+        Hat.Command.ArgSpec
         Hat.Command.ParserSpec
         Hat.Command.ScriptSpec
         Hat.DebugSpec
@@ -367,6 +371,7 @@ test-suite hat-test
         Hat.Server.MessageLogSpec
         Hat.Server.MouseSpec
         Hat.Server.MruSpec
+        Hat.Server.NameSpec
         Hat.Server.WinlinkSpec
         Hat.Server.OptionEffectSpec
         Hat.Server.OptionParseSpec

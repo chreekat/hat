@@ -31,7 +31,7 @@ import Data.Functor ((<&>))
 import Data.IORef
 import Data.List (nub, partition, sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust, listToMaybe)
+import Data.Maybe (isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -39,6 +39,7 @@ import Data.Vector qualified as V
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Socket qualified as N
+import Hat.Command.Arg (Arg (..), argFromBytes, argLossy)
 import Hat.Geometry
 import Hat.Log
 import Hat.Server.Environ
@@ -173,10 +174,11 @@ welcome d st re h = do
             -- then skips unknown tags.
             sendMessage conn (ServerVersion protocolVersion)
             atomically $ writeTVar client.ready True
-            controlLoop d st re client `finally` removeClient st client
-        ControlModeIntent setupCmds -> case client.control of
-            Nothing -> sendMessage conn (ServerError "control state missing")
-            Just cs -> do
+            controlLoop d st re client h.argvBytes `finally` removeClient st client
+        ControlModeIntent setupCmds -> case (client.control, twinArgs h.argvBytes setupCmds) of
+            (Nothing, _) -> sendMessage conn (ServerError "control state missing")
+            (_, Left e) -> sendMessage conn (ServerError e)
+            (Just cs, Right setup) -> do
                 atomically $ modifyTVar' st.clients (Map.insert client.id client)
                 notifyClient st "client-created" client []
                 sendMessage conn (Welcome "")
@@ -184,9 +186,11 @@ welcome d st re h = do
                 atomically $ writeTVar client.ready True
                 logEvent st.logger ClientConnected
                     { client = rawClient client.id, term = h.term }
-                controlModeSession d st re client cs setupCmds
+                controlModeSession d st re client cs setup
                     `finally` removeClient st client
-        AttachIntent setupCmds -> do
+        AttachIntent setupCmds -> case twinArgs h.argvBytes setupCmds of
+          Left e -> sendMessage conn (ServerError e)
+          Right setup -> do
             -- Register early so the setup commands (new-session,
             -- attach-session -t) act on a live client and can switch it.
             atomically $ modifyTVar' st.clients (Map.insert client.id client)
@@ -203,14 +207,15 @@ welcome d st re h = do
             atomically . writeTVar client.sessionHist
                 =<< atomically (resolveSessionNames st h.sessionHist)
             setupErr <- openTerminal st client h >>= \case
-                Just e -> pure (Just e)
-                Nothing -> attachSetup d st client setupCmds
+                Just e -> pure (Just (ServerError e))
+                Nothing -> attachSetup d st client setup
             msess <- case setupErr of
                 Just _ -> pure Nothing
                 Nothing -> currentSession st client
             case (setupErr, msess) of
-                (Just e, _) ->
-                    sendMessage conn (ServerError e) >> removeClient st client
+                (Just e, _) -> do
+                    sendFrame conn (frameServerMessageAt client.wireLevel e)
+                    removeClient st client
                 (_, Nothing) -> do
                     sendMessage conn (ServerError "no session to attach")
                     removeClient st client
@@ -256,7 +261,7 @@ openTerminal st client h = case h.termCaps of
 -- pointing at the session it should render. An empty command list means a
 -- plain attach: reuse an existing session or create one. Returns the
 -- first error, if any, so 'welcome' can reject the attach.
-attachSetup :: Dispatch -> ServerState -> Client -> [[Text]] -> IO (Maybe Text)
+attachSetup :: Dispatch -> ServerState -> Client -> [[Arg]] -> IO (Maybe ServerToClient)
 attachSetup _ st client [] = do
     sess <- ensureSession st client
     atomically $ do
@@ -265,8 +270,14 @@ attachSetup _ st client [] = do
         adoptServerAlternate st client sess.id
     pure Nothing
 attachSetup d st client cmds = do
-    replies <- d.runCommands st (Just client) cmds
-    pure (listToMaybe [e | RErr e <- replies])
+    replies <- d.runArgCommands st (Just client) cmds
+    pure (listToMaybe (mapMaybe errorMessage replies))
+
+-- | An error reply as the message that carries it, its bytes verbatim.
+errorMessage :: Reply -> Maybe ServerToClient
+errorMessage r = case r of
+    RErr e -> Just (maybe (ServerError e) ServerErrorBytes (replyErrorBytes r))
+    _ -> Nothing
 
 -- | The session @client.session@ currently names, if it still exists.
 currentSession :: ServerState -> Client -> IO (Maybe Session)
@@ -845,22 +856,35 @@ runInputs d st client keys = do
                 pure True
             _ -> pure False
 
-controlLoop :: Dispatch -> ServerState -> ReadEnd -> Client -> IO ()
-controlLoop d st re client = do
+-- | The words of the commands a connection carries: the hello's raw argv
+-- when it has one, which must read as the commands' text exactly (the
+-- twin a server that predates it runs instead).
+twinArgs :: ArgvBytes -> [[Text]] -> Either Text [[Arg]]
+twinArgs argv cmds = case argv of
+    TextIsExact -> Right (map (map Utf8Arg) cmds)
+    RawArgv raw
+        | map (map TE.decodeUtf8Lenient) raw == cmds -> Right (map (map argFromBytes) raw)
+        | otherwise -> Left "hello argv does not match its commands"
+
+-- | A command client's commands, the first from the hello's @argv@.
+controlLoop :: Dispatch -> ServerState -> ReadEnd -> Client -> ArgvBytes -> IO ()
+controlLoop d st re client argv = do
     m <- recvMessage re
     case m of
-        Just (Known (Command cmds)) -> do
+        Just (Known (Command cmds)) -> case twinArgs argv cmds of
+          Left e -> send client (ServerError e)
+          Right args -> do
             awaitStartup st client cmds
             syncAllPanes st
             open <- newTVarIO True
             let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
-            replies <- d.runCommands st (Just granted) cmds
+            replies <- d.runArgCommands st (Just granted) args
                 `finally` atomically (writeTVar open False)
-            forM_ replies $ \case
+            forM_ replies $ \r -> case r of
                 ROutput out -> send client (Message out)
                 RErr e -> do
                     logShownMessage st client e
-                    send client (ServerError e)
+                    mapM_ (send client) (errorMessage r)
                 RData bytes -> forM_ (chunksOf stdoutChunk bytes) $
                     send client . WriteStdout
                 RExitStatus _ -> pure ()
@@ -871,11 +895,11 @@ controlLoop d st re client = do
             -- inspects a pane's size never races the pty resize.
             awaitReconciled st
             send client CommandDone
-            controlLoop d st re client
+            controlLoop d st re client TextIsExact
         Just (Known Detach) -> pure ()
         Just (Malformed _) -> pure ()
         Nothing -> pure ()
-        _ -> controlLoop d st re client
+        _ -> controlLoop d st re client argv
 
 
 -- | A control-mode client's life: run the command it was started with
@@ -883,10 +907,10 @@ controlLoop d st re client = do
 -- empty line, the end of its input, a detach, or its session ending — and
 -- its writer has sent everything queued and the farewell.
 controlModeSession
-    :: Dispatch -> ServerState -> ReadEnd -> Client -> ControlState -> [[Text]]
+    :: Dispatch -> ServerState -> ReadEnd -> Client -> ControlState -> [[Arg]]
     -> IO ()
 controlModeSession d st re client cs setup = do
-    awaitStartup st client setup
+    awaitStartup st client (map (map argLossy) setup)
     withAsync (subscriptionLoop st client cs) $ \subs -> do
         link subs
         withAsync (controlWriter client cs) $ \writer -> do

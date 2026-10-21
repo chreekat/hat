@@ -4,7 +4,6 @@
 # Baseline recorded 2026-07-08: everything fails (CLI compat is young).
 border-arrows.sh                # wontfix: hat deliberately draws triangle indicators, not tmux's ACS arrows
 capture-pane-hyperlink.sh       # -e does not emit OSC 8; its first case also needs the OSC 8 id=, which libghostty-vt does not expose
-check-names.sh                  # invalid UTF-8 in argv is lossily decoded before the server can reject it (wire carries Text)
 combine-test.sh                 # grapheme clusters (ZWJ, variation selectors, combining on padding) beyond the scalar shim
 # copy-mode-test-emacs: blocked on tab preservation. the emulator expands
 # tabs to spaces in the grid, so a copied tab-indented line comes back
@@ -48,11 +47,8 @@ input-raw-sgr.sh                # emulator: OSC 8 id= (linkid) not exposed
 input-raw-unicode.sh            # emulator: no grapheme clustering of RI pairs / VS16 (mode 2027 off)
 input-unicode.sh                # emulator: sticky EXTENDED line flag (-F), no 32-byte cluster cap
 
-pane-ops.sh                     # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
 
 # windows / sessions / pipe / lifecycle
-window-ops.sh                   # invalid-UTF-8 window name (argv bytes cannot cross the Text wire)
-session-ops.sh                  # invalid-UTF-8 session name (argv bytes cannot cross the Text wire)
 
 # screen redraw / theme
 theme-report.sh                 # CSI ? 996 n answered from the OS colour scheme, not the outer terminal's report

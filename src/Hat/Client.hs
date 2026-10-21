@@ -41,6 +41,7 @@ import Hat.Client.Draw
 import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
 import Hat.Geometry (Size)
+import Hat.Command.Arg (Arg (..), argBytes, argLossy)
 import Hat.Server.Command.Session (newSessionValueFlags)
 import Hat.Server.Command.Types (parseArgs)
 import Hat.Term.Caps (termFromWire)
@@ -51,7 +52,7 @@ data ExitReason
     = Detached
     | SessionEnded
     | ServerDied
-    | Rejected Text
+    | Rejected B.ByteString  -- ^ why, for standard error verbatim
     | RestartRequested (Maybe Text) [Text]
         -- ^ server asked us to re-exec in place, naming the session to
         --   rejoin (when it knows it) and the MRU session history to carry
@@ -61,6 +62,10 @@ data ExitReason
 
 versionMismatch :: Text
 versionMismatch = "unexpected greeting — mismatched hat versions?"
+
+-- | 'Rejected' for a reason in text.
+rejected :: Text -> ExitReason
+rejected = Rejected . TE.encodeUtf8
 
 -- | Whether attaching to @target@ from inside a pane would nest a client
 -- in its own server: @$TMUX@'s first comma-field is the enclosing server's
@@ -90,11 +95,13 @@ terminalMode _ = FireAndForget
 
 -- | Run with the hello, or answer why this terminal cannot be used: as in
 -- tmux, a client whose standard input is a terminal reads its @TERM@'s
--- terminfo entry first, and fails if there is none.
+-- terminfo entry first, and fails if there is none. @cmds@ are the
+-- commands the connection carries, whose argv the hello holds when their
+-- text is not exact.
 withHello
-    :: Word16 -> Autostart -> Intent -> [Text] -> (Text -> r)
+    :: Word16 -> Autostart -> Intent -> [[Arg]] -> [Text] -> (Text -> r)
     -> (ClientToServer -> IO r) -> IO r
-withHello v origin intent hist refuse body = do
+withHello v origin intent cmds hist refuse body = do
     mterm <- lookupEnv "TERM"
     tty <- queryTerminal stdInput
     ecaps <- case mterm of
@@ -116,26 +123,35 @@ withHello v origin intent hist refuse body = do
             , autostarted = origin == Autostarted
             , sessionHist = hist
             , termCaps = Just caps
+            , argvBytes = case mtty of
+                -- A terminal's path travels only beside raw argv.
+                Just _ -> RawArgv (map (map argBytes) cmds)
+                Nothing | all (all isText) cmds -> TextIsExact
+                Nothing -> RawArgv (map (map argBytes) cmds)
             , ttyName = T.pack <$> mtty
             }
+  where
+    isText = \case
+        Utf8Arg _ -> True
+        RawArg _ -> False
 
 -- | Attach to the server and shuttle bytes until detach or death. The
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
 -- shell) run server-side to establish which session we render. @hist@ seeds
 -- @switch-client -l@ across a restart and is empty for a fresh attach.
 -- @answered@ runs once the server first answers.
-runClient :: Socket -> Autostart -> IO () -> [[Text]] -> [Text] -> IO ExitReason
+runClient :: Socket -> Autostart -> IO () -> [[Arg]] -> [Text] -> IO ExitReason
 runClient sock origin answered setup hist = do
     inp <- probeTerminal stdInput
     out <- probeTerminal stdOutput
     case diagnoseTerminal inp out of
-        Just msg -> pure (Rejected msg)
+        Just msg -> pure (rejected msg)
         Nothing -> attachClient protocolVersion sock origin answered setup hist
 
 attachClient
-    :: Word16 -> Socket -> Autostart -> IO () -> [[Text]] -> [Text] -> IO ExitReason
+    :: Word16 -> Socket -> Autostart -> IO () -> [[Arg]] -> [Text] -> IO ExitReason
 attachClient v sock origin answered setup hist =
-    withHello v origin (AttachIntent setup) hist Rejected $ \h -> do
+    withHello v origin (AttachIntent (lossy setup)) setup hist rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     greeting <- recvMessage re
@@ -160,10 +176,11 @@ awaitWelcome sock re d greeting =
                     (B.hPut stdout (enterAltScreen d))
                     (B.hPut stdout . leaveAltScreen =<< readIORef dialect)
                     (shuttle dialect sock re)
-        Just (Known (ServerError e)) -> pure (Rejected e)
+        Just (Known (ServerError e)) -> pure (rejected e)
+        Just (Known (ServerErrorBytes e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
-        Just (UnknownTag _) -> pure (Rejected versionMismatch)
-        Just (Malformed _) -> pure (Rejected versionMismatch)
+        Just (UnknownTag _) -> pure (rejected versionMismatch)
+        Just (Malformed _) -> pure (rejected versionMismatch)
         Nothing -> pure ServerDied
 
 shuttle :: IORef Dialect -> Socket -> ReadEnd -> IO ExitReason
@@ -222,7 +239,8 @@ receiveServer out dialect size outbox re = next
                 RestartClientTo t hist -> pure (RestartRequested (Just t) hist)
                 CommandDone -> next
                 Exited -> pure SessionEnded
-                ServerError e -> pure (Rejected e)
+                ServerError e -> pure (rejected e)
+                ServerErrorBytes e -> pure (Rejected e)
                 Welcome _ -> next
                 -- The terminal identified itself after attach and the
                 -- server learned more of what it can do.
@@ -271,9 +289,9 @@ data ControlFlavour = ControlLines | ControlDcs
 -- the server's farewell; then print @%exit@ and, if asked, linger for an
 -- empty input line. Returns the exit status the server gave.
 runControlMode
-    :: Socket -> Autostart -> ControlFlavour -> [[Text]] -> IO (Either ExitReason Int)
+    :: Socket -> Autostart -> ControlFlavour -> [[Arg]] -> IO (Either ExitReason Int)
 runControlMode sock origin flavour setup =
-    withHello protocolVersion origin (ControlModeIntent setup) [] (Left . Rejected) $ \h -> do
+    withHello protocolVersion origin (ControlModeIntent (lossy setup)) setup [] (Left . rejected) $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     greeting <- recvMessage re
@@ -293,10 +311,11 @@ runControlMode sock origin flavour setup =
                             ExitNow -> pure ()
                         pure (Right status)
                     _ -> pure (Left ServerDied)
-        Just (Known (ServerError e)) -> pure (Left (Rejected e))
+        Just (Known (ServerError e)) -> pure (Left (rejected e))
+        Just (Known (ServerErrorBytes e)) -> pure (Left (Rejected e))
         Just (Known _) -> pure (Left (Rejected "unexpected greeting"))
-        Just (UnknownTag _) -> pure (Left (Rejected versionMismatch))
-        Just (Malformed _) -> pure (Left (Rejected versionMismatch))
+        Just (UnknownTag _) -> pure (Left (rejected versionMismatch))
+        Just (Malformed _) -> pure (Left (rejected versionMismatch))
         Nothing -> pure (Left ServerDied)
   where
     receiver re = recvMessage re >>= \case
@@ -366,7 +385,7 @@ data Output = Output
 -- | Send one command line and print the responses until the server
 -- closes or answers. Used by @hat <command>@ from a shell. @answered@ runs
 -- once the server first answers.
-runControl :: Socket -> Autostart -> IO () -> [[Text]] -> IO ExitReason
+runControl :: Socket -> Autostart -> IO () -> [[Arg]] -> IO ExitReason
 runControl sock origin answered =
     controlAt protocolVersion sock origin answered Output
         { line = B8.putStrLn . TE.encodeUtf8
@@ -381,14 +400,14 @@ captureControl sock origin cmds = do
     r <- controlAt protocolVersion sock origin (pure ()) Output
         { line = keep . (<> "\n") . TE.encodeUtf8
         , bytes = keep
-        } cmds
+        } (map (map Utf8Arg) cmds)
     case r of
         SessionEnded -> Right . B.concat . reverse <$> readIORef acc
         other -> pure (Left other)
 
-controlAt :: Word16 -> Socket -> Autostart -> IO () -> Output -> [[Text]] -> IO ExitReason
+controlAt :: Word16 -> Socket -> Autostart -> IO () -> Output -> [[Arg]] -> IO ExitReason
 controlAt v sock origin answered out cmds =
-    withHello v origin ControlIntent [] Rejected $ \h -> do
+    withHello v origin ControlIntent cmds [] rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     -- A server exiting as we connect resets the connection: it never saw us.
@@ -396,12 +415,13 @@ controlAt v sock origin answered out cmds =
     answered
     case greeting of
         Just (Known (Welcome _)) -> do
-            sendMessage sock (Command cmds)
+            sendMessage sock (Command (lossy cmds))
             drain Nothing re
-        Just (Known (ServerError e)) -> pure (Rejected e)
+        Just (Known (ServerError e)) -> pure (rejected e)
+        Just (Known (ServerErrorBytes e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
-        Just (UnknownTag _) -> pure (Rejected versionMismatch)
-        Just (Malformed _) -> pure (Rejected versionMismatch)
+        Just (UnknownTag _) -> pure (rejected versionMismatch)
+        Just (Malformed _) -> pure (rejected versionMismatch)
         Nothing -> pure ServerDied
   where
     drain status re = do
@@ -414,11 +434,16 @@ controlAt v sock origin answered out cmds =
             Just (Known (WriteStdout bs)) -> out.bytes bs >> next
             Just (Known ReadStdin) -> sendStdin re.sock >> next
             Just (Known (ExitStatus n)) -> drain (Just n) re
-            Just (Known (ServerError e)) -> pure (Rejected e)
+            Just (Known (ServerError e)) -> pure (rejected e)
+            Just (Known (ServerErrorBytes e)) -> pure (Rejected e)
             Just (Known CommandDone) -> done
             Just (Known Exited) -> done
             Just (Known _) -> next
             Just (UnknownTag _) -> next
             Just (Malformed err) ->
-                pure (Rejected ("wire protocol error: " <> T.pack err
+                pure (rejected ("wire protocol error: " <> T.pack err
                     <> " — mismatched hat versions?"))
+
+-- | The commands as the wire's text carriers hold them.
+lossy :: [[Arg]] -> [[Text]]
+lossy = map (map argLossy)

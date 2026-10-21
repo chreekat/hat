@@ -7,6 +7,8 @@ module Hat.Server.Dispatch
     ( dispatch
     , runArgv
     , runCommands
+    , runArgArgv
+    , runArgCommands
     , runCommandText
     , resolveCommand
     , commandTable
@@ -56,6 +58,7 @@ import System.IO (IOMode (..), openFile)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Process
 import Text.Read (readMaybe)
+import Hat.Command.Arg (Arg (..), argLossy)
 import Hat.Command.Parser (parseScript)
 import Hat.Server.Script (FileLoad (..), parseErrorLine, resolveCommandText, resolveScript)
 import Hat.Log
@@ -127,6 +130,8 @@ dispatch :: Dispatch
 dispatch = Dispatch
     { runArgv = runArgv
     , runCommands = runCommands
+    , runArgArgv = runArgArgv
+    , runArgCommands = runArgCommands
     , runCommandText = runCommandText
     , unknownCommand = unknownCommand
     , newEditorPane = cmdNewEditorPane }
@@ -209,54 +214,68 @@ loadCommandFile st mclient load path contents = resolveScript st mclient load sc
     cause n e = atomically (addConfigCause st (sourceLocated path n e))
 
 runCommands :: ServerState -> Maybe Client -> [[Text]] -> IO [Reply]
-runCommands st mclient cmds =
-    withCommandBatch st (concat <$> mapM (runArgv st mclient) cmds)
+runCommands st mclient = runArgCommands st mclient . map (map Utf8Arg)
+
+runArgCommands :: ServerState -> Maybe Client -> [[Arg]] -> IO [Reply]
+runArgCommands st mclient cmds =
+    withCommandBatch st (concat <$> mapM (runArgArgv st mclient) cmds)
 
 runArgv :: ServerState -> Maybe Client -> [Text] -> IO [Reply]
-runArgv _ _ [] = pure []
-runArgv st mclient (name : args) = do
+runArgv st mclient = runArgArgv st mclient . map Utf8Arg
+
+runArgArgv :: ArgvImpl
+runArgArgv _ _ [] = pure []
+runArgArgv st mclient argv@(name : args) = do
     -- Attribute every command to its issuing client, so a duplicate or
     -- unexpected control command (e.g. a second restart-server nobody typed)
     -- is traceable to its source.
     logEvent st.logger CommandRun
         { client = maybe (-1) (\c -> rawClient c.id) mclient
-        , command = T.unwords (name : args) }
-    case envAssignment (name : args) of
-        Just (vis, n, v) -> [] <$ atomically
-            (modifyTVar' st.globalEnviron (environSet vis n v))
+        , command = T.unwords (map argLossy argv) }
+    case envAssignment (map argLossy argv) of
+        Just (vis, n, v) -> case [ a | a@(RawArg _) <- argv ] of
+            raw : _ -> pure [errQuoting "argument is not valid UTF-8: " raw]
+            [] -> [] <$ atomically
+                (modifyTVar' st.globalEnviron (environSet vis n v))
         Nothing -> do
             -- Like tmux, a command-alias match beats the builtin table.
             opts <- readTVarIO st.options
-            case lookupCommandAlias opts name of
+            case lookupCommandAlias opts (argLossy name) of
                 Just body -> runAlias st mclient body args
-                Nothing -> runBuiltin st mclient name args
+                Nothing -> runNamed st mclient argv
 
 -- | Run an alias expansion: the body parses as a command sequence, the
 -- invocation's own arguments append to its last command, and the expanded
 -- names resolve as builtins only, so an alias never recurses.
-runAlias :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
+runAlias :: ServerState -> Maybe Client -> Text -> [Arg] -> IO [Reply]
 runAlias st mclient body args = resolveCommandText st mclient body >>= \case
     Left err -> pure [RErr err]
     Right [] -> pure []
     Right cmds -> do
-        let expanded = init cmds <> [last cmds <> args]
-        concat <$> mapM run expanded
-  where
-    run [] = pure []
-    run (n : as) = runBuiltin st mclient n as
+        let texts = map (map Utf8Arg) cmds
+            expanded = init texts <> [last texts <> args]
+        concat <$> mapM (runNamed st mclient) expanded
+
+-- | Run an argv as a builtin, its first word naming the command.
+runNamed :: ArgvImpl
+runNamed st mclient = \case
+    [] -> pure []
+    Utf8Arg name : args -> runBuiltin st mclient name args
+    raw : _ -> pure [errQuoting "unknown command: " raw]
 
 -- | Dispatch one command through the builtin table, then fire its
 -- @after-*@ hook (on success) or @command-error@ (on failure).
-runBuiltin :: ServerState -> Maybe Client -> Text -> [Text] -> IO [Reply]
+runBuiltin :: ServerState -> Maybe Client -> Text -> [Arg] -> IO [Reply]
 runBuiltin st mclient name0 args = case resolveCommand name0 of
     Left e -> pure [RErr e]
-    Right name | Just impl <- Map.lookup name commandTable -> do
-        logCommand st mclient (printCommands [name0 : args])
+    Right name | Just impl <- Map.lookup name argvTable -> do
+        let texts = map argLossy args
+        logCommand st mclient (printCommands [name0 : texts])
         replies <- impl st mclient args
             `catch` \(e :: SomeException) ->
                 pure [RErr (name <> ": " <> T.pack (show e))]
         announceResized st
-        fireCommandHooks st mclient name args replies
+        fireCommandHooks st mclient name texts replies
         pure replies
     Right name -> pure [RErr ("unknown command: " <> name)]
 
@@ -412,6 +431,19 @@ commandTable :: Map.Map Text CommandImpl
 commandTable = Map.fromList (concatMap expand commandSpecs)
   where
     expand (names, impl) = [(n, impl) | n <- names]
+
+-- | Every command by each of its names, taking its words as they arrived:
+-- a name-taking command admits its names itself, any other takes text only.
+argvTable :: Map.Map Text ArgvImpl
+argvTable = Map.fromList
+    [ (n, Map.findWithDefault (textOnly canon impl) canon nameTaking)
+    | (names@(canon : _), impl) <- commandSpecs, n <- names ]
+  where
+    nameTaking = Map.fromList
+        [ ("new-session", argvNewSession), ("rename-session", argvRenameSession)
+        , ("new-window", argvNewWindow), ("rename-window", argvRenameWindow)
+        , ("break-pane", argvBreakPane), ("set-buffer", argvSetBuffer)
+        , ("select-pane", argvSelectPane) ]
 
 commandSpecs :: [([Text], CommandImpl)]
 commandSpecs =

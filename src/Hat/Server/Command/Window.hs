@@ -11,6 +11,7 @@ module Hat.Server.Command.Window
     , applyShifts
     , selectNamed
     , cmdNewWindow
+    , argvNewWindow
     , cmdSelectWindow
     , cmdNextWindow
     , cmdPrevWindow
@@ -19,6 +20,7 @@ module Hat.Server.Command.Window
     , cmdResizeWindow
     , cmdKillWindow
     , cmdRenameWindow
+    , argvRenameWindow
     , cmdMoveWindow
     , cmdLinkWindow
     , cmdUnlinkWindow
@@ -44,8 +46,10 @@ import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Mru (recordVisit)
+import Hat.Command.Arg (Arg (..))
 import Hat.Server.Command.Types
-    (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+    (ArgvImpl, CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Server.Name (NameKind (..), NameSlot (..), admitName, admittingNames)
 import Hat.Server.ClientSession (sendClientsAway)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
@@ -157,6 +161,8 @@ cmdNewWindow st mclient args
             Right (sess, requested) -> do
                 env <- sessionFormatEnv st sess
                 opts <- mapM (expandName env) opts0
+                let refused = [ r | Just nm <- [lookup "-n" opts]
+                                  , Left r <- [admitName WindowName (Utf8Arg nm)] ]
                 reuse <- case (lookup "-n" opts, requested) of
                     (Just nm, Nothing) | "-S" `elem` flags -> atomically $ do
                         ws <- readTVar sess.windows
@@ -165,16 +171,26 @@ cmdNewWindow st mclient args
                         pure (selectNamed nm named)
                     _ -> pure (Right Nothing)
                 case reuse of
+                    _ | r : _ <- refused -> pure [r]
                     Left e -> pure [RErr e]
                     Right (Just ix) -> do
                         unless ("-d" `elem` flags) $ switchToWindow st sess ix
                         pure []
                     Right Nothing -> createWindow st mclient sess opts flags pos requested
   where
-    (opts0, flags, pos) = parseArgs "nctF" args
+    (opts0, flags, pos) = parseArgs newWindowValueFlags args
     expandName env = \case
         ("-n", nm) -> (,) "-n" <$> expandFormat st env nm
         o -> pure o
+
+-- | 'cmdNewWindow', its name as it arrived.
+argvNewWindow :: ArgvImpl
+argvNewWindow =
+    admittingNames "new-window" newWindowValueFlags [NameFlag "-n" WindowName] cmdNewWindow
+
+-- | The @new-window@ flags that take a value.
+newWindowValueFlags :: [Char]
+newWindowValueFlags = "nctF"
 
 -- | The creating body of @new-window@: reject an unusable @-t@ before
 -- spawning, spawn the pane, then place it in one transaction — only after
@@ -542,15 +558,23 @@ cmdRenameWindow st mclient args = do
                 Right (sess, wix, win, pane) -> do
                     pix <- paneIndexOf st win pane
                     env <- paneFormatEnv st sess wix win pix pane
-                    name <- expandFormat st env nm
-                    atomically $ do
-                        writeTVar win.name name
-                        writeTVar win.autoRename False
-                        bumpDirty st
-                    notifyWindow st "window-renamed" (Just sess.id) win []
-                    pure []
+                    expanded <- expandFormat st env nm
+                    case admitName WindowName (Utf8Arg expanded) of
+                      Left r -> pure [r]
+                      Right name -> do
+                        atomically $ do
+                            writeTVar win.name name
+                            writeTVar win.autoRename False
+                            bumpDirty st
+                        notifyWindow st "window-renamed" (Just sess.id) win []
+                        pure []
                 Left e -> pure [RErr e]
         _ -> pure [RErr "usage: rename-window [-t target] name"]
+
+-- | 'cmdRenameWindow', its name as it arrived.
+argvRenameWindow :: ArgvImpl
+argvRenameWindow =
+    admittingNames "rename-window" "t" [NamePositional WindowName] cmdRenameWindow
 
 -- | @move-window@: link the source window at the destination, then drop
 -- its source link. Restore replays this to place windows at their saved

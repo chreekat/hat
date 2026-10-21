@@ -5,6 +5,7 @@
 module Hat.Server.Command.Buffer
     ( cmdShowBuffer
     , cmdSetBuffer
+    , argvSetBuffer
     , cmdDeleteBuffer
     , cmdListBuffers
     , cmdLoadBuffer
@@ -38,14 +39,24 @@ import Hat.Path (expandTilde)
 import Hat.Model
 import Hat.Model.Options (optionNumber)
 import Hat.Model.PasteBuffers
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs)
+import Hat.Server.Command.Types (ArgvImpl, CommandImpl, Reply (..), parseArgs)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Hooks (notifyPasteChanges)
 import Hat.Server.FormatEnv (expandFormat, paneFormatEnv)
 import Hat.Server.Locate (findTarget, paneIndexOf, targetPane)
+import Hat.Server.Name (NameKind (..), NameSlot (..), admittingNames)
 import Hat.Server.Pane (OutputTap (..), StdinFeed (..), startPipe, stopPipe, typeIntoPane)
 import Hat.Server.Target qualified as Target
 import Hat.Term.Emulator qualified as Emu
+
+-- | 'cmdSetBuffer', its names as they arrived.
+argvSetBuffer :: ArgvImpl
+argvSetBuffer = admittingNames "set-buffer" setBufferValueFlags
+    [NameFlag "-b" BufferName, NameFlag "-n" BufferName] cmdSetBuffer
+
+-- | The @set-buffer@ flags that take a value.
+setBufferValueFlags :: [Char]
+setBufferValueFlags = "btn"
 
 -- | @set-buffer [-aw] [-b name] [-n new-name] [-t client] [data]@ and
 -- @delete-buffer [-b name]@ (tmux's @cmd-set-buffer.c@): without @-b@,
@@ -71,7 +82,7 @@ cmdSetBuffer st _ args = withFlags "set-buffer" "aw" flags $
             (Nothing, []) -> pure [RErr "no data specified"]
             (Nothing, _) -> pure [RErr usage]
   where
-    (opts, flags, pos) = parseArgs "btn" args
+    (opts, flags, pos) = parseArgs setBufferValueFlags args
     mname = lookup "-b" opts
     appending = "-a" `elem` flags
     named s = case mname of

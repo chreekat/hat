@@ -23,6 +23,7 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 
 import Hat.Client (ExitReason (..), runControl)
+import Hat.Command.Arg (Arg (..))
 import Hat.Geometry
 import Hat.Term.Cell
 import Hat.Transport.Wire
@@ -84,22 +85,31 @@ genIntent = oneof
     , ControlModeIntent <$> listOf (listOf genText)
     ]
 
+-- | A hello as a client sends it: raw argv only beside capabilities.
 genHello :: Gen Hello
-genHello = Hello
-    <$> arbitrary
-    <*> genText
-    <*> listOf ((,) <$> genText <*> genText)
-    <*> arbitrary
-    <*> genText
-    <*> genIntent
-    <*> arbitrary
-    <*> listOf genText
-    <*> oneof [pure Nothing, Just <$> listOf genText]
-    <*> pure Nothing
-    >>= \h -> case h.termCaps of
-        -- A hello names its terminal's path only beside its capabilities.
-        Just _ -> (\t -> h { ttyName = t }) <$> oneof [pure Nothing, Just <$> genText]
-        Nothing -> pure h
+genHello = do
+    caps <- oneof [pure Nothing, Just <$> listOf genText]
+    h <- Hello
+        <$> arbitrary
+        <*> genText
+        <*> listOf ((,) <$> genText <*> genText)
+        <*> arbitrary
+        <*> genText
+        <*> genIntent
+        <*> arbitrary
+        <*> listOf genText
+        <*> pure caps
+        <*> case caps of
+            Nothing -> pure TextIsExact
+            Just _ -> oneof [pure TextIsExact, RawArgv <$> listOf (listOf genBytes)]
+        <*> pure Nothing
+    -- A terminal's path travels only beside raw argv.
+    case h.argvBytes of
+        RawArgv _ -> (\t -> h { ttyName = t }) <$> oneof [pure Nothing, Just <$> genText]
+        TextIsExact -> pure h
+
+genBytes :: Gen B.ByteString
+genBytes = B.pack <$> arbitrary
 
 instance Arbitrary ClientToServer where
     arbitrary = oneof
@@ -119,7 +129,10 @@ instance Arbitrary ClientToServer where
             ++ [ ClientHello h { autostarted = False } | h.autostarted ]
             ++ [ ClientHello h { sessionHist = hs }
                | hs <- shrinkList (const []) h.sessionHist ]
-            ++ [ ClientHello h { termCaps = Nothing, ttyName = Nothing } | Just _ <- [h.termCaps] ]
+            ++ [ ClientHello h { termCaps = Nothing, argvBytes = TextIsExact, ttyName = Nothing }
+               | Just _ <- [h.termCaps] ]
+            ++ [ ClientHello h { argvBytes = TextIsExact, ttyName = Nothing }
+               | RawArgv _ <- [h.argvBytes] ]
             ++ [ ClientHello h { ttyName = Nothing } | Just _ <- [h.ttyName] ]
             ++ [ ClientHello h { termCaps = Just cs }
                | Just cs0 <- [h.termCaps], cs <- shrinkList (const []) cs0 ]
@@ -153,6 +166,7 @@ instance Arbitrary ServerToClient where
         , LockClient <$> genText
         , OpenedTerminal <$> listOf genText <*> listOf genText
         , ExitStatus <$> arbitrary
+        , ServerErrorBytes . B.pack <$> arbitrary
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -181,12 +195,25 @@ instance Arbitrary ServerToClient where
             [ OpenedTerminal cs feats | cs <- shrinkList (const []) caps ]
             ++ [ OpenedTerminal caps fs | fs <- shrinkList (const []) feats ]
         ExitStatus n -> ExitStatus <$> shrink n
+        ServerErrorBytes bs -> ServerErrorBytes . B.pack <$> shrink (B.unpack bs)
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
 dropFaint = \case
     Put p s t -> Put p s { faint = False } t
     op -> op
+
+-- | A command client's hello whose argv held a word that is not UTF-8.
+rawHello :: Hello
+rawHello = Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
+    (Just []) (RawArgv [["rename-session", "bad\xc2name"]]) Nothing
+
+-- | 'rawHello' as the wire carries it: the nine-field hello's fields, then
+-- each command's words as byte strings.
+rawHelloHex :: String
+rawHelloHex =
+    "82008a0465787465726d9f8261416142ff830018181850642f746d708101f480\
+    \809f9f4e72656e616d652d73657373696f6e48626164c26e616d65ffff"
 
 -- | Render bytes as lowercase hex for golden comparison.
 hex :: B.ByteString -> String
@@ -227,30 +254,31 @@ spec = do
         forM_
             [ ( "ClientHello"
               , encodeMessage (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False [] Nothing Nothing))
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False [] Nothing
+                        TextIsExact Nothing))
               , "8200880465787465726d9f8261416142ff830018181850642f746d708101f480" )
             , ( "ClientHello (terminfo capabilities)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
-                        (Just ["am=1"]) Nothing))
+                        (Just ["am=1"]) TextIsExact Nothing))
               , "8200890465787465726d9f8261416142ff830018181850642f746d708101f480\
                 \9f64616d3d31ff" )
+            , ( "ClientHello (raw argv)"
+              , encodeMessage (ClientHello rawHello)
+              , rawHelloHex )
             , ( "ClientHello (terminal path)"
-              , encodeMessage (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
-                        (Just ["am=1"]) (Just "/dev/pts/3")))
-              , "82008a0465787465726d9f8261416142ff830018181850642f746d708101f480\
-                \9f64616d3d31ff6a2f6465762f7074732f33" )
+              , encodeMessage (ClientHello rawHello { ttyName = Just "/dev/pts/3" })
+              , "82008b" <> drop 6 rawHelloHex <> "6a2f6465762f7074732f33" )
             , ( "ClientHello (attach intent)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        (AttachIntent [["new"]]) False [] Nothing Nothing))
+                        (AttachIntent [["new"]]) False [] Nothing TextIsExact Nothing))
               , "8200880465787465726d9f8261416142ff830018181850642f746d70\
                 \82009f9f636e6577fffff480" )
             , ( "ClientHello (control-mode intent)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        (ControlModeIntent [["attach"]]) False [] Nothing Nothing))
+                        (ControlModeIntent [["attach"]]) False [] Nothing TextIsExact Nothing))
               , "8200880465787465726d9f8261416142ff830018181850642f746d70\
                 \82029f9f66617474616368fffff480" )
             , ( "Input", encodeMessage (Input "hi"), "8201426869" )
@@ -298,6 +326,7 @@ spec = do
               , encodeMessage (OpenedTerminal ["am=1"] ["title"])
               , "83119f64616d3d31ff9f657469746c65ff" )
             , ( "ExitStatus", encodeMessage (ExitStatus 3), "821203" )
+            , ( "ServerErrorBytes", encodeMessage (ServerErrorBytes "a\xff\&b"), "82134361ff62" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -336,7 +365,18 @@ spec = do
                     :: Inbound ClientToServer)
                     `shouldBe` Known (ClientHello
                         (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                            ControlIntent autostarted hist Nothing Nothing))
+                            ControlIntent autostarted hist Nothing TextIsExact Nothing))
+        -- An old server reads the hello's first fields and skips the rest:
+        -- the raw argv, and whatever a later hello appends after it.
+        it "reads a hello longer than it knows, skipping the extra fields" $
+            (decodeMessage (B.pack (hexBytes
+                ("82008c" <> drop 6 rawHelloHex <> "6a2f6465762f7074732f33" <> "00")))
+                :: Inbound ClientToServer)
+                `shouldBe` Known (ClientHello rawHello { ttyName = Just "/dev/pts/3" })
+        it "carries raw argv beside capabilities, never without them" $
+            (decodeMessage (encodeMessage (ClientHello rawHello { termCaps = Nothing }))
+                :: Inbound ClientToServer)
+                `shouldBe` Known (ClientHello rawHello { termCaps = Just [] })
 
     describe "negotiate" $ do
         it "meets an older client at its version" $
@@ -384,6 +424,11 @@ spec = do
         -- as it is, skips it as unknown, and exits 0 as it always did.
         it "sends ExitStatus unchanged below level 12" $
             hex (encodeServerMessageAt 11 (ExitStatus 3)) `shouldBe` "821203"
+        -- The level-12 corpus vector for tag 19: a pre-13 peer gets the
+        -- error as text, each invalid byte a U+FFFD.
+        it "downgrades ServerErrorBytes to a lossy ServerError below level 13" $
+            hex (encodeServerMessageAt 12 (ServerErrorBytes "a\xff\&b"))
+                `shouldBe` "82086561efbfbd62"
         it "reads a level-6 name-only RestartClientTo as empty history" $
             (decodeMessage (B.pack (hexBytes "820c646d61696e"))
                 :: Inbound ServerToClient)
@@ -436,6 +481,12 @@ spec = do
                 , frameOf (encodeMessage CommandDone)
                 ]
             reason `shouldBe` CommandsFinished 3
+        it "rejects with an error's bytes verbatim" $ do
+            reason <- withFakeServer
+                [ frameOf (encodeMessage (Welcome ""))
+                , frameOf (encodeMessage (ServerErrorBytes "invalid session name: a\xff\&b"))
+                ]
+            reason `shouldBe` Rejected "invalid session name: a\xff\&b"
         it "returns the fatal error on a malformed frame" $ do
             reason <- withFakeServer
                 [ frameOf (encodeMessage (Welcome ""))
@@ -445,7 +496,7 @@ spec = do
         it "reports a connection reset before the greeting as ServerDied" $ do
             (clientSock, serverSock) <- socketPair AF_UNIX Stream 0
             (reason, _) <- concurrently
-                (runControl clientSock Joined (pure ()) [["list-sessions"]]
+                (runControl clientSock Joined (pure ()) [[Utf8Arg "list-sessions"]]
                     <* close clientSock)
                 -- Closing with the hello still unread resets the connection.
                 (SBL.recv serverSock 1 >> close serverSock)
@@ -471,7 +522,7 @@ withFakeServer frames = do
     pure reason
   where
     client sock = do
-        r <- runControl sock Joined (pure ()) [["kill-server"]]
+        r <- runControl sock Joined (pure ()) [[Utf8Arg "kill-server"]]
         close sock
         pure r
     server sock = do

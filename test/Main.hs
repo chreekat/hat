@@ -12,6 +12,7 @@ import Hat.Client.DrawSpec qualified
 import Hat.Client.TerminfoSpec qualified
 import Hat.Client.TtySpec qualified
 import Hat.ClientSpec qualified
+import Hat.Command.ArgSpec qualified
 import Hat.Command.ParserSpec qualified
 import Hat.Command.ScriptSpec qualified
 import Hat.DebugSpec qualified
@@ -46,6 +47,7 @@ import Hat.Server.KeysSpec qualified
 import Hat.Server.LayoutSpec qualified
 import Hat.Server.LayoutStringSpec qualified
 import Hat.Server.MruSpec qualified
+import Hat.Server.NameSpec qualified
 import Hat.Server.WinlinkSpec qualified
 import Hat.Server.OptionEffectSpec qualified
 import Hat.Server.OptionParseSpec qualified
@@ -134,6 +136,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Layout" Hat.Server.LayoutSpec.spec
     describe "Hat.Server.LayoutString" Hat.Server.LayoutStringSpec.spec
     describe "Hat.Server.Mru" Hat.Server.MruSpec.spec
+    describe "Hat.Server.Name" Hat.Server.NameSpec.spec
     describe "Hat.Server.OptionParse" Hat.Server.OptionParseSpec.spec
     describe "Hat.Server.Winlink" Hat.Server.WinlinkSpec.spec
     describe "Hat.Server.Options" Hat.Server.OptionsSpec.spec
@@ -161,6 +164,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Server.Viewport" Hat.Server.ViewportSpec.spec
     describe "Hat.Server.ListKeys" Hat.Server.ListKeysSpec.spec
+    describe "Hat.Command.Arg" Hat.Command.ArgSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Command.Script" Hat.Command.ScriptSpec.spec
     describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
