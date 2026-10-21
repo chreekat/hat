@@ -39,7 +39,7 @@ import System.Posix.Terminal (queryTerminal)
 import System.Process (CreateProcess (..), createProcess, shell, waitForProcess)
 
 import Hat.Client.Draw
-import Hat.Command.Arg (Arg (..), argLossy)
+import Hat.Command.Arg (Arg (..), argBytes, argLossy)
 import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
 import Hat.Server.Command.Session (newSessionValueFlags)
@@ -95,11 +95,13 @@ terminalMode _ = FireAndForget
 
 -- | Run with the hello, or answer why this terminal cannot be used: as in
 -- tmux, a client whose standard input is a terminal reads its @TERM@'s
--- terminfo entry first, and fails if there is none.
+-- terminfo entry first, and fails if there is none. @cmds@ are the
+-- commands the connection carries, whose argv the hello holds when their
+-- text is not exact.
 withHello
-    :: Word16 -> Autostart -> Intent -> [Text] -> (Text -> r)
+    :: Word16 -> Autostart -> Intent -> [[Arg]] -> [Text] -> (Text -> r)
     -> (ClientToServer -> IO r) -> IO r
-withHello v origin intent hist refuse body = do
+withHello v origin intent cmds hist refuse body = do
     mterm <- lookupEnv "TERM"
     tty <- queryTerminal stdInput
     ecaps <- case mterm of
@@ -120,7 +122,14 @@ withHello v origin intent hist refuse body = do
             , autostarted = origin == Autostarted
             , sessionHist = hist
             , termCaps = Just caps
+            , argvBytes = if all (all isText) cmds
+                then TextIsExact
+                else RawArgv (map (map argBytes) cmds)
             }
+  where
+    isText = \case
+        Utf8Arg _ -> True
+        RawArg _ -> False
 
 -- | Attach to the server and shuttle bytes until detach or death. The
 -- setup commands (e.g. a @new-session@ or @attach-session -t@ typed at a
@@ -138,7 +147,7 @@ runClient sock origin answered setup hist = do
 attachClient
     :: Word16 -> Socket -> Autostart -> IO () -> [[Arg]] -> [Text] -> IO ExitReason
 attachClient v sock origin answered setup hist =
-    withHello v origin (AttachIntent (lossy setup)) hist rejected $ \h -> do
+    withHello v origin (AttachIntent (lossy setup)) setup hist rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     greeting <- recvMessage re
@@ -308,7 +317,7 @@ data ControlFlavour = ControlLines | ControlDcs
 runControlMode
     :: Socket -> Autostart -> ControlFlavour -> [[Arg]] -> IO (Either ExitReason Int)
 runControlMode sock origin flavour setup =
-    withHello protocolVersion origin (ControlModeIntent (lossy setup)) [] (Left . rejected) $ \h -> do
+    withHello protocolVersion origin (ControlModeIntent (lossy setup)) setup [] (Left . rejected) $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     greeting <- recvMessage re
@@ -424,7 +433,7 @@ captureControl sock origin cmds = do
 
 controlAt :: Word16 -> Socket -> Autostart -> IO () -> Output -> [[Arg]] -> IO ExitReason
 controlAt v sock origin answered out cmds =
-    withHello v origin ControlIntent [] rejected $ \h -> do
+    withHello v origin ControlIntent cmds [] rejected $ \h -> do
     re <- newReadEnd sock
     sendMessage sock h
     -- A server exiting as we connect resets the connection: it never saw us.

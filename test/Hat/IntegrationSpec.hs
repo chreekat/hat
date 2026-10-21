@@ -2311,7 +2311,7 @@ attachUnread h = do
         { protoVersion = W.protocolVersion, term = "xterm", env = []
         , size = Size { rows = 24, cols = 80 }, cwd = T.pack h.home
         , intent = W.AttachIntent [], autostarted = False, sessionHist = []
-        , termCaps = Nothing }
+        , termCaps = Nothing, argvBytes = W.TextIsExact }
     re <- W.newReadEnd sock
     W.recvMessage re >>= \case
         Just (W.Known (W.Welcome _)) -> pure re

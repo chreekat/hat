@@ -85,17 +85,26 @@ genIntent = oneof
     , ControlModeIntent <$> listOf (listOf genText)
     ]
 
+-- | A hello as a client sends it: raw argv only beside capabilities.
 genHello :: Gen Hello
-genHello = Hello
-    <$> arbitrary
-    <*> genText
-    <*> listOf ((,) <$> genText <*> genText)
-    <*> arbitrary
-    <*> genText
-    <*> genIntent
-    <*> arbitrary
-    <*> listOf genText
-    <*> oneof [pure Nothing, Just <$> listOf genText]
+genHello = do
+    caps <- oneof [pure Nothing, Just <$> listOf genText]
+    Hello
+        <$> arbitrary
+        <*> genText
+        <*> listOf ((,) <$> genText <*> genText)
+        <*> arbitrary
+        <*> genText
+        <*> genIntent
+        <*> arbitrary
+        <*> listOf genText
+        <*> pure caps
+        <*> case caps of
+            Nothing -> pure TextIsExact
+            Just _ -> oneof [pure TextIsExact, RawArgv <$> listOf (listOf genBytes)]
+
+genBytes :: Gen B.ByteString
+genBytes = B.pack <$> arbitrary
 
 instance Arbitrary ClientToServer where
     arbitrary = oneof
@@ -115,7 +124,9 @@ instance Arbitrary ClientToServer where
             ++ [ ClientHello h { autostarted = False } | h.autostarted ]
             ++ [ ClientHello h { sessionHist = hs }
                | hs <- shrinkList (const []) h.sessionHist ]
-            ++ [ ClientHello h { termCaps = Nothing } | Just _ <- [h.termCaps] ]
+            ++ [ ClientHello h { termCaps = Nothing, argvBytes = TextIsExact }
+               | Just _ <- [h.termCaps] ]
+            ++ [ ClientHello h { argvBytes = TextIsExact } | RawArgv _ <- [h.argvBytes] ]
             ++ [ ClientHello h { termCaps = Just cs }
                | Just cs0 <- [h.termCaps], cs <- shrinkList (const []) cs0 ]
         Input bs -> Input . B.pack <$> shrink (B.unpack bs)
@@ -185,6 +196,18 @@ dropFaint = \case
     Put p s t -> Put p s { faint = False } t
     op -> op
 
+-- | A command client's hello whose argv held a word that is not UTF-8.
+rawHello :: Hello
+rawHello = Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
+    (Just []) (RawArgv [["rename-session", "bad\xc2name"]])
+
+-- | 'rawHello' as the wire carries it: the nine-field hello's fields, then
+-- each command's words as byte strings.
+rawHelloHex :: String
+rawHelloHex =
+    "82008a0465787465726d9f8261416142ff830018181850642f746d708101f480\
+    \809f9f4e72656e616d652d73657373696f6e48626164c26e616d65ffff"
+
 -- | Render bytes as lowercase hex for golden comparison.
 hex :: B.ByteString -> String
 hex = concatMap byte . B.unpack
@@ -224,24 +247,28 @@ spec = do
         forM_
             [ ( "ClientHello"
               , encodeMessage (ClientHello
-                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False [] Nothing))
+                    (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False [] Nothing
+                        TextIsExact))
               , "8200880465787465726d9f8261416142ff830018181850642f746d708101f480" )
             , ( "ClientHello (terminfo capabilities)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp" ControlIntent False []
-                        (Just ["am=1"])))
+                        (Just ["am=1"]) TextIsExact))
               , "8200890465787465726d9f8261416142ff830018181850642f746d708101f480\
                 \9f64616d3d31ff" )
+            , ( "ClientHello (raw argv)"
+              , encodeMessage (ClientHello rawHello)
+              , rawHelloHex )
             , ( "ClientHello (attach intent)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        (AttachIntent [["new"]]) False [] Nothing))
+                        (AttachIntent [["new"]]) False [] Nothing TextIsExact))
               , "8200880465787465726d9f8261416142ff830018181850642f746d70\
                 \82009f9f636e6577fffff480" )
             , ( "ClientHello (control-mode intent)"
               , encodeMessage (ClientHello
                     (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                        (ControlModeIntent [["attach"]]) False [] Nothing))
+                        (ControlModeIntent [["attach"]]) False [] Nothing TextIsExact))
               , "8200880465787465726d9f8261416142ff830018181850642f746d70\
                 \82029f9f66617474616368fffff480" )
             , ( "Input", encodeMessage (Input "hi"), "8201426869" )
@@ -328,7 +355,17 @@ spec = do
                     :: Inbound ClientToServer)
                     `shouldBe` Known (ClientHello
                         (Hello 4 "xterm" [("A", "B")] (Size 24 80) "/tmp"
-                            ControlIntent autostarted hist Nothing))
+                            ControlIntent autostarted hist Nothing TextIsExact))
+        -- An old server reads the hello's first fields and skips the rest:
+        -- the raw argv, and whatever a later hello appends after it.
+        it "reads a hello longer than it knows, skipping the extra fields" $
+            (decodeMessage (B.pack (hexBytes ("82008b" <> drop 6 rawHelloHex <> "00")))
+                :: Inbound ClientToServer)
+                `shouldBe` Known (ClientHello rawHello)
+        it "carries raw argv beside capabilities, never without them" $
+            (decodeMessage (encodeMessage (ClientHello rawHello { termCaps = Nothing }))
+                :: Inbound ClientToServer)
+                `shouldBe` Known (ClientHello rawHello { termCaps = Just [] })
 
     describe "negotiate" $ do
         it "meets an older client at its version" $

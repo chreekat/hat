@@ -81,7 +81,7 @@ import Hat.Server.Keys
     , KeyEncoding (..), initialKeyState )
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Transport.Wire
-    ( Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
+    ( ArgvBytes (..), Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
     , sendMessage )
 import Hat.Server.Floating (noFloats)
@@ -939,7 +939,8 @@ spec = do
                     { protoVersion = protocolVersion + 1
                     , term = "xterm", env = [], size = Size 24 80
                     , cwd = "/", intent = ControlIntent
-                    , autostarted = False, sessionHist = [], termCaps = Nothing }
+                    , autostarted = False, sessionHist = [], termCaps = Nothing
+                    , argvBytes = TextIsExact }
             serverRe <- newReadEnd server
             clientRe <- newReadEnd client
             withAsync (welcome dispatch st serverRe h) $ \_ -> do

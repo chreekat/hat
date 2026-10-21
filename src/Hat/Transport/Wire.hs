@@ -44,6 +44,7 @@ module Hat.Transport.Wire
     , Intent (..)
     , ExitWait (..)
     , Autostart (..)
+    , ArgvBytes (..)
     , Hello (..)
     , ClientToServer (..)
     , ServerToClient (..)
@@ -74,6 +75,7 @@ import Control.Exception (mask_)
 import Control.Monad (replicateM_, unless)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
@@ -162,6 +164,15 @@ data ExitWait = ExitNow | AwaitEmptyLine
 data Autostart = Autostarted | Joined
     deriving (Eq, Show)
 
+-- | The argv behind the commands a connection carries (its intent's, or
+-- its first 'Command''s), when their text is not exact. See
+-- 'Hat.Server.Conn.twinArgs'.
+data ArgvBytes
+    = TextIsExact             -- ^ every word was UTF-8
+    | RawArgv [[ByteString]]  -- ^ each command's words, verbatim
+    deriving (Eq, Show, Generic)
+    deriving anyclass (Serialise)
+
 -- | The client's opening handshake. A standalone single-constructor
 -- record so its field selectors are total.
 data Hello = Hello
@@ -182,6 +193,8 @@ data Hello = Hello
         --   'Hat.Client.Terminfo.readTermCaps' lists them (@[]@ when the
         --   client has no terminal or no @TERM@); 'Nothing' from an
         --   eight-field hello, whose client predates them.
+    , argvBytes    :: ArgvBytes
+        -- ^ 'TextIsExact' from a hello of nine fields or fewer
     }
     deriving (Eq, Show, Generic)
     deriving anyclass (Serialise)
@@ -402,19 +415,30 @@ nullary 1 v = pure v
 nullary n _ = pure (Malformed ("expected 0 fields, got " <> show (n - 1)))
 
 -- | 'Hello' as a definite list of its fields. Decoding accepts any length
--- >= 6 and ignores extras, so fields can be appended compatibly.
+-- >= 6 and ignores extras, so fields can be appended compatibly. A field
+-- present only when it says something ends the list: raw argv, when there
+-- is any, behind capabilities ('Nothing' is spelt by absence, so raw argv
+-- carries 'Nothing' as @[]@).
 encodeHello :: Hello -> Encoding
-encodeHello h =
-       encodeListLen (maybe 8 (const 9) h.termCaps)
-    <> encodeWord16 h.protoVersion
-    <> encode h.term
-    <> encode h.env
-    <> encode h.size
-    <> encode h.cwd
-    <> encode h.intent
-    <> encode h.autostarted
-    <> encode h.sessionHist
-    <> foldMap encode h.termCaps
+encodeHello h = case h.argvBytes of
+    TextIsExact ->
+           encodeListLen (maybe 8 (const 9) h.termCaps)
+        <> core
+        <> foldMap encode h.termCaps
+    RawArgv raw ->
+           encodeListLen 10
+        <> core
+        <> encode (fromMaybe [] h.termCaps)
+        <> encode raw
+  where
+    core = encodeWord16 h.protoVersion
+        <> encode h.term
+        <> encode h.env
+        <> encode h.size
+        <> encode h.cwd
+        <> encode h.intent
+        <> encode h.autostarted
+        <> encode h.sessionHist
 
 decodeHello :: Decoder s Hello
 decodeHello = do
@@ -434,7 +458,8 @@ decodeHello = do
                 <*> (if n >= 7 then decode else pure False)
                 <*> (if n >= 8 then decode else pure [])
                 <*> (if n >= 9 then Just <$> decode else pure Nothing)
-            replicateM_ (max 0 (n - 9)) skipField
+                <*> (if n >= 10 then RawArgv <$> decode else pure TextIsExact)
+            replicateM_ (max 0 (n - 10)) skipField
             pure h
 
 -- | Skip one CBOR term (used to drop trailing 'Hello' fields).
