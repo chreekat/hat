@@ -547,9 +547,10 @@ optionTable =
             \buffers with an escape sequence ('on' only)."
     , live $ arrayOf "terminal-overrides" ServerScope KString "," ["linux*:AX@"]
         `described` "List of terminal capabilities overrides."
+    -- tmux's default lacks *:RGB.
     , live $ arrayOf "terminal-features" ServerScope KString ","
         [ "xterm*:clipboard:ccolour:cstyle:focus:title", "screen*:title"
-        , "rxvt*:ignorefkeys" ]
+        , "rxvt*:ignorefkeys", "*:RGB" ]
         `described` "List of terminal features, used if they cannot be \
             \automatically detected."
     , live $ scalar "theme" ServerScope

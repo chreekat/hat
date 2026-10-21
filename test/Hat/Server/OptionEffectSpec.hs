@@ -22,7 +22,7 @@ import Hat.Server.Prompt (emptyPrompt)
 import Hat.Model.Options
     ( BorderLines (..), OptionValue (..), Options (..)
     , StatusPosition (..), WindowSizeMode (..), applyEntry, defaultOptions
-    , optionText )
+    , optionArray, optionText )
 import Hat.Server
     ( Reply (..), deliversKey, escWait, namedSizesOf, resizeModeOf
     , runCommands, toastDeadline, toastExpired )
@@ -42,12 +42,21 @@ import Hat.Server.Scene
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.View (messageLine, promptCursorOf, statusLayout)
+import Hat.Term.Caps (createTerm, rgbColours)
 import Hat.Term.Cell qualified as Cell
 import Hat.TestSupport (clientTheme)
 
 spec :: Spec
 spec = do
     describe "option effects (see docs/options-audit.md)" $ do
+        -- terminal-features: hat's default gives every terminal RGB.
+        describe "terminal-features" $
+            it "draws a terminal that announces no RGB in RGB by default" $ do
+                let vt100 = ["clear=\ESC[H\ESC[2J", "cup=\ESC[%i%p1%d;%p2%dH", "colors=8"]
+                    term feats = rgbColours <$> createTerm "vt100" vt100 [] feats Nothing
+                term (optionArray "terminal-features" defaultOptions) `shouldBe` Right True
+                term [] `shouldBe` Right False
+
         -- focus-events: a FocusIn/FocusOut report reaches the pane only when
         -- focus-events is on (the full gating matrix is SessionSpec's).
         describe "focus-events gates FocusIn/FocusOut delivery" $
