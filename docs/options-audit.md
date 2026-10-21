@@ -39,7 +39,6 @@ spot-read of each suspect consumer.
 | `prefix` / `prefix2` | `keyContext` → `routeKey` (Conn.hs, Keys.hs); `send-prefix [-2]`; `None` is no key | implemented ✅ tested | pure (KeysSpec) |
 | `key-table` | `keyContext` → `routeKey`: the client's default table | implemented ✅ tested | pure (KeysSpec) |
 | `repeat-time` / `initial-repeat-time` | `routeKey` (a `bind -r` binding keeps its table open), `expireKeyRepeat` timer in `inputLoop` (Conn.hs) | implemented ✅ tested | pure (KeysSpec) |
-| `assume-paste-time` | `assumedPaste` → `routeKey` (Keys.hs): from the second key in a row arriving within it of the one before, keys skip the key tables and go to the pane as pasted; a bracketed paste takes precedence. never on a terminal whose capabilities include `Enbp` (`assumePasteFor`, Conn.hs), as in tmux | implemented ✅ tested | pure (KeysSpec) |
 | `allow-set-title` | pane reader `TitleRequest` (Pane.hs): OSC 0/2 and APC, cleaned by `cleanName` | implemented ✅ tested | integration (check-names) |
 | `allow-rename` | pane reader `RenameRequest` → `renameFromApp` (Pane.hs): `ESC k` names the window | implemented ✅ tested | integration (check-names) |
 | `alternate-screen` | `hostPolicyOf` → `scrubHost` drops ?47/?1047/?1049 (HostProtocol.hs) | implemented ✅ tested | pure (EmulatorSpec) |
@@ -197,6 +196,12 @@ fails (`not supported by hat`).
 | Feature | Options | Commands |
 |---|---|---|
 | Locking clients | `lock-after-time`, `lock-command`, the `after-lock-server` hook | `lock-server`, `lock-session`, `lock-client` |
+| Guessing a paste from key timing | `assume-paste-time` | — |
+
+Hat never guesses that fast keys are a paste: every hat client turns on
+bracketed paste, so a terminal that brackets its pastes marks them, and keys
+from one that does not are looked up in the key tables however fast they
+arrive.
 
 ## Defects (the backlog)
 

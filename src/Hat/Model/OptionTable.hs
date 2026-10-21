@@ -606,7 +606,8 @@ optionTable =
     -- Session options.
     , live $ scalar "activity-action" SessionScope (KChoice bellActions) "other"
         `described` "Action to take on an activity alert."
-    , live $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
+    -- Left out of hat; see docs/options-audit.md.
+    , unsupported $ scalar "assume-paste-time" SessionScope (KNumber 0 intMax) "1"
         `described` "Maximum time between input to assume it is pasting rather \
             \than typing."
         `measuredIn` "milliseconds"

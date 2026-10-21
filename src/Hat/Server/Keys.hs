@@ -639,9 +639,6 @@ data KeyState = KeyState
     , repeating :: Maybe Repeating
     , bracketPasting :: Bool
         -- ^ inside the outer terminal's bracketed paste
-    , lastKeyAt :: Int
-        -- ^ when the previous key arrived, monotonic microseconds
-    , pasteGuess :: PasteGuess
     , mouse :: MouseState
     , mouseEvent :: Maybe MouseEvent
         -- ^ the mouse key being acted on, for the commands it runs
@@ -657,11 +654,6 @@ data KeyState = KeyState
     }
     deriving (Eq, Show)
 
--- | Whether keys are arriving too fast to be typed (tmux's
--- @CLIENT_ASSUMEPASTING@).
-data PasteGuess = Typing | AssumedPaste
-    deriving (Eq, Show)
-
 -- | An open repeat window: the key whose binding repeats, and when the
 -- window closes.
 data Repeating = Repeating
@@ -673,8 +665,7 @@ data Repeating = Repeating
 initialKeyState :: KeyState
 initialKeyState = KeyState
     { table = Nothing, tableSince = 0, repeating = Nothing
-    , bracketPasting = False, lastKeyAt = 0, pasteGuess = Typing
-    , mouse = initialMouseState, mouseEvent = Nothing
+    , bracketPasting = False, mouse = initialMouseState, mouseEvent = Nothing
     , drag = Nothing, commandState = Nothing, firingKey = Nothing }
 
 -- | Switch the client into a key table (@switch-client -T@), at @now@.
@@ -704,9 +695,6 @@ data KeyContext = KeyContext
     , initialRepeatTime :: Int        -- ^ ms; 0 uses @repeat-time@
     , mouseOn :: Bool                 -- ^ @mouse@
     , now :: Int
-    , assumePasteTime :: Int          -- ^ ms; 0 assumes no paste
-    , arrivedUs :: Int
-        -- ^ when the key arrived, monotonic microseconds
     }
 
 -- | What a key should do. Consecutive passthroughs coalesce into one write.
@@ -724,21 +712,17 @@ data KeyAction
 -- table while a @bind -r@ binding repeats); a miss in any table but the
 -- default falls back to it; a key that reaches the default table unbound is
 -- passed to the pane, unless it started in another table. A pane in a mode
--- puts the mode's table in front of the default one. A bracketed paste, or
--- one 'assumedPaste' guesses, bypasses the tables altogether.
+-- puts the mode's table in front of the default one. A bracketed paste
+-- bypasses the tables altogether.
 routeKey :: KeyContext -> Keymap -> KeyState -> Key -> (KeyState, [KeyAction])
 routeKey ctx km st0 k
     | k.name == "PasteStart" = (st1 { bracketPasting = True }, [Paste])
     | k.name == "PasteEnd" = (st1 { bracketPasting = False }, [Paste])
     | st1.bracketPasting = (st1, [Paste])
     | isMouseKey k.name && not ctx.mouseOn = (st1, [Passthrough k.raw])
-    | k.name `elem` ["FocusIn", "FocusOut"] || isMouseKey k.name =
-        tableChanged first0 first0 st1
-    | otherwise = case assumedPaste ctx st0 of
-        (guess, Pasted) -> (st1 { pasteGuess = guess }, [Paste])
-        (guess, Typed) -> tableChanged first0 first0 st1 { pasteGuess = guess }
+    | otherwise = tableChanged first0 first0 st1
   where
-    st1 = (expireRepeat ctx.now st0) { lastKeyAt = ctx.arrivedUs }
+    st1 = expireRepeat ctx.now st0
     current s = fromMaybe ctx.defaultTable s.table
     isDefault t = t == ctx.defaultTable
     first0 = case ctx.modeTable of
@@ -779,21 +763,6 @@ routeKey ctx km st0 k
         | Just r <- st.repeating, r.key == k.name = ctx.repeatTime
         | ctx.initialRepeatTime /= 0 = ctx.initialRepeatTime
         | otherwise = ctx.repeatTime
-
--- | tmux's @server_client_is_assume_paste@: a key within @assume-paste-time@
--- of the one before starts a guessed paste, and each further such key is
--- pasted; a slower key ends it. Yields the new guess and how this key is
--- taken.
-assumedPaste :: KeyContext -> KeyState -> (PasteGuess, KeyArrival)
-assumedPaste ctx st
-    | ctx.assumePasteTime == 0 = (st.pasteGuess, Typed)
-    | ctx.arrivedUs - st.lastKeyAt < ctx.assumePasteTime * 1000 =
-        (AssumedPaste, if st.pasteGuess == AssumedPaste then Pasted else Typed)
-    | otherwise = (Typing, Typed)
-
--- | Whether a key is looked up in the key tables or taken as pasted.
-data KeyArrival = Typed | Pasted
-    deriving (Eq, Show)
 
 -- | 'routeKey' over a run of keys arriving together.
 routeKeys :: KeyContext -> Keymap -> KeyState -> [Key] -> (KeyState, [KeyAction])

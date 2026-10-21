@@ -1618,10 +1618,8 @@ spec = parallel $ do
         -- the command's stdout. If copy-pipe reads that stdout to EOF on the
         -- client's input thread, the thread blocks forever and the client
         -- goes dead. 'sleep' backgrounded in a subshell reproduces the leak.
-        -- Its keys arrive in one burst, which must not be taken for a paste.
         writeFile (h.home <> "/hat.conf") $
             "bind-key -T copy-mode p send-keys -X copy-pipe 'sleep 30 &'\n"
-            <> "set -g assume-paste-time 0\n"
         c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
         awaitScreen c1 "$"
         typeInto c1 "echo PIPEDWORD"

@@ -89,7 +89,7 @@ import Hat.Server.InputRequests (Asked (..))
 import Hat.Model.PasteBuffers (PasteBuffer (..), pasteTop)
 import Hat.Server.InputRequestsIO (askTerminal, paneReply)
 import Hat.Term.HostProtocol (OscTerm (..))
-import Hat.Term.Caps (CapValue (..), TtyTerm (..))
+import Hat.Term.Caps (TtyTerm (..))
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
 import Hat.TestSupport (nodeOf)
@@ -2531,33 +2531,25 @@ spec = do
             readTVarIO win.latest `shouldReturn` Just b.id
 
     describe "input routing within a chunk" $ do
-        -- Keys typed back to back here, so no paste is assumed of them.
         let keyed = do
                 (st, sess) <- seedSession "/"
-                atomically $ do
-                    writeTVar st.keymap defaultKeymap
-                    writeOwn st.globalSessionOptions
-                        (singletonDelta "assume-paste-time" (OVScalar "0"))
+                atomically $ writeTVar st.keymap defaultKeymap
                 _ <- addWindow sess 0
                 client <- addClient st sess.id (Size 24 80) 1
                 pure (st, client)
-        -- "aby" from a terminal with the given capabilities, under a 10s
-        -- assume-paste-time and with y bound: what @x is left at.
-        let fastKeys caps = do
-                (st, sess) <- seedSession "/"
-                _ <- addWindow sess 0
-                client <- addClient st sess.id (Size 24 80) 1
-                atomically $ writeTVar client.ttyTerm $ Just TtyTerm
-                    { name = "dumb", caps = Map.fromList caps
-                    , features = Set.empty, termType = "" }
-                [] <- runArgv st Nothing ["bind", "-n", "y", "set", "-g", "@x", "1"]
-                [] <- runArgv st Nothing ["set", "-g", "assume-paste-time", "10000"]
-                handleInput dispatch st client "aby"
-                Map.lookup "@x" . (.user) <$> readTVarIO st.options
-        it "keys arriving within assume-paste-time skip the key tables" $
-            fastKeys [] `shouldReturn` Nothing
-        it "assumes no paste from a terminal that brackets its pastes" $
-            fastKeys [("Enbp", StrCap "\\E[?2004h")] `shouldReturn` Just "1"
+        it "looks keys up however fast they arrive, from a terminal that does not bracket pastes" $ do
+            (st, sess) <- seedSession "/"
+            _ <- addWindow sess 0
+            client <- addClient st sess.id (Size 24 80) 1
+            atomically $ writeTVar client.ttyTerm $ Just TtyTerm
+                { name = "dumb", caps = Map.empty, features = Set.empty, termType = "" }
+            [] <- runArgv st Nothing ["bind", "-n", "y", "set", "-g", "@x", "1"]
+            handleInput dispatch st client "aby"
+            Map.lookup "@x" . (.user) <$> readTVarIO st.options `shouldReturn` Just "1"
+        it "refuses assume-paste-time: hat never guesses a paste" $ do
+            (st, _) <- seedSession "/"
+            runArgv st Nothing ["set", "-g", "assume-paste-time", "0"]
+                `shouldReturn` [RErr "assume-paste-time: option not supported by hat"]
         it "keys after the key that opens the prompt are typed into it" $ do
             (st, client) <- keyed
             handleInput dispatch st client "\x02:abc"
