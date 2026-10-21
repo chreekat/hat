@@ -109,7 +109,7 @@ import Control.Exception
 import Control.Monad (filterM, forM_, forever, unless, void, when)
 import Data.IORef
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -152,6 +152,7 @@ import Hat.Server.Conn
 import Hat.Server.Dispatch
 import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.HookMonitor (monitorLoop)
+import Hat.Server.Hooks (notifyClient)
 import Hat.Server.InputRequestsIO (expireLoop)
 import Hat.Server.Startup
 import Hat.Server.Toast
@@ -537,6 +538,12 @@ followDesktopScheme st = do
                 unless (T.null (T.strip path)) $
                     void $ runArgv st Nothing ["source-file", T.strip path]
             notifySubscribedPanes st scheme
+            -- Each terminal client's theme is the followed scheme.
+            clients <- Map.elems <$> readTVarIO st.clients
+            forM_ [ c | c <- clients, c.role == Attached, isNothing c.control ] $ \c ->
+                notifyClient st (case scheme of
+                    SchemeDark -> "client-dark-theme"
+                    SchemeLight -> "client-light-theme") c []
         atomically (bumpDirty st)
 
 -- | Tell every pane whose app subscribed to color-scheme reports (DEC mode

@@ -2541,6 +2541,19 @@ spec = do
                 [] <- runArgv st Nothing ["resize-window", "-t", "work:0", "-x", "50", "-y", "10"]
                 [] <- runArgv st Nothing ["resize-window", "-t", "work:0", "-x", "50", "-y", "10"]
                 recorded st `shouldReturn` [ROutput "|80x24->50x10|50x10->50x10"]
+        it "fires client-dark-theme and client-light-theme at each attached client as the followed scheme flips" $ do
+            (st, _) <- hooked
+            _ <- addClient st (SessionId 0) (Size 24 80) 1
+            _ <- addClient st (SessionId 0) (Size 24 80) 2
+            _ <- record st "client-light-theme"
+            _ <- record st "client-dark-theme"
+            let desktop sch = do
+                    atomically (writeTVar st.desktopScheme (Just sch))
+                    followDesktopScheme st
+            mapM_ desktop [SchemeDark, SchemeDark, SchemeLight]
+            recorded st `shouldReturn` [ROutput (T.concat
+                [ "|client-dark-theme:client-1|client-dark-theme:client-2"
+                , "|client-light-theme:client-1|client-light-theme:client-2" ])]
         it "a latest client going away passes the window to the next, which fires client-active" $ do
             (st, sess) <- hooked
             a <- addClient st (SessionId 0) (Size 24 80) 1

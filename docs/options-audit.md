@@ -247,7 +247,9 @@ arrive.
 
 - **`theme`** `detect` reads the desktop colour scheme hat already follows
   (`Hat.Server.ColorScheme`), not each client terminal's own report, so
-  every client shares one theme. Hat clients draw RGB directly, so
+  every client shares one theme, and `client-light-theme` /
+  `client-dark-theme` fire at every terminal client as the followed scheme
+  flips. Hat clients draw RGB directly, so
   `client_colours` is always 16777216 and the palettes' rich colours apply.
   Styles decoded into `Options` record fields (`mode-style`) still draw
   theme colours as the terminal default.
@@ -310,7 +312,8 @@ arrive.
   `color-scheme`, tailed with `gsettings monitor`). While on, the scheme
   drives `theme detect`, `#{color_scheme}`, the chrome palette laid under
   every user scope, the `@color-scheme-dark`/`@color-scheme-light` config
-  files and the mode-2031 reports to panes; off, hat follows no scheme. tmux learns each
+  files, the mode-2031 reports to panes and the `client-light-theme` /
+  `client-dark-theme` hooks; off, hat follows no scheme. tmux learns each
   client terminal's theme from the terminal itself, so it has no switch;
   hat's source is the desktop, so it gets one, named in tmux's `theme`
   vocabulary.
