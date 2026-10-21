@@ -5,14 +5,16 @@
 #
 # Prints each script's outcome and wall-clock seconds, slowest first. Set
 # HAT_UPSTREAM_LOGS=DIR to keep each script's combined output as DIR/<name>.log.
-# Scripts listed in tools/upstream-serial.txt run after the parallel batch,
-# one at a time, and are marked (serial) in the report.
+# Scripts listed in tools/upstream-racy.txt run after the parallel batch,
+# one at a time.
 #
 # Outcomes per script (see ARCHITECTURE.md "Testing strategy"):
 #   PASS  - exit 0, not in xfail list
 #   XFAIL - nonzero, listed in tools/upstream-xfail.txt   -> suite ok
 #   XPASS - exit 0 but listed in xfail                    -> suite FAILS
 #   FAIL  - nonzero, not listed                           -> suite FAILS
+#   RPASS - exit 0, listed in tools/upstream-racy.txt     -> suite ok
+#   RFAIL - nonzero, listed in racy                       -> suite ok
 #
 # tmux's regress dir is ISC-licensed and not vendored here; point this
 # at a checkout (e.g. ~/src/tmux).
@@ -40,7 +42,7 @@ regress="$tmux_src/regress"
 
 here=$(dirname "$0")
 xfail_file="$here/upstream-xfail.txt"
-serial_file="$here/upstream-serial.txt"
+racy_file="$here/upstream-racy.txt"
 # $HAT_BIN overrides; else build and locate the dev binary as one step, so it
 # is fresh and the two agree on a builddir. Never fall through to a $PATH
 # `hat`, which on a dev box is the stale system-installed one.
@@ -61,11 +63,11 @@ fi
 listed_in() {
     [ -f "$1" ] && sed 's/#.*//' "$1" | awk 'NF { print $1 }'
 }
-serial_names=$(listed_in "$serial_file")
-is_serial() { printf '%s\n' $serial_names | grep -qxF "$1"; }
-parallel_tests=""; serial_tests=""
+racy_names=$(listed_in "$racy_file")
+is_racy() { printf '%s\n' $racy_names | grep -qxF "$1"; }
+parallel_tests=""; racy_tests=""
 for t in $tests; do
-    if is_serial "$t"; then serial_tests="$serial_tests $t"
+    if is_racy "$t"; then racy_tests="$racy_tests $t"
     else parallel_tests="$parallel_tests $t"; fi
 done
 
@@ -139,13 +141,13 @@ loadavg() { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo '?'; }
 load_start=$(loadavg)
 [ -n "$parallel_tests" ] &&
     printf '%s\n' $parallel_tests | xargs -P"$jobs" -I{} bash -c 'run_one "$@"' _ {}
-for t in $serial_tests; do
+for t in $racy_tests; do
     bash -c 'run_one "$@"' _ "$t"
 done
 load_end=$(loadavg)
 
-pass=0; fail=0; xfail=0; xpass=0
-failed_names=""; xpassed_names=""
+pass=0; fail=0; xfail=0; xpass=0; rpass=0; rfail=0
+failed_names=""; xpassed_names=""; rfailed_names=""
 outcomes="$work/outcomes"
 : > "$outcomes"
 while read -r code secs name; do
@@ -153,7 +155,15 @@ while read -r code secs name; do
     if [ -f "$xfail_file" ] && grep -q "^$name" "$xfail_file"; then
         expected_fail=true
     fi
-    if [ "$code" -eq 0 ]; then
+    if is_racy "$name"; then
+        if [ "$code" -eq 0 ]; then
+            rpass=$((rpass + 1))
+            outcome=RPASS
+        else
+            rfail=$((rfail + 1)); rfailed_names="$rfailed_names $name"
+            outcome=RFAIL
+        fi
+    elif [ "$code" -eq 0 ]; then
         if $expected_fail; then
             xpass=$((xpass + 1)); xpassed_names="$xpassed_names $name"
             outcome=XPASS
@@ -170,16 +180,16 @@ while read -r code secs name; do
             outcome=FAIL
         fi
     fi
-    mode=""
-    is_serial "$name" && mode=" (serial)"
-    printf '%-5s %6ss  %s%s\n' "$outcome" "$secs" "$name" "$mode" >> "$outcomes"
+    printf '%-5s %6ss  %s\n' "$outcome" "$secs" "$name" >> "$outcomes"
 done < "$results"
 
 sort -k2 -rn "$outcomes"
 
 echo "jobs=$jobs cores=$cores load(1m) start=$load_start end=$load_end"
 echo "pass=$pass xfail=$xfail fail=$fail xpass=$xpass"
-[ -n "$serial_tests" ] && echo "serial (run alone after the parallel batch):$serial_tests"
+[ -n "$racy_tests" ] &&
+    echo "racy: pass=$rpass fail=$rfail (run alone after the parallel batch; never fail the suite)"
+[ -n "$rfailed_names" ] && echo "racy, lost this run:$rfailed_names"
 [ -n "$failed_names" ] && echo "FAILED:$failed_names"
 [ -n "$xpassed_names" ] && echo "XPASSED (remove from xfail!):$xpassed_names"
 [ "$fail" -eq 0 ] && [ "$xpass" -eq 0 ]

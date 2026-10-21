@@ -1102,24 +1102,35 @@ Concrete shape:
 tools/
   run-upstream-tests.sh        # iterate, record outcomes, summarize
   upstream-xfail.txt           # known-failing tests, one per line, with reason
+  upstream-racy.txt            # racy tests, one per line, with the race
 test-upstream/                 # cabal test-suite `hat-upstream`: wraps the
                                # runner; skips unless HAT_UPSTREAM=1
 ```
 
-Each script run produces one of four outcomes:
+Each script run produces one of six outcomes:
 
-| Outcome             | In `xfail.txt`? | Script result | Suite result |
+| Outcome             | Listed in       | Script result | Suite result |
 | ------------------- | --------------- | ------------- | ------------ |
-| **PASS**            | no              | 0             | success      |
-| **XFAIL** (known)   | yes             | non-zero      | success      |
-| **XPASS** (unexpected pass) | yes      | 0             | **failure**  |
-| **FAIL**            | no              | non-zero      | failure      |
+| **PASS**            | —               | 0             | success      |
+| **XFAIL** (known)   | `xfail.txt`     | non-zero      | success      |
+| **XPASS** (unexpected pass) | `xfail.txt` | 0         | **failure**  |
+| **FAIL**            | —               | non-zero      | failure      |
+| **RPASS**           | `racy.txt`      | 0             | success      |
+| **RFAIL**           | `racy.txt`      | non-zero      | success      |
 
 XPASS is the important one: when a test we'd marked as known-failing
 starts passing, the runner fails until someone removes its entry from
 `xfail.txt`. This keeps the file from rotting into a stale list of
 "we tried once and gave up." Every promotion to PASS is recorded as a
 real change; every regression to FAIL is caught at the next run.
+
+A few scripts race inside tmux's own script — a fixed `sleep`, or no wait
+between `send-keys` and `capture-pane` — and lose under load; tmux itself
+loses the same races more often. They usually pass, so an xfail entry
+would turn each pass into an XPASS failure. `upstream-racy.txt` names them
+instead, each with the race it hinges on: they run one at a time after the
+parallel batch, and the summary reports how each fared without letting
+either outcome fail the suite.
 
 The suite is **opt-in** (`HAT_UPSTREAM=1`), not part of the default
 `cabal test` or CI run (`scripts/ci.sh` runs build + `cabal test` +

@@ -84,6 +84,7 @@ import Hat.Term.EmulatorSpec qualified
 import Hat.Term.Emulator.HistorySpec qualified
 import Hat.Term.GoldenSpec qualified
 import Hat.Transport.WireSpec qualified
+import Hat.UpstreamRunnerSpec qualified
 
 -- | Bound the fd table so each close_fds spawn scans a small range; the
 -- hard limit stays untouched.
@@ -117,6 +118,7 @@ main = hspec $ parallel $ do
     describe "Hat.Term.Emulator.History" Hat.Term.Emulator.HistorySpec.spec
     describe "Hat.Term golden" Hat.Term.GoldenSpec.spec
     describe "Hat.Transport.Wire" Hat.Transport.WireSpec.spec
+    describe "upstream runner" Hat.UpstreamRunnerSpec.spec
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.ResizeRender" Hat.Server.ResizeRenderSpec.spec
     describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec

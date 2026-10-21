@@ -1,8 +1,9 @@
-# tmux regress scripts run one at a time, after the parallel batch, with
-# nothing else from the suite running. Each races inside tmux's own script
-# (fixed sleeps, or no wait between send-keys and capture), and loses those
-# races under load -- tmux 3.4 itself loses them more often under the same
-# load. One per line, with the race it hinges on.
+# Racy tmux regress scripts: each races inside tmux's own script (fixed
+# sleeps, or no wait between send-keys and capture) and loses those races
+# under load -- tmux 3.4 itself loses them more often under the same load.
+# They run one at a time, after the parallel batch, with nothing else from
+# the suite running; their pass or fail is reported but never fails the
+# suite. One per line, with the race it hinges on.
 input-keys.sh                   # capture-pane straight after send-keys, no wait for `cat -tv` to echo
 input-raw-cursor.sh             # input-common.inc's fixed `sleep 0.3` for the pane's printf before capture
 input-raw-reflow.sh             # fixed `sleep 0.3` for the printf and `sleep 0.2` after resize-window before capture

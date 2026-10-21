@@ -401,6 +401,7 @@ test-suite hat-test
         Hat.Term.Emulator.HistorySpec
         Hat.Term.GoldenSpec
         Hat.Transport.WireSpec
+        Hat.UpstreamRunnerSpec
     ghc-options:        -threaded -with-rtsopts=-N
     build-depends:
         async       ^>= 2.2.6,
