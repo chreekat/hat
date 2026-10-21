@@ -453,7 +453,7 @@ spec = do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
                 run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
                 [_, b] <- paneIds st "S:0"
-                let bad = RawArg "a\xffb"
+                let bad = RawArg "a\xff\&b"
                 forM_
                     [ (["rename-session", "-t", "S"], bad, "session")
                     , (["new-session", "-d", "-s"], bad, "session")
