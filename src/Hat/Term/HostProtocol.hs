@@ -78,6 +78,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Word (Word8)
 
 import Hat.Colour (colourParseX11)
+import Hat.Command.Arg (Arg (..), argFromBytes)
 
 -- | Which color an OSC query asks about: OSC 10 (foreground) or 11
 -- (background).
@@ -446,9 +447,9 @@ titleStackOps = \case
 -- unless valid UTF-8; @#(@ defused to @_(@ so no format ever runs a command
 -- from it; control characters and backslash made visible as @vis(3)@ does.
 cleanName :: ByteString -> Maybe Text
-cleanName raw = case TE.decodeUtf8' raw of
-    Left _ -> Nothing
-    Right t -> Just (T.concatMap visible (T.replace "#(" "_(" t))
+cleanName raw = case argFromBytes raw of
+    RawArg _ -> Nothing
+    Utf8Arg t -> Just (T.concatMap visible (T.replace "#(" "_(" t))
   where
     visible c = case c of
         '\\' -> "\\\\"
