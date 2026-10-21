@@ -443,7 +443,8 @@ argvTable = Map.fromList
     nameTaking = Map.fromList
         [ ("new-session", argvNewSession), ("rename-session", argvRenameSession)
         , ("new-window", argvNewWindow), ("rename-window", argvRenameWindow)
-        , ("break-pane", argvBreakPane), ("set-buffer", argvSetBuffer) ]
+        , ("break-pane", argvBreakPane), ("set-buffer", argvSetBuffer)
+        , ("select-pane", argvSelectPane) ]
 
 commandSpecs :: [([Text], CommandImpl)]
 commandSpecs =

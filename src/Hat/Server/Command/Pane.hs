@@ -13,6 +13,7 @@ module Hat.Server.Command.Pane
     , cmdNewPane
     , cmdNewEditorPane
     , cmdSelectPane
+    , argvSelectPane
     , cmdLastPane
     , cmdKillPane
     , cmdRespawnPane
@@ -44,7 +45,10 @@ import Hat.Server.Command.Buffer (storeBuffer)
 import Hat.Server.Command.Option (paneOptionText, setPaneOption)
 import Hat.Server.Command.CaptureRaw (cellUsed, flagLetters, rawDump)
 import Hat.Server.ArgNumber (stringPercentage)
-import Hat.Server.Command.Types (CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Command.Arg (Arg (..))
+import Hat.Server.Command.Types
+    (ArgvImpl, CommandImpl, Reply (..), parseArgs, strtonum, unknownFlag)
+import Hat.Server.Name (NameKind (..), NameSlot (..), admitName, admittingNames)
 import Hat.Server.Floating
     ( Border (..), FloatSplit (..), FloatState (..), GeomArgs (..), Modal (..), borderOf
     , floatingGeom, modalPane, splitFloatingGeom, stackNew, swapStacked )
@@ -569,11 +573,14 @@ spawnInWindow entry st mclient args
                                     then Just active' else Nothing)
                             True <$ bumpDirty st
                 optErr <- if placed then setPaneOptions pane else pure Nothing
+                titleErr <- case (placed, optErr, lookup "-T" opts) of
+                    (True, Nothing, Just t) -> setPaneTitle st sess win pane t
+                    _ -> pure Nothing
                 if | not placed -> [RErr "no space for a new pane"] <$ hangupPane pane
                    | Just e <- optErr ->
                         [RErr e] <$ killPaneLocs st [(sess.id, win, pane)]
+                   | Just r <- titleErr -> [r] <$ killPaneLocs st [(sess.id, win, pane)]
                    | otherwise -> do
-                        forM_ (lookup "-T" opts) (setPaneTitle st sess win pane)
                         when ("-d" `notElem` flags) $
                             setCurrentPane mclient sess.id win.id pane.id
                         case entry of
@@ -676,6 +683,15 @@ locateWindowOf st win = do
         pure [ (sid, ix) | (ix, w) <- Map.toList ws, w.id == win.id ]
     pure (listToMaybe (concat hits))
 
+-- | 'cmdSelectPane', its title as it arrived.
+argvSelectPane :: ArgvImpl
+argvSelectPane =
+    admittingNames "select-pane" selectPaneValueFlags [NameFlag "-T" PaneTitle] cmdSelectPane
+
+-- | The @select-pane@ flags that take a value.
+selectPaneValueFlags :: [Char]
+selectPaneValueFlags = "PtT"
+
 -- | @select-pane@ (@cmd-select-pane.c@): make the target pane — or its
 -- neighbour in a @-L@\/@-R@\/@-U@\/@-D@ direction — active; @-l@ acts on
 -- the last pane instead; @-m@\/@-M@ set and clear the marked pane; @-d@\/@-e@
@@ -721,7 +737,7 @@ cmdSelectPane st mclient args
                         Just wp
                             | "-e" `elem` flags -> [] <$ setInputOff st wp False
                             | "-d" `elem` flags -> [] <$ setInputOff st wp True
-                            | Just t <- lookup "-T" opts -> [] <$ setPaneTitle st sess win wp t
+                            | Just t <- lookup "-T" opts -> maybe [] pure <$> setPaneTitle st sess win wp t
                             | otherwise -> do
                                 before <- readTVarIO win.activeId
                                 activate st sess win wp ("-Z" `elem` flags)
@@ -730,7 +746,7 @@ cmdSelectPane st mclient args
                                     setCurrentPane mclient sess.id win.id wp.id
                                 pure []
   where
-    (opts, flags, _) = parseArgs "PtT" args
+    (opts, flags, _) = parseArgs selectPaneValueFlags args
     direction
         | "-L" `elem` flags = Just DirLeft
         | "-R" `elem` flags = Just DirRight
@@ -793,20 +809,25 @@ setInputOff :: ServerState -> Pane -> Bool -> IO ()
 setInputOff st wp off = atomically $ writeTVar wp.inputOff off >> bumpDirty st
 
 -- | Set a pane's title as its program would (OSC 2), firing
--- @pane-title-changed@ when that changes it.
-setPaneTitle :: ServerState -> Session -> Window -> Pane -> Text -> IO ()
+-- @pane-title-changed@ when that changes it; or the refusal of a title
+-- 'admitName' refuses.
+setPaneTitle :: ServerState -> Session -> Window -> Pane -> Text -> IO (Maybe Reply)
 setPaneTitle st sess win wp raw = do
     pix <- paneIndexOf st win wp
     wix <- atomically $ do
         ws <- readTVar sess.windows
         pure (listToMaybe [ i | (i, w) <- Map.toList ws, w.id == win.id ])
     env <- paneFormatEnv st sess (fromMaybe 0 wix) win pix wp
-    title <- T.filter (\c -> c >= ' ' && c /= '\DEL') <$> expandFormat st env raw
-    old <- Emu.title wp.emulator
-    when (title /= old) $ do
-        setScreenTitle wp title
-        atomically (bumpDirty st)
-        notifyPane st "pane-title-changed" wp [ ("new_title", PText title) ]
+    expanded <- expandFormat st env raw
+    case admitName PaneTitle (Utf8Arg expanded) of
+      Left r -> pure (Just r)
+      Right title -> do
+        old <- Emu.title wp.emulator
+        when (title /= old) $ do
+            setScreenTitle wp title
+            atomically (bumpDirty st)
+            notifyPane st "pane-title-changed" wp [ ("new_title", PText title) ]
+        pure Nothing
 
 -- | Set or clear the marked pane: @-M@ (or marking the marked pane again)
 -- clears it. Fires @marked-pane-changed@.

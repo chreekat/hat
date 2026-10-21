@@ -445,6 +445,8 @@ spec = do
                     , (["set-buffer", "-b", "a\tb", "data"], "buffer") ]
                     $ \(argv, kind) -> run st argv
                         `shouldReturn` [RErr ("invalid " <> kind <> " name: a\tb")]
+                run st ["select-pane", "-t", b, "-T", "a\tb"]
+                    `shouldReturn` [RErr "invalid pane title: a\tb"]
                 run st ["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]
                     `shouldReturn` [ROutput "S:sleep"]
 
@@ -466,6 +468,8 @@ spec = do
                     $ \(argv, name, kind) ->
                         runArgArgv st Nothing (map Utf8Arg argv <> [name, Utf8Arg "x"])
                             `shouldReturn` [errQuoting ("invalid " <> kind <> " name: ") bad]
+                runArgArgv st Nothing [Utf8Arg "select-pane", Utf8Arg "-t", Utf8Arg b, Utf8Arg "-T", bad]
+                    `shouldReturn` [errQuoting "invalid pane title: " bad]
                 run st ["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]
                     `shouldReturn` [ROutput "S:sleep"]
 
