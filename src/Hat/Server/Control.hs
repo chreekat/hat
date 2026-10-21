@@ -134,9 +134,9 @@ runControlCommands d st client cs origin = \case
 
 -- | A reply as protocol lines.
 replyLines :: Reply -> [ByteString]
-replyLines = \case
+replyLines r = case r of
     ROutput t -> [TE.encodeUtf8 t]
-    RErr e -> [TE.encodeUtf8 e]
+    RErr e -> [fromMaybe (TE.encodeUtf8 e) (replyErrorBytes r)]
     RData bytes -> B8.lines bytes
     RExitStatus _ -> []
 

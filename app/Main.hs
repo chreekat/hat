@@ -4,6 +4,7 @@ module Main (main) where
 
 import Control.Concurrent (threadDelay)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as B
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -215,7 +216,7 @@ controlMode path mconfig flavour setup = do
         Right 0 -> pure ()
         Right n -> exitWith (ExitFailure n)
         Left (Rejected e) -> do
-            hPutStrLn stderr ("hat: " <> T.unpack e)
+            B.hPut stderr ("hat: " <> e <> "\n")
             exitWith (ExitFailure 1)
         Left ServerDied -> do
             hPutStrLn stderr "hat: server exited unexpectedly"
@@ -247,7 +248,7 @@ attach path mconfig answered setup hist = do
             hPutStrLn stderr "hat: server connection lost"
             exitWith (ExitFailure 1)
         Rejected e -> do
-            hPutStrLn stderr ("hat: " <> T.unpack e)
+            B.hPut stderr ("hat: " <> e <> "\n")
             exitWith (ExitFailure 1)
 
 -- | Re-exec @hat@ in place to reattach: the server told us to restart, so
@@ -291,7 +292,7 @@ control path mconfig answered cmds = do
                 -- Bare, like tmux: scripts match on the exact error text
                 -- (e.g. @duplicate session: NAME@), so no @hat: @ prefix.
                 Rejected e -> do
-                    hPutStrLn stderr (T.unpack e)
+                    B.hPut stderr (e <> "\n")
                     exitFailure
                 ServerDied -> do
                     hPutStrLn stderr "hat: server exited unexpectedly"

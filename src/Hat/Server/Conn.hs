@@ -31,7 +31,7 @@ import Data.Functor ((<&>))
 import Data.IORef
 import Data.List (nub, partition, sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust, listToMaybe)
+import Data.Maybe (isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -205,14 +205,15 @@ welcome d st re h = do
             atomically . writeTVar client.sessionHist
                 =<< atomically (resolveSessionNames st h.sessionHist)
             setupErr <- openTerminal st client h >>= \case
-                Just e -> pure (Just e)
+                Just e -> pure (Just (ServerError e))
                 Nothing -> attachSetup d st client setupCmds
             msess <- case setupErr of
                 Just _ -> pure Nothing
                 Nothing -> currentSession st client
             case (setupErr, msess) of
-                (Just e, _) ->
-                    sendMessage conn (ServerError e) >> removeClient st client
+                (Just e, _) -> do
+                    sendFrame conn (frameServerMessageAt client.wireLevel e)
+                    removeClient st client
                 (_, Nothing) -> do
                     sendMessage conn (ServerError "no session to attach")
                     removeClient st client
@@ -259,7 +260,7 @@ openTerminal st client h = case h.termCaps of
 -- pointing at the session it should render. An empty command list means a
 -- plain attach: reuse an existing session or create one. Returns the
 -- first error, if any, so 'welcome' can reject the attach.
-attachSetup :: Dispatch -> ServerState -> Client -> [[Text]] -> IO (Maybe Text)
+attachSetup :: Dispatch -> ServerState -> Client -> [[Text]] -> IO (Maybe ServerToClient)
 attachSetup _ st client [] = do
     sess <- ensureSession st client
     atomically $ do
@@ -269,7 +270,13 @@ attachSetup _ st client [] = do
     pure Nothing
 attachSetup d st client cmds = do
     replies <- d.runCommands st (Just client) cmds
-    pure (listToMaybe [e | RErr e <- replies])
+    pure (listToMaybe (mapMaybe errorMessage replies))
+
+-- | An error reply as the message that carries it, its bytes verbatim.
+errorMessage :: Reply -> Maybe ServerToClient
+errorMessage r = case r of
+    RErr e -> Just (maybe (ServerError e) ServerErrorBytes (replyErrorBytes r))
+    _ -> Nothing
 
 -- | The session @client.session@ currently names, if it still exists.
 currentSession :: ServerState -> Client -> IO (Maybe Session)
@@ -871,11 +878,11 @@ controlLoop d st re client = do
             let granted = client { stdinSource = StdinFrom (requestStdin re client open) }
             replies <- d.runCommands st (Just granted) cmds
                 `finally` atomically (writeTVar open False)
-            forM_ replies $ \case
+            forM_ replies $ \r -> case r of
                 ROutput out -> send client (Message out)
                 RErr e -> do
                     logShownMessage st client e
-                    send client (ServerError e)
+                    mapM_ (send client) (errorMessage r)
                 RData bytes -> forM_ (chunksOf stdoutChunk bytes) $
                     send client . WriteStdout
                 RExitStatus _ -> pure ()

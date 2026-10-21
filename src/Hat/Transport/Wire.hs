@@ -91,7 +91,7 @@ import Hat.Term.Cell
 -- | This build's wire version. See the evolution charter in the module
 -- haddock and 'negotiate'.
 protocolVersion :: Word16
-protocolVersion = 12
+protocolVersion = 13
 
 -- | The oldest dialect any build ever froze; nothing older exists to speak.
 dialectFloor :: Word16
@@ -236,6 +236,9 @@ data ServerToClient
     | ExitStatus Int
         -- ^ the status a command client exits with once its commands are
         --   done (level 12 and up; an older peer skips the tag and exits 0)
+    | ServerErrorBytes ByteString
+        -- ^ a 'ServerError' whose text is not UTF-8, for standard error
+        --   verbatim (level 13 and up)
     deriving (Eq, Show, Generic)
 
 data DrawOp
@@ -317,6 +320,7 @@ instance WireMessage ClientToServer where
 --   LockClient    = 16
 --   OpenedTerminal = 17
 --   ExitStatus    = 18
+--   ServerErrorBytes = 19
 instance WireMessage ServerToClient where
     encodeWire = \case
         Welcome n     -> encodeListLen 2 <> encodeWord 0 <> encode n
@@ -345,6 +349,7 @@ instance WireMessage ServerToClient where
         OpenedTerminal caps feats ->
             encodeListLen 3 <> encodeWord 17 <> encode caps <> encode feats
         ExitStatus n  -> encodeListLen 2 <> encodeWord 18 <> encode n
+        ServerErrorBytes e -> encodeListLen 2 <> encodeWord 19 <> encode e
     decodeWirePayload tag len = case tag of
         0 -> field len (Known . Welcome <$> decode)
         1 -> field len (Known . Draw <$> decode)
@@ -383,6 +388,7 @@ instance WireMessage ServerToClient where
             _ -> pure (Malformed
                 ("OpenedTerminal: expected 2 fields, got " <> show (len - 1)))
         18 -> field len (Known . ExitStatus <$> decode)
+        19 -> field len (Known . ServerErrorBytes <$> decode)
         _ -> pure (UnknownTag tag)
 
 -- | A single-field constructor: the payload list must be @[tag, field]@.
@@ -458,6 +464,7 @@ encodeServerMessageAt lvl = \case
     -- to (see 'Hat.Server.Lock.lockClient').
     LockClient _ | lvl < 10 ->
         encodeMessage (Message "locking: not supported by this client")
+    ServerErrorBytes e | lvl < 13 -> encodeMessage (ServerError (TE.decodeUtf8Lenient e))
     msg -> encodeMessage msg
 
 -- Mirrors the Generic @[DrawOp]@ encoding byte-for-byte (pinned in WireSpec),

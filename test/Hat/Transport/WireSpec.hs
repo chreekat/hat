@@ -148,6 +148,7 @@ instance Arbitrary ServerToClient where
         , LockClient <$> genText
         , OpenedTerminal <$> listOf genText <*> listOf genText
         , ExitStatus <$> arbitrary
+        , ServerErrorBytes . B.pack <$> arbitrary
         ]
     shrink = \case
         Welcome n -> Welcome . T.pack <$> shrink (T.unpack n)
@@ -176,6 +177,7 @@ instance Arbitrary ServerToClient where
             [ OpenedTerminal cs feats | cs <- shrinkList (const []) caps ]
             ++ [ OpenedTerminal caps fs | fs <- shrinkList (const []) feats ]
         ExitStatus n -> ExitStatus <$> shrink n
+        ServerErrorBytes bs -> ServerErrorBytes . B.pack <$> shrink (B.unpack bs)
 
 -- | What a level-4 peer receives: the pre-faint Style, so the field is gone.
 dropFaint :: DrawOp -> DrawOp
@@ -287,6 +289,7 @@ spec = do
               , encodeMessage (OpenedTerminal ["am=1"] ["title"])
               , "83119f64616d3d31ff9f657469746c65ff" )
             , ( "ExitStatus", encodeMessage (ExitStatus 3), "821203" )
+            , ( "ServerErrorBytes", encodeMessage (ServerErrorBytes "a\xff\&b"), "82134361ff62" )
             ] $ \(name, bytes, golden) ->
             it name $ hex bytes `shouldBe` golden
 
@@ -373,6 +376,11 @@ spec = do
         -- as it is, skips it as unknown, and exits 0 as it always did.
         it "sends ExitStatus unchanged below level 12" $
             hex (encodeServerMessageAt 11 (ExitStatus 3)) `shouldBe` "821203"
+        -- The level-12 corpus vector for tag 19: a pre-13 peer gets the
+        -- error as text, each invalid byte a U+FFFD.
+        it "downgrades ServerErrorBytes to a lossy ServerError below level 13" $
+            hex (encodeServerMessageAt 12 (ServerErrorBytes "a\xff\&b"))
+                `shouldBe` "82086561efbfbd62"
         it "reads a level-6 name-only RestartClientTo as empty history" $
             (decodeMessage (B.pack (hexBytes "820c646d61696e"))
                 :: Inbound ServerToClient)
@@ -425,6 +433,12 @@ spec = do
                 , frameOf (encodeMessage CommandDone)
                 ]
             reason `shouldBe` CommandsFinished 3
+        it "rejects with an error's bytes verbatim" $ do
+            reason <- withFakeServer
+                [ frameOf (encodeMessage (Welcome ""))
+                , frameOf (encodeMessage (ServerErrorBytes "invalid session name: a\xff\&b"))
+                ]
+            reason `shouldBe` Rejected "invalid session name: a\xff\&b"
         it "returns the fatal error on a malformed frame" $ do
             reason <- withFakeServer
                 [ frameOf (encodeMessage (Welcome ""))
