@@ -9,21 +9,28 @@ module Hat.Server.Command.Types
     , errQuoting
     , replyErrorBytes
     , CommandImpl
+    , ArgvImpl
+    , textOnly
     , Dispatch (..)
+    , FlagWord
     , parseArgs
     , parseArgsDigits
+    , parseArgsOver
     , unknownFlag
     , strtonum
     , templateReplace
     ) where
 
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as B
+import Data.Char (chr)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Read qualified as TR
 
-import Hat.Command.Arg (Arg (..))
+import Hat.Command.Arg (Arg (..), argFromBytes, argLossy)
 import Hat.Model (Client, Pane, ServerState)
 import Hat.Server.ArgNumber (strtonum)
 
@@ -68,6 +75,20 @@ replyErrorBytes = \case
 -- command's argument words, producing reply lines.
 type CommandImpl = ServerState -> Maybe Client -> [Text] -> IO [Reply]
 
+-- | A command handler taking its words as they arrived, UTF-8 or not.
+type ArgvImpl = ServerState -> Maybe Client -> [Arg] -> IO [Reply]
+
+-- | A handler that takes only text: a word that is not UTF-8 fails the
+-- command @name@, quoting it.
+textOnly :: Text -> CommandImpl -> ArgvImpl
+textOnly name impl st mclient args = case traverse text args of
+    Right ts -> impl st mclient ts
+    Left raw -> pure [errQuoting (name <> ": argument is not valid UTF-8: ") raw]
+  where
+    text = \case
+        Utf8Arg t -> Right t
+        raw -> Left raw
+
 -- | The command engine's entry points, in the three shapes a caller has a
 -- command in: one argv, a batch of them, or an unparsed line. Carrying them
 -- as a value is what lets a client path run a command while knowing nothing
@@ -89,32 +110,56 @@ data Dispatch = Dispatch
 -- Returns (value flags as ("-s", value), boolean flags as "-d",
 -- positional args).
 parseArgs :: [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
-parseArgs spec = parseArgsDigits spec []
+parseArgs spec = parseArgsOver spec []
 
 -- | 'parseArgs' for a command whose flags include the digits @digits@
 -- (@command-prompt -1@): an argument of those digits alone is flags, not
 -- the number it otherwise reads as.
 parseArgsDigits :: [Char] -> [Char] -> [Text] -> ([(Text, Text)], [Text], [Text])
-parseArgsDigits spec digits = go [] []
+parseArgsDigits = parseArgsOver
+
+-- | A word flags are read from. Flag letters are ASCII, so a word that is
+-- not UTF-8 splits as bytes.
+class FlagWord w where
+    wordUncons :: w -> Maybe (Char, w)
+    wordText :: w -> Text  -- ^ U+FFFD where it is not UTF-8
+
+instance FlagWord Text where
+    wordUncons = T.uncons
+    wordText = id
+
+instance FlagWord Arg where
+    wordUncons = \case
+        Utf8Arg t -> fmap Utf8Arg <$> T.uncons t
+        RawArg bytes -> do
+            (w, rest) <- B.uncons bytes
+            pure (if w < 0x80 then chr (fromIntegral w) else '\xFFFD', argFromBytes rest)
+    wordText = argLossy
+
+-- | 'parseArgsDigits' over any 'FlagWord'.
+{-# INLINABLE parseArgsOver #-}
+parseArgsOver :: FlagWord w => [Char] -> [Char] -> [w] -> ([(Text, w)], [Text], [w])
+parseArgsOver spec digits = go [] []
   where
     go opts flags = \case
         [] -> (opts, flags, [])
-        ("--" : rest) -> (opts, flags, rest)   -- end-of-flags separator
         (a : rest)
-            | Just bundle <- T.stripPrefix "-" a
-            , not (T.null bundle)
-            , not (isNumber a) || T.all (`elem` digits) bundle ->
+            | wordText a == "--" -> (opts, flags, rest)   -- end-of-flags separator
+            | Just ('-', bundle) <- wordUncons a
+            , not (blank bundle)
+            , not (isNumber (wordText a)) || T.all (`elem` digits) (wordText bundle) ->
                 let (opts', flags', rest') = scanBundle bundle rest
                 in go (opts' <> opts) (flags' <> flags) rest'
             | otherwise -> (opts, flags, a : rest)
-    scanBundle bundle rest = case T.uncons bundle of
+    blank = isNothing . wordUncons
+    scanBundle bundle rest = case wordUncons bundle of
         Nothing -> ([], [], rest)
         Just (c, more)
             | c `elem` spec ->
-                case (T.null more, rest) of
+                case (blank more, rest) of
                     (False, _) -> ([(dash c, more)], [], rest)
                     (True, v : rest') -> ([(dash c, v)], [], rest')
-                    (True, []) -> ([(dash c, "")], [], [])
+                    (True, []) -> ([(dash c, more)], [], [])
             | otherwise ->
                 let (opts', flags', rest') = scanBundle more rest
                 in (opts', dash c : flags', rest')
