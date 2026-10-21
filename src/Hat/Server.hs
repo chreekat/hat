@@ -50,6 +50,7 @@ module Hat.Server
     , WindowFlagState (..)
     , defaultKeymap  -- ^ exported for the copy-mode binding test
     , applySessionSize  -- ^ exported for the aggressive-resize test
+    , followDesktopScheme  -- ^ exported for the desktop-theme test
     , reencodeKey       -- ^ exported for the key-encoding test
     , awaitReconciled  -- ^ exported for the reconcile-barrier test
     , awaitReconcileTick  -- ^ exported for the command-batch gate test
@@ -274,7 +275,8 @@ runServerWith path mconfig mhandover = do
                 [ clockDaemon
                 , reconcileLoop st                -- pane sizes track the layout
                 , titleDaemon
-                , watchColorScheme st             -- follow the desktop theme
+                , watchColorScheme st             -- read the desktop theme
+                , followDesktopLoop st            -- desktop-theme
                 , monitorLoop st                  -- set-hook -B format monitors
                 , expireLoop st                   -- lapse unanswered terminal queries
                 ] <> [ persistLoop st p | p <- maybe [] pure mstore ]
@@ -439,10 +441,8 @@ waitIdle st = do
 
 -- Color scheme -----------------------------------------------------------
 
--- | Follow the desktop's light\/dark preference: read it once, then tail
--- @gsettings monitor@ for changes. Runs after the config has loaded so
--- the @\@color-scheme-*@ options are set before the initial apply. The
--- monitor is a durable daemon: if its subprocess dies (a crash, EOF on its
+-- | Watch the desktop's light\/dark preference ('recordDesktopScheme'):
+-- read it once, then tail @gsettings monitor@ for changes. The monitor is a durable daemon: if its subprocess dies (a crash, EOF on its
 -- pipe) or the @gsettings@ binary is absent (a host without a desktop
 -- session), the watcher is respawned after a capped backoff so theme-
 -- following resumes on its own — a transient death never silently ends the
@@ -454,9 +454,7 @@ waitIdle st = do
 -- execve escapes that cleanup, so 'cmdRestartServer' reaps the registered
 -- monitor first (see 'withRegisteredMonitor', 'reapMonitor').
 watchColorScheme :: ServerState -> IO ()
-watchColorScheme st = do
-    atomically (readTVar st.startupPhase >>= check . (/= LoadingConfig))
-    loop minBackoff
+watchColorScheme st = loop minBackoff
   where
     loop backoff = do
         r <- try watch
@@ -479,7 +477,7 @@ watchColorScheme st = do
     watch = do
         out <- readCreateProcess
             (proc "gsettings" ["get", schemaKey, key]) { close_fds = True } ""
-        forM_ (parseSchemeLine (T.strip (T.pack out))) (applyScheme st)
+        forM_ (parseSchemeLine (T.strip (T.pack out))) (recordDesktopScheme st)
         withCreateProcess
             (proc "gsettings" ["monitor", schemaKey, key])
                 { std_out = CreatePipe, close_fds = True } $ \_ mout _ ph ->
@@ -489,32 +487,56 @@ watchColorScheme st = do
             withRegisteredMonitor st.monitorRegistry ph $
                 forM_ mout $ \h -> forever $ do
                     line <- TIO.hGetLine h
-                    forM_ (parseSchemeLine line) (applyScheme st)
+                    forM_ (parseSchemeLine line) (recordDesktopScheme st)
     minBackoff = 1_000_000     -- 1s after the first death
     maxBackoff = 60_000_000    -- capped at 60s so an absent gsettings idles
     schemaKey = "org.gnome.desktop.interface"
     key = "color-scheme"
 
--- | Record a (possibly unchanged) scheme; on a change, source the
+-- | Record what the desktop's scheme now is.
+recordDesktopScheme :: ServerState -> ColorScheme -> IO ()
+recordDesktopScheme st = atomically . writeTVar st.desktopScheme . Just
+
+-- | The scheme hat should follow: the desktop's, under @desktop-theme@.
+followedScheme :: ServerState -> STM (Maybe ColorScheme)
+followedScheme st = do
+    opts <- readTVar st.options
+    if optionFlag "desktop-theme" opts then readTVar st.desktopScheme else pure Nothing
+
+-- | Apply 'followedScheme' whenever it differs from the scheme in force.
+-- Runs after the config has loaded, so the first scheme applied sees the
+-- config's @desktop-theme@ and @\@color-scheme-*@ options.
+followDesktopLoop :: ServerState -> IO ()
+followDesktopLoop st = do
+    atomically (readTVar st.startupPhase >>= check . (/= LoadingConfig))
+    forever $ do
+        atomically $ check =<< ((/=) <$> followedScheme st <*> readTVar st.colorScheme)
+        followDesktopScheme st
+
+-- | Put 'followedScheme' in force; on a change to a scheme, source the
 -- config file the user pointed at it (@set -g \@color-scheme-dark
 -- \<file\>@, likewise @-light@) and redraw.
-applyScheme :: ServerState -> ColorScheme -> IO ()
-applyScheme st scheme = do
-    old <- atomically $ swapTVar st.colorScheme (Just scheme)
-    unless (old == Just scheme) $ do
+followDesktopScheme :: ServerState -> IO ()
+followDesktopScheme st = do
+    (old, new) <- atomically $ do
+        new <- followedScheme st
+        old <- swapTVar st.colorScheme new
+        pure (old, new)
+    unless (old == new) $ do
         -- The scheme is a base layer under every user scope, so a user's
         -- own set always wins; then the user's per-scheme config on top.
         atomically $ do
-            writeOwn st.schemeOptions (applyPalette scheme)
+            writeOwn st.schemeOptions (maybe emptyDelta applyPalette new)
             refreshGlobalOptions st
-        opts <- readTVarIO st.options
-        let optName = case scheme of
-                SchemeDark -> "@color-scheme-dark"
-                SchemeLight -> "@color-scheme-light"
-        forM_ (Map.lookup optName opts.user) $ \path ->
-            unless (T.null (T.strip path)) $
-                void $ runArgv st Nothing ["source-file", T.strip path]
-        notifySubscribedPanes st scheme
+        forM_ new $ \scheme -> do
+            opts <- readTVarIO st.options
+            let optName = case scheme of
+                    SchemeDark -> "@color-scheme-dark"
+                    SchemeLight -> "@color-scheme-light"
+            forM_ (Map.lookup optName opts.user) $ \path ->
+                unless (T.null (T.strip path)) $
+                    void $ runArgv st Nothing ["source-file", T.strip path]
+            notifySubscribedPanes st scheme
         atomically (bumpDirty st)
 
 -- | Tell every pane whose app subscribed to color-scheme reports (DEC mode

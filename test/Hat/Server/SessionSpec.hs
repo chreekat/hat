@@ -36,7 +36,7 @@ import Hat.Client (TerminalMode (..), nestsOwnServer, terminalMode)
 import Hat.Model
 import Hat.Model.Options
     (ArrayKey (..), Options (..), OptionValue (..)
-    , applyDelta, defaultOptions, insertDelta, lookupDelta, singletonDelta)
+    , applyDelta, defaultOptions, insertDelta, lookupDelta, optionText, singletonDelta)
 import Hat.Server.Alerts (AlertKind (..), deliverAlert)
 import Hat.Server
     ( DetachResult (..), WindowFate (..), SessionFate (..), IdleInputs (..)
@@ -44,6 +44,7 @@ import Hat.Server
     , Reply (..), RestartClientOutcome (..), restartClientAction
     , ReloadScope (..), reloadFarewell
     , applySessionSize, attentionSeen, awaitReconciled, awaitReconcileTick
+    , followDesktopScheme
     , reconcileThrough
     , cmdAttachSession, cmdListClients, cmdMoveWindow, cmdRestartClient
     , cmdRestart
@@ -431,6 +432,27 @@ spec = do
                 mapM_ (\n -> built [n] `shouldReturn` Map.restrictKeys full (Set.singleton n))
                     names)
                 `finally` release
+
+    describe "desktop-theme" $ do
+        let desktop st sch = do
+                atomically (writeTVar st.desktopScheme (Just sch))
+                followDesktopScheme st
+            statusStyle st = optionText "status-style" <$> readTVarIO st.options
+        it "follows the desktop's light or dark scheme by default" $ do
+            (st, _) <- seedSession "/"
+            runArgv st Nothing ["show", "-sv", "desktop-theme"] `shouldReturn` [ROutput "on"]
+            desktop st SchemeLight
+            readTVarIO st.colorScheme `shouldReturn` Just SchemeLight
+            statusStyle st `shouldNotReturn` optionText "status-style" defaultOptions
+        it "off, leaves the desktop's scheme unfollowed, dropping what it applied" $ do
+            (st, _) <- seedSession "/"
+            desktop st SchemeDark
+            [] <- runArgv st Nothing ["set", "-s", "desktop-theme", "off"]
+            followDesktopScheme st
+            readTVarIO st.colorScheme `shouldReturn` Nothing
+            statusStyle st `shouldReturn` optionText "status-style" defaultOptions
+            desktop st SchemeLight
+            readTVarIO st.colorScheme `shouldReturn` Nothing
 
     describe "clientTheme" $
         it "follows the options and the desktop's scheme" $ do

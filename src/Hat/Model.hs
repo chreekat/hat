@@ -235,11 +235,12 @@ data ServerState = ServerState
         --   drain. See 'runServer' (keep vs drop at drain) and
         --   'persistDecision' (the pin against mirror writes).
     , shutdown :: TVar Shutdown  -- ^ see 'Hat.Server.serverIdle'
-    , colorScheme :: TVar (Maybe ColorScheme)
+    , desktopScheme :: TVar (Maybe ColorScheme)
         -- ^ the desktop's light/dark preference, when a watcher could
-        --   determine it ('Nothing' outside a desktop session). Drives
-        --   @#{color_scheme}@ and sourcing of the @\@color-scheme-dark@ /
-        --   @\@color-scheme-light@ config files.
+        --   determine it ('Nothing' outside a desktop session)
+    , colorScheme :: TVar (Maybe ColorScheme)
+        -- ^ the scheme hat follows: 'desktopScheme' under @desktop-theme@,
+        --   else 'Nothing'; see 'Hat.Server.followDesktopScheme'
     , options     :: TVar Options
     , serverOptions :: OwnOptions          -- ^ see 'resolveGlobal'
     , globalSessionOptions :: OwnOptions   -- ^ see 'resolveForSession'
@@ -1234,7 +1235,8 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newTVarIO 0      -- readsInFlight
     <*> newTVarIO False  -- preserveStore
     <*> newTVarIO Serving
-    <*> newTVarIO Nothing
+    <*> newTVarIO Nothing  -- desktopScheme
+    <*> newTVarIO Nothing  -- colorScheme
     <*> newTVarIO defaultOptions
     <*> newOwnOptionsIO  -- serverOptions
     <*> newOwnOptionsIO  -- globalSessionOptions

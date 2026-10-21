@@ -152,7 +152,7 @@ schemeReport SchemeLight = "\ESC[?997;2n"
 
 -- | The scheme's chrome (status bar, pane borders) as an option overlay. It
 -- is applied as the lowest-priority layer under every user scope (see
--- 'Hat.Server.applyScheme'), so a user's own @set@ always wins; without a
+-- 'Hat.Server.followDesktopScheme'), so a user's own @set@ always wins; without a
 -- detected scheme nothing is applied, so the classic defaults stand.
 applyPalette :: ColorScheme -> OptionsDelta
 applyPalette scheme = foldr (uncurry insertDelta) emptyDelta

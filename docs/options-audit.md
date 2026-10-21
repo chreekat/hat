@@ -137,6 +137,7 @@ spot-read of each suspect consumer.
 | `history-file` | `loadHistory` after the config, `saveHistory` at exit and before a reload's exec (PromptHistory.hs) | implemented ✅ tested | pure + model (PromptHistorySpec) |
 | `prompt-history-limit` | `pushHistory` (Prompt.hs) on each submitted line, `restoreHistory` (PromptHistory.hs) as the `history-file` loads: the newest entries of each type are kept | implemented ✅ tested | pure (PromptSpec, PromptHistorySpec) |
 | `message-limit` | `logMessage` (MessageLog.hs) trims the message log as each message is added (tmux's `server_add_message`); `show-messages` lists what is left | implemented ✅ tested | pure + model (MessageLogSpec, SessionSpec) |
+| `desktop-theme` | `followedScheme` → `followDesktopScheme` (Server.hs): the desktop's scheme is put in force, or none when off | implemented ✅ tested | model (SessionSpec) |
 | `main-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `main-pane-height` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
 | `other-pane-width` | `namedSizesOf` → `namedLayout` (Command/Layout.hs, Layout.hs): cells or `N%` | implemented ✅ tested | pure |
@@ -303,6 +304,16 @@ arrive.
   not UTF-8 in a tmux-written entry is rewritten as U+FFFD.
 
 ## Hat extensions (deliberate, beyond tmux)
+
+- **`desktop-theme`** (server flag, default `on`) is hat's own option:
+  follow the desktop's light or dark colour scheme (GNOME's
+  `color-scheme`, tailed with `gsettings monitor`). While on, the scheme
+  drives `theme detect`, `#{color_scheme}`, the chrome palette laid under
+  every user scope, the `@color-scheme-dark`/`@color-scheme-light` config
+  files and the mode-2031 reports to panes; off, hat follows no scheme. tmux learns each
+  client terminal's theme from the terminal itself, so it has no switch;
+  hat's source is the desktop, so it gets one, named in tmux's `theme`
+  vocabulary.
 
 - **`pane-border-indicators`** also takes `color` for `colour` (the
   registry's `aliasing`); `show-options` prints the canonical `colour`.

@@ -558,6 +558,10 @@ optionTable =
         (KChoice ["detect", "terminal", "light", "dark"]) "terminal"
         `described` "Whether tmux should detect the terminal theme, use \
             \terminal ANSI colours, or force the light or dark theme."
+    -- Hat's own: tmux has no such option.
+    , live $ scalar "desktop-theme" ServerScope KFlag "on"
+        `described` "Whether to follow the desktop's light or dark colour \
+            \scheme."
     , live $ themeColour "dark-theme-black" "gray5" "black"
         `described` "Dark theme colour for black."
     , live $ themeColour "dark-theme-white" "gray90" "white"

@@ -154,6 +154,8 @@ set -g @color-scheme-dark  ~/.config/hat/dark.conf
 set -g @color-scheme-light ~/.config/hat/light.conf
 ```
 
+`set -s desktop-theme off` stops following the desktop.
+
 ## Rough edges
 
 - **Not all of tmux.** Missing entirely: mouse support, `display-popup`,

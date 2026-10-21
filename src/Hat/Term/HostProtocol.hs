@@ -26,7 +26,7 @@
 -- Everything here is pure: bytes in, signals and rewritten bytes out. The
 -- 'Hat.Term.Emulator' 'Hat.Term.Emulator.feed' loop is the thin IO wiring
 -- that runs these over the grid engine; 'Hat.Server' is the host that answers
--- the signals with knowledge it holds (see 'Hat.Server.applyScheme').
+-- the signals with knowledge it holds (see 'Hat.Server.followDesktopScheme').
 module Hat.Term.HostProtocol
     ( -- * OSC color-query vocabulary
       OscColorTarget (..)
@@ -535,7 +535,7 @@ partitionPassthrough = go
 
 -- | A color control the inner app sent to its terminal, which hat answers
 -- itself: neither the emulator nor the outer terminal knows the OS scheme hat
--- tracks (see 'Hat.Server.applyScheme').
+-- tracks (see 'Hat.Server.followDesktopScheme').
 data QuerySignal
     = SigColor CsSignal              -- ^ DEC mode 2031 subscribe/query
     | SigOsc OscColorTarget OscTerm  -- ^ OSC 10/11 color query
