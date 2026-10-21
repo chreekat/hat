@@ -76,6 +76,7 @@ library
         Hat.Client
         Hat.Client.Draw
         Hat.Client.Terminfo
+        Hat.Command.Arg
         Hat.Command.Parser
         Hat.Command.Script
         Hat.Client.Tty
@@ -328,6 +329,7 @@ test-suite hat-test
         Hat.Client.TerminfoSpec
         Hat.Client.TtySpec
         Hat.ClientSpec
+        Hat.Command.ArgSpec
         Hat.Command.ParserSpec
         Hat.Command.ScriptSpec
         Hat.DebugSpec

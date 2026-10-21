@@ -12,6 +12,7 @@ import Hat.Client.DrawSpec qualified
 import Hat.Client.TerminfoSpec qualified
 import Hat.Client.TtySpec qualified
 import Hat.ClientSpec qualified
+import Hat.Command.ArgSpec qualified
 import Hat.Command.ParserSpec qualified
 import Hat.Command.ScriptSpec qualified
 import Hat.DebugSpec qualified
@@ -159,6 +160,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Title" Hat.Server.TitleSpec.spec
     describe "Hat.Server.Viewport" Hat.Server.ViewportSpec.spec
     describe "Hat.Server.ListKeys" Hat.Server.ListKeysSpec.spec
+    describe "Hat.Command.Arg" Hat.Command.ArgSpec.spec
     describe "Hat.Command.Parser" Hat.Command.ParserSpec.spec
     describe "Hat.Command.Script" Hat.Command.ScriptSpec.spec
     describe "Hat.FuzzyMatch" Hat.FuzzyMatchSpec.spec
