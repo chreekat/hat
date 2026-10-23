@@ -36,6 +36,11 @@ spec = do
                         close (fromIntegral a) l.slope
                             && close (fromIntegral b) l.intercept)
 
+    describe "fitFloor" $
+        it "fits through each size's cheapest repeat, so a spike moves nothing" $
+            fitFloor [(1, 3), (1, 100), (3, 7), (3, 7)] `shouldSatisfy`
+                fits (\l -> close 2 l.slope && close 1 l.intercept)
+
 fits :: (Line -> Bool) -> Either e Line -> Bool
 fits p = either (const False) p
 

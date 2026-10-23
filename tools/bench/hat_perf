@@ -36,6 +36,7 @@ OUT="$PWD/bench-out"
 KEEP=0
 COUNTER=perf
 KEY_INTERVAL=""
+REPS=3
 
 usage() {
     cat <<'USAGE'
@@ -57,6 +58,7 @@ usage: hat_perf [options]
                          perf's)
   --key-interval SECS    pause between typed keys (default 0.02; 0.1 under
                          valgrind, slow enough that keys never coalesce)
+  --reps K               runs per size (default 3)
 
 Each workload is fixed so runs stay comparable; vary only the sizes.
 USAGE
@@ -73,6 +75,7 @@ while [ $# -gt 0 ]; do
         --keep) KEEP=1; shift ;;
         --counter) COUNTER="$2"; shift 2 ;;
         --key-interval) KEY_INTERVAL="$2"; shift 2 ;;
+        --reps) REPS="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "hat_perf: unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -171,11 +174,11 @@ feed_keys() {
 
 # one_run MUX WORKLOAD N: measure server + client CSVs for one workload size.
 one_run() {
-    local mux=$1 wl=$2 n=$3
+    local mux=$1 wl=$2 n=$3 rep=$4
     WORK=$(mktemp -d "/tmp/hat-perf-XXXXXX")
     local sock="$WORK/socket"
-    local server_csv="$OUT/$mux-$wl-server-$n.csv"
-    local client_csv="$OUT/$mux-$wl-client-$n.csv"
+    local server_csv="$OUT/$mux-$wl-server-$n-$rep.csv"
+    local client_csv="$OUT/$mux-$wl-client-$n-$rep.csv"
 
     # Same conf for both muxes. The lines workload needs room to scroll;
     # typing barely scrolls. Only typestatus renders a status line.
@@ -312,7 +315,7 @@ EOF
     wait "$client_job" 2>/dev/null || true
     CTL=()
 
-    [ "$KEEP" = 1 ] && echo ">>> $mux $wl N=$n scratch kept in $WORK" \
+    [ "$KEEP" = 1 ] && echo ">>> $mux $wl N=$n rep $rep scratch kept in $WORK" \
         || rm -rf "$WORK"
     WORK=""
 }
@@ -323,8 +326,10 @@ for mux in $MUXES; do
             echo ">>> skipping restart for $mux: no in-place restart to measure"
             continue
         fi
-        for n in $(sizes_for "$wl"); do
-            one_run "$mux" "$wl" "$n"
+        for rep in $(seq "$REPS"); do
+            for n in $(sizes_for "$wl"); do
+                one_run "$mux" "$wl" "$n" "$rep"
+            done
         done
     done
 done

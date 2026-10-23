@@ -4,8 +4,10 @@
 module Hat.Bench.Linear
     ( Line (..)
     , fitLinear
+    , fitFloor
     ) where
 
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 
 -- | The fitted line @y = slope · x + intercept@.
@@ -29,3 +31,8 @@ fitLinear pts
     sxx = sum [ (x - xbar) ^ (2 :: Int) | (x, _) <- pts ]
     sxy = sum [ (x - xbar) * (y - ybar) | (x, y) <- pts ]
     a = sxy / sxx
+
+-- | 'fitLinear' through each x's least y. Run-to-run noise in an
+-- instruction count only ever adds, so a size's cheapest repeat is its cost.
+fitFloor :: [(Double, Double)] -> Either Text Line
+fitFloor = fitLinear . Map.toList . Map.fromListWith min

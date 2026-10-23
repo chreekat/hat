@@ -66,7 +66,7 @@ fitDir dir = do
   where
     fit (k, points) = do
         pts <- mapM instructions (sortOn fst points)
-        case fitLinear pts of
+        case fitFloor pts of
             Left err -> die (T.unpack (renderKey k <> ": " <> err))
             Right l -> pure (k, l)
     instructions (n, f) = do

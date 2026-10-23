@@ -39,15 +39,21 @@ renderKey :: SeriesKey -> Text
 renderKey k = T.unwords [k.mux, k.workload, k.role]
 
 -- | The series and size a perf CSV belongs to, from the
--- @\<mux>-\<workload>-\<role>-\<N>.csv@ name the bench driver writes.
+-- @\<mux>-\<workload>-\<role>-\<N>[-\<repeat>].csv@ name the bench driver
+-- writes.
 parseSeriesFile :: Text -> Maybe (SeriesKey, Int)
 parseSeriesFile name = do
     stem <- T.stripSuffix ".csv" name
     case T.splitOn "-" stem of
-        [m, w, r, n] -> case TR.decimal n of
-            Right (size, "") ->
-                Just (SeriesKey { mux = m, workload = w, role = r }, size)
-            _ -> Nothing
+        [m, w, r, n] -> series m w r n
+        [m, w, r, n, rep] -> number rep *> series m w r n
+        _ -> Nothing
+  where
+    series m w r n =
+        (SeriesKey { mux = m, workload = w, role = r },) <$> number n
+    number :: Text -> Maybe Int
+    number t = case TR.decimal t of
+        Right (v, "") -> Just v
         _ -> Nothing
 
 -- | Three significant digits with an engineering suffix: @28.1M@, @41.0k@.
