@@ -25,6 +25,10 @@ spec = do
             parseSeriesFile "tmux-type4-client-1600.csv"
                 `shouldBe` Just (key "tmux" "type4" "client", 1600)
 
+        it "reads a repeat's CSV as its size's series" $
+            parseSeriesFile "hat-type-server-200-2.csv"
+                `shouldBe` Just (key "hat" "type" "server", 200)
+
         it "rejects a non-CSV file" $
             parseSeriesFile "hat-type-server-200.txt" `shouldBe` Nothing
 
