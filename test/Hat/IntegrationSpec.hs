@@ -428,13 +428,7 @@ awaitWith what check d = do
 restartKeepsClient :: [(String, String)] -> Hat -> IO ()
 restartKeepsClient extraEnv h = do
     let digits = filter (\ch -> ch >= '0' && ch <= '9')
-    -- The re-exec'd client resolves `hat` on PATH: point it at THIS
-    -- build so the hop is deterministic (and never the system hat).
-    ambient <- testPath
-    let bindir = h.home </> "bin"
-    createDirectoryIfMissing True bindir
-    createFileLink h.bin (bindir </> "hat")
-    c <- startClientEnv h (("PATH", bindir <> ":" <> ambient) : extraEnv) []
+    c <- startRestartableClient h extraEnv
     awaitScreen c "$"
     typeInto c "echo before-restart\r"
     awaitScreen c "before-restart"
@@ -456,6 +450,16 @@ restartKeepsClient extraEnv h = do
     awaitScreen c "done-42"
     pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
     pidAfter `shouldBe` pidBefore
+
+-- | An attached client whose re-exec resolves `hat` on PATH to THIS build,
+-- so a restart's hop is deterministic (and never the system hat).
+startRestartableClient :: Hat -> [(String, String)] -> IO Driver
+startRestartableClient h extraEnv = do
+    ambient <- testPath
+    let bindir = h.home </> "bin"
+    createDirectoryIfMissing True bindir
+    createFileLink h.bin (bindir </> "hat")
+    startClientEnv h (("PATH", bindir <> ":" <> ambient) : extraEnv) []
 
 -- What a user would see on screen.
 awaitScreen :: Driver -> T.Text -> IO ()
@@ -2112,6 +2116,19 @@ spec = parallel $ do
     it "restart reattaches the client across a lingering old image (83)" $
         withHat hatBin
             (restartKeepsClient [("HAT_TEST_RELOAD_LINGER", "200000")])
+
+    it "restart reattaches a C-locale client to its non-ASCII session" $
+        withHat hatBin $ \h -> do
+        c <- startRestartableClient h []
+        awaitScreen c "$"
+        _ <- hatRaw h ["rename-session", "caf\xc3\xa9"]
+        _ <- hatCtl h ["restart", h.bin]
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitWith "the re-exec'd client to reattach"
+            (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
+        hatRaw h ["list-clients", "-F", "#{client_session}"]
+            `shouldReturn` (ExitSuccess, "caf\xc3\xa9\n", "")
 
     -- b89: a pane's output stream must cross a reload without a gap, even
     -- for bytes emitted inside the capture->exec window (the linger holds

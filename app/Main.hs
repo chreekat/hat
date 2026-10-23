@@ -8,13 +8,15 @@ import Data.ByteString qualified as B
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
+import GHC.Foreign qualified as GHC
+import GHC.IO.Encoding (getFileSystemEncoding)
 import Network.Socket (Socket, close)
 import System.Directory (doesFileExist, findExecutable)
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO
 import System.Posix.Env.ByteString qualified as PB
-import System.Posix.Process (executeFile)
+import System.Posix.Process.ByteString qualified as PP
 import System.Process
     ( CreateProcess (..), ProcessHandle, StdStream (..), createProcess
     , getProcessExitCode, proc )
@@ -262,11 +264,20 @@ attach path mconfig answered setup hist = do
 restartClient :: FilePath -> Maybe FilePath -> Maybe T.Text -> [T.Text] -> IO ()
 restartClient path mconfig msess hist = do
     onPath <- findExecutable "hat"
-    target <- maybe getExecutablePath pure onPath
-    let argv = ["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig
-            <> ["attach"] <> maybe [] (\s -> ["-t", T.unpack s]) msess
-            <> concatMap (\n -> ["--reattach-hist", T.unpack n]) hist
-    executeFile target False argv Nothing
+    target <- localeBytes =<< maybe getExecutablePath pure onPath
+    paths <- traverse localeBytes
+        (["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig)
+    -- Names go out as UTF-8 whatever the locale: the client reads them so.
+    let names = maybe [] (\s -> ["-t", TE.encodeUtf8 s]) msess
+            <> concatMap (\n -> ["--reattach-hist", TE.encodeUtf8 n]) hist
+    PP.executeFile target False (paths <> ["attach"] <> names) Nothing
+
+-- | A path's bytes in the locale's encoding, the one 'getArgs' and
+-- 'getExecutablePath' decoded it with.
+localeBytes :: FilePath -> IO ByteString
+localeBytes p = do
+    enc <- getFileSystemEncoding
+    GHC.withCStringLen enc p B.packCStringLen
 
 control :: FilePath -> Maybe FilePath -> IO () -> [[Arg]] -> IO ()
 control path mconfig answered cmds = do
