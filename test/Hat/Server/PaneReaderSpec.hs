@@ -9,6 +9,7 @@ import Control.Monad (unless, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Maybe (isJust, isNothing)
+import Data.Text qualified as T
 import GHC.Conc (BlockReason (BlockedOnSTM), ThreadStatus (ThreadBlocked), threadStatus)
 import System.Posix.IO.ByteString (fdRead)
 import System.Posix.Types (Fd)
@@ -18,6 +19,7 @@ import GHC.IO.Buffer (newByteBuffer)
 import GHC.IO.BufferedIO (BufferedIO (..), writeBuf, writeBufNonBlocking)
 import GHC.IO.Device (IODevice (..), IODeviceType (Stream), RawIO (..))
 import GHC.IO.Handle (mkFileHandle, noNewlineTranslation)
+import System.Environment (getEnv)
 import System.IO (Handle, IOMode (WriteMode))
 import System.Timeout (timeout)
 import Test.Hspec
@@ -77,9 +79,11 @@ withStalledReader body = do
     st <- newServerState Map.empty lg "/tmp/hat-panereaderspec.sock" Nothing
     let sid = SessionId 0
     (sink, stall) <- stallingSink
+    path <- getEnv "PATH"
     bracket
         (newWindowWithPane st sid "/bin/sh"
-            (ShellCommand "printf b89-fed; exec sleep 600") ProgramPane "/" []
+            (ShellCommand "printf b89-fed; exec sleep 600") ProgramPane "/"
+            [("PATH", T.pack path)]
             Size { rows = 24, cols = 80 } Nothing)
         (\(_, pane) -> tryPutMVar stall.hold () >> hangupPane pane)
         (\(win, pane) -> do
