@@ -157,7 +157,7 @@ teardown h = do
     -- stops accepting before it exits, so "unreachable" is not "gone". The
     -- poll gives a clean drain its chance; the unconditional -9 guarantees
     -- nothing survives the socket-path unlink below.
-    _ <- pollServerGone h.sock 20
+    _ <- pollServerGone h.sock 2000
     void $ P.readProcessWithExitCode
         "pkill" ["-9", "-f", "--", "--server " <> h.sock] ""
     -- A driver's pty master stays open for the whole test -- closed here,
@@ -654,7 +654,7 @@ spec = parallel $ do
         t2 <- readIORef c2.transcript
         t2 `shouldSatisfy` B8.isInfixOf "[exited]"
 
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "server did not exit"
 
     -- 28: a server that served a connection which left without creating a
@@ -665,14 +665,14 @@ spec = parallel $ do
         withHat hatBin $ \h -> do
         code <- (\(c, _, _) -> c) <$> hatCtl h ["start-server"]
         code `shouldBe` ExitSuccess
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "empty server did not exit"
 
     it "exit-unattached ends a server left with only detached sessions" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h ["new-session", "-d", "sleep 300"]
         _ <- hatCtl h ["set-option", "-g", "exit-unattached", "on"]
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "unattached server did not exit"
 
     -- A pane whose shell ignores SIGHUP (and keeps the pty slave open) gives
@@ -688,7 +688,7 @@ spec = parallel $ do
         pid <- serverPid h
 
         _ <- hatCtl h ["kill-server"]
-        gone <- pollPidGone pid 50
+        gone <- pollPidGone pid 5000
         unless gone $
             expectationFailure "server did not exit after kill-server"
 
@@ -728,7 +728,7 @@ spec = parallel $ do
         -- The pane must end on the shell's exit, so the session ends and this
         -- client is told to leave -- even though the child still holds the pty.
         status <- awaitExit c1
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerGone h.sock 5000
         -- Reap the orphan we intentionally leaked before asserting.
         _ <- P.readProcessWithExitCode "kill" ["-9", show (lingerer :: Int)] ""
         status `shouldBe` Exited ExitSuccess
@@ -1190,7 +1190,7 @@ spec = parallel $ do
         -- the next start comes up pristine instead of resurrecting it.
         typeInto c1 "exit\r"
         _ <- awaitExit c1
-        gone <- pollServerGone h.sock 50
+        gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "server did not exit"
 
         -- bb: the drain wipes only the live tree; the history keeps it.
@@ -1216,7 +1216,7 @@ spec = parallel $ do
         -- and is on the default restore whitelist.
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerExited h 50
+        gone <- pollServerExited h 5000
         unless gone $ expectationFailure "server did not die"
 
         -- Restart: the restored pane comes back running vim, not a shell.
@@ -1393,7 +1393,7 @@ spec = parallel $ do
         -- Kill the server; the tree is saved automatically on the way out.
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerExited h 50
+        gone <- pollServerExited h 5000
         unless gone $ expectationFailure "server did not die"
 
         -- Restart: a fresh client autostarts a new server, which restores
@@ -1427,7 +1427,7 @@ spec = parallel $ do
 
         _ <- ctlOut h ["kill-server"]
         _ <- awaitExit c1
-        gone <- pollServerExited h 50
+        gone <- pollServerExited h 5000
         unless gone $ expectationFailure "server did not die"
 
         c2 <- startClient h
@@ -2134,40 +2134,32 @@ killsLinkedStubborn h dst kill = do
         `finally` P.readProcessWithExitCode
             "kill" ["-9", show (stubborn :: Int)] ""
 
+-- | Poll every 10ms until @done@ holds; False past @budgetMs@.
+pollFor :: Int -> IO Bool -> IO Bool
+pollFor budgetMs done = isJust <$> timeout (budgetMs * 1000) loop
+  where
+    loop = done >>= \ok -> unless ok (threadDelay 10_000 *> loop)
+
 pollServerGone :: FilePath -> Int -> IO Bool
-pollServerGone _ 0 = pure False
-pollServerGone path n = do
-    up <- serverUp path
-    if up
-        then threadDelay 100_000 *> pollServerGone path (n - 1)
-        else pure True
+pollServerGone path budgetMs = pollFor budgetMs (not <$> serverUp path)
 
--- | Poll (every 100ms, @n@ times) until no server process remains on @h@'s
--- socket. kill-server unlinks the socket before it replies, so a vanished
--- socket alone no longer shows the process has exited.
+-- | Until no server process remains on @h@'s socket. kill-server unlinks the
+-- socket before it replies, so a vanished socket alone no longer shows the
+-- process has exited.
 pollServerExited :: Hat -> Int -> IO Bool
-pollServerExited _ 0 = pure False
-pollServerExited h n = do
-    pids <- serverPids h
-    if null (words pids)
-        then pure True
-        else threadDelay 100_000 *> pollServerExited h (n - 1)
+pollServerExited h budgetMs = pollFor budgetMs (null . words <$> serverPids h)
 
--- | Poll (every 100ms, @n@ times) until process @pid@ has exited (a zombie
--- counts as exited). Unlike 'pollServerGone', a server that stopped
--- listening but is still draining counts as alive.
+-- | Until process @pid@ has exited (a zombie counts as exited). Unlike
+-- 'pollServerGone', a server that stopped listening but is still draining
+-- counts as alive.
 pollPidGone :: Int -> Int -> IO Bool
-pollPidGone _ 0 = pure False
-pollPidGone pid n = do
+pollPidGone pid budgetMs = pollFor budgetMs $ do
     stat <- (Just . B8.unpack <$> B.readFile ("/proc/" <> show pid <> "/stat"))
         `catch` \(_ :: IOException) -> pure Nothing
     -- The state field follows the parenthesised command name.
-    let alive = case drop 2 . dropWhile (/= ')') <$> stat of
-            Just (st : _) -> st /= 'Z'
-            _ -> False
-    if alive
-        then threadDelay 100_000 *> pollPidGone pid (n - 1)
-        else pure True
+    pure $ case drop 2 . dropWhile (/= ')') <$> stat of
+        Just (st : _) -> st == 'Z'
+        _ -> True
 
 -- | Whether a server answers at the path. The probe is closed before
 -- returning: an open probe counts as an active connection and holds the
