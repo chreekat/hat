@@ -2062,8 +2062,12 @@ spec = parallel $ do
         let bindir = h.home </> "bin"
         createDirectoryIfMissing True bindir
         createFileLink h.bin (bindir </> "hat")
+        -- The config's sleep widens the re-exec boot's load window, so the
+        -- farewelled clients reattach inside it; the first boot skips it.
         let confPath = h.home <> "/hat.conf"
-        writeFile confPath "if 'sleep 0.7' 'set -g escape-time 0'\n"
+            holdPath = h.home <> "/hold-config"
+        writeFile confPath $
+            "if '! test -f " <> holdPath <> " || sleep 0.7' 'set -g escape-time 0'\n"
         let env = [("PATH", bindir <> ":" <> ambient)]
         c1 <- startClientEnv h env ["-f", confPath]
         awaitScreen c1 "$"
@@ -2074,6 +2078,7 @@ spec = parallel $ do
                 pure (List.sort (lines out) == ["0", "beta"])
         awaitTrue "two clients on their own sessions" ownSessions
         performGC  -- deterministic: drivers must survive collection mid-test
+        writeFile holdPath ""
         _ <- hatCtl h ["restart", "-C", h.bin]
         awaitTrue "the reload handover to be consumed" $
             doesFileExist (h.sock <> ".reload.last")
