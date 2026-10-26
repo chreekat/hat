@@ -36,7 +36,7 @@ OUT="$PWD/bench-out"
 KEEP=0
 COUNTER=perf
 KEY_INTERVAL=""
-REPS=3
+REPS=1
 
 usage() {
     cat <<'USAGE'
@@ -58,7 +58,8 @@ usage: hat_perf [options]
                          perf's)
   --key-interval SECS    pause between typed keys (default 0.02; 0.1 under
                          valgrind, slow enough that keys never coalesce)
-  --reps K               runs per size (default 3)
+  --reps K               runs per size, fitted through each size's cheapest
+                         (default 1)
 
 Each workload is fixed so runs stay comparable; vary only the sizes.
 USAGE

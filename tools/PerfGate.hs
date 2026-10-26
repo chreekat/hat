@@ -4,17 +4,22 @@
 -- from the same run instead of judging by it.
 module Main (main) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (finally)
 import System.Directory (removePathForcibly)
 import System.Environment (lookupEnv)
+import System.Exit (exitFailure)
+import System.IO (hPutStrLn, stderr)
 import System.Posix.Temp (mkdtemp)
 import System.Process (callProcess, readProcess)
+import Text.Read (readMaybe)
 
 data Mode = Check | Record
 
 main :: IO ()
 main = do
     mode <- maybe Check (const Record) <$> lookupEnv "HAT_PERF_RECORD"
+    awaitQuiescence
     bin <- listBin "exe:hat"
     out <- mkdtemp "/tmp/hat-perf-gate-"
     gate mode bin out `finally` removePathForcibly out
@@ -41,3 +46,30 @@ gate mode bin out = do
 
 listBin :: String -> IO FilePath
 listBin component = init <$> readProcess "cabal" ["list-bin", component] ""
+
+-- | Wait, up to two minutes, for the 1-minute load average to fall to
+-- @HAT_PERF_MAX_LOAD@ (default 1.0), else refuse to measure: the typing
+-- workloads' instruction counts move with load.
+awaitQuiescence :: IO ()
+awaitQuiescence = do
+    limit <- lookupEnv "HAT_PERF_MAX_LOAD" >>= \case
+        Nothing -> pure (1.0 :: Double)
+        Just s -> maybe (refuse ("HAT_PERF_MAX_LOAD is not a number: " <> s))
+                        pure (readMaybe s)
+    let poll :: Int -> IO ()
+        poll tries = do
+            load <- oneMinuteLoad
+            if load <= limit then pure ()
+            else if tries <= 0 then refuse
+                ("1-minute load " <> show load <> " stayed above "
+                    <> show limit <> "; not measuring a busy box")
+            else threadDelay 5_000_000 >> poll (tries - 1)
+    poll 24
+  where
+    oneMinuteLoad :: IO Double
+    oneMinuteLoad = do
+        raw <- readFile "/proc/loadavg"
+        maybe (refuse ("unreadable /proc/loadavg: " <> raw)) pure
+            (readMaybe (takeWhile (/= ' ') raw))
+    refuse :: String -> IO a
+    refuse msg = hPutStrLn stderr ("hat-perf: " <> msg) >> exitFailure
