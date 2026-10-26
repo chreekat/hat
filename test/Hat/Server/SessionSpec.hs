@@ -19,7 +19,8 @@ import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
     , socketPair, touchSocket )
 import System.Mem (performGC)
-import System.Posix.IO (closeFd, fdRead)
+import System.Posix.IO (closeFd)
+import System.Posix.IO.ByteString (fdRead)
 import System.Posix.Process (getProcessID)
 import System.Posix.Terminal (openPseudoTerminal)
 import System.Posix.Terminal qualified as Termios
@@ -833,8 +834,8 @@ spec = do
                 | n <= 0 = pure B.empty
                 | otherwise = do
                     threadWaitRead fd
-                    (got, _) <- fdRead fd (fromIntegral n)
-                    (B8.pack got <>) <$> readExactly fd (n - length got)
+                    got <- fdRead fd (fromIntegral n)
+                    (got <>) <$> readExactly fd (n - B.length got)
         it "answers a palette entry the pane sets from it" $ do
             (st, sess) <- seedSession "/"
             win <- addWindow sess 0

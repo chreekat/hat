@@ -30,7 +30,7 @@ plainLook :: ChromeLook
 plainLook = ChromeLook
     { borderLines = BorderSingle, windowStyle = Cell.defaultStyle
     , paneStyles = Map.empty, scrollbarLooks = Map.empty, active = Nothing, marked = Nothing
-    , numbers = Map.fromList [ (PaneId i, fromIntegral i) | i <- [0 .. 9] ]
+    , numbers = Map.fromList [ (PaneId i, i) | i <- [0 .. 9] ]
     , paneLines = Map.empty, lineSets = Map.empty
     , fillInside = Cell.glyphCell ' ' Cell.defaultStyle
     , fillOutside = Cell.glyphCell '~' Cell.defaultStyle
