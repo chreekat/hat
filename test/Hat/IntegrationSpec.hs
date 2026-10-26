@@ -1859,84 +1859,34 @@ spec = parallel $ do
                     `catch` \(_ :: SomeException) -> pure ""
             links `shouldNotSatisfy` elem marker
 
-    -- Milestone A: `restart-server` reloads the server binary in place by
-    -- re-exec'ing itself and re-adopting the still-running pane programs
-    -- rather than respawning them. The shell's pid is the identity that must
-    -- survive the swap; the client is dropped and the user reattaches.
-    it "restart-server reloads in place, keeping the pane's program alive" $
+    -- `restart-server` re-execs in place, adopting the running pane programs:
+    -- across two reloads in a row (the second adopts state the first rebuilt by
+    -- replay) the shell's pid, its alt-screen grid and its input path survive,
+    -- the consumed handover stays as .last, and only named fds cross (8a).
+    it "restart-server twice in a row keeps a full-screen program and its display" $
         withHat hatBin $ \h -> do
         let digits = filter (\ch -> ch >= '0' && ch <= '9')
+            -- This build, never the `hat` a bare restart-server finds on PATH.
+            reload c = hatCtl h ["restart-server", h.bin] >> awaitExit c
         c <- startClient h
         awaitScreen c "$"
-        typeInto c "echo before-reload\r"
-        awaitScreen c "before-reload"
         pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
         pidBefore `shouldNotBe` ""
-        -- Reload in place; the re-exec drops our client. Pass this build's
-        -- path explicitly so the reload is deterministic — a bare
-        -- restart-server would resolve `hat` on PATH and hijack the system
-        -- install (a different, reload-unaware binary).
-        _ <- hatCtl h ["restart-server", h.bin]
-        _ <- awaitExit c
-        -- Reattach: the rebuilt session waits out the reload's Restoring phase.
-        c2 <- startClient h
-        pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
-        -- Same process — the shell never died across the binary swap.
-        pidAfter `shouldBe` pidBefore
-        -- And it still runs our input.
-        typeInto c2 "echo after-reload\r"
-        awaitScreen c2 "after-reload"
-
-    -- Milestone B: `restart-server` preserves a pane's live screen. A
-    -- full-screen program is drawn into the alt screen, then blocks in `cat`
-    -- so nothing redraws it; after the reload and reattach the content is still
-    -- there only because the emulator's screen was captured and replayed. The
-    -- octal escapes keep a literal ESC out of the shell's line editor.
-    it "restart-server preserves a full-screen program's live display" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        typeInto c "printf '\\033[?1049h\\033[2J\\033[HALTSCREEN-BEACON'; cat\r"
-        awaitScreen c "ALTSCREEN-BEACON"
-        _ <- hatCtl h ["restart-server", h.bin]
-        _ <- awaitExit c
-        c2 <- startClient h
-        -- `cat` never redrew: the beacon survives only because the reload
-        -- restored the alt-screen grid.
-        awaitScreen c2 "ALTSCREEN-BEACON"
-        -- The consumed handover is kept as .last: it is the exact reproducer
-        -- when a resume crashes natively, so it must survive the reload.
-        doesFileExist (h.sock <> ".reload.last") `shouldReturn` True
-
-    -- Reloading a server that was ITSELF reloaded: the pane's emulator was
-    -- rebuilt by the first reload's replay, and adopting that rebuilt state a
-    -- second time must not hang (the production double-reload that fell back to
-    -- a respawn from disk, losing the live programs).
-    it "restart-server twice in a row keeps a full-screen pane alive" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
+        -- Octal escapes keep a literal ESC out of the shell's line editor;
+        -- `cat` never redraws, so the beacon survives only by replay.
         typeInto c "printf '\\033[?1049h\\033[2J\\033[HBEACON-ONE'; cat\r"
         awaitScreen c "BEACON-ONE"
-        _ <- hatCtl h ["restart-server", h.bin]
-        _ <- awaitExit c
+        _ <- reload c
         c2 <- startClient h
         awaitScreen c2 "BEACON-ONE"
-        _ <- hatCtl h ["restart-server", h.bin]
-        _ <- awaitExit c2
+        doesFileExist (h.sock <> ".reload.last") `shouldReturn` True
+        _ <- reload c2
         c3 <- startClient h
         awaitScreen c3 "BEACON-ONE"
-
-    -- Bug 8a: only the fds a reload names may cross the execve; the log handle
-    -- stands in for every fd the successor image reopens for itself.
-    it "restart-server leaves the fds it does not name behind" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        _ <- hatCtl h ["restart-server", h.bin]
-        _ <- awaitExit c
-        c2 <- startClient h
-        awaitScreen c2 "$"
+        digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+            `shouldReturn` pidBefore
+        typeInto c3 "after-reload\r"
+        awaitScreen c3 "after-reload"
         fdsOn h (h.home </> "server.log") `shouldReturn` 1
 
     -- Bug cb: a reload must not forget the alternate session, so a reattached
