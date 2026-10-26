@@ -735,23 +735,18 @@ spec = parallel $ do
         unless gone $ expectationFailure
             "pane leaked: server did not exit after its shell exited"
 
-    it "restores the terminal line discipline when the session ends" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        left <- rawModesLeftBehind c1
-        left `shouldBe` []
-
-    it "restores the terminal line discipline after detach" $
+    it "restores the terminal line discipline after detach and session end" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "\x02\&d"
         _ <- awaitExit c1
-        left <- rawModesLeftBehind c1
-        left `shouldBe` []
+        rawModesLeftBehind c1 `shouldReturn` []
+        c2 <- startClient h
+        awaitScreen c2 "$"
+        typeInto c2 "exit\r"
+        _ <- awaitExit c2
+        rawModesLeftBehind c2 `shouldReturn` []
 
     -- bug 6: a pager (less) draws on the alternate screen; on exit the primary
     -- buffer must be repainted on the *client*, not just in the emulator, or
@@ -1806,36 +1801,19 @@ spec = parallel $ do
         status `shouldBe` Exited (ExitFailure 1)
         t `shouldSatisfy` B8.isInfixOf "missing or unsuitable terminal: hat-no-such-terminal"
 
-    it "runs cat: line-buffered echo, not doubled" $
+    it "runs cat: single echo, then Ctrl-D EOFs back to the shell" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
         typeInto c1 "cat\r"
         awaitForeground h "cat"
-        -- Type without Enter: canonical mode echoes each char exactly once.
-        -- A doubled echo would render "aabbccxxyyzz", which does NOT contain
-        -- "abcxyz", so awaiting "abcxyz" already proves the echo was single.
+        -- Without Enter, canonical mode echoes each char once; a doubled
+        -- echo ("aabbccxxyyzz") would never contain "abcxyz".
         typeInto c1 "abcxyz"
         awaitScreen c1 "abcxyz"
-        scr <- screenText c1
-        scr `shouldNotSatisfy` T.isInfixOf "aabbccxxyyzz"
         typeInto c1 "\r"
-        typeInto c1 "\x04"
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
-    it "runs cat: Ctrl-D sends EOF and returns to the shell" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "cat\r"
-        awaitForeground h "cat"
-        typeInto c1 "hello world\r"
-        awaitScreen c1 "hello world"
-        -- Ctrl-D on an empty line EOFs cat; the shell then evaluates
-        -- arithmetic that cat could never produce by echo alone. "done-42"
-        -- can only appear once cat has exited, so it is its own sync.
+        -- Ctrl-D on the now-empty line EOFs cat; only the shell can then
+        -- evaluate the arithmetic, so "done-42" is its own sync.
         typeInto c1 "\x04"
         typeInto c1 "echo done-$((21+21))\r"
         awaitScreen c1 "done-42"
