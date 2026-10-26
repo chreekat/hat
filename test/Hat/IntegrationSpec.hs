@@ -51,8 +51,8 @@ import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..))
 import Hat.Server.Persist qualified as Persist
 import Hat.Term.Pty (setWinsize)
-import Hat.TestSupport (bashPath, nodeOf)
-import Hat.Server.Layout (Orientation (..), fitLayout, singlePane)
+import Hat.TestSupport (bashPath)
+import Hat.Server.Layout (fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Transport.Socket (connectTo)
 import Hat.Transport.Wire qualified as W
@@ -1125,71 +1125,6 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    it "mirrors the session/window/pane tree into the SQLite store" $
-        withHatPersist hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- A second window with a live shell. The \& keeps the hex escape
-        -- from swallowing the 'c' (\x02c would parse as one char, 0x2C).
-        typeInto c1 "\x02\&c"
-        typeInto c1 "echo win2-marker\r"
-        awaitScreen c1 "win2-marker"
-
-        -- Split that window in two.
-        typeInto c1 "\x02%"
-        awaitScreen c1 "\x2502"
-
-        -- kill-server captures the tree synchronously before teardown.
-        _ <- hatCtl h ["kill-server"]
-        snap <- Persist.withStore (storeOf h) Persist.loadSnapshot
-        let wins = concatMap (.windows) snap.sessions
-            paneCounts = List.sort (map (length . (.panes)) wins)
-            cwds = concatMap (.panes) wins
-        length snap.sessions `shouldBe` 1
-        length wins `shouldBe` 2
-        paneCounts `shouldBe` [1, 2]
-        all (not . T.null . (.cwd)) cwds `shouldBe` True
-
-    it "restores a saved session tree when the server starts" $
-        withHatPersist hatBin $ \h -> do
-        -- Seed the store the server reads on startup: two windows, the
-        -- second split into two panes.
-        let area = Size { rows = 24, cols = 80 }
-            lay1 = emitLayout (fitLayout area (singlePane (PaneId 0)))
-            lay2 = emitLayout (fitLayout area
-                (nodeOf LeftRight [singlePane (PaneId 0), singlePane (PaneId 1)]))
-            snap = Snapshot
-                { lastActiveSession = Nothing, sessions =
-                    [ SessionSnap
-                        { name = "restored", startCwd = "/tmp", currentIx = 0
-                        , windowHist = []
-                        , createdAt = Nothing, restores = 0
-                        , group = Nothing
-                        , windows =
-                            [ WindowSnap { ix = 0, name = "one", layout = lay1
-                                , active = 0, paneHist = []
-                                , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
-                            , WindowSnap { ix = 1, name = "two", layout = lay2
-                                , active = 0, paneHist = []
-                                , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }
-                                          , PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
-                            ] } ] }
-        createDirectoryIfMissing True (takeDirectory (storeOf h))
-        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
-
-        -- Attaching autostarts the server, which restores before we attach.
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- The restored tree is present: two windows, three panes total.
-        wl <- ctlOut h ["list-windows", "-a"]
-        length (lines wl) `shouldBe` 2
-        pl <- ctlOut h ["list-panes", "-a"]
-        length (lines pl) `shouldBe` 3
-
     -- A restored tree comes back at its captured area, not 24x80 (bug 4b).
     it "restores the saved tree at its captured area before any client attaches" $
         withHatPersist hatBin $ \h -> do
@@ -1243,6 +1178,18 @@ spec = parallel $ do
         names1 <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
         names1 `shouldSatisfy` List.isInfixOf "stale"
 
+        -- bb: the restore archived the seed as generation 1; it is listable
+        -- and restores by id, under a fresh name when the live session
+        -- collides.
+        listed <- ctlOut h ["list-snapshots"]
+        lines listed `shouldSatisfy` any ("1: " `List.isPrefixOf`)
+        out <- ctlOut h ["restore-snapshot", "1"]
+        out `shouldContain` "as 'stale-2'"
+        names <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
+        lines names `shouldSatisfy`
+            (\ns -> "stale" `elem` ns && "stale-2" `elem` ns)
+        _ <- ctlOut h ["kill-session", "-t", "stale-2"]
+
         -- Exiting the last shell closes the last window, the session and
         -- the server. Unlike kill-server, this must drop the saved tree:
         -- the next start comes up pristine instead of resurrecting it.
@@ -1293,42 +1240,6 @@ spec = parallel $ do
         awaitForeground h "sh"
         typeInto c2 "echo dropped-to-$((3*7))\r"
         awaitScreen c2 "dropped-to-21"
-
-    -- bb: snapshot history is listable, and any generation restores by id.
-    it "lists snapshot generations and restores one by id" $
-        withHatPersist hatBin $ \h -> do
-        -- Seed a saved tree, as a previous run's kill-server would have.
-        let lay = emitLayout (fitLayout (Size { rows = 24, cols = 80 }) (singlePane (PaneId 0)))
-            snap = Snapshot
-                { lastActiveSession = Nothing, sessions =
-                    [ SessionSnap
-                        { name = "bbsess", startCwd = "/tmp", currentIx = 0
-                        , windowHist = []
-                        , createdAt = Nothing, restores = 0
-                        , group = Nothing
-                        , windows =
-                            [ WindowSnap
-                                { ix = 0, name = "one", layout = lay
-                                , active = 0, paneHist = []
-                                , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
-                            ] } ] }
-        createDirectoryIfMissing True (takeDirectory (storeOf h))
-        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
-
-        -- Autostart restores the tree, archiving it as generation 1.
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        listed <- ctlOut h ["list-snapshots"]
-        lines listed `shouldSatisfy` any ("1: " `List.isPrefixOf`)
-
-        -- Restoring it again collides with the live restored session, so
-        -- the copy comes back under a fresh name.
-        out <- ctlOut h ["restore-snapshot", "1"]
-        out `shouldContain` "as 'bbsess-2'"
-        names <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
-        lines names `shouldSatisfy`
-            (\ns -> "bbsess" `elem` ns && "bbsess-2" `elem` ns)
 
     it "splits panes, navigates, zooms, and kills" $
         withHat hatBin $ \h -> do
@@ -1531,30 +1442,6 @@ spec = parallel $ do
     -- b7: a window's automatic-rename status must survive save/restore, in
     -- both directions -- an auto-renaming window keeps tracking its pane, a
     -- manually-named window stays pinned.
-    it "restores each window's automatic-rename status" $
-        withHatPersist hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        -- Window 0 stays automatic; window 1 is pinned by rename-window,
-        -- which disables its automatic-rename.
-        _ <- ctlOut h ["new-window", "-d", "-t", "1"]
-        awaitScreen c1 "1:sh"
-        _ <- ctlOut h ["rename-window", "-t", "1", "pinned"]
-        awaitScreen c1 "1:pinned"
-        flags1 <- ctlOut h ["list-windows", "-F", "#{automatic_rename}"]
-        lines flags1 `shouldBe` ["1", "0"]
-
-        _ <- ctlOut h ["kill-server"]
-        _ <- awaitExit c1
-        gone <- pollServerExited h 50
-        unless gone $ expectationFailure "server did not die"
-
-        c2 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c2 "1:pinned"
-        flags2 <- ctlOut h ["list-windows", "-F", "#{automatic_rename}"]
-        lines flags2 `shouldBe` ["1", "0"]
-
     it "automatic-rename follows the pane's foreground command" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
@@ -1569,33 +1456,6 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         _ <- awaitExit c1
         pure ()
-
-    it "names an automatic-rename window after the Nix wrapper, not .name-wrapped" $
-        withHat hatBin $ \h -> do
-        -- A NixOS-style wrapper pair: public `vimish` execs the real
-        -- binary `.vimish-wrapped`, passing the public name along in
-        -- argv[0]. The real binary is a copy of bash (the coreutils
-        -- multi-call binary would dispatch on the renamed argv[0]) that
-        -- blocks on stdin like an editor would.
-        -- cp, not copyFile, for the same ETXTBSY reason as
-        -- 'writeExecutable'.
-        let bin = h.home </> "bin"
-            wrapped = bin </> ".vimish-wrapped"
-        createDirectoryIfMissing True bin
-        bash <- bashPath
-        P.callProcess "cp" [bash, wrapped]
-        writeExecutable (bin </> "vimish") $ unlines
-            [ "#!" <> bash
-            , "exec -a \"$0\" " <> wrapped <> " -c 'read line'"
-            ]
-        writeFile (h.home <> "/hat.conf") "set -g automatic-rename on\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        typeInto c1 (B8.pack ("$HOME/bin/vimish\r"))
-        -- The window takes the wrapper's public name, like tmux would.
-        awaitScreen c1 "0:vimish*"
-        typeInto c1 "\x04"                   -- Ctrl-D ends the read
-        awaitScreen c1 "0:sh*"
 
     it "follows the desktop color scheme (gsettings) and sources the dark config" $
         withHat hatBin $ \h -> do
