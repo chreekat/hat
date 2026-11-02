@@ -857,8 +857,6 @@ serverFormatVars st = do
     hostname <- T.pack . nodeName <$> getSystemID
     pid <- getProcessID
     uid <- getRealUserID
-    user <- (Just . T.pack . userName <$> getUserEntryForID uid)
-        `Control.Exception.catch` \(_ :: IOException) -> pure Nothing
     (nextId, nsessions, mconfig) <- atomically $ (,,)
         <$> readTVar st.nextSession <*> (Map.size <$> readTVar st.sessions)
         <*> readTVar st.serverConfig
@@ -880,7 +878,7 @@ serverFormatVars st = do
         , ("tree_mode_format", treeModeFormat)
         , ("version", versionText)
         ]
-        <> [ ("user", u) | Just u <- [user] ]
+        <> [ ("user", u) | Just u <- [st.userName] ]
 
 -- | tmux's @WINDOW_TREE_DEFAULT_FORMAT@.
 treeModeFormat :: Text

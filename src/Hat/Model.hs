@@ -165,7 +165,7 @@ import Hat.Model.Ids
 import Hat.Model.MessageLog (MessageLog, emptyMessageLog)
 import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Model.PasteBuffers (PasteStore, emptyPasteStore)
-import Hat.Path (findHome)
+import Hat.Path (findHome, findUserName)
 import Hat.Term.Pty qualified
 import Hat.Model.Options
     ( ModeKeys, Options, applyDelta, defaultOptions, resolveOptions )
@@ -289,6 +289,8 @@ data ServerState = ServerState
     , home :: Maybe FilePath
         -- ^ the server's home directory (tmux's @find_home@), against which
         --   @~@ in a path resolves
+    , userName :: Maybe Text
+        -- ^ the real user's name in the user database, looked up once at start
     , startTime :: POSIXTime  -- ^ when this server process started
     , configCauses :: TVar [Text]
         -- ^ configuration errors not yet shown, oldest first; see
@@ -1261,6 +1263,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     <*> newMonitorRegistry
     <*> newHooksState
     <*> findHome
+    <*> fmap (fmap T.pack) findUserName
     <*> getPOSIXTime
     <*> newTVarIO []
     <*> newTVarIO Map.empty

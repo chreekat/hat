@@ -10,6 +10,7 @@ module Hat.Path
     , expandTildeWith
     , expandTilde
     , findHome
+    , findUserName
     , fitsSocketAddr
     ) where
 
@@ -18,7 +19,7 @@ import Control.Monad (join)
 import System.Environment (lookupEnv)
 import System.FilePath (dropTrailingPathSeparator, normalise, (</>))
 import System.Posix.User
-    (getRealUserID, getUserEntryForID, getUserEntryForName, homeDirectory)
+    (getRealUserID, getUserEntryForID, getUserEntryForName, homeDirectory, userName)
 
 -- | A filesystem path built through the smart constructor. See 'hatPath'.
 newtype HatPath = HatPath FilePath
@@ -74,6 +75,11 @@ findHome = lookupEnv "HOME" >>= \case
     Just h | not (null h) -> pure (Just h)
     _ -> either (const Nothing :: IOError -> Maybe FilePath) (Just . homeDirectory)
         <$> try (getUserEntryForID =<< getRealUserID)
+
+-- | The real user's name in the user database, if it has one.
+findUserName :: IO (Maybe String)
+findUserName = either (const Nothing :: IOError -> Maybe String) (Just . userName)
+    <$> try (getUserEntryForID =<< getRealUserID)
 
 -- | Whether a path fits a @sockaddr_un@: @sun_path@ is 108 bytes, terminator
 -- included. Counts the bytes GHC's file-system encoding gives the path (UTF-8,
