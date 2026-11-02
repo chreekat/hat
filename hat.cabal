@@ -179,6 +179,7 @@ library
         Hat.Server.PromptHistory
         Hat.Server.Rebuild
         Hat.Server.Reload
+        Hat.Server.ReloadProbe
         Hat.Server.Render
         Hat.Server.Resize
         Hat.Server.Scene
@@ -385,6 +386,7 @@ test-suite hat-test
         Hat.Server.PopupSpec
         Hat.Server.PromptSpec
         Hat.Server.PromptHistorySpec
+        Hat.Server.ReloadProbeSpec
         Hat.Server.ReloadSpec
         Hat.Server.SceneSpec
         Hat.Server.ScrollbarsSpec

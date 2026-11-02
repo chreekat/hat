@@ -61,6 +61,7 @@ import Hat.Server.PaneReaderSpec qualified
 import Hat.Server.PopupSpec qualified
 import Hat.Server.PromptSpec qualified
 import Hat.Server.PromptHistorySpec qualified
+import Hat.Server.ReloadProbeSpec qualified
 import Hat.Server.ReloadSpec qualified
 import Hat.Server.SceneSpec qualified
 import Hat.Server.ScrollbarsSpec qualified
@@ -125,6 +126,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.ResizeRender" Hat.Server.ResizeRenderSpec.spec
     describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec
+    describe "Hat.Server.ReloadProbe" Hat.Server.ReloadProbeSpec.spec
     describe "Hat.Server.Scene" Hat.Server.SceneSpec.spec
     describe "Hat.Server.Scrollbars" Hat.Server.ScrollbarsSpec.spec
     describe "Hat.Server.Theme" Hat.Server.ThemeSpec.spec
