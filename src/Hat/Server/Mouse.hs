@@ -289,10 +289,11 @@ checkMouse now view st0 m = case classified of
             Nothing -> (stRecorded, Unplaced)
             Just () -> finish ty loc ev eb (windowXY ex ey)
     -- A report on the status line is never outside the modal pane.
-    outsideModal md ex ey = case view.statusAt of
-        Just at | ey >= at && ey < at + view.statusLines -> False
-        _ -> let (px, py) = windowXY ex ey
-             in px <= view.width && py <= view.height
+    outsideModal md ex ey
+        | onStatus view.statusAt view.statusLines ey = False
+        | otherwise =
+            let (px, py) = windowXY ex ey
+            in px <= view.width && py <= view.height
                 && maybe True (\bx -> not (contains bx px py))
                     (find (\bx -> bx.pane == md.pane) view.boxes)
     -- A drag begun on the modal pane follows the mouse out of it.
@@ -418,7 +419,7 @@ isMotion st0 m =
 scrollbarHover :: MouseView -> MouseState -> MouseInput -> Maybe (Maybe (Int, Int))
 scrollbarHover view st0 m
     | not (isMotion st0 m) = Nothing
-    | Just at <- view.statusAt, m.y >= at, m.y < at + view.statusLines = Just Nothing
+    | onStatus view.statusAt view.statusLines m.y = Just Nothing
     | px > view.width || py > view.height = Just Nothing
     | Just md <- view.modal
     , maybe True (\bx -> not (contains bx px py)) (find (\bx -> bx.pane == md.pane) view.boxes) =
@@ -539,16 +540,21 @@ stripMods t = case T.splitAt 2 t of
     _ -> t
 
 -- | tmux's @cmd_mouse_at@: the event's position inside a pane's box, if it is
--- inside.
+-- inside; never for one on the status line.
 mouseAt :: Bool -> MouseEvent -> PaneBox -> Maybe (Int, Int)
 mouseAt useLast ev bx =
-    let (x0, y0) = (\(x, y) -> (x + ev.viewOrigin.col, y + ev.viewOrigin.row)) $
-            if useLast then (ev.lastX, ev.lastY) else (ev.input.x, ev.input.y)
-        y1 = if ev.statusAt == Just 0 && y0 >= ev.statusLines
-                then y0 - ev.statusLines else y0
-    in if x0 < bx.xoff || x0 >= bx.xoff + bx.sx || y1 < bx.yoff || y1 >= bx.yoff + bx.sy
+    let y = if useLast then ev.lastY else ev.input.y
+        (x0, y0) = windowPoint useLast ev
+    in if onStatus ev.statusAt ev.statusLines y
+            || x0 < bx.xoff || x0 >= bx.xoff + bx.sx || y0 < bx.yoff || y0 >= bx.yoff + bx.sy
         then Nothing
-        else Just (x0 - bx.xoff, y1 - bx.yoff)
+        else Just (x0 - bx.xoff, y0 - bx.yoff)
+
+-- | Whether a client row is on the status line.
+onStatus :: Maybe Int -> Int -> Int -> Bool
+onStatus statusAt statusLines y = case statusAt of
+    Just at -> y >= at && y < at + statusLines
+    Nothing -> False
 
 -- | The mouse tracking a pane's app turned on.
 data PaneMouseMode = PaneMouseMode

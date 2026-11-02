@@ -171,6 +171,16 @@ spec = do
                 `shouldBe` Nothing
             mouseBytes PaneMouseMode { tracking = 2, sgr = True, utf8 = False } drag (9, 5)
                 `shouldBe` Just "\ESC[<32;10;6M"
+        it "a report on the status line is in no pane (bug 4b)" $ do
+            let tall = PaneBox { pane = PaneId 0, xoff = 0, yoff = 0, sx = 40, sy = 40, kind = TiledBox }
+                evOn v m = case checkMouse 0 v initialMouseState m of
+                    (_, Keyed k) -> k.event
+                    _ -> error "no key"
+                top = view { statusAt = Just 0, boxes = [tall] }
+                panned = view { origin = Pos { row = 5, col = 0 }, boxes = [tall] }
+            mouseAt False (evOn top (sgr 0 3 0 'm')) tall `shouldBe` Nothing
+            mouseAt False (evOn top (sgr 0 3 1 'm')) tall `shouldBe` Just (3, 0)
+            mouseAt False (evOn panned (sgr 0 3 23 'm')) tall `shouldBe` Nothing
     describe "outerMouseMode (the tracking a client asks of its terminal)" $ do
         it "with mouse off, mirrors the active pane's" $ do
             outerMouseMode False False 0 [0, 3] `shouldBe` 0
