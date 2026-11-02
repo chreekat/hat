@@ -66,7 +66,8 @@ import Hat.Server.Environ
 import Hat.Model
 import Hat.Model.Options (lookupCommandAlias, quoteIfNeeded)
 import Hat.Path (expandTilde)
-import Hat.Server.Reload (ReloadCleanup (..), encodeHandover)
+import Hat.Server.Reload (ReloadCleanup (..), encodeHandover, reloadEra)
+import Hat.Server.ReloadProbe (judgeReloadTarget, probeReloadTarget)
 import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.ListKeys (cmdListKeys, printCommands)
 import Hat.Server.Command.ShowMessages (cmdShowMessages)
@@ -635,8 +636,9 @@ reloadFarewell _ _ _ _ = Exited
 -- ('resumeServer'). The pane pty masters and the listening socket survive the
 -- exec, so a farewelled client that reattaches immediately just waits in the
 -- accept backlog; the accepted sockets are close-on-exec, so dropped clients
--- hang up cleanly. A missing target is reported before anything is torn down,
--- so a typo'd path is a harmless error rather than a half-dropped server.
+-- hang up cleanly. A missing target, or one that cannot read this server's
+-- era, is reported before anything is torn down, so it is a harmless error
+-- rather than a half-dropped server.
 cmdReload :: ReloadScope -> CommandImpl
 cmdReload scope st mclient args = do
     -- Fail loud rather than reload on top of an in-flight startup or
@@ -676,9 +678,15 @@ cmdReload' scope st mclient args =
       Right req -> do
         target <- maybe resolveReloadTarget pure req.target
         exists <- doesFileExist target
-        if not exists
-            then pure [RErr (reloadName scope <> ": no such binary: " <> T.pack target)]
-            else do
+        verdict <- if not exists
+            then pure (Just (reloadName scope <> ": no such binary: " <> T.pack target))
+            else judgeReloadTarget (reloadName scope) target reloadEra
+                <$> probeReloadTarget target  -- See Note [Probing a reload target]
+        case verdict of
+          Just refusal -> do
+            logEvent st.logger ReloadRefused { target = target, reason = refusal }
+            pure [RErr refusal]
+          Nothing -> do
                 logEvent st.logger ServerReloading { target = target }
                 -- A failure anywhere past the capture reopens what the
                 -- reload closed — the parked readers and the accept gate —
@@ -739,9 +747,8 @@ cmdReload' scope st mclient args =
 -- | The binary a no-argument @restart-server@ re-execs: @hat@ as resolved on
 -- @PATH@. That is a stable profile\/system symlink the kernel follows at exec
 -- time, so after an upgrade @hat restart-server@ picks up the newly-installed
--- version while keeping the pane programs alive — the point of the feature. The
--- handover's era gate keeps that safe across versions: a matching era adopts
--- the tree, a changed one falls back to a clean restart ('cleanupInherited').
+-- version while keeping the pane programs alive — the point of the feature. An
+-- older build there is refused (see Note [Probing a reload target]).
 -- 'getExecutablePath' would not do: it resolves @\/proc\/self\/exe@ to the
 -- immutable Nix store path this process launched from — the OLD build — so it
 -- can never see an upgrade. It is only the last-resort fallback when @hat@ is

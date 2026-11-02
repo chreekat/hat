@@ -5,7 +5,10 @@ import Hat.Server.ClientIO (send, withClientWriter)
 import Hat.Server.Outbound (backlog, newOutbound)
 import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
-import Control.Exception (finally)
+import Control.Exception (bracket, finally)
+import System.Directory (removeDirectoryRecursive)
+import System.Posix.Files (setFileMode)
+import System.Posix.Temp (mkdtemp)
 import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -76,6 +79,7 @@ import Hat.Server.Environ
     , environSet )
 import Hat.Server.Snapshot (cmdListSnapshots, cmdRestoreSnapshot)
 import Hat.Term.Pty qualified as Pty
+import Hat.Server.Reload (reloadEra)
 import Hat.Server.Keys
     ( EscPending (NoEscPending), ExtendedFormat (..), ExtendedKeys (..), Key (..)
     , KeyEncoding (..), initialKeyState )
@@ -1115,6 +1119,24 @@ spec = do
                 any (T.isInfixOf "no such binary")
             -- Nothing is queued (see the restart-client no-op test for the
             -- GC/touchSocket choreography).
+            performGC
+            peerRe <- newReadEnd peer
+            got <- timeout 100_000
+                (recvMessage peerRe :: IO (Maybe (Inbound ServerToClient)))
+            touchSocket client.sock
+            got `shouldBe` Nothing
+
+        it "refuses a target that cannot read this server's era, telling no client (bug 52)" $
+            bracket (mkdtemp "/tmp/hat-old-") removeDirectoryRecursive $ \dir -> do
+            (st, _) <- seedSession "/"
+            (client, peer) <- wiredClient st Attached
+            let old = dir <> "/hat"
+            writeFile old "#!/bin/sh\necho hat-reload-eras 1 1-10\n"
+            setFileMode old 0o755
+            errs <- timeout 10_000_000 (cmdRestart st (Just client) [T.pack old])
+            (\rs -> [e | RErr e <- rs]) <$> errs `shouldBe` Just
+                [ "restart: " <> T.pack old <> " cannot read this server's state (it reads eras 1-10, this is era "
+                    <> T.pack (show reloadEra) <> "); not restarting" ]
             performGC
             peerRe <- newReadEnd peer
             got <- timeout 100_000
