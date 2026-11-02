@@ -10,6 +10,7 @@ module Hat.Server.Mouse
       -- * Per-client state
     , MouseState (..)
     , initialMouseState
+    , Pressed (..)
     , Click (..)
     , ClickStart (..)
     , Drag (..)
@@ -117,7 +118,12 @@ data MouseState = MouseState
     , dragPane :: Maybe PaneId  -- ^ the pane a drag started over
     , dragStart :: (Int, Int)  -- ^ where the last drag started, in the window
     , click :: Click
+    , pressed :: Pressed
     }
+    deriving (Eq, Show)
+
+-- | Where the button held down went down.
+data Pressed = NotPressed | PressedOnPane | PressedOffPane
     deriving (Eq, Show)
 
 -- | Where a run of clicks stands: a down waiting to become a double click,
@@ -140,7 +146,7 @@ data ClickStart = ClickStart
 initialMouseState :: MouseState
 initialMouseState = MouseState
     { prevX = 0, prevY = 0, prevB = 0, dragFlag = 0, dragPane = Nothing
-    , dragStart = (0, 0), click = NoClick }
+    , dragStart = (0, 0), click = NoClick, pressed = NotPressed }
 
 -- | What a mouse drag in progress moves (tmux's @mouse_drag_update@).
 data Drag
@@ -226,7 +232,9 @@ data MouseEvent = MouseEvent
     , onSession :: SessionId
     , onWindow :: Maybe WindowId
     , onPane :: Maybe PaneId
-    , ignore :: Bool  -- ^ a timed double click, never sent to a pane
+    , ignore :: Bool
+        -- ^ never sent to a pane: a timed double click, or the drags and
+        -- release of a button pressed off every pane
     , viewOrigin :: Pos  -- ^ the client's viewport origin (tmux's @ox@, @oy@)
     }
     deriving (Eq, Show)
@@ -274,7 +282,8 @@ checkMouse now view st0 m = case classified of
             NoClick -> Just (MouseDown, m.x, m.y, m.b)
     placed ty ex ey eb
         | Just md <- view.modal, outsideModal md ex ey, not (modalDrag md ty) =
-            ( stRecorded { dragFlag = 0, dragPane = Nothing }
+            ( stRecorded { dragFlag = 0, dragPane = Nothing
+                         , pressed = pressStep ty LocEmpty }
             , Swallowed (if md.outside == CloseModal
                             && ty `elem` [MouseDown, SecondClick, TripleClick]
                         then Just md.pane else Nothing) )
@@ -287,7 +296,7 @@ checkMouse now view st0 m = case classified of
                 , ignore = False, viewOrigin = view.origin }
         in case mloc of
             Nothing -> (stRecorded, Unplaced)
-            Just () -> finish ty loc ev eb (windowXY ex ey)
+            Just () -> finish ty loc ev { ignore = heldOffPane ty } eb (windowXY ex ey)
     -- A report on the status line is never outside the modal pane.
     outsideModal md ex ey
         | onStatus view.statusAt view.statusLines ey = False
@@ -357,7 +366,7 @@ checkMouse now view st0 m = case classified of
     finish ty0 loc ev eb start =
         let -- A click run restarts on another button, place or pane.
             (ty, click1) = clickStep ty0 loc ev
-            stClick = stRecorded { click = click1 }
+            stClick = stRecorded { click = click1, pressed = pressStep ty loc }
             (ty', stDrag) = endDrag ty stClick
             stMoved = case ty' of
                 MouseDrag -> startDrag ev eb start stDrag
@@ -382,6 +391,14 @@ checkMouse now view st0 m = case classified of
                 MouseDown -> (MouseDown, AwaitSecond start)
                 SecondClick -> (SecondClick, AwaitThird start)
                 _ -> (ty', NoClick)
+    -- A pane's app sees a button's drags and release only after its press.
+    heldOffPane ty = st0.pressed == PressedOffPane
+        && ty `elem` [MouseDrag, MouseUp, MouseDragEnd]
+    pressStep ty loc
+        | ty `elem` [MouseDown, SecondClick, TripleClick] =
+            if loc == LocPane then PressedOnPane else PressedOffPane
+        | ty `elem` [MouseUp, MouseDragEnd] = NotPressed
+        | otherwise = st0.pressed
     endDrag ty st
         | ty `notElem` [MouseDrag, WheelUp, WheelDown, DoubleClick, TripleClick]
         , st.dragFlag /= 0 = (MouseDragEnd, st { dragFlag = 0, dragPane = Nothing })

@@ -181,6 +181,13 @@ spec = do
             mouseAt False (evOn top (sgr 0 3 0 'm')) tall `shouldBe` Nothing
             mouseAt False (evOn top (sgr 0 3 1 'm')) tall `shouldBe` Just (3, 0)
             mouseAt False (evOn panned (sgr 0 3 23 'm')) tall `shouldBe` Nothing
+        it "a button pressed off every pane is never sent to one (bug 4b)" $ do
+            let ignored = concatMap (\case Keyed k -> [k.event.ignore]; _ -> []) . snd
+                    . mapAccumL (checkMouse 0 view) initialMouseState
+            ignored [sgr 0 3 23 'M', sgr 32 3 22 'M', sgr 32 3 5 'M', sgr 0 3 5 'm']
+                `shouldBe` [False, True, True, True]
+            ignored [sgr 0 3 23 'M', sgr 0 3 5 'm', sgr 0 3 5 'M', sgr 0 3 5 'm']
+                `shouldBe` [False, True, False, False]
     describe "outerMouseMode (the tracking a client asks of its terminal)" $ do
         it "with mouse off, mirrors the active pane's" $ do
             outerMouseMode False False 0 [0, 3] `shouldBe` 0
