@@ -46,6 +46,7 @@ import Hat.Server.FormatEnv
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Locate (findTarget, paneIndexOf)
 import Hat.Server.ModeTree
+import Hat.Server.ModeTree qualified as ModeTree (Item (..))
 import Hat.Server.PaneMode (modifyTopMode, resetPaneMode, setPaneMode, zoomForMode)
 import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
 import Hat.Server.Target qualified as Target
@@ -328,11 +329,9 @@ sessionItems st ts mfilter = do
                 SortActivity -> Just (comparing (\(_, _, _, a) -> Down a))
                 _ -> Nothing) winfos
         wins <- catMaybes <$> mapM (\(ix, w, _, _) -> windowItem sess ix w) ordered
-        if null wins then pure Nothing else do
-            text <- expandAt st (FormatTarget (InSession sess) (levelVars SessionLevel))
-                ts.itemFormat
+        if null wins then pure Nothing else
             pure $ Just Item
-                { tag = TagSession sess.id, name = nm, text = Just text
+                { tag = TagSession sess.id, name = nm, text = Nothing
                 , children = wins, startExpanded = True, align = AlignNone
                 , searchText = [nm], fuzzyName = Just nm
                 , tagging = Taggable, previewFrom = OwnPreview }
@@ -355,19 +354,16 @@ sessionItems st ts mfilter = do
             (\(_, _, at, _) -> keeps mfilter (expandAt st (FormatTarget at Map.empty))) ordered
         if null matched then pure Nothing else do
             paneItems <- forM [ m | m@(p, _, _, _) <- matched, Just p.id /= ts.hidePane ] $
-                \(p, pix, at, env) -> do
-                    text <- expandAt st (FormatTarget at (levelVars PaneLevel)) ts.itemFormat
+                \(p, pix, _, env) ->
                     pure Item
-                        { tag = TagPane p.id, name = tshow pix, text = Just text
+                        { tag = TagPane p.id, name = tshow pix, text = Nothing
                         , children = [], startExpanded = True, align = AlignRight
                         , searchText = [Map.findWithDefault "" "pane_current_command" env]
                         , fuzzyName = Nothing
                         , tagging = Taggable, previewFrom = OwnPreview }
-            text <- expandAt st (FormatTarget (InWindow sess ix win) (levelVars WindowLevel))
-                ts.itemFormat
             wname <- readTVarIO win.name
             pure $ Just Item
-                { tag = TagWinlink sess.id ix, name = tshow ix, text = Just text
+                { tag = TagWinlink sess.id ix, name = tshow ix, text = Nothing
                 , children = paneItems, startExpanded = True, align = AlignRight
                 , searchText = [wname], fuzzyName = Just wname
                 , tagging = Taggable, previewFrom = OwnPreview }
@@ -391,6 +387,29 @@ levelVars level = Map.fromList
   where
     flag l = if l == level then "1" else "0"
 
+-- | The text a list mode's line draws after its name: the mode's format
+-- expanded at the line's item. Customize-mode's builder gives its own.
+drawnText :: ServerState -> TreeState -> Line -> IO (Maybe Text)
+drawnText st ts l = case l.item.tag of
+    _ | ts.kind == OptionTree -> pure l.item.text
+    TagBuffer o -> do
+        bufs <- pasteWalk <$> readTVarIO st.buffers
+        expandAtOrigin <- originExpander st ts
+        traverse (\pb -> expandAtOrigin (bufferEnv pb) ts.itemFormat)
+            (listToMaybe [ b | b <- bufs, b.order == o ])
+    TagClient cid -> do
+        mc <- Map.lookup cid <$> readTVarIO st.clients
+        menv <- maybe (pure Nothing) (clientFormatEnv st) mc
+        traverse (\env -> expandFormat st env ts.itemFormat) menv
+    tag -> do
+        expand <- itemExpander st tag
+        Just <$> expand (levelVars (levelOf tag)) ts.itemFormat
+  where
+    levelOf = \case
+        TagSession _ -> SessionLevel
+        TagWinlink _ _ -> WindowLevel
+        _ -> PaneLevel
+
 bufferItems :: ServerState -> TreeState -> Maybe Text -> IO [Item]
 bufferItems st ts mfilter = do
     bufs <- pasteWalk <$> readTVarIO st.buffers
@@ -400,12 +419,10 @@ bufferItems st ts mfilter = do
             SortSize -> Just (comparing (B.length . (.body)))
             _ -> Nothing) bufs
     fmap catMaybes . forM ordered $ \pb -> do
-        let expand = expandAtOrigin (bufferEnv pb)
-        ok <- keeps mfilter expand
-        if not ok then pure Nothing else do
-            text <- expand ts.itemFormat
+        ok <- keeps mfilter (expandAtOrigin (bufferEnv pb))
+        if not ok then pure Nothing else
             pure $ Just Item
-                { tag = TagBuffer pb.order, name = pb.name, text = Just text
+                { tag = TagBuffer pb.order, name = pb.name, text = Nothing
                 , children = [], startExpanded = True, align = AlignNone
                 , searchText = [pb.name, TE.decodeUtf8Lenient pb.body]
                 , fuzzyName = Just pb.name
@@ -429,10 +446,9 @@ clientItems st ts mfilter = do
             Nothing -> pure Nothing
             Just env -> do
                 ok <- keeps mfilter (expandFormat st env)
-                if not ok then pure Nothing else do
-                    text <- expandFormat st env ts.itemFormat
+                if not ok then pure Nothing else
                     pure $ Just Item
-                        { tag = TagClient c.id, name = nm, text = Just text
+                        { tag = TagClient c.id, name = nm, text = Nothing
                         , children = [], startExpanded = True, align = AlignNone
                         , searchText = [nm], fuzzyName = Just nm
                         , tagging = Taggable, previewFrom = OwnPreview }
@@ -529,7 +545,12 @@ drawTreeMode
     :: ServerState -> TreeState -> Size
     -> IO (V.Vector (V.Vector Cell.Cell), Maybe Pos)
 drawTreeMode st ts size = do
-    (_, ls, noMatches, _, settled) <- layoutTree st size ts
+    (_, built, noMatches, h, settled) <- layoutTree st size ts
+    -- Only the lines on screen expand their text.
+    ls <- forM (zip [0 ..] built) $ \(i, l) ->
+        if i >= settled.offset && i < settled.offset + h
+            then (\t -> l { item = l.item { ModeTree.text = t } }) <$> drawnText st settled l
+            else pure l
     opts <- readTVarIO st.options
     look <- treeLook st ts
     help <- if ts.showHelp

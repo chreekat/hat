@@ -166,6 +166,20 @@ spec = do
                 run st ["send-keys", "-t", "S:0.0", "/", "a", "C-v", "C-g", "b"] `shouldReturn` []
                 cells <- treeCells st
                 any (T.isInfixOf "a^Gb" . rowText) cells `shouldBe` True
+        it "a scrolled tree draws the text of every line it shows" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "-x", "80", "-y", "12", "-n", "w0", "cat"]
+                    `shouldReturn` []
+                forM_ [1 .. 11 :: Int] $ \i ->
+                    run st ["new-window", "-d", "-t", "S:" <> T.pack (show i), "-n", "w" <> T.pack (show i), "cat"]
+                        `shouldReturn` []
+                run st ["choose-tree", "-w", "-t", "S:0.0"] `shouldReturn` []
+                run st ["send-keys", "-t", "S:0.0", "End"] `shouldReturn` []
+                rows <- map rowText <$> treeCells st
+                let listed = filter (not . T.null . T.strip) (takeWhile (not . T.isInfixOf "┌") rows)
+                (listed, filter (not . T.isInfixOf ": w") listed)
+                    `shouldSatisfy` \(ls, untexted) -> length ls > 1 && null untexted
+                        && any (T.isInfixOf ": w11") ls
         it "choose-client has nothing to show without a client" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
@@ -361,11 +375,12 @@ searchable st = do
     run st ["new-window", "-d", "-t", "projects:1", "-n", "hat", "cat"] `shouldReturn` []
     run st ["choose-tree", "-w", "-t", "work:0.0", "set -g @chosen '%%'"] `shouldReturn` []
 
--- | What the server's only pane's tree mode draws, row by row.
+-- | What the server's only pane in a tree mode draws, row by row.
 treeCells :: ServerState -> IO [[Cell.Cell]]
 treeCells st = do
-    [p] <- allPanes st
-    Just (TreeMode ts) <- atomically (topMode p)
+    ps <- allPanes st
+    modes <- mapM (atomically . topMode) ps
+    [(p, ts)] <- pure [ (p, ts) | (p, Just (TreeMode ts)) <- zip ps modes ]
     size <- readTVarIO p.size
     (cells, _) <- drawTreeMode st ts size
     pure (map V.toList (V.toList cells))
