@@ -9,6 +9,8 @@ module Hat.Server.ClientSession
     , detachOnDestroy
     , SessionChoice (..)
     , destroyDestination
+    , NameStep (..)
+    , stepByName
     , sendClientsAway
     ) where
 
@@ -101,17 +103,30 @@ destroyDestination mode dying survivors = (.session) <$> case mode of
     DestroyDetach -> Nothing
     DestroySwitch -> newest byName
     DestroyNoDetached -> newest (filter (not . (.attached)) byName)
-    DestroyPrevious -> case filter ((< dying) . (.name)) byName of
-        [] -> lastOf byName
-        before -> lastOf before
-    DestroyNext -> case filter ((> dying) . (.name)) byName of
-        [] -> firstOf byName
-        after -> firstOf after
+    DestroyPrevious -> stepByName PreviousName dying [ (c.name, c) | c <- survivors ]
+    DestroyNext -> stepByName NextName dying [ (c.name, c) | c <- survivors ]
   where
     byName = List.sortOn (.name) survivors
     newest = List.foldl' (\best c -> case best of
         Just b | b.activity >= c.activity -> best
         _ -> Just c) Nothing
+
+-- | Which way 'stepByName' steps.
+data NameStep = PreviousName | NextName
+    deriving (Eq, Show)
+
+-- | The entry named next after (or before) @from@, wrapping around the
+-- names (tmux's @session_next_session@ and @session_previous_session@).
+stepByName :: NameStep -> Text -> [(Text, a)] -> Maybe a
+stepByName step from entries = snd <$> case step of
+    PreviousName -> case filter ((< from) . fst) byName of
+        [] -> lastOf byName
+        before -> lastOf before
+    NextName -> case filter ((> from) . fst) byName of
+        [] -> firstOf byName
+        after -> firstOf after
+  where
+    byName = List.sortOn fst entries
     firstOf = \case
         [] -> Nothing
         c : _ -> Just c

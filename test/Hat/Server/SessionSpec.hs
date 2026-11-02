@@ -643,6 +643,23 @@ spec = do
                 `shouldReturn` []
             readTVarIO c.session `shouldReturn` other.id
 
+    describe "switch-client -n and -p" $
+        it "step through the sessions by name, wrapping" $ do
+            (st, work) <- seedSession "/"
+            s <- addSession st 1
+            x <- addSession st 2
+            atomically $ writeTVar x.name "x"
+            c <- addClient st s.id (Size 24 80) 1
+            let switch flag = runArgv st Nothing ["switch-client", "-c", clientName c, flag]
+            switch "-n" `shouldReturn` []
+            readTVarIO c.session `shouldReturn` work.id
+            switch "-n" `shouldReturn` []
+            readTVarIO c.session `shouldReturn` x.id
+            switch "-n" `shouldReturn` []
+            readTVarIO c.session `shouldReturn` s.id
+            switch "-p" `shouldReturn` []
+            readTVarIO c.session `shouldReturn` x.id
+
     describe "clock mode" $ do
         it "is the pane's mode until a key ends it" $ do
             (st, _) <- seedSession "/"

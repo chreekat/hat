@@ -43,7 +43,8 @@ import Hat.Server.Command.Types
 import Hat.Server.FormatEnv (paneFormatEnv, windowFormatEnv)
 import Hat.Server.ClientIO (send)
 import Hat.Server.ConfigCauses (showConfigCauses)
-import Hat.Server.ClientSession (adoptServerAlternate, sendClientsAway, switchClientTo)
+import Hat.Server.ClientSession
+    (NameStep (..), adoptServerAlternate, sendClientsAway, stepByName, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
     ( PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange, sessionTarget )
@@ -669,7 +670,11 @@ cmdListPanes st mclient args = do
 
 cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient0 args = do
-    let (opts, flags, _) = parseArgs "ctT" args
+    let (opts, flags, _) = parseArgs "ctTO" args
+        nameStep
+            | "-n" `elem` flags = Just (NextName, "next")
+            | "-p" `elem` flags = Just (PreviousName, "previous")
+            | otherwise = Nothing
     etarget <- case lookup "-c" opts of
         Just name -> fmap Just <$> formatClient st mclient0 Nothing (Just name)
         Nothing -> pure (Right mclient0)
@@ -686,6 +691,15 @@ cmdSwitchClient st mclient0 args = do
                         [] <$ modifyIORef' client.keyState (enterTable table now)
                     else pure [RErr "switch-client -T: another client's key table \
                         \is not yet supported by hat"]
+            | Just _ <- lookup "-O" opts -> pure [RErr "switch-client -O: not supported"]
+            | Just (step, which) <- nameStep -> do
+                cur <- readTVarIO client.session
+                sessions <- Map.elems <$> readTVarIO st.sessions
+                named <- forM sessions $ \sess -> (\n -> (n, sess)) <$> readTVarIO sess.name
+                case [ n | (n, sess) <- named, sess.id == cur ] of
+                    curName : _ | Just sess <- stepByName step curName named ->
+                        [] <$ attachClient st client sess
+                    _ -> pure [RErr ("can't find " <> which <> " session")]
             | "-l" `elem` flags -> do
                 hist <- readTVarIO client.sessionHist
                 sessions <- readTVarIO st.sessions
