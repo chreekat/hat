@@ -31,6 +31,7 @@ module Hat.Server.Reload
     , ReloadCleanup (..)
     , Handover (..)
     , reloadEra
+    , readableEras
     , encodeHandover
     , decodeHandover
     ) where
@@ -56,6 +57,7 @@ import Hat.Geometry (Size)
 import Hat.Server.Persist
     (ModalSnap (..), PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
     , decodeSnapshotJson, plainPane)
+import Hat.Server.ReloadProbe (ReloadEras, erasFromRanges)
 import Hat.Term.Cell (Cell, Style)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator.Types (paintLineBytes)
@@ -373,6 +375,10 @@ data Handover = Handover
 -- encoding, so a shape change that forgets the bump fails the build.
 reloadEra :: Int
 reloadEra = 15
+
+-- | The eras 'decodeReloadTree' adopts.
+readableEras :: ReloadEras
+readableEras = erasFromRanges [(1, reloadEra)]
 
 -- Identifies a hat reload blob, so a stray or foreign file is rejected rather
 -- than misread. "HATR".

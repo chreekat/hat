@@ -28,6 +28,8 @@ import Hat.Command.Script (Script (..), ScriptItem (..))
 import Hat.Debug (prepareDebugSocket)
 import Hat.Path (hatPath, render, (</:>))
 import Hat.Server (resumeServer, runServer)
+import Hat.Server.Reload (readableEras)
+import Hat.Server.ReloadProbe
 import Hat.Transport.Socket (ConnectFailure (..), connectTo, defaultSocketPath)
 import Hat.Version (versionText)
 
@@ -66,6 +68,7 @@ main :: IO ()
 main = do
     args <- getArgs
     case args of
+        [a] | a == probeArg -> TIO.putStrLn (renderProbeAnswer readableEras)
         ("--server" : path : rest) ->
             let (mhandover, cfgArgs) = takeReloadHandover rest
                 mconfig = case cfgArgs of

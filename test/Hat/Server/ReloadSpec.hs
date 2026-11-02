@@ -21,6 +21,7 @@ import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist
 import Hat.Server.PersistSpec ()  -- the tree generators, shared with the store
 import Hat.Server.Reload
+import Hat.Server.ReloadProbe (erasFromRanges)
 import Hat.Term.Cell
 import Hat.Term.Emulator (carriedDecModes)
 import Hat.Term.HostProtocol (CursorModel (..), CursorStyle (..), defaultCursorModel)
@@ -645,6 +646,9 @@ spec = describe "reload handover" $ do
     -- edit the vector.
     it "decodes every era in the corpus" $
         mapM_ decodesToTree corpus
+
+    it "reports exactly the corpus's eras as readable" $
+        readableEras `shouldBe` erasFromRanges [ (e, e) | (e, _, _, _) <- corpus ]
 
     -- Golden bytes are the format contract for the CURRENT era. An intended
     -- shape change bumps 'reloadEra' and appends a corpus row; an unintended
