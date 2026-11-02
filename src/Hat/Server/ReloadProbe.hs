@@ -93,6 +93,7 @@ parseProbeAnswer :: Text -> Either Text ReloadEras
 parseProbeAnswer out = case T.words (T.takeWhile (/= '\n') out) of
     (tag : "1" : eras : _) | tag == answerTag ->
         erasFromRanges <$> traverse range (T.splitOn "," eras)
+    [tag, "1"] | tag == answerTag -> Left "an answer with no eras"
     (tag : fmt : _) | tag == answerTag -> Left ("unknown answer format " <> fmt)
     _ -> Left ("no answer line in " <> tshow (T.take 80 out))
   where
