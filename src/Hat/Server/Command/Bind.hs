@@ -3,6 +3,9 @@
 module Hat.Server.Command.Bind
     ( cmdBind
     , cmdUnbind
+    , bindArgs
+    , isBlock
+    , splitOnSemis
     ) where
 
 import Control.Concurrent.STM (atomically, modifyTVar')
@@ -21,13 +24,7 @@ import Hat.Server.Script (FileLoad (..), resolveScript)
 -- bound, as tmux's @key_bindings_add@ does.
 cmdBind :: CommandImpl
 cmdBind st mclient args = do
-    let (opts, flags, pos) = parseArgs "TN" args
-        table
-            | "-n" `elem` flags = "root"
-            | Just t <- lookup "-T" opts = t
-            | otherwise = "prefix"
-        note = lookup "-N" opts
-        repeats = if "-r" `elem` flags then Repeats else Once
+    let (table, note, repeats, pos) = bindArgs args
     case pos of
         [keyName] | Just key <- parseKeyName keyName -> do
             atomically $ modifyTVar' st.keymap $
@@ -51,19 +48,39 @@ cmdBind st mclient args = do
         { note = maybe b.note Just note
         , repeats = if repeats == Repeats then Repeats else b.repeats }
 
+-- | A @bind-key@ argument list's table, note and repeat mode, and the key
+-- and command words after its flags.
+bindArgs :: [Text] -> (Text, Maybe Text, Repeat, [Text])
+bindArgs args = (table, lookup "-N" opts, repeats, pos)
+  where
+    (opts, flags, pos) = parseArgs "TN" args
+    table
+        | "-n" `elem` flags = "root"
+        | Just t <- lookup "-T" opts = t
+        | otherwise = "prefix"
+    repeats = if "-r" `elem` flags then Repeats else Once
+
 -- A binding's command part: one brace block to parse as a script, its
 -- conditionals and assignments run now, or argv split on ";" tokens (from
 -- escaped semicolons).
 splitBinding :: ServerState -> Maybe Client -> [Text] -> IO (Either Text [[Text]])
 splitBinding st mclient = \case
-    [block] | T.any (\c -> c == ' ' || c == ';' || c == '\n') block ->
+    [block] | isBlock block ->
         either (Left . snd) (Right . map snd)
             <$> resolveScript st mclient RunFile (parseScript block)
-    rest -> pure (Right (filter (not . null) (splitOnSemis rest)))
+    rest -> pure (Right (splitOnSemis rest))
+
+-- | Whether a binding's lone command word is a brace block's text.
+isBlock :: Text -> Bool
+isBlock = T.any (\c -> c == ' ' || c == ';' || c == '\n')
+
+-- | Command words split into commands at their @;@ words.
+splitOnSemis :: [Text] -> [[Text]]
+splitOnSemis = filter (not . null) . go
   where
-    splitOnSemis xs = case break (== ";") xs of
+    go xs = case break (== ";") xs of
         (before, []) -> [before]
-        (before, _ : after) -> before : splitOnSemis after
+        (before, _ : after) -> before : go after
 
 cmdUnbind :: CommandImpl
 cmdUnbind st _ args = do

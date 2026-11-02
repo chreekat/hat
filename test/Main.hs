@@ -44,6 +44,7 @@ import Hat.Server.FormatSpec qualified
 import Hat.Server.HooksSpec qualified
 import Hat.Server.InputRequestsSpec qualified
 import Hat.Server.KeysSpec qualified
+import Hat.Server.KeymapSpec qualified
 import Hat.Server.LayoutSpec qualified
 import Hat.Server.LayoutStringSpec qualified
 import Hat.Server.MruSpec qualified
@@ -173,6 +174,7 @@ main = hspec $ parallel $ do
     describe "Hat.Server.Command.Types" Hat.Server.CommandTypesSpec.spec
     describe "Hat.Server.Config" Hat.Server.ConfigSpec.spec
     describe "Hat.Server.Keys" Hat.Server.KeysSpec.spec
+    describe "Hat.Server.Keymap" Hat.Server.KeymapSpec.spec
     describe "Hat.Server.CopyMode" Hat.Server.CopyModeSpec.spec
     describe "Hat.Server.DisplayPanes" Hat.Server.DisplayPanesSpec.spec
     describe "Hat.Server.Prompt" Hat.Server.PromptSpec.spec

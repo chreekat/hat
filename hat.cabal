@@ -364,6 +364,7 @@ test-suite hat-test
         Hat.Server.HooksSpec
         Hat.Server.InputRequestsSpec
         Hat.Server.KeysSpec
+        Hat.Server.KeymapSpec
         Hat.Server.LayoutSpec
         Hat.Server.LayoutStringSpec
         Hat.Server.MenuSpec
