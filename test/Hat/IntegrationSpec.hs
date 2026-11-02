@@ -1909,6 +1909,23 @@ spec = parallel $ do
         withHat hatBin
             (restartKeepsClient [("HAT_TEST_RELOAD_LINGER", "200000")])
 
+    it "restart reattaches a client whose PATH hat cannot answer the probe (bug 52)" $
+        withHat hatBin $ \h -> do
+        ambient <- testPath
+        let bindir = h.home </> "bin"
+        createDirectoryIfMissing True bindir
+        writeExecutable (bindir </> "hat")
+            "#!/bin/sh\necho 'hat: no server running' >&2\nexit 1\n"
+        c <- startClientEnv h [("PATH", bindir <> ":" <> ambient)] []
+        awaitScreen c "$"
+        _ <- hatCtl h ["restart", h.bin]
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        awaitWith "the re-exec'd client to reattach"
+            (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
+        typeInto c "echo done-$((21+21))\r"
+        awaitScreen c "done-42"
+
     it "restart reattaches a C-locale client to its non-ASCII session" $
         withHat hatBin $ \h -> do
         c <- startRestartableClient h []

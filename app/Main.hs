@@ -264,10 +264,18 @@ attach path mconfig answered setup hist = do
 -- the farewell named, so each client rejoins its own; a nameless farewell (an
 -- older server) falls back to a bare attach. The farewell's MRU session
 -- history rides back as @--reattach-hist@ flags so @switch-client -l@ survives.
+-- A @hat@ on PATH that cannot answer the probe is passed over for this very
+-- binary (see Note [Probing a reload target]).
 restartClient :: FilePath -> Maybe FilePath -> Maybe T.Text -> [T.Text] -> IO ()
 restartClient path mconfig msess hist = do
     onPath <- findExecutable "hat"
-    target <- localeBytes =<< maybe getExecutablePath pure onPath
+    answered <- traverse (\p -> (p,) <$> probeReloadTarget p) onPath
+    target <- localeBytes =<< case answered of
+        Just (p, Answered _) -> pure p
+        Just (p, NoAnswer _) -> do
+            hPutStrLn stderr ("hat: " <> p <> " gave no reload-era answer; reattaching with this build")
+            getExecutablePath
+        Nothing -> getExecutablePath
     paths <- traverse localeBytes
         (["-S", path] <> maybe [] (\c -> ["-f", c]) mconfig)
     -- Names go out as UTF-8 whatever the locale: the client reads them so.
