@@ -7,7 +7,7 @@ import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
 import Control.Exception (bracket, finally)
 import System.Directory (removeDirectoryRecursive)
-import System.Posix.Files (setFileMode)
+import System.Process qualified as P
 import System.Posix.Temp (mkdtemp)
 import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
@@ -1131,8 +1131,7 @@ spec = do
             (st, _) <- seedSession "/"
             (client, peer) <- wiredClient st Attached
             let old = dir <> "/hat"
-            writeFile old "#!/bin/sh\necho hat-reload-eras 1 1-10\n"
-            setFileMode old 0o755
+            writeScript old "echo hat-reload-eras 1 1-10\n"
             errs <- timeout 10_000_000 (cmdRestart st (Just client) [T.pack old])
             (\rs -> [e | RErr e <- rs]) <$> errs `shouldBe` Just
                 [ "restart: " <> T.pack old <> " cannot read this server's state (it reads eras 1-10, this is era "
@@ -2714,3 +2713,10 @@ spec = do
             Map.lookup "@x" . (.user) <$> readTVarIO st.options
                 `shouldReturn` Just "1"
             fmap (.input) <$> readTVarIO client.prompt `shouldReturn` Just ""
+
+-- | Write an executable shell script from a child process, so no fork of this
+-- (parallel) test process can hold its write fd across the script's exec.
+writeScript :: FilePath -> String -> IO ()
+writeScript path body =
+    () <$ P.readProcess "/bin/sh" ["-c", "cat > \"$0\" && chmod 755 \"$0\"", path]
+        ("#!/bin/sh\n" <> body)
