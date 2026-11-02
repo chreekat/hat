@@ -955,31 +955,14 @@ treeModeKey d st mclient pane key = do
                 | PromptEnvironmentValue _ <- p.use = answer ls ts p (Just line)
                 | otherwise = answer ls ts p (if T.null line then Nothing else Just line)
     -- See Note [Fuzzy tree search].
-    searchKey items ls h ts p
-        | key.name `elem` ["Up", "C-p", "Down", "C-n"] =
-            let moved = treeKey h (sortSequence ts.kind) items ls ts { modePrompt = Nothing } key.name
-            in put moved.state { modePrompt = Just p }
-        | otherwise = case editPrompt noPromptEnv p.edit key of
-            Editing e -> edited e
-            Answering e _ -> edited e
-            Submit line -> submitted line
-            SubmitPassing line -> submitted line
-            Cancel -> answer ls ts p Nothing
-      where
-        edited e = put ts
-            { modePrompt = Just p { edit = e }
-            , current = (fuzzyView e.input items).best <|> ts.current }
-        submitted line = do
-            let chosen = ts
-                    { modePrompt = Nothing
-                    , search = if T.null line then Nothing else Just line }
-            put chosen
-            unless (null ls) $ kindKey ls chosen "Enter"
+    searchKey items ls h ts p = do
+        let r = searchPromptKey h (sortSequence ts.kind) items ls ts p key
+        put r.state
+        forM_ r.unhandled (kindKey ls r.state)
     answer ls ts p mline = do
         let closed = ts { modePrompt = Nothing }
         case p.use of
             PromptFilter -> put closed { filter = mline }
-            PromptSearch back -> put closed { current = back }
             PromptKill -> do
                 put closed
                 when (yes mline) $ forM_ (current ls ts) (killItem . (.item.tag))

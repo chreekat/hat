@@ -935,7 +935,7 @@ spec = parallel $ do
         typeInto c "\r"
         awaitWith "the popup to close" (fmap (not . T.isInfixOf "POP-42") . screenText) c
 
-    it "runs a choose-tree -GZw \\; send-keys / binding into a fuzzy search that typing narrows and Enter chooses" $
+    it "runs a choose-tree -GZw \\; send-keys / binding into a fuzzy search that typing narrows, Enter closes, and Enter chooses" $
         withHat hatBin $ \h -> do
         writeFile (h.home <> "/hat.conf") "bind / choose-tree -GZw \\; send-keys /\n"
         c <- startClientArgs h ["-f", h.home <> "/hat.conf"]
@@ -949,6 +949,10 @@ spec = parallel $ do
         awaitScreen c "(search) hd"
         awaitWith "the list to narrow to the match"
             (fmap (\t -> "hat-dev" `T.isInfixOf` t && not ("notes" `T.isInfixOf` t)) . screenText) c
+        typeInto c "\r"
+        awaitWith "the search to close on the narrowed list"
+            (fmap (\t -> "hat-dev" `T.isInfixOf` t && not ("(search)" `T.isInfixOf` t)
+                        && not ("notes" `T.isInfixOf` t)) . screenText) c
         typeInto c "\r"
         awaitTrue "the client to switch to the match" $
             (== "projects:1\n") <$> ctlOut h ["list-clients", "-F", "#{session_name}:#{window_index}"]

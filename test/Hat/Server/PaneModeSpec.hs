@@ -138,16 +138,18 @@ spec = do
                 run st ["list-buffers", "-F", "#{buffer_name}"]
                     `shouldReturn` [ROutput "two"]
                 display st "S:0.0" "#{pane_mode}" `shouldReturn` [ROutput "buffer-mode"]
-        it "/ narrows the tree to fuzzy matches as typed, and Enter chooses the best" $
+        it "/ narrows the tree to fuzzy matches as typed; Enter closes the search, a second chooses the best" $
             withServer $ \st -> do
                 searchable st
                 run st ["send-keys", "-t", "work:0.0", "/", "hat", "Enter"] `shouldReturn` []
+                display st "work:0.0" "#{pane_mode}" `shouldReturn` [ROutput "tree-mode"]
+                run st ["send-keys", "-t", "work:0.0", "Enter"] `shouldReturn` []
                 run st ["show", "-gv", "@chosen"] `shouldReturn` [ROutput "=projects:1."]
                 display st "work:0.0" "#{pane_in_mode}" `shouldReturn` [ROutput "0"]
         it "Up and Down move through the matches while the search is typed" $
             withServer $ \st -> do
                 searchable st
-                run st ["send-keys", "-t", "work:0.0", "/", "hat", "Down", "Enter"]
+                run st ["send-keys", "-t", "work:0.0", "/", "hat", "Down", "Enter", "Enter"]
                     `shouldReturn` []
                 run st ["show", "-gv", "@chosen"] `shouldReturn` [ROutput "=work:"]
         it "Escape leaves the search for the whole tree, selected where it was" $

@@ -15,6 +15,7 @@ module Hat.Server.ModeTree
     , settle
     , KeyResult (..)
     , treeKey
+    , searchPromptKey
     , searchSet
     , FuzzyView (..)
     , fuzzyView
@@ -33,6 +34,7 @@ module Hat.Server.ModeTree
     , drawFormat
     ) where
 
+import Control.Applicative ((<|>))
 import Data.List (findIndex, sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
@@ -45,7 +47,8 @@ import Hat.FuzzyMatch (score)
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
 import Hat.Server.FormatDraw (FormatColours (..), formatDrawIn, formatWidth)
-import Hat.Server.Prompt (promptFor)
+import Hat.Server.Keys (Key (..))
+import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
 import Hat.Server.Message (inputCells, quotedInput)
 import Hat.Server.Theme (Theme)
 import Hat.TextWidth (textWidth)
@@ -263,6 +266,35 @@ treeKey height sortSeq roots ls st key
         , entry = PromptLine
         }
 
+-- | One key against a mode's open fuzzy search prompt @p@. See Note
+-- [Fuzzy tree search].
+searchPromptKey
+    :: Int -> SortSequence -> [Item] -> [Line] -> TreeState -> TreePrompt -> Key
+    -> KeyResult
+searchPromptKey h sortSeq items ls ts p key
+    | key.name `elem` ["Up", "C-p", "Down", "C-n"] =
+        let moved = treeKey h sortSeq items ls ts { modePrompt = Nothing } key.name
+        in stay moved.state { modePrompt = Just p }
+    | otherwise = case editPrompt noPromptEnv p.edit key of
+        Editing e -> edited e
+        Answering e _ -> edited e
+        Submit line -> submitted line
+        SubmitPassing line -> submitted line
+        Cancel -> stay ts
+            { modePrompt = Nothing
+            , search = Nothing
+            , current = case p.use of
+                PromptSearch back -> back
+                _ -> ts.current }
+  where
+    stay s = KeyResult s False Nothing
+    edited e = stay ts
+        { modePrompt = Just p { edit = e }
+        , current = (fuzzyView e.input items).best <|> ts.current }
+    submitted line = stay ts
+        { modePrompt = Nothing
+        , search = if T.null line then Nothing else Just line }
+
 -- | Select the next item (in @dir@, wrapping, through collapsed items too)
 -- whose search text holds the current search term, expanding its parents
 -- (tmux's @mode_tree_search_set@). Case-insensitive when the term is all
@@ -300,8 +332,9 @@ searchSet roots dir st = case st.search of
 -- matches ('Hat.FuzzyMatch.score'), under their ancestors for context,
 -- with siblings ordered by the best score in their subtree so the best
 -- match comes first, selected. Each key typed narrows and re-ranks the list
--- at once; Up and Down move through it, Enter chooses the selected item, and
--- Escape returns to the whole tree, selected where it was before the search.
+-- at once; Up and Down move through it. Enter closes the prompt and keeps the
+-- list narrowed, its keys choosing as usual; Escape returns to the whole
+-- tree, selected where it was before the search, as tmux's does.
 -- An item with no fuzzy name (a pane) is context only, never a match; a
 -- matching item keeps its other children.
 
@@ -347,21 +380,29 @@ fuzzyView q items
     ancestors r = [ r.item.tag | not (null r.matched) ] <> concatMap ancestors r.matched
     flatten r = r : concatMap flatten r.matched
 
--- | The query a mode's open search prompt holds, if any.
+-- | The query the list is narrowed by: the open search prompt's, else the
+-- last one entered.
 fuzzyQuery :: TreeState -> Maybe Text
-fuzzyQuery ts = case ts.modePrompt of
-    Just p | PromptSearch _ <- p.use, not (T.null p.edit.input) -> Just p.edit.input
+fuzzyQuery ts = case searchPrompt ts of
+    Just p -> if T.null p.edit.input then Nothing else Just p.edit.input
+    Nothing -> ts.search
+
+searchPrompt :: TreeState -> Maybe TreePrompt
+searchPrompt ts = case ts.modePrompt of
+    Just p | PromptSearch _ <- p.use -> Just p
     _ -> Nothing
 
 -- | The items a mode lays out, and the state whose expansion it lays them
 -- out under: while a fuzzy search holds a query, its matches with their
--- ancestors opened; else every item.
+-- ancestors opened; else every item. An entered query that no longer
+-- matches anything shows every item, so the list never empties under it.
 shownItems :: TreeState -> [Item] -> ([Item], TreeState)
 shownItems ts items = case fuzzyQuery ts of
-    Nothing -> (items, ts)
-    Just q ->
-        let v = fuzzyView q items
-        in (v.kept, ts { expanded = foldr (`Map.insert` True) ts.expanded v.opened })
+    Just q
+        | let v = fuzzyView q items
+        , not (null v.kept) || isJust (searchPrompt ts) ->
+            (v.kept, ts { expanded = foldr (`Map.insert` True) ts.expanded v.opened })
+    _ -> (items, ts)
 
 -- | The tagged items among the visible lines (tmux only acts on those).
 taggedLines :: TreeState -> [Line] -> [Line]

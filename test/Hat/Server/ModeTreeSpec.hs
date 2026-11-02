@@ -10,6 +10,7 @@ import Hat.Geometry (Size (..))
 import Hat.Model
 import Hat.Server.Command.Types (templateReplace)
 import Hat.Server.FormatDraw (styleCell)
+import Hat.Server.Keys (Key (..))
 import Hat.Server.ModeTree
 import Hat.Server.Prompt (promptFor)
 import Hat.Server.Theme (terminalTheme)
@@ -216,6 +217,30 @@ spec = do
             map (.item.tag) (buildLines lts shown) `shouldBe` tags (fuzzyView "hat" named).kept
         it "lays out every item while no query is typed" $
             tags (fst (shownItems (searching "") named)) `shouldBe` tags named
+        it "lays out every item under an entered query that matches none" $
+            tags (fst (shownItems fresh { search = Just "zzz" } named)) `shouldBe` tags named
+
+    describe "searchPromptKey" $ do
+        let key ts k = case ts.modePrompt of
+                Just p -> searchPromptKey 10 [] named (lined ts) ts p Key { name = k, raw = "" }
+                Nothing -> error "no prompt"
+            lined ts = uncurry (flip buildLines) (shownItems ts named)
+            from = TagWinlink (SessionId 0) 1
+            opened = fresh
+                { current = Just from, search = Just "hat"
+                , modePrompt = Just TreePrompt
+                    { edit = promptFor "(search) " "ha" "", use = PromptSearch (Just from)
+                    , entry = PromptLine } }
+            typed = (key opened "t").state
+        it "Enter closes the prompt on the narrowed list, choosing nothing (bug 6d)" $ do
+            let r = key typed "Enter"
+            (r.finished, r.unhandled, r.state.modePrompt) `shouldBe` (False, Nothing, Nothing)
+            r.state.current `shouldBe` typed.current
+            map (.item.tag) (lined r.state) `shouldBe` map (.item.tag) (lined typed)
+        it "Escape closes the prompt on the whole list, selected where it was" $ do
+            let r = key typed "Escape"
+            (r.unhandled, r.state.current) `shouldBe` (Nothing, Just from)
+            tags (fst (shownItems r.state named)) `shouldBe` tags named
 
     describe "templateReplace" $ do
         it "puts the item in for %% with single quotes escaped" $
