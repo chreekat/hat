@@ -22,6 +22,7 @@ import Data.ByteString qualified as B
 import Data.List (sortBy)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
+import Data.Set qualified as Set
 import Data.Ord (Down (..), comparing)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -40,8 +41,8 @@ import Hat.Server.FormatDraw (FormatColours (..), formatTrimLeft, formatWidth, s
 import Hat.Server.Customize
 import Hat.Server.Editor (spawnEditor)
 import Hat.Server.FormatEnv
-    ( clientFormatEnv, clientTheme, expandFormat, paneFormatEnv, sessionFormatEnv
-    , windowFormatEnv )
+    ( FormatScope (..), FormatTarget (..), Wanted, clientFormatEnv, clientTheme, expandAt
+    , expandFormat, onlyVars, targetVars )
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Locate (findTarget, paneIndexOf)
 import Hat.Server.ModeTree
@@ -275,11 +276,11 @@ itemsFor st ts mfilter = case ts.kind of
     ClientList -> clientItems st ts mfilter
     OptionTree -> customizeItems st ts mfilter
 
--- | Whether a filter keeps an item with this environment.
-keeps :: ServerState -> Maybe Text -> FormatEnv -> IO Bool
-keeps st mfilter env = case mfilter of
+-- | Whether a filter keeps an item, its formats expanded by @expand@.
+keeps :: Maybe Text -> (Text -> IO Text) -> IO Bool
+keeps mfilter expand = case mfilter of
     Nothing -> pure True
-    Just f -> formatTrue <$> expandFormat st env f
+    Just f -> formatTrue <$> expand f
 
 -- | Order a list by a sort, ties broken by name, reversed on request; the
 -- natural order is only ever reversed.
@@ -328,8 +329,8 @@ sessionItems st ts mfilter = do
                 _ -> Nothing) winfos
         wins <- catMaybes <$> mapM (\(ix, w, _, _) -> windowItem sess ix w) ordered
         if null wins then pure Nothing else do
-            env <- sessionFormatEnv st sess
-            text <- expandFormat st (Map.union (levelVars SessionLevel) env) ts.itemFormat
+            text <- expandAt st (FormatTarget (InSession sess) (levelVars SessionLevel))
+                ts.itemFormat
             pure $ Just Item
                 { tag = TagSession sess.id, name = nm, text = Just text
                 , children = wins, startExpanded = True, align = AlignNone
@@ -339,35 +340,42 @@ sessionItems st ts mfilter = do
         panes <- atomically (windowPanes win)
         pinfos <- forM panes $ \p -> do
             pix <- paneIndexOf st win p
-            env <- paneFormatEnv st sess ix win pix p
-            pure (p, pix, env)
+            let at = InPane sess ix win pix p
+            env <- targetVars st (FormatTarget at Map.empty) paneItemVars
+            pure (p, pix, at, env)
         hist <- readTVarIO win.paneHist
-        let titled (_, _, env) = Map.findWithDefault "" "pane_title" env
+        let titled (_, _, _, env) = Map.findWithDefault "" "pane_title" env
             ordered = sortedBy ts.sort titled (\case
-                SortIndex -> Just (comparing (\(_, pix, _) -> pix))
-                SortCreation -> Just (comparing (\(p, _, _) -> p.id))
-                SortActivity -> Just (comparing (\(p, _, _) ->
+                SortIndex -> Just (comparing (\(_, pix, _, _) -> pix))
+                SortCreation -> Just (comparing (\(p, _, _, _) -> p.id))
+                SortActivity -> Just (comparing (\(p, _, _, _) ->
                     fromMaybe maxBound (lookup p.id (zip hist [0 :: Int ..]))))
                 _ -> Nothing) pinfos
-        matched <- filterM (\(_, _, env) -> keeps st mfilter env) ordered
+        matched <- filterM
+            (\(_, _, at, _) -> keeps mfilter (expandAt st (FormatTarget at Map.empty))) ordered
         if null matched then pure Nothing else do
-            paneItems <- forM [ m | m@(p, _, _) <- matched, Just p.id /= ts.hidePane ] $
-                \(p, pix, env) -> do
-                    text <- expandFormat st (Map.union (levelVars PaneLevel) env) ts.itemFormat
+            paneItems <- forM [ m | m@(p, _, _, _) <- matched, Just p.id /= ts.hidePane ] $
+                \(p, pix, at, env) -> do
+                    text <- expandAt st (FormatTarget at (levelVars PaneLevel)) ts.itemFormat
                     pure Item
                         { tag = TagPane p.id, name = tshow pix, text = Just text
                         , children = [], startExpanded = True, align = AlignRight
                         , searchText = [Map.findWithDefault "" "pane_current_command" env]
                         , fuzzyName = Nothing
                         , tagging = Taggable, previewFrom = OwnPreview }
-            wenv <- windowFormatEnv st sess ix win
-            text <- expandFormat st (Map.union (levelVars WindowLevel) wenv) ts.itemFormat
+            text <- expandAt st (FormatTarget (InWindow sess ix win) (levelVars WindowLevel))
+                ts.itemFormat
             wname <- readTVarIO win.name
             pure $ Just Item
                 { tag = TagWinlink sess.id ix, name = tshow ix, text = Just text
                 , children = paneItems, startExpanded = True, align = AlignRight
                 , searchText = [wname], fuzzyName = Just wname
                 , tagging = Taggable, previewFrom = OwnPreview }
+
+-- | The variables a pane item reads besides its formats: its sort name
+-- and search text.
+paneItemVars :: Wanted
+paneItemVars = onlyVars (Set.fromList ["pane_title", "pane_current_command"])
 
 -- | Which level of the session tree an item stands for.
 data ItemLevel = SessionLevel | WindowLevel | PaneLevel
@@ -386,16 +394,16 @@ levelVars level = Map.fromList
 bufferItems :: ServerState -> TreeState -> Maybe Text -> IO [Item]
 bufferItems st ts mfilter = do
     bufs <- pasteWalk <$> readTVarIO st.buffers
-    targetEnv <- originEnv st ts
+    expandAtOrigin <- originExpander st ts
     let ordered = sortedBy ts.sort (.name) (\case
             SortCreation -> Just (comparing (Down . (.order)))
             SortSize -> Just (comparing (B.length . (.body)))
             _ -> Nothing) bufs
     fmap catMaybes . forM ordered $ \pb -> do
-        let env = Map.union (bufferEnv pb) targetEnv
-        ok <- keeps st mfilter env
+        let expand = expandAtOrigin (bufferEnv pb)
+        ok <- keeps mfilter expand
         if not ok then pure Nothing else do
-            text <- expandFormat st env ts.itemFormat
+            text <- expand ts.itemFormat
             pure $ Just Item
                 { tag = TagBuffer pb.order, name = pb.name, text = Just text
                 , children = [], startExpanded = True, align = AlignNone
@@ -420,7 +428,7 @@ clientItems st ts mfilter = do
         case menv of
             Nothing -> pure Nothing
             Just env -> do
-                ok <- keeps st mfilter env
+                ok <- keeps mfilter (expandFormat st env)
                 if not ok then pure Nothing else do
                     text <- expandFormat st env ts.itemFormat
                     pure $ Just Item
@@ -439,15 +447,16 @@ attachedClients st = do
         sid <- readTVar c.session
         Map.member sid <$> readTVar st.sessions
 
--- | The format environment of the pane the mode was entered on.
-originEnv :: ServerState -> TreeState -> IO FormatEnv
-originEnv st ts = do
+-- | How formats expand at the pane the mode was entered on, with some
+-- variables given over its own.
+originExpander :: ServerState -> TreeState -> IO (FormatEnv -> Text -> IO Text)
+originExpander st ts = do
     mloc <- atomically (findPaneLoc st ts.origin.fromPane)
     case mloc of
-        Nothing -> pure Map.empty
+        Nothing -> pure (expandFormat st)
         Just (sess, ix, win, pane) -> do
             pix <- paneIndexOf st win pane
-            paneFormatEnv st sess ix win pix pane
+            pure (expandAt st . FormatTarget (InPane sess ix win pix pane))
 
 findPaneLoc :: ServerState -> PaneId -> STM (Maybe (Session, Int, Window, Pane))
 findPaneLoc st pid = do
@@ -476,37 +485,41 @@ layoutTree st size ts = do
     lineKey i l = case ts.keyFormat of
         Nothing -> pure (defaultLineKey i)
         Just kf -> do
-            env <- itemEnv st l.item.tag
-            k <- expandFormat st (Map.insert "line" (tshow i) env) kf
+            expand <- itemExpander st l.item.tag
+            k <- expand (Map.singleton "line" (tshow i)) kf
             pure (if T.null k then Nothing else Just k)
 
--- | The format environment of an item, for a custom key format.
-itemEnv :: ServerState -> TreeTag -> IO FormatEnv
-itemEnv st = \case
+-- | How formats expand at an item, with some variables given over its own.
+itemExpander :: ServerState -> TreeTag -> IO (FormatEnv -> Text -> IO Text)
+itemExpander st = \case
     TagSession sid -> do
         msess <- Map.lookup sid <$> readTVarIO st.sessions
-        maybe (pure Map.empty) (sessionFormatEnv st) msess
+        pure (maybe plain (at . InSession) msess)
     TagWinlink sid ix -> do
         msess <- Map.lookup sid <$> readTVarIO st.sessions
         case msess of
-            Nothing -> pure Map.empty
+            Nothing -> pure plain
             Just sess -> do
                 mwin <- Map.lookup ix <$> readTVarIO sess.windows
-                maybe (pure Map.empty) (windowFormatEnv st sess ix) mwin
+                pure (maybe plain (at . InWindow sess ix) mwin)
     TagPane pid -> do
         mloc <- atomically (findPaneLoc st pid)
         case mloc of
-            Nothing -> pure Map.empty
+            Nothing -> pure plain
             Just (sess, ix, win, pane) -> do
                 pix <- paneIndexOf st win pane
-                paneFormatEnv st sess ix win pix pane
+                pure (at (InPane sess ix win pix pane))
     TagBuffer o -> do
         bufs <- pasteWalk <$> readTVarIO st.buffers
-        pure (maybe Map.empty bufferEnv (listToMaybe [ b | b <- bufs, b.order == o ]))
+        pure (over (maybe Map.empty bufferEnv (listToMaybe [ b | b <- bufs, b.order == o ])))
     TagClient cid -> do
         mc <- Map.lookup cid <$> readTVarIO st.clients
-        maybe (pure Map.empty) (fmap (fromMaybe Map.empty) . clientFormatEnv st) mc
-    _ -> pure Map.empty
+        over <$> maybe (pure Map.empty) (fmap (fromMaybe Map.empty) . clientFormatEnv st) mc
+    _ -> pure plain
+  where
+    at scope given = expandAt st (FormatTarget scope given)
+    over env given = expandFormat st (Map.union given env)
+    plain = over Map.empty
 
 -- Drawing ---------------------------------------------------------------
 
@@ -583,12 +596,12 @@ previewOf
 previewOf look st ts tag size = case (ts.view, tag) of
     _ | ts.kind == OptionTree -> customizePreview st look.theme ts tag size
     (ViewInfo, _) | ts.kind == SessionTree -> do
-        env <- itemEnv st tag
+        expand <- itemExpander st tag
         let groups = case tag of
                 TagPane _ -> [paneInfoLines, windowInfoLines, sessionInfoLines]
                 TagWinlink _ _ -> [windowInfoLines, sessionInfoLines]
                 _ -> [sessionInfoLines]
-        expanded <- mapM (mapM (expandFormat st env)) groups
+        expanded <- mapM (mapM (expand Map.empty)) groups
         pure (infoGrid look size expanded)
     (_, TagPane pid)
         | ts.hidePane == Just pid -> pure blank
@@ -610,9 +623,8 @@ previewOf look st ts tag size = case (ts.view, tag) of
                 cols <- forM shown $ \p -> do
                     scr <- Emu.snapshot p.emulator
                     pix <- paneIndexOf st win p
-                    env <- paneFormatEnv st sess ix win pix p
                     opts <- resolveForPaneIO st sess win p
-                    labelled scr env opts (p.id == active)
+                    labelled scr (InPane sess ix win pix p) opts (p.id == active)
                 pure (fitGrid size (columns cols))
             _ -> pure blank
     (_, TagSession sid) -> do
@@ -626,9 +638,8 @@ previewOf look st ts tag size = case (ts.view, tag) of
                     mp <- atomically (activePane win)
                     forM mp $ \p -> do
                         scr <- Emu.snapshot p.emulator
-                        env <- windowFormatEnv st sess wix win
                         opts <- resolveForWindowIO st sess win
-                        labelled scr env opts (wix == cur)
+                        labelled scr (InWindow sess wix win) opts (wix == cur)
                 pure (fitGrid size (columns cols))
     (_, TagBuffer o) -> do
         bufs <- pasteWalk <$> readTVarIO st.buffers
@@ -662,11 +673,12 @@ previewOf look st ts tag size = case (ts.view, tag) of
     -- An item's column: its screen, and its label (@tree-mode-preview-format@)
     -- in @tree-mode-preview-style@ over the background of its border
     -- (@tree-mode-border-style@), both in the item's options and context.
-    labelled scr env opts isCur = do
-        let style name = styleIn look.theme (expandFormat st env) (optionText name opts)
+    labelled scr scope opts isCur = do
+        let expand = expandAt st (FormatTarget scope Map.empty)
+            style name = styleIn look.theme expand (optionText name opts)
         edge <- style "tree-mode-border-style"
         sty <- style "tree-mode-preview-style"
-        label <- expandFormat st env (optionText "tree-mode-preview-format" opts)
+        label <- expand (optionText "tree-mode-preview-format" opts)
         pure Column
             { screen = scr, label = label, labelStyle = sty { Cell.bg = edge.bg }
             , edge = edge, centre = isCur }
@@ -763,9 +775,8 @@ treeLook st ts = do
         Nothing -> pure (global, pure)
         Just (sess, ix, win, pane) -> do
             pix <- paneIndexOf st win pane
-            env <- paneFormatEnv st sess ix win pix pane
             o <- resolveForWindowIO st sess win
-            pure (o, expandFormat st env)
+            pure (o, expandAt st (FormatTarget (InPane sess ix win pix pane) Map.empty))
     let style name = styleIn th expand (optionText name opts)
     selection <- style "tree-mode-selection-style"
     border <- style "tree-mode-border-style"
