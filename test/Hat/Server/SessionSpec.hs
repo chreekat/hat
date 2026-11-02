@@ -7,6 +7,7 @@ import Control.Concurrent (newMVar, threadWaitRead)
 import Control.Concurrent.STM
 import Control.Exception (bracket, finally)
 import System.Directory (removeDirectoryRecursive)
+import System.Posix.Files (createNamedPipe)
 import System.Process qualified as P
 import System.Posix.Temp (mkdtemp)
 import Control.Monad (filterM, forM_)
@@ -22,8 +23,8 @@ import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
     , socketPair, touchSocket )
 import System.Mem (performGC)
-import System.Posix.IO (closeFd)
-import System.Posix.IO.ByteString (fdRead)
+import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
+import System.Posix.IO.ByteString (fdRead, fdWrite)
 import System.Posix.Process (getProcessID)
 import System.Posix.Terminal (openPseudoTerminal)
 import System.Posix.Terminal qualified as Termios
@@ -1142,6 +1143,36 @@ spec = do
                 (recvMessage peerRe :: IO (Maybe (Inbound ServerToClient)))
             touchSocket client.sock
             got `shouldBe` Nothing
+
+        it "rejects a second restart while the first is probing its target (bug 52)" $
+            bracket (mkdtemp "/tmp/hat-old-") removeDirectoryRecursive $ \dir -> do
+            (st, _) <- seedSession "/"
+            let old = dir <> "/hat"
+                started = dir <> "/started"
+                gate = dir <> "/gate"
+                refusal = "restart: " <> T.pack old <> " cannot read this server's state (it reads eras 1-10, this is era "
+                    <> T.pack (show reloadEra) <> "); not restarting"
+                restart = fmap (fmap (\rs -> [e | RErr e <- rs])) . timeout 10_000_000 $
+                    cmdRestart st Nothing [T.pack old]
+                -- Read-write, so opening a fifo never blocks and never sees EOF.
+                fifo path = createNamedPipe path 0o600
+                    >> openFd path ReadWrite defaultFileFlags
+            writeScript old $ "echo up > " <> started <> "\nread x < " <> gate
+                <> "\necho hat-reload-eras 1 1-10\n"
+            bracket (fifo started) closeFd $ \up -> bracket (fifo gate) closeFd $ \go -> do
+                let probing = timeout 10_000_000 (fdRead up 3) `shouldReturn` Just "up\n"
+                    release = () <$ fdWrite go "go\n"
+                withAsync restart $ \first -> do
+                    probing
+                    second <- restart
+                    second `shouldSatisfy` maybe False (any (T.isInfixOf "in progress"))
+                    release
+                    wait first `shouldReturn` Just [refusal]
+                -- Refused, the claim is released: a third restart probes again.
+                withAsync restart $ \third -> do
+                    probing
+                    release
+                    wait third `shouldReturn` Just [refusal]
 
     describe "locking" $
         it "is not supported: its commands, options and hook are refused" $ do

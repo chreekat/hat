@@ -28,6 +28,7 @@ module Hat.Model
     , KeptExpansion (..)
     , EnvImport (..)
     , StartupPhase (..)
+    , ReloadClaim (..)
     , Shutdown (..)
     , DestroyHold (..)
     , AcceptGate (..)
@@ -224,6 +225,7 @@ data ServerState = ServerState
                                 --   config-spawned one has been accepted.
                                 --   See 'waitIdle'.
     , startupPhase :: TVar StartupPhase  -- ^ see 'Hat.Server.startupGate'.
+    , reloadClaim :: TVar ReloadClaim   -- ^ see 'Hat.Server.Dispatch.cmdReload'.
     , acceptGate  :: TVar AcceptGate    -- ^ see 'Hat.Server.Conn.acceptLoop'.
     , readGate    :: TVar ReadGate      -- ^ see 'Hat.Server.Pane.pauseReaders'.
     , readsInFlight :: TVar Int
@@ -1047,6 +1049,10 @@ data EnvImport = ImportEnv | SkipEnvImport
 data StartupPhase = LoadingConfig | Restoring | Ready
     deriving (Eq, Show)
 
+-- | Whether an in-place reload is under way in this image.
+data ReloadClaim = NoReload | ReloadClaimed
+    deriving (Eq, Show)
+
 -- | Whether the server was asked to end (@kill-server@), whatever its
 -- @exit-empty@ says.
 data Shutdown = Serving | ShuttingDown
@@ -1233,6 +1239,7 @@ newServerState defaultKeymap lg path storePath = ServerState
     -- Ready, not LoadingConfig: a bare state (tests) is idle. 'runServerWith'
     -- arms LoadingConfig before its accept loop can serve anyone.
     <*> newTVarIO Ready  -- startupPhase
+    <*> newTVarIO NoReload  -- reloadClaim
     <*> newTVarIO AcceptOpen
     <*> newTVarIO ReadersFlowing
     <*> newTVarIO 0      -- readsInFlight

@@ -640,15 +640,28 @@ reloadFarewell _ _ _ _ = Exited
 -- era, is reported before anything is torn down, so it is a harmless error
 -- rather than a half-dropped server.
 cmdReload :: ReloadScope -> CommandImpl
-cmdReload scope st mclient args = do
+cmdReload scope st mclient args =
     -- Fail loud rather than reload on top of an in-flight startup or
     -- reload: capturing a half-rebuilt tree and re-exec'ing through it is
     -- how a second restart-server strands the live programs. Startup lands
-    -- at Ready the moment the tree is whole again.
-    phase <- readTVarIO st.startupPhase
-    if phase /= Ready
-        then pure [RErr (reloadName scope <> ": startup or reload still in progress; try again shortly")]
-        else cmdReload' scope st mclient args
+    -- at Ready the moment the tree is whole again; a reload holds its claim
+    -- from before the probe until the exec, or until it gives up.
+    bracket claim release $ \case
+        OurReload -> cmdReload' scope st mclient args
+        ReloadBusy -> pure [RErr (reloadName scope <> ": startup or reload still in progress; try again shortly")]
+  where
+    claim = atomically $ do
+        phase <- readTVar st.startupPhase
+        held <- readTVar st.reloadClaim
+        if phase == Ready && held == NoReload
+            then OurReload <$ writeTVar st.reloadClaim ReloadClaimed
+            else pure ReloadBusy
+    release = \case
+        OurReload -> atomically (writeTVar st.reloadClaim NoReload)
+        ReloadBusy -> pure ()
+
+-- | Whether 'cmdReload' won the server's reload claim.
+data ReloadTurn = OurReload | ReloadBusy
 
 -- | What a reload invocation asks for: the scrollback it carries, and the
 -- binary it names (none: the on-PATH @hat@, see 'resolveReloadTarget').
