@@ -207,6 +207,20 @@ spec = do
                 `shouldBe` Just (case widths [0, 1, 2] three of
                     [a, b, c] -> [a, b + 1 + c]
                     other -> other)
+        it "gives a middle pane's space to its previous sibling" $
+            fmap (widths [0, 2]) (removePane (PaneId 1) three)
+                `shouldBe` Just (case widths [0, 1, 2] three of
+                    [a, b, c] -> [a + 1 + b, c]
+                    other -> other)
+        it "halves the window again after split -b, split -b, close the middle (bug 1e)" $ do
+            let one = fitLayout windowSize (leaf 0)
+                closed o = split1 o Nothing Before SpanPane 0 1 one
+                    >>= split1 o Nothing Before SpanPane 1 2
+                    >>= removePane (PaneId 1)
+            (closed LeftRight >>= \l -> traverse (`cellOf` l) [2, 0])
+                `shouldBe` Just [(60, 40), (59, 40)]
+            (closed TopBottom >>= \l -> traverse (`cellOf` l) [2, 0])
+                `shouldBe` Just [(120, 20), (120, 19)]
         prop "removing a split-off pane restores the original pane set" $
             forAll genLayout $ \lay -> case splitPane
                     (SplitSpec TopBottom Nothing Before SpanPane)

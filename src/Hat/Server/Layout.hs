@@ -599,9 +599,9 @@ destroyBottomRight root = do
         _ -> []
 
 -- | Remove the cell at a (non-root) path: a tiled cell's space and border
--- go to its 'neighbourOf' — or, with none, its parent leaves the tiling
--- ('removeTileAt') — and a parent left with one child is replaced by it
--- (@layout_destroy_cell@).
+-- go to its 'closingNeighbourOf' — or, with none, its parent leaves the
+-- tiling ('removeTileAt') — and a parent left with one child is replaced by
+-- it (@layout_destroy_cell@).
 destroyAt :: Path -> Layout -> Layout
 destroyAt p root = modifyAt parentPath collapse given
   where
@@ -609,7 +609,7 @@ destroyAt p root = modifyAt parentPath collapse given
     i = last p
     given = case (at parentPath root).cell of
         NodeCell t cs
-            | (gone : _) <- drop i cs, isTiled gone -> case neighbourOf i cs of
+            | (gone : _) <- drop i cs, isTiled gone -> case closingNeighbourOf i cs of
                 Just j -> modifyAt (parentPath <> [j]) (adjust t (extent t gone + 1)) root
                 Nothing -> removeTileAt parentPath root
         _ -> root
@@ -620,6 +620,12 @@ destroyAt p root = modifyAt parentPath collapse given
                 | otherwise -> only
             kept -> parent { cell = NodeCell t kept }
         _ -> parent
+
+-- | The sibling that takes a closed cell's space: the nearest tiled one
+-- before it, else after it (tmux 3.7's @layout_destroy_cell@).
+closingNeighbourOf :: Int -> [Layout] -> Maybe Int
+closingNeighbourOf i cs = List.find (\j -> tiledish (cs !! j))
+    ([i - 1, i - 2 .. 0] <> [i + 1 .. length cs - 1])
 
 -- | The sibling whose space a cell at index @i@ takes or gives when it
 -- leaves or rejoins the tiling: the nearest tiled one after it — before it,
