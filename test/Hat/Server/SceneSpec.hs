@@ -147,7 +147,7 @@ spec = do
                     , scrollbars = Map.singleton (PaneId 9) 1 }
             (scene V.! 2) V.! 4 `shouldBe` SceneScrollbar (PaneId 9) 0 0
             picture plainLook scene !! 1 `shouldBe` ".┌───┐."
-    describe "two-pane colours" $
+    describe "two-pane colours" $ do
         it "splits the dividing border between the panes beside it" $ do
             let inp = SceneInput
                     { window = Size { rows = 4, cols = 3 }, area = Size { rows = 4, cols = 3 }
@@ -159,6 +159,24 @@ spec = do
                                _ -> Nothing
                          | y <- [0 .. 3] ]
             owners `shouldBe` map (Just . PaneId) [0, 0, 0, 1]
+        it "draws an indicator arrow in the active pane's style on either half (bug a)" $ do
+            let dim = Cell.defaultStyle { Cell.fg = Cell.Indexed 8 }
+                lit = Cell.defaultStyle { Cell.fg = Cell.Indexed 2 }
+                arrowStyle twoPane panes at =
+                    let inp = SceneInput
+                            { window = Size { rows = 4, cols = 4 }, area = Size { rows = 4, cols = 4 }
+                            , panes, paneStatus = PaneStatusOff, twoPane = Just twoPane
+                            , scrollbars = Map.empty, scrollbarSide = ScrollbarRight, overlays = Map.empty
+                            , floats = [], menu = Nothing }
+                        look = plainLook
+                            { active = Just (PaneId 1)
+                            , paneStyles = Map.fromList [ (PaneId 0, dim), (PaneId 1, lit) ]
+                            , arrows = Map.singleton at '\x25c0' }
+                    in [ c.style | (pos, c) <- sceneChrome look (buildScene inp), pos == at ]
+            arrowStyle LeftRight [ (PaneId 0, rect 0 4 0 1), (PaneId 1, rect 0 4 2 4) ] (Pos 1 1)
+                `shouldBe` [lit]
+            arrowStyle TopBottom [ (PaneId 0, rect 0 1 0 4), (PaneId 1, rect 2 4 0 4) ] (Pos 1 1)
+                `shouldBe` [lit]
     describe "scrollbars" $ do
         let look = plainLook { scrollbarLooks = Map.singleton (PaneId 0) ScrollbarLook
                 { style = ScrollbarStyle

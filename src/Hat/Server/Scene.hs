@@ -448,14 +448,17 @@ sceneChrome look scene =
                 (Map.lookup pid look.paneLines >>= (V.!? off))
         SceneBorder b ->
             let owner = borderOwner look.active b
+                arrow = Map.lookup pos look.arrows
+                -- An arrow always draws in the active pane's style.
+                stylePane = if isJust arrow then look.active else owner
                 sty = maybe look.windowStyle
-                    (\p -> Map.findWithDefault look.windowStyle p look.paneStyles) owner
+                    (\p -> Map.findWithDefault look.windowStyle p look.paneStyles) stylePane
                 marked = maybe False (hasPane b) look.marked
                 sty' = if marked then sty { Cell.reverse = not sty.reverse } else sty
                 glyph = fromMaybe
                     (borderGlyph (linesOf look owner) (owner >>= (`Map.lookup` look.numbers))
                         (cellTypeOf b.mask))
-                    (Map.lookup pos look.arrows)
+                    arrow
             in Just (isolatedRun look scene pos b (Cell.glyphCell glyph sty'))
 
 -- | A vertical border run closes the bidi isolate the cells before it
