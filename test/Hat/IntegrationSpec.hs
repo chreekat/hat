@@ -434,36 +434,6 @@ awaitWith what check d = do
                 atomically $ readTVar d.fed >>= \now -> when (now == seen) retry
                 go
 
--- The shared body of the restart-keeps-client tests: the pane pid pins the
--- server half of the upgrade, the same pty client still delivering input
--- pins the client half. @extraEnv@ seeds the autostarted server's
--- environment (e.g. the reload linger knob).
-restartKeepsClient :: [(String, String)] -> Hat -> IO ()
-restartKeepsClient extraEnv h = do
-    let digits = filter (\ch -> ch >= '0' && ch <= '9')
-    c <- startRestartableClient h extraEnv
-    awaitScreen c "$"
-    typeInto c "echo before-restart\r"
-    awaitScreen c "before-restart"
-    pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
-    pidBefore `shouldNotBe` ""
-    _ <- hatCtl h ["restart", h.bin]
-    -- Only type once the new image owns the ptys (the consumed handover)
-    -- and the re-exec'd client is attached to it, so no keystroke can
-    -- land in the old image's final instants.
-    awaitTrue "the reload handover to be consumed" $
-        doesFileExist (h.sock <> ".reload.last")
-    -- Through the driver, so a timeout shows the pty: whatever the
-    -- re-exec'd client printed before dying is the diagnosis.
-    awaitWith "the re-exec'd client to reattach"
-        (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
-    -- "done-42" can only render if the reloaded server adopted the pane
-    -- AND the re-exec'd client reattached to shuttle the keystrokes.
-    typeInto c "echo done-$((21+21))\r"
-    awaitScreen c "done-42"
-    pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
-    pidAfter `shouldBe` pidBefore
-
 -- | An attached client whose re-exec resolves `hat` on PATH to THIS build,
 -- so a restart's hop is deterministic (and never the system hat).
 startRestartableClient :: Hat -> [(String, String)] -> IO Driver
@@ -1808,15 +1778,38 @@ spec = parallel $ do
     -- `restart` = restart-server + restart-client: the attached client
     -- re-execs and reattaches instead of exiting, so one command upgrades
     -- both halves (bug 4f). The pane pid pins the server half; the same pty
-    -- client still delivering input pins the client half.
-    it "restart reloads the server and the attached client stays attached" $
-        withHat hatBin (restartKeepsClient [])
-
-    -- 83: a farewelled client's reattach must wait in the listen backlog for
-    -- the next image, even when the old image lingers before its exec.
-    it "restart reattaches the client across a lingering old image (83)" $
-        withHat hatBin
-            (restartKeepsClient [("HAT_TEST_RELOAD_LINGER", "200000")])
+    -- client still delivering input pins the client half. 83: the reattach
+    -- must wait in the listen backlog for the next image, even when the old
+    -- image lingers before its exec. The session's non-ASCII name must
+    -- survive the hop of a C-locale client.
+    it "restart reattaches a C-locale client to its non-ASCII session across a lingering old image (4f, 83)" $
+        withHat hatBin $ \h -> do
+        let digits = filter (\ch -> ch >= '0' && ch <= '9')
+        c <- startRestartableClient h [("HAT_TEST_RELOAD_LINGER", "200000")]
+        awaitScreen c "$"
+        _ <- hatRaw h ["rename-session", "caf\xc3\xa9"]
+        typeInto c "echo before-restart\r"
+        awaitScreen c "before-restart"
+        pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        pidBefore `shouldNotBe` ""
+        _ <- hatCtl h ["restart", h.bin]
+        -- Only type once the new image owns the ptys (the consumed handover)
+        -- and the re-exec'd client is attached to it, so no keystroke can
+        -- land in the old image's final instants.
+        awaitTrue "the reload handover to be consumed" $
+            doesFileExist (h.sock <> ".reload.last")
+        -- Through the driver, so a timeout shows the pty: whatever the
+        -- re-exec'd client printed before dying is the diagnosis.
+        awaitWith "the re-exec'd client to reattach"
+            (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
+        -- "done-42" can only render if the reloaded server adopted the pane
+        -- AND the re-exec'd client reattached to shuttle the keystrokes.
+        typeInto c "echo done-$((21+21))\r"
+        awaitScreen c "done-42"
+        pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
+        pidAfter `shouldBe` pidBefore
+        hatRaw h ["list-clients", "-F", "#{client_session}"]
+            `shouldReturn` (ExitSuccess, "caf\xc3\xa9\n", "")
 
     it "restart reattaches a client whose PATH hat cannot answer the probe (bug 52)" $
         withHat hatBin $ \h -> do
@@ -1834,19 +1827,6 @@ spec = parallel $ do
             (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
         typeInto c "echo done-$((21+21))\r"
         awaitScreen c "done-42"
-
-    it "restart reattaches a C-locale client to its non-ASCII session" $
-        withHat hatBin $ \h -> do
-        c <- startRestartableClient h []
-        awaitScreen c "$"
-        _ <- hatRaw h ["rename-session", "caf\xc3\xa9"]
-        _ <- hatCtl h ["restart", h.bin]
-        awaitTrue "the reload handover to be consumed" $
-            doesFileExist (h.sock <> ".reload.last")
-        awaitWith "the re-exec'd client to reattach"
-            (\_ -> not . null . words <$> ctlOut h ["list-clients"]) c
-        hatRaw h ["list-clients", "-F", "#{client_session}"]
-            `shouldReturn` (ExitSuccess, "caf\xc3\xa9\n", "")
 
     -- b89: a pane's output stream must cross a reload without a gap, even
     -- for bytes emitted inside the capture->exec window (the linger holds
