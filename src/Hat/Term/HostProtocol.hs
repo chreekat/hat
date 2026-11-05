@@ -36,6 +36,7 @@ module Hat.Term.HostProtocol
     , scrubPassthrough
       -- * Sequences hat handles above the grid engine
     , HostCarry (..)
+    , EscCarry (..)
     , HostPiece (..)
     , HostSignal (..)
     , HostPolicy (..)
@@ -197,11 +198,46 @@ scrubPassthrough size st0 chunk = case st0 of
 
 -- | Scanner state for 'scrubHost', carried across 'feed' chunks.
 data HostCarry
-    = HostCarry ByteString
-        -- ^ an unfinished sequence the previous chunk ended in
-    | HostDiscarding
+    = HostCarry !ByteString
+        -- ^ an unfinished sequence the previous chunk ended in, its body (if
+        --   it has one) not yet reached
+    | HostString !StringHold
+        -- ^ inside the body of a string this layer takes
+    | HostDiscarding !EscCarry
         -- ^ inside a string that outgrew the input buffer, dropping it up to
         --   its terminator
+    deriving (Eq, Show)
+
+-- | A string this layer takes, its body open across reads.
+data StringHold = StringHold
+    { kind :: !StringKind
+    , lead :: !Int
+        -- ^ bytes tmux's buffer holds ahead of the body ('inputStringLimit')
+    , body :: ![ByteString]
+        -- ^ the body so far, latest read first
+    , size :: !Int
+        -- ^ the body's length
+    , esc :: !EscCarry
+        -- ^ how the body so far ends
+    }
+    deriving (Eq, Show)
+
+-- | Whether held bytes end in an ESC that a backslash next would complete
+-- into an ST.
+data EscCarry = NoEsc | EscHeld
+    deriving (Eq, Show)
+
+-- | Which string a 'StringHold' is; see 'stringSignal'.
+data StringKind = TitleString | RenameString | ClipboardString | StatusString
+    deriving (Eq, Show)
+
+-- | The signal a completed string of a kind is, from its body and terminator.
+stringSignal :: StringKind -> ByteString -> OscTerm -> HostSignal
+stringSignal = \case
+    TitleString -> \t _ -> HostTitle t
+    RenameString -> \t _ -> HostRename t
+    ClipboardString -> HostClipboard
+    StatusString -> \t _ -> HostQuery (StatusQuery t)
 
 -- | What 'scrubHost' makes of a pane's output: bytes for the grid engine, or
 -- a sequence hat acts on itself, in stream order.
@@ -289,9 +325,15 @@ inputStringLimit n = last (takeWhile (<= max 32 n) (iterate (* 2) 32)) - 1
 scrubHost :: HostPolicy -> HostCarry -> ByteString -> (HostCarry, [HostPiece])
 scrubHost pol carry0 chunk = case carry0 of
     HostCarry held -> scan (held <> chunk)
-    HostDiscarding -> case stringEnd chunk 0 of
-        Just (_, end, _) -> scan (B.drop end chunk)
-        Nothing -> (HostDiscarding, [])
+    HostString hold -> case grow limit hold chunk of
+        StillOpen hold' -> (HostString hold', [])
+        Overflowed esc -> (HostDiscarding esc, [])
+        Ended sig rest ->
+            let (carry, pieces) = scan rest
+            in (carry, maybe pieces ((: pieces) . HostSignal) sig)
+    HostDiscarding esc -> case bodyScan esc chunk of
+        BodyOpen _ esc' -> (HostDiscarding esc', [])
+        BodyEnd _ _ rest -> scan rest
   where
     limit = inputStringLimit pol.bufferSize
     scan bs = go 0 0 []
@@ -305,10 +347,11 @@ scrubHost pol carry0 chunk = case carry0 of
             Just d ->
                 let p = i + d
                 in case classify p of
+                    -- A header past the buffer's size is dropped like a body.
                     Incomplete
-                        | len - p > limit + 16 ->
-                            finish HostDiscarding s p acc
+                        | len - (p + 2) > limit -> finish (HostDiscarding NoEsc) s p acc
                         | otherwise -> finish (HostCarry (B.drop p bs)) s p acc
+                    Held carry -> finish carry s p acc
                     Skip n -> go s (p + n) acc
                     Found end piece -> go end end (piece : emit s p acc)
                     Dropped end -> go end end (emit s p acc)
@@ -316,8 +359,8 @@ scrubHost pol carry0 chunk = case carry0 of
             | p + 1 >= len = Incomplete
             | otherwise = case at (p + 1) of
                 0x5d -> osc p          -- ']'
-                0x5f -> str p HostTitle          -- '_' APC
-                0x6b -> str p HostRename         -- 'k'
+                0x5f -> str p TitleString        -- '_' APC
+                0x6b -> str p RenameString       -- 'k'
                 0x5b -> csi p          -- '['
                 0x50 -> dcs p          -- 'P'
                 0x63 -> Found (p + 2) (HostSignal (HostCursor TerminalReset "\ESCc"))
@@ -330,32 +373,31 @@ scrubHost pol carry0 chunk = case carry0 of
                 case (ds, at q) of
                     ("0", c) -> titleAt c q
                     ("2", c) -> titleAt c q
-                    ("52", 0x3b) -> case stringEnd bs (q + 1) of
-                        Nothing -> Incomplete
-                        Just (payload, end, term) -> keep (q + 1 - (p + 2)) end payload
-                            (HostSignal (HostClipboard payload term))
-                    ("12", 0x3b) -> case stringEnd bs (q + 1) of
-                        Nothing -> Incomplete
-                        Just ("?", end, term) ->
-                            Found end (HostSignal (HostQuery (CursorColourQuery term)))
-                        Just _ -> Skip 2
+                    ("52", 0x3b) -> str' (q + 1 - (p + 2)) (q + 1) ClipboardString
+                    -- OSC 12 is taken only as the cursor-colour query @;?@;
+                    -- a colour set passes on.
+                    ("12", 0x3b) -> case bodyScan NoEsc (B.drop (q + 1) bs) of
+                        BodyEnd "?" term rest ->
+                            Found (len - B.length rest) (HostSignal (HostQuery (CursorColourQuery term)))
+                        BodyOpen soFar _ | soFar `B.isPrefixOf` "?" -> Incomplete
+                        _ -> Skip 2
                     _ -> Skip 2
           where
             -- tmux takes the title after the @;@, or an empty one when the
             -- number is the whole string.
             titleAt c q
-                | c == 0x3b = str' (q + 1 - (p + 2)) (q + 1) HostTitle
-                | c == 0x07 || c == 0x1b = str' (q - (p + 2)) q HostTitle
+                | c == 0x3b = str' (q + 1 - (p + 2)) (q + 1) TitleString
+                | c == 0x07 || c == 0x1b = str' (q - (p + 2)) q TitleString
                 | otherwise = Skip 2
-        str p mk = str' 0 (p + 2) mk
-        str' lead q mk = case stringEnd bs q of
-            Nothing -> Incomplete
-            Just (payload, end, _) -> keep lead end payload (HostSignal (mk payload))
-        -- tmux's buffer holds the whole string, @lead@ bytes ahead of the
-        -- payload included.
-        keep lead end payload piece
-            | lead + B.length payload > limit = Dropped end
-            | otherwise = Found end piece
+        str p kind = str' 0 (p + 2) kind
+        -- A string's body from offset @q@, @lead@ bytes into tmux's buffer.
+        str' lead q kind =
+            let fresh = StringHold { kind = kind, lead = lead, body = [], size = 0, esc = NoEsc }
+            in case grow limit fresh (B.drop q bs) of
+                StillOpen hold -> Held (HostString hold)
+                Overflowed esc -> Held (HostDiscarding esc)
+                Ended Nothing rest -> Dropped (len - B.length rest)
+                Ended (Just sig) rest -> Found (len - B.length rest) (HostSignal sig)
         csi p = case csiAt bs (p + 2) of
             Nothing -> Incomplete
             Just (prefix, params, inter, final, end) ->
@@ -406,10 +448,7 @@ scrubHost pol carry0 chunk = case carry0 of
         -- DECRQSS is the one DCS this layer takes.
         dcs p = case csiAt bs (p + 2) of
             Nothing -> Incomplete
-            Just (_, _, "$", 0x71, q) -> case stringEnd bs (q - 1) of
-                Nothing -> Incomplete
-                Just (payload, end, _) ->
-                    keep 0 end payload (HostSignal (HostQuery (StatusQuery payload)))
+            Just (_, _, "$", 0x71, q) -> str' 0 (q - 1) StatusString
             Just _ -> Skip 2
         altModes = [47, 1047, 1049]
         decset ns f = "\ESC[?" <> B.intercalate ";" (map (B8.pack . show) ns) <> B.singleton f
@@ -471,30 +510,67 @@ cleanName raw = case argFromBytes raw of
 
 -- | What 'scrubHost' makes of the escape sequence at one offset.
 data Scanned
-    = Incomplete           -- ^ it runs past the end of the bytes so far
+    = Incomplete           -- ^ its header runs past the end of the bytes so far
+    | Held HostCarry       -- ^ its body does: the state to resume from
     | Skip Int             -- ^ not this layer's: scan on this many bytes later
     | Found Int HostPiece  -- ^ taken, up to this offset, as this piece
     | Dropped Int          -- ^ taken out of the stream, up to this offset
 
--- | The payload of a string sequence starting at an offset, the offset just
--- past it, and its terminator: BEL, ST, or an ESC that starts something else
--- (left in the stream). 'Nothing' when the string has not ended yet.
-stringEnd :: ByteString -> Int -> Maybe (ByteString, Int, OscTerm)
-stringEnd bs q = go q
+-- | What a string's body came to once more bytes were fed to it.
+data Grown
+    = StillOpen StringHold
+        -- ^ unterminated, within the buffer
+    | Overflowed EscCarry
+        -- ^ unterminated and past the buffer: dropped from here to its
+        --   terminator
+    | Ended (Maybe HostSignal) ByteString
+        -- ^ terminated: its signal (none when it outgrew the buffer), and the
+        --   bytes after it
+
+-- | Feed bytes to a held string's body. A body is scanned once: the bytes
+-- the hold already has are known to hold no terminator, so only the new ones
+-- are searched.
+grow :: Int -> StringHold -> ByteString -> Grown
+grow limit h bs = case bodyScan h.esc bs of
+    BodyOpen part esc
+        | over part -> Overflowed esc
+        | otherwise -> StillOpen (h `with` part) { esc = esc }
+    BodyEnd part term rest
+        | over part -> Ended Nothing rest
+        | otherwise -> Ended (Just (stringSignal h.kind (B.concat (reverse (h `with` part).body)) term)) rest
   where
-    len = B.length bs
-    go j = case B.findIndex (\b -> b == 0x07 || b == 0x1b) (B.drop j bs) of
-        Nothing -> Nothing
-        Just d ->
-            let k = j + d
-                payload = B.take (k - q) (B.drop q bs)
-            in if B.index bs k == 0x07
-                then Just (payload, k + 1, TermBel)
-                else if k + 1 >= len
-                    then Nothing
-                    else if B.index bs (k + 1) == 0x5c
-                        then Just (payload, k + 2, TermSt)
-                        else Just (payload, k, TermSt)
+    over part = h.lead + h.size + B.length part > limit
+    with hold part
+        | B.null part = hold
+        | otherwise = hold { body = part : hold.body, size = hold.size + B.length part }
+
+-- | How a string's body goes on in some bytes.
+data BodyScan
+    = BodyOpen ByteString EscCarry
+        -- ^ unterminated: the body bytes, and whether they ended in an ESC
+        --   that may yet start the ST
+    | BodyEnd ByteString OscTerm ByteString
+        -- ^ terminated: the body bytes, the terminator, and the bytes the
+        --   stream resumes with
+
+-- | Scan bytes for the end of a string body, given how the body stood before
+-- them. The terminator is BEL, ST, or an ESC that starts something else,
+-- which stays in the stream.
+bodyScan :: EscCarry -> ByteString -> BodyScan
+bodyScan EscHeld bs = case B.uncons bs of
+    Nothing -> BodyOpen "" EscHeld
+    Just (0x5c, rest) -> BodyEnd "" TermSt rest
+    Just _ -> BodyEnd "" TermSt (B.cons 0x1b bs)
+bodyScan NoEsc bs =
+    let escAt = B.elemIndex 0x1b bs
+        belAt = B.elemIndex 0x07 (maybe bs (`B.take` bs) escAt)
+    in case (belAt, escAt) of
+        (Just k, _) -> BodyEnd (B.take k bs) TermBel (B.drop (k + 1) bs)
+        (Nothing, Nothing) -> BodyOpen bs NoEsc
+        (Nothing, Just k)
+            | k + 1 >= B.length bs -> BodyOpen (B.take k bs) EscHeld
+            | B.index bs (k + 1) == 0x5c -> BodyEnd (B.take k bs) TermSt (B.drop (k + 2) bs)
+            | otherwise -> BodyEnd (B.take k bs) TermSt (B.drop k bs)
 
 -- | A CSI's parts from just past its @ESC [@: a private prefix byte, the
 -- parameter bytes, the intermediates, the final byte, and the offset past

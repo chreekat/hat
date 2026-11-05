@@ -17,6 +17,7 @@ import Test.QuickCheck hiding (resize)
 import Hat.Geometry
 import Hat.Term.Cell
 import Hat.Term.Emulator
+import Hat.Term.HostProtocol (EscCarry (..), HostCarry (..), HostPiece (..), HostSignal (..), scrubHost)
 import Hat.Term.RawGrid qualified as Raw
 
 new80x24 :: IO Emulator
@@ -1295,6 +1296,14 @@ spec = do
                     pure (start - stop, r)
                 inReads e body = concat <$> forM [1 .. 256 :: Int] (\_ -> feedStr e (B8.replicate 4000 body))
                 onceOver = (< 16 * 1024 * 1024)
+            it "a string arriving in many reads costs its size once, not once per read" $ do
+                e <- new80x24
+                _ <- feedStr e "\ESC]52;c;"
+                (allocated, arrived) <- allocatedBy $ do
+                    evs <- (<>) <$> inReads e 'A' <*> feedStr e "\a"
+                    evaluate (sum [ B.length p | ClipboardRequest p _ <- evs ])
+                arrived `shouldBe` 2 + 256 * 4000
+                allocated `shouldSatisfy` onceOver
             it "a passthrough arriving in many reads costs its size once, not once per read" $ do
                 e <- new80x24
                 _ <- feedStr e "\ESCPtmux;"
@@ -1303,6 +1312,27 @@ spec = do
                     evaluate (sum [ B.length p | UnhandledPassthrough p <- evs ])
                 arrived `shouldBe` 256 * 4000
                 allocated `shouldSatisfy` onceOver
+            it "drops a string the moment it outgrows the buffer" $ do
+                let pol = defaultHostPolicy { bufferSize = 1024 }
+                    carryAfter = fst . foldl (\(c, _) -> scrubHost pol c) (HostCarry "", [])
+                    held = \case
+                        HostString _ -> True
+                        _ -> False
+                carryAfter ["\ESC]2;", B8.replicate 1021 'A'] `shouldSatisfy` held
+                carryAfter ["\ESC]2;", B8.replicate 1021 'A', "A"] `shouldBe` HostDiscarding NoEsc
+            it "a string's ST torn between reads still ends it, kept or dropped" $ do
+                let pol = defaultHostPolicy { bufferSize = 1024 }
+                    torn first second =
+                        let (c1, ps1) = scrubHost pol (HostCarry "") first
+                            (c2, ps2) = scrubHost pol c1 second
+                        in (c2, ps1 <> ps2)
+                torn "\ESC]2;ab\ESC" "\\x"
+                    `shouldBe` (HostCarry "", [HostSignal (HostTitle "ab"), HostBytes "x"])
+                torn ("\ESC]2;" <> B8.replicate 2048 'A' <> "\ESC") "\\x"
+                    `shouldBe` (HostCarry "", [HostBytes "x"])
+                -- An ESC that starts something else ends the string and stays
+                torn "\ESC]2;ab\ESC" "[mx"
+                    `shouldBe` (HostCarry "", [HostSignal (HostTitle "ab"), HostBytes "\ESC[mx"])
 
     prop "plain ascii lands verbatim on row 0" $ \(PlainLine s) -> ioProperty $ do
         e <- new80x24
