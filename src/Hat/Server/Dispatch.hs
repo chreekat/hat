@@ -726,7 +726,11 @@ cmdReload' scope st mclient args =
                         msess <- clientSessionName st client
                         hist <- clientSessionHistNames st client
                         pure (client, reloadFarewell scope client.role msess hist)
-                    unsent <- sendFarewells farewellGrace (attached <> issuer)
+                    -- Test-only knob: a shorter grace (µs), so the suite
+                    -- need not sit out the full one for a client that never reads.
+                    grace <- fromMaybe farewellGrace . (>>= readMaybe)
+                        <$> lookupEnv "HAT_TEST_FAREWELL_GRACE"
+                    unsent <- sendFarewells grace (attached <> issuer)
                     forM_ unsent $ \c ->
                         logEvent st.logger FarewellUnsent { client = rawClient c.id }
                     -- Test-only knob: hold the farewell->exec window open (µs)
