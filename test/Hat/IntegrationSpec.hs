@@ -1302,7 +1302,8 @@ spec = parallel $ do
         typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
         awaitScreen c1 "^[[I"                -- forwarded to the pane, echoed by cat -v
 
-    it "save -> kill-server -> restart -> restore rebuilds the window tree" $
+    -- See Note [Captured links].
+    it "save -> kill-server -> restart -> restore rebuilds the window tree, its links and groups shared" $
         withHatPersist hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "0:sh*"
@@ -1312,9 +1313,24 @@ spec = parallel $ do
         awaitScreen c1 "0:built0*"
         _ <- ctlOut h ["new-window", "-d", "-t", "1", "-n", "editor"]
         awaitScreen c1 "1:editor"
-        meta0 <- ctlOut h
-            ["list-sessions", "-F", "#{session_created} #{session_restores}"]
-        [created0, "0"] <- pure (words meta0)
+        -- A window linked into a second session, and a session grouped
+        -- with the first: each must come back shared, not copied.
+        _ <- ctlOut h ["new-window", "-d", "-t", "0:2", "-n", "shared"]
+        _ <- ctlOut h ["new-session", "-d", "-s", "other"]
+        _ <- ctlOut h ["link-window", "-d", "-s", "0:2", "-t", "other:5"]
+        _ <- ctlOut h ["new-session", "-d", "-s", "grp", "-t", "0"]
+        let meta = words <$> ctlOut h
+                ["display-message", "-p", "-t", "0:", "#{session_created} #{session_restores}"]
+            probe = do
+                linked <- ctlOut h ["display-message", "-p", "-t", "other:5"
+                    , "#{window_linked_sessions_list}"]
+                grouped <- ctlOut h ["display-message", "-p", "-t", "grp:"
+                    , "#{session_group_list}"]
+                panes <- ctlOut h ["list-panes", "-a", "-F", "#{pane_id}"]
+                pure (lines linked, lines grouped, length (lines panes))
+        [created0, "0"] <- meta
+        saved <- probe
+        saved `shouldBe` (["0,other,grp"], ["0,grp"], 8)
 
         -- Kill the server; the tree is saved automatically on the way out.
         _ <- ctlOut h ["kill-server"]
@@ -1324,41 +1340,12 @@ spec = parallel $ do
 
         -- Restart: a fresh client autostarts a new server, which restores
         -- the saved tree before we attach -- no manual replay needed.
-        c2 <- startClient h
+        c2 <- startClientArgs h ["attach", "-t", "0"]
         awaitScreen c2 "0:built0"
         awaitScreen c2 "1:editor"
-        -- Session identity rides along: same creation stamp, one restore.
-        meta1 <- ctlOut h
-            ["list-sessions", "-F", "#{session_created} #{session_restores}"]
-        words meta1 `shouldBe` [created0, "1"]
-
-    -- See Note [Captured links].
-    it "restores a linked window and a session group as shared, not copied" $
-        withHatPersist hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        _ <- ctlOut h ["new-window", "-d", "-t", "0:1", "-n", "shared"]
-        _ <- ctlOut h ["new-session", "-d", "-s", "other"]
-        _ <- ctlOut h ["link-window", "-d", "-s", "0:1", "-t", "other:5"]
-        _ <- ctlOut h ["new-session", "-d", "-s", "grp", "-t", "0"]
-        let probe = do
-                linked <- ctlOut h ["display-message", "-p", "-t", "other:5"
-                    , "#{window_linked_sessions_list}"]
-                grouped <- ctlOut h ["display-message", "-p", "-t", "grp:"
-                    , "#{session_group_list}"]
-                panes <- ctlOut h ["list-panes", "-a", "-F", "#{pane_id}"]
-                pure (lines linked, lines grouped, length (lines panes))
-        saved <- probe
-        saved `shouldBe` (["0,other,grp"], ["0,grp"], 6)
-
-        _ <- ctlOut h ["kill-server"]
-        _ <- awaitExit c1
-        gone <- pollServerExited h 5000
-        unless gone $ expectationFailure "server did not die"
-
-        c2 <- startClient h
-        awaitScreen c2 "shared"
         probe `shouldReturn` saved
+        -- Session identity rides along: same creation stamp, one restore.
+        meta `shouldReturn` [created0, "1"]
 
     -- b7: a window's automatic-rename status must survive save/restore, in
     -- both directions -- an auto-renaming window keeps tracking its pane, a
