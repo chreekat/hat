@@ -778,7 +778,8 @@ spec = parallel $ do
         typeInto c "\x02\""
         awaitScreen c "\x2500"  -- ─ border
         -- Run less on distinctive numbered lines in the short pane.
-        typeInto c "seq 1 200 | sed 's/^/ZOOMLINE-/' > zf.txt; less zf.txt\r"
+        let zf = B8.pack (h.home </> "zf.txt")
+        typeInto c $ "seq 1 200 | sed 's/^/ZOOMLINE-/' > " <> zf <> "; less " <> zf <> "\r"
         awaitScreen c "ZOOMLINE-1"
         -- Press h for less's full-screen help overlay (what the screenshot
         -- showed), then zoom via the control path (returns after reconcile).
