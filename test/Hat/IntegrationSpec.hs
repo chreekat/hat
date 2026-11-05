@@ -1536,25 +1536,6 @@ spec = parallel $ do
         _ <- awaitExit c
         pure ()
 
-    it "restart-server keeps a dead pane dead, and its command respawnable" $
-        withHat hatBin $ \h -> do
-        let runs = h.home <> "/runs"
-        _ <- hatCtl h
-            [ "set", "-g", "remain-on-exit", "on", ";"
-            , "new", "-d", "echo run >> " <> runs <> "; exit 7" ]
-        let deadStatus = ctlOut h
-                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
-        awaitTrue "the pane to die" ((== "1 7\n") <$> deadStatus)
-        _ <- hatCtl h ["restart-server", h.bin]
-        awaitTrue "the handover to be consumed" $
-            doesFileExist (h.sock <> ".reload.last")
-        deadStatus `shouldReturn` "1 7\n"
-        ctlOut h ["capture-pane", "-p"]
-            >>= (`shouldSatisfy` List.isInfixOf "Pane is dead (status 7, ")
-        _ <- hatCtl h ["respawn-pane"]
-        _ <- awaitFile runs ((== 2) . length . lines)
-        pure ()
-
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
     -- runs, or the pane spawns before `set -g default-terminal` applies.
@@ -1673,16 +1654,28 @@ spec = parallel $ do
     -- `restart-server` re-execs in place, adopting the running pane programs:
     -- across two reloads in a row (the second adopts state the first rebuilt by
     -- replay) the shell's pid, its alt-screen grid and its input path survive,
-    -- the consumed handover stays as .last, and only named fds cross (8a).
-    it "restart-server twice in a row keeps a full-screen program and its display" $
+    -- the consumed handover stays as .last, and only named fds cross (8a). A
+    -- dead pane stays dead, its command respawnable. A typo'd binary path must
+    -- be caught before anything is torn down, so the running session is
+    -- untouched rather than half-dropped.
+    it "restart-server twice in a row keeps a full-screen program, its display and a dead pane" $
         withHat hatBin $ \h -> do
         let digits = filter (\ch -> ch >= '0' && ch <= '9')
             -- This build, never the `hat` a bare restart-server finds on PATH.
             reload c = hatCtl h ["restart-server", h.bin] >> awaitExit c
         c <- startClient h
         awaitScreen c "$"
+        (_, out, err) <- hatCtl h ["restart-server", "/no/such/hat"]
+        (out <> err) `shouldSatisfy` List.isInfixOf "no such binary"
         pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
         pidBefore `shouldNotBe` ""
+        let runs = h.home <> "/runs"
+            deadStatus = ctlOut h
+                ["display", "-p", "-t", ":1", "#{pane_dead} #{pane_dead_status}"]
+        _ <- hatCtl h
+            [ "set", "-g", "remain-on-exit", "on", ";"
+            , "new-window", "-d", "echo run >> " <> runs <> "; exit 7" ]
+        awaitTrue "the pane to die" ((== "1 7\n") <$> deadStatus)
         -- Octal escapes keep a literal ESC out of the shell's line editor;
         -- `cat` never redraws, so the beacon survives only by replay.
         typeInto c "printf '\\033[?1049h\\033[2J\\033[HBEACON-ONE'; cat\r"
@@ -1699,6 +1692,12 @@ spec = parallel $ do
         typeInto c3 "after-reload\r"
         awaitScreen c3 "after-reload"
         fdsOn h (h.home </> "server.log") `shouldReturn` 1
+        deadStatus `shouldReturn` "1 7\n"
+        ctlOut h ["capture-pane", "-p", "-t", ":1"]
+            >>= (`shouldSatisfy` List.isInfixOf "Pane is dead (status 7, ")
+        _ <- hatCtl h ["respawn-pane", "-t", ":1"]
+        _ <- awaitFile runs ((== 2) . length . lines)
+        pure ()
 
     -- Bug cb: a reload must not forget the alternate session, so a reattached
     -- client's `switch-client -l` still toggles back to where it came from. The
@@ -1872,18 +1871,6 @@ spec = parallel $ do
             doesFileExist (h.sock <> ".reload.last")
         awaitWith "each re-exec'd client to rejoin its own session"
             (\_ -> ownSessions) c1
-
-    -- A typo'd binary path must be caught before anything is torn down, so the
-    -- running session is untouched rather than half-dropped.
-    it "restart-server rejects a missing binary without dropping the session" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        (_, out, err) <- hatCtl h ["restart-server", "/no/such/hat"]
-        (out <> err) `shouldSatisfy` List.isInfixOf "no such binary"
-        -- the shell is still live: it runs our input as if nothing happened.
-        typeInto c "echo survived-bad-reload\r"
-        awaitScreen c "survived-bad-reload"
 
     it "a client that stops reading stalls no pane for anyone else" $
         withHat hatBin $ \h -> do
