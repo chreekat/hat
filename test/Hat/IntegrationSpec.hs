@@ -1208,7 +1208,11 @@ spec = parallel $ do
     -- Bug a4: break-pane numbered the new window from 0, ignoring base-index.
     -- With base-index 1 the origin window is 1, so the broken-out pane must
     -- land at the next free index (2), exactly like new-window would.
-    it "break-pane numbers the new window from base-index" $
+    -- Bug: a pane's reader captures the window it was spawned in, but
+    -- break-pane re-parents the live pane. When its program then exits, the
+    -- reader must reap it from its CURRENT window (2), not the split it came
+    -- from (1) — otherwise the broken-out window lingers with a dead pane.
+    it "break-pane numbers the new window from base-index, which closes when its program exits (a4)" $
         withHat hatBin $ \h -> do
         let confPath = h.home <> "/hat.conf"
         writeFile confPath "set -g base-index 1\n"
@@ -1216,28 +1220,16 @@ spec = parallel $ do
         awaitScreen c1 "1:sh*"
         typeInto c1 "\x02%"                 -- split -h; new pane active
         awaitScreen c1 "\x2502"
-        _ <- ctlOut h ["break-pane"]
+        _ <- ctlOut h ["break-pane"]        -- move it into window 2 (now current)
         out <- ctlOut h ["list-windows", "-F", "#{window_index}"]
         List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
-
-    -- Bug: a pane's reader captures the window it was spawned in, but
-    -- break-pane re-parents the live pane. When its program then exits, the
-    -- reader must reap it from its CURRENT window (1), not the split it came
-    -- from (0) — otherwise the broken-out window lingers with a dead pane.
-    it "a broken-out pane's window closes when its program exits" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"
-        typeInto c1 "\x02%"                 -- split -h; new pane active
-        awaitScreen c1 "\x2502"
-        _ <- ctlOut h ["break-pane"]        -- move it into window 1 (now current)
-        awaitScreen c1 "1:sh*"
+        awaitScreen c1 "2:sh*"
         typeInto c1 "exit\r"                 -- end the broken-out pane's shell
-        awaitWith "window 1 collapsed, back on window 0" (\d -> do
+        awaitWith "window 2 collapsed, back on window 1" (\d -> do
             t <- screenText d
-            -- Match the window-1 label ("1:sh"), not a bare "1:", so the
-            -- status-bar clock (e.g. 11:52) can't spoof the "still there" check.
-            pure (not ("1:sh" `T.isInfixOf` t) && "0:sh*" `T.isInfixOf` t)) c1
+            -- Match the window-2 label ("2:sh"), not a bare "2:", so the
+            -- status-bar clock (e.g. 12:52) can't spoof the "still there" check.
+            pure (not ("2:sh" `T.isInfixOf` t) && "1:sh*" `T.isInfixOf` t)) c1
 
     -- A joined pane's keystroke echo must repaint on its own; status-interval
     -- 0 removes the clock tick that would otherwise eventually flush it.
