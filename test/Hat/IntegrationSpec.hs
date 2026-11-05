@@ -1430,49 +1430,38 @@ spec = parallel $ do
         typeInto c1 "echo STILLALIVE\r"
         awaitScreen c1 "STILLALIVE"
 
-    it "pipe-pane tees pane output to a command, and stops on demand" $
+    -- Pins the structural reap: the pipe-pane child is owned as a scoped
+    -- sub-resource, so stopping the pipe — and, on the teardown path, killing
+    -- the pane out from under it — reaps the child rather than orphaning it.
+    it "pipe-pane tees pane output to a command until stopped, reaping it on stop and on pane kill" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
         awaitScreen c1 "$"
-        let logPath = h.home <> "/pane.log"
-        _ <- ctlOut h ["pipe-pane", "cat >> " <> logPath]
+        let readPid path =
+                read . takeWhile (/= '\n') <$> awaitFile path (not . null)
+            logPath = h.home <> "/pane.log"
+            pidPath1 = h.home <> "/pipe1.pid"
+        _ <- ctlOut h ["pipe-pane", "echo $$ > " <> pidPath1 <> "; cat >> " <> logPath]
+        pid1 <- readPid pidPath1
         typeInto c1 "echo PIPEPANEMARKER\r"
         awaitScreen c1 "PIPEPANEMARKER"
         _ <- awaitFile logPath (List.isInfixOf "PIPEPANEMARKER")
 
-        -- No-arg pipe-pane stops the pipe (synchronously); later output is
-        -- not captured. The pane taps output to the pipe BEFORE the emulator
-        -- renders it, so once AFTERSTOPMARKER is on screen, a still-live pipe
-        -- would already have written it — its absence is thus decidable now.
+        -- Stop path: no-arg pipe-pane cancels the supervisor, reaping the
+        -- child, and later output is not captured. The pane taps output to
+        -- the pipe BEFORE the emulator renders it, so once AFTERSTOPMARKER is
+        -- on screen, a still-live pipe would already have written it — its
+        -- absence is thus decidable now.
         _ <- ctlOut h ["pipe-pane"]
+        awaitReaped pid1
         typeInto c1 "echo AFTERSTOPMARKER\r"
         awaitScreen c1 "AFTERSTOPMARKER"
         readFile logPath >>= (`shouldNotSatisfy` List.isInfixOf "AFTERSTOPMARKER")
 
-    -- Pins the structural reap: the pipe-pane child is owned as a scoped
-    -- sub-resource, so stopping the pipe — and, on the teardown path, killing
-    -- the pane out from under it — reaps the child rather than orphaning it.
-    it "pipe-pane reaps its subprocess on stop and on pane kill" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        let spawnPipe path = ctlOut h
-                ["pipe-pane", "echo $$ > " <> path <> "; cat > /dev/null"]
-            readPid path =
-                read . takeWhile (/= '\n') <$> awaitFile path (not . null)
-
-        -- Stop path: no-arg pipe-pane cancels the supervisor, reaping the child.
-        let pidPath1 = h.home <> "/pipe1.pid"
-        _ <- spawnPipe pidPath1
-        pid1 <- readPid pidPath1
-        pidAlive pid1 `shouldReturn` True
-        _ <- ctlOut h ["pipe-pane"]
-        awaitReaped pid1
-
         -- Teardown path: killing the pane runs reapPane -> stopPipe, so a live
         -- pipe child is reaped as the pane dies, not left orphaned.
         let pidPath2 = h.home <> "/pipe2.pid"
-        _ <- spawnPipe pidPath2
+        _ <- ctlOut h ["pipe-pane", "echo $$ > " <> pidPath2 <> "; cat > /dev/null"]
         pid2 <- readPid pidPath2
         pidAlive pid2 `shouldReturn` True
         _ <- ctlOut h ["kill-pane"]
