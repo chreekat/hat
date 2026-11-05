@@ -661,27 +661,18 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "unattached server did not exit"
 
-    -- A pane whose shell ignores SIGHUP (and keeps the pty slave open) gives
+    -- A pane whose program ignores SIGHUP (and keeps the pty slave open) gives
     -- the reader thread no EOF, so a teardown that closes the master Handle
     -- while the reader still blocks in it deadlocks. kill-server must instead
-    -- interrupt the reader and complete within a bounded deadline.
-    it "kill-server completes even when a pane ignores SIGHUP" $
+    -- interrupt the reader and complete within a bounded deadline. A kill
+    -- escalates to SIGKILL for such a pane however many times its window is
+    -- linked.
+    it "kill-server SIGKILLs a SIGHUP-ignoring pane in a linked window, and exits" $
         withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "trap '' HUP; sleep 300\r"
-        awaitForeground h "sleep"
-        pid <- serverPid h
-
-        _ <- hatCtl h ["kill-server"]
-        gone <- pollPidGone pid 5000
+        killsLinkedStubborn h "b:5" ["kill-server"]
+        gone <- pollServerExited h 5000
         unless gone $
             expectationFailure "server did not exit after kill-server"
-
-    -- A kill escalates to SIGKILL for a SIGHUP-ignoring pane however many
-    -- times its window is linked.
-    it "kill-server SIGKILLs a SIGHUP-ignoring pane in a linked window" $
-        withHat hatBin $ \h -> killsLinkedStubborn h "b:5" ["kill-server"]
     it "kill-session SIGKILLs a SIGHUP-ignoring pane linked twice into it" $
         withHat hatBin $ \h -> killsLinkedStubborn h "a:5" ["kill-session", "-t", "a"]
 
@@ -2144,18 +2135,6 @@ pollServerGone path budgetMs = pollFor budgetMs (not <$> serverUp path)
 -- process has exited.
 pollServerExited :: Hat -> Int -> IO Bool
 pollServerExited h budgetMs = pollFor budgetMs (null <$> serverPids h)
-
--- | Until process @pid@ has exited (a zombie counts as exited). Unlike
--- 'pollServerGone', a server that stopped listening but is still draining
--- counts as alive.
-pollPidGone :: Int -> Int -> IO Bool
-pollPidGone pid budgetMs = pollFor budgetMs $ do
-    stat <- (Just . B8.unpack <$> B.readFile ("/proc/" <> show pid <> "/stat"))
-        `catch` \(_ :: IOException) -> pure Nothing
-    -- The state field follows the parenthesised command name.
-    pure $ case drop 2 . dropWhile (/= ')') <$> stat of
-        Just (st : _) -> st == 'Z'
-        _ -> True
 
 -- | Whether a server answers at the path. The probe is closed before
 -- returning: an open probe counts as an active connection and holds the
