@@ -1016,37 +1016,10 @@ spec = parallel $ do
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
 
-    -- A restored tree comes back at its captured area, not 24x80 (bug 4b).
-    it "restores the saved tree at its captured area before any client attaches" $
-        withHatPersist hatBin $ \h -> do
-        let lay = emitLayout (fitLayout (Size { rows = 30, cols = 100 }) (singlePane (PaneId 0)))
-            snap = Snapshot
-                { lastActiveSession = Nothing, sessions =
-                    [ SessionSnap
-                        { name = "sized", startCwd = "/tmp", currentIx = 0
-                        , windowHist = []
-                        , createdAt = Nothing, restores = 0
-                        , group = Nothing
-                        , windows =
-                            [ WindowSnap
-                                { ix = 0, name = "one", layout = lay
-                                , active = 0, paneHist = []
-                                , autoRename = False
-                                , key = Nothing, linkOf = Nothing, modal = Nothing, size = Nothing, panes = [PaneSnap { cwd = "/tmp", command = Nothing, shellSpawned = False, kind = ProgramPane, inputOff = False, title = Nothing, titleStack = [] }] }
-                            ] } ] }
-        createDirectoryIfMissing True (takeDirectory (storeOf h))
-        Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
-
-        -- start-server autostarts the server and only returns once startup
-        -- (including the restore) has landed; no client ever attaches.
-        _ <- hatCtl h ["start-server"]
-        out <- ctlOut h ["list-panes", "-a", "-F", "#{pane_width}x#{pane_height}"]
-        out `shouldBe` "100x30\n"
-
-    it "forgets the saved tree when the last window exits (pristine restart)" $
+    it "restores the saved tree at its captured area, and forgets it when the last window exits (4b)" $
         withHatPersist hatBin $ \h -> do
         -- Seed a saved tree so the autostarted server restores it.
-        let lay = emitLayout (fitLayout (Size { rows = 24, cols = 80 }) (singlePane (PaneId 0)))
+        let lay = emitLayout (fitLayout (Size { rows = 30, cols = 100 }) (singlePane (PaneId 0)))
             snap = Snapshot
                 { lastActiveSession = Nothing, sessions =
                     [ SessionSnap
@@ -1063,6 +1036,13 @@ spec = parallel $ do
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
+
+        -- 4b: the tree comes back at its captured area, not 24x80. start-server
+        -- only returns once startup (including the restore) has landed, and
+        -- no client has attached yet to resize it.
+        _ <- hatCtl h ["start-server"]
+        ctlOut h ["list-panes", "-a", "-F", "#{pane_width}x#{pane_height}"]
+            `shouldReturn` "100x30\n"
 
         c1 <- startClient h
         awaitScreen c1 "$"
