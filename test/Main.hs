@@ -89,6 +89,7 @@ import Hat.Term.Emulator.HistorySpec qualified
 import Hat.Term.GoldenSpec qualified
 import Hat.Transport.WireSpec qualified
 import Hat.UpstreamRunnerSpec qualified
+import Hat.Watchdog (labelItems, withWatchdog)
 
 -- | Bound the fd table so each close_fds spawn scans a small range; the
 -- hard limit stays untouched.
@@ -99,7 +100,8 @@ boundFds = do
         ResourceLimits { softLimit = ResourceLimit 2048, hardLimit = hard }
 
 main :: IO ()
-main = hspec $ parallel $ do
+-- Far past the slowest healthy run, even on a loaded box.
+main = withWatchdog 300 $ hspec $ labelItems $ parallel $ do
     runIO boundFds
     -- Integration first: its items (each a real hat through a pty) are the
     -- suite's heaviest.

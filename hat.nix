@@ -1,7 +1,8 @@
 { mkDerivation, aeson, array, async, base, bytestring, cborg
-, containers, directory, filepath, hspec, HUnit, lib, libghostty-vt
-, megaparsec, network, process, QuickCheck, regex-tdfa, serialise
-, sqlite-simple, stm, terminfo, text, time, unix, vector
+, containers, directory, filepath, hspec, hspec-core, HUnit, lib
+, libghostty-vt, megaparsec, network, process, QuickCheck
+, regex-tdfa, serialise, sqlite-simple, stm, terminfo, text, time
+, unix, vector
 }:
 mkDerivation {
   pname = "hat";
@@ -21,8 +22,8 @@ mkDerivation {
   ];
   testHaskellDepends = [
     async base bytestring cborg containers directory filepath hspec
-    HUnit network process QuickCheck serialise sqlite-simple stm text
-    time unix vector
+    hspec-core HUnit network process QuickCheck serialise sqlite-simple
+    stm text time unix vector
   ];
   benchmarkHaskellDepends = [ base directory process unix ];
   description = "A terminal multiplexer";

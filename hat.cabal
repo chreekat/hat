@@ -408,6 +408,7 @@ test-suite hat-test
         Hat.Term.GoldenSpec
         Hat.Transport.WireSpec
         Hat.UpstreamRunnerSpec
+        Hat.Watchdog
     ghc-options:        -threaded -with-rtsopts=-N
     build-depends:
         async       ^>= 2.2.6,
@@ -418,6 +419,7 @@ test-suite hat-test
         directory   ^>= 1.3.8.5,
         filepath    ^>= 1.5.4.0,
         hspec       ^>= 2.11.17,
+        hspec-core  ^>= 2.11.17,
         HUnit       ^>= 1.6.2.0,
         serialise   ^>= 0.2.6.1,
         network     ^>= 3.2.8.0,
