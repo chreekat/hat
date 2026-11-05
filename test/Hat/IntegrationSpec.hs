@@ -608,7 +608,7 @@ spec = parallel $ do
         P.readProcessWithExitCode hatBin ["-S", "/nonexistent/hat-sock", "-V"] ""
             `shouldReturn` (ExitSuccess, "hat 0.0.1\n", "")
 
-    it "attaches, survives detach/reattach, and shuts down cleanly" $
+    it "attaches, survives detach/reattach, and shuts down cleanly, leaving the terminal cooked" $
         withHat hatBin $ \h -> do
         -- First client autostarts the server and gets a shell.
         c1 <- startClient h
@@ -622,6 +622,7 @@ spec = parallel $ do
         status1 `shouldBe` Exited ExitSuccess
         t1 <- readIORef c1.transcript
         t1 `shouldSatisfy` B8.isInfixOf "[detached]"
+        rawModesLeftBehind c1 `shouldReturn` []
 
         -- Server must still be alive.
         alive <- serverUp h.sock
@@ -637,6 +638,7 @@ spec = parallel $ do
         status2 `shouldBe` Exited ExitSuccess
         t2 <- readIORef c2.transcript
         t2 `shouldSatisfy` B8.isInfixOf "[exited]"
+        rawModesLeftBehind c2 `shouldReturn` []
 
         gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "server did not exit"
@@ -718,19 +720,6 @@ spec = parallel $ do
         status `shouldBe` Exited ExitSuccess
         unless gone $ expectationFailure
             "pane leaked: server did not exit after its shell exited"
-
-    it "restores the terminal line discipline after detach and session end" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "\x02\&d"
-        _ <- awaitExit c1
-        rawModesLeftBehind c1 `shouldReturn` []
-        c2 <- startClient h
-        awaitScreen c2 "$"
-        typeInto c2 "exit\r"
-        _ <- awaitExit c2
-        rawModesLeftBehind c2 `shouldReturn` []
 
     -- bug 6: a pager (less) draws on the alternate screen; on exit the primary
     -- buffer must be repainted on the *client*, not just in the emulator, or
