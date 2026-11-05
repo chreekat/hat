@@ -1,5 +1,6 @@
 module Hat.Term.PtySpec (spec) where
 
+import Control.Concurrent.Async (forConcurrently)
 import Control.Exception (bracket)
 import Data.ByteString.Char8 qualified as B8
 import Data.Text qualified as T
@@ -9,6 +10,7 @@ import System.Environment (getEnv)
 import System.Exit (ExitCode (..))
 import System.Posix.IO (FdOption (CloseOnExec), closeFd, createPipe, dup, setFdOption)
 import System.Posix.Temp (mkdtemp)
+import System.Posix.Terminal (TerminalMode (..), getTerminalAttributes, terminalMode)
 import System.Posix.Types (Fd (..))
 import System.Process (callProcess)
 import Test.Hspec
@@ -198,6 +200,17 @@ shellSpec = do
                 drainPty pty <* waitExit pty
             out `shouldSatisfy` B8.isInfixOf "CLEAN"
             out `shouldNotSatisfy` B8.isInfixOf "LEAK"
+
+    -- 9c7659a: a pane must come up canonical however many spawn at once.
+    it "brings up every one of many concurrently spawned ptys canonical" $
+        \TestShell{base} -> do
+            canonical <- forConcurrently [1 .. 24 :: Int] $ \_ ->
+                withPty base { args = ["-c", "echo up; exec sleep 100"] } $ \pty -> do
+                    -- The child echoes only after its own tcsetattr, and
+                    -- 'spawn' has returned, so neither side writes termios again.
+                    _ <- readUntil pty "up"
+                    terminalMode ProcessInput <$> getTerminalAttributes (masterFd pty)
+            length (filter not canonical) `shouldBe` 0
 
     it "reports a nonzero exit" $ \TestShell{base} -> do
         status <- withPty base { args = ["-c", "exit 3"] } $ \pty ->
