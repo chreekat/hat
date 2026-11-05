@@ -1474,18 +1474,14 @@ spec = parallel $ do
         (code, err) `shouldBe` (ExitSuccess, "")
         ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
 
-    it "new-session -A attaches a fresh client to the session a bare attach picks" $
+    it "a bare hat runs default-client-command; new-session -A attaches where a bare attach would" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h ["new-session", "-d", "-s", "first"]
         _ <- hatCtl h ["new-session", "-d", "-s", "second"]
+        _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F '#S'"]
+        hatCtl h [] `shouldReturn` (ExitSuccess, "first\nsecond\n", "")
         c <- startClientArgs h ["new-session", "-A"]
         awaitScreen c "[first]"
-
-    it "a bare hat runs default-client-command" $
-        withHat hatBin $ \h -> do
-        _ <- hatCtl h ["new-session", "-d", "-s", "first"]
-        _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F '#S'"]
-        hatCtl h [] `shouldReturn` (ExitSuccess, "first\n", "")
 
     it "a bare hat that starts the server runs its config's default-client-command" $
         withHat hatBin $ \h -> do
