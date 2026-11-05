@@ -785,21 +785,10 @@ spec = parallel $ do
         (_, out, _) <- hatRaw h ["display-message", "-p", "#{session_name}"]
         out `shouldBe` "caf\xc3\xa9\n"
 
-    it "gives the terminal the cursor-style option's shape, the program's over it" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        let outerStyle want = awaitTrue ("the outer cursor " <> show want) $
-                (== want) . (.style) <$> Emu.appCursor c.screen
-        _ <- hatCtl h ["set", "-g", "cursor-style", "bar"]
-        outerStyle HP.StyleBar
-        typeInto c "printf '\\033[4 q'\r"
-        outerStyle HP.StyleUnderline
-        typeInto c "exit\r"
-        _ <- awaitExit c
-        pure ()
-
-    it "titles the terminal with set-titles-string under set-titles" $
+    -- The options that reach the outer terminal through the client: its
+    -- title, its cursor shape (the program's over the option's), and an
+    -- overlay scrollbar a copy-mode scroll or a hover reveals for a timeout.
+    it "titles the terminal, shapes its cursor, and flashes an overlay scrollbar by option" $
         withHat hatBin $ \h -> do
         c <- startClient h
         awaitScreen c "$"
@@ -808,14 +797,14 @@ spec = parallel $ do
         outerTitle "hat: "
         _ <- hatCtl h ["set", "-g", "set-titles-string", "T:#{window_index}"]
         outerTitle "T:0\BEL"
-        typeInto c "exit\r"
-        _ <- awaitExit c
-        pure ()
 
-    it "reveals an overlay scrollbar on a copy-mode scroll or a hover, then hides it" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
+        let outerStyle want = awaitTrue ("the outer cursor " <> show want) $
+                (== want) . (.style) <$> Emu.appCursor c.screen
+        _ <- hatCtl h ["set", "-g", "cursor-style", "bar"]
+        outerStyle HP.StyleBar
+        typeInto c "printf '\\033[4 q'\r"
+        outerStyle HP.StyleUnderline
+
         let barShown want = awaitTrue ("the scrollbar shown: " <> show want) $ do
                 scr <- Emu.snapshot c.screen
                 let Style { bg = b } = ((scr.cells V.! 5) V.! 79).style
@@ -831,9 +820,6 @@ spec = parallel $ do
         typeInto c "\ESC[<35;80;6M"
         barShown True
         barShown False
-        typeInto c "exit\r"
-        _ <- awaitExit c
-        pure ()
 
     it "runs display-panes' template on the pane clicked in panes-mode" $
         withHat hatBin $ \h -> do
