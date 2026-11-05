@@ -9,7 +9,7 @@ import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, evaluate, finally, throwIO,
      try)
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.Char (chr)
 import Data.List qualified as List
 import Data.ByteString qualified as B
@@ -25,6 +25,7 @@ import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (closeFd, createPipe, fdToHandle, handleToFd)
 import System.Posix.IO qualified as PIO
 import System.Posix.Process (ProcessStatus (..))
+import System.Posix.Signals (Signal, nullSignal, sigKILL, sigTERM, signalProcess)
 import System.Mem
 import System.Posix.Temp (mkdtemp)
 import System.Posix.Terminal
@@ -149,16 +150,14 @@ teardown h = do
     -- a server. The path lives under this test's private tmpdir, so the
     -- match can never touch an unrelated hat.
     case r of
-        Nothing -> void $ P.readProcessWithExitCode
-            "pkill" ["-f", "--", "--server " <> h.sock] ""
+        Nothing -> signalPids sigTERM =<< serverPids h
         Just _ -> pure ()
     -- kill-server returns before the drain finishes, and a draining server
     -- stops accepting before it exits, so "unreachable" is not "gone". The
     -- poll gives a clean drain its chance; the unconditional -9 guarantees
     -- nothing survives the socket-path unlink below.
     _ <- pollServerGone h.sock 2000
-    void $ P.readProcessWithExitCode
-        "pkill" ["-9", "-f", "--", "--server " <> h.sock] ""
+    signalPids sigKILL =<< serverPids h
     -- A driver's pty master stays open for the whole test -- closed here,
     -- never by the collector mid-test (a finalized master hangs up its
     -- still-attached client).
@@ -239,18 +238,28 @@ ctlOut h args = (\(_, out, _) -> out) <$> hatCtl h args
 -- This Hat's server pid, found by the socket path in its argv — the same
 -- handle 'teardown' reaps by.
 serverPid :: Hat -> IO Int
-serverPid h = do
-    out <- serverPids h
-    case mapMaybe readMaybe (lines out) of
-        (p : _) -> pure p
-        [] -> fail ("no server running on " <> h.sock)
+serverPid h = serverPids h >>= \case
+    (p : _) -> pure p
+    [] -> fail ("no server running on " <> h.sock)
 
--- The pids of every server process on this Hat's socket, one per line.
-serverPids :: Hat -> IO String
+-- | The pids of every server process on this Hat's socket: each process
+-- whose argv holds @--server@ then the socket path.
+serverPids :: Hat -> IO [Int]
 serverPids h = do
-    (_, out, _) <- P.readProcessWithExitCode
-        "pgrep" ["-f", "--", "--server " <> h.sock] ""
-    pure out
+    entries <- listDirectory "/proc"
+    filterM serves (mapMaybe readMaybe entries)
+  where
+    serves pid = (servesSock . B8.split '\0' <$> B.readFile (procFile pid "cmdline"))
+        `catch` \(_ :: IOException) -> pure False
+    servesSock argv = ["--server", B8.pack h.sock] `List.isInfixOf` argv
+
+procFile :: Int -> FilePath -> FilePath
+procFile pid file = "/proc" </> show pid </> file
+
+-- | Send each process a signal, skipping any already gone.
+signalPids :: Signal -> [Int] -> IO ()
+signalPids sig = mapM_ $ \pid ->
+    signalProcess sig (fromIntegral pid) `catch` \(_ :: IOException) -> pure ()
 
 -- How many fds the server holds on one path.
 fdsOn :: Hat -> FilePath -> IO Int
@@ -515,12 +524,11 @@ awaitFile path ok = go (500 :: Int)
         _ <- evaluate (length s)
         pure s
 
--- Whether a process id is still alive, via @kill -0@ (no signal, just an
--- existence probe). A reaped process's pid is gone, so this reads false.
+-- Whether a process id is still alive, by the null signal (just an existence
+-- probe). A reaped process's pid is gone, so this reads false.
 pidAlive :: Int -> IO Bool
-pidAlive pid = do
-    (code, _, _) <- P.readProcessWithExitCode "kill" ["-0", show pid] ""
-    pure (code == ExitSuccess)
+pidAlive pid = (True <$ signalProcess nullSignal (fromIntegral pid))
+    `catch` \(_ :: IOException) -> pure False
 
 -- Poll until a pid stops being alive; fail after ~5s. A pipe-pane child that
 -- teardown reaped structurally disappears; one that leaked stays alive here.
@@ -706,7 +714,7 @@ spec = parallel $ do
         status <- awaitExit c1
         gone <- pollServerGone h.sock 5000
         -- Reap the orphan we intentionally leaked before asserting.
-        _ <- P.readProcessWithExitCode "kill" ["-9", show (lingerer :: Int)] ""
+        signalPids sigKILL [lingerer]
         status `shouldBe` Exited ExitSuccess
         unless gone $ expectationFailure
             "pane leaked: server did not exit after its shell exited"
@@ -2131,8 +2139,7 @@ killsLinkedStubborn h dst kill = do
         _ <- ctlOut h ["link-window", "-d", "-s", "a:1", "-t", dst]
         _ <- ctlOut h kill
         awaitReaped stubborn)
-        `finally` P.readProcessWithExitCode
-            "kill" ["-9", show (stubborn :: Int)] ""
+        `finally` signalPids sigKILL [stubborn]
 
 -- | Poll every 10ms until @done@ holds; False past @budgetMs@.
 pollFor :: Int -> IO Bool -> IO Bool
@@ -2147,7 +2154,7 @@ pollServerGone path budgetMs = pollFor budgetMs (not <$> serverUp path)
 -- socket before it replies, so a vanished socket alone no longer shows the
 -- process has exited.
 pollServerExited :: Hat -> Int -> IO Bool
-pollServerExited h budgetMs = pollFor budgetMs (null . words <$> serverPids h)
+pollServerExited h budgetMs = pollFor budgetMs (null <$> serverPids h)
 
 -- | Until process @pid@ has exited (a zombie counts as exited). Unlike
 -- 'pollServerGone', a server that stopped listening but is still draining
