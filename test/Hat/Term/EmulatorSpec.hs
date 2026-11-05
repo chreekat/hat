@@ -27,12 +27,52 @@ rowText scr r = T.stripEnd (screenRowText scr r)
 feedStr :: Emulator -> B8.ByteString -> IO [Event]
 feedStr = feed
 
--- | Output that sets, resets or merely passes the program's colours.
-colourPieces :: [B.ByteString]
+-- | The colours a program has set.
+data HeldColours = HeldColours
+    { cursorColour :: Maybe Rgb
+    , foreground :: Maybe Rgb
+    , background :: Maybe Rgb
+    , overrides :: Map.Map Int Rgb
+    }
+    deriving (Eq, Show)
+
+noColours :: HeldColours
+noColours = HeldColours
+    { cursorColour = Nothing, foreground = Nothing, background = Nothing, overrides = Map.empty }
+
+heldColours :: Emulator -> IO HeldColours
+heldColours e = do
+    cursorColour <- appCursorColour e
+    (foreground, background) <- appDefaultColours e
+    overrides <- paletteOverrides e
+    pure HeldColours { cursorColour, foreground, background, overrides }
+
+-- | Output that sets, resets or merely passes the program's colours, with
+-- what each piece leaves them once fed whole.
+colourPieces :: [(B.ByteString, HeldColours -> HeldColours)]
 colourPieces =
-    [ "\ESC]4;1;#010203\a", "\ESC]4;2;#0a0b0c\ESC\\", "\ESC]104\a", "\ESC]104;1\a"
-    , "\ESC]10;#102030\a", "\ESC]11;#405060\a", "\ESC]111\a"
-    , "\ESC]12;#ff8000\a", "\ESC]112\a", "\ESCc", "\ESC]2;title\a", "abc", "\ESC[1m" ]
+    [ ("\ESC]4;1;#010203\a", \c -> c { overrides = Map.insert 1 (1, 2, 3) c.overrides })
+    , ("\ESC]4;2;#0a0b0c\ESC\\", \c -> c { overrides = Map.insert 2 (10, 11, 12) c.overrides })
+    , ("\ESC]104\a", \c -> c { overrides = Map.empty })
+    , ("\ESC]104;1\a", \c -> c { overrides = Map.delete 1 c.overrides })
+    , ("\ESC]10;#102030\a", \c -> c { foreground = Just (16, 32, 48) })
+    , ("\ESC]11;#405060\a", \c -> c { background = Just (64, 80, 96) })
+    , ("\ESC]111\a", \c -> c { background = Nothing })
+    , ("\ESC]12;#ff8000\a", \c -> c { cursorColour = Just (255, 128, 0) })
+    , ("\ESC]112\a", \c -> c { cursorColour = Nothing })
+    , ("\ESCc", id)  -- a full reset leaves the program's colours
+    , ("\ESC]2;title\a", id), ("abc", id), ("\ESC[1m", id) ]
+
+-- | What a stream of pieces leaves at each of ascending byte offsets: the
+-- effects of the pieces the offset covers whole, applied in order.
+heldAt :: [(B.ByteString, HeldColours -> HeldColours)] -> [Int] -> [HeldColours]
+heldAt pieces = go noColours (zip ends (map snd pieces))
+  where
+    ends = drop 1 (scanl (+) 0 (map (B.length . fst) pieces))
+    go _ _ [] = []
+    go held ((end, effect) : rest) offsets@(offset : _)
+        | end <= offset = go (effect held) rest offsets
+    go held remaining (_ : offsets) = held : go held remaining offsets
 
 -- | Bytes cut at each of a series of positive offsets, in turn.
 splitAtAll :: [Int] -> B.ByteString -> [B.ByteString]
@@ -627,18 +667,14 @@ spec = do
             paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
         prop "read between any chunks of output, are the colours the terminal holds" $
             \(pieceIxs :: [Int]) (cuts :: [Positive Int]) -> withMaxSuccess 300 $ ioProperty $ do
-                let bytes = B.concat [ colourPieces !! (i `mod` length colourPieces) | i <- pieceIxs ]
-                    chunks = splitAtAll (map getPositive cuts) bytes
-                    coloursOf e = (,,) <$> appCursorColour e <*> appDefaultColours e
-                        <*> paletteOverrides e
+                let pieces = [ colourPieces !! (i `mod` length colourPieces) | i <- pieceIxs ]
+                    chunks = splitAtAll (map getPositive cuts) (B.concat (map fst pieces))
+                    expected = heldAt pieces (drop 1 (scanl (+) 0 (map B.length chunks)))
                 e <- fresh
-                results <- mapM (\(fed, chunk) -> do
+                results <- forM (zip chunks expected) $ \(chunk, want) -> do
                     _ <- feed e chunk
-                    kept <- coloursOf e
-                    e' <- fresh
-                    _ <- feed e' fed
-                    held <- coloursOf e'
-                    pure (kept === held)) (zip (drop 1 (scanl (<>) "" chunks)) chunks)
+                    got <- heldColours e
+                    pure (got === want)
                 pure (conjoin results)
 
     describe "terminal replies, as tmux gives them" $ do
