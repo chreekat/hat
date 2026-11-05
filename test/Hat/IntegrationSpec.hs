@@ -1520,18 +1520,6 @@ spec = parallel $ do
         (popupCode, _, _) <- hatCtl h ["display-popup", "-E", "exit 4"]
         popupCode `shouldBe` ExitFailure 4
 
-    it "remain-on-exit keeps an exited pane, dead, with its status" $
-        withHat hatBin $ \h -> do
-        _ <- hatCtl h
-            [ "set", "-g", "remain-on-exit", "on", ";"
-            , "new", "-d", "-x", "60", "-y", "5", "echo DEADBEACON; exit 3" ]
-        awaitTrue "the pane to die" $
-            (== "1 3\n") <$> ctlOut h
-                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
-        screen <- ctlOut h ["capture-pane", "-p", "-S", "-"]
-        screen `shouldSatisfy` List.isInfixOf "DEADBEACON"
-        screen `shouldSatisfy` List.isInfixOf "Pane is dead (status 3, "
-
     it "remain-on-exit failed drops a pane whose program succeeded" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h
@@ -1543,14 +1531,20 @@ spec = parallel $ do
             (== ["0 ", "1 1"]) . List.sort . lines <$> ctlOut h
                 ["list-panes", "-a", "-F", "#{pane_dead} #{pane_dead_status}"]
 
-    it "respawn-pane reruns a dead pane's command, and needs -k when live" $
+    it "remain-on-exit keeps a dead pane with its status, respawn-pane reruns it, and a live respawn needs -k" $
         withHat hatBin $ \h -> do
         let runs = h.home <> "/runs"
         _ <- hatCtl h
             [ "set", "-g", "remain-on-exit", "on", ";"
-            , "new", "-d", "echo run >> " <> runs ]
+            , "new", "-d", "-x", "60", "-y", "5"
+            , "echo run >> " <> runs <> "; echo DEADBEACON; exit 3" ]
         let dead = ctlOut h ["display", "-p", "#{pane_dead}"]
-        awaitTrue "the pane to die" ((== "1\n") <$> dead)
+        awaitTrue "the pane to die" $
+            (== "1 3\n") <$> ctlOut h
+                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
+        screen <- ctlOut h ["capture-pane", "-p", "-S", "-"]
+        screen `shouldSatisfy` List.isInfixOf "DEADBEACON"
+        screen `shouldSatisfy` List.isInfixOf "Pane is dead (status 3, "
         _ <- hatCtl h ["respawn-pane"]
         _ <- awaitFile runs ((== 2) . length . lines)
         awaitTrue "the rerun to die" ((== "1\n") <$> dead)
@@ -1564,12 +1558,11 @@ spec = parallel $ do
         awaitReaped pid
         dead `shouldReturn` "0\n"
 
-    it "respawn-window -k reduces the window to one respawned pane" $
-        withHat hatBin $ \h -> do
-        _ <- hatCtl h ["new", "-d", "sleep 100", ";", "split-window", "-d"]
+        -- respawn-window -k reduces the window to one respawned pane.
+        _ <- hatCtl h ["split-window", "-d"]
         ctlOut h ["display", "-p", "#{window_panes}"] `shouldReturn` "2\n"
-        (_, _, err) <- hatCtl h ["respawn-window", "true"]
-        err `shouldBe` "respawn window failed: window 0:0 still active\n"
+        (_, _, werr) <- hatCtl h ["respawn-window", "true"]
+        werr `shouldBe` "respawn window failed: window 0:0 still active\n"
         let ran = h.home <> "/ran"
         _ <- hatCtl h ["respawn-window", "-k", "echo yes > " <> ran <> "; sleep 300"]
         ctlOut h ["display", "-p", "#{window_panes}"] `shouldReturn` "1\n"
