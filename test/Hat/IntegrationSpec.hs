@@ -271,6 +271,14 @@ fdsOn h path = do
         readSymbolicLink (dir </> e) `catch` \(_ :: IOException) -> pure ""
     pure (length (filter (== path) links))
 
+-- The pid holding a write lock on the server's lock file, if any. Asks with
+-- F_GETLK, which takes no lock, so this process's open and close are inert.
+lockHolder :: Hat -> IO (Maybe Int)
+lockHolder h = bracket
+    (PIO.openFd (h.sock <> ".lock") PIO.ReadWrite PIO.defaultFileFlags { PIO.cloexec = True })
+    closeFd
+    (\fd -> fmap (fromIntegral . fst) <$> PIO.getLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0))
+
 -- Where the server writes its persistence store for this isolated Hat,
 -- matching the HAT_STORE_DIR the harness hands it in 'persistEnv'.
 storeOf :: Hat -> FilePath
@@ -1654,10 +1662,10 @@ spec = parallel $ do
     -- `restart-server` re-execs in place, adopting the running pane programs:
     -- across two reloads in a row (the second adopts state the first rebuilt by
     -- replay) the shell's pid, its alt-screen grid and its input path survive,
-    -- the consumed handover stays as .last, and only named fds cross (8a). A
-    -- dead pane stays dead, its command respawnable. A typo'd binary path must
-    -- be caught before anything is torn down, so the running session is
-    -- untouched rather than half-dropped.
+    -- the consumed handover stays as .last, only named fds cross (8a), and the
+    -- server still holds its lock. A dead pane stays dead, its command
+    -- respawnable. A typo'd binary path must be caught before anything is torn
+    -- down, so the running session is untouched rather than half-dropped.
     it "restart-server twice in a row keeps a full-screen program, its display and a dead pane" $
         withHat hatBin $ \h -> do
         let digits = filter (\ch -> ch >= '0' && ch <= '9')
@@ -1692,6 +1700,9 @@ spec = parallel $ do
         typeInto c3 "after-reload\r"
         awaitScreen c3 "after-reload"
         fdsOn h (h.home </> "server.log") `shouldReturn` 1
+        pid <- serverPid h
+        lockHolder h `shouldReturn` Just pid
+        fdsOn h (h.sock <> ".lock") `shouldReturn` 1
         deadStatus `shouldReturn` "1 7\n"
         ctlOut h ["capture-pane", "-p", "-t", ":1"]
             >>= (`shouldSatisfy` List.isInfixOf "Pane is dead (status 7, ")

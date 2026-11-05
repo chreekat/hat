@@ -104,6 +104,7 @@ import Hat.Server.PaneMode (dropModesForReload)
 import Hat.Server.TreeMode (cmdChooseBuffer, cmdChooseClient, cmdChooseTree, cmdCustomizeMode)
 import Hat.Server.ModeKey (paneModeKey)
 import Hat.Server.Locate
+import Hat.Server.Lock (lockFds)
 import Hat.Server.Format (FormatEnv)
 import Hat.Server.Mouse (mouseAt)
 import Hat.Server.MouseIO
@@ -708,7 +709,7 @@ cmdReload' scope st mclient args =
                     (cleanup, tree) <- captureReload req.carry st
                     let blobPath = st.sockPath <> ".reload"
                     B.writeFile blobPath (encodeHandover cleanup tree)
-                    keepOpenAcrossExec cleanup
+                    keepOpenAcrossExec st.sockPath cleanup
                     -- Park the accept loop before any farewell goes out, so a
                     -- farewelled client's immediate reattach waits in the listen
                     -- backlog for the next image instead of being accepted by
@@ -777,19 +778,21 @@ resolveReloadTarget = do
     maybe getExecutablePath pure onPath
 
 -- Decide what crosses the execve. The fds the reload names — the listening
--- socket and every pane's pty master — are cleared of close-on-exec, since a
--- libc that set the flag would slam them shut and hang up every program.
+-- socket and every pane's pty master — and those on the server's lock file
+-- are cleared of close-on-exec, since a libc that set the flag would slam them
+-- shut: hang up every program, or free the lock (see Note [The server lock]).
 -- Everything else is marked close-on-exec: the successor image opens its own
 -- log, store and debug socket, so an inherited one is a leak that rides every
 -- future reload too. The standard streams stay, or the new image would find
 -- 0, 1 and 2 free for the kernel to hand out as something else.
-keepOpenAcrossExec :: ReloadCleanup -> IO ()
-keepOpenAcrossExec cleanup = do
+keepOpenAcrossExec :: FilePath -> ReloadCleanup -> IO ()
+keepOpenAcrossExec sock cleanup = do
+    lock <- lockFds sock
+    let keep = cleanup.listenFd : map fst cleanup.live <> lock
     forM_ keep (setCloseOnExec False)
     held <- openFds
     forM_ (filter (`notElem` std <> keep) held) (setCloseOnExec True)
   where
-    keep = cleanup.listenFd : map fst cleanup.live
     std = [0, 1, 2]
     setCloseOnExec on fd =
         PIO.setFdOption (Fd (fromIntegral fd)) PIO.CloseOnExec on

@@ -158,6 +158,7 @@ library
         Hat.Server.Layout
         Hat.Server.LayoutString
         Hat.Server.Locate
+        Hat.Server.Lock
         Hat.Server.Name
         Hat.Server.Mru
         Hat.Server.OptionParse

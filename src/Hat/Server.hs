@@ -115,12 +115,10 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Network.Socket qualified as N
 import System.Directory
-    (doesFileExist, doesPathExist, removeFile)
+    (doesFileExist, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
-import System.IO (SeekMode (AbsoluteSeek))
-import System.Posix.IO qualified as PIO
 import System.Posix.User (getRealUserID, getUserEntryForID, userShell)
 import System.Process
     (CreateProcess (..), StdStream (..), proc,
@@ -157,6 +155,7 @@ import Hat.Server.InputRequestsIO (expireLoop)
 import Hat.Server.Startup
 import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
+import Hat.Server.Lock (LockResult (..), awaitLock, lockWaitAttempts, reclaimLock)
 import Hat.Server.Pane
 import Hat.Server.PromptHistory (loadHistory, saveHistory)
 import Hat.Server.Snapshot
@@ -179,19 +178,20 @@ runServerWith path mconfig mhandover = do
     -- The lock and log files live next to the socket; the directory
     -- must exist before any of them are touched.
     ensureSocketDir path
-    -- A reload continues the same process (same PID via execve), which
-    -- already holds the lock through the inherited fd, so re-acquiring it
-    -- here would deadlock against ourselves.
-    case mhandover of
-        Just _ -> pure ()
-        Nothing -> do
-            lockResult <- awaitLock path lockWaitAttempts
-            case lockResult of
-                LockHeldElsewhere -> exitSuccess  -- another server won the race
-                LockWon -> pure ()
-    withLogger (render (hatPath (takeDirectory path) </:> "server.log")) serve
+    lock <- case mhandover of
+        Just _ -> reclaimLock path  -- See Note [The server lock]
+        Nothing -> awaitLock path lockWaitAttempts >>= \case
+            LockHeldElsewhere -> exitSuccess  -- another server won the race
+            LockWon -> pure LockWon
+    withLogger (render (hatPath (takeDirectory path) </:> "server.log")) (serve lock)
   where
-   serve lg = do
+   serve lock lg = do
+    -- A resumed image serves on unlocked: exiting would hang up the panes it
+    -- adopted.
+    case lock of
+        LockHeldElsewhere -> logEvent lg ServerCrash
+            { err = "reload: " <> T.pack path <> ".lock is held by another server" }
+        LockWon -> pure ()
     persistOn <- persistEnabled
     mstore <- if persistOn then Just <$> storePathFor path else pure Nothing
     st <- newServerState defaultKeymap lg path mstore
@@ -329,44 +329,6 @@ withDaemons :: [IO ()] -> IO a -> IO a
 withDaemons ds body = foldr spawn body ds
   where
     spawn d k = withAsync d $ \a -> link a >> k
-
--- | The outcome of racing for the server's lock file.
-data LockResult
-    = LockWon            -- ^ this process now holds the lock
-    | LockHeldElsewhere  -- ^ another server already holds it
-
--- | Take the server lock for the socket at @path@. A holder with the path
--- bound is serving (or about to), so it wins outright; one without it is
--- starting up or retired and draining, so poll until it binds the path or
--- exits. Gives up (as held) after @attempts@ polls.
--- See Note [Retiring the socket].
-awaitLock :: FilePath -> Int -> IO LockResult
-awaitLock path attempts = do
-    r <- acquireLock (path <> ".lock")
-    bound <- doesPathExist path
-    case r of
-        LockWon -> pure LockWon
-        LockHeldElsewhere
-            | bound || attempts <= 1 -> pure LockHeldElsewhere
-            | otherwise -> do
-                threadDelay lockPollMicros
-                awaitLock path (attempts - 1)
-
-lockPollMicros :: Int
-lockPollMicros = 10_000
-
--- | 10s of polls: past any drain, which 'reapPane' bounds.
-lockWaitAttempts :: Int
-lockWaitAttempts = 1_000
-
--- flock-style: O_CREAT + posix write lock, held for the server's life.
-acquireLock :: FilePath -> IO LockResult
-acquireLock lockPath = do
-    fd <- PIO.createFile lockPath 0o600
-    r <- try $ PIO.setLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0)
-    case r of
-        Left (_ :: IOException) -> LockHeldElsewhere <$ PIO.closeFd fd
-        Right () -> pure LockWon
 
 -- | The reasons a server stays alive, gathered for 'serverIdle'. See it.
 data IdleInputs = IdleInputs
