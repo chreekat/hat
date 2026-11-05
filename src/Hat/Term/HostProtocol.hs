@@ -126,12 +126,16 @@ data OscTerm = TermBel | TermSt
 -- un-doubled payload, so a wrapper that spans reads still yields its payload
 -- whole).
 data PassState
-    = Outside ByteString
+    = Outside !ByteString
         -- ^ carry: proper prefix of @ESC Ptmux;@ at chunk end
-    | Inside ByteString (Maybe ByteString)
+    | Inside !ByteString !(Maybe PassBody)
         -- ^ carry: a trailing @ESC@ that may start the ST, and the un-doubled
         --   payload accumulated so far ('Nothing' once it outgrew the input
         --   buffer)
+
+-- | The un-doubled payload of an open passthrough so far: its pieces, latest
+-- first, and their total length.
+data PassBody = PassBody ![ByteString] !Int
 
 -- | Strip DCS tmux passthrough (@ESC Ptmux; … ESC \\@) from a pane's output
 -- before the emulator parses it, returning the scrubbed bytes and each completed
@@ -152,14 +156,14 @@ data PassState
 scrubPassthrough :: Int -> PassState -> ByteString -> (PassState, ByteString, [ByteString])
 scrubPassthrough size st0 chunk = case st0 of
     Outside carry        -> outside [] [] (carry <> chunk)
-    Inside carry payload -> inside [] [] (fmap (: []) payload) (carry <> chunk)
+    Inside carry payload -> inside [] [] payload (carry <> chunk)
   where
     intro = "\ESCPtmux;"
     finish = B.concat . reverse
-    -- The payload so far, or 'Nothing' once the buffer would overflow.
-    bounded = (>>= \ps -> let p = finish ps
-                       in if 5 + B.length p > inputStringLimit size then Nothing else Just p)
-    add piece = fmap (piece :)
+    -- Grow the payload by a piece, or lose it once the buffer would overflow.
+    add piece = (>>= \(PassBody ps n) ->
+        let n' = n + B.length piece
+        in if 5 + n' > inputStringLimit size then Nothing else Just (PassBody (piece : ps) n'))
     outside oacc payloads bs = case B.breakSubstring intro bs of
         (before, r)
             | B.null r ->
@@ -168,18 +172,19 @@ scrubPassthrough size st0 chunk = case st0 of
                 let held = introSuffix before
                     emit = B.take (B.length before - B.length held) before
                 in (Outside held, finish (emit : oacc), reverse payloads)
-            | otherwise -> inside (before : oacc) payloads (Just []) (B.drop (B.length intro) r)
+            | otherwise -> inside (before : oacc) payloads (Just (PassBody [] 0)) (B.drop (B.length intro) r)
     -- Inside the wrapper nothing reaches the emulator; the payload is rebuilt
     -- (un-doubling the ESCs the wrapper doubled) until the ST — a lone ESC
     -- followed by backslash — closes it and emits the completed payload.
     inside oacc payloads pacc bs = case B.elemIndex 0x1b bs of
-        Nothing -> (Inside "" (bounded (add bs pacc)), finish oacc, reverse payloads)
+        Nothing -> (Inside "" (add bs pacc), finish oacc, reverse payloads)
         Just i ->
             let pacc' = add (B.take i bs) pacc
             in case B.uncons (B.drop (i + 1) bs) of
-                Nothing           -> (Inside "\ESC" (bounded pacc'), finish oacc, reverse payloads)
+                Nothing           -> (Inside "\ESC" pacc', finish oacc, reverse payloads)
                 Just (0x1b, rest) -> inside oacc payloads (add "\ESC" pacc') rest
-                Just (0x5c, rest) -> outside oacc (maybe payloads (: payloads) (bounded pacc')) rest
+                Just (0x5c, rest) ->
+                    outside oacc (maybe payloads (\(PassBody ps _) -> finish ps : payloads) pacc') rest
                 Just (c, rest)    -> inside oacc payloads (add (B.singleton c) pacc') rest
     -- The longest proper prefix of the intro that this chunk ends with.
     introSuffix bs =

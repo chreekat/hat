@@ -1,5 +1,6 @@
 module Hat.Term.EmulatorSpec (spec) where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -7,6 +8,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes)
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import GHC.Conc (getAllocationCounter)
 import System.Mem.StableName (makeStableName)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
@@ -1283,6 +1285,24 @@ spec = do
                 (n1 + sum ns + passed evs) `shouldBe` 0
                 scr <- snapshot e
                 rowText scr 0 `shouldBe` "x"
+
+            -- Allocation stands in for work: a string torn across many reads
+            -- costs a few times its size to feed, not that per read.
+            let allocatedBy act = do
+                    start <- getAllocationCounter
+                    r <- act
+                    stop <- getAllocationCounter
+                    pure (start - stop, r)
+                inReads e body = concat <$> forM [1 .. 256 :: Int] (\_ -> feedStr e (B8.replicate 4000 body))
+                onceOver = (< 16 * 1024 * 1024)
+            it "a passthrough arriving in many reads costs its size once, not once per read" $ do
+                e <- new80x24
+                _ <- feedStr e "\ESCPtmux;"
+                (allocated, arrived) <- allocatedBy $ do
+                    evs <- (<>) <$> inReads e 'a' <*> feedStr e "\ESC\\"
+                    evaluate (sum [ B.length p | UnhandledPassthrough p <- evs ])
+                arrived `shouldBe` 256 * 4000
+                allocated `shouldSatisfy` onceOver
 
     prop "plain ascii lands verbatim on row 0" $ \(PlainLine s) -> ioProperty $ do
         e <- new80x24
