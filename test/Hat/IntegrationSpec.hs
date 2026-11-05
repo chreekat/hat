@@ -546,6 +546,19 @@ awaitForeground h cmd = go (500 :: Int)
             then pure ()
             else threadDelay 10000 >> go (n - 1)
 
+-- | Until the active pane's child @prog@ blocks reading its terminal. less
+-- drops a SIGWINCH that lands between drawing its prompt and that read, so
+-- a resize must wait for it.
+awaitTtyRead :: Hat -> String -> IO ()
+awaitTtyRead h prog = awaitTrue (prog <> " to block on its terminal") $ do
+    shell <- ctlOut h ["display-message", "-p", "#{pane_pid}"]
+    (_, kids, _) <- P.readProcessWithExitCode
+        "pgrep" ["-x", "-P", takeWhile (/= '\n') shell, prog] ""
+    case lines kids of
+        [pid] -> ((== "wait_woken") <$> B.readFile ("/proc/" <> pid <> "/wchan"))
+            `catch` \(_ :: IOException) -> pure False
+        _ -> pure False
+
 -- Count cells drawn with the reverse-video attribute (how a copy-mode
 -- selection renders).
 reverseCellCount :: Driver -> IO Int
@@ -784,7 +797,8 @@ spec = parallel $ do
         -- Press h for less's full-screen help overlay (what the screenshot
         -- showed), then zoom via the control path (returns after reconcile).
         typeInto c "h"
-        awaitScreen c "SUMMARY OF LESS COMMANDS"
+        awaitScreen c "HELP -- Press RETURN"
+        awaitTtyRead h "less"
         _ <- hatCtl h ["resize-pane", "-Z"]
         awaitScreen c "MOVING"        -- a help section that only fits post-zoom
         scr <- screenText c
