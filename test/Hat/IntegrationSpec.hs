@@ -764,29 +764,11 @@ spec = parallel $ do
     -- tmux prints command errors bare; scripts (tmuxed-alacritty-new)
     -- match on the exact text, e.g. `duplicate session: NAME`. A `hat: `
     -- prefix would break that match, so control errors stay unbranded.
-    it "prints control-command errors bare, like tmux" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
-        (code, _, err) <- hatCtl h ["new-session", "-d", "-s", "work"]
-        code `shouldBe` ExitFailure 1
-        err `shouldBe` "duplicate session: work\n"
-        typeInto c1 "exit\r"
-        _ <- awaitExit c1
-        pure ()
-
-    it "keeps a UTF-8 argument intact from a C-locale client" $
+    it "carries a C-locale client's argv bytes: UTF-8 intact, any other refused as tmux does, errors bare" $
         withHat hatBin $ \h -> do
         _ <- hatRaw h ["new-session", "-d", "-s", "x"]
-        (code, _, _) <- hatRaw h ["rename-session", "-t", "x", "caf\xc3\xa9"]
-        code `shouldBe` ExitSuccess
-        (_, out, _) <- hatRaw h ["display-message", "-p", "#{session_name}"]
-        out `shouldBe` "caf\xc3\xa9\n"
-
-    it "refuses a name that is not UTF-8 as tmux does, quoting its bytes" $
-        withHat hatBin $ \h -> do
-        _ <- hatRaw h ["new-session", "-d", "-s", "x"]
+        hatRaw h ["new-session", "-d", "-s", "x"] `shouldReturn`
+            (ExitFailure 1, "", "duplicate session: x\n")
         forM_
             [ (["rename-session", "-t", "x"], "session")
             , (["new-session", "-d", "-s"], "session")
@@ -796,12 +778,12 @@ spec = parallel $ do
             $ \(argv, kind) ->
                 hatRaw h (argv <> ["a\xff\&b", "data"]) `shouldReturn`
                     (ExitFailure 1, "", "invalid " <> kind <> " name: a\xff\&b\n")
-
-    it "fails a command any other word that is not UTF-8 reaches" $
-        withHat hatBin $ \h -> do
-        _ <- hatRaw h ["new-session", "-d", "-s", "x"]
         hatRaw h ["display-message", "-p", "\xff"] `shouldReturn`
             (ExitFailure 1, "", "display-message: argument is not valid UTF-8: \xff\n")
+        (code, _, _) <- hatRaw h ["rename-session", "-t", "x", "caf\xc3\xa9"]
+        code `shouldBe` ExitSuccess
+        (_, out, _) <- hatRaw h ["display-message", "-p", "#{session_name}"]
+        out `shouldBe` "caf\xc3\xa9\n"
 
     it "gives the terminal the cursor-style option's shape, the program's over it" $
         withHat hatBin $ \h -> do
