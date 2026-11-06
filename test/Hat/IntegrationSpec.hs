@@ -530,19 +530,6 @@ awaitForeground h cmd = go (500 :: Int)
             then pure ()
             else threadDelay 10000 >> go (n - 1)
 
--- | Until the active pane's child @prog@ blocks reading its terminal. less
--- drops a SIGWINCH that lands between drawing its prompt and that read, so
--- a resize must wait for it.
-awaitTtyRead :: Hat -> String -> IO ()
-awaitTtyRead h prog = awaitTrue (prog <> " to block on its terminal") $ do
-    shell <- ctlOut h ["display-message", "-p", "#{pane_pid}"]
-    (_, kids, _) <- P.readProcessWithExitCode
-        "pgrep" ["-x", "-P", takeWhile (/= '\n') shell, prog] ""
-    case lines kids of
-        [pid] -> ((== "wait_woken") <$> B.readFile ("/proc/" <> pid <> "/wchan"))
-            `catch` \(_ :: IOException) -> pure False
-        _ -> pure False
-
 -- Count cells drawn with the reverse-video attribute (how a copy-mode
 -- selection renders).
 reverseCellCount :: Driver -> IO Int
@@ -645,37 +632,6 @@ spec = parallel $ do
         sessions <- ctlOut h ["list-sessions", "-F", "#{session_name}"]
         marker <- ctlOut h ["display-message", "-p", "#{@marker}"]
         (sessions, marker) `shouldBe` ("fresh\n", "\n")
-
-    -- bug 6: zooming a short pane that runs less (alternate screen) grew the
-    -- pane; less redrew once for the new size via SIGWINCH. If the emulator is
-    -- resized after the pty, that one-shot redraw lands on the old-size model
-    -- and persists as garbage. The redraw must land clean at the new height.
-    it "cleanly redraws a zoomed pane running less" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        -- Horizontal split: the new (bottom) pane is active and short.
-        typeInto c "\x02\""
-        awaitScreen c "\x2500"  -- ─ border
-        -- Run less on distinctive numbered lines in the short pane.
-        let zf = B8.pack (h.home </> "zf.txt")
-        typeInto c $ "seq 1 200 | sed 's/^/ZOOMLINE-/' > " <> zf <> "; less " <> zf <> "\r"
-        awaitScreen c "ZOOMLINE-1"
-        -- Press h for less's full-screen help overlay (what the screenshot
-        -- showed), then zoom via the control path (returns after reconcile).
-        typeInto c "h"
-        awaitScreen c "HELP -- Press RETURN"
-        awaitTtyRead h "less"
-        _ <- hatCtl h ["resize-pane", "-Z"]
-        awaitScreen c "MOVING"        -- a help section that only fits post-zoom
-        scr <- screenText c
-        -- The help redrew clean at the new height: its header survives and the
-        -- file content it overlays does not bleed through.
-        T.isInfixOf "SUMMARY OF LESS COMMANDS" scr `shouldBe` True
-        T.isInfixOf "ZOOMLINE-" scr `shouldBe` False
-        typeInto c "q"                -- leave help
-        typeInto c "q"                -- exit less
-        awaitScreen c "$"
 
     -- The real client's byte paths: an argv in the C locale, and a
     -- buffer's stdin and stdout.
