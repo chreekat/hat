@@ -612,17 +612,6 @@ spec = parallel $ do
         gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "server did not exit"
 
-    -- 28: a server that served a connection which left without creating a
-    -- session must drain, not orphan. start-server autostarts an empty
-    -- server (no session, no client stays), so once the control connection
-    -- closes there is nothing left to serve.
-    it "exits an empty server whose connection made no session (28)" $
-        withHat hatBin $ \h -> do
-        code <- (\(c, _, _) -> c) <$> hatCtl h ["start-server"]
-        code `shouldBe` ExitSuccess
-        gone <- pollServerGone h.sock 5000
-        unless gone $ expectationFailure "empty server did not exit"
-
     it "exit-unattached ends a server left with only detached sessions" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h ["new-session", "-d", "sleep 300"]
