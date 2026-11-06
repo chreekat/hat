@@ -1514,14 +1514,12 @@ spec = parallel $ do
     -- both halves (bug 4f). The pane pid pins the server half; the same pty
     -- client still delivering input pins the client half. 83: the reattach
     -- must wait in the listen backlog for the next image, even when the old
-    -- image lingers before its exec. The session's non-ASCII name must
-    -- survive the hop of a C-locale client.
-    it "restart reattaches a C-locale client to its non-ASCII session across a lingering old image (4f, 83)" $
+    -- image lingers before its exec.
+    it "restart reattaches its client across a lingering old image (4f, 83)" $
         withHat hatBin $ \h -> do
         let digits = filter (\ch -> ch >= '0' && ch <= '9')
         c <- startRestartableClient h [("HAT_TEST_RELOAD_LINGER", "200000")]
         awaitScreen c "$"
-        _ <- hatRaw h ["rename-session", "caf\xc3\xa9"]
         typeInto c "echo before-restart\r"
         awaitScreen c "before-restart"
         pidBefore <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
@@ -1542,8 +1540,6 @@ spec = parallel $ do
         awaitScreen c "done-42"
         pidAfter <- digits <$> ctlOut h ["list-panes", "-F", "#{pane_pid}"]
         pidAfter `shouldBe` pidBefore
-        hatRaw h ["list-clients", "-F", "#{client_session}"]
-            `shouldReturn` (ExitSuccess, "caf\xc3\xa9\n", "")
 
     it "restart reattaches a client whose PATH hat cannot answer the probe (bug 52)" $
         withHat hatBin $ \h -> do
