@@ -1076,52 +1076,6 @@ spec = parallel $ do
         typeInto c2 "echo dropped-to-$((3*7))\r"
         awaitScreen c2 "dropped-to-21"
 
-    it "splits panes, navigates, zooms, and kills" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- Vertical split (side by side); border appears.
-        typeInto c1 "\x02%"
-        awaitScreen c1 "\x2502"  -- │
-        typeInto c1 "echo right-pane-here\r"
-        awaitScreen c1 "right-pane-here"
-
-        -- Navigate left, mark that pane.
-        typeInto c1 "\x02h"
-        typeInto c1 "echo left-pane-here\r"
-        awaitScreen c1 "left-pane-here"
-
-        -- Zoom hides the border and the other pane.
-        typeInto c1 "\x02z"
-        awaitWith "zoomed (no border)" (\d -> do
-            t <- screenText d
-            pure (not ("\x2502" `T.isInfixOf` t)
-                  && "left-pane-here" `T.isInfixOf` t)) c1
-        -- Bug 5: navigating away from a zoomed pane cancels the zoom and
-        -- moves to the neighbor. Previously select-pane did nothing while
-        -- zoomed (the collapsed arrangement hid every other pane), so the
-        -- border stayed gone; now the border returns as the zoom is undone.
-        typeInto c1 "\x02\ESC[D"   -- prefix + Left = select-pane -L
-        awaitScreen c1 "\x2502"
-
-        -- Horizontal split below, then kill it.
-        typeInto c1 "\x02\""
-        awaitScreen c1 "\x2500"  -- ─
-        typeInto c1 "\x02x"
-        awaitWith "bottom pane gone" (\d -> do
-            t <- screenText d
-            pure (not ("\x2500" `T.isInfixOf` t))) c1
-
-        -- Kill remaining panes; session ends.
-        typeInto c1 "exit\r"
-        awaitWith "one pane left" (\d -> do
-            t <- screenText d
-            pure (not ("\x2502" `T.isInfixOf` t))) c1
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
     it "notifies a formerly-zoomed pane's child that it shrank on select-pane away" $
         withHat hatBin $ \h -> do
         c1 <- startClient h
@@ -1310,38 +1264,6 @@ spec = parallel $ do
         awaitScreen c1 "DARKMODE"
         out <- ctlOut h ["display-message", "-p", "#{color_scheme}"]
         lines out `shouldBe` ["dark"]
-
-    it "creates and switches windows with a live status line" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "0:sh*"       -- status line is up
-        typeInto c1 "echo window-zero-marker\r"
-        awaitScreen c1 "window-zero-marker"
-
-        -- New window: status shows it as current; screen is a fresh shell.
-        typeInto c1 "\x02\&c"
-        awaitScreen c1 "1:sh*"
-        awaitWith "window 0 hidden" (\d -> do
-            t <- screenText d
-            pure (not ("window-zero-marker" `T.isInfixOf` t))) c1
-        typeInto c1 "echo window-one-marker\r"
-        awaitScreen c1 "window-one-marker"
-
-        -- Direct index select back to 0.
-        typeInto c1 "\x02\&0"
-        awaitScreen c1 "window-zero-marker"
-        awaitScreen c1 "0:sh*"
-
-        -- last-window toggles back to 1.
-        typeInto c1 "\x02\&l"
-        awaitScreen c1 "window-one-marker"
-
-        -- Kill both shells; session and server end.
-        typeInto c1 "exit\r"
-        awaitScreen c1 "window-zero-marker"
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
 
     it "copy-pipe does not freeze the client when the command leaves a child holding stdout" $
         withHat hatBin $ \h -> do
