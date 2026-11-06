@@ -18,7 +18,7 @@ import Data.IORef
 import System.Directory
     (createDirectoryIfMissing, createFileLink, doesFileExist, getFileSize,
      listDirectory, removeDirectoryRecursive)
-import System.Environment (lookupEnv)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, SeekMode (..), hClose, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
@@ -31,7 +31,6 @@ import System.Posix.Temp (mkdtemp)
 import System.Posix.Terminal
     ( TerminalMode (..), TerminalState (Immediately), getTerminalAttributes
     , openPseudoTerminal, setTerminalAttributes, terminalMode )
-import System.Process (readProcess)
 import System.Process qualified as P
 import System.Timeout (timeout)
 import Test.HUnit.Lang
@@ -91,6 +90,18 @@ testPath = do
     ambient <- fromMaybe "" <$> lookupEnv "PATH"
     tools <- lookupEnv "HAT_TEST_TOOLS"
     pure $ maybe ambient (<> (':' : ambient)) tools
+
+-- | The hat executable of this build tree, beside the suite's own binary
+-- (@<pkg>/t/hat-test/build/hat-test/hat-test@ and @<pkg>/x/hat/build/hat/hat@);
+-- the suite's @build-tool-depends@ has cabal build it fresh first.
+devHatBinary :: IO FilePath
+devHatBinary = do
+    self <- getExecutablePath
+    let pkg = iterate takeDirectory self !! 5
+        bin = pkg </> "x" </> "hat" </> "build" </> "hat" </> "hat"
+    present <- doesFileExist bin
+    unless present $ fail ("no hat executable at " <> bin <> "; run the suite through cabal test")
+    pure bin
 
 -- | Run a test against a freshly isolated hat, tearing the server and
 -- its temp dir down afterwards no matter how the test ends. The socket
@@ -557,11 +568,7 @@ rawModesLeftBehind d = do
 
 spec :: Spec
 spec = parallel $ do
-    -- Build and locate as one step, so the tested binary is fresh and the
-    -- two agree on a builddir.
-    hatBin <- runIO $ do
-        P.callProcess "cabal" ["build", "-v0", "exe:hat"]
-        init <$> readProcess "cabal" ["list-bin", "hat"] ""
+    hatBin <- runIO devHatBinary
 
     it "attaches, survives detach/reattach, and shuts down cleanly, leaving the terminal cooked" $
         withHat hatBin $ \h -> do

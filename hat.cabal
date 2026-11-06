@@ -321,6 +321,8 @@ test-suite hat-test
     type:               exitcode-stdio-1.0
     hs-source-dirs:     test
     main-is:            Main.hs
+    -- See devHatBinary in Hat.IntegrationSpec.
+    build-tool-depends: hat:hat
     other-modules:
         Hat.Bench.LinearSpec
         Hat.Bench.PerfStatSpec
