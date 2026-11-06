@@ -108,7 +108,7 @@ clientTheme opts = resolveTheme expand opts Nothing
     expand = renderFormat (Map.fromList [("client_colours", clientColours)])
         (const "") (utcToZonedTime utc (posixSecondsToUTCTime 0))
 
--- | Every pane of every window, in id order.
+-- | Every pane of every window.
 realPanes :: ServerState -> IO [Pane]
 realPanes st = atomically $ do
     sessions <- Map.elems <$> readTVar st.sessions
