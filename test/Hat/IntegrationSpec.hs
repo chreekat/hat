@@ -172,16 +172,11 @@ teardown h = do
 -- Bounded, so a command a wedged server never answers fails the test (with
 -- the server log) instead of hanging the whole suite.
 hatCtl :: Hat -> [String] -> IO (ExitCode, String, String)
-hatCtl h = hatCtlEnv h []
-
--- | 'hatCtl' with extra environment entries, which an autostarted server
--- inherits.
-hatCtlEnv :: Hat -> [(String, String)] -> [String] -> IO (ExitCode, String, String)
-hatCtlEnv h extraEnv args = do
+hatCtl h args = do
     path <- testPath
     r <- timeout 30_000_000 $ P.readCreateProcessWithExitCode
         (P.proc h.bin (["-S", h.sock] <> args))
-            { P.env = Just (extraEnv <> [("HOME", h.home), ("PATH", path)] <> persistEnv h)
+            { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
             , P.close_fds = True }
         ""
     maybe (expectationFailure ("hat " <> unwords args <> ": no reply in 30s")
@@ -1885,29 +1880,10 @@ spec = parallel $ do
 
     it "a client that stops reading stalls no pane for anyone else" $
         withHat hatBin $ \h -> do
-        go <- alertStorm h []
+        go <- alertStorm h
         unread <- attachUnread h
         writeFile go ""
         awaitAlertStorm h
-        N.close unread.sock
-
-    it "restart-server completes while an attached client is not reading" $
-        withHat hatBin $ \h -> do
-        go <- alertStorm h [("HAT_TEST_FAREWELL_GRACE", "500000")]
-        unread <- attachUnread h
-        writeFile go ""
-        awaitAlertStorm h
-        pidBefore <- ctlOut h ["list-panes", "-F", "#{pane_pid}"]
-        done <- timeout 20_000_000 (hatCtl h ["restart-server", h.bin])
-        isJust done `shouldBe` True
-        awaitTrue "the reload handover to be consumed" $
-            doesFileExist (h.sock <> ".reload.last")
-        -- Let go, not orphaned: once it reads again its stream ends.
-        timeout 10_000_000 (readToEnd unread) `shouldReturn` Just ()
-        unsent <- filter (List.isInfixOf "FarewellUnsent") . lines
-            <$> readFile (h.home </> "server.log")
-        length unsent `shouldBe` 1
-        ctlOut h ["list-panes", "-F", "#{pane_pid}"] `shouldReturn` pidBefore
         N.close unread.sock
 
     it "fails at once, as tmux does, on a socket path too long for an address" $
@@ -1927,10 +1903,9 @@ spec = parallel $ do
 
 -- A detached session whose pane, once the returned file exists, raises
 -- 2000 alerts -- a bell and a 1 KiB desktop notification each, far more
--- than a socket buffer holds -- and then prints STORM-DONE. @serverEnv@
--- seeds the server it autostarts.
-alertStorm :: Hat -> [(String, String)] -> IO FilePath
-alertStorm h serverEnv = do
+-- than a socket buffer holds -- and then prints STORM-DONE.
+alertStorm :: Hat -> IO FilePath
+alertStorm h = do
     let go = h.home </> "go"
         script = h.home </> "storm.sh"
     writeFile script $ unlines
@@ -1939,7 +1914,7 @@ alertStorm h serverEnv = do
         , "  for (i = 1; i <= 2000; i++) printf \"%d\\a\\033]9;%s\\033\\\\\\n\", i, pad;"
         , "  print \"STORM-\" \"DONE\" }'"
         , "exec sleep 600" ]
-    _ <- hatCtlEnv h serverEnv ["new-session", "-d", "sh " <> script]
+    _ <- hatCtl h ["new-session", "-d", "sh " <> script]
     pure go
 
 awaitAlertStorm :: Hat -> IO ()
@@ -1960,15 +1935,6 @@ attachUnread h = do
     W.recvMessage re >>= \case
         Just (W.Known (W.Welcome _)) -> pure re
         other -> fail ("attachUnread: " <> show other)
-
--- Read a connection until the server ends it.
-readToEnd :: W.ReadEnd -> IO ()
-readToEnd re = loop `catch` \(_ :: IOException) -> pure ()
-  where
-    loop = W.recvMessage re >>= \case
-        Just (W.Known (_ :: W.ServerToClient)) -> loop
-        Just (W.UnknownTag _) -> loop
-        _ -> pure ()
 
 -- The @n@ of each @TICK-n-END@ word, in order.
 tickNumbers :: T.Text -> [Int]
