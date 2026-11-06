@@ -101,7 +101,7 @@ boundFds = do
 
 main :: IO ()
 -- Far past the slowest healthy run, even on a loaded box.
-main = withWatchdog 300 $ hspec $ labelItems $ parallel $ do
+main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     runIO boundFds
     -- Integration first: its items (each a real hat through a pty) are the
     -- suite's heaviest.
