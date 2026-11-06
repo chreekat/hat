@@ -22,7 +22,7 @@ import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, SeekMode (..), hClose, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
-import System.Posix.IO (closeFd, createPipe, fdToHandle, handleToFd)
+import System.Posix.IO (closeFd, fdToHandle, handleToFd)
 import System.Posix.IO qualified as PIO
 import System.Posix.Process (ProcessStatus (..))
 import System.Posix.Signals (Signal, nullSignal, sigKILL, sigTERM, signalProcess)
@@ -1301,22 +1301,6 @@ spec = parallel $ do
         typeInto c1 "exit\r"
         status <- awaitExit c1
         status `shouldBe` Exited ExitSuccess
-
-    -- A spawned client must not inherit the driver's open fds (bug 9).
-    it "spawns clients with a clean fd table" $
-        withHat hatBin $ \h -> do
-        (r, w) <- createPipe  -- marker fd held open across the spawn
-        flip finally (closeFd r >> closeFd w) $ do
-            c <- startClient h
-            awaitScreen c "$"
-            mpid <- P.getPid c.pty.proch
-            pid <- maybe (fail "client already gone") pure mpid
-            marker <- readSymbolicLink ("/proc/self/fd/" <> show w)
-            fds <- listDirectory ("/proc/" <> show pid <> "/fd")
-            links <- forM fds $ \fd ->
-                readSymbolicLink ("/proc/" <> show pid <> "/fd/" <> fd)
-                    `catch` \(_ :: SomeException) -> pure ""
-            links `shouldNotSatisfy` elem marker
 
     -- What only the exec shows of a reload: pid, fd (8a) and lock survival,
     -- the alt-screen grid by byte replay, and the consumed handover as .last.

@@ -190,7 +190,7 @@ shellSpec = do
     -- `pkill hat` and made the next start's connect() hang. The child
     -- must inherit only its stdio: a forced-inheritable fd here must not
     -- survive into it.
-    it "hands the pane child a clean fd table" $ \TestShell{base} ->
+    it "hands the pane child a clean fd table (bug 9)" $ \TestShell{base} ->
         bracket createPipe (\(r, w) -> closeFd r >> closeFd w) $ \(_, w) -> do
             setFdOption w CloseOnExec False
             let Fd n = w
