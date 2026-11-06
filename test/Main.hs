@@ -9,6 +9,7 @@ import Hat.Bench.ReportSpec qualified
 import Hat.Bench.ResidencySpec qualified
 import Hat.Bench.RtsStatsSpec qualified
 import Hat.Client.DrawSpec qualified
+import Hat.Client.RenderSpec qualified
 import Hat.Client.TerminfoSpec qualified
 import Hat.Client.TtySpec qualified
 import Hat.ClientSpec qualified
@@ -133,6 +134,7 @@ main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     describe "Hat.Server.Scrollbars" Hat.Server.ScrollbarsSpec.spec
     describe "Hat.Server.Theme" Hat.Server.ThemeSpec.spec
     describe "Hat.Client.Draw" Hat.Client.DrawSpec.spec
+    describe "Hat.Client.Render" Hat.Client.RenderSpec.spec
     describe "Hat.Client.Terminfo" Hat.Client.TerminfoSpec.spec
     describe "Hat.Client.Tty" Hat.Client.TtySpec.spec
     describe "Hat.Client" Hat.ClientSpec.spec

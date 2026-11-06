@@ -328,6 +328,7 @@ test-suite hat-test
         Hat.Bench.ResidencySpec
         Hat.Bench.RtsStatsSpec
         Hat.Client.DrawSpec
+        Hat.Client.RenderSpec
         Hat.Client.TerminfoSpec
         Hat.Client.TtySpec
         Hat.ClientSpec
