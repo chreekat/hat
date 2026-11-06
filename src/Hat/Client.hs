@@ -13,6 +13,9 @@ module Hat.Client
     , TerminalMode (..)
     , terminalMode
     , forwardToServer
+    , ClientRender (..)
+    , Step (..)
+    , renderStep
     , receiveServer
     , declinedLock
     ) where
@@ -21,10 +24,10 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
 import Control.Exception (IOException, SomeException, catch, bracket_, try)
-import Control.Monad (forever)
+import Control.Monad (forever, unless)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import Data.Word (Word16)
 import Data.Text qualified as T
@@ -168,14 +171,15 @@ awaitWelcome sock re d greeting =
             awaitWelcome sock re (dialectOf (termFromWire "" caps feats))
                 =<< recvMessage re
         Just (Known (Welcome _)) -> do
-            dialect <- newIORef d
+            sz <- ttySize
+            render <- newIORef ClientRender { dialect = d, size = sz }
             -- withRawMode also owns the stdio buffering switch; see the
             -- ordering note there.
             withRawMode $
                 bracket_
                     (B.hPut stdout (enterAltScreen d))
-                    (B.hPut stdout . leaveAltScreen =<< readIORef dialect)
-                    (shuttle dialect sock re)
+                    (B.hPut stdout . leaveAltScreen . (.dialect) =<< readIORef render)
+                    (shuttle render sock re)
         Just (Known (ServerError e)) -> pure (rejected e)
         Just (Known (ServerErrorBytes e)) -> pure (Rejected e)
         Just (Known _) -> pure (Rejected "unexpected greeting")
@@ -183,18 +187,18 @@ awaitWelcome sock re d greeting =
         Just (Malformed _) -> pure (rejected versionMismatch)
         Nothing -> pure ServerDied
 
-shuttle :: IORef Dialect -> Socket -> ReadEnd -> IO ExitReason
-shuttle dialect sock re = do
+shuttle :: IORef ClientRender -> Socket -> ReadEnd -> IO ExitReason
+shuttle render sock re = do
     outbox <- newTQueueIO
-    size <- newIORef =<< ttySize
     _ <- installHandler sigWinch
         (Catch $ do
             sz <- ttySize
-            writeIORef size sz
+            atomicModifyIORef' render $ \r ->
+                (ClientRender { dialect = r.dialect, size = sz }, ())
             atomically (writeTQueue outbox (Resize sz)))
         Nothing
     -- One writer owns the socket; stdin and SIGWINCH both feed it.
-    r <- race (receiveServer (B.hPut stdout) dialect size outbox re
+    r <- race (receiveServer (B.hPut stdout) render outbox re
                 `catch` \(_ :: SomeException) -> pure ServerDied)
               (race (stdinReader outbox) (forwardToServer sock outbox))
     pure $ case r of
@@ -207,60 +211,77 @@ shuttle dialect sock re = do
             then atomically (writeTQueue outbox Detach)
             else atomically (writeTQueue outbox (Input bs))
 
+-- | What an attached client keeps between the server's messages.
+data ClientRender = ClientRender
+    { dialect :: Dialect  -- ^ how its terminal is spoken to
+    , size :: Size        -- ^ its terminal's size, as of the last SIGWINCH
+    }
+
+-- | What one of the server's messages does at an attached client.
+data Step = Step
+    { render :: ClientRender       -- ^ the client afterwards
+    , output :: B.ByteString       -- ^ for its terminal
+    , replies :: [ClientToServer]  -- ^ for the server
+    , outcome :: Maybe ExitReason  -- ^ 'Just' once the attachment is over
+    }
+
+-- | Act on one of the server's messages to an attached client. The loop
+-- around it ('receiveServer') reads and writes; this decides.
+renderStep :: ClientRender -> ServerToClient -> Step
+renderStep r = \case
+    Draw ops -> writes (opsToAnsi r.dialect r.size ops)
+    SetTitle t -> writes (titleBytes r.dialect t)
+    RingBell -> writes "\BEL"
+    Notify raw -> writes raw
+    Message _ -> silent  -- server renders toasts into frames
+    DetachOk -> ends Detached
+    RestartClient -> ends (RestartRequested Nothing [])
+    RestartClientTo t hist -> ends (RestartRequested (Just t) hist)
+    CommandDone -> silent
+    Exited -> ends SessionEnded
+    ServerError e -> ends (rejected e)
+    ServerErrorBytes e -> ends (Rejected e)
+    Welcome _ -> silent
+    -- The terminal identified itself after attach and the server learned
+    -- more of what it can do.
+    OpenedTerminal caps feats ->
+        let d = dialectOf (termFromWire "" caps feats)
+        in (writes (featuresOn d)) { render = r { dialect = d } }
+    -- Informational: our decoder already reads every dialect ≤ ours, and
+    -- nothing we send upstream is dialect-sensitive.
+    ServerVersion _ -> silent
+    -- Command-client traffic; an attached client's stdin and stdout are
+    -- its terminal.
+    ReadStdin -> silent
+    WriteStdout _ -> silent
+    ControlExit {} -> ends SessionEnded
+    ExitStatus _ -> silent
+    LockClient _ -> silent { replies = declinedLock }
+  where
+    silent = Step { render = r, output = "", replies = [], outcome = Nothing }
+    writes bs = silent { output = bs }
+    ends why = silent { outcome = Just why }
+
 -- | Act on what the server sends an attached client, writing to its
 -- terminal through @out@ and answering through @outbox@, until the
 -- server ends the attachment.
 receiveServer
-    :: (B.ByteString -> IO ()) -> IORef Dialect -> IORef Size
+    :: (B.ByteString -> IO ()) -> IORef ClientRender
     -> TQueue ClientToServer -> ReadEnd -> IO ExitReason
-receiveServer out dialect size outbox re = next
+receiveServer out render outbox re = next
   where
-    next = do
-        m <- recvMessage re
-        case m of
-            Nothing -> pure ServerDied
-            Just (Malformed _) -> pure ServerDied
-            Just (UnknownTag _) -> next
-            Just (Known msg) -> case msg of
-                Draw ops -> do
-                    d <- readIORef dialect
-                    sz <- readIORef size
-                    out (opsToAnsi d sz ops)
-                    next
-                SetTitle t -> do
-                    d <- readIORef dialect
-                    out (titleBytes d t)
-                    next
-                RingBell -> out "\BEL" >> next
-                Notify raw -> out raw >> next
-                Message _ -> next  -- server renders toasts into frames
-                DetachOk -> pure Detached
-                RestartClient -> pure (RestartRequested Nothing [])
-                RestartClientTo t hist -> pure (RestartRequested (Just t) hist)
-                CommandDone -> next
-                Exited -> pure SessionEnded
-                ServerError e -> pure (rejected e)
-                ServerErrorBytes e -> pure (Rejected e)
-                Welcome _ -> next
-                -- The terminal identified itself after attach and the
-                -- server learned more of what it can do.
-                OpenedTerminal caps feats -> do
-                    let d = dialectOf (termFromWire "" caps feats)
-                    writeIORef dialect d
-                    out (featuresOn d)
-                    next
-                -- Informational: our decoder already reads every dialect
-                -- ≤ ours, and nothing we send upstream is dialect-sensitive.
-                ServerVersion _ -> next
-                -- Command-client traffic; an attached client's stdin and
-                -- stdout are its terminal.
-                ReadStdin -> next
-                WriteStdout _ -> next
-                ControlExit {} -> pure SessionEnded
-                ExitStatus _ -> next
-                LockClient _ -> do
-                    atomically (mapM_ (writeTQueue outbox) declinedLock)
-                    next
+    next = recvMessage re >>= \case
+        Nothing -> pure ServerDied
+        Just (Malformed _) -> pure ServerDied
+        Just (UnknownTag _) -> next
+        Just (Known msg) -> do
+            -- Stepped atomically against the SIGWINCH handler's size writes.
+            step <- atomicModifyIORef' render $ \r ->
+                let s = renderStep r msg in (s.render, s)
+            unless (B.null step.output) (out step.output)
+            unless (null step.replies) $
+                atomically (mapM_ (writeTQueue outbox) step.replies)
+            maybe next pure step.outcome
 
 -- | The answer to a server old enough to lock clients: the terminal back
 -- at once, which that server draws to afresh, and a message saying why.

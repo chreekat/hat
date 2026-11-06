@@ -6,7 +6,8 @@ import Data.IORef (newIORef)
 import Network.Socket (Family (AF_UNIX), SocketType (Stream), close, socketPair)
 import Test.Hspec
 
-import Hat.Client (ExitReason (..), declinedLock, forwardToServer, receiveServer)
+import Hat.Client
+    (ClientRender (..), ExitReason (..), declinedLock, forwardToServer, receiveServer)
 import Hat.Client.Draw (legacyDialect)
 import Hat.Geometry (Size (..))
 import Hat.Transport.Wire
@@ -33,9 +34,9 @@ spec = do
             mapM_ (sendMessage theirs) [LockClient "vlock", Exited]
             re <- newReadEnd ours
             outbox <- newTQueueIO
-            dialect <- newIORef legacyDialect
-            size <- newIORef Size { rows = 24, cols = 80 }
-            receiveServer (\_ -> pure ()) dialect size outbox re
+            render <- newIORef ClientRender
+                { dialect = legacyDialect, size = Size { rows = 24, cols = 80 } }
+            receiveServer (\_ -> pure ()) render outbox re
                 `shouldReturn` SessionEnded
             atomically (flushTQueue outbox) `shouldReturn` declinedLock
             declinedLock `shouldSatisfy` \case
