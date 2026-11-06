@@ -5,7 +5,7 @@ module Hat.Server.PaneCommandSpec (spec) where
 import Control.Concurrent.STM
 import Control.Exception (IOException, bracket, catch)
 import Control.Concurrent (threadDelay)
-import Control.Monad (filterM, forM_, unless, void)
+import Control.Monad (filterM, forM_, unless)
 import Data.ByteString.Char8 qualified as B8
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -24,13 +24,12 @@ import Test.Hspec hiding (Arg)
 import Hat.Command.Arg (Arg (..))
 
 import Hat.Geometry (Size (..))
-import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options (Options (..))
 import Hat.Server (Reply (..), dispatch, reconcileThrough)
 import Hat.Server.Command.Types (errQuoting)
 import Hat.Server.Conn (handleInput)
-import Hat.Server.Dispatch (installHooks, runArgArgv, runArgv)
+import Hat.Server.Dispatch (runArgArgv, runArgv)
 import Hat.Server.Layout (fitLayout, singlePane)
 import Hat.Server.LayoutString (emitLayout)
 import Hat.Server.Persist
@@ -40,37 +39,12 @@ import Hat.Server.Snapshot (captureSnapshot, restoreSaved, restoreSnapshot)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified as Pty
-import Hat.TestSupport (addClient)
+import Hat.TestSupport (addClient, realPanes, withServer, withServerStore)
 import Data.Vector qualified as V
-
--- | A fresh server for one test; on exit every pane still alive is killed
--- and its child reaped, so no test leaks a process.
-withServer :: (ServerState -> IO a) -> IO a
-withServer = withServerStore Nothing
-
--- | 'withServer' over a persistence store.
-withServerStore :: Maybe FilePath -> (ServerState -> IO a) -> IO a
-withServerStore store = bracket open close
-  where
-    open = do
-        lg <- newLogger "/dev/null"
-        st <- newServerState Map.empty lg "/tmp/hat-panecommandspec.sock" store
-        installHooks st
-        pure st
-    close st = do
-        panes <- allPanes st
-        void (run st ["kill-server"])
-        forM_ panes $ \p -> timeout 2_000_000 (Pty.waitExit p.pty)
 
 -- | A private directory for one test's files, removed afterwards.
 withTmpDir :: (FilePath -> IO a) -> IO a
 withTmpDir = bracket (mkdtemp "/tmp/hat-panecommandspec-") removeDirectoryRecursive
-
-allPanes :: ServerState -> IO [Pane]
-allPanes st = atomically $ do
-    sessions <- Map.elems <$> readTVar st.sessions
-    wins <- concat <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
-    concat <$> mapM (fmap Map.elems . readTVar . (.panes)) wins
 
 run :: ServerState -> [Text] -> IO [Reply]
 run st = runArgv st Nothing
@@ -117,7 +91,7 @@ outputs out = [ t | ROutput t <- out ]
 -- | The pane a @%N@ id names.
 paneNamed :: ServerState -> Text -> IO Pane
 paneNamed st pid = do
-    ps <- allPanes st
+    ps <- realPanes st
     case [ p | p <- ps, "%" <> T.pack (show (rawPane p.id)) == pid ] of
         p : _ -> pure p
         [] -> fail ("no pane " <> T.unpack pid)
@@ -292,7 +266,7 @@ spec = do
                 run st ["display-message", "-p", "-t", "S:0.0", "#{pane_mode}"]
                     `shouldReturn` [ROutput "view-mode"]
                 run st ["run-shell", "-b", "-t", "S:0.0", "echo later"] `shouldReturn` []
-                [p] <- allPanes st
+                [p] <- realPanes st
                 shown <- timeout 5_000_000 $ untilM $ do
                     mpm <- atomically (topMode p)
                     pure $ case mpm of

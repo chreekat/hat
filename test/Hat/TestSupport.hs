@@ -1,7 +1,7 @@
 -- Helpers shared by more than one spec.
 module Hat.TestSupport
     ( bashPath, nodeOf, clientTheme, addClient, realPanes, withPanesReaped
-    , withServer, awaitTrue
+    , withServer, withServerStore, awaitTrue
     ) where
 
 import Control.Concurrent (threadDelay)
@@ -131,9 +131,13 @@ withPanesReaped st body = body `finally` do
 -- | A fresh in-process server for one test, its command table live, its
 -- panes reaped on the way out ('withPanesReaped').
 withServer :: (ServerState -> IO a) -> IO a
-withServer act = do
+withServer = withServerStore Nothing
+
+-- | 'withServer' over a persistence store.
+withServerStore :: Maybe FilePath -> (ServerState -> IO a) -> IO a
+withServerStore store act = do
     lg <- newLogger "/dev/null"
-    st <- newServerState Map.empty lg "/tmp/hat-testsupport.sock" Nothing
+    st <- newServerState Map.empty lg "/tmp/hat-testsupport.sock" store
     installHooks st
     withPanesReaped st (act st)
 
