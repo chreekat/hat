@@ -390,6 +390,7 @@ test-suite hat-test
         Hat.Server.PromptHistorySpec
         Hat.Server.ReloadProbeSpec
         Hat.Server.ReloadSpec
+        Hat.Server.ReloadRoundTripSpec
         Hat.Server.SceneSpec
         Hat.Server.ScrollbarsSpec
         Hat.Server.ThemeSpec

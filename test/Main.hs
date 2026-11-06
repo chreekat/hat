@@ -64,6 +64,7 @@ import Hat.Server.PromptSpec qualified
 import Hat.Server.PromptHistorySpec qualified
 import Hat.Server.ReloadProbeSpec qualified
 import Hat.Server.ReloadSpec qualified
+import Hat.Server.ReloadRoundTripSpec qualified
 import Hat.Server.SceneSpec qualified
 import Hat.Server.ScrollbarsSpec qualified
 import Hat.Server.ThemeSpec qualified
@@ -129,6 +130,7 @@ main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     describe "Hat.Server.Render" Hat.Server.RenderSpec.spec
     describe "Hat.Server.ResizeRender" Hat.Server.ResizeRenderSpec.spec
     describe "Hat.Server.Reload" Hat.Server.ReloadSpec.spec
+    describe "Hat.Server.ReloadRoundTrip" Hat.Server.ReloadRoundTripSpec.spec
     describe "Hat.Server.ReloadProbe" Hat.Server.ReloadProbeSpec.spec
     describe "Hat.Server.Scene" Hat.Server.SceneSpec.spec
     describe "Hat.Server.Scrollbars" Hat.Server.ScrollbarsSpec.spec
