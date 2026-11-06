@@ -3,47 +3,68 @@
 module Hat.Server.PaneCommandSpec (spec) where
 
 import Control.Concurrent.STM
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, catch)
 import Control.Concurrent (threadDelay)
 import Control.Monad (filterM, forM_, unless, void)
+import Data.ByteString.Char8 qualified as B8
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
+import System.Directory (removeDirectoryRecursive)
+import System.FilePath ((</>))
 import System.Posix.Process (getProcessID)
+import System.Posix.Signals (nullSignal, signalProcess)
+import System.Posix.Temp (mkdtemp)
 import System.Posix.Unistd (getSystemID, nodeName)
 import System.Timeout (timeout)
 import Test.Hspec hiding (Arg)
 
 import Hat.Command.Arg (Arg (..))
 
+import Hat.Geometry (Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options (Options (..))
-import Hat.Server (Reply (..))
+import Hat.Server (Reply (..), dispatch, reconcileThrough)
 import Hat.Server.Command.Types (errQuoting)
+import Hat.Server.Conn (handleInput)
 import Hat.Server.Dispatch (installHooks, runArgArgv, runArgv)
-import Hat.Server.Persist (decodeSnapshotJson, encodeSnapshotJson)
-import Hat.Server.Snapshot (captureSnapshot, restoreSnapshot)
+import Hat.Server.Layout (fitLayout, singlePane)
+import Hat.Server.LayoutString (emitLayout)
+import Hat.Server.Persist
+    (PaneSnap (..), SessionSnap (..), Snapshot (..), WindowSnap (..)
+    , decodeSnapshotJson, encodeSnapshotJson, saveSnapshot, withStore)
+import Hat.Server.Snapshot (captureSnapshot, restoreSaved, restoreSnapshot)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified as Pty
+import Hat.TestSupport (addClient)
 import Data.Vector qualified as V
 
 -- | A fresh server for one test; on exit every pane still alive is killed
 -- and its child reaped, so no test leaks a process.
 withServer :: (ServerState -> IO a) -> IO a
-withServer = bracket open close
+withServer = withServerStore Nothing
+
+-- | 'withServer' over a persistence store.
+withServerStore :: Maybe FilePath -> (ServerState -> IO a) -> IO a
+withServerStore store = bracket open close
   where
     open = do
         lg <- newLogger "/dev/null"
-        st <- newServerState Map.empty lg "/tmp/hat-panecommandspec.sock" Nothing
+        st <- newServerState Map.empty lg "/tmp/hat-panecommandspec.sock" store
         installHooks st
         pure st
     close st = do
         panes <- allPanes st
         void (run st ["kill-server"])
         forM_ panes $ \p -> timeout 2_000_000 (Pty.waitExit p.pty)
+
+-- | A private directory for one test's files, removed afterwards.
+withTmpDir :: (FilePath -> IO a) -> IO a
+withTmpDir = bracket (mkdtemp "/tmp/hat-panecommandspec-") removeDirectoryRecursive
 
 allPanes :: ServerState -> IO [Pane]
 allPanes st = atomically $ do
@@ -89,6 +110,63 @@ geometry st tgt = do
         \#{e|+:#{e|-:#{pane_bottom},#{pane_top}},1}"]
     pure [ t | ROutput t <- out ]
 
+-- | The output lines among a command's replies.
+outputs :: [Reply] -> [Text]
+outputs out = [ t | ROutput t <- out ]
+
+-- | The pane a @%N@ id names.
+paneNamed :: ServerState -> Text -> IO Pane
+paneNamed st pid = do
+    ps <- allPanes st
+    case [ p | p <- ps, "%" <> T.pack (show (rawPane p.id)) == pid ] of
+        p : _ -> pure p
+        [] -> fail ("no pane " <> T.unpack pid)
+
+-- | Whether a pane's screen holds the text.
+screenShows :: ServerState -> Text -> Text -> IO Bool
+screenShows st tgt needle =
+    any (T.isInfixOf needle) . outputs <$> run st ["capture-pane", "-p", "-t", tgt]
+
+-- | The live sessions' names, by id.
+sessionNames :: ServerState -> IO [Text]
+sessionNames st = mapM (readTVarIO . (.name)) . Map.elems =<< readTVarIO st.sessions
+
+-- | Poll a file (which may not exist yet) until its contents satisfy @ok@.
+awaitFile :: FilePath -> (B8.ByteString -> Bool) -> IO B8.ByteString
+awaitFile path ok = do
+    r <- timeout 5_000_000 (untilM (ok <$> contents))
+    unless (isJust r) (expectationFailure ("timed out waiting on " <> path))
+    contents
+  where
+    contents = B8.readFile path `catch` \(_ :: IOException) -> pure ""
+
+-- | Whether a process still exists, zombie included: this process's child
+-- reads as gone only once it has been reaped.
+pidAlive :: Int -> IO Bool
+pidAlive pid = (True <$ signalProcess nullSignal (fromIntegral pid))
+    `catch` \(_ :: IOException) -> pure False
+
+-- | A saved tree of one session holding one window of one empty pane, its
+-- layout fitted to a 30x100 area.
+seedSnapshot :: Text -> Snapshot
+seedSnapshot nm = Snapshot
+    { lastActiveSession = Nothing
+    , sessions =
+        [ SessionSnap
+            { name = nm, startCwd = "/tmp", currentIx = 0, windowHist = []
+            , createdAt = Nothing, restores = 0, group = Nothing
+            , windows =
+                [ WindowSnap
+                    { ix = 0, name = "one", active = 0, paneHist = []
+                    , layout = emitLayout (fitLayout Size { rows = 30, cols = 100 } (singlePane (PaneId 0)))
+                    , autoRename = False, key = Nothing, linkOf = Nothing
+                    , modal = Nothing, size = Nothing
+                    , panes =
+                        [ PaneSnap
+                            { cwd = "/tmp", command = Nothing, shellSpawned = False
+                            , kind = EmptyPane, inputOff = False, title = Nothing
+                            , titleStack = [] } ] } ] } ] }
+
 spec :: Spec
 spec = do
     describe "set-option -p" $
@@ -131,6 +209,20 @@ spec = do
                 run st ["kill-pane", "-a", "-t", b] `shouldReturn` []
                 paneIds st "S:0" `shouldReturn` [b]
 
+    describe "kill-session" $
+        it "SIGKILLs a SIGHUP-ignoring pane linked twice into the session" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "a", "sleep 30"] `shouldReturn` []
+                run st ["new-window", "-d", "-t", "a:1", "trap '' HUP; exec sleep 300"]
+                    `shouldReturn` []
+                run st ["link-window", "-d", "-s", "a:1", "-t", "a:5"] `shouldReturn` []
+                [s] <- paneIds st "a:1"
+                stubborn <- paneNamed st s
+                run st ["kill-session", "-t", "a"] `shouldReturn` []
+                sessionNames st `shouldReturn` []
+                reaped <- timeout 5_000_000 (Pty.waitExit stubborn.pty)
+                reaped `shouldBe` Just (Just (Pty.Terminated 9 False))
+
     describe "server formats" $ do
         it "#{version} is hat's package version" $
             withServer $ \st ->
@@ -143,7 +235,7 @@ spec = do
                 run st ["display-message", "-p", "#{pid}"]
                     `shouldReturn` [ROutput (T.pack (show pid))]
 
-    describe "new-session" $
+    describe "new-session" $ do
         it "execs a command of several words as its argv, which the start formats quote" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "Q", "--", "sh", "-c", "sleep 30", "it's", "a b"]
@@ -152,6 +244,14 @@ spec = do
                     `shouldReturn` [ROutput "'sh' '-c' 'sleep 30' 'it'\\''s' 'a b'"]
                 run st ["display-message", "-p", "-t", "Q:0.0", "#{pane_start_command}"]
                     `shouldReturn` [ROutput "sh -c \"sleep 30\" \"it's\" \"a b\""]
+        it "-A without a target attaches a new client where a bare attach would" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "first", "sleep 30"] `shouldReturn` []
+                run st ["new-session", "-d", "-s", "second", "sleep 30"] `shouldReturn` []
+                first : _ <- Map.elems <$> readTVarIO st.sessions
+                client <- addClient st (SessionId 99) Size { rows = 24, cols = 80 } 1
+                runArgv st (Just client) ["new-session", "-A"] `shouldReturn` []
+                readTVarIO client.session `shouldReturn` first.id
 
     describe "display-message" $ do
         it "with no target, expands in the most recently active session" $
@@ -210,18 +310,47 @@ spec = do
                 run st ["display-message", "-p", "-t", "S:9", "#{window_name}"]
                     `shouldReturn` [ROutput "S:.#(ok)"]
 
-    describe "pipe-pane" $
+    describe "pipe-pane" $ do
         it "pipes the pane a full -t target names, not the current one" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
                 run st ["new-window", "-d", "-t", "S:9", "cat"] `shouldReturn` []
                 run st ["pipe-pane", "-I", "-t", "S:9.0", "echo pasted-here"]
                     `shouldReturn` []
-                let shown = do
-                        out <- run st ["capture-pane", "-p", "-t", "S:9.0"]
-                        pure (any (\r -> case r of ROutput t -> "pasted-here" `T.isInfixOf` t; _ -> False) out)
-                landed <- timeout 5_000_000 (untilM shown)
+                landed <- timeout 5_000_000 (untilM (screenShows st "S:9.0" "pasted-here"))
                 landed `shouldBe` Just ()
+        it "tees the pane's output to its command until stopped, which reaps the command" $
+            withServer $ \st -> withTmpDir $ \dir -> do
+                run st ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                [p] <- paneIds st "S:0"
+                let logPath = dir </> "pane.log"
+                    pidPath = dir </> "pipe.pid"
+                run st ["pipe-pane", "-t", p, T.pack ("echo $$ > " <> pidPath <> "; cat >> " <> logPath)]
+                    `shouldReturn` []
+                run st ["send-keys", "-t", p, "PIPEPANEMARKER", "Enter"] `shouldReturn` []
+                _ <- awaitFile logPath (B8.isInfixOf "PIPEPANEMARKER")
+                Just (pid, _) <- B8.readInt <$> awaitFile pidPath (not . B8.null)
+                run st ["pipe-pane", "-t", p] `shouldReturn` []
+                reaped <- timeout 5_000_000 (untilM (not <$> pidAlive pid))
+                reaped `shouldBe` Just ()
+                -- The tap feeds the pipe before the emulator, so once the line
+                -- is on screen a still-live pipe would already have logged it.
+                run st ["send-keys", "-t", p, "AFTERSTOPMARKER", "Enter"] `shouldReturn` []
+                echoed <- timeout 5_000_000 (untilM (screenShows st p "AFTERSTOPMARKER"))
+                echoed `shouldBe` Just ()
+                B8.readFile logPath >>= (`shouldNotSatisfy` B8.isInfixOf "AFTERSTOPMARKER")
+        it "reaps the pipe's command when the pane is killed" $
+            withServer $ \st -> withTmpDir $ \dir -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                [p] <- paneIds st "S:0"
+                let pidPath = dir </> "pipe.pid"
+                run st ["pipe-pane", "-t", p, T.pack ("echo $$ > " <> pidPath <> "; cat > /dev/null")]
+                    `shouldReturn` []
+                Just (pid, _) <- B8.readInt <$> awaitFile pidPath (not . B8.null)
+                pidAlive pid `shouldReturn` True
+                run st ["kill-pane", "-t", p] `shouldReturn` []
+                reaped <- timeout 5_000_000 (untilM (not <$> pidAlive pid))
+                reaped `shouldBe` Just ()
 
     describe "floating panes" $ do
         let fmt st tgt f = do
@@ -508,7 +637,7 @@ spec = do
                     untilM ((> stamp) <$> readTVarIO w0.activityAt)
                 routed `shouldBe` Just ()
 
-    describe "break-pane" $
+    describe "break-pane" $ do
         it "moves the pane to a new window, printing where it went" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
@@ -518,3 +647,148 @@ spec = do
                         "-n", "out", "-s", b, "-t", "S:"]
                     `shouldReturn` [ROutput ("1:" <> b)]
                 windowIndices st "S" `shouldReturn` [0, 1]
+        it "numbers the new window from base-index (a4)" $
+            withServer $ \st -> do
+                run st ["set", "-g", "base-index", "1"] `shouldReturn` []
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:1", "sleep 30"] `shouldReturn` []
+                [_, b] <- paneIds st "S:1"
+                run st ["break-pane", "-d", "-s", b, "-t", "S:"] `shouldReturn` []
+                windowIndices st "S" `shouldReturn` [1, 2]
+        it "a broken-out pane whose program then exits closes its new window, not its old one" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["split-window", "-d", "-t", "S:0", "read line"] `shouldReturn` []
+                [a, b] <- paneIds st "S:0"
+                run st ["break-pane", "-d", "-s", b, "-t", "S:"] `shouldReturn` []
+                windowIndices st "S" `shouldReturn` [0, 1]
+                run st ["send-keys", "-t", b, "Enter"] `shouldReturn` []
+                closed <- timeout 5_000_000 (untilM ((== [0]) <$> windowIndices st "S"))
+                closed `shouldBe` Just ()
+                paneIds st "S:0" `shouldReturn` [a]
+
+    describe "a zoom" $
+        it "shrinks the formerly-zoomed pane's pty back on select-pane away" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "-x", "80", "-y", "24", "sleep 30"]
+                    `shouldReturn` []
+                run st ["split-window", "-h", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                [_, b] <- paneIds st "S:0"
+                right <- paneNamed st b
+                let ptySize = do
+                        _ <- reconcileThrough st =<< readTVarIO st.dirty
+                        Pty.getWinsize (Pty.masterFd right.pty)
+                narrow <- ptySize
+                narrow.cols `shouldSatisfy` (< 80)
+                run st ["resize-pane", "-Z", "-t", b] `shouldReturn` []
+                ptySize `shouldReturn` Size { rows = 24, cols = 80 }
+                run st ["select-pane", "-L"] `shouldReturn` []
+                run st ["select-pane", "-R"] `shouldReturn` []
+                ptySize `shouldReturn` narrow
+
+    describe "remain-on-exit" $ do
+        it "on keeps a dead pane, telling how its program ended" $
+            withServer $ \st -> do
+                run st ["set", "-g", "remain-on-exit", "on"] `shouldReturn` []
+                run st ["new-session", "-d", "-s", "S", "-x", "60", "-y", "5", "echo DEADBEACON; exit 3"]
+                    `shouldReturn` []
+                died <- timeout 5_000_000 $ untilM $ (== [ROutput "1 3"])
+                    <$> run st ["display", "-p", "-t", "S:0.0", "#{pane_dead} #{pane_dead_status}"]
+                died `shouldBe` Just ()
+                screen <- outputs <$> run st ["capture-pane", "-p", "-t", "S:0.0", "-S", "-"]
+                screen `shouldSatisfy` any (T.isInfixOf "DEADBEACON")
+                screen `shouldSatisfy` any (T.isInfixOf "Pane is dead (status 3, ")
+        it "failed keeps only a pane whose program failed" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["set", "-g", "remain-on-exit", "failed"] `shouldReturn` []
+                run st ["new-window", "-d", "-t", "S:", "true"] `shouldReturn` []
+                run st ["new-window", "-d", "-t", "S:", "exit 1"] `shouldReturn` []
+                settled <- timeout 5_000_000 $ untilM $ (== ["0 ", "1 1"]) . List.sort . outputs
+                    <$> run st ["list-panes", "-a", "-F", "#{pane_dead} #{pane_dead_status}"]
+                settled `shouldBe` Just ()
+        it "key closes a dead pane on the next key typed into it" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["set", "-g", "remain-on-exit", "key"] `shouldReturn` []
+                run st ["split-window", "-t", "S:0", "true"] `shouldReturn` []
+                [a, b] <- paneIds st "S:0"
+                died <- timeout 5_000_000 $ untilM $ (== [ROutput "1"])
+                    <$> run st ["display", "-p", "-t", b, "#{pane_dead}"]
+                died `shouldBe` Just ()
+                [sess] <- Map.elems <$> readTVarIO st.sessions
+                client <- addClient st sess.id Size { rows = 24, cols = 80 } 1
+                handleInput dispatch st client "x"
+                paneIds st "S:0" `shouldReturn` [a]
+
+    describe "respawn-pane" $ do
+        it "reruns a dead pane's command" $
+            withServer $ \st -> withTmpDir $ \dir -> do
+                let runs = dir </> "runs"
+                    dead = (== [ROutput "1 3"]) <$> run st
+                        ["display", "-p", "-t", "S:0.0", "#{pane_dead} #{pane_dead_status}"]
+                run st ["set", "-g", "remain-on-exit", "on"] `shouldReturn` []
+                run st ["new-session", "-d", "-s", "S", T.pack ("echo run >> " <> runs <> "; exit 3")]
+                    `shouldReturn` []
+                died <- timeout 5_000_000 (untilM dead)
+                died `shouldBe` Just ()
+                run st ["respawn-pane", "-t", "S:0.0"] `shouldReturn` []
+                _ <- awaitFile runs ((== 2) . length . B8.lines)
+                rerun <- timeout 5_000_000 (untilM dead)
+                rerun `shouldBe` Just ()
+        it "needs -k to replace a live pane, as respawn-window does a live window" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                [p] <- paneIds st "S:0"
+                live <- paneNamed st p
+                run st ["respawn-pane", "-t", p, "true"]
+                    `shouldReturn` [RErr "respawn pane failed: pane S:0.0 still active"]
+                run st ["respawn-pane", "-k", "-t", p, "sleep 40"] `shouldReturn` []
+                replaced <- timeout 5_000_000 (Pty.waitExit live.pty)
+                replaced `shouldSatisfy` isJust
+                run st ["display", "-p", "-t", p, "#{pane_dead}"] `shouldReturn` [ROutput "0"]
+                run st ["split-window", "-d", "-t", "S:0", "sleep 30"] `shouldReturn` []
+                others <- mapM (paneNamed st) =<< paneIds st "S:0"
+                run st ["respawn-window", "-t", "S:0", "true"]
+                    `shouldReturn` [RErr "respawn window failed: window S:0 still active"]
+                run st ["respawn-window", "-k", "-t", "S:0", "sleep 40"] `shouldReturn` []
+                run st ["display", "-p", "-t", "S:0", "#{window_panes}"] `shouldReturn` [ROutput "1"]
+                forM_ others $ \o -> timeout 5_000_000 (Pty.waitExit o.pty) >>= (`shouldSatisfy` isJust)
+
+    describe "the editor option" $
+        it "runs its program on a buffer chosen in choose-buffer, keeping what it saves" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["set", "-g", "editor", "sh -c 'printf edited > \"$1\"' edit"]
+                    `shouldReturn` []
+                run st ["set-buffer", "-b", "b1", "old"] `shouldReturn` []
+                [sess] <- Map.elems <$> readTVarIO st.sessions
+                client <- addClient st sess.id Size { rows = 24, cols = 80 } 1
+                runArgv st (Just client) ["choose-buffer"] `shouldReturn` []
+                handleInput dispatch st client "e"
+                edited <- timeout 5_000_000 $ untilM $
+                    (== [ROutput "edited"]) <$> run st ["show-buffer", "-b", "b1"]
+                edited `shouldBe` Just ()
+
+    describe "a saved tree" $ do
+        it "is restored at its captured area, not the default size (4b)" $
+            withServer $ \st -> do
+                restoreSnapshot st (seedSnapshot "stale")
+                run st ["list-panes", "-a", "-F", "#{pane_width}x#{pane_height}"]
+                    `shouldReturn` [ROutput "100x30"]
+        it "is archived as a generation list-snapshots lists when a restart restores it (bb)" $
+            withTmpDir $ \dir -> withServerStore (Just (dir </> "store.db")) $ \st -> do
+                withStore (dir </> "store.db") (\c -> saveSnapshot c (seedSnapshot "stale"))
+                restoreSaved st (dir </> "store.db")
+                sessionNames st `shouldReturn` ["stale"]
+                listed <- outputs <$> run st ["list-snapshots"]
+                listed `shouldSatisfy` \case
+                    [l] -> "1: " `T.isPrefixOf` l && "(1 sessions, 1 windows)" `T.isSuffixOf` l
+                    _ -> False
+        it "comes back from restore-snapshot beside the live tree, under a free name (bb)" $
+            withTmpDir $ \dir -> withServerStore (Just (dir </> "store.db")) $ \st -> do
+                withStore (dir </> "store.db") (\c -> saveSnapshot c (seedSnapshot "stale"))
+                restoreSaved st (dir </> "store.db")
+                run st ["restore-snapshot", "1"]
+                    `shouldReturn` [ROutput "restored session 'stale' as 'stale-2'"]
+                sessionNames st `shouldReturn` ["stale", "stale-2"]

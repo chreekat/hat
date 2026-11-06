@@ -617,9 +617,6 @@ spec = parallel $ do
         gone <- pollServerExited h 5000
         unless gone $
             expectationFailure "server did not exit after kill-server"
-    it "kill-session SIGKILLs a SIGHUP-ignoring pane linked twice into it" $
-        withHat hatBin $ \h -> killsLinkedStubborn h "a:5" ["kill-session", "-t", "a"]
-
     -- A command issued once kill-server returns must reach a fresh server,
     -- even while the killed one is still draining a SIGHUP-ignoring pane.
     it "a command after kill-server starts a fresh server, not the draining one" $
@@ -688,20 +685,6 @@ spec = parallel $ do
         awaitTrue "the editor's text to become the value" $
             (== "edited\n") <$> ctlOut h ["show", "-sv", "@cm"]
 
-    it "edits a buffer from choose-buffer in the editor option's program" $
-        withHat hatBin $ \h -> do
-        let editor = h.home <> "/editor.sh"
-        writeExecutable editor "#!/bin/sh\nprintf edited > \"$1\"\n"
-        c <- startClient h
-        awaitScreen c "$"
-        _ <- hatCtl h ["set", "-g", "editor", editor]
-        _ <- hatCtl h ["set-buffer", "-b", "b1", "old"]
-        _ <- hatCtl h ["choose-buffer"]
-        awaitScreen c "b1"
-        typeInto c "e"
-        awaitTrue "the buffer to hold what the editor saved" $
-            (== "edited") <$> ctlOut h ["show-buffer", "-b", "b1"]
-
     -- A client the farewell sends away closes its popup on its way out,
     -- inside the window the linger holds open before the exec; a command
     -- deaf to that hangup must still not outlive the old image unreaped.
@@ -765,7 +748,7 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
-    it "restores the saved tree at its captured area, and forgets it when the last window exits (4b)" $
+    it "forgets a restored tree once its last window exits" $
         withHatPersist hatBin $ \h -> do
         -- Seed a saved tree so the autostarted server restores it.
         let lay = emitLayout (fitLayout (Size { rows = 30, cols = 100 }) (singlePane (PaneId 0)))
@@ -785,13 +768,6 @@ spec = parallel $ do
                             ] } ] }
         createDirectoryIfMissing True (takeDirectory (storeOf h))
         Persist.withStore (storeOf h) $ \c -> Persist.saveSnapshot c snap
-
-        -- 4b: the tree comes back at its captured area, not 24x80. start-server
-        -- only returns once startup (including the restore) has landed, and
-        -- no client has attached yet to resize it.
-        _ <- hatCtl h ["start-server"]
-        ctlOut h ["list-panes", "-a", "-F", "#{pane_width}x#{pane_height}"]
-            `shouldReturn` "100x30\n"
 
         c1 <- startClient h
         awaitScreen c1 "$"
@@ -860,59 +836,6 @@ spec = parallel $ do
         awaitForeground h "sh"
         typeInto c2 "echo dropped-to-$((3*7))\r"
         awaitScreen c2 "dropped-to-21"
-
-    it "notifies a formerly-zoomed pane's child that it shrank on select-pane away" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-
-        -- Split side by side; the new active (right) pane is 39 cols wide.
-        typeInto c1 "\x02%"
-        awaitScreen c1 "\x2502"  -- │
-
-        -- Zoom the active pane: its child now sees the full 80 cols. Zoom via
-        -- the control path (not the \x02z keystroke) so the command returns
-        -- only after the pty resize is reconciled; an interactive keystroke is
-        -- fire-and-forget, so a following 'stty size' could read the pre-zoom
-        -- 39 before SIGWINCH lands.
-        _ <- ctlOut h ["resize-pane", "-Z"]
-        typeInto c1 "stty size\r"
-        awaitScreen c1 "23 80"
-
-        -- Move away, cancelling the zoom, then back to the formerly-zoomed
-        -- pane. Its child must have been told it shrank back to 39 cols
-        -- (TIOCSWINSZ -> SIGWINCH); without that it still believes it is 80.
-        _ <- ctlOut h ["select-pane", "-L"]   -- to the left pane, unzoom
-        awaitScreen c1 "\x2502"
-        _ <- ctlOut h ["select-pane", "-R"]   -- back to the ex-zoomed pane
-        typeInto c1 "stty size\r"
-        awaitScreen c1 "23 39"
-
-    -- Bug a4: break-pane numbered the new window from 0, ignoring base-index.
-    -- With base-index 1 the origin window is 1, so the broken-out pane must
-    -- land at the next free index (2), exactly like new-window would.
-    -- Bug: a pane's reader captures the window it was spawned in, but
-    -- break-pane re-parents the live pane. When its program then exits, the
-    -- reader must reap it from its CURRENT window (2), not the split it came
-    -- from (1) — otherwise the broken-out window lingers with a dead pane.
-    it "break-pane numbers the new window from base-index, which closes when its program exits (a4)" $
-        withHat hatBin $ \h -> do
-        let confPath = h.home <> "/hat.conf"
-        writeFile confPath "set -g base-index 1\n"
-        c1 <- startClientArgs h ["-f", confPath]
-        awaitScreen c1 "1:sh*"
-        typeInto c1 "\x02%"                 -- split -h; new pane active
-        awaitScreen c1 "\x2502"
-        _ <- ctlOut h ["break-pane"]        -- move it into window 2 (now current)
-        out <- ctlOut h ["list-windows", "-F", "#{window_index}"]
-        List.sort (filter (not . null) (lines out)) `shouldBe` ["1", "2"]
-        awaitScreen c1 "2:sh*"
-        typeInto c1 "exit\r"                 -- end the broken-out pane's shell
-        awaitWith "window 2 collapsed, back on window 1" (\d -> do
-            t <- screenText d
-            -- Match the window-2 label ("2:sh"), not a bare "2:", so the
-            -- status-bar clock (e.g. 12:52) can't spoof the "still there" check.
-            pure (not ("2:sh" `T.isInfixOf` t) && "1:sh*" `T.isInfixOf` t)) c1
 
     -- See Note [Captured links].
     it "save -> kill-server -> restart -> restore rebuilds the window tree, its links and groups shared" $
@@ -1040,43 +963,6 @@ spec = parallel $ do
         typeInto c1 "echo STILLALIVE\r"
         awaitScreen c1 "STILLALIVE"
 
-    -- Pins the structural reap: the pipe-pane child is owned as a scoped
-    -- sub-resource, so stopping the pipe — and, on the teardown path, killing
-    -- the pane out from under it — reaps the child rather than orphaning it.
-    it "pipe-pane tees pane output to a command until stopped, reaping it on stop and on pane kill" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        let readPid path =
-                read . takeWhile (/= '\n') <$> awaitFile path (not . null)
-            logPath = h.home <> "/pane.log"
-            pidPath1 = h.home <> "/pipe1.pid"
-        _ <- ctlOut h ["pipe-pane", "echo $$ > " <> pidPath1 <> "; cat >> " <> logPath]
-        pid1 <- readPid pidPath1
-        typeInto c1 "echo PIPEPANEMARKER\r"
-        awaitScreen c1 "PIPEPANEMARKER"
-        _ <- awaitFile logPath (List.isInfixOf "PIPEPANEMARKER")
-
-        -- Stop path: no-arg pipe-pane cancels the supervisor, reaping the
-        -- child, and later output is not captured. The pane taps output to
-        -- the pipe BEFORE the emulator renders it, so once AFTERSTOPMARKER is
-        -- on screen, a still-live pipe would already have written it — its
-        -- absence is thus decidable now.
-        _ <- ctlOut h ["pipe-pane"]
-        awaitReaped pid1
-        typeInto c1 "echo AFTERSTOPMARKER\r"
-        awaitScreen c1 "AFTERSTOPMARKER"
-        readFile logPath >>= (`shouldNotSatisfy` List.isInfixOf "AFTERSTOPMARKER")
-
-        -- Teardown path: killing the pane runs reapPane -> stopPipe, so a live
-        -- pipe child is reaped as the pane dies, not left orphaned.
-        let pidPath2 = h.home <> "/pipe2.pid"
-        _ <- ctlOut h ["pipe-pane", "echo $$ > " <> pidPath2 <> "; cat > /dev/null"]
-        pid2 <- readPid pidPath2
-        pidAlive pid2 `shouldReturn` True
-        _ <- ctlOut h ["kill-pane"]
-        awaitReaped pid2
-
     it "a command list holding a new-session autostarts the server" $
         withHat hatBin $ \h -> do
         (code, _, err) <- hatCtl h
@@ -1084,14 +970,12 @@ spec = parallel $ do
         (code, err) `shouldBe` (ExitSuccess, "")
         ctlOut h ["show", "-gv", "@early"] `shouldReturn` "yes\n"
 
-    it "a bare hat runs default-client-command; new-session -A attaches where a bare attach would" $
+    it "a bare hat runs default-client-command" $
         withHat hatBin $ \h -> do
         _ <- hatCtl h ["new-session", "-d", "-s", "first"]
         _ <- hatCtl h ["new-session", "-d", "-s", "second"]
         _ <- hatCtl h ["set", "-g", "default-client-command", "list-sessions -F '#S'"]
         hatCtl h [] `shouldReturn` (ExitSuccess, "first\nsecond\n", "")
-        c <- startClientArgs h ["new-session", "-A"]
-        awaitScreen c "[first]"
 
     it "a bare hat that starts the server runs its config's default-client-command" $
         withHat hatBin $ \h -> do
@@ -1099,65 +983,6 @@ spec = parallel $ do
         writeFile confPath "set -g default-client-command 'new-session -s fromconf'\n"
         c <- startClientArgs h ["-f", confPath]
         awaitScreen c "[fromconf]"
-
-    it "remain-on-exit failed drops a pane whose program succeeded" $
-        withHat hatBin $ \h -> do
-        _ <- hatCtl h
-            [ "set", "-g", "remain-on-exit", "failed", ";", "new", "-d", ";"
-            , "new-window", "-d", "true", ";", "new-window", "-d", "exit 1" ]
-        -- By status, not window index: once true's window closes, the
-        -- next new-window may reuse its index.
-        awaitTrue "only the failed pane to remain" $
-            (== ["0 ", "1 1"]) . List.sort . lines <$> ctlOut h
-                ["list-panes", "-a", "-F", "#{pane_dead} #{pane_dead_status}"]
-
-    it "remain-on-exit keeps a dead pane with its status, respawn-pane reruns it, and a live respawn needs -k" $
-        withHat hatBin $ \h -> do
-        let runs = h.home <> "/runs"
-        _ <- hatCtl h
-            [ "set", "-g", "remain-on-exit", "on", ";"
-            , "new", "-d", "-x", "60", "-y", "5"
-            , "echo run >> " <> runs <> "; echo DEADBEACON; exit 3" ]
-        let dead = ctlOut h ["display", "-p", "#{pane_dead}"]
-        awaitTrue "the pane to die" $
-            (== "1 3\n") <$> ctlOut h
-                ["display", "-p", "#{pane_dead} #{pane_dead_status}"]
-        screen <- ctlOut h ["capture-pane", "-p", "-S", "-"]
-        screen `shouldSatisfy` List.isInfixOf "DEADBEACON"
-        screen `shouldSatisfy` List.isInfixOf "Pane is dead (status 3, "
-        _ <- hatCtl h ["respawn-pane"]
-        _ <- awaitFile runs ((== 2) . length . lines)
-        awaitTrue "the rerun to die" ((== "1\n") <$> dead)
-
-        _ <- hatCtl h ["respawn-pane", "sleep 100"]
-        dead `shouldReturn` "0\n"
-        pid <- read <$> ctlOut h ["display", "-p", "#{pane_pid}"]
-        (_, _, err) <- hatCtl h ["respawn-pane", "true"]
-        err `shouldBe` "respawn pane failed: pane 0:0.0 still active\n"
-        _ <- hatCtl h ["respawn-pane", "-k", "sleep 200"]
-        awaitReaped pid
-        dead `shouldReturn` "0\n"
-
-        -- respawn-window -k reduces the window to one respawned pane.
-        _ <- hatCtl h ["split-window", "-d"]
-        ctlOut h ["display", "-p", "#{window_panes}"] `shouldReturn` "2\n"
-        (_, _, werr) <- hatCtl h ["respawn-window", "true"]
-        werr `shouldBe` "respawn window failed: window 0:0 still active\n"
-        let ran = h.home <> "/ran"
-        _ <- hatCtl h ["respawn-window", "-k", "echo yes > " <> ran <> "; sleep 300"]
-        ctlOut h ["display", "-p", "#{window_panes}"] `shouldReturn` "1\n"
-        awaitFile ran (== "yes\n") `shouldReturn` "yes\n"
-
-    it "remain-on-exit key closes a dead pane on the next key" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        _ <- hatCtl h ["set", "-g", "remain-on-exit", "key"]
-        typeInto c "exit\r"
-        awaitScreen c "Pane is dead"
-        typeInto c "x"
-        _ <- awaitExit c
-        pure ()
 
     -- The autostart barrier (upstream if-shell-TERM.sh): the client that
     -- spawned the server must wait out the config before its new-session
