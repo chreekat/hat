@@ -4,10 +4,11 @@ import Control.Concurrent (threadWaitRead)
 import Control.Concurrent.Async (async, asyncThreadId, poll, wait)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
-import Control.Exception (bracket)
-import Control.Monad (unless, when)
+import Control.Exception (IOException, bracket, catch, finally)
+import Control.Monad (forM_, unless, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
+import Data.Char (isDigit)
 import Data.Maybe (isJust)
 import Data.Text qualified as T
 import GHC.Conc (BlockReason (BlockedOnSTM), ThreadStatus (ThreadBlocked), threadStatus)
@@ -19,10 +20,15 @@ import GHC.IO.Buffer (newByteBuffer)
 import GHC.IO.BufferedIO (BufferedIO (..), writeBuf, writeBufNonBlocking)
 import GHC.IO.Device (IODevice (..), IODeviceType (Stream), RawIO (..))
 import GHC.IO.Handle (mkFileHandle, noNewlineTranslation)
+import System.Directory (doesFileExist, removePathForcibly)
 import System.Environment (getEnv)
+import System.FilePath ((</>))
 import System.IO (Handle, IOMode (WriteMode))
+import System.Posix.Signals (sigKILL, signalProcess)
+import System.Posix.Temp (mkdtemp)
 import System.Timeout (timeout)
 import Test.Hspec
+import Text.Read (readMaybe)
 
 import Hat.Geometry
 import Hat.Log (newLogger)
@@ -31,7 +37,7 @@ import Hat.Server.Pane
     (hangupPane, newWindowWithPane, pauseReaders, startPaneReader, syncPanes)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified as Pty
-import Hat.TestSupport (awaitTrue)
+import Hat.TestSupport (awaitTrue, bashPath)
 
 -- | A pipe-pane sink whose writes report their bytes to 'seen', then block
 -- until 'hold' is filled.
@@ -148,3 +154,33 @@ spec = describe "pane reader" $ do
         wait syncer
         fed <- screenHas echoed pane.emulator
         unless fed $ expectationFailure "sync returned before the pending output was fed"
+
+    -- e7: a child left holding the pty slave keeps the master from EOF;
+    -- the pane must still end when its shell exits.
+    it "ends the pane on its shell's exit while a child still holds the pty (e7)" $
+        bracket (mkdtemp "/tmp/hat-panereaderspec-") removePathForcibly $ \dir -> do
+        lg <- newLogger "/dev/null"
+        st <- newServerState Map.empty lg "/tmp/hat-panereaderspec.sock" Nothing
+        path <- getEnv "PATH"
+        bash <- bashPath
+        let sid = SessionId 0
+            pidFile = dir </> "lingerer.pid"
+            -- Under job control the backgrounded sleep gets its own process
+            -- group, as an interactive shell's jobs do, so the hangup the
+            -- shell's exit sends its foreground group leaves it holding the
+            -- pane's pty as its stdio.
+            lingerer = "set -m; sleep 600 & echo $! > " <> T.pack pidFile <> "; exit"
+        (win, pane) <- newWindowWithPane st sid bash (ShellCommand lingerer)
+            ProgramPane "/" [("PATH", T.pack path)] Size { rows = 24, cols = 80 } Nothing
+        flip finally (hangupPane pane >> killLingerer pidFile) $ do
+            startPaneReader st sid win pane
+            awaitTrue "the pane reader to end" ((== 0) <$> readTVarIO st.livePanes)
+
+-- | Kill the process whose pid a test's child recorded in @pidFile@, if any.
+killLingerer :: FilePath -> IO ()
+killLingerer pidFile = do
+    recorded <- doesFileExist pidFile
+    when recorded $ do
+        mpid <- readMaybe . takeWhile isDigit <$> readFile pidFile
+        forM_ mpid $ \pid -> signalProcess sigKILL pid
+            `catch` \(_ :: IOException) -> pure ()  -- already gone
