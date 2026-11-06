@@ -20,7 +20,7 @@ import Data.Text qualified as T
 import System.Timeout (timeout)
 import Data.Map.Strict qualified as Map
 import Network.Socket
-    ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol
+    ( Family (AF_UNIX), Socket, SocketType (Stream), close, defaultProtocol
     , socketPair, touchSocket )
 import System.Mem (performGC)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
@@ -36,7 +36,7 @@ import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 
 import Hat.Geometry (Pos (..), Size (..))
-import Hat.Log (newLogger)
+import Hat.Log (closeLogger, newLogger)
 import Hat.Client (TerminalMode (..), nestsOwnServer, terminalMode)
 import Hat.Model
 import Hat.Model.Options
@@ -61,7 +61,7 @@ import Hat.Server
 import Hat.Server.Command.Layout (cmdBreakPane, cmdJoinPane)
 import Hat.Server.ClientSession
     ( DetachOnDestroy (..), SessionChoice (..), destroyDestination )
-import Hat.Server.Conn (clientResized, handleInput, removeClient)
+import Hat.Server.Conn (acceptLoop, clientResized, handleInput, removeClient)
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
 import Hat.Server.Command.CopyMode (runCopyModeCommand)
@@ -85,6 +85,7 @@ import Hat.Server.Keys
     ( EscPending (NoEscPending), ExtendedFormat (..), ExtendedKeys (..), Key (..)
     , KeyEncoding (..), initialKeyState )
 import Hat.Server.Keymap (defaultKeymap)
+import Hat.Transport.Socket (connectTo, listenOn)
 import Hat.Transport.Wire
     ( ArgvBytes (..), Autostart (..), ClientToServer (..), Hello (..), Inbound (..), Intent (..)
     , ServerToClient (..), newReadEnd, protocolVersion, recvMessage
@@ -2714,6 +2715,28 @@ spec = do
                 [_, PaneId new] <- map (.id) <$> realPanes st
                 runArgv st Nothing ["show", "-gv", "@cur"]
                     `shouldReturn` [ROutput (T.pack ('%' : show new))]
+
+    describe "acceptLoop" $
+        it "logs a connection closed before its hello as such, not as a crash" $ do
+            dir <- mkdtemp "/tmp/hat-sessionspec-"
+            flip finally (removeDirectoryRecursive dir) $ do
+                let logPath = dir <> "/server.log"
+                    sockPath = dir <> "/socket"
+                lg <- newLogger logPath
+                st <- newServerState Map.empty lg sockPath Nothing
+                lsock <- listenOn sockPath
+                flip finally (close lsock) $ withAsync (acceptLoop dispatch st lsock) $ \_ -> do
+                    Right conn <- connectTo sockPath
+                    close conn
+                    -- The handler counts itself out only after logging.
+                    timeout 5_000_000 (atomically (readTVar st.served >>= check))
+                        `shouldReturn` Just ()
+                    timeout 5_000_000 (atomically (readTVar st.activeConns >>= check . (== 0)))
+                        `shouldReturn` Just ()
+                closeLogger lg
+                logged <- B8.lines <$> B.readFile logPath
+                filter (B8.isInfixOf "ServerCrash") logged `shouldBe` []
+                filter (B8.isInfixOf "ClosedBeforeHello") logged `shouldSatisfy` (not . null)
 
 -- | Write an executable shell script from a child process, so no fork of this
 -- (parallel) test process can hold its write fd across the script's exec.
