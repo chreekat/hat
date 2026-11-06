@@ -1,10 +1,15 @@
--- | The client render seam, driven over a real socketpair: a shrunk client
--- must be fully repainted (regression guard, bug 97).
+-- | The client render seam, driven over a real socketpair: what 'renderOnce'
+-- sends must take the client's screen to the server's view of its session —
+-- after a shrink (regression guard, bug 97) and for several clients on one
+-- pane.
 module Hat.Server.ResizeRenderSpec (spec) where
 
-import Control.Concurrent.STM (newTVarIO)
+import Control.Concurrent.STM (atomically, newTVarIO, readTVarIO, writeTVar)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as B
 import Data.IORef (newIORef)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Network.Socket
@@ -16,11 +21,15 @@ import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model hiding (Toast (..))
 import Hat.Server.ClientIO (withClientWriter)
+import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
-import Hat.Server.Render (Frame)
+import Hat.Server.Render (Frame, blankFrame)
 import Hat.Server.View (renderOnce)
 import Hat.Term.Cell
+import Hat.Term.Emulator qualified as Emu
+import Hat.Term.Pty qualified as Pty
+import Hat.TestSupport (awaitTrue, realPanes, withServer)
 import Hat.Transport.Wire
     (Autostart (..), DrawOp (..), Inbound (..), ServerToClient (..)
     , ReadEnd (..), newReadEnd, protocolVersion, recvMessage)
@@ -104,15 +113,52 @@ applyOps = foldl apply
                         , let c = pos.col + i, c < V.length row ]
                 in frame V.// [(pos.row, row V.// updates)]
 
+-- The next frame's ops; none within the deadline means no frame was sent.
 drawOps :: ReadEnd -> IO [DrawOp]
-drawOps peer = do
-    r <- timeout 250_000 (recvMessage peer)
-    pure $ case r of
-        Just (Just (Known (Draw ops))) -> ops
-        _ -> []
+drawOps peer = fromMaybe [] <$> timeout 1_000_000 go
+  where
+    go = recvMessage peer >>= \case
+        Just (Known (Draw ops)) -> pure ops
+        Just _ -> go
+        Nothing -> pure []
+
+-- Each row's text, as a terminal shows the frame.
+frameText :: Frame -> [T.Text]
+frameText = map (T.pack . map baseChar . V.toList) . V.toList
+
+-- Render to the client once and show the result on a screen that held
+-- @onScreen@.
+paint :: ServerState -> Client -> ReadEnd -> Frame -> IO Frame
+paint st client peer onScreen = do
+    withClientWriter client (renderOnce st client)
+    applyOps onScreen <$> drawOps peer
+
+-- A client of the test server's one session, viewing it at @sz@ with
+-- nothing yet on its screen.
+viewer :: ServerState -> Size -> IO (Client, ReadEnd)
+viewer st sz = do
+    [sid] <- Map.keys <$> readTVarIO st.sessions
+    (client, peer) <- mkClient sz V.empty
+    atomically (writeTVar client.session sid)
+    pure (client, peer)
+
+-- The test server's one pane.
+onlyPane :: ServerState -> IO Pane
+onlyPane st = realPanes st >>= \case
+    [pane] -> pure pane
+    panes -> fail ("expected one pane, found " <> show (length panes))
+
+screenHas :: ByteString -> Emu.Emulator -> IO Bool
+screenHas needle emu = any (needle `B.isInfixOf`) . snd <$> Emu.screenPainted emu
+
+-- A session whose one window, sized to a 7-row client, runs @cmd@.
+newSessionRunning :: ServerState -> T.Text -> IO ()
+newSessionRunning st cmd =
+    runArgv st Nothing ["new-session", "-d", "-s", "S", "-x", "40", "-y", "6", cmd]
+        `shouldReturn` []
 
 spec :: Spec
-spec =
+spec = do
     describe "renderOnce after a shrink" $
         it "fully repaints so no stale wide content survives" $ do
         let wide = Size { rows = 6, cols = 40 }
@@ -132,3 +178,46 @@ spec =
         allBlank `shouldBe` True
         close peer.sock
         close client.sock
+
+    describe "renderOnce over a live pane" $ do
+        it "paints one pane to two clients, each at its own size" $
+            withServer $ \st -> do
+            newSessionRunning st "printf SHARED-9; exec sleep 600"
+            pane <- onlyPane st
+            awaitTrue "the pane's output" (screenHas "SHARED-9" pane.emulator)
+            let small = Size { rows = 7, cols = 40 }
+                large = Size { rows = 12, cols = 60 }
+            (c1, p1) <- viewer st small
+            (c2, p2) <- viewer st large
+            f1 <- frameText <$> paint st c1 p1 (blankFrame small)
+            f2 <- frameText <$> paint st c2 p2 (blankFrame large)
+            -- The pane's row tops both screens; the status line sits on each
+            -- client's own bottom row.
+            let edges f = (T.concat (take 1 f), T.concat (drop (length f - 1) f))
+                (top1, bottom1) = edges f1
+                (top2, bottom2) = edges f2
+            top1 `shouldSatisfy` T.isInfixOf "SHARED-9"
+            top2 `shouldSatisfy` T.isInfixOf "SHARED-9"
+            bottom1 `shouldSatisfy` T.isInfixOf "[S]"
+            bottom2 `shouldSatisfy` T.isInfixOf "[S]"
+            (length f1, length f2) `shouldBe` (7, 12)
+            mapM_ close [p1.sock, c1.sock, p2.sock, c2.sock]
+
+        it "carries later output to both clients through each one's own diff" $
+            withServer $ \st -> do
+            newSessionRunning st "cat"
+            pane <- onlyPane st
+            let sz = Size { rows = 7, cols = 40 }
+            (c1, p1) <- viewer st sz
+            (c2, p2) <- viewer st sz
+            Pty.writePty pane.pty "first-7\n"  -- echoed back as pane output
+            awaitTrue "the first line" (screenHas "first-7" pane.emulator)
+            s1 <- paint st c1 p1 (blankFrame sz)
+            s2 <- paint st c2 p2 (blankFrame sz)
+            Pty.writePty pane.pty "second-8\n"
+            awaitTrue "the second line" (screenHas "second-8" pane.emulator)
+            s1' <- frameText <$> paint st c1 p1 s1
+            s2' <- frameText <$> paint st c2 p2 s2
+            s1' `shouldSatisfy` any (T.isInfixOf "second-8")
+            s2' `shouldSatisfy` any (T.isInfixOf "second-8")
+            mapM_ close [p1.sock, c1.sock, p2.sock, c2.sock]

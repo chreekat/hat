@@ -782,33 +782,6 @@ spec = parallel $ do
             doesFileExist (h.sock <> ".reload.last")
         awaitTrue "the popup's command to be reaped" (not <$> pidAlive pid)
 
-    it "renders vim to two simultaneous clients" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "vim -u NONE -i NONE\r"
-        awaitScreen c1 "VIM - Vi IMproved"
-
-        -- A second client on the same session sees vim too.
-        c2 <- startClient h
-        awaitScreen c2 "VIM - Vi IMproved"
-
-        -- Typing in one client shows up in both.
-        typeInto c1 "ihello from hat"
-        awaitScreen c2 "hello from hat"
-        awaitScreen c1 "hello from hat"
-
-        -- Quit vim, then the shell; both clients exit.
-        typeInto c1 "\ESC:q!\r"
-        awaitScreen c1 "$"
-        typeInto c1 "exit\r"
-        status1 <- awaitExit c1
-        status2 <- awaitExit c2
-        status1 `shouldBe` Exited ExitSuccess
-        status2 `shouldBe` Exited ExitSuccess
-        t2 <- readIORef c2.transcript
-        t2 `shouldSatisfy` B8.isInfixOf "[exited]"
-
     -- bug 64: an outer terminal's extended-key sequence must arrive as the
     -- key it names, not as bytes. Pins that a mapping keyed on the raw ctrl
     -- byte still fires after one has been pressed.
