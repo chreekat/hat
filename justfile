@@ -52,5 +52,11 @@ mem_bench lines='20000' reload='no' build='' rts='' keep='no':
     if [ -n '{{rts}}' ]; then args+=(--rts '{{rts}}'); fi
     ./tools/bench/hat_mem "${args[@]}"
 
+# The test suite, built then run: cabal test re-checks every module of an
+# up-to-date suite on each run, which costs more than the suite itself
+test *ARGS:
+    cabal build -v0 hat-test
+    "$(cabal list-bin hat-test)" {{ARGS}}
+
 ghcid:
     ghcid -c 'cabal repl --repl-options=-fno-code --repl-options=-fno-break-on-exception --repl-options=-fno-break-on-error --repl-options=-v1 --repl-options=-ferror-spans --repl-options=-j --enable-multi-repl --enable-tests --enable-benchmarks all' -o errors.err --restart hat.cabal --restart src/Hat/Term/Ghostty.hsc --restart src/Hat/Term/Winsize.hsc

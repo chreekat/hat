@@ -19,7 +19,9 @@ specific to Hat.
   Re-snapshot if `flake.nix`/`flake.lock` change. (A user shell can use
   direnv or an interactive `nix develop`; the snapshot trick is for
   non-persistent shells like an agent's.)
-- `cabal test` runs the unit, property, and integration suites. The
+- `just test` (or `cabal test`) runs the unit, property, and integration
+  suites; `just test` takes hspec arguments (`just test -m Hat.Path`) and
+  skips the seconds `cabal test` spends re-checking an up-to-date suite. The
   integration tests drive the real `hat` binary through a pty, so rebuild
   before trusting a repro. Keep the whole suite fast and green — a flaky test
   is a stop-work emergency, never "pre-existing flakiness."
