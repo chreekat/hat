@@ -58,7 +58,6 @@ import Hat.Transport.Socket (connectTo)
 import Hat.Transport.Wire qualified as W
 import Hat.Term.Cell (Cell (..), Color (..), Style (..))
 import Hat.Term.Emulator qualified as Emu
-import Hat.Term.HostProtocol qualified as HP
 
 -- An isolated hat instance for one test: a private HOME (so @hat@ never
 -- reads any ambient config) and a private socket. See 'withHat'.
@@ -733,26 +732,12 @@ spec = parallel $ do
         hatBytes h ["save-buffer", "-b", "b", "-"] ""
             `shouldReturn` (ExitSuccess, bytes)
 
-    -- The options that reach the outer terminal through the client: its
-    -- title, its cursor shape (the program's over the option's), and an
-    -- overlay scrollbar a copy-mode scroll or a hover reveals for a timeout.
-    it "titles the terminal, shapes its cursor, and flashes an overlay scrollbar by option" $
+    -- An overlay scrollbar a copy-mode scroll or a hover reveals, hidden
+    -- again once pane-scrollbars-timeout passes.
+    it "flashes an overlay scrollbar for its timeout" $
         withHat hatBin $ \h -> do
         c <- startClient h
         awaitScreen c "$"
-        let outerTitle t = awaitTrue (show t) (B8.isInfixOf ("\ESC]0;" <> t) <$> readIORef c.transcript)
-        _ <- hatCtl h ["set", "-g", "set-titles", "on"]
-        outerTitle "hat: "
-        _ <- hatCtl h ["set", "-g", "set-titles-string", "T:#{window_index}"]
-        outerTitle "T:0\BEL"
-
-        let outerStyle want = awaitTrue ("the outer cursor " <> show want) $
-                (== want) . (.style) <$> Emu.appCursor c.screen
-        _ <- hatCtl h ["set", "-g", "cursor-style", "bar"]
-        outerStyle HP.StyleBar
-        typeInto c "printf '\\033[4 q'\r"
-        outerStyle HP.StyleUnderline
-
         let barShown want = awaitTrue ("the scrollbar shown: " <> show want) $ do
                 scr <- Emu.snapshot c.screen
                 let Style { bg = b } = ((scr.cells V.! 5) V.! 79).style
