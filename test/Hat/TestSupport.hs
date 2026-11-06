@@ -1,24 +1,29 @@
 -- Helpers shared by more than one spec.
 module Hat.TestSupport
-    (bashPath, nodeOf, clientTheme, addClient, realPanes, withPanesReaped) where
+    ( bashPath, nodeOf, clientTheme, addClient, realPanes, withPanesReaped
+    , withServer, awaitTrue
+    ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVar)
 import Control.Exception (finally)
-import Control.Monad (forM_)
+import Control.Monad (forM_, unless, when)
 import Data.IORef (newIORef)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (utc, utcToZonedTime)
 import Data.Vector qualified as V
 import Network.Socket (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
 import System.Directory (findExecutable)
 import System.Timeout (timeout)
+import Test.Hspec (expectationFailure)
 
 import Hat.Geometry (Pos (..), Size (..))
+import Hat.Log (newLogger)
 import Hat.Model
 import Hat.Model.Options (Options)
-import Hat.Server.Dispatch (runArgv)
+import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Format (renderFormat)
 import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
 import Hat.Server.Layout (Cell (..), Layout (..), Orientation (..), fitLayout, fixOffsets)
@@ -122,3 +127,22 @@ withPanesReaped st body = body `finally` do
     panes <- realPanes st
     _ <- runArgv st Nothing ["kill-server"]
     forM_ panes $ \p -> timeout 2_000_000 (Pty.waitExit p.pty)
+
+-- | A fresh in-process server for one test, its command table live, its
+-- panes reaped on the way out ('withPanesReaped').
+withServer :: (ServerState -> IO a) -> IO a
+withServer act = do
+    lg <- newLogger "/dev/null"
+    st <- newServerState Map.empty lg "/tmp/hat-testsupport.sock" Nothing
+    installHooks st
+    withPanesReaped st (act st)
+
+-- | Poll until @act@ holds, failing the test past a 10s deadline.
+awaitTrue :: String -> IO Bool -> IO ()
+awaitTrue what act = do
+    r <- timeout 10_000_000 loop
+    when (isNothing r) $ expectationFailure ("timed out awaiting " <> what)
+  where
+    loop = do
+        ok <- act
+        unless ok (threadDelay 1000 >> loop)

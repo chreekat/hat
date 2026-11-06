@@ -1,6 +1,6 @@
 module Hat.Server.PaneReaderSpec (spec) where
 
-import Control.Concurrent (threadDelay, threadWaitRead)
+import Control.Concurrent (threadWaitRead)
 import Control.Concurrent.Async (async, asyncThreadId, poll, wait)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM (atomically, readTVarIO, writeTVar)
@@ -8,7 +8,7 @@ import Control.Exception (bracket)
 import Control.Monad (unless, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isJust)
 import Data.Text qualified as T
 import GHC.Conc (BlockReason (BlockedOnSTM), ThreadStatus (ThreadBlocked), threadStatus)
 import System.Posix.IO.ByteString (fdRead)
@@ -31,6 +31,7 @@ import Hat.Server.Pane
     (hangupPane, newWindowWithPane, pauseReaders, startPaneReader, syncPanes)
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty qualified as Pty
+import Hat.TestSupport (awaitTrue)
 
 -- | A pipe-pane sink whose writes report their bytes to 'seen', then block
 -- until 'hold' is filled.
@@ -95,16 +96,6 @@ withStalledReader body = do
             chunk <- maybe (expectationFailure "no output reached the pipe"
                                 >> pure B.empty) pure mchunk
             body st pane stall chunk)
-
--- | Poll until @act@ holds, failing the test past a 10s deadline.
-awaitTrue :: String -> IO Bool -> IO ()
-awaitTrue what act = do
-    r <- timeout 10_000_000 loop
-    when (isNothing r) $ expectationFailure ("timed out awaiting " <> what)
-  where
-    loop = do
-        ok <- act
-        unless ok (threadDelay 1000 >> loop)
 
 -- | Read the pty master directly, as the next image would, until @needle@
 -- has arrived; False past a 10s deadline.
