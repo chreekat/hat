@@ -92,12 +92,12 @@ module Hat.Server.Pane
     ) where
 
 import Control.Concurrent
-    (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
+    (forkIOWithUnmask, killThread, myThreadId, threadDelay)
 import Control.Concurrent.Async (Async, async, cancel, waitCatchSTM, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar)
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
-import Control.Exception (Exception, IOException, catch, finally, mask_)
+import Control.Exception (IOException, catch, finally, mask_)
 import Control.Monad (filterM, forM, forM_, forever, unless, void, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
@@ -496,12 +496,9 @@ respawnStart = \case
     ShellInject _ -> FreshShell
     other         -> other
 
--- | Signals a pane's reader that its shell child has exited. See
--- 'startPaneReader'.
-data ChildExited = ChildExited
-    deriving Show
-
-instance Exception ChildExited
+-- | Why a pane's reader woke other than for output: a sync was asked for
+-- (up to the given request), or its shell child exited.
+data ReaderWake = SyncWanted Word64 | ChildGone
 
 -- | The reader thread owns a pane's lifetime: it pumps pty output into
 -- the emulator until end-of-file, and 'closePane' runs in a @finally@ so
@@ -527,31 +524,31 @@ runPaneReader st pane = do
     atomically $ modifyTVar' st.livePanes (+ 1)
     -- Masked for the thread's whole life except between chunks: once the
     -- tid is published, a 'hangupPane' kill must always reach the
-    -- cleanup, and an async exception (a kill, 'ChildExited') never lands
-    -- between consuming a chunk and feeding it.
+    -- cleanup.
     void $ mask_ $ forkIOWithUnmask $ \unmask -> do
         tid <- myThreadId
         atomically $ writeTVar pane.readerTid (Just tid)
         pendingRef <- newIORef pane.pendingInput
         rbuf <- Hat.Term.Pty.newReadBuf
-        -- Track pane death by the shell's exit, not only pty EOF: a lingering
-        -- fd-holder can keep the master from ever EOFing. 'ChildExited' (never
-        -- the 'ThreadKilled' of an explicit kill) switches the reader to a
-        -- non-blocking drain of the reaped child's final bytes, then ends.
-        -- 'withAsync' scopes the watcher to the read phase: once the reads end
-        -- (by EOF or by draining after 'ChildExited'), it is cancelled before
-        -- the 'finally' cleanup, so a late async 'ChildExited' can never land in
-        -- 'paneEof' and interrupt the 'Exited' broadcast it runs.
-        (withAsync (Hat.Term.Pty.waitExit pane.pty >> throwTo tid ChildExited) $
-            \_ -> readLoop unmask
-                    (atomically (awaitControlRoom st pane)
-                        >> Hat.Term.Pty.awaitOutputOr pane.pty syncRequested)
-                    (Hat.Term.Pty.readPtyBuf pane.pty rbuf)
-                    (Hat.Term.Pty.readAvailBuf pane.pty rbuf) pendingRef
-                `catch` \ChildExited -> do
-                    writeIORef pendingRef Nothing
-                    let drainRd = Hat.Term.Pty.readAvailBuf pane.pty rbuf
-                    readLoop unmask (pure Nothing) drainRd drainRd pendingRef)
+        childGone <- newTVarIO False
+        -- Pane death tracks the shell's exit, not only pty EOF: a lingering
+        -- fd-holder can keep the master from ever EOFing. The reader learns
+        -- of the exit only where it waits for output, so the switch to
+        -- draining the child's final bytes falls between chunks.
+        (withAsync (Hat.Term.Pty.waitExit pane.pty >> atomically (writeTVar childGone True)) $
+            \_ -> do
+                let gone = readTVar childGone >>= check
+                    await = atomically ((Just ChildGone <$ gone)
+                            `orElse` (Nothing <$ awaitControlRoom st pane))
+                        >>= maybe (Hat.Term.Pty.awaitOutputOr pane.pty
+                                      ((SyncWanted <$> syncRequested) `orElse` (ChildGone <$ gone)))
+                                  (pure . Just)
+                    drainRd = Hat.Term.Pty.readAvailBuf pane.pty rbuf
+                    afterExit = do
+                        writeIORef pendingRef Nothing
+                        readLoop unmask (pure Nothing) drainRd drainRd afterExit pendingRef
+                readLoop unmask await (Hat.Term.Pty.readPtyBuf pane.pty rbuf) drainRd
+                    afterExit pendingRef)
             `finally` paneEof st pane
             `finally` atomically (modifyTVar' st.livePanes (subtract 1))
   where
@@ -571,26 +568,28 @@ runPaneReader st pane = do
     -- @pending@ is a one-shot: a restored program's command line, typed into
     -- the pane the moment its shell first prints (so readline is up to read
     -- it), then dropped. Enter is a bare CR, as a real keyboard sends.
-    -- @await@ waits for output without consuming it, or for a sync request
-    -- ('syncPanes'); @rd@ is the read step: blocking during the pane's life,
+    -- @await@ waits for output without consuming it, for a sync request
+    -- ('syncPanes'), or for the child's exit, which hands over to
+    -- @afterExit@; @rd@ is the read step: blocking during the pane's life,
     -- a non-blocking drain once the shell has exited (an empty result ends
     -- the loop either way). @drainRd@ never blocks: it serves a sync.
     readLoop
-        :: (forall a. IO a -> IO a) -> IO (Maybe Word64) -> IO B.ByteString
-        -> IO B.ByteString -> IORef (Maybe Text) -> IO ()
-    readLoop unmask await rd drainRd pending = do
+        :: (forall a. IO a -> IO a) -> IO (Maybe ReaderWake) -> IO B.ByteString
+        -> IO B.ByteString -> IO () -> IORef (Maybe Text) -> IO ()
+    readLoop unmask await rd drainRd afterExit pending = do
         woke <- unmask await
         case woke of
             Nothing -> do
                 (bs, events, mopts) <- feedChunk rd
                 unless (B8.null bs) $ do
                     unmask (consume pending bs events mopts)
-                    readLoop unmask await rd drainRd pending
-            Just req -> do
+                    readLoop unmask await rd drainRd afterExit pending
+            Just (SyncWanted req) -> do
                 drain unmask drainRd pending syncDrainChunks
                 atomically $ modifyTVar' pane.outputSync $ \o ->
                     o { answered = max o.answered req }
-                readLoop unmask await rd drainRd pending
+                readLoop unmask await rd drainRd afterExit pending
+            Just ChildGone -> afterExit
     syncRequested = do
         o <- readTVar pane.outputSync
         check (o.requested > o.answered)
