@@ -1,7 +1,10 @@
 -- Helpers shared by more than one spec.
-module Hat.TestSupport (bashPath, nodeOf, clientTheme, addClient) where
+module Hat.TestSupport
+    (bashPath, nodeOf, clientTheme, addClient, realPanes, withPanesReaped) where
 
-import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO)
+import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVar)
+import Control.Exception (finally)
+import Control.Monad (forM_)
 import Data.IORef (newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -10,10 +13,12 @@ import Data.Time.LocalTime (utc, utcToZonedTime)
 import Data.Vector qualified as V
 import Network.Socket (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
 import System.Directory (findExecutable)
+import System.Timeout (timeout)
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options (Options)
+import Hat.Server.Dispatch (runArgv)
 import Hat.Server.Format (renderFormat)
 import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
 import Hat.Server.Layout (Cell (..), Layout (..), Orientation (..), fitLayout, fixOffsets)
@@ -21,6 +26,7 @@ import Hat.Server.Outbound (newOutbound)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.Theme (Theme, clientColours, resolveTheme)
 import Hat.Term.HostProtocol (defaultCursorModel)
+import Hat.Term.Pty qualified as Pty
 import Hat.Transport.Wire (Autostart (Joined), protocolVersion)
 
 -- The dev shell's bash, for tests that need a bashism (@exec -a@). Not
@@ -101,3 +107,18 @@ clientTheme opts = resolveTheme expand opts Nothing
   where
     expand = renderFormat (Map.fromList [("client_colours", clientColours)])
         (const "") (utcToZonedTime utc (posixSecondsToUTCTime 0))
+
+-- | Every pane of every window, in id order.
+realPanes :: ServerState -> IO [Pane]
+realPanes st = atomically $ do
+    sessions <- Map.elems <$> readTVar st.sessions
+    wins <- concat <$> mapM (fmap Map.elems . readTVar . (.windows)) sessions
+    concat <$> mapM (fmap Map.elems . readTVar . (.panes)) wins
+
+-- | Run @body@ on a server whose panes are real; afterwards kill them all
+-- and reap their children, however the body ends.
+withPanesReaped :: ServerState -> IO a -> IO a
+withPanesReaped st body = body `finally` do
+    panes <- realPanes st
+    _ <- runArgv st Nothing ["kill-server"]
+    forM_ panes $ \p -> timeout 2_000_000 (Pty.waitExit p.pty)

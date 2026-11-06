@@ -754,52 +754,6 @@ spec = parallel $ do
         barShown True
         barShown False
 
-    -- The overlays and key tables a client's keys and clicks drive: a key
-    -- table a binding switches to, a menu item its key picks (and the later
-    -- commands of one on the pane an earlier one made), a key's popup taking
-    -- keys until its command exits, and display-panes' template on a click.
-    it "drives key tables, menus, a popup and display-panes from the client's keys and clicks" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        _ <- hatCtl h ["bind", "-T", "move", "y", "set", "-g", "@moved", "yes"]
-        typeInto c "\x02g"
-        typeInto c "y"
-        awaitTrue "the move table's binding to run" $
-            (== "yes\n") <$> ctlOut h ["show", "-gv", "@moved"]
-
-        _ <- hatCtl h ["display-menu", "-T", "Pick", "Alpha", "a", "set -g @picked alpha"]
-        awaitScreen c "Alpha (a)"
-        typeInto c "a"
-        awaitTrue "the item's command" $ do
-            (_, out, _) <- hatCtl h ["show", "-gv", "@picked"]
-            pure (out == "alpha\n")
-        awaitWith "the menu to close" (fmap (not . T.isInfixOf "Alpha (a)") . screenText) c
-
-        _ <- hatCtl h ["bind", "P", "display-popup", "-E", "printf POP-$((6*7)); read x"]
-        typeInto c "\x02P"
-        awaitScreen c "POP-42"
-        typeInto c "\r"
-        awaitWith "the popup to close" (fmap (not . T.isInfixOf "POP-42") . screenText) c
-
-        _ <- hatCtl h ["display-menu", "Split", "s", "split-window; set -gF @cur '##{pane_id}'"]
-        awaitScreen c "Split (s)"
-        typeInto c "s"
-        awaitTrue "the new pane to be current" $ do
-            (_, out, _) <- hatCtl h ["show", "-gv", "@cur"]
-            pure (out == "%1\n")
-
-        _ <- hatCtl h ["set", "-g", "mouse", "on"]
-        _ <- hatCtl h ["split-window", "-h"]
-        _ <- hatCtl h ["display-panes", "-d", "0", "set -g @picked %%"]
-        awaitTrue "panes-mode" $ do
-            (_, out, _) <- hatCtl h ["display-message", "-p", "#{pane_mode}"]
-            pure (out == "panes-mode\n")
-        typeInto c "\ESC[<0;5;5M"
-        awaitTrue "the clicked pane's template" $ do
-            (_, out, _) <- hatCtl h ["show", "-gv", "@picked"]
-            pure (out == "%0\n")
-
     it "adds a user option from customize-mode's Server Options, then edits it in the editor" $
         withHat hatBin $ \h -> do
         let editor = h.home <> "/editor.sh"

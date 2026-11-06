@@ -99,7 +99,7 @@ import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Term.Caps (TtyTerm (..))
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
-import Hat.TestSupport (addClient, nodeOf)
+import Hat.TestSupport (addClient, nodeOf, realPanes, withPanesReaped)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
@@ -2698,6 +2698,22 @@ spec = do
             Map.lookup "@x" . (.user) <$> readTVarIO st.options
                 `shouldReturn` Just "1"
             fmap (.input) <$> readTVarIO client.prompt `shouldReturn` Just ""
+
+    describe "a chosen menu item's commands" $
+        it "run their later commands on the pane an earlier one created" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-sessionspec.sock" Nothing
+            withPanesReaped st $ do
+                runArgv st Nothing ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                [sess] <- Map.elems <$> readTVarIO st.sessions
+                attached <- addClient st sess.id (Size 24 80) 1
+                runArgv st (Just attached)
+                    ["display-menu", "Split", "s", "split-window cat ; set -gF @cur '##{pane_id}'"]
+                    `shouldReturn` []
+                handleInput dispatch st attached "s"
+                [_, PaneId new] <- map (.id) <$> realPanes st
+                runArgv st Nothing ["show", "-gv", "@cur"]
+                    `shouldReturn` [ROutput (T.pack ('%' : show new))]
 
 -- | Write an executable shell script from a child process, so no fork of this
 -- (parallel) test process can hold its write fd across the script's exec.
