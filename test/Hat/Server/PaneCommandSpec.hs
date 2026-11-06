@@ -185,13 +185,16 @@ spec = do
 
     describe "kill-session" $
         it "SIGKILLs a SIGHUP-ignoring pane linked twice into the session" $
-            withServer $ \st -> do
+            withServer $ \st -> withTmpDir $ \dir -> do
+                let trapped = dir </> "trapped"
                 run st ["new-session", "-d", "-s", "a", "sleep 30"] `shouldReturn` []
-                run st ["new-window", "-d", "-t", "a:1", "trap '' HUP; exec sleep 300"]
+                run st ["new-window", "-d", "-t", "a:1",
+                        T.pack ("trap '' HUP; echo set > " <> trapped <> "; exec sleep 300")]
                     `shouldReturn` []
                 run st ["link-window", "-d", "-s", "a:1", "-t", "a:5"] `shouldReturn` []
                 [s] <- paneIds st "a:1"
                 stubborn <- paneNamed st s
+                _ <- awaitFile trapped (not . B8.null)
                 run st ["kill-session", "-t", "a"] `shouldReturn` []
                 sessionNames st `shouldReturn` []
                 reaped <- timeout 5_000_000 (Pty.waitExit stubborn.pty)
@@ -666,12 +669,13 @@ spec = do
                 run st ["set", "-g", "remain-on-exit", "on"] `shouldReturn` []
                 run st ["new-session", "-d", "-s", "S", "-x", "60", "-y", "5", "echo DEADBEACON; exit 3"]
                     `shouldReturn` []
-                died <- timeout 5_000_000 $ untilM $ (== [ROutput "1 3"])
-                    <$> run st ["display", "-p", "-t", "S:0.0", "#{pane_dead} #{pane_dead_status}"]
-                died `shouldBe` Just ()
-                screen <- outputs <$> run st ["capture-pane", "-p", "-t", "S:0.0", "-S", "-"]
-                screen `shouldSatisfy` any (T.isInfixOf "DEADBEACON")
-                screen `shouldSatisfy` any (T.isInfixOf "Pane is dead (status 3, ")
+                let screen = outputs <$> run st ["capture-pane", "-p", "-t", "S:0.0", "-S", "-"]
+                told <- timeout 5_000_000 $ untilM $
+                    any (T.isInfixOf "Pane is dead (status 3, ") <$> screen
+                told `shouldBe` Just ()
+                screen >>= (`shouldSatisfy` any (T.isInfixOf "DEADBEACON"))
+                run st ["display", "-p", "-t", "S:0.0", "#{pane_dead} #{pane_dead_status}"]
+                    `shouldReturn` [ROutput "1 3"]
         it "failed keeps only a pane whose program failed" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
