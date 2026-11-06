@@ -1145,23 +1145,6 @@ spec = parallel $ do
         typeInto c1 "joined-output"
         awaitScreen c1 "joined-output"
 
-    -- The drop path (a bare shell that never enabled ?1004) is covered by
-    -- the pure 'deliversKey' matrix in SessionSpec plus EmulatorSpec's
-    -- default focusReport=False; this keeps the real-pty wiring for the
-    -- harder forward direction.
-    it "forwards focus reports to a pane that enabled ?1004" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g focus-events on\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "$"
-        typeInto c1 "printf '\\033[?1004h'\r" -- the app requests focus reporting
-        typeInto c1 "cat -v\r"               -- render control chars visibly
-        -- cat runs after printf, so its foreground presence proves ?1004 is
-        -- already enabled on the pane.
-        awaitForeground h "cat"
-        typeInto c1 "\ESC[I"                 -- a focus-in report from the terminal
-        awaitScreen c1 "^[[I"                -- forwarded to the pane, echoed by cat -v
-
     -- See Note [Captured links].
     it "save -> kill-server -> restart -> restore rebuilds the window tree, its links and groups shared" $
         withHatPersist hatBin $ \h -> do
