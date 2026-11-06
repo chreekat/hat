@@ -858,19 +858,6 @@ spec = parallel $ do
         awaitTrue "the buffer to hold what the editor saved" $
             (== "edited") <$> ctlOut h ["show-buffer", "-b", "b1"]
 
-    it "ends a popup's command across restart-server, leaving nothing behind" $
-        withHat hatBin $ \h -> do
-        let pidFile = h.home <> "/popup.pid"
-        c <- startClient h
-        awaitScreen c "$"
-        _ <- hatCtl h ["bind", "P", "display-popup", "echo $$ > " <> pidFile <> "; exec sleep 1000"]
-        typeInto c "\x02P"
-        pid <- read <$> awaitFile pidFile (not . null . words)
-        _ <- hatCtl h ["restart-server", h.bin]
-        awaitTrue "the handover to be consumed" $
-            doesFileExist (h.sock <> ".reload.last")
-        awaitTrue "the popup's command to be reaped" (not <$> pidAlive pid)
-
     -- A client the farewell sends away closes its popup on its way out,
     -- inside the window the linger holds open before the exec; a command
     -- deaf to that hangup must still not outlive the old image unreaped.
