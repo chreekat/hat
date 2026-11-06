@@ -93,7 +93,7 @@ module Hat.Server.Pane
 
 import Control.Concurrent
     (forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo)
-import Control.Concurrent.Async (Async, async, cancel, withAsync)
+import Control.Concurrent.Async (Async, async, cancel, waitCatchSTM, withAsync)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar)
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
@@ -1661,18 +1661,24 @@ data StdinFeed = StdinFed | StdinUnfed
 startPipe :: Pane -> String -> OutputTap -> StdinFeed -> IO ()
 startPipe pane cmd outputTap stdinFeed = do
     ready <- newEmptyMVar
+    attached <- newEmptyTMVarIO
     super <- async $ withCreateProcess (shell cmd)
         { std_in  = if tapOn then CreatePipe else Inherit
         , std_out = if feedOn then CreatePipe else Inherit
         } $ \mIn mOut _ _ -> do
             self <- takeMVar ready
-            atomically $ writeTVar pane.pipe $ Just PipeHandle
-                { super = self, toStdin = if tapOn then mIn else Nothing }
+            atomically $ do
+                writeTVar pane.pipe $ Just PipeHandle
+                    { super = self, toStdin = if tapOn then mIn else Nothing }
+                putTMVar attached ()
             (case mOut of
                 Just hout | feedOn -> pumpPipeOutput pane hout
                 _                  -> forever (threadDelay maxBound))
                 `finally` clearPipe pane self
     putMVar ready super
+    -- Return only with the pipe on the pane (or its supervisor already
+    -- gone), so no output read afterwards can miss it.
+    atomically $ takeTMVar attached `orElse` void (waitCatchSTM super)
   where
     tapOn = outputTap == OutputTapped
     feedOn = stdinFeed == StdinFed
