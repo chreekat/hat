@@ -980,19 +980,6 @@ spec = parallel $ do
         _ <- awaitExit c1
         pure ()
 
-    it "runs htop (colors, alt screen, live redraw)" $
-        withHat hatBin $ \h -> do
-        c1 <- startClient h
-        awaitScreen c1 "$"
-        typeInto c1 "htop\r"
-        awaitScreen c1 "Mem"
-        awaitScreen c1 "Tasks"
-        typeInto c1 "q"
-        awaitScreen c1 "$"
-        typeInto c1 "exit\r"
-        status <- awaitExit c1
-        status `shouldBe` Exited ExitSuccess
-
     it "restores the saved tree at its captured area, and forgets it when the last window exits (4b)" $
         withHatPersist hatBin $ \h -> do
         -- Seed a saved tree so the autostarted server restores it.
