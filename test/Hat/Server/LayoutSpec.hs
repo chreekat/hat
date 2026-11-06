@@ -2,7 +2,7 @@
 
 module Hat.Server.LayoutSpec (spec) where
 
-import Control.Monad (foldM, forM_)
+import Control.Monad (forM_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -18,38 +18,95 @@ import Hat.Model.Options (WindowSizeMode (..))
 import Hat.Server.Layout
 import Hat.TestSupport (nodeOf)
 
--- Random layouts grown the way commands grow them: split after split of
--- random panes, any orientation, size, side and span, at a random window
--- size (a split with no room is skipped).
-genLayout :: Gen Layout
-genLayout = do
+-- | A command that grows a layout: a split of a tiled pane, a new floating
+-- pane, or a tiled pane floated out. The pane it adds is numbered by the
+-- command's place in its 'Recipe'.
+data Grow
+    = Split PaneId SplitSpec
+    | Float FloatSpot FloatGeom
+    | FloatOut PaneId FloatGeom
+    deriving (Show)
+
+-- | A window size and the commands that grew a layout in it.
+data Recipe = Recipe Size [Grow]
+    deriving (Show)
+
+-- | A layout grown the way commands grow one: split after split of random
+-- panes, any orientation, size, side and span, at a random window size (a
+-- command with no room, or naming a pane that is gone or floating, is
+-- skipped). Shrinks by dropping and simplifying the commands, so a
+-- counterexample is the shortest recipe that still grows one.
+data Grown = Grown Recipe Layout
+
+instance Show Grown where
+    show (Grown recipe lay) = show recipe <> "\n" <> show lay
+
+instance Arbitrary Grown where
+    arbitrary = fromRecipe <$> genRecipe
+    shrink (Grown recipe _) = fromRecipe <$> shrinkRecipe recipe
+
+fromRecipe :: Recipe -> Grown
+fromRecipe recipe@(Recipe sz steps) =
+    Grown recipe (foldl grow (fitLayout sz (singlePane (PaneId 0))) (zip [1 ..] steps))
+  where
+    grow lay (k, step) = fromMaybe lay $ case step of
+        Split target how
+            | target `elem` tiledPanes lay -> splitPane how target (PaneId k) lay
+            | otherwise -> Nothing
+        Float spot g -> floatPane spot (PaneId k) g lay
+        -- Floating a pane keeps at least one tiled: a window of only
+        -- floating panes tiles nothing.
+        FloatOut target g
+            | length (tiledPanes lay) > 1 -> floatTiled target g lay
+            | otherwise -> Nothing
+
+genRecipe :: Gen Recipe
+genRecipe = do
     w <- chooseInt (1, 60)
     h <- chooseInt (1, 30)
     n <- chooseInt (0, 8)
-    let start = fitLayout (Size (fromIntegral h) (fromIntegral w)) (singlePane (PaneId 0))
-    foldM grow start [1 .. n]
+    Recipe (Size (fromIntegral h) (fromIntegral w)) <$> mapM genGrow [1 .. n]
   where
-    grow lay k = do
-        target <- elements (tiledPanes lay)
-        o <- elements [LeftRight, TopBottom]
-        sz <- oneof [pure Nothing, Just <$> chooseInt (0, 40)]
-        pl <- elements [Before, After]
-        sp <- elements [SpanPane, SpanWindow]
-        g <- genGeom
-        spot <- elements (FloatLast : map FloatBefore (layoutPanes lay))
-        frequency
-            [ (6, pure (fromMaybe lay (splitPane (SplitSpec o sz pl sp) target (PaneId k) lay)))
-            , (1, pure (fromMaybe lay (floatPane spot (PaneId k) g lay)))
-            -- Floating a pane keeps at least one tiled: a window of only
-            -- floating panes tiles nothing.
-            , (1, pure $ if length (tiledPanes lay) > 1
-                then fromMaybe lay (floatTiled target g lay) else lay)
-            ]
+    genGrow k = frequency
+        [ (6, Split <$> pane k <*> genSpec)
+        , (1, Float <$> frequency [(1, pure FloatLast), (k, FloatBefore <$> pane k)] <*> genGeom)
+        , (1, FloatOut <$> pane k <*> genGeom) ]
+    pane k = PaneId <$> chooseInt (0, k - 1)
+    genSpec = SplitSpec <$> elements [LeftRight, TopBottom]
+        <*> oneof [pure Nothing, Just <$> chooseInt (0, 40)]
+        <*> elements [Before, After] <*> elements [SpanPane, SpanWindow]
+    -- Any floating geometry, overhanging the window included.
+    genGeom = FloatGeom <$> chooseInt (1, 30) <*> chooseInt (1, 15)
+        <*> chooseInt (-10, 60) <*> chooseInt (-5, 30)
 
--- Any floating geometry, overhanging the window included.
-genGeom :: Gen FloatGeom
-genGeom = FloatGeom <$> chooseInt (1, 30) <*> chooseInt (1, 15)
-    <*> chooseInt (-10, 60) <*> chooseInt (-5, 30)
+-- | A smaller window, fewer commands, or a command naming an earlier pane,
+-- a plainer split or a smaller float.
+shrinkRecipe :: Recipe -> [Recipe]
+shrinkRecipe (Recipe sz steps) =
+    [ Recipe (Size r c) steps | (r, c) <- shrink (sz.rows, sz.cols), r >= 1, c >= 1 ]
+    <> [ Recipe sz steps' | steps' <- shrinkList shrinkGrow steps ]
+  where
+    shrinkGrow = \case
+        Split (PaneId t) how ->
+            [ Split (PaneId t') how | t' <- shrink t ]
+            <> [ Split (PaneId t) how' | how' <- shrinkSpec how ]
+        Float spot g ->
+            [ Float spot' g | spot' <- shrinkSpot spot ]
+            <> [ Float spot g' | g' <- shrinkGeom g ]
+        FloatOut (PaneId t) g ->
+            [ FloatOut (PaneId t') g | t' <- shrink t ]
+            <> [ FloatOut (PaneId t) g' | g' <- shrinkGeom g ]
+    shrinkSpec (SplitSpec o s pl sp) =
+        [ SplitSpec LeftRight s pl sp | o == TopBottom ]
+        <> [ SplitSpec o s' pl sp | s' <- shrink s ]
+        <> [ SplitSpec o s After sp | pl == Before ]
+        <> [ SplitSpec o s pl SpanPane | sp == SpanWindow ]
+    shrinkSpot = \case
+        FloatLast -> []
+        FloatBefore (PaneId t) -> FloatLast : [ FloatBefore (PaneId t') | t' <- shrink t ]
+    shrinkGeom g =
+        [ FloatGeom w h l t
+        | (w, h, l, t) <- shrink (g.width, g.height, g.left, g.top), w >= 1, h >= 1 ]
 
 -- Shrink toward 'PaneNext' so a failing 'PanePrev' case also reports as
 -- 'PaneNext' if that simpler case reproduces it.
@@ -64,15 +121,26 @@ windowRect = Rect { startRow = 0, endRow = 40, startCol = 0, endCol = 120 }
 windowSize :: Size
 windowSize = Size { rows = 40, cols = 120 }
 
--- Any small rect, degenerate sizes included: a tree starved of space
--- must still tile, never spilling a cell outside the window.
-genTileRect :: Gen Rect
-genTileRect = do
-    r0 <- chooseInt (0, 3)
-    c0 <- chooseInt (0, 3)
-    h <- chooseInt (0, 14)
-    w <- chooseInt (0, 30)
-    pure Rect { startRow = r0, endRow = r0 + h, startCol = c0, endCol = c0 + w }
+-- | Any small rect, degenerate sizes included: a tree starved of space
+-- must still tile, never spilling a cell outside the window. Shrinks
+-- toward the origin and toward no space at all.
+newtype TileRect = TileRect Rect
+    deriving (Show)
+
+instance Arbitrary TileRect where
+    arbitrary = do
+        r0 <- chooseInt (0, 3)
+        c0 <- chooseInt (0, 3)
+        h <- chooseInt (0, 14)
+        w <- chooseInt (0, 30)
+        pure (tileRect r0 c0 h w)
+    shrink (TileRect r) =
+        [ tileRect r0 c0 h w
+        | (r0, c0, h, w) <- shrink (r.startRow, r.startCol, r.endRow - r.startRow, r.endCol - r.startCol) ]
+
+tileRect :: Int -> Int -> Int -> Int -> TileRect
+tileRect r0 c0 h w =
+    TileRect Rect { startRow = r0, endRow = r0 + h, startCol = c0, endCol = c0 + w }
 
 cellsOf :: Rect -> [(Int, Int)]
 cellsOf r = [(row, col) | row <- [r.startRow .. r.endRow - 1]
@@ -111,7 +179,7 @@ consistent l = case l.cell of
 spec :: Spec
 spec = do
     prop "panes and borders tile the window exactly, at any size" $
-        forAll ((,) <$> genLayout <*> genTileRect) $ \(lay, rect) ->
+        \(Grown _ lay) (TileRect rect) ->
             let (rects, borders) = arrange rect lay
                 paneCells = concatMap (cellsOf . snd) rects
                 borderCells = [(p.row, p.col) | (p, _) <- borders]
@@ -121,7 +189,7 @@ spec = do
                 .&&. cellSet === Set.fromList (cellsOf rect)
 
     prop "splits, closes and resizes keep every node exactly filled" $
-        forAll genLayout $ \lay ->
+        \(Grown _ lay) ->
             let ps = layoutPanes lay
                 closed = mapMaybe (`removePane` lay) ps
                 resized = [ resizePane p o d lay
@@ -129,7 +197,7 @@ spec = do
             in conjoin (map (property . consistent) (lay : closed <> resized))
 
     prop "fitting to the layout's own size changes nothing" $
-        forAll genLayout $ \lay -> fitLayout (layoutArea lay) lay === lay
+        \(Grown _ lay) -> fitLayout (layoutArea lay) lay === lay
 
     -- A split of an already-empty rect once fabricated a one-row child
     -- outside the window.
@@ -186,7 +254,7 @@ spec = do
                 (fitLayout Size { rows = 24, cols = 2 } (leaf 0))
                 `shouldBe` Nothing
         prop "adds exactly the new pane" $
-            forAll genLayout $ \lay -> case layoutPanes lay of
+            \(Grown _ lay) -> case layoutPanes lay of
                 [] -> property Discard
                 target : _ -> case splitPane (SplitSpec LeftRight Nothing After SpanPane)
                         target (PaneId 999) lay of
@@ -222,7 +290,7 @@ spec = do
             (closed TopBottom >>= \l -> traverse (`cellOf` l) [2, 0])
                 `shouldBe` Just [(120, 20), (120, 19)]
         prop "removing a split-off pane restores the original pane set" $
-            forAll genLayout $ \lay -> case splitPane
+            \(Grown _ lay) -> case splitPane
                     (SplitSpec TopBottom Nothing Before SpanPane)
                     (last (layoutPanes lay)) (PaneId 999) lay of
                 Nothing -> property Discard
@@ -286,8 +354,8 @@ spec = do
         it "exchanges two panes' positions" $
             layoutPanes (swapLeaves (PaneId 0) (PaneId 1) (nodeOf LeftRight [leaf 0, leaf 1]))
                 `shouldBe` [PaneId 1, PaneId 0]
-        it "is its own inverse" $
-            forAll genLayout $ \lay -> case layoutPanes lay of
+        prop "is its own inverse" $
+            \(Grown _ lay) -> case layoutPanes lay of
                 (a : b : _) -> swapLeaves a b (swapLeaves a b lay) === lay
                 _ -> property Discard
 
@@ -305,8 +373,8 @@ spec = do
         it "-D moves each pane to the next position" $
             layoutPanes (rotateLeaves RotateDown three)
                 `shouldBe` map PaneId [2, 0, 1]
-        it "keeps the shape, and -D undoes -U" $
-            forAll genLayout $ \lay ->
+        prop "keeps the shape, and -D undoes -U" $
+            \(Grown _ lay) ->
                 rotateLeaves RotateDown (rotateLeaves RotateUp lay) === lay
 
     describe "resizePane" $ do
