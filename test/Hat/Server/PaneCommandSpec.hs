@@ -67,6 +67,14 @@ windowIndices st name = atomically $ do
     named <- filterM (\s -> (== name) <$> readTVar s.name) sessions
     concat <$> mapM (fmap Map.keys . readTVar . (.windows)) named
 
+-- | The named session's window at an index.
+windowAt :: ServerState -> Text -> Int -> IO (Maybe Window)
+windowAt st name ix = atomically $ do
+    sessions <- Map.elems <$> readTVar st.sessions
+    named <- filterM (\s -> (== name) <$> readTVar s.name) sessions
+    wins <- concat <$> mapM (fmap Map.toList . readTVar . (.windows)) named
+    pure (lookup ix wins)
+
 -- | A window's pane ids, in pane-index order.
 paneIds :: ServerState -> Text -> IO [Text]
 paneIds st tgt = do
@@ -479,12 +487,26 @@ spec = do
                     `shouldReturn`
                         [errQuoting "display-message: argument is not valid UTF-8: " (RawArg "\xff")]
 
-    describe "join-pane" $
+    describe "join-pane" $ do
         it "refuses to join a pane to itself" $
             withServer $ \st -> do
                 run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
                 run st ["join-pane", "-s", "S:0.0", "-t", "S:0.0"]
                     `shouldReturn` [RErr "source and target panes must be different"]
+        -- 0ebf668: the reader routes each chunk by where the pane lives now.
+        it "routes the joined pane's later output to its new window" $
+            withServer $ \st -> do
+                run st ["new-session", "-d", "-s", "S", "sleep 30"] `shouldReturn` []
+                run st ["new-window", "-d", "-t", "S:1", "cat"] `shouldReturn` []
+                run st ["join-pane", "-h", "-s", "S:1.0", "-t", "S:0"] `shouldReturn` []
+                Just w0 <- windowAt st "S" 0
+                joined <- atomically $
+                    (Map.!) <$> readTVar w0.panes <*> readTVar w0.activeId
+                stamp <- readTVarIO w0.activityAt
+                Pty.writePty joined.pty "joined\n"  -- echoed back as pane output
+                routed <- timeout 5_000_000 $
+                    untilM ((> stamp) <$> readTVarIO w0.activityAt)
+                routed `shouldBe` Just ()
 
     describe "break-pane" $
         it "moves the pane to a new window, printing where it went" $

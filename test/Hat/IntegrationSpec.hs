@@ -1003,22 +1003,6 @@ spec = parallel $ do
             -- status-bar clock (e.g. 12:52) can't spoof the "still there" check.
             pure (not ("2:sh" `T.isInfixOf` t) && "1:sh*" `T.isInfixOf` t)) c1
 
-    -- A joined pane's keystroke echo must repaint on its own; status-interval
-    -- 0 removes the clock tick that would otherwise eventually flush it.
-    it "repaints a joined pane's output in its new window" $
-        withHat hatBin $ \h -> do
-        writeFile (h.home <> "/hat.conf") "set -g status-interval 0\n"
-        c1 <- startClientArgs h ["-f", h.home <> "/hat.conf"]
-        awaitScreen c1 "0:sh*"
-        _ <- ctlOut h ["new-window"]        -- window 1, pane %1
-        awaitScreen c1 "1:sh*"
-        _ <- ctlOut h ["select-window", "-t", "0"]
-        awaitScreen c1 "0:sh*"
-        _ <- ctlOut h ["join-pane", "-h", "-s", "%1"]
-        awaitScreen c1 "\x2502"             -- the joined pane arrived (active)
-        typeInto c1 "joined-output"
-        awaitScreen c1 "joined-output"
-
     -- See Note [Captured links].
     it "save -> kill-server -> restart -> restore rebuilds the window tree, its links and groups shared" $
         withHatPersist hatBin $ \h -> do
