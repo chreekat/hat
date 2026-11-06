@@ -2,20 +2,31 @@
 
 module Hat.Server.ControlSpec (spec) where
 
+import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.STM
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
+import Network.Socket (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socketPair)
 import Test.Hspec
 
 import Hat.Geometry
+import Hat.Log (newLogger)
+import Hat.Model (ServerState (..), Session (..), newServerState)
 import Hat.Model.Ids
+import Hat.Server (dispatch, welcome)
 import Hat.Server.Control
 import Hat.Server.ControlQueue
 import Hat.Server.ControlTypes
-import Hat.Server.Dispatch (resolveCommand)
-import Hat.Transport.Wire (ExitWait (..), ServerToClient (..))
+import Hat.Server.Dispatch (resolveCommand, runArgv)
+import Hat.Server.Resize (reconcileLoop)
+import Hat.TestSupport (addClient, withPanesReaped)
+import Hat.Transport.Wire
+    ( ArgvBytes (..), ClientToServer (..), ExitWait (..), Hello (..), Inbound (..)
+    , Intent (..), ServerToClient (..), newReadEnd, protocolVersion, recvMessage
+    , sendMessage )
 
 lines' :: ControlState -> IO [String]
 lines' cs = do
@@ -132,4 +143,47 @@ spec = do
             case ex of
                 Exiting Nothing -> pure ()
                 _ -> expectationFailure "not exiting without a reason"
+
+    describe "a command client's exit status" $ do
+        it "is the last one its commands reported" $ do
+            st <- freshServer
+            exitStatuses st [["run-shell", "exit 3"]] `shouldReturn` [3]
+            exitStatuses st [["run-shell", "exit 3"], ["run-shell", "true"]] `shouldReturn` [0]
+        it "is a waited-for popup's command's" $ do
+            st <- freshServer
+            withPanesReaped st $ do
+                runArgv st Nothing ["new-session", "-d", "-s", "S", "cat"] `shouldReturn` []
+                [sess] <- Map.elems <$> readTVarIO st.sessions
+                _ <- addClient st sess.id (Size 24 80) 1
+                exitStatuses st [["display-popup", "-E", "exit 4"]] `shouldReturn` [4]
+
+freshServer :: IO ServerState
+freshServer = do
+    lg <- newLogger "/dev/null"
+    newServerState Map.empty lg "/tmp/hat-controlspec.sock" Nothing
+
+-- | The exit statuses the server sends a command client for these commands,
+-- as one connection over a socketpair. A command is reported done only once
+-- the panes are reconciled, so the loop that reconciles them runs too.
+exitStatuses :: ServerState -> [[Text]] -> IO [Int]
+exitStatuses st cmds = withAsync (reconcileLoop st) $ \_ -> do
+    (server, client) <- socketPair AF_UNIX Stream defaultProtocol
+    serverRe <- newReadEnd server
+    clientRe <- newReadEnd client
+    let hello = Hello
+            { protoVersion = protocolVersion, term = "xterm", env = []
+            , size = Size 24 80, cwd = "/", intent = ControlIntent
+            , autostarted = False, sessionHist = [], termCaps = Nothing
+            , argvBytes = TextIsExact, ttyName = Nothing }
+        collect acc = recvMessage clientRe >>= \case
+            Just (Known (ExitStatus n)) -> collect (acc <> [n])
+            Just (Known CommandDone) -> pure acc
+            Just _ -> collect acc
+            Nothing -> pure acc
+    withAsync (welcome dispatch st serverRe hello) $ \_ -> do
+        Just (Known (Welcome _)) <- recvMessage clientRe
+        Just (Known (ServerVersion _)) <- recvMessage clientRe
+        sendMessage client (Command cmds)
+        statuses <- collect []
+        statuses <$ sendMessage client Detach
 
