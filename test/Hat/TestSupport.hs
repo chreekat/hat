@@ -1,17 +1,27 @@
 -- Helpers shared by more than one spec.
-module Hat.TestSupport (bashPath, nodeOf, clientTheme) where
+module Hat.TestSupport (bashPath, nodeOf, clientTheme, addClient) where
 
+import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO)
+import Data.IORef (newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (utc, utcToZonedTime)
+import Data.Vector qualified as V
+import Network.Socket (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
 import System.Directory (findExecutable)
 
-import Hat.Geometry (Size (..))
+import Hat.Geometry (Pos (..), Size (..))
+import Hat.Model
 import Hat.Model.Options (Options)
 import Hat.Server.Format (renderFormat)
+import Hat.Server.Keys (EscPending (NoEscPending), initialKeyState)
 import Hat.Server.Layout (Cell (..), Layout (..), Orientation (..), fitLayout, fixOffsets)
+import Hat.Server.Outbound (newOutbound)
+import Hat.Server.Render (blankFrame)
 import Hat.Server.Theme (Theme, clientColours, resolveTheme)
+import Hat.Term.HostProtocol (defaultCursorModel)
+import Hat.Transport.Wire (Autostart (Joined), protocolVersion)
 
 -- The dev shell's bash, for tests that need a bashism (@exec -a@). Not
 -- /bin/sh: that is bash only on NixOS, and dash elsewhere.
@@ -37,6 +47,52 @@ nodeOf o cs = fixOffsets (Layout w h 0 0 (NodeCell o cs'))
         LeftRight -> (along, across)
         TopBottom -> (across, along)
     size cols rows = Size { rows = fromIntegral rows, cols = fromIntegral cols }
+
+-- | A client attached to the given session with a fixed size and activity
+-- stamp (larger stamp = more recently active), registered with the server.
+-- Its socket is a bare fd that is never driven: for what reads a client's
+-- size, activity, session and history, not for what sends to it.
+addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
+addClient st sid sz stamp = do
+    sock <- socket AF_UNIX Stream defaultProtocol
+    outboundQ <- newOutbound
+    client <- Client (ClientId stamp) Attached Joined sock protocolVersion outboundQ
+        <$> newTVarIO sz
+        <*> newTVarIO stamp
+        <*> newTVarIO sid
+        <*> newTVarIO []
+        <*> newTVarIO True
+        <*> newIORef initialKeyState
+        <*> newIORef NoEscPending
+        <*> newIORef (blankFrame sz)
+        <*> newIORef V.empty
+        <*> newIORef Nothing
+        <*> newIORef Nothing
+        <*> newIORef Map.empty
+        <*> newIORef Map.empty
+        <*> newIORef (Pos 0 0, True)
+        <*> newIORef Nothing
+        <*> newIORef defaultCursorModel
+        <*> newIORef 0        -- lastMouseMode
+        <*> newTVarIO True
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing
+        <*> newTVarIO Nothing  -- popup
+        <*> newTVarIO True     -- outerFocused
+        <*> newTVarIO ImportEnv
+        <*> pure []
+        <*> pure ""
+        <*> pure ""  -- term
+        <*> pure Nothing  -- ttyName
+        <*> newTVarIO Nothing  -- ttyTerm
+        <*> pure 0   -- createdAt
+        <*> pure NoStdin
+        <*> pure Nothing
+        <*> newTVarIO unpannedViewport
+        <*> newIORef (Pos 0 0)
+    atomically $ modifyTVar' st.clients (Map.insert client.id client)
+    pure client
 
 -- | The theme a hat client draws these options with when the desktop
 -- reports no colour scheme.

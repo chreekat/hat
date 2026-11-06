@@ -20,7 +20,7 @@ import Data.Text qualified as T
 import System.Timeout (timeout)
 import Data.Map.Strict qualified as Map
 import Network.Socket
-    ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol, socket
+    ( Family (AF_UNIX), Socket, SocketType (Stream), defaultProtocol
     , socketPair, touchSocket )
 import System.Mem (performGC)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
@@ -99,7 +99,7 @@ import Hat.Term.HostProtocol (OscTerm (..))
 import Hat.Term.Caps (TtyTerm (..))
 import Hat.Server.Theme (terminalTheme)
 import Hat.Server.Layout (Orientation (LeftRight), layoutPanes, singlePane)
-import Hat.TestSupport (nodeOf)
+import Hat.TestSupport (addClient, nodeOf)
 import Hat.Server.Render (blankFrame)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), clientTheme, frameMemo, keepMemo, memoExpand
@@ -184,52 +184,6 @@ typeKey st c = do
 curSize :: Session -> IO Size
 curSize sess = atomically $
     currentWindow sess >>= maybe (error "curSize: no current window") (readTVar . (.size))
-
--- A client attached to the given session with a fixed size and activity
--- stamp (larger stamp = more recently active). 'applySessionSize' only reads
--- a client's size/lastActive/session and writes needsFull, so the socket is a
--- bare fd that is never driven.
-addClient :: ServerState -> SessionId -> Size -> Int -> IO Client
-addClient st sid sz stamp = do
-    sock <- socket AF_UNIX Stream defaultProtocol
-    outboundQ <- newOutbound
-    client <- Client (ClientId stamp) Attached Joined sock protocolVersion outboundQ
-        <$> newTVarIO sz
-        <*> newTVarIO stamp
-        <*> newTVarIO sid
-        <*> newTVarIO []
-        <*> newTVarIO True
-        <*> newIORef initialKeyState
-        <*> newIORef NoEscPending
-        <*> newIORef (blankFrame sz)
-        <*> newIORef V.empty
-        <*> newIORef Nothing
-        <*> newIORef Nothing
-        <*> newIORef Map.empty
-        <*> newIORef Map.empty
-        <*> newIORef (Pos 0 0, True)
-        <*> newIORef Nothing
-        <*> newIORef defaultCursorModel
-        <*> newIORef 0        -- lastMouseMode
-        <*> newTVarIO True
-        <*> newTVarIO Nothing
-        <*> newTVarIO Nothing
-        <*> newTVarIO Nothing
-        <*> newTVarIO Nothing  -- popup
-        <*> newTVarIO True     -- outerFocused
-        <*> newTVarIO ImportEnv
-        <*> pure []
-        <*> pure ""
-        <*> pure ""  -- term
-        <*> pure Nothing  -- ttyName
-        <*> newTVarIO Nothing  -- ttyTerm
-        <*> pure 0   -- createdAt
-        <*> pure NoStdin
-        <*> pure Nothing
-        <*> newTVarIO unpannedViewport
-        <*> newIORef (Pos 0 0)
-    atomically $ modifyTVar' st.clients (Map.insert client.id client)
-    pure client
 
 -- A client whose socket is one half of a socketpair, so a test can read what
 -- the server sends it. 'ready' is armed so 'send' does not drop the message.
