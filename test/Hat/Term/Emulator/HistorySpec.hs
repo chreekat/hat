@@ -12,6 +12,18 @@ import Hat.Term.Emulator.History
 holding :: Int -> Int -> History
 holding lim s = (newHistory lim) { recording = Recording, size = s, seen = s }
 
+-- | A history's limit, the rows it holds and the rows then scrolled in,
+-- growing with the size to a few hundred, a thousand and two thousand, and
+-- shrinking toward none.
+data Scrolled = Scrolled Int Int Int
+    deriving (Show)
+
+instance Arbitrary Scrolled where
+    arbitrary = sized $ \sz ->
+        let upTo hi = chooseInt (0, hi * sz `div` 100)
+        in Scrolled <$> upTo 299 <*> upTo 999 <*> upTo 1999
+    shrink (Scrolled lim s n) = [ Scrolled lim' s' n' | (lim', s', n') <- shrink (lim, s, n) ]
+
 -- | tmux's grid, one scrolled row at a time: collect, then scroll.
 stepwise :: Int -> Int -> Int -> Int
 stepwise lim n s0 = iterate step s0 !! n
@@ -39,10 +51,9 @@ spec = do
             let h = (holding 20 20) { primary = ResizedUnseen }
             afterOutput 60 h `shouldBe` h { size = 60, seen = 60, primary = RowsSeen }
         prop "agrees with tmux's row-at-a-time collection" $
-            \(NonNegative lim) (NonNegative s) (NonNegative n) ->
-                let h = holding (lim `mod` 300) (s `mod` 1000)
-                in (afterOutput (h.seen + n `mod` 2000) h).size
-                    === stepwise h.limit (n `mod` 2000) h.size
+            \(Scrolled lim s n) ->
+                let h = holding lim s
+                in (afterOutput (h.seen + n) h).size === stepwise h.limit n h.size
 
     describe "afterLimit" $ do
         it "trims a fuller history down to the new limit" $
