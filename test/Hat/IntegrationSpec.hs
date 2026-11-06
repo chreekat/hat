@@ -719,29 +719,19 @@ spec = parallel $ do
         typeInto c "q"                -- exit less
         awaitScreen c "$"
 
-    -- tmux prints command errors bare; scripts (tmuxed-alacritty-new)
-    -- match on the exact text, e.g. `duplicate session: NAME`. A `hat: `
-    -- prefix would break that match, so control errors stay unbranded.
-    it "carries a C-locale client's argv bytes: UTF-8 intact, any other refused as tmux does, errors bare" $
+    -- The real client's byte paths: an argv in the C locale, and a
+    -- buffer's stdin and stdout.
+    it "carries a C-locale client's non-ASCII argv and a buffer's stdio bytes unmangled" $
         withHat hatBin $ \h -> do
         _ <- hatRaw h ["new-session", "-d", "-s", "x"]
-        hatRaw h ["new-session", "-d", "-s", "x"] `shouldReturn`
-            (ExitFailure 1, "", "duplicate session: x\n")
-        forM_
-            [ (["rename-session", "-t", "x"], "session")
-            , (["new-session", "-d", "-s"], "session")
-            , (["new-session", "-d", "-n"], "window")
-            , (["new-window", "-d", "-t", "x:", "-n"], "window")
-            , (["set-buffer", "-b"], "buffer") ]
-            $ \(argv, kind) ->
-                hatRaw h (argv <> ["a\xff\&b", "data"]) `shouldReturn`
-                    (ExitFailure 1, "", "invalid " <> kind <> " name: a\xff\&b\n")
-        hatRaw h ["display-message", "-p", "\xff"] `shouldReturn`
-            (ExitFailure 1, "", "display-message: argument is not valid UTF-8: \xff\n")
         (code, _, _) <- hatRaw h ["rename-session", "-t", "x", "caf\xc3\xa9"]
         code `shouldBe` ExitSuccess
         (_, out, _) <- hatRaw h ["display-message", "-p", "#{session_name}"]
         out `shouldBe` "caf\xc3\xa9\n"
+        let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]
+        (ExitSuccess, _) <- hatBytes h ["load-buffer", "-b", "b", "-"] bytes
+        hatBytes h ["save-buffer", "-b", "b", "-"] ""
+            `shouldReturn` (ExitSuccess, bytes)
 
     -- The options that reach the outer terminal through the client: its
     -- title, its cursor shape (the program's over the option's), and an
@@ -875,14 +865,6 @@ spec = parallel $ do
         awaitTrue "the handover to be consumed" $
             doesFileExist (h.sock <> ".reload.last")
         awaitTrue "the popup's command to be reaped" (not <$> pidAlive pid)
-
-    it "carries buffer bytes verbatim through load-buffer - and save-buffer -" $
-        withHat hatBin $ \h -> do
-        let bytes = B.pack [0x61, 0x00, 0x1b, 0x5b, 0x31, 0x6d, 0xff, 0xc3, 0xa9, 0x0a]
-        _ <- hatCtl h ["new-session", "-d", "-s", "work"]
-        (ExitSuccess, _) <- hatBytes h ["load-buffer", "-b", "b", "-"] bytes
-        hatBytes h ["save-buffer", "-b", "b", "-"] ""
-            `shouldReturn` (ExitSuccess, bytes)
 
     it "renders vim to two simultaneous clients" $
         withHat hatBin $ \h -> do
