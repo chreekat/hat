@@ -28,6 +28,12 @@ module Hat.Server.Dispatch
     , reloadFarewell
     , ReloadRequest (..)   -- ^ exported for the reload argument-parse test
     , parseReloadArgs      -- ^ exported for the reload argument-parse test
+    , ReloadTarget (..)    -- ^ exported for the reload round-trip tests
+    , preflightReload      -- ^ exported for the reload round-trip tests
+    , captureHandover      -- ^ exported for the reload round-trip tests
+    , farewellClients      -- ^ exported for the reload round-trip tests
+    , reloadFarewells      -- ^ exported for the reload round-trip tests
+    , retireBeforeExec     -- ^ exported for the reload round-trip tests
     , RestartClientOutcome (..)
     , restartClientAction
     ) where
@@ -685,78 +691,128 @@ parseReloadArgs name args = case (filter (/= "-C") flags, pos) of
   where
     (_, flags, pos) = parseArgs "" args
 
+-- The outgoing image's half of a reload, in the order 'reloadInProcess' in
+-- the test suite replays without the exec: 'preflightReload', then
+-- 'captureHandover', 'farewellClients' and 'retireBeforeExec' around the
+-- exec's own bookkeeping (the handover file, the fd flags, the argv).
 cmdReload' :: ReloadScope -> CommandImpl
 cmdReload' scope st mclient args =
     case parseReloadArgs (reloadName scope) args of
       Left err -> pure [RErr err]
       Right req -> do
-        target <- maybe resolveReloadTarget pure req.target
-        exists <- doesFileExist target
-        verdict <- if not exists
-            then pure (Just (reloadName scope <> ": no such binary: " <> T.pack target))
-            else judgeReloadTarget (reloadName scope) target reloadEra
-                <$> probeReloadTarget target  -- See Note [Probing a reload target]
-        case verdict of
-          Just refusal -> do
-            logEvent st.logger ReloadRefused { target = target, reason = refusal }
-            pure [RErr refusal]
+        ReloadTarget { path = target, refusal } <- preflightReload (reloadName scope) req
+        case refusal of
+          Just why -> do
+            logEvent st.logger ReloadRefused { target = target, reason = why }
+            pure [RErr why]
           Nothing -> do
                 logEvent st.logger ServerReloading { target = target }
                 -- A failure anywhere past the capture reopens what the
                 -- reload closed — the parked readers and the accept gate —
                 -- so a failed reload keeps serving instead of freezing.
-                (do dropModesForReload st
-                    (cleanup, tree) <- captureReload req.carry st
+                (do (cleanup, blob) <- captureHandover req.carry st
                     let blobPath = st.sockPath <> ".reload"
-                    B.writeFile blobPath (encodeHandover cleanup tree)
+                    B.writeFile blobPath blob
                     keepOpenAcrossExec st.sockPath cleanup
-                    -- Park the accept loop before any farewell goes out, so a
-                    -- farewelled client's immediate reattach waits in the listen
-                    -- backlog for the next image instead of being accepted by
-                    -- this dying one.
-                    atomically $ writeTVar st.acceptGate AcceptClosing
-                    atomically $ readTVar st.acceptGate >>= check . (== AcceptParked)
-                    sessions <- readTVarIO st.sessions
-                    attached <- fmap concat . forM (Map.elems sessions) $ \sess -> do
-                        nm <- readTVarIO sess.name
-                        cs <- atomically (sessionClients st sess.id)
-                        forM cs $ \c -> do
-                            hist <- clientSessionHistNames st c
-                            pure (c, reloadFarewell scope c.role (Just nm) hist)
-                    issuer <- forM (maybe [] pure mclient) $ \client -> do
-                        msess <- clientSessionName st client
-                        hist <- clientSessionHistNames st client
-                        pure (client, reloadFarewell scope client.role msess hist)
-                    unsent <- sendFarewells farewellGrace (attached <> issuer)
-                    forM_ unsent $ \c ->
-                        logEvent st.logger FarewellUnsent { client = rawClient c.id }
+                    farewellClients scope st mclient
                     -- Test-only knob: hold the farewell->exec window open (µs)
                     -- so the suite can pin the reattach race deterministically.
                     linger <- lookupEnv "HAT_TEST_RELOAD_LINGER"
                     forM_ (linger >>= readMaybe) threadDelay
-                    mconfig <- readTVarIO st.serverConfig
-                    let argv = ["--server", st.sockPath]
-                            <> maybe [] (: []) mconfig
-                            <> ["--reload-handover", blobPath]
-                    -- The execve replaces this image atomically, so no bracket
-                    -- unwinds: the gsettings monitor child would be orphaned (14 such
-                    -- orphans accrued on the dev box across upgrades). Reap it here,
-                    -- while we can still signal it.
-                    reapMonitor st.monitorRegistry
-                    -- A popup's command is no pane: nothing carries it across
-                    -- the exec, so it ends here, hung up and reaped.
-                    closeAllPopups st
-                    saveHistory st  -- the next image loads it after its config
+                    retireBeforeExec st
                     logEvent st.logger ReloadExec { panes = length cleanup.live }
                     -- The self-exec replaces this image, so 'withLogger's
                     -- flush-on-exit never runs; drain the queue now or the
                     -- reload trace is lost.
                     flushLogger st.logger
-                    void $ executeFile target False argv Nothing)
+                    execReload st target blobPath)
                   `onException` do
                     resumeReaders st
                     atomically (writeTVar st.acceptGate AcceptOpen)
                 pure []  -- unreachable: executeFile replaces this image
+
+-- | The binary a reload resolved its request to, and why it must not exec
+-- it, when it must not. See 'preflightReload'.
+data ReloadTarget = ReloadTarget
+    { path    :: FilePath
+    , refusal :: Maybe Text
+    }
+    deriving (Eq, Show)
+
+-- | Decide, under the command name @name@, whether a reload may exec what
+-- its request names: the binary must exist and read this server's era (see
+-- Note [Probing a reload target]). Nothing is torn down to decide it.
+preflightReload :: Text -> ReloadRequest -> IO ReloadTarget
+preflightReload name req = do
+    path <- maybe resolveReloadTarget pure req.target
+    exists <- doesFileExist path
+    refusal <- if not exists
+        then pure (Just (name <> ": no such binary: " <> T.pack path))
+        else judgeReloadTarget name path reloadEra <$> probeReloadTarget path
+    pure ReloadTarget { path = path, refusal = refusal }
+
+-- | Freeze the live tree into a handover's bytes — the whole payload the next
+-- image decodes ('Hat.Server.Handover.readReload') — beside the
+-- version-independent core the exec's fd bookkeeping needs. Every pane's
+-- modes are dropped first, and the readers stay parked ('captureReload')
+-- until the exec, or 'resumeReaders' on a failure.
+captureHandover :: ScrollbackCarry -> ServerState -> IO (ReloadCleanup, B.ByteString)
+captureHandover carry st = do
+    dropModesForReload st
+    (cleanup, tree) <- captureReload carry st
+    pure (cleanup, encodeHandover cleanup tree)
+
+-- | Send each client a reload drops its farewell ('reloadFarewells'), with
+-- the accept loop parked first, so a farewelled client's immediate reattach
+-- waits in the listen backlog for the next image instead of being accepted
+-- by this dying one. A client still not reading after 'farewellGrace' is
+-- left behind, logged.
+farewellClients :: ReloadScope -> ServerState -> Maybe Client -> IO ()
+farewellClients scope st mclient = do
+    atomically $ writeTVar st.acceptGate AcceptClosing
+    atomically $ readTVar st.acceptGate >>= check . (== AcceptParked)
+    unsent <- sendFarewells farewellGrace =<< reloadFarewells scope st mclient
+    forM_ unsent $ \c ->
+        logEvent st.logger FarewellUnsent { client = rawClient c.id }
+
+-- | Each client a reload drops, paired with its 'reloadFarewell': every
+-- client attached to a session, then the client that issued the reload.
+reloadFarewells :: ReloadScope -> ServerState -> Maybe Client -> IO [(Client, ServerToClient)]
+reloadFarewells scope st mclient = do
+    sessions <- readTVarIO st.sessions
+    attached <- fmap concat . forM (Map.elems sessions) $ \sess -> do
+        nm <- readTVarIO sess.name
+        cs <- atomically (sessionClients st sess.id)
+        forM cs $ \c -> do
+            hist <- clientSessionHistNames st c
+            pure (c, reloadFarewell scope c.role (Just nm) hist)
+    issuer <- forM (maybe [] pure mclient) $ \client -> do
+        msess <- clientSessionName st client
+        hist <- clientSessionHistNames st client
+        pure (client, reloadFarewell scope client.role msess hist)
+    pure (attached <> issuer)
+
+-- | End what no handover carries, while this image can still act on it.
+retireBeforeExec :: ServerState -> IO ()
+retireBeforeExec st = do
+    -- The execve replaces this image atomically, so no bracket unwinds: the
+    -- gsettings monitor child would be orphaned (14 such orphans accrued on
+    -- the dev box across upgrades). Reap it here, while we can still signal it.
+    reapMonitor st.monitorRegistry
+    -- A popup's command is no pane: nothing carries it across the exec, so
+    -- it ends here, hung up and reaped.
+    closeAllPopups st
+    saveHistory st  -- the next image loads it after its config
+
+-- | Replace this image with @target@, resuming on the handover at @blobPath@
+-- ('Hat.Server.resumeServer'). Returns only when the exec itself fails.
+execReload :: ServerState -> FilePath -> FilePath -> IO ()
+execReload st target blobPath = do
+    mconfig <- readTVarIO st.serverConfig
+    let argv = ["--server", st.sockPath]
+            <> maybe [] (: []) mconfig
+            <> ["--reload-handover", blobPath]
+    void $ executeFile target False argv Nothing
 
 -- | The binary a no-argument @restart-server@ re-execs: @hat@ as resolved on
 -- @PATH@. That is a stable profile\/system symlink the kernel follows at exec
