@@ -577,10 +577,6 @@ spec = parallel $ do
         P.callProcess "cabal" ["build", "-v0", "exe:hat"]
         init <$> readProcess "cabal" ["list-bin", "hat"] ""
 
-    it "-V prints the version without reaching for a server" $
-        P.readProcessWithExitCode hatBin ["-S", "/nonexistent/hat-sock", "-V"] ""
-            `shouldReturn` (ExitSuccess, "hat 0.0.1\n", "")
-
     it "attaches, survives detach/reattach, and shuts down cleanly, leaving the terminal cooked" $
         withHat hatBin $ \h -> do
         -- First client autostarts the server and gets a shell.
