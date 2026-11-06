@@ -50,21 +50,51 @@ heldColours e = do
     overrides <- paletteOverrides e
     pure HeldColours { cursorColour, foreground, background, overrides }
 
--- | Output that sets, resets or merely passes the program's colours, with
--- what each piece leaves them once fed whole.
+-- | Output that merely passes the program's colours, then output that
+-- resets them, then output that sets them, with what each piece leaves
+-- them once fed whole.
 colourPieces :: [(B.ByteString, HeldColours -> HeldColours)]
 colourPieces =
-    [ ("\ESC]4;1;#010203\a", \c -> c { overrides = Map.insert 1 (1, 2, 3) c.overrides })
-    , ("\ESC]4;2;#0a0b0c\ESC\\", \c -> c { overrides = Map.insert 2 (10, 11, 12) c.overrides })
+    [ ("abc", id), ("\ESC[1m", id), ("\ESC]2;title\a", id)
+    , ("\ESCc", id)  -- a full reset leaves the program's colours
     , ("\ESC]104\a", \c -> c { overrides = Map.empty })
     , ("\ESC]104;1\a", \c -> c { overrides = Map.delete 1 c.overrides })
+    , ("\ESC]111\a", \c -> c { background = Nothing })
+    , ("\ESC]112\a", \c -> c { cursorColour = Nothing })
+    , ("\ESC]4;1;#010203\a", \c -> c { overrides = Map.insert 1 (1, 2, 3) c.overrides })
+    , ("\ESC]4;2;#0a0b0c\ESC\\", \c -> c { overrides = Map.insert 2 (10, 11, 12) c.overrides })
     , ("\ESC]10;#102030\a", \c -> c { foreground = Just (16, 32, 48) })
     , ("\ESC]11;#405060\a", \c -> c { background = Just (64, 80, 96) })
-    , ("\ESC]111\a", \c -> c { background = Nothing })
-    , ("\ESC]12;#ff8000\a", \c -> c { cursorColour = Just (255, 128, 0) })
-    , ("\ESC]112\a", \c -> c { cursorColour = Nothing })
-    , ("\ESCc", id)  -- a full reset leaves the program's colours
-    , ("\ESC]2;title\a", id), ("abc", id), ("\ESC[1m", id) ]
+    , ("\ESC]12;#ff8000\a", \c -> c { cursorColour = Just (255, 128, 0) }) ]
+
+-- | One of 'colourPieces', shrinking toward the earlier, more inert ones.
+newtype Piece = Piece Int
+
+instance Show Piece where
+    show (Piece i) = show (fst (pieceOf (Piece i)))
+
+instance Arbitrary Piece where
+    arbitrary = Piece <$> chooseInt (0, length colourPieces - 1)
+    shrink (Piece i) = Piece <$> [0 .. i - 1]
+
+pieceOf :: Piece -> (B.ByteString, HeldColours -> HeldColours)
+pieceOf (Piece i) = colourPieces !! i
+
+pieceBytes :: [Piece] -> B.ByteString
+pieceBytes = B.concat . map (fst . pieceOf)
+
+-- | Pieces of colour output and the offsets the whole is cut at, each
+-- cut strictly inside it and in ascending order.
+data CutColours = CutColours [Piece] [Int]
+    deriving (Show)
+
+instance Arbitrary CutColours where
+    arbitrary = do
+        pieces <- arbitrary
+        CutColours pieces <$> sublistOf [1 .. B.length (pieceBytes pieces) - 1]
+    shrink (CutColours pieces cuts) =
+        [ CutColours ps (filter (< B.length (pieceBytes ps)) cuts) | ps <- shrink pieces ]
+        <> [ CutColours pieces cs | cs <- shrinkList (const []) cuts ]
 
 -- | What a stream of pieces leaves at each of ascending byte offsets: the
 -- effects of the pieces the offset covers whole, applied in order.
@@ -77,12 +107,12 @@ heldAt pieces = go noColours (zip ends (map snd pieces))
         | end <= offset = go (effect held) rest offsets
     go held remaining (_ : offsets) = held : go held remaining offsets
 
--- | Bytes cut at each of a series of positive offsets, in turn.
-splitAtAll :: [Int] -> B.ByteString -> [B.ByteString]
-splitAtAll [] bs = [bs]
-splitAtAll (n : ns) bs
-    | B.null bs = []
-    | otherwise = let (a, b) = B.splitAt n bs in a : splitAtAll ns b
+-- | Bytes cut at ascending offsets.
+cutAt :: [Int] -> B.ByteString -> [B.ByteString]
+cutAt offsets bs = go 0 offsets bs
+  where
+    go _ [] rest = [rest]
+    go pos (o : os) rest = let (a, b) = B.splitAt (o - pos) rest in a : go o os b
 
 -- | A row-final continuation with no wide glyph ahead of it (a spacer head)
 -- rewritten as the default blank it renders as.
@@ -669,9 +699,9 @@ spec = do
             setPaletteDefaults e (Map.singleton 5 (9, 9, 9))
             paletteOverrides e `shouldReturn` Map.singleton 1 (1, 2, 3)
         prop "read between any chunks of output, are the colours the terminal holds" $
-            \(pieceIxs :: [Int]) (cuts :: [Positive Int]) -> withMaxSuccess 300 $ ioProperty $ do
-                let pieces = [ colourPieces !! (i `mod` length colourPieces) | i <- pieceIxs ]
-                    chunks = splitAtAll (map getPositive cuts) (B.concat (map fst pieces))
+            \(CutColours ps cuts) -> withMaxSuccess 300 $ ioProperty $ do
+                let pieces = map pieceOf ps
+                    chunks = cutAt cuts (pieceBytes ps)
                     expected = heldAt pieces (drop 1 (scanl (+) 0 (map B.length chunks)))
                 e <- fresh
                 results <- forM (zip chunks expected) $ \(chunk, want) -> do
