@@ -4,10 +4,10 @@
 module Hat.Watchdog (withWatchdog, labelItems) where
 
 import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay, throwTo)
-import Control.Exception (Exception, bracket)
+import Control.Exception (Exception, bracket, handle)
 import Control.Monad (forM_, void)
 import GHC.Conc.Sync (ThreadStatus (..), labelThread, listThreads, threadLabel, threadStatus)
-import System.Exit (ExitCode (..))
+import System.Exit (ExitCode (..), exitWith)
 import System.IO (hFlush, hPutStrLn, stderr)
 import System.Posix.Process (exitImmediately)
 import System.Timeout (timeout)
@@ -21,14 +21,16 @@ instance Show Stuck where
 
 instance Exception Stuck
 
--- | Run @act@ (the main thread's whole run). Past @secs@, dump every live
--- thread's label and status to stderr, then interrupt the main thread so
--- brackets still release their resources, and exit outright if that
--- doesn't finish the run within 'graceSecs'.
+-- | Run @act@ (the main thread's whole hspec run). Past @secs@, dump every
+-- live thread's label and status to stderr, then interrupt the main
+-- thread: hspec cancels its running items on the way out, so each item's
+-- brackets release. The run then exits 'deadlineCode' -- outright if the
+-- unwinding has not finished within 'graceSecs'.
 withWatchdog :: Int -> IO a -> IO a
 withWatchdog secs act = do
     mainT <- myThreadId
-    bracket (forkIO (bark mainT)) killThread (const act)
+    handle (\Stuck -> exitWith deadlineCode) $
+        bracket (forkIO (bark mainT)) killThread (const act)
   where
     bark mainT = do
         threadDelay (secs * 1_000_000)
@@ -37,7 +39,11 @@ withWatchdog secs act = do
         void (timeout 5_000_000 dumpThreads)
         void (forkIO (throwTo mainT Stuck))
         threadDelay (graceSecs * 1_000_000)
-        exitImmediately (ExitFailure 124)
+        void $ timeout 1_000_000 $ do
+            hPutStrLn stderr ("watchdog: still running " <> show graceSecs
+                <> "s after the interrupt; exiting")
+            hFlush stderr
+        exitImmediately deadlineCode
     dumpThreads = do
         hPutStrLn stderr ("watchdog: run still going after " <> show secs <> "s; live threads:")
         ts <- listThreads
@@ -51,8 +57,15 @@ withWatchdog secs act = do
                     hPutStrLn stderr ("  " <> show t <> " " <> maybe "-" show l <> " " <> show s)
         hFlush stderr
 
+-- | Distinct from hspec's own failure exit (1), so a run the watchdog
+-- ended reads as a hang, never as a red test.
+deadlineCode :: ExitCode
+deadlineCode = ExitFailure 124
+
+-- | How long an interrupted run gets to unwind: longer than any one
+-- item's bounded teardown, with room for a loaded box.
 graceSecs :: Int
-graceSecs = 10
+graceSecs = 20
 
 -- | Label the thread running each item with the item's location and
 -- name, for 'withWatchdog''s dump.
