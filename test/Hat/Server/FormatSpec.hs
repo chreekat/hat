@@ -580,7 +580,7 @@ spec = do
             tick (midnight - 1) `shouldNotBe` tick midnight
             tick (midnight + 86399) `shouldBe` tick midnight
         prop "alike at two times, alike expansions" $
-            \f (Positive da) (Positive db) ->
+            \f (Moments a b) ->
                 let fmt = renderFmt f
                     zone = minutesToTimeZone 330
                     at d = ctx { vars = namingEnv, now = fromIntegral (testNow + d), tz = zone }
@@ -588,8 +588,6 @@ spec = do
                     texts = templates <> Map.elems (Map.restrictKeys namingEnv
                         (foldMap formatStrftimes templates))
                     clockAt d = clockTick zone (fromIntegral (testNow + d)) <$> formatClock texts
-                    a = da `mod` 200000 :: Integer
-                    b = a + db `mod` 5000
                     alike = clockAt a == clockAt b
                 in withMaxSuccess 2000 $ counterexample (T.unpack fmt) $ cover 10 alike "alike" $
                     not alike .||. renderFormatCtx (at a) fmt === renderFormatCtx (at b) fmt
@@ -633,6 +631,19 @@ renderFmt = \case
     Loop l body -> "#{" <> T.singleton l <> ":" <> renderFmt body <> "}"
     Collapse fs -> "#{J|6|-:" <> T.intercalate "," (map renderFmt fs) <> "}"
     Cat fs -> T.concat (map renderFmt fs)
+
+-- | Two moments after the spec's clock: one within a couple of days of
+-- it, the other under 5000 seconds later; both shrink toward the clock.
+data Moments = Moments Integer Integer
+    deriving (Show)
+
+instance Arbitrary Moments where
+    arbitrary = do
+        a <- chooseInteger (0, 199999)
+        gap <- chooseInteger (0, 4999)
+        pure (Moments a (a + gap))
+    shrink (Moments a b) =
+        [ Moments a' (a' + gap') | (a', gap') <- shrink (a, b - a) ]
 
 instance Arbitrary Fmt where
     arbitrary = sized go
