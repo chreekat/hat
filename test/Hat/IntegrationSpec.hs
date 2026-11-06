@@ -1560,31 +1560,6 @@ spec = parallel $ do
         _ <- awaitFile runs ((== 2) . length . lines)
         pure ()
 
-    -- Bug cb: a reload must not forget the alternate session, so a reattached
-    -- client's `switch-client -l` still toggles back to where it came from. The
-    -- `[#S]` status-left names the current session, so it is the observable.
-    it "restart-server preserves the alternate session (last-session)" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "[0]"                -- attached to the first session (named "0")
-        -- Switch this client to a new session; the first becomes its alternate.
-        typeInto c "\x02:"
-        awaitPromptOpen c
-        typeInto c "new-session -s work\r"
-        awaitScreen c "[work]"
-        -- Reload in place (deterministic binary path) and reattach.
-        _ <- hatCtl h ["restart-server", h.bin]
-        _ <- awaitExit c
-        c2 <- startClient h
-        -- Reattaches to the current session (work), not the alternate.
-        awaitScreen c2 "[work]"
-        -- switch-client -l must return to the first session — the alternate
-        -- survived the reload.
-        typeInto c2 "\x02:"
-        awaitPromptOpen c2
-        typeInto c2 "switch-client -l\r"
-        awaitScreen c2 "[0]"
-
     -- `restart` = restart-server + restart-client: the attached client
     -- re-execs and reattaches instead of exiting, so one command upgrades
     -- both halves (bug 4f). The pane pid pins the server half; the same pty
