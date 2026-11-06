@@ -646,24 +646,6 @@ spec = parallel $ do
         marker <- ctlOut h ["display-message", "-p", "#{@marker}"]
         (sessions, marker) `shouldBe` ("fresh\n", "\n")
 
-    -- bug 6: a pager (less) draws on the alternate screen; on exit the primary
-    -- buffer must be repainted on the *client*, not just in the emulator, or
-    -- the pager's screen bleeds through.
-    it "repaints the client when a program exits the alternate screen" $
-        withHat hatBin $ \h -> do
-        c <- startClient h
-        awaitScreen c "$"
-        -- Enter the alt screen, show a marker, and park in `read` so the client
-        -- renders the alt screen before we trigger the exit. The markers are
-        -- printf-generated (ALT42MARK / BACK99SHELL) so they appear only in the
-        -- rendered output, never in the echoed command line.
-        typeInto c "printf '\\033[?1049hALT%dMARK' 42; read x; printf '\\033[?1049lBACK%dSHELL\\n' 99\r"
-        awaitScreen c "ALT42MARK"
-        typeInto c "\r"                 -- satisfy `read`, program exits the alt screen
-        awaitScreen c "BACK99SHELL"
-        scr <- screenText c
-        T.isInfixOf "ALT42MARK" scr `shouldBe` False
-
     -- bug 6: zooming a short pane that runs less (alternate screen) grew the
     -- pane; less redrew once for the new size via SIGWINCH. If the emulator is
     -- resized after the pty, that one-shot redraw lands on the old-size model

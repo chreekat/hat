@@ -1,7 +1,7 @@
 -- | The client render seam, driven over a real socketpair: what 'renderOnce'
 -- sends must take the client's screen to the server's view of its session —
--- after a shrink (regression guard, bug 97) and for several clients on one
--- pane.
+-- after a shrink (regression guard, bug 97), for several clients on one
+-- pane, and across a program's alternate-screen exit (bug 6).
 module Hat.Server.ResizeRenderSpec (spec) where
 
 import Control.Concurrent.STM (atomically, newTVarIO, readTVarIO, writeTVar)
@@ -221,3 +221,26 @@ spec = do
             s1' `shouldSatisfy` any (T.isInfixOf "second-8")
             s2' `shouldSatisfy` any (T.isInfixOf "second-8")
             mapM_ close [p1.sock, c1.sock, p2.sock, c2.sock]
+
+        -- bug 6: a program leaving the alternate screen must take the client
+        -- back to the primary screen, not only the emulator.
+        it "repaints the primary screen when a program leaves the alternate screen (bug 6)" $
+            withServer $ \st -> do
+            -- `read` parks the program on the alternate screen until a line
+            -- arrives; the markers are printf output, never an echoed command.
+            newSessionRunning st
+                "printf PRIMARY-7; printf '\\033[?1049hALT-42'; read x; \
+                \printf '\\033[?1049l'; exec sleep 600"
+            pane <- onlyPane st
+            awaitTrue "the alternate screen" (screenHas "ALT-42" pane.emulator)
+            let sz = Size { rows = 7, cols = 40 }
+            (client, peer) <- viewer st sz
+            onAlt <- paint st client peer (blankFrame sz)
+            frameText onAlt `shouldSatisfy` any (T.isInfixOf "ALT-42")
+            Pty.writePty pane.pty "\n"
+            awaitTrue "the primary screen back" (screenHas "PRIMARY-7" pane.emulator)
+            back <- frameText <$> paint st client peer onAlt
+            back `shouldSatisfy` any (T.isInfixOf "PRIMARY-7")
+            back `shouldNotSatisfy` any (T.isInfixOf "ALT-42")
+            close peer.sock
+            close client.sock
