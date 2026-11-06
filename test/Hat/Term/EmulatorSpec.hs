@@ -704,11 +704,8 @@ spec = do
                     chunks = cutAt cuts (pieceBytes ps)
                     expected = heldAt pieces (drop 1 (scanl (+) 0 (map B.length chunks)))
                 e <- fresh
-                results <- forM (zip chunks expected) $ \(chunk, want) -> do
-                    _ <- feed e chunk
-                    got <- heldColours e
-                    pure (got === want)
-                pure (conjoin results)
+                held <- forM chunks $ \chunk -> feed e chunk >> heldColours e
+                pure (held === expected)
 
     describe "terminal replies, as tmux gives them" $ do
         let replyTo setup q = do
