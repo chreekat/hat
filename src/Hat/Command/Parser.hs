@@ -373,35 +373,37 @@ stripLine q0 line0
                 ("", q0)
              | otherwise -> scan rest q0
   where
-    scan line q = go 0 q True False
+    scan line q = go line 0 q True False
       where
-        n = T.length line
-        at = T.index line
         cut i st = (T.take i line, st)
-        go i st boundary afterDirective
-            | i >= n = cut n st
-            | otherwise = case (st, at i) of
-                (Single, '\'') -> go (i + 1) Free False False
-                (Single, _) -> go (i + 1) Single False False
-                (Double, '"') -> go (i + 1) Free False False
-                (Double, '\\') -> go (i + 2) Double False False
-                (Double, _) -> go (i + 1) Double False False
-                (DoubleEsc, _) -> go (i + 1) Double False False
-                (Free, c) -> case c of
-                    '\'' -> go (i + 1) Single False False
-                    '"' -> go (i + 1) Double False False
-                    '\\' -> go (i + 2) Free False False
-                    '#' | boundary -> case formatSpan (T.drop i line) of
-                        Just (fmt, _) | afterDirective ->
-                            go (i + T.length fmt) Free False False
+        -- Walks the unread suffix, counting characters only for 'cut'.
+        go rest i st boundary afterDirective = case T.uncons rest of
+            Nothing -> cut i st
+            Just (c, rest1) -> case (st, c) of
+                (Single, '\'') -> next Free False False
+                (Single, _) -> next Single False False
+                (Double, '"') -> next Free False False
+                (Double, '\\') -> pastEscaped Double
+                (Double, _) -> next Double False False
+                (DoubleEsc, _) -> next Double False False
+                (Free, _) -> case c of
+                    '\'' -> next Single False False
+                    '"' -> next Double False False
+                    '\\' -> pastEscaped Free
+                    '#' | boundary -> case formatSpan rest of
+                        Just (fmt, after) | afterDirective ->
+                            go after (i + T.length fmt) Free False False
                         _ -> cut i Free
                     '%' | boundary ->
-                        let w = T.takeWhile (`notElem` [' ', '\t']) (T.drop i line)
-                        in go (i + T.length w) Free False
+                        let (w, after) = T.span (`notElem` [' ', '\t']) rest
+                        in go after (i + T.length w) Free False
                             (not (T.all (\d -> d == '%' || isDigit d) w))
-                    _ | c == ' ' || c == '\t' -> go (i + 1) Free True afterDirective
-                      | c `elem` [';', '{', '}'] -> go (i + 1) Free True False
-                      | otherwise -> go (i + 1) Free False False
+                    _ | c == ' ' || c == '\t' -> next Free True afterDirective
+                      | c `elem` [';', '{', '}'] -> next Free True False
+                      | otherwise -> next Free False False
+              where
+                next = go rest1 (i + 1)
+                pastEscaped st' = go (T.drop 1 rest1) (i + 2) st' False False
 
 singleQuoted :: Parser Text
 singleQuoted = do

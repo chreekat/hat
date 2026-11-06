@@ -2,9 +2,11 @@ module Hat.Command.ParserSpec (spec) where
 
 import Test.Hspec
 
+import Control.Exception (evaluate)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
+import GHC.Conc (getAllocationCounter)
 
 import Hat.Command.Parser
 import Hat.Command.Script
@@ -139,6 +141,13 @@ spec = do
 
     it "reports parse errors" $
         (parseScript "echo 'unterminated").failure `shouldSatisfy` isJust
+
+    it "a long line costs its size once, not once per character" $ do
+        let line = "bind x { send-keys -l " <> T.replicate 32768 "a" <> " }\n"
+        start <- getAllocationCounter
+        _ <- evaluate (length (commands line))
+        stop <- getAllocationCounter
+        start - stop `shouldSatisfy` (< 32 * 1024 * 1024)
 
     -- argv splitter for the CLI wire path: each argv is one word except
     -- when it ends in an unescaped ';' (command boundary) or in "\;"
