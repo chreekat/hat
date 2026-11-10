@@ -448,7 +448,7 @@ feedSegments e t = go
             sigEvs <- applySignal e sig
             ((outEvs <> sigEvs) <>) <$> go rest
     -- After feeding a segment, collect what libghostty wrote back to the pty
-    -- (a DA/CPR reply).
+    -- (a DA/CPR reply), less what tmux leaves unanswered.
     writeSeg seg
         | B.null seg = pure []
         | otherwise = do
@@ -457,8 +457,26 @@ feedSegments e t = go
                 c_write t (castPtr p) (fromIntegral n)
             s <- readIORef e.state
             writeIORef e.state (s { output = [] })
-            let outs = B.concat (reverse s.output)
+            let outs = dropDecxcprReply (B.concat (reverse s.output))
             pure [Output outs | not (B.null outs)]
+
+-- | The emulator's replies without its DEC-private cursor reports (DECXCPR,
+-- @CSI ? … R@): tmux leaves @CSI ? 6 n@ unanswered, and a reply that lands
+-- after the asking app has exited spills into the shell as visible garbage.
+-- Plain CPR (@CSI … R@) and every other reply pass through.
+dropDecxcprReply :: ByteString -> ByteString
+dropDecxcprReply bs =
+    case B.breakSubstring "\ESC[?" bs of
+        (before, rest)
+            | B.null rest -> bs
+            | otherwise ->
+                let afterIntro = B.drop 3 rest
+                    (_params, tailB) = B.span isParam afterIntro
+                in case B.uncons tailB of
+                    Just (0x52, more) -> before <> dropDecxcprReply more
+                    _ -> before <> "\ESC[?" <> dropDecxcprReply afterIntro
+  where
+    isParam b = (b >= 0x30 && b <= 0x39) || b == 0x3b
 
 -- | Turn a host query hat answers itself into its 'Event', recording the DEC
 -- 2031 subscription a @CSI ? 2031 h@\/@l@ toggles (never fed to libghostty, so

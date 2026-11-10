@@ -993,8 +993,7 @@ spec = do
         evs `shouldContain` [ColorSchemeQuery]
 
     -- Bug f: plain CPR is answered, DECXCPR (CSI ? 6 n) is not — a
-    -- DEC-private cursor report reaches the shell as visible garbage. Nothing
-    -- filters the reply any more, so this pins libghostty's own silence.
+    -- DEC-private cursor report reaches the shell as visible garbage.
     it "answers plain CPR but not DECXCPR (CSI ? 6 n)" $ do
         e <- new80x24
         cpr  <- feedStr e "\ESC[6n"
