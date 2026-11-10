@@ -8,3 +8,9 @@ active-repositories: :none
 -- without oversubscribing.
 semaphore: True
 jobs:  $ncpus
+
+package hat
+  -- A large nursery and serial GC: the parallel --make shares one heap, so
+  -- the default 4MB nursery has every compile thread waiting on frequent
+  -- collections.
+  ghc-options: +RTS -A128m -qg -RTS
