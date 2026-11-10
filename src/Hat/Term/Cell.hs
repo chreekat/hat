@@ -18,12 +18,16 @@ module Hat.Term.Cell
     , cellWidth
     , cluster
     , baseChar
+    , columnsText
     , encodeStyleAt
     ) where
 
 import Codec.Serialise (Serialise (..))
 import Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
 import Codec.Serialise.Encoding (Encoding, encodeListLen, encodeWord)
+import Data.Char (isSpace)
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
@@ -143,6 +147,21 @@ baseChar :: Cell -> Char
 baseChar c = case c.content of
     Continuation  -> ' '
     Glyph ch _ _  -> ch
+
+-- | A row's text as copy-mode search reads it, from its first @n@ columns'
+-- characters ('Nothing' for a wide character's padding column, which
+-- reads as a space), up to the last that is not blank.
+columnsText :: Int -> (Int -> Maybe Char) -> Text
+columnsText n at = T.unfoldrN len step 0
+  where
+    len = lastFilled (n - 1) + 1
+    lastFilled i
+        | i < 0 = -1
+        | maybe True (not . isSpace) (at i) = i
+        | otherwise = lastFilled (i - 1)
+    step i
+        | i >= len = Nothing
+        | otherwise = Just (fromMaybe ' ' (at i), i + 1)
 
 -- | Byte-compatible with the field encoding every era wrote: the whole
 -- cluster rides as one string (empty for a continuation) beside a 0\/1\/2

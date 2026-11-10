@@ -849,6 +849,9 @@ data FrozenGrid = FrozenGrid
     , fgWrapped :: !(V.Vector Bool)
         -- ^ whether each row soft-wraps onto the next; a row past its end
         --   does not
+    , fgText :: !(V.Vector Text)
+        -- ^ the text of the leading rows, read apart from their cells; a row
+        --   past its end takes its text from 'fgRows'
     }
     deriving (Eq, Show)
 

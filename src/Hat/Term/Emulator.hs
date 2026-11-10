@@ -72,6 +72,7 @@ module Hat.Term.Emulator
     , scrollbackLine
     , scrollbackPainted
     , scrollbackLineWrapped
+    , scrollbackLineText
     , screenRowWrapped
     , setScrollbackLimit
     , clearScrollback
@@ -83,7 +84,7 @@ module Hat.Term.Emulator
     ) where
 
 import Control.Concurrent.MVar
-import Control.Exception (finally)
+import Control.Exception (evaluate, finally)
 import Control.Monad (filterM, unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
@@ -97,7 +98,9 @@ import Data.List (dropWhileEnd, intersperse)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Vector.Storable qualified as VS
 import Data.Vector qualified as V
 import Foreign
 import Foreign.Concurrent qualified as FC
@@ -1153,6 +1156,26 @@ paintShimRow t tag y cols = attempt
         if n >= 0
             then B.packCStringLen (castPtr out, fromIntegral n)
             else allocaBytes (cap * 4) $ \bigger -> attempt bigger (cap * 4)
+
+-- | A scrollback row's text (indexed as 'scrollbackLine') as
+-- 'columnsText' reads its cells' base characters.
+scrollbackLineText :: Emulator -> Int -> IO Text
+scrollbackLineText e i = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    (phys, exposed) <- historyRowsT e t
+    if i < 0 || i >= exposed
+        then pure T.empty
+        else do
+            cols <- fromIntegral <$> c_get t dataCols
+            allocaArray cols $ \out -> do
+                _ <- c_row_chars t tagHistory (fromIntegral (phys - exposed + i))
+                        (fromIntegral cols) out
+                chars <- VS.generateM cols (peekElemOff out)
+                evaluate (columnsText cols (charOf . (chars VS.!)))
+  where
+    charOf w
+        | w == shimSpacer = Nothing
+        | w == 0 = Just ' '
+        | otherwise = Just (chr (fromIntegral w))
 
 -- | Whether a scrollback row (indexed as 'scrollbackLine') soft-wraps onto
 -- the next row.

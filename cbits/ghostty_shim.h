@@ -71,6 +71,12 @@ int   ghost_shim_mode(void *t, uint16_t mode_num, int ansi);
 int   ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out);
 int   ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
                            GhostShimCell *out);
+/* One row's characters, one per column: the cell's base codepoint (0 when
+ * blank), or GHOST_SHIM_SPACER for the padding column behind a wide
+ * character. Returns 1, or 0 with out all-zero when the row is unreadable. */
+#define GHOST_SHIM_SPACER 0xFFFFFFFFu
+int   ghost_shim_row_chars(void *t, int tag, uint32_t y, uint16_t cols,
+                           uint32_t *out);
 int   ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
                                 uint32_t *buf, size_t buf_len, size_t *out_len);
 

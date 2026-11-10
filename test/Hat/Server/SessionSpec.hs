@@ -302,7 +302,8 @@ blankCopyData :: Int -> CopyModeData
 blankCopyData hsize = CopyModeData
     { kind = ModeCopy
     , frozen = FrozenGrid
-        { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty, fgWrapped = V.empty }
+        { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty, fgWrapped = V.empty
+        , fgText = V.empty }
     , copyState = copyModeAt "copy-mode" hsize 0
     }
 

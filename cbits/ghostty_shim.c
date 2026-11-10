@@ -202,6 +202,37 @@ int ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
     return 1;
 }
 
+int ghost_shim_row_chars(void *t, int tag, uint32_t y, uint16_t cols,
+                         uint32_t *out) {
+    memset(out, 0, (size_t)cols * sizeof(*out));
+
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = 0;
+    p.value.coordinate.y = y;
+
+    GhosttyGridRef ref = { 0 };
+    if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return 0;
+    for (uint16_t x = 0; x < cols; x++) {
+        ref.x = x;
+        GhosttyCell cell;
+        uint32_t cp = 0;
+        GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+        const GhosttyCellData keys[2] = {
+            GHOSTTY_CELL_DATA_CODEPOINT, GHOSTTY_CELL_DATA_WIDE,
+        };
+        void *vals[2] = { &cp, &wide };
+        if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS
+         || ghostty_cell_get_multi(cell, 2, keys, vals, NULL) != GHOSTTY_SUCCESS) {
+            memset(out, 0, (size_t)cols * sizeof(*out));
+            return 0;
+        }
+        out[x] = wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD
+            ? GHOST_SHIM_SPACER : cp;
+    }
+    return 1;
+}
+
 /* The row painter's view of one cell: the paint-relevant fields, with the
  * style already flattened to the same words GhostShimCell carries. */
 typedef struct {

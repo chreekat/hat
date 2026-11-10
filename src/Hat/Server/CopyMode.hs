@@ -138,6 +138,8 @@ data Grid m = Grid
     , gPadding  :: Int -> Int -> m Bool
         -- ^ is (row, col) the padding column behind a wide character?
     , gWrapped  :: Int -> m Bool     -- ^ is the row a wrapped continuation?
+    , gText     :: Int -> m Text
+        -- ^ a row's characters up to its trimmed length, as 'gChar' reads them
     }
 
 -- | Bottom-most absolute row.
@@ -162,6 +164,9 @@ listGrid sx rows = Grid
         [] -> 0
     , gWrapped = \_ -> pure False
     , gPadding = \_ _ -> pure False
+    , gText = \r -> pure $ case drop r rows of
+        (row : _) -> T.dropWhileEnd (== ' ') (T.take sx row)
+        [] -> ""
     }
 
 -- | Capture a pane's absolute grid — every scrollback line, then the
@@ -176,6 +181,7 @@ freezeGrid e = Emu.clone e >>= \case
     Nothing -> do
         fg <- gridOf e
         fg <$ V.mapM_ evaluate fg.fgRows <* V.mapM_ evaluate fg.fgWrapped
+            <* V.mapM_ evaluate fg.fgText
 
 -- | The absolute grid of an emulator, each row read when it is first used.
 gridOf :: Emu.Emulator -> IO FrozenGrid
@@ -183,17 +189,19 @@ gridOf e = do
     hsize <- Emu.scrollbackLength e
     scr <- Emu.snapshot e
     let sy = V.length scr.cells
+        sx = fromIntegral scr.size.cols
         -- Nothing writes to the emulator a frozen grid reads, so a row
         -- read late is the row as it was.
         later = unsafePerformIO
     pure FrozenGrid
         { fgHsize = hsize
         , fgSy = sy
-        , fgSx = fromIntegral scr.size.cols
+        , fgSx = sx
         , fgRows = V.generate hsize (\i -> later (fromMaybe V.empty <$> Emu.scrollbackLine e i))
             <> scr.cells
         , fgWrapped = V.generate hsize (later . Emu.scrollbackLineWrapped e)
             <> V.generate sy (later . Emu.screenRowWrapped e)
+        , fgText = V.generate hsize (later . Emu.scrollbackLineText e)
         }
 
 -- | Fit copy mode to its pane's new size as tmux resizes its copy of the
@@ -281,6 +289,7 @@ reflowFrozen sx sy fg = (fg', at)
         , fgSx = sx
         , fgRows = V.fromList [ V.fromList (cs <> replicate (sx - width cs) Cell.blankCell) | (cs, _) <- padded ]
         , fgWrapped = V.fromList (concat [ map (const True) (drop 1 nl) <> [False] | nl <- newLines ])
+        , fgText = V.empty
         }
     at (r, c)
         | nOld == 0 = (0, 0)
@@ -313,9 +322,14 @@ frozenGrid fg = Grid
         in pure (min fg.fgSx (lastFilled + 1))
     , gWrapped = \_ -> pure False
     , gPadding = \row col -> pure (maybe False isPadding (rowAt row V.!? col))
+    , gText = \row -> pure $ fromMaybe (cellsText (rowAt row)) (fg.fgText V.!? row)
     }
   where
     rowAt row = fromMaybe V.empty (fg.fgRows V.!? row)
+    cellsText cs = Cell.columnsText (min fg.fgSx (V.length cs)) (columnOf . (cs V.!))
+    columnOf c = case c.content of
+        Cell.Continuation -> Nothing
+        Cell.Glyph ch _ _ -> Just ch
     isPadding c = c.content == Cell.Continuation
 
 -- ---------------------------------------------------------------------
@@ -733,10 +747,9 @@ charSearch g cs target st = do
             if c == target then pure (Just i) else findFrom (step i) inBounds step
 
 -- | The trimmed text of a grid row.
-rowText :: Monad m => Grid m -> Int -> m Text
-rowText g r = do
-    len <- g.gLineLen r
-    T.pack <$> mapM (g.gChar r) [0 .. len - 1]
+rowText :: Grid m -> Int -> m Text
+rowText g = g.gText
+
 
 -- | A compiled string-search pattern, ready to scan grid rows. Built by
 -- 'compilePattern'; consumed by 'findMatch'.
@@ -1329,7 +1342,8 @@ paneGrid pane = do
         _ -> frozenGrid emptyFrozen
   where
     emptyFrozen = FrozenGrid
-        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty, fgWrapped = V.empty }
+        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty, fgWrapped = V.empty
+        , fgText = V.empty }
 
 -- | Run a reader motion against a pane grid, updating the cursor. Outside a
 -- rectangle selection the cursor lands no further right than the line

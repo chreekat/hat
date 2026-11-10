@@ -12,6 +12,8 @@ import Data.Vector qualified as V
 import GHC.Conc (getAllocationCounter)
 import System.IO (hIsClosed)
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import Test.QuickCheck (ioProperty, (===))
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
@@ -25,7 +27,7 @@ import Hat.Server (defaultKeymap)
 import Hat.Server.Keys (Binding (..))
 import Hat.Server.CopyMode
 import Hat.Server.FormatDraw (styleCell)
-import Hat.TestSupport (clientTheme)
+import Hat.TestSupport (PaintedSoup (..), clientTheme)
 import Hat.Term.Cell
     ( Cell (..), Color (..), Content (..), Style (..), Width (..), defaultStyle
     , glyphCell )
@@ -230,7 +232,7 @@ spec = do
             row1 = V.fromList (map narrow "xyz" <> replicate 17 (narrow ' '))
             wide = frozenGrid FrozenGrid
                 { fgHsize = 0, fgSy = 2, fgSx = 20
-                , fgRows = V.fromList [row0, row1], fgWrapped = V.empty }
+                , fgRows = V.fromList [row0, row1], fgWrapped = V.empty, fgText = V.empty }
             at col row = start.sState { cursorRow = row, cursorCol = col }
             go m s = runIdentity (runMotion wide KeysVi viSeparators m s)
             pos s = (s.cursorCol, s.cursorRow)
@@ -431,7 +433,8 @@ spec = do
         let gridOf w sy hs rows = FrozenGrid
                 { fgHsize = hs, fgSy = sy, fgSx = w
                 , fgRows = V.fromList [ rowOf w (filter (/= '+') r) | r <- rows ]
-                , fgWrapped = V.fromList [ "+" `T.isSuffixOf` T.pack r | r <- rows ] }
+                , fgWrapped = V.fromList [ "+" `T.isSuffixOf` T.pack r | r <- rows ]
+                , fgText = V.empty }
             rowOf w r = V.fromList (cellsOf r <> replicate (w - widthOf r) (glyphCell ' ' defaultStyle))
             cellsOf = concatMap $ \c -> if c == '日'
                 then [ Cell { content = Glyph c [] Wide, style = defaultStyle }
@@ -484,7 +487,7 @@ spec = do
                 { fgHsize = 2, fgSy = 2, fgSx = 10
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
-                    | r <- rows ], fgWrapped = V.empty }
+                    | r <- rows ], fgWrapped = V.empty, fgText = V.empty }
             varsUnder n st = Map.fromList (copyModeFormats " " n CopyModeData { kind = ModeCopy, frozen = frozen, copyState = st })
             vars = varsUnder NumbersOff
             at = copyModeAt "copy-mode" 2 5
@@ -544,7 +547,7 @@ spec = do
                 { fgHsize = 0, fgSy = 3, fgSx = 12
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 12 (T.unpack r <> repeat ' ') ]
-                    | r <- rows ], fgWrapped = V.empty }
+                    | r <- rows ], fgWrapped = V.empty, fgText = V.empty }
             fgOf n = defaultStyle { fg = Indexed n }
             look = CopyLook
                 { keys = KeysVi, numbers = NumbersOff
@@ -858,6 +861,14 @@ spec = do
             _ <- Emu.feed e "\r\nafter"
             g <- frozenGrid <$> freezeGrid e
             T.stripEnd (rowText (g :: Grid Identity) 1) `shouldBe` "after"
+        prop "reads its history's text as the rows' cells spell it" $
+            \(PaintedSoup lns) -> ioProperty $ do
+                e <- Emu.newEmulator Size { rows = 3, cols = 10 } 1000
+                _ <- Emu.feed e (B8.intercalate "\r\n" lns <> "\r\n\r\n\r\n")
+                frozen <- freezeGrid e
+                let texts g = [ runIdentity (g.gText r) | r <- [0 .. frozen.fgHsize - 1] ]
+                pure $ texts (frozenGrid frozen :: Grid Identity)
+                    === texts (frozenGrid frozen { fgText = V.empty })
         it "reads no history row until it is used" $ do
             let frozenCost n = do
                     e <- Emu.newEmulator Size { rows = 24, cols = 80 } 5000

@@ -14,6 +14,8 @@ module Hat.Term.Ghostty
     , c_get_title
     , c_mode
     , c_row_cells
+    , c_row_chars
+    , shimSpacer
     , c_paint_row
     , c_format_history
     , c_format_release
@@ -96,6 +98,8 @@ foreign import ccall unsafe "ghost_shim_mode"
     c_mode :: Ptr CTerm -> CUShort -> CInt -> IO CInt
 foreign import ccall unsafe "ghost_shim_row_cells"
     c_row_cells :: Ptr CTerm -> CInt -> CUInt -> CUShort -> Ptr () -> IO CInt
+foreign import ccall unsafe "ghost_shim_row_chars"
+    c_row_chars :: Ptr CTerm -> CInt -> CUInt -> CUShort -> Ptr Word32 -> IO CInt
 foreign import ccall unsafe "ghost_shim_paint_row"
     c_paint_row :: Ptr CTerm -> CInt -> CUInt -> CUShort
                 -> Ptr Word8 -> CSize -> IO CLong
@@ -143,6 +147,10 @@ type WritePtyFn = Ptr CTerm -> Ptr () -> Ptr Word8 -> CSize -> IO ()
 type BellFn     = Ptr CTerm -> Ptr () -> IO ()
 foreign import ccall "wrapper" wrapWritePty :: WritePtyFn -> IO (FunPtr WritePtyFn)
 foreign import ccall "wrapper" wrapBell     :: BellFn -> IO (FunPtr BellFn)
+
+-- | What 'c_row_chars' writes for the padding column behind a wide character.
+shimSpacer :: Word32
+shimSpacer = #{const GHOST_SHIM_SPACER}
 
 -- | Bytes of one 'GhostShimCell', as 'c_row_cells' and friends fill them.
 shimCellSize :: Int
