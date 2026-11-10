@@ -80,7 +80,11 @@ enterClockMode st pane = do
         when on tick
 
 holdsClock :: Pane -> STM Bool
-holdsClock pane = any ((== ClockMode) . (.mode)) <$> readTVar pane.modes
+holdsClock pane = any (isClock . (.mode)) <$> readTVar pane.modes
+  where
+    isClock = \case
+        ClockMode -> True
+        _ -> False
 
 -- | Clear every pane's modes ahead of a reload, which carries no mode state:
 -- each mode's own effect on its window (a @-Z@ zoom) is undone so the

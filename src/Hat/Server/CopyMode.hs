@@ -86,7 +86,7 @@ module Hat.Server.CopyMode
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, bracket, catch, evaluate)
+import Control.Exception (SomeException, bracket, catch)
 import Control.Monad (forM, forM_, void)
 import Data.Array ((!))
 import Data.Char (isSpace, toLower)
@@ -119,7 +119,6 @@ import Hat.Server.Clipboard (pushBufferBytes, setSelection)
 import Hat.Server.Outbound (Delivery (InOrder))
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
-import Hat.Term.Emulator.Types (rtrimBlank)
 
 -- ---------------------------------------------------------------------
 -- Grid abstraction
@@ -172,135 +171,80 @@ listGrid sx rows = Grid
 -- | Capture a pane's absolute grid — every scrollback line, then the
 -- live screen — into an immutable 'FrozenGrid'. Copy mode reads this
 -- snapshot for the whole session so the program's later output stays
--- invisible until the mode exits. The capture is a private clone of the
--- pane's terminal whose rows are read on first use; when the terminal
--- cannot be cloned, every row is read from it now instead.
+-- invisible until the mode exits. The capture is a private copy of the
+-- pane's terminal whose rows are read on first use: a clone, or a
+-- repainting of its cells when it cannot be cloned.
 freezeGrid :: Emu.Emulator -> IO FrozenGrid
-freezeGrid e = Emu.clone e >>= \case
-    Just c -> gridOf c
-    Nothing -> do
-        fg <- gridOf e
-        fg <$ V.mapM_ evaluate fg.fgRows <* V.mapM_ evaluate fg.fgWrapped
-            <* V.mapM_ evaluate fg.fgText
+freezeGrid e = gridOf =<< privateCopy e
 
--- | The absolute grid of an emulator, each row read when it is first used.
+-- | An emulator holding what another holds, which nothing else writes.
+privateCopy :: Emu.Emulator -> IO Emu.Emulator
+privateCopy e = maybe (Emu.repaintedCopy e) pure =<< Emu.clone e
+
+-- | The absolute grid of a private emulator, each row read when it is
+-- first used. See Note [Reading a private copy lazily].
 gridOf :: Emu.Emulator -> IO FrozenGrid
 gridOf e = do
     hsize <- Emu.scrollbackLength e
     scr <- Emu.snapshot e
     let sy = V.length scr.cells
-        sx = fromIntegral scr.size.cols
-        -- Nothing writes to the emulator a frozen grid reads, so a row
-        -- read late is the row as it was.
         later = unsafePerformIO
     pure FrozenGrid
         { fgHsize = hsize
         , fgSy = sy
-        , fgSx = sx
+        , fgSx = fromIntegral scr.size.cols
         , fgRows = V.generate hsize (\i -> later (fromMaybe V.empty <$> Emu.scrollbackLine e i))
             <> scr.cells
         , fgWrapped = V.generate hsize (later . Emu.scrollbackLineWrapped e)
             <> V.generate sy (later . Emu.screenRowWrapped e)
         , fgText = V.generate hsize (later . Emu.scrollbackLineText e)
+        , fgSource = Just e
         }
 
--- | Fit copy mode to its pane's new size as tmux resizes its copy of the
--- grid: the lines rewrapped at the new width, the rows past the new height
--- in the history, and the cursor kept on its character — on the screen's
--- top row when that is in the history. Positions the state holds follow
--- their characters too.
+-- Note [Reading a private copy lazily]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- A frozen grid's rows come from an emulator that only the grid holds and
+-- nothing ever writes: reading one is a pure function of the row, so it
+-- runs, via 'unsafePerformIO', only when the row is first used. Resizing
+-- keeps that true by reflowing a further copy of it, never the emulator
+-- itself, so a grid's unread rows still read as they were frozen.
+
+-- | Fit copy mode to its pane's new size as the pane's own terminal
+-- resizes: libghostty rewraps a copy of the frozen grid, rows past the new
+-- height go into the history, and the cursor and every other position the
+-- state holds follow their characters, the view scrolled to the cursor
+-- when it is in the history. A grid with no emulator behind it is kept.
+-- See Note [Reading a private copy lazily].
 resizeCopyMode :: Size -> CopyModeData -> CopyModeData
-resizeCopyMode sz pm
-    | sx == fg.fgSx && sy == fg.fgSy = pm
-    | otherwise = pm
-        { frozen = fg'
-        , copyState = cs
-            { cursorRow = row
-            , cursorCol = col
-            , viewportOffY = if row < fg'.fgHsize then fg'.fgHsize - row else 0
-            , selection = fmap (\(p, k) -> (at p, k)) cs.selection
-            , pinnedEnd = at <$> cs.pinnedEnd
-            , mark = at cs.mark
-            , recentre = Nothing
+resizeCopyMode sz pm = case pm.frozen.fgSource of
+    Just src | (sx, sy) /= (pm.frozen.fgSx, pm.frozen.fgSy) ->
+        let (fg', at) = unsafePerformIO (reflowed src)
+            (row, col) = at (cs.cursorRow, cs.cursorCol)
+        in pm
+            { frozen = fg'
+            , copyState = cs
+                { cursorRow = row
+                , cursorCol = col
+                , viewportOffY = if row < fg'.fgHsize then fg'.fgHsize - row else 0
+                , selection = fmap (\(p, k) -> (at p, k)) cs.selection
+                , pinnedEnd = at <$> cs.pinnedEnd
+                , mark = at cs.mark
+                , recentre = Nothing
+                }
             }
-        }
+    _ -> pm
   where
-    fg = pm.frozen
     cs = pm.copyState
     sx = max 1 (fromIntegral sz.cols)
     sy = max 1 (fromIntegral sz.rows)
-    (fg', at) = reflowFrozen sx sy fg
-    (row, col) = at (cs.cursorRow, cs.cursorCol)
-
--- | A frozen grid at a new width and height (tmux's @grid_reflow@ under
--- @screen_resize_cursor@), and where each old @(row, col)@ lands. Each
--- line — its rows joined while they wrap — is split again at the new
--- width, a wide character that would straddle the edge starting the next
--- row; rows short of the height are blank ones added at the bottom.
-reflowFrozen :: Int -> Int -> FrozenGrid -> (FrozenGrid, (Int, Int) -> (Int, Int))
-reflowFrozen sx sy fg = (fg', at)
-  where
-    nOld = V.length fg.fgRows
-    wraps i = fromMaybe False (fg.fgWrapped V.!? i)
-    rowAt i = maybe [] V.toList (fg.fgRows V.!? i)
-    -- Each line's rows, and each row's cells as it contributes them.
-    lineRows = groupLines 0
-    groupLines i
-        | i >= nOld = []
-        | otherwise = let (rs, next) = takeLine i in rs : groupLines next
-    takeLine i
-        | wraps i && i + 1 < nOld = let (rs, n) = takeLine (i + 1) in (i : rs, n)
-        | otherwise = ([i], i + 1)
-    contributed i
-        | wraps i = dropSpacerHead (rowAt i)
-        | otherwise = rtrimBlank (rowAt i)
-    -- A wrapped row's last column holds a spacer when a wide character did
-    -- not fit there.
-    dropSpacerHead cs = case reverse cs of
-        (c : rest) | c.content == Cell.Continuation, not (endsWide rest) -> reverse rest
-        _ -> cs
-    endsWide (c : _) = Cell.cellWidth c == 2
-    endsWide [] = False
-    width = sum . map Cell.cellWidth
-    -- Where each old row starts within its line, in columns.
-    starts = V.fromList (concatMap (\rs -> scanl (+) 0 (map (width . contributed) (init rs))) lineRows)
-    lineOf = V.fromList (concat [ map (const li) rs | (li, rs) <- zip [0 :: Int ..] lineRows ])
-    -- The new rows of each line, as (cells, starting column in the line).
-    split cs = go 0 [] 0 (units cs)
-      where
-        go _ acc s [] = [(reverse acc, s)]
-        go c acc s (u : us)
-            | c > 0 && c + width u > sx = (reverse acc, s) : go 0 [] (s + c) (u : us)
-            | otherwise = go (c + width u) (reverse u <> acc) s us
-    units = \case
-        [] -> []
-        (c : rest)
-            | Cell.cellWidth c == 2, (k : rest') <- rest, k.content == Cell.Continuation ->
-                (if sx < 2 then [c] else [c, k]) : units rest'
-            | c.content == Cell.Continuation -> units rest
-            | otherwise -> [c] : units rest
-    newLines = [ split (concatMap contributed rs) | rs <- lineRows ]
-    firstRow = V.fromList (scanl (+) 0 (map length newLines))
-    newRows = concat newLines
-    padded = newRows <> replicate (sy - length newRows) ([], 0)
-    fg' = FrozenGrid
-        { fgHsize = max 0 (length padded - sy)
-        , fgSy = sy
-        , fgSx = sx
-        , fgRows = V.fromList [ V.fromList (cs <> replicate (sx - width cs) Cell.blankCell) | (cs, _) <- padded ]
-        , fgWrapped = V.fromList (concat [ map (const True) (drop 1 nl) <> [False] | nl <- newLines ])
-        , fgText = V.empty
-        }
-    at (r, c)
-        | nOld == 0 = (0, 0)
-        | otherwise =
-            let r' = max 0 (min (nOld - 1) r)
-                li = lineOf V.! r'
-                off = starts V.! r' + max 0 c
-                rows = zip [firstRow V.! li ..] (map snd (newLines !! li))
-                -- A line's first row starts at 0, so one always qualifies.
-                (nr, s) = last ((firstRow V.! li, 0) : [ x | x@(_, s0) <- rows, s0 <= off ])
-            in (nr, max 0 (min (sx - 1) (off - s)))
+    positions = (cs.cursorRow, cs.cursorCol) : cs.mark
+        : maybe [] (pure . fst) cs.selection <> maybe [] pure cs.pinnedEnd
+    reflowed src = do
+        c <- privateCopy src
+        landed <- Emu.resizeTracking c Size { rows = fromIntegral sy, cols = fromIntegral sx } positions
+        fg' <- gridOf c
+        let table = Map.fromList (zip positions landed)
+        pure (fg', \p -> Map.findWithDefault (0, 0) p table)
 
 -- | A read-only 'Grid' over a frozen snapshot. Blank / out-of-bounds
 -- cells read as spaces; line length trims trailing blanks (a wide
@@ -1343,7 +1287,7 @@ paneGrid pane = do
   where
     emptyFrozen = FrozenGrid
         { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty, fgWrapped = V.empty
-        , fgText = V.empty }
+        , fgText = V.empty, fgSource = Nothing }
 
 -- | Run a reader motion against a pane grid, updating the cursor. Outside a
 -- rectangle selection the cursor lands no further right than the line

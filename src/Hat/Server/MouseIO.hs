@@ -327,7 +327,7 @@ mouseFormatVars st client ev = do
                     pure (CopyMode.frozenGrid FrozenGrid
                         { fgHsize = 0, fgSy = V.length scr.cells
                         , fgSx = fromIntegral scr.size.cols, fgRows = scr.cells
-                        , fgWrapped = V.empty, fgText = V.empty }, y)
+                        , fgWrapped = V.empty, fgText = V.empty, fgSource = Nothing }, y)
             word <- CopyMode.gridWord seps g row x
             line <- CopyMode.gridLine g row
             link <- case mmode of

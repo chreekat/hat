@@ -7,6 +7,7 @@ import Data.Functor.Identity (Identity, runIdentity)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.ByteString.Char8 qualified as B8
 import Data.Vector qualified as V
 import GHC.Conc (getAllocationCounter)
@@ -232,7 +233,7 @@ spec = do
             row1 = V.fromList (map narrow "xyz" <> replicate 17 (narrow ' '))
             wide = frozenGrid FrozenGrid
                 { fgHsize = 0, fgSy = 2, fgSx = 20
-                , fgRows = V.fromList [row0, row1], fgWrapped = V.empty, fgText = V.empty }
+                , fgRows = V.fromList [row0, row1], fgWrapped = V.empty, fgText = V.empty, fgSource = Nothing }
             at col row = start.sState { cursorRow = row, cursorCol = col }
             go m s = runIdentity (runMotion wide KeysVi viSeparators m s)
             pos s = (s.cursorCol, s.cursorRow)
@@ -429,18 +430,17 @@ spec = do
             screenRow (recentreTopBottom scrollGrid moved) `shouldBe` 4
 
     describe "a resize in copy mode" $ do
-        -- Rows as text, a trailing '+' marking a row that wraps.
-        let gridOf w sy hs rows = FrozenGrid
-                { fgHsize = hs, fgSy = sy, fgSx = w
-                , fgRows = V.fromList [ rowOf w (filter (/= '+') r) | r <- rows ]
-                , fgWrapped = V.fromList [ "+" `T.isSuffixOf` T.pack r | r <- rows ]
-                , fgText = V.empty }
-            rowOf w r = V.fromList (cellsOf r <> replicate (w - widthOf r) (glyphCell ' ' defaultStyle))
-            cellsOf = concatMap $ \c -> if c == '日'
-                then [ Cell { content = Glyph c [] Wide, style = defaultStyle }
-                     , Cell { content = Continuation, style = defaultStyle } ]
-                else [glyphCell c defaultStyle]
-            widthOf = sum . map (\c -> if c == '日' then 2 else 1)
+        -- Rows as text, a trailing '+' marking a row that wraps: the text is
+        -- fed to a pane of the given size, which wraps it there.
+        let frozenOf w sy rows = do
+                e <- Emu.newEmulator Size { rows = sy, cols = w } 100
+                let fed (r : more)
+                        | "+" `T.isSuffixOf` r = T.dropEnd 1 r <> fed more
+                        | null more = r
+                        | otherwise = r <> "\r\n" <> fed more
+                    fed [] = ""
+                _ <- Emu.feed e (TE.encodeUtf8 (fed rows))
+                freezeGrid e
             textOf fg = [ T.stripEnd (T.pack [ baseChar c | c <- V.toList r, c.content /= Continuation ])
                           <> (if w then "+" else "")
                         | (r, w) <- zip (V.toList fg.fgRows)
@@ -448,33 +448,48 @@ spec = do
             baseChar c = case c.content of
                 Glyph ch _ _ -> ch
                 Continuation -> ' '
-            resized sz fg st = resizeCopyMode sz CopyModeData { kind = ModeCopy, frozen = fg, copyState = st }
+            resized sz w sy rows st = do
+                fg <- frozenOf w sy rows
+                pure (resizeCopyMode sz CopyModeData { kind = ModeCopy, frozen = fg, copyState = st })
             cursorAt r c = (copyModeAt "copy-mode" r c)
         it "rewraps the lines at the new width" $ do
-            let pm = resized (Size { rows = 3, cols = 3 })
-                    (gridOf 4 3 0 ["abcd+", "ef", "xy"]) (cursorAt 1 1)
+            pm <- resized (Size { rows = 3, cols = 3 }) 4 3 ["abcd+", "ef", "xy"] (cursorAt 1 1)
             textOf pm.frozen `shouldBe` ["abc+", "def", "xy"]
             (pm.frozen.fgHsize, pm.frozen.fgSy, pm.frozen.fgSx) `shouldBe` (0, 3, 3)
         it "joins wrapped rows again as it widens, padding the screen" $ do
-            let pm = resized (Size { rows = 3, cols = 6 })
-                    (gridOf 3 3 0 ["abc+", "de", "x"]) (cursorAt 1 1)
+            pm <- resized (Size { rows = 3, cols = 6 }) 3 3 ["abc+", "de", "x"] (cursorAt 1 1)
             textOf pm.frozen `shouldBe` ["abcde", "x", ""]
-        it "moves a wide character that does not fit to the next row" $
-            textOf (resized (Size { rows = 3, cols = 2 }) (gridOf 4 3 0 ["a日b", "", ""]) (cursorAt 0 0)).frozen
-                `shouldBe` ["a+", "日+", "b", "", ""]
+        it "moves a wide character that does not fit to the next row" $ do
+            pm <- resized (Size { rows = 3, cols = 2 }) 4 3 ["a日b", "", ""] (cursorAt 0 0)
+            textOf pm.frozen `shouldBe` ["a+", "日+", "b", "", ""]
         it "keeps the cursor on its character, scrolled to it in the history" $ do
-            let onF = resized (Size { rows = 2, cols = 3 })
-                    (gridOf 4 2 1 ["abcd+", "ef", "xy"]) (cursorAt 1 1)
-                onB = resized (Size { rows = 2, cols = 3 })
-                    (gridOf 4 2 1 ["abcd+", "ef", "xy"]) (cursorAt 0 1)
+            onF <- resized (Size { rows = 2, cols = 3 }) 4 2 ["abcd+", "ef", "xy"] (cursorAt 1 1)
+            onB <- resized (Size { rows = 2, cols = 3 }) 4 2 ["abcd+", "ef", "xy"] (cursorAt 0 1)
             (onF.copyState.cursorRow, onF.copyState.cursorCol, onF.copyState.viewportOffY)
                 `shouldBe` (1, 2, 0)
             onB.frozen.fgHsize `shouldBe` 1
             (onB.copyState.cursorRow, onB.copyState.cursorCol, onB.copyState.viewportOffY)
                 `shouldBe` (0, 1, 1)
+        it "leaves the grid it resized reading as it was" $ do
+            fg <- frozenOf 4 2 ["abcd+", "ef", "xy"]
+            let pm = resizeCopyMode (Size { rows = 2, cols = 3 })
+                    CopyModeData { kind = ModeCopy, frozen = fg, copyState = cursorAt 0 0 }
+            textOf pm.frozen `shouldBe` ["abc+", "def", "xy"]
+            textOf fg `shouldBe` ["abcd+", "ef", "xy"]
+        it "freezes and rewraps a pane whose terminal cannot be cloned" $ do
+            e <- Emu.newEmulator Size { rows = 2, cols = 4 } 100
+            _ <- Emu.feed e "abcdef\r\nxy"
+            -- A device control string longer than the clone can carry,
+            -- still unterminated.
+            _ <- Emu.feed e ("\ESCPq" <> B8.replicate (2 * 1024 * 1024) 'a')
+            Emu.clone e >>= (`shouldBe` True) . null
+            fg <- freezeGrid e
+            textOf fg `shouldBe` ["abcd+", "ef", "xy"]
+            let pm = resizeCopyMode (Size { rows = 2, cols = 3 })
+                    CopyModeData { kind = ModeCopy, frozen = fg, copyState = cursorAt 0 0 }
+            textOf pm.frozen `shouldBe` ["abc+", "def", "xy"]
         it "a new height alone moves rows between the screen and the history" $ do
-            let pm = resized (Size { rows = 2, cols = 4 })
-                    (gridOf 4 3 0 ["ab", "cd", "ef"]) (cursorAt 2 1)
+            pm <- resized (Size { rows = 2, cols = 4 }) 4 3 ["ab", "cd", "ef"] (cursorAt 2 1)
             textOf pm.frozen `shouldBe` ["ab", "cd", "ef"]
             pm.frozen.fgHsize `shouldBe` 1
             (pm.copyState.cursorRow, pm.copyState.cursorCol, pm.copyState.viewportOffY)
@@ -487,7 +502,7 @@ spec = do
                 { fgHsize = 2, fgSy = 2, fgSx = 10
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 10 (T.unpack r <> repeat ' ') ]
-                    | r <- rows ], fgWrapped = V.empty, fgText = V.empty }
+                    | r <- rows ], fgWrapped = V.empty, fgText = V.empty, fgSource = Nothing }
             varsUnder n st = Map.fromList (copyModeFormats " " n CopyModeData { kind = ModeCopy, frozen = frozen, copyState = st })
             vars = varsUnder NumbersOff
             at = copyModeAt "copy-mode" 2 5
@@ -547,7 +562,7 @@ spec = do
                 { fgHsize = 0, fgSy = 3, fgSx = 12
                 , fgRows = V.fromList
                     [ V.fromList [ glyphCell c defaultStyle | c <- take 12 (T.unpack r <> repeat ' ') ]
-                    | r <- rows ], fgWrapped = V.empty, fgText = V.empty }
+                    | r <- rows ], fgWrapped = V.empty, fgText = V.empty, fgSource = Nothing }
             fgOf n = defaultStyle { fg = Indexed n }
             look = CopyLook
                 { keys = KeysVi, numbers = NumbersOff
@@ -868,7 +883,7 @@ spec = do
                 frozen <- freezeGrid e
                 let texts g = [ runIdentity (g.gText r) | r <- [0 .. frozen.fgHsize - 1] ]
                 pure $ texts (frozenGrid frozen :: Grid Identity)
-                    === texts (frozenGrid frozen { fgText = V.empty })
+                    === texts (frozenGrid frozen { fgText = V.empty, fgSource = Nothing })
         it "reads no history row until it is used" $ do
             let frozenCost n = do
                     e <- Emu.newEmulator Size { rows = 24, cols = 80 } 5000

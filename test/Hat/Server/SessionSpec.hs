@@ -14,7 +14,7 @@ import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.IORef (newIORef, readIORef)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Timeout (timeout)
@@ -303,7 +303,7 @@ blankCopyData hsize = CopyModeData
     { kind = ModeCopy
     , frozen = FrozenGrid
         { fgHsize = hsize, fgSy = 24, fgSx = 80, fgRows = V.empty, fgWrapped = V.empty
-        , fgText = V.empty }
+        , fgText = V.empty, fgSource = Nothing }
     , copyState = copyModeAt "copy-mode" hsize 0
     }
 
@@ -562,7 +562,7 @@ spec = do
             Just (CopyMode pm) <- atomically (topMode p)
             rowOf pm 0 `shouldBe` "x"
             _ <- runCopyModeCommand st p "cancel" []
-            atomically (topMode p) `shouldReturn` Nothing
+            isNothing <$> atomically (topMode p) `shouldReturn` True
             isJust <$> readTVarIO p.viewBacking `shouldReturn` False
 
     describe "an attached client's command output" $

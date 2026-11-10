@@ -555,7 +555,7 @@ data PaneMode
     | ClockMode
     | TreeMode !TreeState
     | PanesMode !PanesState  -- ^ @display-panes@
-    deriving (Eq, Show)
+    deriving (Show)
 
 -- | The mode's name as @#{pane_mode}@ and the mode hooks report it.
 modeName :: PaneMode -> Text
@@ -591,7 +591,7 @@ data ModeEntry = ModeEntry
     { mode   :: !PaneMode
     , onExit :: !ModeExit
     }
-    deriving (Eq, Show)
+    deriving (Show)
 
 -- | What leaving a mode does to its pane: @-k@ on the mode-entering
 -- commands kills it.
@@ -829,7 +829,7 @@ data CopyModeData = CopyModeData
     , frozen    :: !FrozenGrid
     , copyState :: !CopyModeState
     }
-    deriving (Eq, Show)
+    deriving (Show)
 
 -- | What a 'CopyModeData' browses: the pane's own grid (tmux's copy mode)
 -- or the text shown in the pane apart from it (tmux's view mode, over the
@@ -852,8 +852,14 @@ data FrozenGrid = FrozenGrid
     , fgText :: !(V.Vector Text)
         -- ^ the text of the leading rows, read apart from their cells; a row
         --   past its end takes its text from 'fgRows'
+    , fgSource :: !(Maybe Emu.Emulator)
+        -- ^ the private emulator the rows are read from, which nothing writes
     }
-    deriving (Eq, Show)
+
+-- | Its dimensions only: showing the rows would read every one.
+instance Show FrozenGrid where
+    showsPrec d fg = showParen (d > 10) $
+        showString "FrozenGrid " . shows (fg.fgHsize, fg.fgSy, fg.fgSx)
 
 -- | Selection granularity, matching tmux's @SEL_CHAR@ / @SEL_WORD@ /
 -- @SEL_LINE@ (plus rectangle).

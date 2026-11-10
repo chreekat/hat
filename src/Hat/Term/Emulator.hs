@@ -31,6 +31,7 @@ module Hat.Term.Emulator
     , decModes
     , newEmulator
     , clone
+    , repaintedCopy
     , feed
     , HostPolicy (..)
     , defaultHostPolicy
@@ -90,10 +91,12 @@ import Control.Monad (filterM, forM, unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Unsafe qualified as BU
 import Data.Char (chr)
 import Data.IORef
+import Data.Maybe (fromMaybe)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.List (dropWhileEnd, intersperse)
 import Data.Map (Map)
@@ -287,6 +290,31 @@ clone e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
             pal <- readIORef e.palette
             cm <- readIORef e.colours
             Just <$> wrapTerminal c h s { output = [], events = [] } pal cm
+
+-- | A fresh emulator holding the history and screen repainted from their
+-- cells, soft wraps and the cursor included, with none of the program's
+-- other state: a copy for when 'clone' cannot snapshot the terminal.
+repaintedCopy :: Emulator -> IO Emulator
+repaintedCopy e = do
+    scr <- snapshot e
+    hsize <- scrollbackLength e
+    limit <- (.limit) <$> readIORef e.history
+    sb <- mapM (\i -> fromMaybe V.empty <$> scrollbackLine e i) [0 .. hsize - 1]
+    wraps <- (<>) <$> mapM (scrollbackLineWrapped e) [0 .. hsize - 1]
+        <*> mapM (screenRowWrapped e) [0 .. V.length scr.cells - 1]
+    c <- newEmulator scr.size (max limit hsize)
+    let sx = fromIntegral scr.size.cols
+        rows = zip (sb <> V.toList scr.cells) wraps
+        -- A wrapped row is painted out to the last column, so the next row's
+        -- first character wraps onto a new row as it did.
+        painted (row, wrapped) = paintLineBytes row <> "\ESC[0m" <> if wrapped
+            then B8.replicate (sx - length (rtrimBlank (V.toList row))) ' '
+            else "\r\n"
+        body = B.concat (map painted rows)
+        trimmed = fromMaybe body (B.stripSuffix "\r\n" body)
+        home = "\ESC[" <> B8.pack (show (scr.cursor.row + 1)) <> ";"
+            <> B8.pack (show (scr.cursor.col + 1)) <> "H"
+    c <$ feed c ("\ESC[0m" <> trimmed <> home)
 
 -- | Take ownership of a libghostty terminal as an 'Emulator' starting from
 -- the given history, state, palette defaults and colour memo.
