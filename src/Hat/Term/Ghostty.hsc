@@ -7,6 +7,10 @@ module Hat.Term.Ghostty
     , CRender
     , c_new
     , c_clone
+    , CTracked
+    , c_track
+    , c_tracked_at
+    , c_untrack
     , c_free
     , c_write
     , c_resize
@@ -84,6 +88,14 @@ foreign import ccall unsafe "ghost_shim_new"
     c_new :: CUShort -> CUShort -> CSize -> IO (Ptr CTerm)
 foreign import ccall safe "ghost_shim_clone"
     c_clone :: Ptr CTerm -> IO (Ptr CTerm)
+-- | A libghostty tracked grid reference; see 'c_track'.
+data CTracked
+foreign import ccall unsafe "ghost_shim_track"
+    c_track :: Ptr CTerm -> CInt -> CUShort -> CUInt -> IO (Ptr CTracked)
+foreign import ccall unsafe "ghost_shim_tracked_at"
+    c_tracked_at :: Ptr CTracked -> Ptr CUShort -> Ptr CUInt -> IO CInt
+foreign import ccall unsafe "ghost_shim_untrack"
+    c_untrack :: Ptr CTracked -> IO ()
 foreign import ccall unsafe "ghost_shim_free"
     c_free :: Ptr CTerm -> IO ()
 foreign import ccall safe "ghost_shim_write"

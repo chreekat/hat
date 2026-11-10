@@ -55,6 +55,14 @@ void  ghost_shim_free(void *t);
 /* An independent copy of the terminal (its screens, history and state), or
  * NULL when it cannot be snapshotted. */
 void *ghost_shim_clone(void *t);
+/* A reference to the cell at (x, y) under a point tag that follows the cell
+ * through the terminal's later changes (a resize's reflow), or NULL. Free it
+ * with ghost_shim_untrack. */
+void *ghost_shim_track(void *t, int tag, uint16_t x, uint32_t y);
+/* Where a tracked cell now is, in screen coordinates (row 0 the oldest row
+ * held). Returns 1, or 0 when the cell is gone. */
+int   ghost_shim_tracked_at(void *ref, uint16_t *x, uint32_t *y);
+void  ghost_shim_untrack(void *ref);
 void  ghost_shim_write(void *t, const uint8_t *data, size_t len);
 void  ghost_shim_resize(void *t, uint16_t cols, uint16_t rows);
 

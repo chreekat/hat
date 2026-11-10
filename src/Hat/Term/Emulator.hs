@@ -44,6 +44,7 @@ module Hat.Term.Emulator
     , encodeKeyPress
     , keyModes
     , resize
+    , resizeTracking
     , snapshot
     , snapshotWithGens
     , screenPainted
@@ -84,8 +85,8 @@ module Hat.Term.Emulator
     ) where
 
 import Control.Concurrent.MVar
-import Control.Exception (evaluate, finally)
-import Control.Monad (filterM, unless, when)
+import Control.Exception (bracket, evaluate, finally)
+import Control.Monad (filterM, forM, unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
@@ -526,7 +527,30 @@ applySignal e sig = case sig of
 -- logical lines tmux had trimmed from the history before stay out of it
 -- after, and every row the reflow made of the rest is history.
 resize :: Emulator -> Size -> IO ()
-resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+resize e sz = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> resizeT e t sz
+
+-- | 'resize', carrying each absolute position (row 0 the oldest history row,
+-- then the screen's) to where its cell lands, or to the top-left corner when
+-- the resize drops it or leaves it out of the history.
+resizeTracking :: Emulator -> Size -> [(Int, Int)] -> IO [(Int, Int)]
+resizeTracking e sz ps = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    (phys0, size0) <- historyRowsT e t
+    let pointOf (r, c)
+            | r < size0 = (tagHistory, phys0 - size0 + r, c)
+            | otherwise = (tagActive, r - size0, c)
+        track (tag, y, x) = c_track t tag (fromIntegral (max 0 x)) (fromIntegral (max 0 y))
+    bracket (mapM (track . pointOf) ps) (mapM_ c_untrack) $ \refs -> do
+        resizeT e t sz
+        (phys1, size1) <- historyRowsT e t
+        forM refs $ \ref -> alloca $ \xp -> alloca $ \yp -> do
+            ok <- c_tracked_at ref xp yp
+            x <- fromIntegral <$> peek xp
+            y <- subtract (phys1 - size1) . fromIntegral <$> peek yp
+            pure $ if ok == 0 || y < 0 then (0, 0) else (y, x)
+
+-- | 'resize' with the lock already held.
+resizeT :: Emulator -> Ptr CTerm -> Size -> IO ()
+resizeT e t sz = do
     alt <- c_get t dataActiveScreen
     cols0 <- fromIntegral <$> c_get t dataCols
     let cols1 = max 1 sz.cols

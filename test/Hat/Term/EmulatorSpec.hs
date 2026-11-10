@@ -276,6 +276,41 @@ spec = do
             e <- new80x24
             _ <- feedStr e "text\xe6\x97"  -- the first two bytes of 日
             isJust <$> clone e `shouldReturn` True
+        it "is itself a terminal that can be cloned in the middle of a character" $ do
+            e <- new80x24
+            _ <- feedStr e "text\xe6\x97"
+            Just c <- clone e
+            isJust <$> clone c `shouldReturn` True
+
+    describe "resizeTracking" $ do
+        let rowsOf e = do
+                scr <- snapshot e
+                sblen <- scrollbackLength e
+                sb <- catMaybes <$> mapM (scrollbackLine e) [0 .. sblen - 1]
+                pure (sb <> V.toList scr.cells)
+            wrapping = "one two three four\r\nfive\r\nsix seven eight"
+            charAt grid (r, c) = case drop r grid of
+                (row : _) | Just cell <- row V.!? c, Glyph ch _ _ <- cell.content -> ch
+                _ -> ' '
+            carried limit text from to = do
+                e <- newEmulator from limit
+                _ <- feedStr e text
+                old <- rowsOf e
+                let ps = [ (r, c) | (r, row) <- zip [0 ..] old, c <- [0 .. V.length row - 1]
+                                  , charAt old (r, c) /= ' ' ]
+                ps' <- resizeTracking e to ps
+                new <- rowsOf e
+                pure (map (charAt old) ps, map (charAt new) ps')
+        it "lands every position on its own character as the lines narrow" $ do
+            (was, now) <- carried 100 wrapping Size { rows = 3, cols = 20 } Size { rows = 3, cols = 7 }
+            now `shouldBe` was
+        it "lands every position on its own character as the lines widen" $ do
+            (was, now) <- carried 100 wrapping Size { rows = 4, cols = 7 } Size { rows = 2, cols = 30 }
+            now `shouldBe` was
+        it "counts the history from its oldest row hat keeps, past history-limit" $ do
+            (was, now) <- carried 2 "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight"
+                Size { rows = 4, cols = 7 } Size { rows = 2, cols = 30 }
+            now `shouldBe` was
 
     describe "history-limit, as tmux's grid keeps it" $ do
         -- 25 lines of 25 columns on a 5x40 screen: 21 scroll into history.

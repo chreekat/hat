@@ -25,6 +25,31 @@ void *ghost_shim_new(uint16_t cols, uint16_t rows, size_t max_scrollback) {
     return t;
 }
 
+void *ghost_shim_track(void *t, int tag, uint16_t x, uint32_t y) {
+    GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
+    p.value.coordinate.x = x;
+    p.value.coordinate.y = y;
+    GhosttyTrackedGridRef ref = NULL;
+    if (ghostty_terminal_grid_ref_track((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
+        return NULL;
+    return ref;
+}
+
+int ghost_shim_tracked_at(void *ref, uint16_t *x, uint32_t *y) {
+    GhosttyPointCoordinate c = { 0 };
+    if (ref == NULL
+     || ghostty_tracked_grid_ref_point((GhosttyTrackedGridRef)ref,
+            GHOSTTY_POINT_TAG_SCREEN, &c) != GHOSTTY_SUCCESS)
+        return 0;
+    *x = c.x;
+    *y = c.y;
+    return 1;
+}
+
+void ghost_shim_untrack(void *ref) {
+    ghostty_tracked_grid_ref_free((GhosttyTrackedGridRef)ref);
+}
+
 void *ghost_shim_clone(void *t) {
     uint8_t *buf = NULL;
     size_t len = 0;
@@ -33,8 +58,13 @@ void *ghost_shim_clone(void *t) {
         return NULL;
     GhosttyTerminal c = NULL;
     GhosttySnapshotDecoder d = NULL;
+    /* The copy keeps tracking unfinished input, so it can be cloned too. */
+    bool retain = true;
     if (ghostty_snapshot_decoder_new_buf(NULL, &d, buf, len) == GHOSTTY_SUCCESS) {
-        if (ghostty_snapshot_decoder_decode(d, &c) != GHOSTTY_SUCCESS) c = NULL;
+        if (ghostty_snapshot_decoder_set(d, GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+                &retain) != GHOSTTY_SUCCESS
+         || ghostty_snapshot_decoder_decode(d, &c) != GHOSTTY_SUCCESS)
+            c = NULL;
         ghostty_snapshot_decoder_free(d);
     }
     ghostty_free(NULL, buf, len);
