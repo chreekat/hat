@@ -27,7 +27,7 @@ import Hat.Server.Locate (clientOptions)
 import Hat.Server.Menu
     (MenuInput (..), MenuItem (..), MenuOutcome (..), WindowMenu (event, target), menuKey)
 import Hat.Server.Mouse (MouseInput (..), MouseState (..), parseMouseInput)
-import Hat.Server.View (statusLayout)
+import Hat.Server.StatusLine (statusLayout)
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.Toast (showReplies)
 

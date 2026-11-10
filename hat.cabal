@@ -190,6 +190,7 @@ library
         Hat.Server.Snapshot
         Hat.Server.Startup
         Hat.Server.Status
+        Hat.Server.StatusLine
         Hat.Server.Style
         Hat.Server.Target
         Hat.Server.Theme

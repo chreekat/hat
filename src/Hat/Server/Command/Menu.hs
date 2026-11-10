@@ -27,7 +27,7 @@ import Hat.Server.Mouse (MouseEvent (..), MouseInput (..))
 import Hat.Server.MouseIO (clientMouseEvent, mouseFormatVars)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.Target qualified as Target
-import Hat.Server.View (statusLayout, statusRangesFor)
+import Hat.Server.StatusLine (statusLayout, statusRangesFor)
 
 -- | @display-menu [-MO] [-b border-lines] [-c target-client]
 -- [-C starting-choice] [-H selected-style] [-s style] [-S border-style]

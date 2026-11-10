@@ -7,9 +7,7 @@ module Hat.Server.View
     , renderOnce
     , statusCells
     , flashTarget
-    , statusLayout  -- ^ exported for the status-position effect test
     , messageLine  -- ^ exported for the message-line effect test
-    , statusRangesFor
     , promptCursorOf
     ) where
 
@@ -49,7 +47,7 @@ import Hat.Server.FormatDraw (colourValue, formatDraw, styleCell)
 import Hat.Server.FormatEnv
     (FormatScope (..), FormatTarget (..), Wanted (..), wantedNames,
      clientTheme, demanding, expandAt, formatCtxFor, frameMemo, keepMemo,
-     memoExpander, Expand (..), sessionFormatEnv, sessionVars, windowOwnEnv, windowOwnVars)
+     memoExpander, Expand (..), sessionFormatEnv, sessionVars, windowOwnVars)
 import Hat.Server.Layout (paneOrder, twoPaneSplit)
 import Hat.Server.Resize (paneScrollbars, windowArrange, windowFloats, windowPaneStatus, zoomHidesChrome)
 import Hat.Server.Locate (locatePane, paneIndexOf)
@@ -68,9 +66,9 @@ import Hat.Server.Message (PromptView (..), drawMessage, drawPrompt)
 import Hat.Server.Prompt qualified as Prompt
 import Hat.Server.Popup (PopupState (..), popupCursor, popupGrid)
 import Hat.Server.Mouse qualified as Mouse
-import Hat.Server.FormatDraw (DrawRange)
 import Hat.Server.Status
-    (StatusTexts (..), drawStatus, statusFormats, statusRanges, statusRows, statusTexts)
+    (StatusTexts (..), drawStatus, statusFormats, statusRows, statusTexts)
+import Hat.Server.StatusLine (gatherStatus, statusLayout)
 import Hat.Term.Caps (hasCap)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
@@ -126,16 +124,6 @@ awaitRenderable st client lastGen = do
     check (done >= g)
     check =<< hasRoom client  -- See Note [Falling behind]
     pure g
-
--- | Where the status bar sits in a client of @rows@ rows: the vertical offset
--- the window content takes below a top bar, and the row the bar occupies
--- (@Nothing@ when @status@ is off — no bar, content fills the height). See
--- 'renderOnce'.
-statusLayout :: StatusPosition -> Int -> Int -> (Int, Maybe Int)
-statusLayout _   0     _    = (0, Nothing)
-statusLayout pos count rows = case pos of
-    StatusTop    -> (count, Just 0)
-    StatusBottom -> (0, Just (rows - count))
 
 -- | The rect whose edge cells the prefix highlight tints: the active pane's,
 -- whatever the layout — a lone pane, a split, or a zoomed pane all qualify.
@@ -979,16 +967,6 @@ statusRowsCached st client sess sopts width = do
                     , plain, animated, rowCells = rows }
             pure $! foldr seq rows rows
 
--- | Everything the status rows' expansion consumes beyond the options,
--- read fresh: the session's format environment and each window's own
--- (the @W:@ loop's items).
-gatherStatus :: ServerState -> Session -> IO (Map.Map Text Text, [Map.Map Text Text])
-gatherStatus st sess = do
-    env <- sessionFormatEnv st sess
-    ws <- Map.toAscList <$> readTVarIO sess.windows
-    wins <- mapM (\(ix, win) -> windowOwnEnv st sess ix win) ws
-    pure (env, wins)
-
 -- | Expand and draw the status rows from gathered inputs; see
 -- 'statusCells'.
 renderStatus
@@ -999,14 +977,6 @@ renderStatus st sopts env wins width = do
     let rows = statusRows ctx { F.windows = wins, F.animate = F.Animate }
             sopts width
     pure $! foldr seq rows rows
-
--- | The ranges across status line @i@ as the client sees it, for a mouse
--- click there.
-statusRangesFor :: ServerState -> Session -> Options -> Int -> Int -> IO (V.Vector DrawRange)
-statusRangesFor st sess sopts width i = do
-    (env, winEnvs) <- gatherStatus st sess
-    ctx <- formatCtxFor st env
-    pure (statusRanges ctx { F.windows = winEnvs } sopts width i)
 
 -- | The status line (0-based) the prompt and messages take: @message-line@,
 -- or the last line when there are fewer.

@@ -44,7 +44,7 @@ import Hat.Server.Floating
     (Border, FloatState (..), Modal (..), borderOf, dragFloatGeom, dragNewGeom)
 import Hat.Server.Resize (applySessionSize, windowArrange, windowFloats, windowLayoutAt)
 import Hat.Server.Scene (FloatingPane (..))
-import Hat.Server.View (statusLayout, statusRangesFor)
+import Hat.Server.StatusLine (statusLayout, statusRangesFor)
 import Hat.Term.Emulator qualified as Emu
 
 -- | What the client shows, for placing a report whose rows (now and before)

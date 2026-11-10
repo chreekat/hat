@@ -42,7 +42,8 @@ import Hat.Term.HostProtocol
 import Hat.Server.Scene
 import Hat.Server.FormatDraw (styleCell)
 import Hat.Server.Theme (terminalTheme)
-import Hat.Server.View (messageLine, promptCursorOf, statusLayout)
+import Hat.Server.StatusLine (statusLayout)
+import Hat.Server.View (messageLine, promptCursorOf)
 import Hat.Term.Caps (createTerm, rgbColours)
 import Hat.Term.Cell qualified as Cell
 import Hat.TestSupport (clientTheme)
