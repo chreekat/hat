@@ -195,8 +195,6 @@ gridOf e = do
         , fgSx = fromIntegral scr.size.cols
         , fgRows = V.generate hsize (\i -> later (fromMaybe V.empty <$> Emu.scrollbackLine e i))
             <> scr.cells
-        , fgWrapped = V.generate hsize (later . Emu.scrollbackLineWrapped e)
-            <> V.generate sy (later . Emu.screenRowWrapped e)
         , fgText = V.generate hsize (later . Emu.scrollbackLineText e)
         , fgSource = Just e
         }
@@ -1286,7 +1284,7 @@ paneGrid pane = do
         _ -> frozenGrid emptyFrozen
   where
     emptyFrozen = FrozenGrid
-        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty, fgWrapped = V.empty
+        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty
         , fgText = V.empty, fgSource = Nothing }
 
 -- | Run a reader motion against a pane grid, updating the cursor. Outside a
