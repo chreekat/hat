@@ -16,6 +16,7 @@ import Test.QuickCheck hiding (resize)
 
 import Hat.Geometry
 import Hat.Term.Cell
+import Hat.TestSupport (PaintedSoup (..))
 import Hat.Term.Emulator
 import Hat.Term.HostProtocol (EscCarry (..), HostCarry (..), HostPiece (..), HostSignal (..), scrubHost)
 import Hat.Term.RawGrid qualified as Raw
@@ -135,29 +136,6 @@ instance Arbitrary PlainLine where
         n <- chooseInt (0, 80)
         PlainLine <$> vectorOf n (chooseEnum (' ', '~'))
     shrink (PlainLine s) = PlainLine <$> shrinkList (const []) s
-
--- | Lines of terminal-bound bytes mixing plain runs, SGR fragments, wide
--- chars, and combining marks; shrinks by dropping whole lines.
-newtype PaintedSoup = PaintedSoup [B8.ByteString]
-    deriving (Show)
-
-instance Arbitrary PaintedSoup where
-    arbitrary = PaintedSoup <$> (chooseInt (1, 8) >>= flip vectorOf line)
-      where
-        line = B8.concat <$> (chooseInt (0, 12) >>= flip vectorOf piece)
-        piece = frequency
-            [ (4, plain)
-            , (2, sgr)
-            , (1, pure "\xe6\x97\xa5")   -- 日 (wide)
-            , (1, pure "e\xcc\x81")      -- e + combining acute
-            ]
-        plain = do
-            k <- chooseInt (1, 12)
-            B8.pack <$> vectorOf k (chooseEnum (' ', '~'))
-        sgr = do
-            ps <- vectorOf 2 (chooseInt (0, 108))
-            pure ("\ESC[" <> B8.intercalate ";" (map (B8.pack . show) ps) <> "m")
-    shrink (PaintedSoup lns) = PaintedSoup <$> shrinkList (const []) lns
 
 spec :: Spec
 spec = do

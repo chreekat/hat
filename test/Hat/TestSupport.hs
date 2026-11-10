@@ -2,6 +2,7 @@
 module Hat.TestSupport
     ( bashPath, nodeOf, clientTheme, addClient, realPanes, withPanesReaped
     , withServer, withServerStore, awaitTrue
+    , PaintedSoup (..)
     ) where
 
 import Control.Concurrent (threadDelay)
@@ -17,7 +18,9 @@ import Data.Vector qualified as V
 import Network.Socket (Family (AF_UNIX), SocketType (Stream), defaultProtocol, socket)
 import System.Directory (findExecutable)
 import System.Timeout (timeout)
+import Data.ByteString.Char8 qualified as B8
 import Test.Hspec (expectationFailure)
+import Test.QuickCheck (Arbitrary (..), chooseEnum, chooseInt, frequency, shrinkList, vectorOf)
 
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (newLogger)
@@ -150,3 +153,26 @@ awaitTrue what act = do
     loop = do
         ok <- act
         unless ok (threadDelay 1000 >> loop)
+
+-- | Lines of terminal-bound bytes mixing plain runs, SGR fragments, wide
+-- chars, and combining marks; shrinks by dropping whole lines.
+newtype PaintedSoup = PaintedSoup [B8.ByteString]
+    deriving (Show)
+
+instance Arbitrary PaintedSoup where
+    arbitrary = PaintedSoup <$> (chooseInt (1, 8) >>= flip vectorOf line)
+      where
+        line = B8.concat <$> (chooseInt (0, 12) >>= flip vectorOf piece)
+        piece = frequency
+            [ (4, plain)
+            , (2, sgr)
+            , (1, pure "\xe6\x97\xa5")   -- 日 (wide)
+            , (1, pure "e\xcc\x81")      -- e + combining acute
+            ]
+        plain = do
+            k <- chooseInt (1, 12)
+            B8.pack <$> vectorOf k (chooseEnum (' ', '~'))
+        sgr = do
+            ps <- vectorOf 2 (chooseInt (0, 108))
+            pure ("\ESC[" <> B8.intercalate ";" (map (B8.pack . show) ps) <> "m")
+    shrink (PaintedSoup lns) = PaintedSoup <$> shrinkList (const []) lns
