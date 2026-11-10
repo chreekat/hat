@@ -30,7 +30,8 @@ import Hat.Server.Environ
     ( EnvEntry (..), EnvVisibility (..), environFind, environFromPairs
     , environUpdate )
 import Hat.Server.Keys (Key (..))
-import Hat.Server.Pane (hostPolicyOf, paneProgram, shellStart, suitableShell)
+import Hat.Server.Pane (hostPolicyOf, paneProgram, shellStart)
+import Hat.Server.Shell (suitableShell)
 import Hat.Model.Ids (PaneId (..))
 import Hat.Server.Layout (Layout (..), LayoutName (..), namedLayout, paneCell)
 import Hat.Server.PaneColours (cursorColourOf, oscColourReply)

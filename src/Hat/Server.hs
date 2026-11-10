@@ -157,6 +157,7 @@ import Hat.Server.Toast
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.Lock (LockResult (..), awaitLock, lockWaitAttempts, reclaimLock)
 import Hat.Server.Pane
+import Hat.Server.Shell (suitableShell)
 import Hat.Server.PromptHistory (loadHistory, saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Resize

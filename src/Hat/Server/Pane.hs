@@ -19,7 +19,6 @@ module Hat.Server.Pane
     , shellLine
     , shellStart
     , withDefaultCommand
-    , suitableShell
     , paneShell
     , paneProgram
     , spawnPane
@@ -114,9 +113,8 @@ import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Char (isAlphaNum)
-import System.Environment (getEnvironment, getProgName)
+import System.Environment (getEnvironment)
 import System.IO (Handle, hFlush)
-import System.Posix.Files (fileAccess)
 import System.Posix.Process (getProcessID)
 import System.Exit (ExitCode (..))
 import System.Posix.Process qualified as Posix
@@ -149,6 +147,7 @@ import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
 import Hat.Server.PaneColours
     (oscColourReply, queryCursorColour, queryDefaultColour, queryPaletteColour)
+import Hat.Server.Shell (baseName, suitableShell)
 import Hat.Server.Style (applyStyle)
 import Hat.Server.Winlink (unlinkEverywhere)
 import Hat.Term.Cell qualified as Cell
@@ -264,13 +263,6 @@ newWindowWithPane st sid shellCmd how kind dir environ sz latest = do
             }
     pure (win, pane)
 
--- | A path's last component, or the whole path when that is empty (how tmux
--- names a shell).
-baseName :: FilePath -> String
-baseName path = case Prelude.reverse (takeWhile (/= '/') (Prelude.reverse path)) of
-    "" -> path
-    base -> base
-
 -- | Where a captured program was running: as a child of the pane's
 -- interactive shell (the user typed it), or as the pane's own top-level
 -- process (a pane launched directly on a program). See 'restoreRun'.
@@ -292,17 +284,6 @@ withDefaultCommand :: Text -> PaneStart -> PaneStart
 withDefaultCommand dc = \case
     FreshShell | not (T.null dc) -> ShellCommand dc
     start -> start
-
--- | tmux's @checkshell@: an absolute path to an executable that is not hat
--- itself.
-suitableShell :: FilePath -> IO Bool
-suitableShell path = case path of
-    '/' : _ -> do
-        self <- getProgName
-        if baseName path == self then pure False
-            else fileAccess path False False True
-                `catch` \(_ :: IOException) -> pure False
-    _ -> pure False
 
 -- | The shell a session's new panes run: its @default-shell@ when that is
 -- a 'suitableShell', else @/bin/sh@.

@@ -55,7 +55,7 @@ import Hat.Server.Locate
     ( findTarget, locatePane, noSuchTarget, paneIndexOf
     , targetCurrentWindow, targetPane, targetSession )
 import Hat.Server.OptionParse
-import Hat.Server.Pane (suitableShell)
+import Hat.Server.Shell (suitableShell)
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.Scrollbars (hideScrollbars)
 import Hat.Server.Target qualified as Target

@@ -186,6 +186,7 @@ library
         Hat.Server.Scene
         Hat.Server.Script
         Hat.Server.Scrollbars
+        Hat.Server.Shell
         Hat.Server.Snapshot
         Hat.Server.Startup
         Hat.Server.Status
