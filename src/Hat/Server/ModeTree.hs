@@ -32,6 +32,8 @@ module Hat.Server.ModeTree
     , drawTree
     , helpFormats
     , drawFormat
+    , previewCells
+    , styleIn
     ) where
 
 import Control.Applicative ((<|>))
@@ -46,7 +48,7 @@ import Data.Vector qualified as V
 import Hat.FuzzyMatch (score)
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
-import Hat.Server.FormatDraw (FormatColours (..), formatDrawIn, formatWidth)
+import Hat.Server.FormatDraw (FormatColours (..), formatDrawIn, formatWidth, styleCell)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
 import Hat.Server.Message (inputCells, quotedInput)
@@ -668,3 +670,31 @@ helpStart = map ("#[fg=themelightgrey]" <>)
 helpEnd :: [Text]
 helpEnd = map ("#[fg=themelightgrey]" <>)
     [ "  q, Escape #[#{E:tree-mode-border-style},acs]x#[default] Exit mode" ]
+
+-- | 'screenPreview' over a screen's cells and its cursor, if shown.
+previewCells :: V.Vector (V.Vector Cell.Cell) -> Maybe Pos -> Int -> Int -> [[Cell.Cell]]
+previewCells cells mcursor nx ny
+    | nx <= 0 || ny <= 0 = []
+    | otherwise =
+        [ [ cellAt (px + x) (py + y) | x <- [0 .. nx - 1] ] | y <- [0 .. ny - 1] ]
+  where
+    sy = V.length cells
+    sx = maybe 0 V.length (cells V.!? 0)
+    (px, py) = case mcursor of
+        Just c -> (origin c.col nx sx, origin c.row ny sy)
+        Nothing -> (0, 0)
+    origin c n total =
+        let o = if c < n `div` 3 then 0 else c - n `div` 3
+        in if o + n > total then (if n > total then 0 else total - n) else o
+    cellAt x y =
+        let c = fromMaybe Cell.blankCell (cells V.!? y >>= (V.!? x))
+        in if mcursor == Just (Pos y x)
+            then c { Cell.style = c.style { Cell.reverse = True } }
+            else c
+
+-- | A style option's cells, its formats expanded first (tmux's
+-- @style_apply@ with a format tree).
+styleIn :: Theme -> (Text -> IO Text) -> Text -> IO Cell.Style
+styleIn th expand raw
+    | "#{" `T.isInfixOf` raw = styleCell th <$> expand raw
+    | otherwise = pure (styleCell th raw)

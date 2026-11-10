@@ -43,14 +43,14 @@ import Hat.Server.FormatDraw (colourValue, formatDraw)
 import Hat.Server.FormatEnv (FormatScope (..), FormatTarget (..), clientTheme, expandAt)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Layout (Cell (..), Layout (..), Orientation (..), fitLayout, paneCell)
-import Hat.Server.Locate (findTarget, locatePane)
+import Hat.Server.Locate (findTarget, locatePane, modeClient)
 import Hat.Server.ModeStack (SetMode (..), unzoomPaneWindow)
+import Hat.Server.ModeTree (previewCells, styleIn)
 import Hat.Server.PaneMode (resetPaneMode, setPaneMode, zoomForMode)
 import Hat.Server.Resize (applySessionSize, windowPaneStatus)
 import Hat.Server.Scene (PaneStatus (..), borderGlyph, cellTypeOf)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Toast (showToast)
-import Hat.Server.TreeMode (modeClient, previewCells, styleIn)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 

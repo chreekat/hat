@@ -23,7 +23,6 @@ module Hat.Server.Command.Pane
     , cmdResizePane
     , nextZoom
     , zoomTarget
-    , noteActiveChange
     ) where
 
 import Control.Applicative ((<|>))
@@ -57,7 +56,7 @@ import Hat.Server.Layout
 import Hat.Model.Options (Options (..), optionText, quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), notify, notifyPane, notifyWindow )
+    ( PayloadItem (..), noteActiveChange, notifyPane, notifyWindow )
 import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf, setCurrentPane)
 import Hat.Server.Mouse (ClickOutside (..), Drag (..))
 import Hat.Server.MouseIO
@@ -656,32 +655,6 @@ splitSizeArg st sess orient spanning eff target lay opts = do
             v <- expand p
             pure (Just . (\n -> cur * n `div` 100) <$> strtonum 0 100 v)
         _ -> pure (Right Nothing)
-
--- Fire window-pane-changed when a select actually moved the active pane.
-noteActiveChange :: ServerState -> Window -> IO a -> IO a
-noteActiveChange st win act = do
-    old <- readTVarIO win.activeId
-    r <- act
-    new <- readTVarIO win.activeId
-    when (new /= old) $ do
-        mloc <- atomically (locateWindowOf st win)
-        wname <- readTVarIO win.name
-        notify st "window-pane-changed"
-            (NotifyTarget (fst <$> mloc) (Just win.id) (Just new))
-            [ ("window", PWindowRef win.id wname)
-            , ("pane", PPaneRef new)
-            , ("old_pane", PPaneRef old)
-            , ("new_pane", PPaneRef new) ]
-    pure r
-
--- The session holding a window (and its index there).
-locateWindowOf :: ServerState -> Window -> STM (Maybe (SessionId, Int))
-locateWindowOf st win = do
-    sessions <- readTVar st.sessions
-    hits <- forM (Map.toList sessions) $ \(sid, sess) -> do
-        ws <- readTVar sess.windows
-        pure [ (sid, ix) | (ix, w) <- Map.toList ws, w.id == win.id ]
-    pure (listToMaybe (concat hits))
 
 -- | 'cmdSelectPane', its title as it arrived.
 argvSelectPane :: ArgvImpl

@@ -27,21 +27,25 @@ module Hat.Server.Locate
     , formatClient
     , setCurrentPane
     , withCommandState
+    , locateWindowOf
+    , findPaneLoc
+    , attachedClients
+    , modeClient
     ) where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.STM
 import Control.Exception (finally)
-import Control.Monad (forM, forM_)
+import Control.Monad (filterM, forM, forM_)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Read qualified as TR
 import Data.IORef (modifyIORef', readIORef)
-import Data.Ord (Down (..))
+import Data.Ord (Down (..), comparing)
 
 import Hat.Model
 import Hat.Model.Options
@@ -492,3 +496,48 @@ withCommandState st mclient pane act = do
             modifyIORef' c.keyState $ \ks -> ks { commandState = Just (sid, win.id, pane.id) }
             act `finally` modifyIORef' c.keyState (\ks -> ks { commandState = old })
         _ -> act
+
+-- | Clients attached to a live session, the ones client-mode lists.
+attachedClients :: ServerState -> IO [Client]
+attachedClients st = do
+    cs <- Map.elems <$> readTVarIO st.clients
+    filterM (\c -> isAttachedTo c) [ c | c <- cs, c.role == Attached ]
+  where
+    isAttachedTo c = atomically $ do
+        sid <- readTVar c.session
+        Map.member sid <$> readTVar st.sessions
+
+findPaneLoc :: ServerState -> PaneId -> STM (Maybe (Session, Int, Window, Pane))
+findPaneLoc st pid = do
+    sessions <- Map.elems <$> readTVar st.sessions
+    hits <- forM sessions $ \s -> do
+        ws <- Map.toList <$> readTVar s.windows
+        fmap catMaybes . forM ws $ \(ix, w) -> do
+            ps <- readTVar w.panes
+            pure ((,,,) s ix w <$> Map.lookup pid ps)
+    pure (listToMaybe (concat hits))
+
+-- | The client a mode's commands act for (tmux's target client): the one
+-- that pressed the key when it is attached, else the most recently active
+-- client attached to the pane's session, else any attached client.
+modeClient :: ServerState -> Maybe Client -> Pane -> IO (Maybe Client)
+modeClient st mclient pane = case mclient of
+    Just c | c.role == Attached -> pure (Just c)
+    _ -> do
+        cs <- attachedClients st
+        msid <- atomically (fmap (\(s, _, _, _) -> s.id) <$> findPaneLoc st pane.id)
+        withAct <- forM cs $ \c -> atomically $
+            (,,) c <$> readTVar c.session <*> readTVar c.lastActive
+        let mine = [ x | x@(_, sid, _) <- withAct, Just sid == msid ]
+            best xs = listToMaybe
+                [ c | (c, _, _) <- List.sortBy (comparing (\(_, _, a) -> Down a)) xs ]
+        pure (best mine <|> best withAct)
+
+-- The session holding a window (and its index there).
+locateWindowOf :: ServerState -> Window -> STM (Maybe (SessionId, Int))
+locateWindowOf st win = do
+    sessions <- readTVar st.sessions
+    hits <- forM (Map.toList sessions) $ \(sid, sess) -> do
+        ws <- readTVar sess.windows
+        pure [ (sid, ix) | (ix, w) <- Map.toList ws, w.id == win.id ]
+    pure (listToMaybe (concat hits))

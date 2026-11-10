@@ -34,6 +34,7 @@ module Hat.Server.Hooks
     , installHookEngine
     , installEventSink
     , notifyPasteChanges
+    , noteActiveChange
     ) where
 
 import Control.Concurrent (myThreadId)
@@ -54,7 +55,7 @@ import Hat.Model.Options (ArrayKey, firstFreeIndex, hookNames)
 import Hat.Model.PasteBuffers (BufferChange (..), PasteStore, pasteChanges)
 import Hat.Server.Format (FormatEnv, evaluate)
 import Hat.Server.HookTypes
-import Hat.Server.Locate (locatePane)
+import Hat.Server.Locate (locateWindowOf, locatePane)
 
 noTarget :: NotifyTarget
 noTarget = NotifyTarget Nothing Nothing Nothing
@@ -394,3 +395,20 @@ installHookEngine st run expand cmdNames = atomically $ do
 -- startup.
 installEventSink :: ServerState -> EventSink -> IO ()
 installEventSink st = atomically . writeTVar st.hooks.sink
+
+-- Fire window-pane-changed when a select actually moved the active pane.
+noteActiveChange :: ServerState -> Window -> IO a -> IO a
+noteActiveChange st win act = do
+    old <- readTVarIO win.activeId
+    r <- act
+    new <- readTVarIO win.activeId
+    when (new /= old) $ do
+        mloc <- atomically (locateWindowOf st win)
+        wname <- readTVarIO win.name
+        notify st "window-pane-changed"
+            (NotifyTarget (fst <$> mloc) (Just win.id) (Just new))
+            [ ("window", PWindowRef win.id wname)
+            , ("pane", PPaneRef new)
+            , ("old_pane", PPaneRef old)
+            , ("new_pane", PPaneRef new) ]
+    pure r

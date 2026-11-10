@@ -35,7 +35,6 @@ import System.Environment (getEnvironment)
 import Hat.Geometry
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.Command.Pane (noteActiveChange)
 import Hat.Server.Command.Window (switchToWindow)
 import Hat.Command.Arg (Arg (..))
 import Hat.Server.Command.Types
@@ -47,7 +46,8 @@ import Hat.Server.ClientSession
     (NameStep (..), adoptServerAlternate, sendClientsAway, stepByName, switchClientTo)
 import Hat.Server.Format (truthy)
 import Hat.Server.Hooks
-    ( PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange, sessionTarget )
+    ( PayloadItem (..), noTarget, noteActiveChange, notify, notifyClient, notifyGroupChange
+    , sessionTarget )
 import Hat.Server.Keys (enterTable)
 import Hat.Server.Locate
     ( defaultAttachSession, findTarget, formatClient, paneIndexOf, targetSession

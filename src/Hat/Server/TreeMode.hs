@@ -10,12 +10,8 @@ module Hat.Server.TreeMode
     , cmdCustomizeMode
     , treeModeKey
     , drawTreeMode
-    , modeClient
-    , previewCells
-    , styleIn
     ) where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.ByteString qualified as B
@@ -37,14 +33,14 @@ import Hat.Server.Command.Buffer (bufferEnv, formatTrue, modifyStore_)
 import Hat.Server.Command.Types
     (CommandImpl, Dispatch (..), Reply (..), parseArgs, templateReplace, unknownFlag)
 import Hat.Server.Format (FormatEnv)
-import Hat.Server.FormatDraw (FormatColours (..), formatTrimLeft, formatWidth, styleCell)
+import Hat.Server.FormatDraw (FormatColours (..), formatTrimLeft, formatWidth)
 import Hat.Server.Customize
 import Hat.Server.Editor (spawnEditor)
 import Hat.Server.FormatEnv
     ( FormatScope (..), FormatTarget (..), Wanted, clientFormatEnv, clientTheme, expandAt
     , expandFormat, onlyVars, targetVars )
 import Hat.Server.Keys (Key (..))
-import Hat.Server.Locate (findTarget, paneIndexOf)
+import Hat.Server.Locate (attachedClients, findPaneLoc, findTarget, modeClient, paneIndexOf)
 import Hat.Server.ModeTree
 import Hat.Server.ModeTree qualified as ModeTree (Item (..))
 import Hat.Server.PaneMode (modifyTopMode, resetPaneMode, setPaneMode, zoomForMode)
@@ -453,16 +449,6 @@ clientItems st ts mfilter = do
                         , searchText = [nm], fuzzyName = Just nm
                         , tagging = Taggable, previewFrom = OwnPreview }
 
--- | Clients attached to a live session, the ones client-mode lists.
-attachedClients :: ServerState -> IO [Client]
-attachedClients st = do
-    cs <- Map.elems <$> readTVarIO st.clients
-    filterM (\c -> isAttachedTo c) [ c | c <- cs, c.role == Attached ]
-  where
-    isAttachedTo c = atomically $ do
-        sid <- readTVar c.session
-        Map.member sid <$> readTVar st.sessions
-
 -- | How formats expand at the pane the mode was entered on, with some
 -- variables given over its own.
 originExpander :: ServerState -> TreeState -> IO (FormatEnv -> Text -> IO Text)
@@ -473,16 +459,6 @@ originExpander st ts = do
         Just (sess, ix, win, pane) -> do
             pix <- paneIndexOf st win pane
             pure (expandAt st . FormatTarget (InPane sess ix win pix pane))
-
-findPaneLoc :: ServerState -> PaneId -> STM (Maybe (Session, Int, Window, Pane))
-findPaneLoc st pid = do
-    sessions <- Map.elems <$> readTVar st.sessions
-    hits <- forM sessions $ \s -> do
-        ws <- Map.toList <$> readTVar s.windows
-        fmap catMaybes . forM ws $ \(ix, w) -> do
-            ps <- readTVar w.panes
-            pure ((,,,) s ix w <$> Map.lookup pid ps)
-    pure (listToMaybe (concat hits))
 
 -- | The mode's lines over its rebuilt items, each with the key that
 -- chooses it, and the state settled onto them.
@@ -803,39 +779,11 @@ treeLook st ts = do
     border <- style "tree-mode-border-style"
     pure TreeLook { theme = th, selection = selection, border = border, expand = expand }
 
--- | A style option's cells, its formats expanded first (tmux's
--- @style_apply@ with a format tree).
-styleIn :: Theme -> (Text -> IO Text) -> Text -> IO Cell.Style
-styleIn th expand raw
-    | "#{" `T.isInfixOf` raw = styleCell th <$> expand raw
-    | otherwise = pure (styleCell th raw)
-
 -- | tmux's @screen_write_preview@: an @nx@ by @ny@ window of a screen,
 -- around its cursor when that shows (marked in reverse), else the top left.
 screenPreview :: Emu.Screen -> Int -> Int -> [[Cell.Cell]]
 screenPreview scr = previewCells scr.cells
     (if scr.cursorVisible then Just scr.cursor else Nothing)
-
--- | 'screenPreview' over a screen's cells and its cursor, if shown.
-previewCells :: V.Vector (V.Vector Cell.Cell) -> Maybe Pos -> Int -> Int -> [[Cell.Cell]]
-previewCells cells mcursor nx ny
-    | nx <= 0 || ny <= 0 = []
-    | otherwise =
-        [ [ cellAt (px + x) (py + y) | x <- [0 .. nx - 1] ] | y <- [0 .. ny - 1] ]
-  where
-    sy = V.length cells
-    sx = maybe 0 V.length (cells V.!? 0)
-    (px, py) = case mcursor of
-        Just c -> (origin c.col nx sx, origin c.row ny sy)
-        Nothing -> (0, 0)
-    origin c n total =
-        let o = if c < n `div` 3 then 0 else c - n `div` 3
-        in if o + n > total then (if n > total then 0 else total - n) else o
-    cellAt x y =
-        let c = fromMaybe Cell.blankCell (cells V.!? y >>= (V.!? x))
-        in if mcursor == Just (Pos y x)
-            then c { Cell.style = c.style { Cell.reverse = True } }
-            else c
 
 -- | Rows of cells as a grid exactly @size@, padded with blanks.
 fitGrid :: Size -> [[Cell.Cell]] -> V.Vector (V.Vector Cell.Cell)
@@ -1262,19 +1210,3 @@ itemPane st = \case
                 mwin <- currentWindow sess
                 traverse (readTVar . (.activeId)) mwin
     _ -> pure Nothing
-
--- | The client a mode's commands act for (tmux's target client): the one
--- that pressed the key when it is attached, else the most recently active
--- client attached to the pane's session, else any attached client.
-modeClient :: ServerState -> Maybe Client -> Pane -> IO (Maybe Client)
-modeClient st mclient pane = case mclient of
-    Just c | c.role == Attached -> pure (Just c)
-    _ -> do
-        cs <- attachedClients st
-        msid <- atomically (fmap (\(s, _, _, _) -> s.id) <$> findPaneLoc st pane.id)
-        withAct <- forM cs $ \c -> atomically $
-            (,,) c <$> readTVar c.session <*> readTVar c.lastActive
-        let mine = [ x | x@(_, sid, _) <- withAct, Just sid == msid ]
-            best xs = listToMaybe
-                [ c | (c, _, _) <- sortBy (comparing (\(_, _, a) -> Down a)) xs ]
-        pure (best mine <|> best withAct)
