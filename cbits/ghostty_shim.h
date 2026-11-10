@@ -52,6 +52,9 @@ typedef struct {
 
 void *ghost_shim_new(uint16_t cols, uint16_t rows, size_t max_scrollback);
 void  ghost_shim_free(void *t);
+/* An independent copy of the terminal (its screens, history and state), or
+ * NULL when it cannot be snapshotted. */
+void *ghost_shim_clone(void *t);
 void  ghost_shim_write(void *t, const uint8_t *data, size_t len);
 void  ghost_shim_resize(void *t, uint16_t cols, uint16_t rows);
 

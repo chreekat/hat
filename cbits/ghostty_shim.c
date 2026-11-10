@@ -11,12 +11,34 @@
 void *ghost_shim_new(uint16_t cols, uint16_t rows, size_t max_scrollback) {
     GhosttyTerminal t = NULL;
     if (ghostty_terminal_new(NULL, &t, cols, rows) != GHOSTTY_SUCCESS) return NULL;
+    /* Tracking unfinished input lets ghost_shim_clone snapshot the terminal
+     * between any two writes; a sequence longer than this still in flight
+     * makes the snapshot fail instead. */
+    size_t continuation = 1 << 20;
     if (ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-            &max_scrollback) != GHOSTTY_SUCCESS) {
+            &max_scrollback) != GHOSTTY_SUCCESS
+     || ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
+            &continuation) != GHOSTTY_SUCCESS) {
         ghostty_terminal_free(t);
         return NULL;
     }
     return t;
+}
+
+void *ghost_shim_clone(void *t) {
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    if (ghostty_snapshot_encode_alloc((GhosttyTerminal)t, NULL, &buf, &len)
+            != GHOSTTY_SUCCESS)
+        return NULL;
+    GhosttyTerminal c = NULL;
+    GhosttySnapshotDecoder d = NULL;
+    if (ghostty_snapshot_decoder_new_buf(NULL, &d, buf, len) == GHOSTTY_SUCCESS) {
+        if (ghostty_snapshot_decoder_decode(d, &c) != GHOSTTY_SUCCESS) c = NULL;
+        ghostty_snapshot_decoder_free(d);
+    }
+    ghostty_free(NULL, buf, len);
+    return c;
 }
 
 void ghost_shim_free(void *t) {

@@ -6,6 +6,7 @@ module Hat.Term.Ghostty
     ( CTerm
     , CRender
     , c_new
+    , c_clone
     , c_free
     , c_write
     , c_resize
@@ -79,6 +80,8 @@ data CRender
 
 foreign import ccall unsafe "ghost_shim_new"
     c_new :: CUShort -> CUShort -> CSize -> IO (Ptr CTerm)
+foreign import ccall safe "ghost_shim_clone"
+    c_clone :: Ptr CTerm -> IO (Ptr CTerm)
 foreign import ccall unsafe "ghost_shim_free"
     c_free :: Ptr CTerm -> IO ()
 foreign import ccall safe "ghost_shim_write"

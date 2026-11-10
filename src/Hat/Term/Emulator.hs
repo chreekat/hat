@@ -30,6 +30,7 @@ module Hat.Term.Emulator
     , decModeReplayBytes
     , decModes
     , newEmulator
+    , clone
     , feed
     , HostPolicy (..)
     , defaultHostPolicy
@@ -253,9 +254,7 @@ newEmulator sz limit = do
         budget = max 65536 (fromIntegral limit * perRow) :: CSize
     t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) budget
     if t == nullPtr then error "ghostty_terminal_new failed" else pure ()
-    lk <- newMVar ()
-    hr <- newIORef (newHistory limit)
-    st <- newIORef EmulatorState
+    wrapTerminal t (newHistory limit) EmulatorState
         { colorSub = False
         , cursorModel = defaultCursorModel
         , title = ""
@@ -267,6 +266,33 @@ newEmulator sz limit = do
         , output = []
         , events = []
         }
+        PaletteDefaults { builtin = Nothing, applied = Map.empty }
+        noColours
+
+-- | An independent copy of the emulator as it stands: the same grid, history
+-- and state, which later output to either never reaches the other.
+-- 'Nothing' when libghostty cannot snapshot the terminal.
+clone :: Emulator -> IO (Maybe Emulator)
+clone e = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    c <- c_clone t
+    if c == nullPtr
+        then pure Nothing
+        else do
+            h <- readIORef e.history
+            s <- readIORef e.state
+            pal <- readIORef e.palette
+            cm <- readIORef e.colours
+            Just <$> wrapTerminal c h s { output = [], events = [] } pal cm
+
+-- | Take ownership of a libghostty terminal as an 'Emulator' starting from
+-- the given history, state, palette defaults and colour memo.
+wrapTerminal
+    :: Ptr CTerm -> History -> EmulatorState -> PaletteDefaults -> ColourMemo
+    -> IO Emulator
+wrapTerminal t h0 st0 pal0 cm0 = do
+    lk <- newMVar ()
+    hr <- newIORef h0
+    st <- newIORef st0
 
     writePtyW <- wrapWritePty $ \_ _ p n -> do
         bs <- B.packCStringLen (castPtr p, fromIntegral n)
@@ -289,8 +315,8 @@ newEmulator sz limit = do
     gc <- newIORef GridCache { rows = V.empty, gens = V.empty }
     sb0 <- mallocForeignPtrBytes 0
     sb <- newIORef SnapBuf { buf = sb0, cap = 0 }
-    pal <- newIORef PaletteDefaults { builtin = Nothing, applied = Map.empty }
-    cm <- newIORef noColours
+    pal <- newIORef pal0
+    cm <- newIORef cm0
     pure Emulator
         { term = fp, lock = lk, history = hr, state = st, cellIntern = ci
         , render = rp, gridCache = gc, snapBuf = sb, palette = pal, colours = cm }

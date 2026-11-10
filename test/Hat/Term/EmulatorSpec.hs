@@ -5,7 +5,7 @@ import Control.Monad (forM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, isJust)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import GHC.Conc (getAllocationCounter)
@@ -279,6 +279,25 @@ spec = do
         _ <- feedStr e "\ESC[?1049l"
         m2 <- modes e
         m2.altScreen `shouldBe` False
+
+    describe "clone" $ do
+        let gridText e = do
+                scr <- snapshot e
+                sblen <- scrollbackLength e
+                sb <- catMaybes <$> mapM (scrollbackLine e) [0 .. sblen - 1]
+                pure ( map (T.stripEnd . cellsText) sb
+                     , [ rowText scr r | r <- [0 .. fromIntegral scr.size.rows - 1] ] )
+        it "holds the history and screen as they were, and nothing written after" $ do
+            e <- newEmulator Size { rows = 3, cols = 10 } 2
+            forM_ [1 .. 6 :: Int] $ \i -> feedStr e (B8.pack ("line " ++ show i ++ "\r\n"))
+            taken <- gridText e
+            Just c <- clone e
+            _ <- feedStr e "later\r\nlater\r\n"
+            gridText c `shouldReturn` taken
+        it "can be taken in the middle of a character" $ do
+            e <- new80x24
+            _ <- feedStr e "text\xe6\x97"  -- the first two bytes of 日
+            isJust <$> clone e `shouldReturn` True
 
     describe "history-limit, as tmux's grid keeps it" $ do
         -- 25 lines of 25 columns on a 5x40 screen: 21 scroll into history.
