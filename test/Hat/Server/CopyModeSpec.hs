@@ -1,13 +1,15 @@
 module Hat.Server.CopyModeSpec (spec) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (forM)
 import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (Identity, runIdentity)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.ByteString.Char8 qualified as B8
 import Data.Vector qualified as V
+import GHC.Conc (getAllocationCounter)
 import System.IO (hIsClosed)
 import Test.Hspec
 
@@ -856,6 +858,20 @@ spec = do
             _ <- Emu.feed e "\r\nafter"
             g <- frozenGrid <$> freezeGrid e
             T.stripEnd (rowText (g :: Grid Identity) 1) `shouldBe` "after"
+        it "reads no history row until it is used" $ do
+            let frozenCost n = do
+                    e <- Emu.newEmulator Size { rows = 24, cols = 80 } 5000
+                    _ <- Emu.feed e $ B8.concat
+                        [ B8.pack ("history line " <> show i <> "\r\n") | i <- [1 .. n :: Int] ]
+                    allocStart <- getAllocationCounter
+                    frozen <- freezeGrid e
+                    _ <- evaluate frozen.fgHsize
+                    allocStop <- getAllocationCounter
+                    pure (frozen.fgHsize, allocStart - allocStop)
+            (shortRows, short) <- frozenCost 100
+            (longRows, long) <- frozenCost 3100
+            longRows - shortRows `shouldBe` 3000
+            (long - short) `shouldSatisfy` (< 3000 * 512)
 
     describe "copy-pipe fd hygiene (withDevNullSink)" $ do
         -- The /dev/null sink a copy-pipe hands its child must be released on

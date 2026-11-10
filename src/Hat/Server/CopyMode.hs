@@ -86,7 +86,7 @@ module Hat.Server.CopyMode
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, bracket, catch)
+import Control.Exception (SomeException, bracket, catch, evaluate)
 import Control.Monad (forM, forM_, void)
 import Data.Array ((!))
 import Data.Char (isSpace, toLower)
@@ -99,6 +99,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.IO (Handle, IOMode (WriteMode), hClose, hPutStr, openFile)
+import System.IO.Unsafe (unsafePerformIO)
 import Text.Regex.TDFA
     (CompOption (..), Regex, defaultCompOpt, defaultExecOpt, matchAll)
 import Text.Regex.TDFA.Text qualified as Regex
@@ -166,23 +167,33 @@ listGrid sx rows = Grid
 -- | Capture a pane's absolute grid — every scrollback line, then the
 -- live screen — into an immutable 'FrozenGrid'. Copy mode reads this
 -- snapshot for the whole session so the program's later output stays
--- invisible until the mode exits.
+-- invisible until the mode exits. The capture is a private clone of the
+-- pane's terminal whose rows are read on first use; when the terminal
+-- cannot be cloned, every row is read from it now instead.
 freezeGrid :: Emu.Emulator -> IO FrozenGrid
-freezeGrid e = do
+freezeGrid e = Emu.clone e >>= \case
+    Just c -> gridOf c
+    Nothing -> do
+        fg <- gridOf e
+        fg <$ V.mapM_ evaluate fg.fgRows <* V.mapM_ evaluate fg.fgWrapped
+
+-- | The absolute grid of an emulator, each row read when it is first used.
+gridOf :: Emu.Emulator -> IO FrozenGrid
+gridOf e = do
     hsize <- Emu.scrollbackLength e
     scr <- Emu.snapshot e
     let sy = V.length scr.cells
-        sx = fromIntegral scr.size.cols
-    sb <- forM [0 .. hsize - 1] $ \i ->
-        maybe V.empty id <$> Emu.scrollbackLine e i
-    wraps <- (<>) <$> mapM (Emu.scrollbackLineWrapped e) [0 .. hsize - 1]
-        <*> mapM (Emu.screenRowWrapped e) [0 .. sy - 1]
+        -- Nothing writes to the emulator a frozen grid reads, so a row
+        -- read late is the row as it was.
+        later = unsafePerformIO
     pure FrozenGrid
         { fgHsize = hsize
         , fgSy = sy
-        , fgSx = sx
-        , fgRows = V.fromList sb <> scr.cells
-        , fgWrapped = V.fromList wraps
+        , fgSx = fromIntegral scr.size.cols
+        , fgRows = V.generate hsize (\i -> later (fromMaybe V.empty <$> Emu.scrollbackLine e i))
+            <> scr.cells
+        , fgWrapped = V.generate hsize (later . Emu.scrollbackLineWrapped e)
+            <> V.generate sy (later . Emu.screenRowWrapped e)
         }
 
 -- | Fit copy mode to its pane's new size as tmux resizes its copy of the
