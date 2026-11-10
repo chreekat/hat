@@ -56,7 +56,7 @@ heldColours e = do
 colourPieces :: [(B.ByteString, HeldColours -> HeldColours)]
 colourPieces =
     [ ("abc", id), ("\ESC[1m", id), ("\ESC]2;title\a", id)
-    , ("\ESCc", id)  -- a full reset leaves the program's colours
+    , ("\ESCc", \c -> c { overrides = Map.empty })
     , ("\ESC]104\a", \c -> c { overrides = Map.empty })
     , ("\ESC]104;1\a", \c -> c { overrides = Map.delete 1 c.overrides })
     , ("\ESC]111\a", \c -> c { background = Nothing })

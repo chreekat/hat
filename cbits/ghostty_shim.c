@@ -10,12 +10,12 @@
 
 void *ghost_shim_new(uint16_t cols, uint16_t rows, size_t max_scrollback) {
     GhosttyTerminal t = NULL;
-    GhosttyTerminalOptions o = {
-        .cols = cols,
-        .rows = rows,
-        .max_scrollback = max_scrollback,
-    };
-    if (ghostty_terminal_new(NULL, &t, o) != GHOSTTY_SUCCESS) return NULL;
+    if (ghostty_terminal_new(NULL, &t, cols, rows) != GHOSTTY_SUCCESS) return NULL;
+    if (ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+            &max_scrollback) != GHOSTTY_SUCCESS) {
+        ghostty_terminal_free(t);
+        return NULL;
+    }
     return t;
 }
 
@@ -44,11 +44,24 @@ long ghost_shim_get(void *t, int data) {
 }
 
 int ghost_shim_mode(void *t, uint16_t mode_num, int ansi) {
-    bool v = false;
-    if (ghostty_terminal_mode_get((GhosttyTerminal)t,
-            ghostty_mode_new(mode_num, ansi != 0), &v) != GHOSTTY_SUCCESS)
+    GhosttyTerminalModeConfig m = { .mode = ghostty_mode_new(mode_num, ansi != 0) };
+    if (ghostty_terminal_get((GhosttyTerminal)t, GHOSTTY_TERMINAL_DATA_MODE, &m)
+            != GHOSTTY_SUCCESS)
         return 0;
-    return v ? 1 : 0;
+    return m.value ? 1 : 0;
+}
+
+/* GhostShimCell's flag word (see ghostty_shim.h) from a style. */
+static unsigned shim_flags(const GhosttyStyle *st) {
+    unsigned f = 0;
+    if (st->flags & GHOSTTY_STYLE_FLAG_BOLD)          f |= 1;
+    if (GHOSTTY_STYLE_UNDERLINE(*st))                 f |= 2;
+    if (st->flags & GHOSTTY_STYLE_FLAG_ITALIC)        f |= 4;
+    if (st->flags & GHOSTTY_STYLE_FLAG_INVERSE)       f |= 8;
+    if (st->flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH) f |= 16;
+    if (st->flags & GHOSTTY_STYLE_FLAG_BLINK)         f |= 32;
+    if (st->flags & GHOSTTY_STYLE_FLAG_FAINT)         f |= 64;
+    return f;
 }
 
 static void color_of(GhosttyStyleColor col, int *tag, uint32_t *val) {
@@ -97,15 +110,7 @@ static void shim_from_cell(GhosttyCell cell, const GhosttyStyle *st,
     }
 
     if (st) {
-        unsigned f = 0;
-        if (st->bold)          f |= 1;
-        if (st->underline)     f |= 2;
-        if (st->italic)        f |= 4;
-        if (st->inverse)       f |= 8;
-        if (st->strikethrough) f |= 16;
-        if (st->blink)         f |= 32;
-        if (st->faint)         f |= 64;
-        out->flags = f;
+        out->flags = shim_flags(st);
         color_of(st->fg_color, &out->fg_tag, &out->fg_val);
         color_of(st->bg_color, &out->bg_tag, &out->bg_val);
     }
@@ -132,14 +137,14 @@ int ghost_shim_cell(void *t, int tag, uint16_t x, uint32_t y, GhostShimCell *out
     p.value.coordinate.x = x;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return 0;
     GhosttyCell cell;
     if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS)
         return 0;
 
-    GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+    GhosttyStyle st = { 0 };
     const GhosttyStyle *stp =
         ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS ? &st : NULL;
     shim_from_cell(cell, stp, out);
@@ -157,7 +162,7 @@ int ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
     p.value.coordinate.x = 0;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return 0;
     for (uint16_t x = 0; x < cols; x++) {
@@ -167,7 +172,7 @@ int ghost_shim_row_cells(void *t, int tag, uint32_t y, uint16_t cols,
             memset(out, 0, (size_t)cols * sizeof(*out));
             return 0;
         }
-        GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+        GhosttyStyle st = { 0 };
         const GhosttyStyle *stp =
             ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS ? &st : NULL;
         shim_from_cell(cell, stp, &out[x]);
@@ -229,20 +234,12 @@ static int paint_cell(GhosttyGridRef *ref, StyleCache *sc, PaintCell *pc) {
     }
 
     if (!sc->valid || sc->id != sid) {
-        GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+        GhosttyStyle st = { 0 };
         sc->flags = 0;
         sc->fg_tag = 0; sc->fg_val = 0;
         sc->bg_tag = 0; sc->bg_val = 0;
         if (ghostty_grid_ref_style(ref, &st) == GHOSTTY_SUCCESS) {
-            unsigned f = 0;
-            if (st.bold)          f |= 1;
-            if (st.underline)     f |= 2;
-            if (st.italic)        f |= 4;
-            if (st.inverse)       f |= 8;
-            if (st.strikethrough) f |= 16;
-            if (st.blink)         f |= 32;
-            if (st.faint)         f |= 64;
-            sc->flags = f;
+            sc->flags = shim_flags(&st);
             color_of(st.fg_color, &sc->fg_tag, &sc->fg_val);
             color_of(st.bg_color, &sc->bg_tag, &sc->bg_val);
         }
@@ -381,7 +378,7 @@ long ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
     GhosttyPoint p = { .tag = (GhosttyPointTag)tag };
     p.value.coordinate.x = 0;
     p.value.coordinate.y = y;
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return 0;
 
@@ -440,6 +437,24 @@ long ghost_shim_paint_row(void *t, int tag, uint32_t y, uint16_t cols,
     return (long)o;
 }
 
+/* A VT formatter over the terminal, restricted to sel when it is non-NULL. */
+static GhosttyFormatter vt_formatter(void *t, const GhosttySelection *sel,
+                                     bool trim, GhosttyFormatterExtras extras) {
+    GhosttyFormatter f = NULL;
+    if (ghostty_formatter_terminal_new(NULL, &f, (GhosttyTerminal)t) != GHOSTTY_SUCCESS)
+        return NULL;
+    GhosttyFormatterFormat emit = GHOSTTY_FORMATTER_FORMAT_VT;
+    if (ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_EMIT, &emit) != GHOSTTY_SUCCESS
+     || ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_TRIM, &trim) != GHOSTTY_SUCCESS
+     || ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_EXTRAS, &extras) != GHOSTTY_SUCCESS
+     || (sel && ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_SELECTION, sel)
+                    != GHOSTTY_SUCCESS)) {
+        ghostty_formatter_free(f);
+        return NULL;
+    }
+    return f;
+}
+
 long ghost_shim_format_history(void *t, uint32_t from, uint32_t to,
                                uint16_t cols, uint8_t **out) {
     GhosttyPoint a = { .tag = GHOSTTY_POINT_TAG_HISTORY };
@@ -448,23 +463,14 @@ long ghost_shim_format_history(void *t, uint32_t from, uint32_t to,
     GhosttyPoint b = { .tag = GHOSTTY_POINT_TAG_HISTORY };
     b.value.coordinate.x = cols ? cols - 1 : 0;
     b.value.coordinate.y = to;
-    GhosttyGridRef ra = { .size = sizeof(GhosttyGridRef) };
-    GhosttyGridRef rb = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ra = { 0 };
+    GhosttyGridRef rb = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, a, &ra) != GHOSTTY_SUCCESS
      || ghostty_terminal_grid_ref((GhosttyTerminal)t, b, &rb) != GHOSTTY_SUCCESS)
         return -1;
-    GhosttySelection sel = { .size = sizeof(GhosttySelection),
-                             .start = ra, .end = rb, .rectangle = false };
-    GhosttyFormatterTerminalOptions fo = { .size = sizeof fo };
-    fo.emit = GHOSTTY_FORMATTER_FORMAT_VT;
-    fo.trim = true;
-    fo.extra.size = sizeof fo.extra;
-    fo.extra.screen.size = sizeof fo.extra.screen;
-    fo.selection = &sel;
-    GhosttyFormatter f = NULL;
-    if (ghostty_formatter_terminal_new(NULL, &f, (GhosttyTerminal)t, fo)
-            != GHOSTTY_SUCCESS)
-        return -1;
+    GhosttySelection sel = { .start = ra, .end = rb, .rectangle = false };
+    GhosttyFormatter f = vt_formatter(t, &sel, true, GHOSTTY_FORMATTER_EXTRAS_NONE);
+    if (f == NULL) return -1;
     uint8_t *buf = NULL;
     size_t len = 0;
     GhosttyResult r = ghostty_formatter_format_alloc(f, NULL, &buf, &len);
@@ -484,7 +490,7 @@ int ghost_shim_cell_graphemes(void *t, int tag, uint16_t x, uint32_t y,
     p.value.coordinate.x = x;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return GHOSTTY_INVALID_VALUE;
     return ghostty_grid_ref_graphemes(&ref, buf, buf_len, out_len);
@@ -495,7 +501,7 @@ int ghost_shim_row_wrapped(void *t, int tag, uint32_t y) {
     p.value.coordinate.x = 0;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return 0;
     GhosttyRow row;
@@ -526,16 +532,16 @@ static void raw_from_cell(GhosttyCell cell, const GhosttyStyle *st,
 
     if (st) {
         unsigned a = 0;
-        if (st->bold)          a |= 1;
-        if (st->faint)         a |= 2;
-        if (st->italic)        a |= 4;
-        if (st->blink)         a |= 8;
-        if (st->inverse)       a |= 16;
-        if (st->invisible)     a |= 32;
-        if (st->strikethrough) a |= 64;
-        if (st->overline)      a |= 128;
+        if (st->flags & GHOSTTY_STYLE_FLAG_BOLD)          a |= 1;
+        if (st->flags & GHOSTTY_STYLE_FLAG_FAINT)         a |= 2;
+        if (st->flags & GHOSTTY_STYLE_FLAG_ITALIC)        a |= 4;
+        if (st->flags & GHOSTTY_STYLE_FLAG_BLINK)         a |= 8;
+        if (st->flags & GHOSTTY_STYLE_FLAG_INVERSE)       a |= 16;
+        if (st->flags & GHOSTTY_STYLE_FLAG_INVISIBLE)     a |= 32;
+        if (st->flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH) a |= 64;
+        if (st->flags & GHOSTTY_STYLE_FLAG_OVERLINE)      a |= 128;
         out->attrs = a;
-        out->underline = st->underline;
+        out->underline = GHOSTTY_STYLE_UNDERLINE(*st);
         color_of(st->fg_color, &out->fg_tag, &out->fg_val);
         color_of(st->bg_color, &out->bg_tag, &out->bg_val);
         color_of(st->underline_color, &out->us_tag, &out->us_val);
@@ -562,7 +568,7 @@ int ghost_shim_raw_row(void *t, int tag, uint32_t y, uint16_t cols,
     p.value.coordinate.x = 0;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return 0;
     for (uint16_t x = 0; x < cols; x++) {
@@ -572,7 +578,7 @@ int ghost_shim_raw_row(void *t, int tag, uint32_t y, uint16_t cols,
             memset(out, 0, (size_t)cols * sizeof(*out));
             return 0;
         }
-        GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+        GhosttyStyle st = { 0 };
         const GhosttyStyle *stp =
             ghostty_grid_ref_style(&ref, &st) == GHOSTTY_SUCCESS ? &st : NULL;
         raw_from_cell(cell, stp, &out[x]);
@@ -586,7 +592,7 @@ long ghost_shim_cell_link(void *t, int tag, uint16_t x, uint32_t y,
     p.value.coordinate.x = x;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return -1;
     size_t n = 0;
@@ -601,7 +607,7 @@ int ghost_shim_row_prompt(void *t, int tag, uint32_t y) {
     p.value.coordinate.x = 0;
     p.value.coordinate.y = y;
 
-    GhosttyGridRef ref = { .size = sizeof(GhosttyGridRef) };
+    GhosttyGridRef ref = { 0 };
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, p, &ref) != GHOSTTY_SUCCESS)
         return -1;
     GhosttyRow row;
@@ -692,7 +698,7 @@ int ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
                         GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &cell)
                         != GHOSTTY_SUCCESS)
                     continue;
-                GhosttyStyle st = { .size = sizeof(GhosttyStyle) };
+                GhosttyStyle st = { 0 };
                 const GhosttyStyle *stp = ghostty_render_state_row_cells_get(
                     r->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &st)
                         == GHOSTTY_SUCCESS ? &st : NULL;
@@ -702,12 +708,12 @@ int ghost_shim_render_snapshot(void *rp, void *t, uint16_t cols, uint16_t rows,
 
         bool clean = false;
         ghostty_render_state_row_set(r->iter,
-            GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean);
+            GHOSTTY_RENDER_STATE_ROW_OPT_DIRTY, &clean);
         y++;
     }
 
     GhosttyRenderStateDirty none = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
-    ghostty_render_state_set(r->rs, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &none);
+    ghostty_render_state_set(r->rs, GHOSTTY_RENDER_STATE_OPT_DIRTY, &none);
     return y;
 }
 
@@ -727,26 +733,20 @@ int ghost_shim_pen(void *t, GhostShimCell *out) {
     /* Emit the cursor's active SGR (plus one cell, which we discard): the
      * style extra is terminal-level, so restricting the content dump to a
      * one-cell selection keeps the pen without formatting the whole screen. */
-    GhosttyFormatterTerminalOptions fo = { .size = sizeof(fo) };
-    fo.emit = GHOSTTY_FORMATTER_FORMAT_VT;
-    fo.extra.size = sizeof(fo.extra);
-    fo.extra.screen.size = sizeof(fo.extra.screen);
-    fo.extra.screen.style = true;
     GhosttyPoint origin = { .tag = GHOST_SHIM_ACTIVE };
     origin.value.coordinate.x = 0;
     origin.value.coordinate.y = 0;
-    GhosttyGridRef oref = { .size = sizeof(GhosttyGridRef) };
-    GhosttySelection sel = { .size = sizeof(GhosttySelection) };
+    GhosttyGridRef oref = { 0 };
+    GhosttySelection sel = { 0 };
+    const GhosttySelection *selp = NULL;
     if (ghostty_terminal_grid_ref((GhosttyTerminal)t, origin, &oref)
             == GHOSTTY_SUCCESS) {
         sel.start = oref;
         sel.end = oref;
-        fo.selection = &sel;
+        selp = &sel;
     }
-    GhosttyFormatter f = NULL;
-    if (ghostty_formatter_terminal_new(NULL, &f, (GhosttyTerminal)t, fo)
-            != GHOSTTY_SUCCESS)
-        return 0;
+    GhosttyFormatter f = vt_formatter(t, selp, false, GHOSTTY_FORMATTER_EXTRA_STYLE);
+    if (f == NULL) return 0;
     uint8_t *buf = NULL;
     size_t len = 0;
     GhosttyResult fr = ghostty_formatter_format_alloc(f, NULL, &buf, &len);
@@ -756,9 +756,8 @@ int ghost_shim_pen(void *t, GhostShimCell *out) {
     /* Replay it into a scratch terminal so libghostty's own parser rebuilds the
      * pen, then take it off a space written under it. */
     GhosttyTerminal scratch = NULL;
-    GhosttyTerminalOptions so = { .cols = 4, .rows = 2, .max_scrollback = 4096 };
     int ok = 0;
-    if (ghostty_terminal_new(NULL, &scratch, so) == GHOSTTY_SUCCESS) {
+    if (ghostty_terminal_new(NULL, &scratch, 4, 2) == GHOSTTY_SUCCESS) {
         ghostty_terminal_vt_write(scratch, buf, len);
         ghostty_terminal_vt_write(scratch, (const uint8_t *)"\x1b[H ", 4);
         ok = ghost_shim_cell(scratch, GHOST_SHIM_ACTIVE, 0, 0, out);
@@ -813,11 +812,11 @@ static long encode_press(GhosttyKeyEncoder e, uint32_t cp, unsigned mods,
     ghostty_key_event_set_mods(ev, mods_of(mods));
     ghostty_key_event_set_unshifted_codepoint(ev, cp);
     /* The layout text the key produces; a C0 codepoint has none. */
-    char text = (char)cp;
-    if (cp >= 0x20 && cp < 0x7f) ghostty_key_event_set_utf8(ev, &text, 1);
+    uint8_t text = (uint8_t)cp;
+    if (cp >= 0x20 && cp < 0x7f)
+        ghostty_key_event_set_utf8(ev, (GhosttyString){ .ptr = &text, .len = 1 });
     size_t n = 0;
-    GhosttyResult r =
-        ghostty_key_encoder_encode(e, ev, (char *)buf, cap, &n);
+    GhosttyResult r = ghostty_key_encoder_encode(e, ev, buf, cap, &n);
     ghostty_key_event_free(ev);
     return r == GHOSTTY_SUCCESS ? (long)n : -1;
 }
@@ -842,7 +841,7 @@ long ghost_shim_encode_key(void *t, uint32_t cp, unsigned mods,
                            uint8_t *buf, size_t cap) {
     GhosttyKeyEncoder e = NULL;
     if (ghostty_key_encoder_new(NULL, &e) != GHOSTTY_SUCCESS) return -1;
-    ghostty_key_encoder_setopt_from_terminal(e, (GhosttyTerminal)t);
+    ghostty_key_encoder_set_from_terminal(e, (GhosttyTerminal)t);
     long n = encode_press(e, cp, mods, buf, cap);
     if (n > 0 && is_extended(buf, n) && !protocol_active(e))
         n = encode_press(e, cp, 1 + (((mods > 0 ? mods - 1 : 0)) & 2), buf, cap);
@@ -858,7 +857,7 @@ int ghost_shim_key_modes(void *t, uint8_t *kitty_flags) {
     *kitty_flags = kf;
     GhosttyKeyEncoder e = NULL;
     if (ghostty_key_encoder_new(NULL, &e) != GHOSTTY_SUCCESS) return -1;
-    ghostty_key_encoder_setopt_from_terminal(e, (GhosttyTerminal)t);
+    ghostty_key_encoder_set_from_terminal(e, (GhosttyTerminal)t);
     int mok = kf == 0 && protocol_active(e);
     ghostty_key_encoder_free(e);
     return mok;

@@ -3,11 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # libghostty-vt is 0.1.0-unstable with an evolving C ABI (bug 17), so it is
-    # pinned to a fixed nixpkgs rev — decoupled from the rolling nixpkgs above —
-    # and a `nix flake update` cannot silently swap the emulator's ABI out from
-    # under a running deploy. Bump this rev deliberately to move libghostty-vt.
-    nixpkgs-ghostty.url = "github:NixOS/nixpkgs/d407951447dcd00442e97087bf374aad70c04cea";
+    # The Zig toolchain libghostty-vt builds with (nix/libghostty-vt.nix), on a
+    # fixed rev so a `nix flake update` cannot swap the compiler under the
+    # emulator. Bump it deliberately, with the library.
+    nixpkgs-ghostty.url = "github:NixOS/nixpkgs/f4a03c008967841f2a0b3cb7c436fc6fc31671f6";
     flake-compat = {
       url = "github:edolstra/flake-compat";
       flake = false;
@@ -28,11 +27,10 @@
         nixpkgs.lib.genAttrs systems
           (system: f (import nixpkgs {
             inherit system;
-            # Take libghostty-vt from the pinned rev; everything else tracks
-            # nixpkgs above.
             overlays = [ (final: prev: {
-              libghostty-vt =
-                (import nixpkgs-ghostty { inherit system; }).libghostty-vt;
+              libghostty-vt = final.callPackage ./nix/libghostty-vt.nix {
+                zig = (import nixpkgs-ghostty { inherit system; }).zig_0_17;
+              };
             }) ];
           }));
     in
@@ -86,9 +84,8 @@
           buildInputs = [
             pkgs.cabal-install
             pkgs.cabal2nix
-            # libghostty-vt backs the terminal emulator (bug 17). Its pkg-config
-            # files live in the dev output's share/pkgconfig, which the
-            # pkg-config setup hook adds to the path.
+            # libghostty-vt backs the terminal emulator; the pkg-config setup
+            # hook finds its .pc files.
             pkgs.libghostty-vt
             pkgs.haskellPackages.weeder
 
