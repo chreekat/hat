@@ -52,7 +52,7 @@ import Data.Bits ((.|.), testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.Char (chr, ord)
+import Data.Char (chr, isAsciiUpper, ord)
 import Data.List (sort, sortOn)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Map.Strict (Map)
@@ -583,7 +583,12 @@ extendedByName :: Text -> Maybe Key
 extendedByName t = do
     (bits, base) <- modifiedName t
     code <- baseKeyCode base
-    extendedKeyOf code (bits + 1)
+    k <- extendedKeyOf code (bits + 1)
+    -- Alt alone keeps an uppercase base its own key, as tmux's
+    -- key_string_lookup_string does; Ctrl and Shift fold it to lowercase.
+    pure $ if bits == 2 && isAsciiUpper (chr code)
+        then mkKey ("M-" <> T.singleton (chr code)) k.raw
+        else k
 
 -- A key name's modifier bitmask and the base name under it; 'Nothing' when it
 -- carries no modifier prefix at all.

@@ -509,6 +509,12 @@ spec = do
             (.raw) <$> parseKeyName "S-Up" `shouldBe` Just "\ESC[1;2A"
         it "parses meta keys" $
             (.raw) <$> parseKeyName "M-n" `shouldBe` Just "\ESCn"
+        it "keeps a meta key's uppercase base apart from its lowercase one (48)" $ do
+            (.name) <$> parseKeyName "M-R" `shouldBe` Just "M-R"
+            (.name) <$> parseKeyName "M-r" `shouldBe` Just "M-r"
+            [(.name) <$> parseKeyName "M-R"] `shouldBe` map (Just . (.name)) (tokenizeKeys "\ESCR")
+            (.name) <$> parseKeyName "C-R" `shouldBe` Just "C-r"
+            (.name) <$> parseKeyName "M-S-R" `shouldBe` Just "M-S-r"
         it "parses named keys" $ do
             (.raw) <$> parseKeyName "Up" `shouldBe` Just "\ESC[A"
             (.raw) <$> parseKeyName "Enter" `shouldBe` Just "\r"

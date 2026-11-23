@@ -308,9 +308,9 @@ copyKeys = map copyMode
     <> map copyMode
     [ "M-< { send-keys -X history-top }"
     , "M-> { send-keys -X history-bottom }"
+    , "M-R { send-keys -X top-line }"
+    , "M-b { send-keys -X previous-word }"
     ]
-    <> [ lacking "M-R { send -X top-line }" "a name for M-R apart from M-r" ]
-    <> map copyMode [ "M-b { send-keys -X previous-word }" ]
     <> [ lacking "C-M-b { send -X previous-matching-bracket }" "previous-matching-bracket" ]
     <> map copyMode [ "M-f { send-keys -X next-word-end }" ]
     <> [ lacking "C-M-f { send -X next-matching-bracket }" "next-matching-bracket" ]
