@@ -136,7 +136,7 @@ data Grid m = Grid
     , gLineLen  :: Int -> m Int      -- ^ trimmed content length of a row
     , gPadding  :: Int -> Int -> m Bool
         -- ^ is (row, col) the padding column behind a wide character?
-    , gWrapped  :: Int -> m Bool     -- ^ is the row a wrapped continuation?
+    , gWrapped  :: Int -> m Bool     -- ^ does the row soft-wrap onto the next?
     , gText     :: Int -> m Text
         -- ^ a row's characters up to its trimmed length, as 'gChar' reads them
     }
@@ -195,6 +195,8 @@ gridOf e = do
         , fgSx = fromIntegral scr.size.cols
         , fgRows = V.generate hsize (\i -> later (fromMaybe V.empty <$> Emu.scrollbackLine e i))
             <> scr.cells
+        , fgWrapped = V.generate hsize (later . Emu.scrollbackLineWrapped e)
+            <> V.generate sy (later . Emu.screenRowWrapped e)
         , fgText = V.generate hsize (later . Emu.scrollbackLineText e)
         , fgSource = Just e
         }
@@ -262,7 +264,7 @@ frozenGrid fg = Grid
                 | isSpace (Cell.baseChar c) = acc
                 | otherwise = max acc i
         in pure (min fg.fgSx (lastFilled + 1))
-    , gWrapped = \_ -> pure False
+    , gWrapped = \row -> pure (fromMaybe False (fg.fgWrapped V.!? row))
     , gPadding = \row col -> pure (maybe False isPadding (rowAt row V.!? col))
     , gText = \row -> pure $ fromMaybe (cellsText (rowAt row)) (fg.fgText V.!? row)
     }
@@ -888,19 +890,21 @@ extractSelection g keys st = case st.selection of
   where
     (er, ec) = selectionEnd st
 
--- | One line of a selection, always terminated with @\\n@ (rows never
--- wrap in this model). Returns the empty text if @sx > ex@.
+-- | One row of a selection (tmux's @window_copy_copy_line@): a row that
+-- soft-wraps keeps its full width and ends without a newline when the
+-- selection runs on past it. Returns the empty text if @sx > ex@.
 copyLine :: Monad m => Grid m -> Int -> Int -> Int -> m Text
 copyLine g row sx ex
     | sx > ex = pure ""
     | otherwise = do
-        xx <- g.gLineLen row
+        wrapped <- g.gWrapped row
+        xx <- if wrapped then pure g.gSx else g.gLineLen row
         let ex' = min ex xx
             sx' = min sx xx
         cells <- if sx' < ex'
             then mapM (g.gChar row) [sx' .. ex' - 1]
             else pure []
-        pure (T.pack cells <> "\n")
+        pure (T.pack cells <> if wrapped && ex' == xx then "" else "\n")
 
 -- ---------------------------------------------------------------------
 -- Viewport rendering (selection highlight + copy cursor placement)
@@ -1284,7 +1288,7 @@ paneGrid pane = do
         _ -> frozenGrid emptyFrozen
   where
     emptyFrozen = FrozenGrid
-        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty
+        { fgHsize = 0, fgSy = 0, fgSx = 0, fgRows = V.empty, fgWrapped = V.empty
         , fgText = V.empty, fgSource = Nothing }
 
 -- | Run a reader motion against a pane grid, updating the cursor. Outside a
