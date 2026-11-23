@@ -327,7 +327,7 @@ sessionItems st ts mfilter = do
         wins <- catMaybes <$> mapM (\(ix, w, _, _) -> windowItem sess ix w) ordered
         if null wins then pure Nothing else
             pure $ Just Item
-                { tag = TagSession sess.id, name = nm, text = Nothing
+                { tag = TagSession sess.id, name = nm, text = NoText
                 , children = wins, startExpanded = True, align = AlignNone
                 , searchText = [nm], fuzzyName = Just nm
                 , tagging = Taggable, previewFrom = OwnPreview }
@@ -352,14 +352,14 @@ sessionItems st ts mfilter = do
             paneItems <- forM [ m | m@(p, _, _, _) <- matched, Just p.id /= ts.hidePane ] $
                 \(p, pix, _, env) ->
                     pure Item
-                        { tag = TagPane p.id, name = tshow pix, text = Nothing
+                        { tag = TagPane p.id, name = tshow pix, text = NoText
                         , children = [], startExpanded = True, align = AlignRight
                         , searchText = [Map.findWithDefault "" "pane_current_command" env]
                         , fuzzyName = Nothing
                         , tagging = Taggable, previewFrom = OwnPreview }
             wname <- readTVarIO win.name
             pure $ Just Item
-                { tag = TagWinlink sess.id ix, name = tshow ix, text = Nothing
+                { tag = TagWinlink sess.id ix, name = tshow ix, text = NoText
                 , children = paneItems, startExpanded = True, align = AlignRight
                 , searchText = [wname], fuzzyName = Just wname
                 , tagging = Taggable, previewFrom = OwnPreview }
@@ -387,7 +387,10 @@ levelVars level = Map.fromList
 -- expanded at the line's item. Customize-mode's builder gives its own.
 drawnText :: ServerState -> TreeState -> Line -> IO (Maybe Text)
 drawnText st ts l = case l.item.tag of
-    _ | ts.kind == OptionTree -> pure l.item.text
+    _ | ts.kind == OptionTree -> case l.item.text of
+        NoText -> pure Nothing
+        ItemText t -> pure (Just t)
+        ItemFormat env -> Just <$> expandFormat st env ts.itemFormat
     TagBuffer o -> do
         bufs <- pasteWalk <$> readTVarIO st.buffers
         expandAtOrigin <- originExpander st ts
@@ -418,7 +421,7 @@ bufferItems st ts mfilter = do
         ok <- keeps mfilter (expandAtOrigin (bufferEnv pb))
         if not ok then pure Nothing else
             pure $ Just Item
-                { tag = TagBuffer pb.order, name = pb.name, text = Nothing
+                { tag = TagBuffer pb.order, name = pb.name, text = NoText
                 , children = [], startExpanded = True, align = AlignNone
                 , searchText = [pb.name, TE.decodeUtf8Lenient pb.body]
                 , fuzzyName = Just pb.name
@@ -444,7 +447,7 @@ clientItems st ts mfilter = do
                 ok <- keeps mfilter (expandFormat st env)
                 if not ok then pure Nothing else
                     pure $ Just Item
-                        { tag = TagClient c.id, name = nm, text = Nothing
+                        { tag = TagClient c.id, name = nm, text = NoText
                         , children = [], startExpanded = True, align = AlignNone
                         , searchText = [nm], fuzzyName = Just nm
                         , tagging = Taggable, previewFrom = OwnPreview }
@@ -525,7 +528,7 @@ drawTreeMode st ts size = do
     -- Only the lines on screen expand their text.
     ls <- forM (zip [0 ..] built) $ \(i, l) ->
         if i >= settled.offset && i < settled.offset + h
-            then (\t -> l { item = l.item { ModeTree.text = t } }) <$> drawnText st settled l
+            then (\t -> l { item = l.item { ModeTree.text = maybe NoText ItemText t } }) <$> drawnText st settled l
             else pure l
     opts <- readTVarIO st.options
     look <- treeLook st ts

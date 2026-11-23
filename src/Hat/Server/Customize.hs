@@ -55,7 +55,7 @@ import Hat.Server.Hooks (hookEntriesAt, isRegisteredEvent)
 import Hat.Server.Keymap (defaultKeymap)
 import Hat.Server.Keys (Binding (..), Key (..), Repeat (..), parseKeyName)
 import Hat.Server.Locate (locatePane, paneIndexOf)
-import Hat.Server.ModeTree (Item (..), Line (..), NameAlign (..), PreviewFrom (..), Tagging (..))
+import Hat.Server.ModeTree (Item (..), ItemText (..), Line (..), NameAlign (..), PreviewFrom (..), Tagging (..))
 import Hat.Server.Prompt (promptFor)
 import Hat.Server.Theme (Theme)
 import Hat.Term.Cell qualified as Cell
@@ -323,19 +323,19 @@ customizeItems st ts mfilter = hereOf st ts >>= \case
             genv <- readTVarIO st.globalEnviron
             senv <- readTVarIO h.session.environ
             sequence
-                [ envGroup st ts h mfilter GlobalEnvironment genv
-                , envGroup st ts h mfilter SessionEnvironment senv ]
+                [ envGroup st h mfilter GlobalEnvironment genv
+                , envGroup st h mfilter SessionEnvironment senv ]
         km <- readTVarIO st.keymap
         keys <- mapM (keyGroup st ts h mfilter) [ (t, b) | (t, b) <- Map.toAscList km, not (Map.null b) ]
         pure (catMaybes opts <> envs <> catMaybes keys)
 
 heading :: TreeTag -> Text -> [Item] -> Item
 heading tag nm cs = Item
-    { tag = tag, name = nm, text = Nothing, children = cs, startExpanded = False
+    { tag = tag, name = nm, text = NoText, children = cs, startExpanded = False
     , align = AlignNone, searchText = [nm], fuzzyName = Just nm
     , tagging = Untaggable, previewFrom = OwnPreview }
 
-leaf :: TreeTag -> Text -> Maybe Text -> Item
+leaf :: TreeTag -> Text -> ItemText -> Item
 leaf tag nm txt = Item
     { tag = tag, name = nm, text = txt, children = [], startExpanded = False
     , align = AlignNone, searchText = [nm], fuzzyName = Just nm
@@ -394,8 +394,7 @@ optionItem st ts h mfilter g t n v = do
             env = Map.union vars h.env
         ok <- keeps st mfilter env
         if not ok then pure Nothing else do
-            text <- if isArray then pure Nothing
-                else Just <$> expandFormat st env ts.itemFormat
+            let text = if isArray then NoText else ItemFormat env
             items <- case v of
                 OVArray m | isArray -> fmap catMaybes . forM (Map.toAscList m) $ \(k, iv) ->
                     if ts.itemsShown == ChangedItems && not (isChanged mdef False (Just k) v)
@@ -404,8 +403,7 @@ optionItem st ts h mfilter g t n v = do
                             let nm = n <> "[" <> arrayKeyText k <> "]"
                                 ienv = Map.insert "option_name" nm
                                     (Map.insert "option_value" iv env)
-                            itext <- expandFormat st ienv ts.itemFormat
-                            pure (Just (leaf (TagOption g n (Just k)) nm (Just itext))
+                            pure (Just (leaf (TagOption g n (Just k)) nm (ItemFormat ienv))
                                 { startExpanded = True })
                 _ -> pure []
             pure (Just (leaf (TagOption g n Nothing) n text) { children = items })
@@ -414,9 +412,8 @@ monitorSpec :: Text -> Monitor -> Text
 monitorSpec n m = n <> ":" <> monitorTargetText m.target <> ":" <> m.format
 
 envGroup
-    :: ServerState -> TreeState -> Here -> Maybe Text -> CustomizeGroup -> Environ
-    -> IO Item
-envGroup st ts h mfilter g environ = do
+    :: ServerState -> Here -> Maybe Text -> CustomizeGroup -> Environ -> IO Item
+envGroup st h mfilter g environ = do
     let global = g == GlobalEnvironment
         scopeVars = Map.fromList
             [ ("is_option", "0"), ("is_key", "0"), ("is_environment", "1")
@@ -431,10 +428,8 @@ envGroup st ts h mfilter g environ = do
                 (Map.union scopeVars h.env)
         ok <- keeps st mfilter env
         if not ok then pure Nothing else case e.value of
-            Nothing -> pure (Just (leaf (TagEnvironment g n) ("-" <> n) Nothing))
-            Just _ -> do
-                text <- expandFormat st env ts.itemFormat
-                pure (Just (leaf (TagEnvironment g n) n (Just text)))
+            Nothing -> pure (Just (leaf (TagEnvironment g n) ("-" <> n) NoText))
+            Just _ -> pure (Just (leaf (TagEnvironment g n) n (ItemFormat env)))
     pure (heading (TagGroup g) (groupTitle g) kids)
 
 keyGroup
@@ -452,10 +447,10 @@ keyGroup st ts h mfilter (table, binds) = do
             if not ok then pure Nothing else do
                 nm <- expandFormat st env ts.itemFormat
                 let part p label value = (leaf (TagKeyPart table k p) label
-                        (Just ("#[fg=themelightgrey]#[ignore]" <> value)))
+                        (ItemText ("#[fg=themelightgrey]#[ignore]" <> value)))
                         { tagging = Untaggable, previewFrom = ParentPreview
                         , startExpanded = True }
-                pure $ Just (leaf (TagKey table k) nm Nothing)
+                pure $ Just (leaf (TagKey table k) nm NoText)
                     { searchText = [k], fuzzyName = Just k
                     , children =
                         [ part KeyCommand "Command" (printList b.commands)

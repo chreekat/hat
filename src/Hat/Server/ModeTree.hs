@@ -5,6 +5,7 @@
 -- preview box and prompt.
 module Hat.Server.ModeTree
     ( Item (..)
+    , ItemText (..)
     , NameAlign (..)
     , Tagging (..)
     , PreviewFrom (..)
@@ -48,6 +49,7 @@ import Data.Vector qualified as V
 import Hat.FuzzyMatch (score)
 import Hat.Geometry (Pos (..), Rect (..), Size (..))
 import Hat.Model
+import Hat.Server.Format (FormatEnv)
 import Hat.Server.FormatDraw (FormatColours (..), formatDrawIn, formatWidth, styleCell)
 import Hat.Server.Keys (Key (..))
 import Hat.Server.Prompt (PromptEdit (..), editPrompt, noPromptEnv, promptFor)
@@ -60,7 +62,7 @@ import Hat.Term.Cell qualified as Cell
 data Item = Item
     { tag           :: !TreeTag
     , name          :: !Text
-    , text          :: !(Maybe Text)  -- ^ drawn after @name: @
+    , text          :: !ItemText      -- ^ drawn after @name: @
     , children      :: ![Item]
     , startExpanded :: !Bool          -- ^ the expansion of an item not seen before
     , align         :: !NameAlign
@@ -71,6 +73,13 @@ data Item = Item
     , tagging       :: !Tagging
     , previewFrom   :: !PreviewFrom
     }
+    deriving (Eq, Show)
+
+-- | What an item draws after its name.
+data ItemText
+    = NoText
+    | ItemText Text  -- ^ left unevaluated until its line is drawn
+    | ItemFormat FormatEnv  -- ^ the mode's item format, at this environment
     deriving (Eq, Show)
 
 -- | Whether @t@ tags an item (tmux's @mode_tree_no_tag@).
@@ -519,13 +528,18 @@ drawTree inp st = TreeDraw
             left = w - length prefix
             nm = padName l
             label = nm <> (if tagged then "*" else "")
-                <> (if isJust l.item.text then "#[fg=themelightgrey]: #[default]" else "")
+                <> (if hasText then "#[fg=themelightgrey]: #[default]" else "")
             -- tmux draws the label across the rest of the line and the text
             -- over it after the label's own width, each aligning within the
             -- width it is drawn in.
             labelWidth = min left (formatWidth label)
             labelCells = drawFormatIn inp.theme use base (max 0 left) label
-            body = prefix <> case l.item.text of
+            -- A format still unexpanded is a line off screen, never drawn.
+            drawnText = case l.item.text of
+                ItemText t -> Just t
+                _ -> Nothing
+            hasText = isJust drawnText
+            body = prefix <> case drawnText of
                 Just t -> take labelWidth labelCells
                     <> drawFormatIn inp.theme use base (max 0 (left - labelWidth)) t
                 Nothing -> labelCells

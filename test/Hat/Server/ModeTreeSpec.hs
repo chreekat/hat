@@ -28,7 +28,7 @@ items =
     ]
   where
     node t n cs = Item
-        { tag = t, name = n, text = Just "x", children = cs, startExpanded = True
+        { tag = t, name = n, text = ItemText "x", children = cs, startExpanded = True
         , align = AlignNone, searchText = [n], fuzzyName = Just n
         , tagging = Taggable, previewFrom = OwnPreview }
     leaf t n = (node t n []) { fuzzyName = Nothing }
@@ -44,7 +44,7 @@ named =
     window s i n p = item (TagWinlink (SessionId s) i) (T.pack (show i)) (Just n)
         [item (TagPane (PaneId p)) "0" Nothing []]
     item t n fz cs = Item
-        { tag = t, name = n, text = Nothing, children = cs, startExpanded = True
+        { tag = t, name = n, text = NoText, children = cs, startExpanded = True
         , align = AlignNone, searchText = [n], fuzzyName = fz
         , tagging = Taggable, previewFrom = OwnPreview }
 
@@ -129,7 +129,7 @@ spec = do
         -- Heading @h@ (untaggable) over items @a@ and @b@, whose child
         -- @c@ (untaggable) previews as @b@.
         let heading = Item
-                { tag = TagSession (SessionId 9), name = "h", text = Nothing
+                { tag = TagSession (SessionId 9), name = "h", text = NoText
                 , children = [leafI "a", (leafI "bb") { children = [part] }]
                 , startExpanded = True, align = AlignNone, searchText = []
                 , fuzzyName = Nothing, tagging = Untaggable, previewFrom = OwnPreview }
@@ -182,7 +182,7 @@ spec = do
                 `shouldBe` True
 
         it "aligns an item's text within the rest of its line" $ do
-            let item = (items !! 0) { children = [], text = Just "#[align=right]R" }
+            let item = (items !! 0) { children = [], text = ItemText "#[align=right]R" }
                 ls = [ l { key = defaultLineKey i } | (i, l) <- zip [0 ..] (buildLines fresh [item]) ]
                 drawn = drawTree DrawInput
                     { size = Size { rows = 24, cols = 60 }, lines = ls
