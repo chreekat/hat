@@ -37,7 +37,10 @@ runCopyModeCommand st pane strings name cmdArgs = do
                     (reMode (CopyMode.pushDigit d state))
                 pure []
             | otherwise -> case (Map.lookup name CopyMode.handlers, CopyMode.commandPositionals name cmdArgs) of
-                (Nothing, _) -> pure []
+                (Nothing, _)
+                    | Map.member name CopyMode.tmuxCommands ->
+                        pure [RErr (name <> ": not yet supported by hat")]
+                    | otherwise -> pure [RErr ("unknown copy-mode command: " <> name)]
                 (Just _, Left err) -> pure [RErr err]
                 (Just h, Right pos0) -> searchArgs pos0 >>= \case
                   -- An empty expansion leaves nothing to search for.

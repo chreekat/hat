@@ -586,6 +586,12 @@ spec = do
             (st, p) <- viewing ["foo"]
             runCopyModeCommand st p SearchLiteral "search-forward" ["-x"] >>= (`shouldSatisfy` refused)
             runCopyModeCommand st p SearchLiteral "history-top" ["extra"] >>= (`shouldSatisfy` refused)
+        it "fail loud on a tmux command hat lacks, and on a name tmux does not know" $ do
+            (st, p) <- viewing ["foo"]
+            runCopyModeCommand st p SearchLiteral "previous-matching-bracket" []
+                >>= (`shouldSatisfy` refused)
+            runCopyModeCommand st p SearchLiteral "no-such-command" []
+                >>= (`shouldSatisfy` refused)
         it "fail loud on a tmux flag hat does not honour" $ do
             (st, p) <- viewing ["foo"]
             runCopyModeCommand st p SearchLiteral "copy-selection" ["-P"] >>= (`shouldSatisfy` refused)

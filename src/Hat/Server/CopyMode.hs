@@ -12,6 +12,7 @@ module Hat.Server.CopyMode
     ( Handler
     , handlers
     , commandPositionals
+    , tmuxCommands
     , Grid (..)
     , Motion
     , listGrid
@@ -1323,30 +1324,135 @@ type Handler
     = ServerState -> Pane -> CopyModeState -> [Text]
     -> IO (Either Text (Maybe CopyModeState))
 
--- | A copy-mode command's arguments: tmux's template and positional bounds
--- for it (@window_copy_cmd_table@), then the flags and leading positionals
--- hat honours of those.
+-- | A copy-mode command's arguments: its template and positional bounds.
 data CommandArgs = CommandArgs
     { template :: Text
     , minArgs :: Int
     , maxArgs :: Int
-    , honouredFlags :: [Char]
-    , honouredArgs :: Int
     }
 
+-- | tmux's copy-mode commands and their arguments, from
+-- @window_copy_cmd_table@ of the pinned source.
+tmuxCommands :: Map Text CommandArgs
+tmuxCommands = Map.fromList
+    [ ("append-selection", CommandArgs "" 0 0)
+    , ("append-selection-and-cancel", CommandArgs "" 0 0)
+    , ("back-to-indentation", CommandArgs "" 0 0)
+    , ("begin-selection", CommandArgs "" 0 0)
+    , ("bottom-line", CommandArgs "" 0 0)
+    , ("cancel", CommandArgs "" 0 0)
+    , ("clear-selection", CommandArgs "" 0 0)
+    , ("copy-end-of-line", CommandArgs "CP" 0 1)
+    , ("copy-end-of-line-and-cancel", CommandArgs "CP" 0 1)
+    , ("copy-line", CommandArgs "CP" 0 1)
+    , ("copy-line-and-cancel", CommandArgs "CP" 0 1)
+    , ("copy-pipe", CommandArgs "CP" 0 2)
+    , ("copy-pipe-and-cancel", CommandArgs "CP" 0 2)
+    , ("copy-pipe-end-of-line", CommandArgs "CP" 0 2)
+    , ("copy-pipe-end-of-line-and-cancel", CommandArgs "CP" 0 2)
+    , ("copy-pipe-line", CommandArgs "CP" 0 2)
+    , ("copy-pipe-line-and-cancel", CommandArgs "CP" 0 2)
+    , ("copy-pipe-no-clear", CommandArgs "CP" 0 2)
+    , ("copy-selection", CommandArgs "CP" 0 1)
+    , ("copy-selection-and-cancel", CommandArgs "CP" 0 1)
+    , ("copy-selection-no-clear", CommandArgs "CP" 0 1)
+    , ("cursor-centre-horizontal", CommandArgs "" 0 0)
+    , ("cursor-centre-vertical", CommandArgs "" 0 0)
+    , ("cursor-down", CommandArgs "" 0 0)
+    , ("cursor-down-and-cancel", CommandArgs "" 0 0)
+    , ("cursor-left", CommandArgs "" 0 0)
+    , ("cursor-right", CommandArgs "" 0 0)
+    , ("cursor-up", CommandArgs "" 0 0)
+    , ("end-of-line", CommandArgs "" 0 0)
+    , ("goto-line", CommandArgs "" 1 1)
+    , ("halfpage-down", CommandArgs "" 0 0)
+    , ("halfpage-down-and-cancel", CommandArgs "" 0 0)
+    , ("halfpage-up", CommandArgs "" 0 0)
+    , ("history-bottom", CommandArgs "" 0 0)
+    , ("history-top", CommandArgs "" 0 0)
+    , ("jump-again", CommandArgs "" 0 0)
+    , ("jump-backward", CommandArgs "" 1 1)
+    , ("jump-forward", CommandArgs "" 1 1)
+    , ("jump-reverse", CommandArgs "" 0 0)
+    , ("jump-to-backward", CommandArgs "" 1 1)
+    , ("jump-to-forward", CommandArgs "" 1 1)
+    , ("jump-to-mark", CommandArgs "" 0 0)
+    , ("line-numbers-off", CommandArgs "" 0 0)
+    , ("line-numbers-on", CommandArgs "" 0 0)
+    , ("line-numbers-toggle", CommandArgs "" 0 0)
+    , ("middle-line", CommandArgs "" 0 0)
+    , ("next-matching-bracket", CommandArgs "" 0 0)
+    , ("next-paragraph", CommandArgs "" 0 0)
+    , ("next-prompt", CommandArgs "o" 0 0)
+    , ("next-space", CommandArgs "" 0 0)
+    , ("next-space-end", CommandArgs "" 0 0)
+    , ("next-word", CommandArgs "" 0 0)
+    , ("next-word-end", CommandArgs "" 0 0)
+    , ("other-end", CommandArgs "" 0 0)
+    , ("page-down", CommandArgs "" 0 0)
+    , ("page-down-and-cancel", CommandArgs "" 0 0)
+    , ("page-up", CommandArgs "" 0 0)
+    , ("pipe", CommandArgs "" 0 1)
+    , ("pipe-and-cancel", CommandArgs "" 0 1)
+    , ("pipe-no-clear", CommandArgs "" 0 1)
+    , ("previous-matching-bracket", CommandArgs "" 0 0)
+    , ("previous-paragraph", CommandArgs "" 0 0)
+    , ("previous-prompt", CommandArgs "o" 0 0)
+    , ("previous-space", CommandArgs "" 0 0)
+    , ("previous-word", CommandArgs "" 0 0)
+    , ("recentre-top-bottom", CommandArgs "" 0 0)
+    , ("rectangle-off", CommandArgs "" 0 0)
+    , ("rectangle-on", CommandArgs "" 0 0)
+    , ("rectangle-toggle", CommandArgs "" 0 0)
+    , ("refresh-off", CommandArgs "" 0 0)
+    , ("refresh-on", CommandArgs "" 0 0)
+    , ("refresh-toggle", CommandArgs "" 0 0)
+    , ("scroll-bottom", CommandArgs "" 0 0)
+    , ("scroll-down", CommandArgs "" 0 0)
+    , ("scroll-down-and-cancel", CommandArgs "" 0 0)
+    , ("scroll-exit-off", CommandArgs "" 0 0)
+    , ("scroll-exit-on", CommandArgs "" 0 0)
+    , ("scroll-exit-toggle", CommandArgs "" 0 0)
+    , ("scroll-middle", CommandArgs "" 0 0)
+    , ("scroll-to-mouse", CommandArgs "e" 0 0)
+    , ("scroll-top", CommandArgs "" 0 0)
+    , ("scroll-up", CommandArgs "" 0 0)
+    , ("search-again", CommandArgs "" 0 0)
+    , ("search-backward", CommandArgs "" 0 1)
+    , ("search-backward-incremental", CommandArgs "" 1 1)
+    , ("search-backward-text", CommandArgs "" 0 1)
+    , ("search-forward", CommandArgs "" 0 1)
+    , ("search-forward-incremental", CommandArgs "" 1 1)
+    , ("search-forward-text", CommandArgs "" 0 1)
+    , ("search-reverse", CommandArgs "" 0 0)
+    , ("select-line", CommandArgs "" 0 0)
+    , ("select-word", CommandArgs "" 0 0)
+    , ("selection-mode", CommandArgs "" 0 1)
+    , ("set-mark", CommandArgs "" 0 0)
+    , ("start-of-line", CommandArgs "" 0 0)
+    , ("stop-selection", CommandArgs "" 0 0)
+    , ("toggle-position", CommandArgs "" 0 0)
+    , ("top-line", CommandArgs "" 0 0)
+    ]
+
+-- | A command's arguments as hat takes them: tmux's, but for hat's own
+-- commands and where hat asks less.
 commandArgs :: Text -> CommandArgs
-commandArgs name = fromMaybe (CommandArgs "" 0 0 "" 0) (lookup name table)
-  where
-    table =
-        [ (n, CommandArgs "" 0 1 "" 1)
-        | n <- [ "search-forward", "search-backward", "search-forward-text"
-               , "search-backward-text", "apply-search" ] ]
-        -- tmux requires the target; hat arms a jump without one.
-        <> [ (n, CommandArgs "" 0 1 "" 1)
-           | n <- ["jump-forward", "jump-backward", "jump-to-forward", "jump-to-backward"] ]
-        <> [ (n, CommandArgs "CP" 0 1 "" 0)
-           | n <- ["copy-selection", "copy-selection-no-clear", "copy-selection-and-cancel"] ]
-        <> [ (n, CommandArgs "CP" 0 2 "" 1) | n <- ["copy-pipe", "copy-pipe-and-cancel"] ]
+commandArgs = \case
+    -- tmux requires the target; hat arms a jump without one.
+    n | n `elem` ["jump-forward", "jump-backward", "jump-to-forward", "jump-to-backward"] ->
+        CommandArgs "" 0 1
+    "apply-search" -> CommandArgs "" 0 1
+    n -> Map.findWithDefault (CommandArgs "" 0 0) n tmuxCommands
+
+-- | The flags and the count of leading positionals hat honours of a
+-- command's arguments: no flags, and every positional but a copy's
+-- buffer-name prefix.
+honoured :: Text -> ([Char], Int)
+honoured name
+    | name `elem` ["copy-selection", "copy-selection-no-clear", "copy-selection-and-cancel"] = ("", 0)
+    | name `elem` ["copy-pipe", "copy-pipe-and-cancel"] = ("", 1)
+    | otherwise = ("", (commandArgs name).maxArgs)
 
 -- | A copy-mode command's positional arguments, its words read as tmux's
 -- @args_parse@ reads them against its 'CommandArgs'. What hat does not
@@ -1354,16 +1460,17 @@ commandArgs name = fromMaybe (CommandArgs "" 0 0 "" 0) (lookup name table)
 commandPositionals :: Text -> [Text] -> Either Text [Text]
 commandPositionals name ws = do
     let spec = commandArgs name
+        (flagsHonoured, argsHonoured) = honoured name
     (flags, pos) <- parseTmuxArgs spec.template ws
     let n = length pos
     if n < spec.minArgs
         then Left ("too few arguments (need at least " <> tshow spec.minArgs <> ")")
     else if n > spec.maxArgs
         then Left ("too many arguments (need at most " <> tshow spec.maxArgs <> ")")
-    else case [ c | (c, _) <- flags, c `notElem` spec.honouredFlags ] of
+    else case [ c | (c, _) <- flags, c `notElem` flagsHonoured ] of
         c : _ -> Left (name <> " -" <> T.singleton c <> ": not yet supported by hat")
-        [] | n > spec.honouredArgs ->
-                Left (name <> ": argument " <> tshow (spec.honouredArgs + 1)
+        [] | n > argsHonoured ->
+                Left (name <> ": argument " <> tshow (argsHonoured + 1)
                     <> " is not yet supported by hat")
            | otherwise -> Right pos
 
