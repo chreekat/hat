@@ -45,7 +45,7 @@ import Hat.Log
 import Hat.Server.Environ
 import Hat.Model
 import Hat.Model.Options
-import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.CopyMode (SearchString (..), runCopyModeCommand)
 import Hat.Server.ClientSession (adoptServerAlternate)
 import Hat.Server.Command.Session (checkUnattached)
 import Hat.Server.Command.Types
@@ -851,8 +851,8 @@ runInputs d st client keys = do
             Just (CopyMode s) | Just _ <- s.copyState.pendingSearch -> do
                 -- Neither command can fail, so the replies are empty.
                 void $ if T.length key.name == 1
-                    then runCopyModeCommand st pane "apply-search" [key.name]
-                    else runCopyModeCommand st pane "cancel-search" []
+                    then runCopyModeCommand st pane SearchLiteral "apply-search" [key.name]
+                    else runCopyModeCommand st pane SearchLiteral "cancel-search" []
                 pure True
             _ -> pure False
 

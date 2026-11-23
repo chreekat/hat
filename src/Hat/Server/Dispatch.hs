@@ -78,7 +78,7 @@ import Hat.Server.Command.Bind (cmdBind, cmdUnbind)
 import Hat.Server.Command.ListKeys (cmdListKeys, printCommands)
 import Hat.Server.Command.ShowMessages (cmdShowMessages)
 import Hat.Server.MessageLog (logCommand)
-import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.CopyMode (SearchString (..), runCopyModeCommand)
 import Hat.Server.Command.Hook (cmdSetHook, cmdShowHooks, resolveHookTarget)
 import Hat.Server.Command.Wait (cmdWaitFor)
 import Hat.Server.Hooks
@@ -1223,7 +1223,7 @@ cmdSendKeys st mclient args
                                 -- a drag (tmux's window_copy_start_drag).
                                 (Just (client, ev), "begin-selection") ->
                                     [] <$ startSelectionDrag st client ev
-                                _ -> runCopyModeCommand st pane name cmdArgs
+                                _ -> runCopyModeCommand st pane searchString name cmdArgs
                         [] -> pure []
                     -- -H: each argument is one hex byte.
                     | hexBytes = case mapM hexByte pos of
@@ -1266,6 +1266,7 @@ cmdSendKeys st mclient args
     literal = "-l" `elem` flags
     hexBytes = "-H" `elem` flags
     modeCmd = "-X" `elem` flags
+    searchString = if "-F" `elem` flags then SearchFormat else SearchLiteral
     hexByte t = case TR.hexadecimal t of
         Right (n, rest) | T.null rest, n >= 0, n <= 255 ->
             Just (fromIntegral (n :: Int))

@@ -30,7 +30,7 @@ import Hat.Server.Pane (typeKeyIntoPane)
 import Hat.Server.PanePrompt (openPanePrompt)
 import Hat.Server.Toast (showReplies)
 import Hat.Server.PaneMode (enterClockMode, modifyTopMode, resetPaneModeAll, setPaneMode)
-import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.CopyMode (SearchString (..), runCopyModeCommand)
 import Hat.Server.MouseIO (clientMouseEvent, mouseEventPane, startSelectionDrag)
 import Hat.Server.Target qualified as Target
 import Hat.Server.Prompt qualified as Prompt
@@ -117,7 +117,7 @@ cmdCopyMode st mclient args = do
                             , lineNumbers = if isJust keyMouse then LinesHidden else LinesFromOption } }
                     other -> other
                 when ("-u" `elem` flags) $
-                    void (runCopyModeCommand st pane "page-up" [])
+                    void (runCopyModeCommand st pane SearchLiteral "page-up" [])
                 forM_ ((,) <$> mclient <*> mev) $ \(client, ev) ->
                     startSelectionDrag st client ev
                 pure []

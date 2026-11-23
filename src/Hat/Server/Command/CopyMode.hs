@@ -2,7 +2,8 @@
 -- selection or scroll, named the way @send-keys -X@ and the copy-mode key
 -- tables name them.
 module Hat.Server.Command.CopyMode
-    ( runCopyModeCommand
+    ( SearchString (..)
+    , runCopyModeCommand
     ) where
 
 import Control.Concurrent.STM
@@ -15,11 +16,17 @@ import Hat.Model
 import Hat.Model.Options (ModeKeys (..), Options (..))
 import Hat.Server.Command.Types (Reply (..))
 import Hat.Server.CopyMode qualified as CopyMode
+import Hat.Server.FormatEnv (FormatScope (..), FormatTarget (..), expandAt, expandFormat)
+import Hat.Server.Locate (findPaneLoc, paneIndexOf)
 import Hat.Server.PaneMode (modifyTopMode, resetPaneMode)
 import Hat.Server.Scrollbars (revealScrollbar, scrollShowsScrollbar)
 
-runCopyModeCommand :: ServerState -> Pane -> Text -> [Text] -> IO [Reply]
-runCopyModeCommand st pane name cmdArgs = do
+-- | Whether a copy-mode search's string is a format, expanded against the
+-- pane before it searches (@send-keys -F@).
+data SearchString = SearchLiteral | SearchFormat
+
+runCopyModeCommand :: ServerState -> Pane -> SearchString -> Text -> [Text] -> IO [Reply]
+runCopyModeCommand st pane strings name cmdArgs = do
     mmode <- atomically (topMode pane)
     case mmode of
         Just (CopyMode pm)
@@ -32,7 +39,10 @@ runCopyModeCommand st pane name cmdArgs = do
             | otherwise -> case (Map.lookup name CopyMode.handlers, CopyMode.commandPositionals name cmdArgs) of
                 (Nothing, _) -> pure []
                 (Just _, Left err) -> pure [RErr err]
-                (Just h, Right pos) -> do
+                (Just h, Right pos0) -> searchArgs pos0 >>= \case
+                  -- An empty expansion leaves nothing to search for.
+                  Nothing -> pure []
+                  Just pos -> do
                     -- Motions repeat [count] times; yanks never do. Every
                     -- command clears the pending count.
                     let count
@@ -61,6 +71,17 @@ runCopyModeCommand st pane name cmdArgs = do
         -- not in copy mode; -X is a no-op
         _ -> pure []
   where
+    searchArgs pos = case (strings, pos) of
+        (SearchFormat, [ss]) | name `elem` searches -> do
+            mloc <- atomically (findPaneLoc st pane.id)
+            expanded <- case mloc of
+                Just (sess, ix, win, _) -> do
+                    pix <- paneIndexOf st win pane
+                    expandAt st (FormatTarget (InPane sess ix win pix pane) Map.empty) ss
+                Nothing -> expandFormat st Map.empty ss
+            pure (if T.null expanded then Nothing else Just [expanded])
+        _ -> pure (Just pos)
+    searches = ["search-forward", "search-backward", "search-forward-text", "search-backward-text"]
     readDigit (a : _) = case TR.decimal a of
         Right (d, rest) | T.null rest, d >= 0, d <= 9 -> Just d
         _ -> Nothing

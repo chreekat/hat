@@ -18,6 +18,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Timeout (timeout)
+import Data.Functor ((<&>))
 import Data.Map.Strict qualified as Map
 import Network.Socket
     ( Family (AF_UNIX), Socket, SocketType (Stream), close, defaultProtocol
@@ -64,7 +65,7 @@ import Hat.Server.ClientSession
 import Hat.Server.Conn (acceptLoop, clientResized, handleInput, removeClient)
 import Hat.Server.Dispatch (installHooks, runArgv)
 import Hat.Server.Command.Pane (cmdClearHistory)
-import Hat.Server.Command.CopyMode (runCopyModeCommand)
+import Hat.Server.Command.CopyMode (SearchString (..), runCopyModeCommand)
 import Hat.Server.ViewMode (ViewText (..), viewModeAdd)
 import Hat.Server.Toast (showReplies, showToast)
 import Hat.Server.ConfigCauses (addConfigCause, showConfigCauses)
@@ -561,7 +562,7 @@ spec = do
             viewModeAdd st p ViewLiteral ["x\ESC"]
             Just (CopyMode pm) <- atomically (topMode p)
             rowOf pm 0 `shouldBe` "x"
-            _ <- runCopyModeCommand st p "cancel" []
+            _ <- runCopyModeCommand st p SearchLiteral "cancel" []
             isNothing <$> atomically (topMode p) `shouldReturn` True
             isJust <$> readTVarIO p.viewBacking `shouldReturn` False
 
@@ -579,18 +580,31 @@ spec = do
                 _ -> False
         it "end their flags at --, as tmux's args_parse does" $ do
             (st, p) <- viewing ["foo", "-bar"]
-            _ <- runCopyModeCommand st p "search-forward" ["--", "-bar"]
+            _ <- runCopyModeCommand st p SearchLiteral "search-forward" ["--", "-bar"]
             fst <$> cursorOf p `shouldReturn` 1
         it "refuse a flag the command does not take, and words past its count" $ do
             (st, p) <- viewing ["foo"]
-            runCopyModeCommand st p "search-forward" ["-x"] >>= (`shouldSatisfy` refused)
-            runCopyModeCommand st p "history-top" ["extra"] >>= (`shouldSatisfy` refused)
+            runCopyModeCommand st p SearchLiteral "search-forward" ["-x"] >>= (`shouldSatisfy` refused)
+            runCopyModeCommand st p SearchLiteral "history-top" ["extra"] >>= (`shouldSatisfy` refused)
         it "fail loud on a tmux flag hat does not honour" $ do
             (st, p) <- viewing ["foo"]
-            runCopyModeCommand st p "copy-selection" ["-P"] >>= (`shouldSatisfy` refused)
+            runCopyModeCommand st p SearchLiteral "copy-selection" ["-P"] >>= (`shouldSatisfy` refused)
+        it "expand a search under send-keys -F, an empty expansion searching for nothing" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            p <- stubPane 0
+            atomically $ modifyTVar' win.panes (Map.insert p.id p)
+            viewModeAdd st p ViewLiteral ["foo", "bar0"]
+            let lastQuery = atomically (topMode p) <&> \case
+                    Just (CopyMode pm) -> (\(q, _, _) -> q) <$> pm.copyState.lastQuery
+                    _ -> Nothing
+            _ <- runCopyModeCommand st p SearchFormat "search-forward" ["bar#{window_index}"]
+            fst <$> cursorOf p `shouldReturn` 1
+            _ <- runCopyModeCommand st p SearchFormat "search-backward" ["#{?#{==:a,b},x,}"]
+            lastQuery `shouldReturn` Just "bar0"
         it "jump straight to a target character given as the argument" $ do
             (st, p) <- viewing ["abcx"]
-            _ <- runCopyModeCommand st p "jump-forward" ["--", "x"]
+            _ <- runCopyModeCommand st p SearchLiteral "jump-forward" ["--", "x"]
             cursorOf p `shouldReturn` (0, 3)
 
     describe "an attached client's command output" $

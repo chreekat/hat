@@ -341,11 +341,10 @@ copyKeys = map copyMode
 -- | The vi copy-mode table, @copy-mode-vi@.
 copyViKeys :: [DefaultBinding]
 copyViKeys =
-    [ lacking "'#' { send -FX search-backward -- '#{copy_cursor_word}' }" "send-keys -F"
-    , lacking "* { send -FX search-forward -- '#{copy_cursor_word}' }" "send-keys -F"
-    ]
-    <> map vi
-    [ "C-c { send-keys -X cancel }"
+    map vi
+    [ "'#' { send -FX search-backward -- '#{copy_cursor_word}' }"
+    , "* { send -FX search-forward -- '#{copy_cursor_word}' }"
+    , "C-c { send-keys -X cancel }"
     , "C-d { send-keys -X halfpage-down }"
     , "C-e { send-keys -X scroll-down }"
     , "C-b { send-keys -X page-up }"
