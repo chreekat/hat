@@ -29,15 +29,16 @@ runCopyModeCommand st pane name cmdArgs = do
                 atomically $ modifyTopMode st pane
                     (reMode (CopyMode.pushDigit d state))
                 pure []
-            | otherwise -> case Map.lookup name CopyMode.handlers of
-                Nothing -> pure []
-                Just h -> do
+            | otherwise -> case (Map.lookup name CopyMode.handlers, CopyMode.commandPositionals name cmdArgs) of
+                (Nothing, _) -> pure []
+                (Just _, Left err) -> pure [RErr err]
+                (Just h, Right pos) -> do
                     -- Motions repeat [count] times; yanks never do. Every
                     -- command clears the pending count.
                     let count
                             | name `elem` ["copy-selection", "copy-selection-no-clear", "copy-pipe"] = 1
                             | otherwise = min 1000 (maybe 1 (max 1) state.numPrefix)
-                    result <- applyN h (state { numPrefix = Nothing }) count
+                    result <- applyN h pos (state { numPrefix = Nothing }) count
                     keys <- maybe KeysEmacs (.modeKeys) <$> paneOptionsNow st pane
                     let unmarked s
                             | CopyMode.clearsMarks keys name = s { searchMarks = Nothing }
@@ -66,13 +67,13 @@ runCopyModeCommand st pane name cmdArgs = do
     readDigit [] = Nothing
     -- Run a handler @n@ times, threading the state and stopping early if
     -- it errors or exits copy mode.
-    applyN _ s 0 = pure (Right (Just s))
-    applyN h s n = do
-        r <- h st pane s cmdArgs
+    applyN _ _ s 0 = pure (Right (Just s))
+    applyN h pos s n = do
+        r <- h st pane s pos
         case r of
             Left err -> pure (Left err)
             Right Nothing -> pure (Right Nothing)
-            Right (Just s') -> applyN h s' (n - 1)
+            Right (Just s') -> applyN h pos s' (n - 1)
 
 -- | Re-center a pane's copy-mode viewport on its cursor after a motion,
 -- over the pane's frozen snapshot (a no-op when not in copy mode).

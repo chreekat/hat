@@ -565,6 +565,34 @@ spec = do
             isNothing <$> atomically (topMode p) `shouldReturn` True
             isJust <$> readTVarIO p.viewBacking `shouldReturn` False
 
+    describe "copy-mode command arguments" $ do
+        let viewing lns = do
+                (st, _) <- seedSession "/"
+                p <- stubPane 0
+                viewModeAdd st p ViewLiteral lns
+                pure (st, p)
+            cursorOf p = atomically (topMode p) >>= \case
+                Just (CopyMode pm) -> pure (pm.copyState.cursorRow, pm.copyState.cursorCol)
+                _ -> fail "not in copy mode"
+            refused = \case
+                [RErr _] -> True
+                _ -> False
+        it "end their flags at --, as tmux's args_parse does" $ do
+            (st, p) <- viewing ["foo", "-bar"]
+            _ <- runCopyModeCommand st p "search-forward" ["--", "-bar"]
+            fst <$> cursorOf p `shouldReturn` 1
+        it "refuse a flag the command does not take, and words past its count" $ do
+            (st, p) <- viewing ["foo"]
+            runCopyModeCommand st p "search-forward" ["-x"] >>= (`shouldSatisfy` refused)
+            runCopyModeCommand st p "history-top" ["extra"] >>= (`shouldSatisfy` refused)
+        it "fail loud on a tmux flag hat does not honour" $ do
+            (st, p) <- viewing ["foo"]
+            runCopyModeCommand st p "copy-selection" ["-P"] >>= (`shouldSatisfy` refused)
+        it "jump straight to a target character given as the argument" $ do
+            (st, p) <- viewing ["abcx"]
+            _ <- runCopyModeCommand st p "jump-forward" ["--", "x"]
+            cursorOf p `shouldReturn` (0, 3)
+
     describe "an attached client's command output" $
         it "goes to the view mode of the pane it looks at, its errors to a message" $ do
             (st, sess) <- seedSession "/"

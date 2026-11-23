@@ -11,6 +11,7 @@
 module Hat.Server.CopyMode
     ( Handler
     , handlers
+    , commandPositionals
     , Grid (..)
     , Motion
     , listGrid
@@ -112,6 +113,7 @@ import System.Process
     )
 import Data.Vector qualified as V
 
+import Hat.Command.Template (parseTmuxArgs)
 import Hat.Geometry (Pos (..), Size (..))
 import Hat.Model
 import Hat.Model.Options
@@ -1321,6 +1323,50 @@ type Handler
     = ServerState -> Pane -> CopyModeState -> [Text]
     -> IO (Either Text (Maybe CopyModeState))
 
+-- | A copy-mode command's arguments: tmux's template and positional bounds
+-- for it (@window_copy_cmd_table@), then the flags and leading positionals
+-- hat honours of those.
+data CommandArgs = CommandArgs
+    { template :: Text
+    , minArgs :: Int
+    , maxArgs :: Int
+    , honouredFlags :: [Char]
+    , honouredArgs :: Int
+    }
+
+commandArgs :: Text -> CommandArgs
+commandArgs name = fromMaybe (CommandArgs "" 0 0 "" 0) (lookup name table)
+  where
+    table =
+        [ (n, CommandArgs "" 0 1 "" 1)
+        | n <- [ "search-forward", "search-backward", "search-forward-text"
+               , "search-backward-text", "apply-search" ] ]
+        -- tmux requires the target; hat arms a jump without one.
+        <> [ (n, CommandArgs "" 0 1 "" 1)
+           | n <- ["jump-forward", "jump-backward", "jump-to-forward", "jump-to-backward"] ]
+        <> [ (n, CommandArgs "CP" 0 1 "" 0)
+           | n <- ["copy-selection", "copy-selection-no-clear", "copy-selection-and-cancel"] ]
+        <> [ (n, CommandArgs "CP" 0 2 "" 1) | n <- ["copy-pipe", "copy-pipe-and-cancel"] ]
+
+-- | A copy-mode command's positional arguments, its words read as tmux's
+-- @args_parse@ reads them against its 'CommandArgs'. What hat does not
+-- honour is refused rather than dropped.
+commandPositionals :: Text -> [Text] -> Either Text [Text]
+commandPositionals name ws = do
+    let spec = commandArgs name
+    (flags, pos) <- parseTmuxArgs spec.template ws
+    let n = length pos
+    if n < spec.minArgs
+        then Left ("too few arguments (need at least " <> tshow spec.minArgs <> ")")
+    else if n > spec.maxArgs
+        then Left ("too many arguments (need at most " <> tshow spec.maxArgs <> ")")
+    else case [ c | (c, _) <- flags, c `notElem` spec.honouredFlags ] of
+        c : _ -> Left (name <> " -" <> T.singleton c <> ": not yet supported by hat")
+        [] | n > spec.honouredArgs ->
+                Left (name <> ": argument " <> tshow (spec.honouredArgs + 1)
+                    <> " is not yet supported by hat")
+           | otherwise -> Right pos
+
 handlers :: Map Text Handler
 handlers = Map.fromList
     [ ("cancel",            \_ _ _ _ -> pure (Right Nothing))
@@ -1365,10 +1411,10 @@ handlers = Map.fromList
     , ("previous-paragraph", gridH paragraphUp)
     -- Char search: f/F/t/T arm a pending search; the next key (captured in
     -- handleKeys) runs @apply-search@; ; and , repeat it.
-    , ("jump-forward",      pureH (armSearch Forward OnTarget))
-    , ("jump-backward",     pureH (armSearch Backward OnTarget))
-    , ("jump-to-forward",   pureH (armSearch Forward ShortOfTarget))
-    , ("jump-to-backward",  pureH (armSearch Backward ShortOfTarget))
+    , ("jump-forward",      jumpH Forward OnTarget)
+    , ("jump-backward",     jumpH Backward OnTarget)
+    , ("jump-to-forward",   jumpH Forward ShortOfTarget)
+    , ("jump-to-backward",  jumpH Backward ShortOfTarget)
     , ("jump-again",        gridH (jumpRepeat id))
     , ("jump-reverse",      gridH (jumpRepeat flipDir))
     , ("apply-search",      applySearchH)
@@ -1445,6 +1491,11 @@ handlers = Map.fromList
         g <- paneGrid pane
         Right . Just <$> endOfLine opts.modeKeys g st
     armSearch dir stop' s = s { pendingSearch = Just (CharSearch dir stop') }
+    -- With its target given, a jump lands at once; without, it waits for
+    -- the next key ('apply-search').
+    jumpH dir stop' sst pane s = \case
+        [] -> pure (Right (Just (armSearch dir stop' s)))
+        target -> applySearchH sst pane (armSearch dir stop' s) target
     flipDir cs = cs { direction = flipDirection cs.direction }
     jumpRepeat modify g st = case st.lastSearch of
         Nothing -> pure st
@@ -1459,7 +1510,7 @@ handlers = Map.fromList
         _ -> pure (Right (Just st { pendingSearch = Nothing }))
     -- / and ? submit their query as the command args.
     searchStringH kind dir sst pane st args = do
-        let query = T.unwords args
+        let query = fromMaybe "" (listToMaybe args)
         if T.null query
             then pure (Right (Just st))
             else runSearch sst dir kind query pane
@@ -1478,7 +1529,7 @@ handlers = Map.fromList
     -- copy-pipe [-flags] <shell command>: yank the selection into a
     -- buffer AND feed it to @sh -c <command>@ on stdin.
     pipeH cancelAfter sst pane s args = do
-        let cmd = T.strip (T.unwords (filter (not . T.isPrefixOf "-") args))
+        let cmd = T.strip (fromMaybe "" (listToMaybe args))
         opts <- paneOpts sst pane
         global <- readTVarIO sst.options
         g <- paneGrid pane
