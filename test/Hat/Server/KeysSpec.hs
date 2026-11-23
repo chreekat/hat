@@ -471,6 +471,13 @@ spec = do
             run initialKeyState "\ESC\ESC[A" `shouldBe`
                 (Nothing, [RunCommands [["resize-pane", "-U"]]])
 
+    describe "keyChar" $
+        it "is the one printable character a key types, Space included" $ do
+            map (\n -> parseKeyName n >>= keyChar) ["x", "Space", "é", "%"]
+                `shouldBe` map Just "x é%"
+            map (\n -> parseKeyName n >>= keyChar) ["Enter", "Escape", "Up", "M-x", "C-a", "Tab"]
+                `shouldBe` replicate 6 Nothing
+
     describe "parseKeyName" $ do
         it "parses mouse keys, canonicalising modifiers and case" $ do
             (.name) <$> parseKeyName "MouseDown1Pane" `shouldBe` Just "MouseDown1Pane"

@@ -842,17 +842,17 @@ runInputs d st client keys = do
             pure (deliversKey opts report k)
         | otherwise = pure (deliversKey opts False k)
     -- When the pane's copy mode is waiting for a char-search target, this
-    -- key IS the target: a single printable char runs the search, anything
-    -- else (Escape, Enter, an arrow) cancels it. Returns whether it was
-    -- consumed here.
+    -- key IS the target: a key typing one printable character runs the
+    -- search, anything else (Escape, Enter, an arrow) cancels it. Returns
+    -- whether it was consumed here.
     feedPendingSearch key pane = do
         mmode <- atomically (topMode pane)
         case mmode of
             Just (CopyMode s) | Just _ <- s.copyState.pendingSearch -> do
                 -- Neither command can fail, so the replies are empty.
-                void $ if T.length key.name == 1
-                    then runCopyModeCommand st pane SearchLiteral "apply-search" [key.name]
-                    else runCopyModeCommand st pane SearchLiteral "cancel-search" []
+                void $ case keyChar key of
+                    Just c -> runCopyModeCommand st pane SearchLiteral "apply-search" [T.singleton c]
+                    Nothing -> runCopyModeCommand st pane SearchLiteral "cancel-search" []
                 pure True
             _ -> pure False
 

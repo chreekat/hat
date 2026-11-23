@@ -10,6 +10,7 @@
 -- arrive first, else emitting Escape on timeout.
 module Hat.Server.Keys
     ( Key (..)
+    , keyChar
     , Binding (..)
     , Repeat (..)
     , Keymap
@@ -52,7 +53,7 @@ import Data.Bits ((.|.), testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as B8
-import Data.Char (chr, isAsciiUpper, ord)
+import Data.Char (chr, isAsciiUpper, isControl, ord)
 import Data.List (sort, sortOn)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Map.Strict (Map)
@@ -74,6 +75,12 @@ data Key = Key
     , raw  :: ByteString  -- ^ bytes to forward when the key is unbound
     }
     deriving (Eq, Ord, Show)
+
+-- | The character a key types, when it types exactly one printable one.
+keyChar :: Key -> Maybe Char
+keyChar k = case T.unpack <$> TE.decodeUtf8' k.raw of
+    Right [c] | not (isControl c) -> Just c
+    _ -> Nothing
 
 mkKey :: Text -> ByteString -> Key
 mkKey n r = Key { name = n, raw = r }
