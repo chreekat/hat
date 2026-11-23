@@ -19,6 +19,7 @@ module Hat.Server.Command.Session
     , DestroyUnattached (..)
     , destroysUnattached
     , checkUnattached
+    , importClientEnv
     ) where
 
 import Control.Concurrent.STM
@@ -45,8 +46,9 @@ import Hat.Server.ConfigCauses (showConfigCauses)
 import Hat.Server.ClientSession
     (NameStep (..), adoptServerAlternate, sendClientsAway, stepByName, switchClientTo)
 import Hat.Server.Format (truthy)
+import Hat.Server.Environ (environUpdate)
 import Hat.Server.Hooks
-    ( PayloadItem (..), noTarget, noteActiveChange, notify, notifyClient, notifyGroupChange
+    ( PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange
     , sessionTarget )
 import Hat.Server.Keys (enterTable)
 import Hat.Server.Locate
@@ -54,8 +56,8 @@ import Hat.Server.Locate
     , withTargetSession )
 import Hat.Server.Name (NameKind (..), NameSlot (..), admitName, admittingNames)
 import Hat.Server.Pane
-    ( LifecycleNotify (..), createGroupedSession, createSession, killPaneLocsWith, rehomePanes
-    , switchActive, windowHolders )
+    ( LifecycleNotify (..), activate, createGroupedSession, createSession, killPaneLocsWith, rehomePanes
+    , windowHolders )
 import Hat.Server.Resize (defaultSizeOf)
 import Hat.Server.FormatEnv
     (clientContextFormatEnv, clientFormatVars, expandFormat, sessionFormatEnv)
@@ -264,6 +266,13 @@ configCausesFor st sess = do
 -- | Show @sess@ on @client@, then let @destroy-unattached@ collect any
 -- session the move left without a client (tmux's
 -- @server_client_set_session@).
+-- | Fold the client's @update-environment@ vars into the session's
+-- environment ('environUpdate').
+importClientEnv :: ServerState -> Session -> Client -> IO ()
+importClientEnv st sess client = do
+    vars <- (.updateEnvironment) <$> readTVarIO st.options
+    atomically $ modifyTVar' sess.environ (environUpdate vars client.env)
+
 attachClient :: ServerState -> Client -> Session -> IO ()
 attachClient st client sess = do
     switchClientTo st client sess
@@ -671,6 +680,9 @@ cmdListPanes st mclient args = do
 cmdSwitchClient :: CommandImpl
 cmdSwitchClient st mclient0 args = do
     let (opts, flags, _) = parseArgs "ctTO" args
+        switchTo client sess = do
+            unless ("-E" `elem` flags) (importClientEnv st sess client)
+            attachClient st client sess
         nameStep
             | "-n" `elem` flags = Just (NextName, "next")
             | "-p" `elem` flags = Just (PreviousName, "previous")
@@ -682,6 +694,8 @@ cmdSwitchClient st mclient0 args = do
         Left e -> pure [RErr e]
         Right Nothing -> pure [RErr "no client"]
         Right (Just client)
+            | "-r" `elem` flags ->
+                pure [RErr "switch-client -r: read-only clients are not yet supported by hat"]
             -- A client's key table is its input thread's own state, which
             -- only a binding that client is running may change.
             | Just table <- lookup "-T" opts ->
@@ -698,7 +712,7 @@ cmdSwitchClient st mclient0 args = do
                 named <- forM sessions $ \sess -> (\n -> (n, sess)) <$> readTVarIO sess.name
                 case [ n | (n, sess) <- named, sess.id == cur ] of
                     curName : _ | Just sess <- stepByName step curName named ->
-                        [] <$ attachClient st client sess
+                        [] <$ switchTo client sess
                     _ -> pure [RErr ("can't find " <> which <> " session")]
             | "-l" `elem` flags -> do
                 hist <- readTVarIO client.sessionHist
@@ -706,19 +720,16 @@ cmdSwitchClient st mclient0 args = do
                 -- Skip any sessions killed since they were visited.
                 case mapMaybe (`Map.lookup` sessions) hist of
                     []         -> pure [RErr "no last session"]
-                    (sess : _) -> attachClient st client sess >> pure []
+                    (sess : _) -> [] <$ switchTo client sess
             -- A target naming a window or pane also makes it current there.
             | Just t <- lookup "-t" opts, T.any (`elem` (":.%" :: String)) t || t == "=" -> do
                 res <- findTarget st mclient0 Target.FindPane (Just t)
                 case res of
                     Left e -> pure [RErr e]
                     Right (sess, ix, win, pane) -> do
-                        noteActiveChange st win $ atomically $ do
-                            switched <- switchActive win pane.id
-                            when switched (bumpDirty st)
+                        activate st sess win pane ("-Z" `elem` flags)
                         switchToWindow st sess ix
-                        attachClient st client sess
-                        pure []
+                        [] <$ switchTo client sess
             | otherwise ->
                 withTargetSession st mclient0 (lookup "-t" opts) $ \sess ->
-                    attachClient st client sess >> pure []
+                    [] <$ switchTo client sess

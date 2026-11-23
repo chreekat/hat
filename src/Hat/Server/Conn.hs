@@ -42,12 +42,11 @@ import Network.Socket qualified as N
 import Hat.Command.Arg (Arg (..), argFromBytes, argLossy)
 import Hat.Geometry
 import Hat.Log
-import Hat.Server.Environ
 import Hat.Model
 import Hat.Model.Options
 import Hat.Server.Command.CopyMode (SearchString (..), runCopyModeCommand)
 import Hat.Server.ClientSession (adoptServerAlternate)
-import Hat.Server.Command.Session (checkUnattached)
+import Hat.Server.Command.Session (checkUnattached, importClientEnv)
 import Hat.Server.Command.Types
 import Hat.Server.ClientIO (send, withClientWriter)
 import Hat.Server.Clipboard (clipboardReply, pushBufferBytes)
@@ -424,9 +423,7 @@ removeClient st client = do
 refreshSessionEnv :: ServerState -> Session -> Client -> IO ()
 refreshSessionEnv st sess client = readTVarIO client.envImport >>= \case
     SkipEnvImport -> pure ()
-    ImportEnv -> do
-        vars <- (.updateEnvironment) <$> readTVarIO st.options
-        atomically $ modifyTVar' sess.environ (environUpdate vars client.env)
+    ImportEnv -> importClientEnv st sess client
 
 ensureSession :: ServerState -> Client -> IO Session
 ensureSession st client = do

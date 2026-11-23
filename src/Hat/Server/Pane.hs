@@ -88,6 +88,7 @@ module Hat.Server.Pane
     , createSession
     , createGroupedSession
     , sessionSpawnEnv
+    , activate
     ) where
 
 import Control.Concurrent
@@ -141,7 +142,7 @@ import Hat.Server.Keys
 import Hat.Server.Floating (ModalReturn (..), Restack (..), loseModal, modalPane, noFloats, restack)
 import Hat.Server.Layout
 import Hat.Server.Hooks
-    ( NotifyTarget (..), PayloadItem (..), noTarget, notify, notifyClient, notifyGroupChange
+    ( NotifyTarget (..), PayloadItem (..), noTarget, noteActiveChange, notify, notifyClient, notifyGroupChange
     , notifyGroupDrops, notifyPane, notifyWindow, sessionTarget )
 import Hat.Server.FormatEnv (expandFormat, paneEnvById, refreshAutoNames)
 import Hat.Server.Locate (locatePane)
@@ -1875,3 +1876,17 @@ noteAlternate st pane = do
         when (was /= alt) $ do
             writeTVar pane.onAlternate alt
             bumpDirty st
+
+-- | Make a pane its window's active one. The window unzooms, unless
+-- @keepZoom@ zooms the new active pane instead (tmux's @window_push_zoom@\/
+-- @window_pop_zoom@ around @window_set_active_pane@).
+activate :: ServerState -> Session -> Window -> Pane -> Bool -> IO ()
+activate st sess win wp keepZoom = noteActiveChange st win $ do
+    changed <- atomically $ do
+        zoomed <- readTVar win.zoomed
+        switched <- switchActive win wp.id
+        when switched $ do
+            writeTVar win.zoomed (if keepZoom && isJust zoomed then Just wp.id else Nothing)
+            bumpDirty st
+        pure switched
+    when changed (applySessionSize st sess.id)

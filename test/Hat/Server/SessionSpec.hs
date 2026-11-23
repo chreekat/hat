@@ -40,6 +40,7 @@ import Hat.Geometry (Pos (..), Size (..))
 import Hat.Log (closeLogger, newLogger)
 import Hat.Client (TerminalMode (..), nestsOwnServer, terminalMode)
 import Hat.Model
+import Hat.Model qualified as Model
 import Hat.Model.Options
     (ArrayKey (..), Options (..), OptionValue (..)
     , applyDelta, defaultOptions, insertDelta, lookupDelta, optionText, singletonDelta)
@@ -651,6 +652,40 @@ spec = do
             runArgv st Nothing ["switch-client", "-c", clientName c, "-t", "s"]
                 `shouldReturn` []
             readTVarIO c.session `shouldReturn` other.id
+
+    describe "switch-client" $ do
+        it "imports the client's update-environment vars into the session, unless -E" $ do
+            (st, _) <- seedSession "/"
+            other <- addSession st 1
+            c0 <- addClient st (SessionId 0) (Size 24 80) 1
+            let c = c0 { Model.env = [("DISPLAY", ":9")] }
+                display = (>>= (.value)) . Map.lookup "DISPLAY" <$> readTVarIO other.environ
+            atomically $ writeTVar st.options defaultOptions { updateEnvironment = ["DISPLAY"] }
+            runArgv st (Just c) ["switch-client", "-E", "-t", "s"] `shouldReturn` []
+            display `shouldReturn` Nothing
+            runArgv st (Just c) ["switch-client", "-t", "s"] `shouldReturn` []
+            display `shouldReturn` Just ":9"
+        it "unzooms the window of the pane it selects, or with -Z zooms that pane" $ do
+            (st, sess) <- seedSession "/"
+            win <- addWindow sess 0
+            pa <- stubPane 1
+            pb <- stubPane 2
+            atomically $ do
+                writeTVar win.layout (nodeOf LeftRight [singlePane pa.id, singlePane pb.id])
+                writeTVar win.panes (Map.fromList [(pa.id, pa), (pb.id, pb)])
+                writeTVar win.activeId pa.id
+                writeTVar win.zoomed (Just pa.id)
+            c <- addClient st sess.id (Size 24 80) 1
+            runArgv st (Just c) ["switch-client", "-Z", "-t", "%2"] `shouldReturn` []
+            readTVarIO win.zoomed `shouldReturn` Just pb.id
+            runArgv st (Just c) ["switch-client", "-t", "%1"] `shouldReturn` []
+            readTVarIO win.zoomed `shouldReturn` Nothing
+        it "refuses -r, there being no read-only clients" $ do
+            (st, sess) <- seedSession "/"
+            c <- addClient st sess.id (Size 24 80) 1
+            runArgv st (Just c) ["switch-client", "-r"] >>= (`shouldSatisfy` \case
+                [RErr _] -> True
+                _ -> False)
 
     describe "switch-client -n and -p" $
         it "step through the sessions by name, wrapping" $ do

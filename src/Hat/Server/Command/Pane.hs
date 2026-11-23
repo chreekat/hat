@@ -56,16 +56,16 @@ import Hat.Server.Layout
 import Hat.Model.Options (Options (..), optionText, quoteIfNeeded)
 import Hat.Server.FormatEnv (paneFormatEnv)
 import Hat.Server.Hooks
-    ( PayloadItem (..), noteActiveChange, notifyPane, notifyWindow )
+    ( PayloadItem (..), notifyPane, notifyWindow )
 import Hat.Server.Locate (findTarget, markedTarget, paneIndexOf, setCurrentPane)
 import Hat.Server.Mouse (ClickOutside (..), Drag (..))
 import Hat.Server.MouseIO
     (clientMouseEvent, mouseDragUpdate, mouseEventPane, startDrag, startNewPaneDrag)
 import Hat.Server.Mru (recordVisit)
 import Hat.Server.Pane
-    ( LifecycleNotify (..), hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
+    ( LifecycleNotify (..), activate, hangupPane, killPaneLocs, killPaneLocsWith, respawnPane
     , emptyPane, launchOf, paneShell, respawnStart, setScreenTitle, sessionSpawnEnv
-    , spawnPane, startPaneReader, switchActive, withDefaultCommand )
+    , spawnPane, startPaneReader, withDefaultCommand )
 import Hat.Server.Resize (applySessionSize)
 import Hat.Server.FormatEnv (expandFormat, sessionFormatEnv)
 import Hat.Server.Resize (windowLayoutAt)
@@ -763,20 +763,6 @@ lastPaneOf st sess win flags = do
             | "-e" `elem` flags -> [] <$ setInputOff st wp False
             | "-d" `elem` flags -> [] <$ setInputOff st wp True
             | otherwise -> [] <$ activate st sess win wp ("-Z" `elem` flags)
-
--- | Make a pane its window's active one. The window unzooms, unless
--- @keepZoom@ zooms the new active pane instead (tmux's @window_push_zoom@\/
--- @window_pop_zoom@ around @window_set_active_pane@).
-activate :: ServerState -> Session -> Window -> Pane -> Bool -> IO ()
-activate st sess win wp keepZoom = noteActiveChange st win $ do
-    changed <- atomically $ do
-        zoomed <- readTVar win.zoomed
-        switched <- switchActive win wp.id
-        when switched $ do
-            writeTVar win.zoomed (if keepZoom && isJust zoomed then Just wp.id else Nothing)
-            bumpDirty st
-        pure switched
-    when changed (applySessionSize st sess.id)
 
 setInputOff :: ServerState -> Pane -> Bool -> IO ()
 setInputOff st wp off = atomically $ writeTVar wp.inputOff off >> bumpDirty st
