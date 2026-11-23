@@ -119,7 +119,10 @@ import System.Directory
 import System.Environment (lookupEnv)
 import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory)
+import System.Posix.Signals (nullSignal, signalProcess)
+import System.Posix.Types (ProcessID)
 import System.Posix.User (getRealUserID, getUserEntryForID, userShell)
+import Text.Read (readMaybe)
 import System.Process
     (CreateProcess (..), StdStream (..), proc,
      readCreateProcess, withCreateProcess)
@@ -248,6 +251,7 @@ runServerWith path mconfig mhandover = do
             -- connection), so the autostarting client is always counted
             -- before we can drain, whatever the config-load timing.
         titlesRef <- newIORef Map.empty
+        owner <- (>>= readMaybe) <$> lookupEnv "HAT_TEST_OWNER"
         -- Background daemons run under 'withDaemons': each is bracketed by
         -- 'withAsync' (all torn down when the serve loop returns — no leaked
         -- threads, and the persist mirror stops before the store is dropped)
@@ -282,6 +286,7 @@ runServerWith path mconfig mhandover = do
                 , monitorLoop st                  -- set-hook -B format monitors
                 , expireLoop st                   -- lapse unanswered terminal queries
                 ] <> [ persistLoop st p | p <- maybe [] pure mstore ]
+                  <> [ ownerLoop st o | Just o <- [owner] ]
         -- Last-resort trace: an exception escaping the accept loop or a linked
         -- daemon takes the process down (e.g. a reload's resume fault), and
         -- otherwise vanishes to stderr with nothing in the log. Record its
@@ -328,6 +333,16 @@ withDaemons :: [IO ()] -> IO a -> IO a
 withDaemons ds body = foldr spawn body ds
   where
     spawn d k = withAsync d $ \a -> link a >> k
+
+-- | Shut the server down, as kill-server does, once the process the test
+-- harness names as its owner (@HAT_TEST_OWNER@) is gone, however it died.
+ownerLoop :: ServerState -> ProcessID -> IO ()
+ownerLoop st owner = do
+    alive <- (True <$ signalProcess nullSignal owner)
+        `catch` \(_ :: IOException) -> pure False
+    if alive
+        then threadDelay 500_000 >> ownerLoop st owner
+        else shutDownServer st Nothing
 
 -- | The reasons a server stays alive, gathered for 'serverIdle'. See it.
 data IdleInputs = IdleInputs

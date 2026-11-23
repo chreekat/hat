@@ -24,7 +24,7 @@ import System.IO (Handle, SeekMode (..), hClose, hSetBuffering, BufferMode (..))
 import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (closeFd, fdToHandle, handleToFd)
 import System.Posix.IO qualified as PIO
-import System.Posix.Process (ProcessStatus (..))
+import System.Posix.Process (ProcessStatus (..), getProcessID)
 import System.Posix.Signals (Signal, nullSignal, sigKILL, sigTERM, signalProcess)
 import System.Mem
 import System.Posix.Temp (mkdtemp)
@@ -66,16 +66,20 @@ data Hat = Hat
     , sock    :: FilePath
     , persist :: Bool   -- ^ whether the server keeps its SQLite store
     , keep    :: IORef [Driver]  -- ^ every spawned driver; see 'teardown'
+    , ownerPid :: String  -- ^ the process whose exit ends the server
     }
 
--- Disable the SQLite persistence layer unless a test opts in, so most
--- servers start from a clean slate and skip the background poll thread.
--- When on, point the store at a private dir so isolation does not lean on
--- the server's HOME/XDG derivation.
-persistEnv :: Hat -> [(String, String)]
-persistEnv h
-    | h.persist = [("HAT_STORE_DIR", storeDir h)]
-    | otherwise = [("HAT_PERSIST", "0")]
+-- The environment every hat the suite runs gets: its owner, so a killed
+-- suite leaves no server behind; and no SQLite persistence unless a test
+-- opts in, so most servers start from a clean slate and skip the
+-- background poll thread. When on, the store sits in a private dir so
+-- isolation does not lean on the server's HOME/XDG derivation.
+harnessEnv :: Hat -> [(String, String)]
+harnessEnv h = ("HAT_TEST_OWNER", h.ownerPid) : persisting
+  where
+    persisting
+        | h.persist = [("HAT_STORE_DIR", storeDir h)]
+        | otherwise = [("HAT_PERSIST", "0")]
 
 -- The private store directory and file for a persistence-enabled Hat.
 storeDir :: Hat -> FilePath
@@ -119,10 +123,11 @@ withHatPersist hatBin = withHatOn hatBin True "socket"
 withHatOn :: FilePath -> Bool -> FilePath -> (Hat -> IO a) -> IO a
 withHatOn hatBin persistOn sockRel action = do
     keepRef <- newIORef []
+    self <- getProcessID
     let hatFor dir = Hat
             { bin = hatBin, home = dir
             , sock = dir <> "/" <> sockRel, persist = persistOn
-            , keep = keepRef }
+            , keep = keepRef, ownerPid = show self }
     bracket (mkdtemp "/tmp/hat-test-") (teardown . hatFor)
         (\dir -> action (hatFor dir) `catch` rethrowWithLog (hatFor dir))
 
@@ -186,7 +191,7 @@ hatCtl h args = do
     path <- testPath
     r <- timeout 30_000_000 $ P.readCreateProcessWithExitCode
         (P.proc h.bin (["-S", h.sock] <> args))
-            { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+            { P.env = Just ([("HOME", h.home), ("PATH", path)] <> harnessEnv h)
             , P.close_fds = True }
         ""
     maybe (expectationFailure ("hat " <> unwords args <> ": no reply in 30s")
@@ -200,7 +205,7 @@ hatBytes h args input = do
     r <- timeout 30_000_000 $ do
         (Just hin, Just hout, _, ph) <- P.createProcess
             (P.proc h.bin (["-S", h.sock] <> args))
-                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> harnessEnv h)
                 , P.close_fds = True
                 , P.std_in = P.CreatePipe, P.std_out = P.CreatePipe }
         B.hPut hin input >> hClose hin
@@ -224,7 +229,7 @@ hatRaw h args = do
     r <- timeout 30_000_000 $ do
         (Just hin, Just hout, Just herr, ph) <- P.createProcess
             (P.proc sh ["-c", script])
-                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> persistEnv h)
+                { P.env = Just ([("HOME", h.home), ("PATH", path)] <> harnessEnv h)
                 , P.close_fds = True
                 , P.std_in = P.CreatePipe, P.std_out = P.CreatePipe
                 , P.std_err = P.CreatePipe }
@@ -285,7 +290,7 @@ lockHolder h = bracket
     (\fd -> fmap (fromIntegral . fst) <$> PIO.getLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0))
 
 -- Where the server writes its persistence store for this isolated Hat,
--- matching the HAT_STORE_DIR the harness hands it in 'persistEnv'.
+-- matching the HAT_STORE_DIR the harness hands it in 'harnessEnv'.
 storeOf :: Hat -> FilePath
 storeOf h = storeDir h </> (takeFileName h.sock <> ".db")
 
@@ -371,7 +376,7 @@ startClientEnv h extraEnv extra = do
                         , ("HOME", h.home)
                         , ("PS1", "$ ")
                         ]
-                        <> persistEnv h
+                        <> harnessEnv h
                         <> maybe [] (\v -> [("TERMINFO_DIRS", v)]) terminfo
                 in extraEnv
                    <> [kv | kv@(k, _) <- defaults
@@ -604,6 +609,16 @@ spec = parallel $ do
 
         gone <- pollServerGone h.sock 5000
         unless gone $ expectationFailure "server did not exit"
+
+    it "exits once the process that owns it is gone, however it died (28)" $
+        withHat hatBin $ \h0 -> do
+        owner <- P.spawnProcess "sleep" ["300"]
+        Just pid <- P.getPid owner
+        let h = h0 { ownerPid = show pid }
+        _ <- hatCtl h ["new-session", "-d"]
+        P.terminateProcess owner >> P.waitForProcess owner >>= (`shouldBe` ExitFailure (-15))
+        gone <- pollServerExited h 5000
+        unless gone $ expectationFailure "server outlived its owner"
 
     it "exit-unattached ends a server left with only detached sessions" $
         withHat hatBin $ \h -> do
