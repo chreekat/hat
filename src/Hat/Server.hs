@@ -101,7 +101,7 @@ module Hat.Server
     ) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.Async (link, race, withAsync)
+import Control.Concurrent.Async (link, waitSTM, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
     (IOException, SomeException, bracket, catch, displayException,
@@ -287,24 +287,22 @@ runServerWith path mconfig mhandover = do
         -- otherwise vanishes to stderr with nothing in the log. Record its
         -- 'displayException' (backtrace included) and flush before it dies,
         -- then re-raise so the process still exits.
-        r <- withDaemons daemons (race (acceptLoop dispatch st lsock) (waitIdle st))
+        withDaemons daemons
+                (withAsync (waitIdle st) $ \idle -> acceptLoop dispatch st (waitSTM idle) lsock)
                 `catch` \(e :: SomeException) -> do
                     logEvent lg ServerFatal { err = T.pack (displayException e) }
                     flushLogger lg
                     throwIO e
         saveHistory st
-        case r of
-            Left () -> pure ()
-            Right () -> do
-                logEvent lg ServerStopping { reason = "no sessions left" }
-                -- The daemons (the persist mirror included) are already torn
-                -- down, so no in-flight write can recreate the store after we
-                -- retire it. The tree drained (every window closed), so the
-                -- next start must be pristine — unless kill-server asked to
-                -- keep the tree for a restore.
-                preserve <- readTVarIO st.preserveStore
-                unless preserve $ forM_ mstore (retireStore st)
-                removeFile path `catch` \(_ :: IOException) -> pure ()
+        logEvent lg ServerStopping { reason = "no sessions left" }
+        -- The daemons (the persist mirror included) are already torn
+        -- down, so no in-flight write can recreate the store after we
+        -- retire it. The tree drained (every window closed), so the
+        -- next start must be pristine — unless kill-server asked to
+        -- keep the tree for a restore.
+        preserve <- readTVarIO st.preserveStore
+        unless preserve $ forM_ mstore (retireStore st)
+        removeFile path `catch` \(_ :: IOException) -> pure ()
 
 -- | tmux's start-up @default-shell@: the server's @$SHELL@, else the user's
 -- login shell, when suitable ('suitableShell'); the registry's @/bin/sh@

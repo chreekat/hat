@@ -20,11 +20,12 @@ module Hat.Server.Conn
     , newClient    -- ^ exported for the source-file tests
     ) where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Applicative ((<|>))
+import Control.Concurrent (forkIO, threadWaitReadSTM)
 import Control.Concurrent.Async (link, race, wait, withAsync)
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Monad (foldM, forM_, forever, unless, void, when)
+import Control.Monad (foldM, forM_, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
 import Data.Functor ((<&>))
@@ -84,50 +85,68 @@ import Hat.Term.Caps
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel)
 import Hat.Transport.Wire
+import System.Posix.Types (Fd (..))
 
 
 -- Connections ----------------------------------------------------------
 
--- | Serve connections until 'acceptGate' closes; while parked, arrivals sit
--- in the listen backlog (for the next image, across a reload's exec) until
--- the gate reopens. Once retiring, it closes the listener and turns away
--- whatever is still in the backlog. See Note [Retiring the socket].
-acceptLoop :: Dispatch -> ServerState -> N.Socket -> IO ()
-acceptLoop d st lsock = forever $ do
-    r <- race awaitGate (N.accept lsock)
-    case r of
-        Left AcceptRetiring -> retire
-        Left _ -> do
-            atomically $ writeTVar st.acceptGate AcceptParked
-            gate <- atomically $ do
-                g <- readTVar st.acceptGate
-                check (g == AcceptOpen || g == AcceptRetiring)
-                pure g
-            when (gate == AcceptRetiring) retire
-        Right (conn, _) -> do
-          gate <- readTVarIO st.acceptGate
-          if gate == AcceptRetiring then N.close conn else do
-            -- Counting the handler as in-flight here, before its fork, is what
-            -- lets us drop the old fixed-delay grace period without racing the
-            -- autostarting client — and, since the count falls again when the
-            -- handler ends, lets a client that connects and dies before
-            -- creating a session drain (bug 28). Whether it counts as 'served'
-            -- waits on its hello (see 'handleConn').
-            atomically $ modifyTVar' st.activeConns (+ 1)
-            void . forkIO $
-                handleConn d st conn
-                    `catch` (\(e :: SomeException) ->
-                        logEvent st.logger ServerCrash { err = T.pack (show e) })
-                    `finally` do
-                        atomically $ modifyTVar' st.activeConns (subtract 1)
-                        N.close conn `catch` \(_ :: SomeException) -> pure ()
+-- | Serve connections until @stop@ (the server's exit). While 'acceptGate'
+-- is closed it parks, and arrivals sit in the listen backlog (for the next
+-- image, across a reload's exec) until the gate reopens. Once retiring, it
+-- closes the listener and turns away whatever is still in the backlog. See
+-- Note [Retiring the socket].
+acceptLoop :: Dispatch -> ServerState -> STM () -> N.Socket -> IO ()
+acceptLoop d st stop lsock = loop
   where
-    awaitGate = atomically $ do
+    loop = do
+        (readable, unregister) <- N.withFdSocket lsock (threadWaitReadSTM . Fd)
+        -- Only a readable listener is accepted from, so an accept is never
+        -- abandoned with its connection in hand.
+        next <- atomically (Stop <$ stop <|> GateMoved <$> gateMoved <|> Arrival <$ readable)
+            `finally` unregister
+        case next of
+            Stop -> pure ()
+            GateMoved AcceptRetiring -> retire
+            GateMoved _ -> do
+                atomically $ writeTVar st.acceptGate AcceptParked
+                resumed <- atomically (Nothing <$ stop <|> Just <$> reopened)
+                case resumed of
+                    Nothing -> pure ()
+                    Just AcceptRetiring -> retire
+                    Just _ -> loop
+            Arrival -> do
+                (conn, _) <- N.accept lsock
+                serve conn
+                loop
+    serve conn = do
+        gate <- readTVarIO st.acceptGate
+        if gate == AcceptRetiring then N.close conn else do
+          -- Counting the handler as in-flight here, before its fork, is what
+          -- lets us drop the old fixed-delay grace period without racing the
+          -- autostarting client — and, since the count falls again when the
+          -- handler ends, lets a client that connects and dies before
+          -- creating a session drain (bug 28). Whether it counts as 'served'
+          -- waits on its hello (see 'handleConn').
+          atomically $ modifyTVar' st.activeConns (+ 1)
+          void . forkIO $
+              handleConn d st conn
+                  `catch` (\(e :: SomeException) ->
+                      logEvent st.logger ServerCrash { err = T.pack (show e) })
+                  `finally` do
+                      atomically $ modifyTVar' st.activeConns (subtract 1)
+                      N.close conn `catch` \(_ :: SomeException) -> pure ()
+    gateMoved = do
         g <- readTVar st.acceptGate
         check (g == AcceptClosing || g == AcceptRetiring)
         pure g
-    -- Idles until the server's exit cancels the loop.
-    retire = N.close lsock >> forever (threadDelay maxBound)
+    reopened = do
+        g <- readTVar st.acceptGate
+        check (g == AcceptOpen || g == AcceptRetiring)
+        pure g
+    retire = N.close lsock >> atomically stop
+
+-- | What woke 'acceptLoop'.
+data AcceptEvent = Stop | GateMoved AcceptGate | Arrival
 
 -- Note [Retiring the socket]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~

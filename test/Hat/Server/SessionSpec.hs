@@ -2800,7 +2800,36 @@ spec = do
                 runArgv st Nothing ["show", "-gv", "@cur"]
                     `shouldReturn` [ROutput (T.pack ('%' : show new))]
 
-    describe "acceptLoop" $
+    describe "acceptLoop" $ do
+        let serving body = do
+                dir <- mkdtemp "/tmp/hat-sessionspec-"
+                flip finally (removeDirectoryRecursive dir) $ do
+                    let sockPath = dir <> "/socket"
+                    lg <- newLogger "/dev/null"
+                    st <- newServerState Map.empty lg sockPath Nothing
+                    stopping <- newTVarIO False
+                    lsock <- listenOn sockPath
+                    flip finally (close lsock) $
+                        withAsync (acceptLoop dispatch st (readTVar stopping >>= check) lsock) $ \loop ->
+                            body st sockPath stopping loop
+        it "leaves an arrival in the backlog while its gate is closed, serving it once reopened" $
+            serving $ \st sockPath _ _ -> do
+                atomically $ writeTVar st.acceptGate AcceptClosing
+                timeout 5_000_000 (atomically (readTVar st.acceptGate >>= check . (== AcceptParked)))
+                    `shouldReturn` Just ()
+                Right conn <- connectTo sockPath
+                close conn
+                readTVarIO st.served `shouldReturn` False
+                atomically $ writeTVar st.acceptGate AcceptOpen
+                timeout 5_000_000 (atomically (readTVar st.served >>= check))
+                    `shouldReturn` Just ()
+        it "returns when the server stops, parked or not" $
+            serving $ \st _ stopping loop -> do
+                atomically $ writeTVar st.acceptGate AcceptClosing
+                timeout 5_000_000 (atomically (readTVar st.acceptGate >>= check . (== AcceptParked)))
+                    `shouldReturn` Just ()
+                atomically $ writeTVar stopping True
+                timeout 5_000_000 (wait loop) `shouldReturn` Just ()
         it "logs a connection closed before its hello as such, not as a crash" $ do
             dir <- mkdtemp "/tmp/hat-sessionspec-"
             flip finally (removeDirectoryRecursive dir) $ do
@@ -2809,7 +2838,7 @@ spec = do
                 lg <- newLogger logPath
                 st <- newServerState Map.empty lg sockPath Nothing
                 lsock <- listenOn sockPath
-                flip finally (close lsock) $ withAsync (acceptLoop dispatch st lsock) $ \_ -> do
+                flip finally (close lsock) $ withAsync (acceptLoop dispatch st retry lsock) $ \_ -> do
                     Right conn <- connectTo sockPath
                     close conn
                     -- The handler counts itself out only after logging.
