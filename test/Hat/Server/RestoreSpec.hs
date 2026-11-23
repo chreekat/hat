@@ -1,18 +1,22 @@
 module Hat.Server.RestoreSpec (spec) where
 
 import Control.Concurrent.STM (atomically, modifyTVar', readTVarIO, writeTVar)
-import Control.Exception (ErrorCall (..), IOException, bracket, throwIO, try)
-import Control.Monad (forM_, void)
+import Control.Exception (ErrorCall (..), IOException, bracket, catch, throwIO, try)
+import Control.Concurrent (threadDelay)
+import Control.Monad (forM_, unless, void)
 import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Map.Strict qualified as Map
 import Data.Vector qualified as V
 import System.Exit (ExitCode)
-import System.Posix.IO (closeFd)
+import System.Directory (doesPathExist)
+import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
+import System.Posix.Signals (sigKILL, signalProcess)
+import System.Timeout (timeout)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (CPid, Fd)
-import System.Process (createProcess, getPid, proc, terminateProcess, waitForProcess)
+import System.Process (StdStream (..), createProcess, getPid, proc, std_err, std_in, std_out, terminateProcess, waitForProcess)
 import System.Posix.Terminal (openPseudoTerminal)
 import Test.Hspec
 
@@ -23,7 +27,7 @@ import Hat.Model
      newServerState)
 import Hat.Model.Options (OptionValue (..), applyEntry)
 import Hat.Transport.Wire (Autostart (..))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 
 import Hat.Server
     (PaneStart (..), PersistDecision (..), ReloadRequest (..),
@@ -41,8 +45,9 @@ import Hat.Server.LayoutString (emitLayout)
 import Hat.Model.PaneKind (PaneKind (..))
 import Hat.Server.Persist (PaneSnap (..), SessionSnap (..), Snapshot (..))
 import Hat.Server.Reload
-    (HotPane (..), HotSession (..), HotWindow (..), ReloadModes (..),
+    (HotPane (..), HotSession (..), HotWindow (..), ReloadCleanup (..), ReloadModes (..),
      ReloadScreen (..), ReloadStart (..), ReloadTree (..), emptyReloadScreen)
+import Hat.Server.Dispatch (cleanupInherited)
 import Hat.Term.Cell qualified as Cell
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.HostProtocol (defaultCursorModel)
@@ -92,6 +97,33 @@ testState = do
 
 spec :: Spec
 spec = do
+    describe "cleanupInherited" $
+        it "hangs up and reaps an inherited pane's child, killing one that ignores the hangup (df)" $ do
+            -- Streamless, and killed whatever the outcome, so a failure leaves
+            -- no child holding the suite's output open.
+            let child cmd = bracket (spawn cmd) (\pid -> signalProcess sigKILL pid `catch` \(_ :: IOException) -> pure ())
+                spawn cmd = do
+                    (_, _, _, ph) <- createProcess (proc "/bin/sh" ["-c", cmd])
+                        { std_in = NoStream, std_out = NoStream, std_err = NoStream }
+                    mpid <- getPid ph
+                    maybe (throwIO (ErrorCall "child exited at once")) pure mpid
+                poll done = isJust <$> timeout 5_000_000 (let go = done >>= \d -> unless d (threadDelay 10_000 >> go) in go)
+                procPath pid = "/proc/" <> show pid
+                -- Only once its shell has exec'd does a child ignore the hangup.
+                execd pid = poll ((== "sleep\n") <$> B8.readFile (procPath pid <> "/comm"))
+                gone pid = poll (not <$> doesPathExist (procPath pid))
+            child "exec sleep 1000" $ \polite -> child "trap '' HUP; exec sleep 1000" $ \stubborn -> do
+                mapM execd [polite, stubborn] `shouldReturn` [True, True]
+                (m1, s1) <- openPseudoTerminal
+                (m2, s2) <- openPseudoTerminal
+                listener <- openFd "/dev/null" ReadOnly defaultFileFlags
+                cleanupInherited ReloadCleanup
+                    { listenFd = fromIntegral listener
+                    , live = [ (fromIntegral m1, fromIntegral polite)
+                             , (fromIntegral m2, fromIntegral stubborn) ] }
+                mapM_ closeFd [s1, s2]
+                mapM gone [polite, stubborn] `shouldReturn` [True, True]
+
     describe "finallyReady" $
         -- A crashed config load or restore must never strand the phase:
         -- every attach parks on it forever in ensureSession (the deadlock

@@ -38,7 +38,7 @@ module Hat.Server.Dispatch
     , restartClientAction
     ) where
 
-import Control.Concurrent (forkIO, myThreadId, threadDelay)
+import Control.Concurrent (forkIO, myThreadId, readMVar, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (filterM, forM, forM_, replicateM, unless, void, when)
@@ -47,7 +47,7 @@ import Data.ByteString qualified as B
 import Data.Char (isAlpha, isAlphaNum)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -58,8 +58,9 @@ import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.Posix.IO qualified as PIO
 import System.Posix.Process (executeFile)
-import System.Posix.Signals (sigHUP, signalProcess)
-import System.Posix.Types (Fd (..))
+import System.Posix.Signals (sigHUP, sigKILL, signalProcess)
+import System.Posix.Types (Fd (..), ProcessID)
+import System.Timeout (timeout)
 import System.IO (IOMode (..), openFile)
 import System.IO.Error (isDoesNotExistError, isPermissionError)
 import System.Process
@@ -117,6 +118,7 @@ import Hat.Server.MouseIO
     (clientMouseEvent, mouseEventPane, mouseFormatVars, moveCopyCursor, sendMouse
     , startSelectionDrag)
 import Hat.Server.Pane
+import Hat.Term.Pty qualified
 import Hat.Server.PromptHistory (saveHistory)
 import Hat.Server.Snapshot
 import Hat.Server.Resize (announceResized)
@@ -867,8 +869,18 @@ cleanupInherited cleanup = do
             `catch` \(_ :: IOException) -> pure ()
         PIO.closeFd (Fd (fromIntegral fd))
             `catch` \(_ :: IOException) -> pure ()
+        void (forkIO (reapInherited (fromIntegral pid)))
     PIO.closeFd (Fd (fromIntegral cleanup.listenFd))
         `catch` \(_ :: IOException) -> pure ()
+
+-- | Collect a hung-up inherited child once it exits, as a pane's teardown
+-- does ('reapPane'): it gets a pane's grace, then SIGKILL.
+reapInherited :: ProcessID -> IO ()
+reapInherited pid = do
+    exited <- Hat.Term.Pty.startReaper pid
+    reaped <- timeout paneExitWaitMicros (readMVar exited)
+    when (isNothing reaped) $
+        signalProcess sigKILL pid `catch` \(_ :: IOException) -> pure ()
 
 -- | @restart-client@: tell the currently-attached client to re-exec itself in
 -- place, keeping its session. A no-op when the command is not issued from an

@@ -7,6 +7,7 @@ module Hat.Term.Pty
     , PtyHandle
     , spawn
     , adopt
+    , startReaper
     , exitedPty
     , isClosed
     , readPty
