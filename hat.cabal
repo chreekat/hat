@@ -79,6 +79,7 @@ library
         Hat.Command.Arg
         Hat.Command.Parser
         Hat.Command.Script
+        Hat.Command.Template
         Hat.Client.Tty
         Hat.Base64
         Hat.Colour
