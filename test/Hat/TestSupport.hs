@@ -105,6 +105,7 @@ addClient st sid sz stamp = do
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
         <*> newIORef (Pos 0 0)
+        <*> newIORef Nothing
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure client
 

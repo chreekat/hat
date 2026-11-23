@@ -333,6 +333,7 @@ newClient st conn h = do
     envImportVar <- newTVarIO ImportEnv
     viewportVar <- newTVarIO unpannedViewport
     viewOriginVar <- newIORef (Pos 0 0)
+    shownActiveVar <- newIORef Nothing
     ttyTermVar <- newTVarIO Nothing
     created <- getPOSIXTime
     controlState <- case h.intent of
@@ -382,6 +383,7 @@ newClient st conn h = do
         , control = controlState
         , viewport = viewportVar
         , lastViewOrigin = viewOriginVar
+        , shownActive = shownActiveVar
         }
 
 -- | Resolve MRU session names to the ids of the sessions that still exist,

@@ -1,10 +1,11 @@
--- | The per-client prefix highlight: the active pane's own edge cells take a
--- tint while the prefix key is armed, and briefly linger on the new pane after
--- a prefix command moves the active pane. See 'Hat.Server.View.flashTarget'
--- for what it tints.
+-- | The per-client pane highlight: the active pane's own edge cells take a
+-- tint while the prefix key is armed, and briefly linger on a pane that newly
+-- takes focus, whatever moved it there. See 'Hat.Server.View.flashTarget' for
+-- what it tints.
 module Hat.Server.Flash
     ( armFlash
     , disarmFlash
+    , noteActivePane
     , startLingerClock
     , lingerDeadline
     , flashExpired
@@ -12,7 +13,8 @@ module Hat.Server.Flash
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM_, unless, void, when)
+import Data.IORef (atomicModifyIORef')
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 
@@ -30,6 +32,16 @@ disarmFlash :: ServerState -> Client -> Bool -> IO ()
 disarmFlash st client moved
     | moved     = atomically $ setFlash st client (Just FlashLingerPending)
     | otherwise = atomically $ setFlash st client Nothing
+
+-- | Record the active pane a frame is about to show, lingering on it when it
+-- differs from the last frame's. An armed prefix already highlights it, and a
+-- client's first frame has nothing it moved from.
+noteActivePane :: ServerState -> Client -> PaneId -> IO ()
+noteActivePane st client active = do
+    prev <- atomicModifyIORef' client.shownActive (\p -> (Just active, p))
+    when (maybe False (/= active) prev) $ atomically $ do
+        cur <- readTVar client.flash
+        unless (cur == Just FlashArmed) $ setFlash st client (Just FlashLingerPending)
 
 -- | Start a pending linger's clock the first time its frame is rendered, so
 -- the highlight is visible for its full span after the moved-to pane reaches

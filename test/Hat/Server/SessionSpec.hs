@@ -235,6 +235,7 @@ wiredClientEnv st clientRole clientEnv = do
         <*> pure Nothing
         <*> newTVarIO unpannedViewport
         <*> newIORef (Pos 0 0)
+        <*> newIORef Nothing
     atomically $ modifyTVar' st.clients (Map.insert client.id client)
     pure (client, peer)
 

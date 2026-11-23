@@ -1207,6 +1207,9 @@ data Client = Client
     , viewport  :: TVar Viewport  -- ^ see "Hat.Server.Viewport"
     , lastViewOrigin :: IORef Pos
         -- ^ the 'viewport' origin 'lastFrame' was drawn at; render thread only
+    , shownActive :: IORef (Maybe PaneId)
+        -- ^ the active pane 'lastFrame' showed; 'Nothing' before the first
+        --   frame. See 'Hat.Server.Flash.noteActivePane'.
     }
 
 -- | A client's popup: its box, and the command running on a pty of its

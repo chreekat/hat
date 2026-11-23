@@ -1,5 +1,5 @@
--- | The prefix highlight: arming the prefix tints the active pane's own edge
--- cells, in any layout, and lingers on the new pane after a pane move.
+-- | The pane highlight: arming the prefix tints the active pane's own edge
+-- cells, in any layout, and it lingers on a pane that newly takes focus.
 module Hat.Server.FlashSpec (spec) where
 
 import Test.Hspec
@@ -13,10 +13,10 @@ import Data.Vector qualified as V
 import Hat.Geometry (Rect (..), Size (..))
 import Hat.Log (newLogger)
 import Hat.Model
-import Hat.Server.Flash (lingerDeadline, flashExpired)
+import Hat.Server.Flash (flashExpired, lingerDeadline, noteActivePane)
 import Hat.Server.Floating (noFloats)
 import Hat.Server.Layout (Orientation (..), singlePane)
-import Hat.TestSupport (nodeOf)
+import Hat.TestSupport (addClient, nodeOf)
 import Hat.Server.Render (blankFrame, tintInnerRing)
 import Hat.Server.Resize (windowArrange)
 import Hat.Server.View (flashTarget)
@@ -24,6 +24,22 @@ import Hat.Term.Cell qualified as Cell
 
 spec :: Spec
 spec = do
+    describe "noteActivePane" $
+        it "lingers on a pane that newly takes focus, but not on a first frame or an armed prefix" $ do
+            lg <- newLogger "/dev/null"
+            st <- newServerState Map.empty lg "/tmp/hat-flashspec.sock" Nothing
+            c <- addClient st (SessionId 0) (Size { rows = 24, cols = 80 }) 1
+            let flashIs f = (== f) <$> readTVarIO c.flash
+            noteActivePane st c (PaneId 1)
+            flashIs Nothing `shouldReturn` True
+            noteActivePane st c (PaneId 1)
+            flashIs Nothing `shouldReturn` True
+            noteActivePane st c (PaneId 2)
+            flashIs (Just FlashLingerPending) `shouldReturn` True
+            atomically $ writeTVar c.flash (Just FlashArmed)
+            noteActivePane st c (PaneId 1)
+            flashIs (Just FlashArmed) `shouldReturn` True
+
     describe "flashTarget picks what the prefix highlight tints" $ do
         let ra = Rect { startRow = 0, endRow = 10, startCol = 0, endCol = 40 }
             rb = Rect { startRow = 0, endRow = 10, startCol = 41, endCol = 80 }

@@ -39,7 +39,7 @@ import Hat.Server.CopyMode qualified as CopyMode
 import Hat.Server.ClientIO (hasRoom, send, sendAs)
 import Hat.Server.Outbound (Delivery (..), Slot (..))
 import Hat.Server.DisplayPanes qualified as DisplayPanes
-import Hat.Server.Flash (startLingerClock)
+import Hat.Server.Flash (noteActivePane, startLingerClock)
 import Hat.Server.Format (clockTick, formatClock, formatReadsLoops, formatStrftimes)
 import Hat.Server.Format qualified as F
 import Hat.Server.HookTypes (HooksState (..))
@@ -242,6 +242,7 @@ renderOnce st client = do
                     , Just pv <- [Map.lookup pidL paneViews] ]
                 (base, baseOrigins) = composeRows csize
                     chrome layers prevFrame prevOrigins
+            noteActivePane st client active
             mflash <- readTVarIO client.flash
             scheme <- readTVarIO st.colorScheme
             let (flashed, flashedOrigins)

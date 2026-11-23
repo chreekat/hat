@@ -65,6 +65,7 @@ mkClientWith cid = do
     envImpV <- newTVarIO ImportEnv
     viewportV <- newTVarIO unpannedViewport
     viewOriginV <- newIORef (Pos 0 0)
+    shownActiveV <- newIORef Nothing
     termV <- newTVarIO Nothing
     let client = Client
             { id = cid, role = Attached, autostart = Joined, sock = a, wireLevel = protocolVersion
@@ -84,7 +85,7 @@ mkClientWith cid = do
             , outerFocused = focusV, envImport = envImpV
             , env = [], cwd = "", term = "", ttyName = Nothing, ttyTerm = termV, createdAt = 0
             , stdinSource = NoStdin, control = Nothing
-            , viewport = viewportV, lastViewOrigin = viewOriginV
+            , viewport = viewportV, lastViewOrigin = viewOriginV, shownActive = shownActiveV
              }
     re <- newReadEnd b
     pure (client, re)
