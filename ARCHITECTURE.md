@@ -143,6 +143,34 @@ Almost no logic lives there. **(inferred.)**
   The client process only relays lines; the server owns the protocol
   (`Hat.Server.Control`). Listed P3 in FEATURES.md.
 
+## Rex attach mode
+
+`hat attach --rex <socket>` makes the client process a client of a
+[Rex](https://www.superlogical.com/rex) server instead of a hat server. Rex
+ships terminal *state* (a libghostty snapshot, then the raw pty stream) and
+a layout, not frames, so in this mode the client emulates and draws
+locally: `Hat.Client.Rex` holds a libghostty terminal for the pane it
+shows, born from the server's snapshot (`Emulator.fromSnapshot`) and fed
+the stream as it is (`Emulator.feedMirror`), and draws it with the same
+pure frame differ and ANSI encoder the hat server's frames go through.
+
+- No hat server is involved, and Rex panes never enter a hat session.
+- The client still holds no durable state: a reattach starts over from a
+  fresh snapshot.
+- The protocol codec is the pure `Hat.Rex.*` modules, split by protocol
+  layer (control messages, session view, data handshake, terminal
+  stream). Nothing in them depends on `Hat.Client.Rex`.
+- Rex endpoints are a transport decision apart from hat's own wire, which
+  stays Unix-socket only. Today a Rex endpoint is a Unix socket too, spoken
+  to through the `websockets` library; a `wss://` endpoint would add a TLS
+  client beside it.
+- `HAT_REX_LOG=<dir>` records an attach: `control.jsonl` (one control
+  message per line, tickets and reconnect tokens redacted) and each
+  pane's raw stream, in the layout of the corpus under
+  `test/fixtures/rex/`.
+
+The boundary's compatibility rule is in CLAUDE.md's table.
+
 ## Concurrency model
 
 Haskell's strength here. The shape:
