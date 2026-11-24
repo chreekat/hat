@@ -102,14 +102,23 @@ sendBinary :: WsConn -> ByteString -> IO ()
 sendBinary (WsConn c) = WS.sendBinaryData c
 
 -- | The next data message, or how the connection ended. Pings are answered
--- on the way.
+-- on the way, and so is the peer's close; a peer that has hung up before
+-- the answer has still said why it closed.
 recvMessage :: WsConn -> IO Received
-recvMessage (WsConn c) = handle lost (handle ended (got <$> WS.receiveDataMessage c))
+recvMessage (WsConn c) = handle lost (handle ended next)
   where
-    got = \case
-        WS.Text bs _ -> GotText (BL.toStrict bs)
-        WS.Binary bs -> GotBinary (BL.toStrict bs)
+    next = WS.receive c >>= \case
+        WS.DataMessage _ _ _ (WS.Text bs _) -> pure (GotText (BL.toStrict bs))
+        WS.DataMessage _ _ _ (WS.Binary bs) -> pure (GotBinary (BL.toStrict bs))
+        WS.ControlMessage (WS.Ping bs) -> answer (WS.Pong bs) >> next
+        WS.ControlMessage (WS.Pong _) -> next
+        WS.ControlMessage (WS.Close code why) -> do
+            answer (WS.Close code why)
+            pure (PeerClosed Close { code, reason = TE.decodeUtf8Lenient (BL.toStrict why) })
+    -- A peer gone since it wrote shows on the next read.
+    answer = quietly . WS.send c . WS.ControlMessage
     ended = pure . \case
+        -- Raised by the library's own close handling, which 'next' replaces.
         WS.CloseRequest code why ->
             PeerClosed Close { code, reason = TE.decodeUtf8Lenient (BL.toStrict why) }
         WS.ConnectionClosed -> ConnectionLost
@@ -117,9 +126,10 @@ recvMessage (WsConn c) = handle lost (handle ended (got <$> WS.receiveDataMessag
         WS.UnicodeException e -> FramingBroken ("WebSocket text is not UTF-8: " <> T.pack e)
     lost (_ :: IOException) = pure ConnectionLost
 
+-- | Run a write whose failure means only that the peer is gone.
+quietly :: IO () -> IO ()
+quietly = handle (\(_ :: IOException) -> pure ()) . handle (\(_ :: WS.ConnectionException) -> pure ())
+
 -- | Say goodbye with a status code. A peer already gone is no error.
 closeWs :: WsConn -> Word16 -> IO ()
-closeWs (WsConn c) code =
-    handle (\(_ :: IOException) -> pure ()) $
-    handle (\(_ :: WS.ConnectionException) -> pure ()) $
-        WS.sendCloseCode c code B.empty
+closeWs (WsConn c) code = quietly (WS.sendCloseCode c code B.empty)

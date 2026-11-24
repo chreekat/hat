@@ -23,7 +23,7 @@ mkDerivation {
   testHaskellDepends = [
     aeson async base bytestring cborg containers directory filepath
     hspec hspec-core HUnit network process QuickCheck serialise
-    sqlite-simple stm text time unix vector
+    sqlite-simple stm text time unix vector websockets
   ];
   benchmarkHaskellDepends = [ base directory process unix ];
   description = "A terminal multiplexer";
