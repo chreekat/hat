@@ -4,6 +4,7 @@
 -- between attaches: each starts from the server's snapshot.
 module Hat.Client.Rex
     ( runRexAttach
+    , localTerm
     , DetachKeys (..)
     , detachKeys
     ) where
@@ -39,6 +40,7 @@ import Hat.Client.RexArgs (RexTarget (..))
 import Hat.Client.Terminfo (readTermCaps)
 import Hat.Client.Tty
 import Hat.Geometry (Pos (..), Size (..))
+import Hat.Model.Options (defaultOptions, optionArray)
 import Hat.Rex.Conn
 import Hat.Rex.Control
 import Hat.Rex.Data
@@ -48,7 +50,7 @@ import Hat.Rex.Log
 import Hat.Rex.View (BlockId (..), SessionId)
 import Hat.Server.Render (composeFrame, diffFrame, fullRedraw)
 import Hat.Server.View (framePeriod)
-import Hat.Term.Caps (createTerm)
+import Hat.Term.Caps (TtyTerm, createTerm)
 import Hat.Term.Emulator (Emulator, Screen (..))
 import Hat.Term.Emulator qualified as Emu
 import Hat.Term.Pty (sigWinch)
@@ -138,7 +140,7 @@ streamLogName (BlockId bid) = "stream-" <> map safe (T.unpack bid) <> ".bin"
   where
     safe c = if c == ':' || c == '/' then '-' else c
 
--- | How this terminal is drawn to, from its terminfo entry alone.
+-- | How this terminal is drawn to.
 localDialect :: Attempt Dialect
 localDialect = do
     mterm <- lookupEnv "TERM"
@@ -147,8 +149,16 @@ localDialect = do
         Just t | not (null t) -> do
             caps <- readTermCaps (T.pack t)
             pure $ either (Left . refuse) (Right . dialectOf) $
-                caps >>= \c -> createTerm (T.pack t) c [] [] (T.pack <$> colorterm)
+                caps >>= \c -> localTerm (T.pack t) c (T.pack <$> colorterm)
         _ -> pure (Left (refuse "TERM is not set"))
+
+-- | This terminal as a hat server with no configuration would open it:
+-- from its @TERM@, the capabilities read for it and its @COLORTERM@, under
+-- the default @terminal-overrides@ and @terminal-features@.
+localTerm :: Text -> [Text] -> Maybe Text -> Either Text TtyTerm
+localTerm term caps = createTerm term caps
+    (optionArray "terminal-overrides" defaultOptions)
+    (optionArray "terminal-features" defaultOptions)
 
 -- | Run with a WebSocket to the server's socket open at a path, closed
 -- with a normal goodbye however the action ends.

@@ -5,6 +5,7 @@ import Test.Hspec
 
 import Hat.Client.Rex
 import Hat.Client.RexArgs
+import Hat.Term.Caps (featurePresent, rgbColours)
 
 spec :: Spec
 spec = do
@@ -42,6 +43,18 @@ spec = do
                 `shouldBe` Just (Left "attach --rex does not take -d")
             rexAttachTarget ["attach", "--rex", "a.sock", "--rex", "b.sock"]
                 `shouldSatisfy` maybe False isLeft
+
+    describe "the local terminal" $ do
+        let caps = ["clear=\\E[H\\E[2J", "cup=\\E[%i%p1%d;%p2%dH", "colors#256"]
+
+        it "gets the default terminal-features, truecolour among them" $ do
+            (rgbColours <$> localTerm "xterm-256color" caps Nothing) `shouldBe` Right True
+            (featurePresent "clipboard" <$> localTerm "xterm-256color" caps Nothing)
+                `shouldBe` Right True
+            (rgbColours <$> localTerm "foot" caps Nothing) `shouldBe` Right True
+
+        it "is refused when it cannot be drawn to" $
+            localTerm "dumb" [] Nothing `shouldSatisfy` isLeft
 
     describe "detach keys" $ do
         it "detaches on C-b d, in one read or two" $ do
