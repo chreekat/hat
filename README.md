@@ -45,13 +45,11 @@ this is not your multiplexer.
 
 > [!NOTE]
 > **Going back a version.** `hat restart` into a newer build keeps your
-> programs running. Into an *older* build it works only while the two share
-> a handover format: today that is every build from 2026-11-02 on. Otherwise
-> the restart is refused, with the running server left as it was. To go back
-> further, exit the server and start the old one; your sessions are
-> restored, your running programs are not. A build can't yet write an older
-> build's format; that is tracked in
-> [#1](https://github.com/chreekat/hat/issues/1).
+> programs running. Into an *older* build it does too, unless the handover
+> format changed in between: then the restart is refused, with the running
+> server left as it was. To go back past such a change, exit the server and
+> start the old one; your sessions are restored, your running programs are
+> not. ([#1](https://github.com/chreekat/hat/issues/1))
 
 ## Why Hat
 
