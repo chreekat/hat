@@ -49,8 +49,8 @@ newtype Nonce = Nonce Word64
     deriving (Eq, Show)
 
 data HandshakeReply
-    = Welcomed Nonce
-    | Rejected RejectReason
+    = DataWelcome Nonce
+    | DataReject RejectReason
     deriving (Eq, Show)
 
 data RejectReason
@@ -70,8 +70,8 @@ decodeHandshakeReply bs = case B.unpack (B.take 2 bs) of
     0x81 : _
         | B.length bs /= 32 -> Left "the data WELCOME is not 32 bytes"
         | nonce == 0 -> Left "the data WELCOME has a zero channel nonce"
-        | otherwise -> Right (Welcomed (Nonce nonce))
-    [0x82, r] -> Right . Rejected $ case r of
+        | otherwise -> Right (DataWelcome (Nonce nonce))
+    [0x82, r] -> Right . DataReject $ case r of
         0x01 -> TicketInvalid
         0x02 -> AlreadyConnected
         0x03 -> StreamUnavailable

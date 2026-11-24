@@ -5,6 +5,7 @@ module Main (main) where
 import Control.Concurrent (threadDelay)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
@@ -22,6 +23,8 @@ import System.Process
     , getProcessExitCode, proc )
 
 import Hat.Client
+import Hat.Client.Rex (runRexAttach)
+import Hat.Client.RexArgs (RexTarget, rexAttachTarget)
 import Hat.Command.Arg (Arg (..), argFromBytes, argLossy)
 import Hat.Command.Parser (parseArgv, parseScript)
 import Hat.Command.Script (Script (..), ScriptItem (..))
@@ -38,7 +41,7 @@ import GHC.Debug.Stub qualified
 #endif
 
 data Cli = Cli
-    { socketName :: String
+    { socketName :: Maybe String  -- ^ @-L@
     , socketPathOverride :: Maybe FilePath
     , configFile :: Maybe FilePath
     , controlMode :: Maybe ControlFlavour  -- ^ @-C@ once, or @-CC@
@@ -83,7 +86,9 @@ main = do
             let cli = parseCli (zip args raw)
             case cli.action of
                 PrintVersion -> TIO.putStrLn ("hat " <> versionText)
-                RunCommand -> clientMain =<< resolveConfig cli
+                RunCommand -> case rexAttachTarget cli.command of
+                    Nothing -> clientMain =<< resolveConfig cli
+                    Just target -> rexAttach cli target
 
 -- | Run the server as a ghc-debug debuggee on the socket 'prepareDebugSocket'
 -- pins, so ghc-debug-brick can attach to the live process. Only the long-lived
@@ -115,7 +120,7 @@ takeReloadHandover = go (Nothing, [])
 
 parseCli :: [(String, ByteString)] -> Cli
 parseCli = go Cli
-    { socketName = "default"
+    { socketName = Nothing
     , socketPathOverride = Nothing
     , configFile = Nothing
     , controlMode = Nothing
@@ -127,14 +132,14 @@ parseCli = go Cli
         [] -> cli
         ("-C" : _) -> go cli { controlMode = Just (moreControl cli) } (drop 1 ws)
         ("-CC" : _) -> go cli { controlMode = Just ControlDcs } (drop 1 ws)
-        ("-L" : name : _) -> go cli { socketName = name } (drop 2 ws)
+        ("-L" : name : _) -> go cli { socketName = Just name } (drop 2 ws)
         ("-S" : path : _) -> go cli { socketPathOverride = Just path } (drop 2 ws)
         ("-f" : path : _) -> go cli { configFile = Just path } (drop 2 ws)
         -- -u asks for UTF-8, which hat's client always speaks.
         ("-u" : _) -> go cli (drop 1 ws)
         ("-V" : _) -> cli { action = PrintVersion }
         (arg : _)
-            | Just v <- attached "-L" arg -> go cli { socketName = v } (drop 1 ws)
+            | Just v <- attached "-L" arg -> go cli { socketName = Just v } (drop 1 ws)
             | Just v <- attached "-S" arg ->
                 go cli { socketPathOverride = Just v } (drop 1 ws)
             | Just v <- attached "-f" arg -> go cli { configFile = Just v } (drop 1 ws)
@@ -144,9 +149,24 @@ parseCli = go Cli
         (pre, v) | pre == flag && not (null v) -> Just v
         _ -> Nothing
 
+-- | @attach --rex@: attach to a Rex server instead of a hat server. None of
+-- the flags that pick or configure a hat server apply.
+rexAttach :: Cli -> Either T.Text RexTarget -> IO ()
+rexAttach cli = \case
+    Left why -> refused why
+    Right target
+        | hatServerFlags -> refused "--rex cannot be combined with -L, -S, -f or -C"
+        | otherwise -> runRexAttach target >>= reportEnd
+  where
+    hatServerFlags = isJust cli.socketName || isJust cli.socketPathOverride
+        || isJust cli.configFile || isJust cli.controlMode
+    refused why = do
+        TIO.hPutStrLn stderr ("hat: " <> why)
+        exitFailure
+
 clientMain :: Cli -> IO ()
 clientMain cli = do
-    path <- maybe (defaultSocketPath cli.socketName) pure cli.socketPathOverride
+    path <- maybe (defaultSocketPath (fromMaybe "default" cli.socketName)) pure cli.socketPathOverride
     let (hist, cmdArgs) = takeReattachHist cli.command
         cmds = map (map argFromBytes) (parseArgv cmdArgs)
     case cli.controlMode of
@@ -244,17 +264,24 @@ attach path mconfig answered setup hist = do
     (sock, origin) <- connectOrStart path mconfig
     reason <- runClient sock origin answered setup hist
     case reason of
-        Detached -> putStrLn "[detached]"
-        SessionEnded -> putStrLn "[exited]"
-        -- Only a command client's commands finish.
-        CommandsFinished _ -> putStrLn "[exited]"
         RestartRequested target hist' -> restartClient path mconfig target hist'
-        ServerDied -> do
-            hPutStrLn stderr "hat: server connection lost"
-            exitWith (ExitFailure 1)
-        Rejected e -> do
-            B.hPut stderr ("hat: " <> e <> "\n")
-            exitWith (ExitFailure 1)
+        _ -> reportEnd reason
+
+-- | Tell the user how an attach ended, and exit accordingly.
+reportEnd :: ExitReason -> IO ()
+reportEnd = \case
+    Detached -> putStrLn "[detached]"
+    SessionEnded -> putStrLn "[exited]"
+    -- Only a command client's commands finish.
+    CommandsFinished _ -> putStrLn "[exited]"
+    -- Acted on by the attach that can restart.
+    RestartRequested _ _ -> pure ()
+    ServerDied -> do
+        hPutStrLn stderr "hat: server connection lost"
+        exitWith (ExitFailure 1)
+    Rejected e -> do
+        B.hPut stderr ("hat: " <> e <> "\n")
+        exitWith (ExitFailure 1)
 
 -- | Re-exec @hat@ in place to reattach: the server told us to restart, so
 -- replace this client image with a fresh @hat attach@ against the same socket

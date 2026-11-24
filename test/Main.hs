@@ -27,6 +27,8 @@ import Hat.Rex.ConnSpec qualified
 import Hat.Rex.ControlSpec qualified
 import Hat.Rex.DataSpec qualified
 import Hat.Rex.ReplaySpec qualified
+import Hat.Rex.SessionSpec qualified
+import Hat.Client.RexSpec qualified
 import Hat.Rex.StreamSpec qualified
 import Hat.Model.PasteBuffersSpec qualified
 import Hat.Server.PersistSpec qualified
@@ -204,4 +206,6 @@ main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     describe "Hat.Rex.Control" Hat.Rex.ControlSpec.spec
     describe "Hat.Rex.Data" Hat.Rex.DataSpec.spec
     describe "Hat.Rex.Replay" Hat.Rex.ReplaySpec.spec
+    describe "Hat.Rex.Session" Hat.Rex.SessionSpec.spec
+    describe "Hat.Client.Rex" Hat.Client.RexSpec.spec
     describe "Hat.Rex.Stream" Hat.Rex.StreamSpec.spec

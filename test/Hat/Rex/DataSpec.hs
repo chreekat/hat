@@ -31,14 +31,14 @@ spec = describe "Rex data handshake" $ do
     it "reads the channel nonce of a WELCOME" $
         -- 4554578536633190305, the r19 capture's nonce.
         decodeHandshakeReply (welcome [0xa1, 0xc7, 0xa3, 0x41, 0x0c, 0x1d, 0x35, 0x3f])
-            `shouldBe` Right (Welcomed (Nonce 4554578536633190305))
+            `shouldBe` Right (DataWelcome (Nonce 4554578536633190305))
 
     it "refuses a WELCOME of another length or with a zero nonce" $ do
         decodeHandshakeReply (B.take 31 (welcome [1, 0, 0, 0, 0, 0, 0, 0])) `shouldSatisfy` isLeft
         decodeHandshakeReply (welcome [0, 0, 0, 0, 0, 0, 0, 0]) `shouldSatisfy` isLeft
 
     it "reads every REJECT reason" $
-        map (\r -> decodeHandshakeReply (B.pack [0x82, r])) [1 .. 8] `shouldBe` map (Right . Rejected)
+        map (\r -> decodeHandshakeReply (B.pack [0x82, r])) [1 .. 8] `shouldBe` map (Right . DataReject)
             [ TicketInvalid, AlreadyConnected, StreamUnavailable, LimitReached
             , MalformedHandshake, ServerFailed, WrongSubprotocol, UnknownReason 8 ]
 

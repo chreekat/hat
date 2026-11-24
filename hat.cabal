@@ -75,6 +75,8 @@ library
         Hat.Bench.RtsStats
         Hat.Client
         Hat.Client.Draw
+        Hat.Client.Rex
+        Hat.Client.RexArgs
         Hat.Client.Terminfo
         Hat.Command.Arg
         Hat.Command.Parser
@@ -103,6 +105,7 @@ library
         Hat.Rex.Conn
         Hat.Rex.Control
         Hat.Rex.Data
+        Hat.Rex.Session
         Hat.Rex.Stream
         Hat.Rex.View
         Hat.Server
@@ -340,6 +343,7 @@ test-suite hat-test
         Hat.Bench.RtsStatsSpec
         Hat.Client.DrawSpec
         Hat.Client.RenderSpec
+        Hat.Client.RexSpec
         Hat.Client.TerminfoSpec
         Hat.Client.TtySpec
         Hat.ClientSpec
@@ -357,6 +361,7 @@ test-suite hat-test
         Hat.Rex.ControlSpec
         Hat.Rex.DataSpec
         Hat.Rex.ReplaySpec
+        Hat.Rex.SessionSpec
         Hat.Rex.StreamSpec
         Hat.Model.PasteBuffersSpec
         Hat.Server.PersistSpec
