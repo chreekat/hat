@@ -45,7 +45,8 @@ data Received
     = GotText ByteString
     | GotBinary ByteString
     | PeerClosed Close
-    | ConnectionLost Text  -- ^ no close frame: the transport ended, or the peer broke the framing
+    | ConnectionLost       -- ^ the transport ended with no close frame
+    | FramingBroken Text   -- ^ the peer sent what is not WebSocket; how, for the user
     deriving (Eq, Show)
 
 -- | Upgrade a connected socket to a WebSocket at a path, speaking one
@@ -62,10 +63,13 @@ openWs sock path subprotocol = do
                 modifyIORef' response (fmap (<> chunk))
                 pure (Just chunk)
     stream <- WS.Stream.makeStream receive (maybe (pure ()) (NL.sendAll sock))
-    r <- try $ WS.newClientConnection stream "localhost" path WS.defaultConnectionOptions
-        [("Sec-WebSocket-Protocol", subprotocol)]
+    r <- handle (\(_ :: IOException) -> pure (Right Nothing)) $
+        handle (\(_ :: WS.ConnectionException) -> pure (Right Nothing)) $
+        try $ Just <$> WS.newClientConnection stream "localhost" path
+            WS.defaultConnectionOptions [("Sec-WebSocket-Protocol", subprotocol)]
     case r of
-        Right conn -> Right (WsConn conn) <$ writeIORef response Nothing
+        Right (Just conn) -> Right (WsConn conn) <$ writeIORef response Nothing
+        Right Nothing -> pure (Left "the connection was lost during the WebSocket handshake")
         Left (WS.MalformedResponse hd _) | WS.responseCode hd /= 101 -> do
             seen <- maybe B.empty id <$> readIORef response
             let body0 = B.drop 4 (snd (B.breakSubstring "\r\n\r\n" seen))
@@ -108,10 +112,10 @@ recvMessage (WsConn c) = handle lost (handle ended (got <$> WS.receiveDataMessag
     ended = pure . \case
         WS.CloseRequest code why ->
             PeerClosed Close { code, reason = TE.decodeUtf8Lenient (BL.toStrict why) }
-        WS.ConnectionClosed -> ConnectionLost "connection lost"
-        WS.ParseException e -> ConnectionLost ("WebSocket framing error: " <> T.pack e)
-        WS.UnicodeException e -> ConnectionLost ("WebSocket text is not UTF-8: " <> T.pack e)
-    lost (_ :: IOException) = pure (ConnectionLost "connection lost")
+        WS.ConnectionClosed -> ConnectionLost
+        WS.ParseException e -> FramingBroken ("WebSocket framing error: " <> T.pack e)
+        WS.UnicodeException e -> FramingBroken ("WebSocket text is not UTF-8: " <> T.pack e)
+    lost (_ :: IOException) = pure ConnectionLost
 
 -- | Say goodbye with a status code. A peer already gone is no error.
 closeWs :: WsConn -> Word16 -> IO ()

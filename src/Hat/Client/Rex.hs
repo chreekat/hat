@@ -169,7 +169,7 @@ ended :: Received -> ExitReason
 ended = \case
     PeerClosed c | not (T.null c.reason) ->
         refuse ("the Rex server closed the connection: " <> c.reason)
-    ConnectionLost why | why /= "connection lost" -> refuse why
+    FramingBroken why -> refuse why
     _ -> ServerDied
 
 -- | Greet the server, pick the session and its focused pane, and get a
