@@ -77,10 +77,11 @@ void *ghost_shim_decode(bool (*read)(void *, uint8_t *, size_t, size_t *),
     GhosttySnapshotDecoder d = NULL;
     if (ghostty_snapshot_decoder_new(NULL, &d, reader) != GHOSTTY_SUCCESS) return NULL;
     GhosttyTerminal t = NULL;
-    /* As in ghost_shim_clone. */
-    bool retain = true;
-    if (ghostty_snapshot_decoder_set(d, GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
-            &retain) != GHOSTTY_SUCCESS
+    /* The history is only ever read back, if at all, so it is kept
+     * compressed from the start. */
+    bool compress = true;
+    if (ghostty_snapshot_decoder_set(d, GHOSTTY_SNAPSHOT_DECODER_OPT_COMPRESS_HISTORY,
+            &compress) != GHOSTTY_SUCCESS
      || ghostty_snapshot_decoder_decode(d, &t) != GHOSTTY_SUCCESS)
         t = NULL;
     else if (ghostty_snapshot_decoder_get(d, GHOSTTY_SNAPSHOT_DECODER_DATA_SOURCE_OFFSET,

@@ -57,7 +57,9 @@ void  ghost_shim_free(void *t);
  * NULL when it cannot be snapshotted. */
 void *ghost_shim_clone(void *t);
 /* A terminal decoded from one snapshot drawn from a reader, with the count of
- * source bytes the snapshot took, or NULL when it does not decode. */
+ * source bytes the snapshot took, or NULL when it does not decode. It does not
+ * track unfinished input, so ghost_shim_clone fails on it between the halves
+ * of a sequence. */
 void *ghost_shim_decode(bool (*read)(void *, uint8_t *, size_t, size_t *),
                         void *userdata, size_t *consumed);
 /* A reference to the cell at (x, y) under a point tag that follows the cell
