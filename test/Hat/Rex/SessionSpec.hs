@@ -31,10 +31,9 @@ spec = do
         let block n creator = Block { blockId = BlockId n, creatorName = creator }
             terminal n = block n (Just "com.superlogical.terminal")
             window n focused blocks = Window
-                { windowId = WindowId n, label = "", focusedBlock = BlockId <$> focused, blocks }
+                { windowId = WindowId n, focusedBlock = BlockId <$> focused, blocks }
             view active windows = View
-                { revision = 1, sessionId = SessionId "session:1", label = "main"
-                , activeWindow = WindowId <$> active, windows }
+                { activeWindow = WindowId <$> active, windows }
 
         it "is the active window's focused block" $
             focusedPane (view (Just "w2")

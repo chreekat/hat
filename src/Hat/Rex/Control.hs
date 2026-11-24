@@ -2,9 +2,9 @@
 -- control connection, as a client writes and reads them.
 --
 -- Rex owns this format. Fields hat does not act on are ignored, and a
--- message, event or error code hat does not know is carried as unknown
--- rather than refused; a missing or mistyped field hat does act on is a
--- decoding error.
+-- message or event hat does not know is carried as unknown rather than
+-- refused; a missing or mistyped field hat does act on is a decoding
+-- error.
 module Hat.Rex.Control
     ( -- * Revisions
       apiRevision
@@ -21,7 +21,6 @@ module Hat.Rex.Control
     , Welcome (..)
     , checkWelcome
     , Response (..)
-    , RexError (..)
     , Event (..)
     , SessionEvent (..)
     , decodeServerMessage
@@ -104,7 +103,7 @@ dataConnect sid bid = Call
 data ServerMessage
     = WelcomeMessage Welcome
     | ResponseMessage Response
-    | EventMessage Int Event  -- ^ with its @seq@
+    | EventMessage Event
     | UnknownMessage Text     -- ^ a @type@ from a newer server
     deriving (Eq, Show)
 
@@ -116,15 +115,7 @@ data Welcome = Welcome
 
 data Response = Response
     { id :: Text
-    , seq :: Int  -- ^ the last event the result already includes
-    , result :: Either RexError Value
-    }
-    deriving (Eq, Show)
-
-data RexError = RexError
-    { code :: Text
-    , message :: Text
-    , status :: Int
+    , result :: Either Text Value  -- ^ the result, or the server's words for why there is none
     }
     deriving (Eq, Show)
 
@@ -164,19 +155,13 @@ decodeServerMessage bs = first T.pack $
             pure (WelcomeMessage Welcome { protocol, revision })
         "response" -> do
             rid <- o .: "id"
-            sq <- o .: "seq"
             merr <- o .:? "error"
             result <- case merr of
-                Just e -> Left <$> rexError e
+                Just e -> Left <$> withObject "error" (.: "message") e
                 Nothing -> Right . fromMaybe (object []) <$> o .:? "payload"
-            pure (ResponseMessage Response { id = rid, seq = sq, result })
-        "event" -> EventMessage <$> o .: "seq" <*> (o .: "payload" >>= named event)
+            pure (ResponseMessage Response { id = rid, result })
+        "event" -> EventMessage <$> (o .: "payload" >>= named event)
         other -> pure (UnknownMessage other)
-    rexError = withObject "error" $ \o -> do
-        code <- o .: "code"
-        msg <- o .: "message"
-        status <- o .: "status"
-        pure RexError { code, message = msg, status }
     event name o = case name of
         "session_destroyed" -> SessionDestroyed <$> o .: "session_id"
         "session_event" ->
@@ -203,12 +188,12 @@ data SessionEntry = SessionEntry
 -- | The result of 'sessionList', in the server's order.
 decodeSessionList :: Value -> Either Text [SessionEntry]
 decodeSessionList = resultOf "session.list" $ \o -> do
-    sessions <- fromMaybe [] <$> o .: "sessions"
+    sessions <- o .:? "sessions" .!= []
     mapM (withObject "session" entry) sessions
   where
     entry s = do
         sessionId <- s .: "session_id"
-        label <- s .: "label"
+        label <- s .:? "label" .!= ""
         pure SessionEntry { sessionId, label }
 
 -- | The result of 'sessionAttach': the session's view.

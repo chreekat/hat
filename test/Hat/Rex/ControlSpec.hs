@@ -70,14 +70,10 @@ spec = describe "Rex control protocol" $ do
             (decodeSessionList <$> payload "1")
                 `shouldReturn` Right [SessionEntry { sessionId = sid, label = "main" }]
             (decodeAttach <$> payload "2") `shouldReturn` Right View
-                { revision = 1
-                , sessionId = sid
-                , label = "main"
-                , activeWindow = Just wid
+                { activeWindow = Just wid
                 , windows =
                     [ Window
                         { windowId = wid
-                        , label = "main"
                         , focusedBlock = Just bid
                         , blocks = [Block { blockId = bid, creatorName = Just "com.superlogical.terminal" }]
                         } ]
@@ -87,7 +83,7 @@ spec = describe "Rex control protocol" $ do
         it "reads the events that end a session" $ do
             msgs <- transcript "r19"
             let events = [ e | (ServerToClient, v) <- msgs
-                         , Right (EventMessage _ e) <- [decodeValue v] ]
+                         , Right (EventMessage e) <- [decodeValue v] ]
             filter known events `shouldBe`
                 [ SessionEvent sid (BlockClosed bid), SessionDestroyed sid ]
 
@@ -116,11 +112,11 @@ spec = describe "Rex control protocol" $ do
 
         it "carries events it does not know, in or out of a session" $ do
             decodeValue (event "hosts_changed" (object []))
-                `shouldBe` Right (EventMessage 7 (UnknownEvent "hosts_changed"))
+                `shouldBe` Right (EventMessage (UnknownEvent "hosts_changed"))
             decodeValue (event "session_event" (object
                     [ "session_id" .= sid
                     , "event" .= object ["type" .= ("window_created" :: Text), "payload" .= object []] ]))
-                `shouldBe` Right (EventMessage 7 (SessionEvent sid (UnknownSessionEvent "window_created")))
+                `shouldBe` Right (EventMessage (SessionEvent sid (UnknownSessionEvent "window_created")))
 
         it "ignores fields it does not know" $
             decodeValue (object
@@ -128,15 +124,45 @@ spec = describe "Rex control protocol" $ do
                     , "payload" .= object
                         [ "type" .= ("session_destroyed" :: Text)
                         , "payload" .= object ["session_id" .= sid, "why" .= ("x" :: Text)] ] ])
-                `shouldBe` Right (EventMessage 7 (SessionDestroyed sid))
+                `shouldBe` Right (EventMessage (SessionDestroyed sid))
 
-        it "reads a failed request's error, whatever its code" $
-            decodeServerMessage
-                "{\"type\":\"response\",\"id\":\"2\",\"seq\":0,\
-                \\"error\":{\"code\":\"from_the_future\",\"message\":\"no\",\"status\":404}}"
-                `shouldBe` Right (ResponseMessage Response
-                    { id = "2", seq = 0
-                    , result = Left RexError { code = "from_the_future", message = "no", status = 404 } })
+        it "reads a failed request's message, whatever its code" $
+            decodeValue (object
+                    [ "type" .= ("response" :: Text), "id" .= ("2" :: Text), "seq" .= (0 :: Int)
+                    , "error" .= object
+                        [ "code" .= ("from_the_future" :: Text), "message" .= ("no" :: Text)
+                        , "status" .= (404 :: Int) ] ])
+                `shouldBe` Right (ResponseMessage Response { id = "2", result = Left "no" })
+
+        it "needs only the fields hat acts on" $ do
+            decodeValue (object
+                    [ "type" .= ("response" :: Text), "id" .= ("2" :: Text)
+                    , "error" .= object ["message" .= ("no" :: Text)] ])
+                `shouldBe` Right (ResponseMessage Response { id = "2", result = Left "no" })
+            decodeValue (object
+                    [ "type" .= ("event" :: Text)
+                    , "payload" .= object
+                        [ "type" .= ("session_destroyed" :: Text)
+                        , "payload" .= object ["session_id" .= sid] ] ])
+                `shouldBe` Right (EventMessage (SessionDestroyed sid))
+
+        it "takes absent or null lists as empty and an absent label as none" $ do
+            let bare = View
+                    { activeWindow = Nothing
+                    , windows = [Window { windowId = wid, focusedBlock = Nothing, blocks = [] }] }
+            decodeSessionList (object []) `shouldBe` Right []
+            decodeSessionList (object ["sessions" .= Aeson.Null]) `shouldBe` Right []
+            decodeSessionList (object ["sessions" .= [object ["session_id" .= sid]]])
+                `shouldBe` Right [SessionEntry { sessionId = sid, label = "" }]
+            decodeAttach (object ["view" .= object ["windows" .= [object ["window_id" .= wid]]]])
+                `shouldBe` Right bare
+            decodeAttach (object ["view" .= object
+                    [ "windows" .= [object
+                        [ "window_id" .= wid
+                        , "layers" .= [object ["blocks" .= Aeson.Null]] ]] ]])
+                `shouldBe` Right bare
+            decodeAttach (object ["view" .= object []])
+                `shouldBe` Right View { activeWindow = Nothing, windows = [] }
 
         it "refuses a known event missing the field hat acts on" $
             decodeValue (event "session_destroyed" (object [])) `shouldSatisfy` isLeft

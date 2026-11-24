@@ -11,9 +11,8 @@ module Hat.Rex.View
     , terminalCreator
     ) where
 
-import Data.Aeson (FromJSON, ToJSON, Value, withObject, (.:), (.:?))
+import Data.Aeson (FromJSON, ToJSON, Value, withObject, (.!=), (.:), (.:?))
 import Data.Aeson.Types (Parser)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 
 newtype SessionId = SessionId Text
@@ -29,17 +28,13 @@ newtype BlockId = BlockId Text
     deriving newtype (FromJSON, ToJSON)
 
 data View = View
-    { revision :: Int  -- ^ larger is newer, within one session
-    , sessionId :: SessionId
-    , label :: Text
-    , activeWindow :: Maybe WindowId  -- ^ 'Nothing' for a session with no windows
+    { activeWindow :: Maybe WindowId  -- ^ 'Nothing' for a session with no windows
     , windows :: [Window]
     }
     deriving (Eq, Show)
 
 data Window = Window
     { windowId :: WindowId
-    , label :: Text
     , focusedBlock :: Maybe BlockId
     , blocks :: [Block]  -- ^ of every layer, back to front
     }
@@ -59,25 +54,21 @@ terminalCreator = "com.superlogical.terminal"
 -- or null list is empty.
 parseView :: Value -> Parser View
 parseView = withObject "view" $ \o -> do
-    revision <- o .: "revision"
-    sessionId <- o .: "session_id"
-    label <- fromMaybe "" <$> o .:? "label"
     activeWindow <- o .:? "active_window_id"
-    windows <- mapM parseWindow . fromMaybe [] =<< o .:? "windows"
-    pure View { revision, sessionId, label, activeWindow, windows }
+    windows <- mapM parseWindow =<< o .:? "windows" .!= []
+    pure View { activeWindow, windows }
 
 parseWindow :: Value -> Parser Window
 parseWindow = withObject "window" $ \o -> do
     windowId <- o .: "window_id"
-    label <- fromMaybe "" <$> o .:? "label"
     focusedBlock <- o .:? "focused_block_id"
-    layers <- fromMaybe [] <$> o .: "layers"
+    layers <- o .:? "layers" .!= []
     blocks <- concat <$> mapM parseLayerBlocks layers
-    pure Window { windowId, label, focusedBlock, blocks }
+    pure Window { windowId, focusedBlock, blocks }
 
 parseLayerBlocks :: Value -> Parser [Block]
 parseLayerBlocks = withObject "layer" $ \o ->
-    mapM parseBlock . fromMaybe [] =<< o .: "blocks"
+    mapM parseBlock =<< o .:? "blocks" .!= []
 
 parseBlock :: Value -> Parser Block
 parseBlock = withObject "block" $ \o -> do

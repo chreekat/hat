@@ -182,7 +182,7 @@ attachPane control wanted = do
         next = recvControl control >>= \case
             GotText bs -> case decodeServerMessage bs of
                 Left e -> pure (Left (refuse ("unreadable Rex message: " <> e)))
-                Right (EventMessage _ ev) -> modifyIORef' early (ev :) >> next
+                Right (EventMessage ev) -> modifyIORef' early (ev :) >> next
                 Right (UnknownMessage _) -> next
                 Right msg -> pure (Right msg)
             GotBinary _ -> next
@@ -192,7 +192,7 @@ attachPane control wanted = do
             sendControl control (request n c)
             let await = next >>= \case
                     Right (ResponseMessage r) | r.id == T.pack (show n) -> pure $ case r.result of
-                        Left err -> Left (refuse (c.method <> ": " <> err.message))
+                        Left why -> Left (refuse (c.method <> ": " <> why))
                         Right v -> either (Left . refuse . ((c.method <> ": ") <>)) Right (decode v)
                     Right _ -> await
                     Left e -> pure (Left e)
@@ -287,7 +287,7 @@ showPane dialect control sid bid early nextStream nonce emu leftover = do
             [] -> recvControl control >>= \case
                 GotText bs -> case decodeServerMessage bs of
                     Left e -> pure (refuse ("unreadable Rex message: " <> e))
-                    Right (EventMessage _ ev) -> events [ev]
+                    Right (EventMessage ev) -> events [ev]
                     Right _ -> events []
                 GotBinary _ -> events []
                 other -> pure (ended other)
