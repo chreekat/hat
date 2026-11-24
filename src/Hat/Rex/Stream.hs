@@ -13,7 +13,8 @@ import Data.Aeson (eitherDecodeStrict, withObject, (.:))
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
-import Data.ByteString.Char8 qualified as B8
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Word (Word16)
@@ -52,7 +53,8 @@ maxMessageBytes = 1024 * 1024
 splitRex :: Nonce -> Carry -> ByteString -> (Carry, [Piece])
 splitRex (Nonce nonce) (Carry carried) chunk = go (carried <> chunk)
   where
-    marker = "\ESC_rex1;" <> B8.pack (show nonce) <> ";"
+    marker = BL.toStrict . BB.toLazyByteString $
+        "\ESC_rex1;" <> BB.word64Dec nonce <> ";"
     go buf = case B.breakSubstring marker buf of
         (before, rest)
             | B.null rest ->

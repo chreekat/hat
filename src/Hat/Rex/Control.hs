@@ -13,6 +13,7 @@ module Hat.Rex.Control
     , hello
     , Call (..)
     , request
+    , requestId
     , sessionList
     , sessionAttach
     , dataConnect
@@ -38,6 +39,9 @@ import Data.ByteString (ByteString)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Lazy qualified as TL
+import Data.Text.Lazy.Builder qualified as TB
+import Data.Text.Lazy.Builder.Int qualified as TB
 
 import Hat.Rex.View
 
@@ -71,11 +75,15 @@ data Call = Call
     }
     deriving (Eq, Show)
 
--- | A call as the request with the given number for its id.
+-- | The id of the request with the given number: the number in decimal.
+requestId :: Int -> Text
+requestId = TL.toStrict . TB.toLazyText . TB.decimal
+
+-- | A call as the request with the given number.
 request :: Int -> Call -> Value
 request n call = object $
     [ "type" .= ("request" :: Text)
-    , "id" .= T.pack (show n)
+    , "id" .= requestId n
     , "method" .= call.method
     ] <> maybe [] (\p -> ["payload" .= p]) call.payload
 

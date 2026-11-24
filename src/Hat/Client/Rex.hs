@@ -201,7 +201,7 @@ attachPane control wanted = do
         call n c decode = do
             sendControl control (request n c)
             let await = next >>= \case
-                    Right (ResponseMessage r) | r.id == T.pack (show n) -> pure $ case r.result of
+                    Right (ResponseMessage r) | r.id == requestId n -> pure $ case r.result of
                         Left why -> Left (refuse (c.method <> ": " <> why))
                         Right v -> either (Left . refuse . ((c.method <> ": ") <>)) Right (decode v)
                     Right _ -> await
