@@ -26,7 +26,9 @@ import GHC.Foreign qualified as GHC
 import GHC.IO.Encoding (getFileSystemEncoding)
 import Network.Socket (Socket, close)
 import System.Environment (lookupEnv)
-import System.IO (stdin, stdout)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>))
+import System.IO (BufferMode (NoBuffering), IOMode (WriteMode), hSetBuffering, stdin, stdout, withBinaryFile)
 import System.Info (os)
 import System.Posix.IO (stdInput, stdOutput)
 import System.Posix.Signals (Handler (Catch), installHandler)
@@ -42,7 +44,8 @@ import Hat.Rex.Control
 import Hat.Rex.Data
 import Hat.Rex.Session
 import Hat.Rex.Stream
-import Hat.Rex.View (BlockId, SessionId)
+import Hat.Rex.Log
+import Hat.Rex.View (BlockId (..), SessionId)
 import Hat.Server.Render (composeFrame, diffFrame, fullRedraw)
 import Hat.Server.View (framePeriod)
 import Hat.Term.Caps (createTerm)
@@ -73,11 +76,67 @@ runRexAttach target = do
         Nothing -> localDialect `andThen` \dialect -> do
             enc <- getFileSystemEncoding
             path <- B.useAsCStringLen target.socket (GHC.peekCStringLen enc)
-            withConnection path "/api/control" "rex.control.v1" $ \control ->
+            logDir <- lookupEnv "HAT_REX_LOG"
+            withLog logDir "control.jsonl" $ \controlLog ->
+                withConnection path "/api/control" "rex.control.v1" $ \ws -> do
+                let control = Logged
+                        { conn = ws
+                        , record = \dir -> controlLog . controlLine dir }
                 attachPane control target.session `andThen` \(sid, bid, ticket, early) ->
-                withConnection path "/api/data" "rex.data.terminal.v1" $ \stream ->
-                    openStream stream ticket `andThen` \(nonce, emu, leftover) ->
-                        showPane dialect control sid bid early stream nonce emu leftover
+                    withLog logDir (streamLogName bid) $ \streamLog ->
+                    withConnection path "/api/data" "rex.data.terminal.v1" $ \stream ->
+                    openStream stream streamLog ticket `andThen` \(nonce, emu, leftover) ->
+                        showPane dialect control sid bid early
+                            (recvStream stream streamLog) nonce emu leftover
+
+-- | A control connection, and where its messages are recorded.
+data Logged = Logged
+    { conn :: WsConn
+    , record :: Direction -> ByteString -> IO ()
+    }
+
+-- | Send one control message.
+sendControl :: Logged -> Value -> IO ()
+sendControl c v = do
+    let bs = BL.toStrict (Aeson.encode v)
+    c.record ClientToServer bs
+    sendText c.conn bs
+
+-- | The next thing from the control connection.
+recvControl :: Logged -> IO Received
+recvControl c = do
+    r <- recvMessage c.conn
+    case r of
+        GotText bs -> c.record ServerToClient bs
+        _ -> pure ()
+    pure r
+
+-- | The next thing from a pane's stream after its handshake, its bytes
+-- recorded.
+recvStream :: WsConn -> (ByteString -> IO ()) -> IO Received
+recvStream stream record = do
+    r <- recvMessage stream
+    case r of
+        GotBinary bs -> record bs
+        _ -> pure ()
+    pure r
+
+-- | Run with a writer to a file of the directory @HAT_REX_LOG@ names; with
+-- no directory the writer does nothing.
+withLog :: Maybe FilePath -> FilePath -> ((ByteString -> IO ()) -> IO a) -> IO a
+withLog mdir name body = case mdir of
+    Nothing -> body (\_ -> pure ())
+    Just dir -> do
+        createDirectoryIfMissing True dir
+        withBinaryFile (dir </> name) WriteMode $ \h -> do
+            hSetBuffering h NoBuffering
+            body (B.hPut h)
+
+-- | The file a pane's stream is recorded in.
+streamLogName :: BlockId -> FilePath
+streamLogName (BlockId bid) = "stream-" <> map safe (T.unpack bid) <> ".bin"
+  where
+    safe c = if c == ':' || c == '/' then '-' else c
 
 -- | How this terminal is drawn to, from its terminfo entry alone.
 localDialect :: Attempt Dialect
@@ -116,11 +175,11 @@ ended = \case
 -- | Greet the server, pick the session and its focused pane, and get a
 -- ticket for the pane's stream. Also gives the events that arrived on the
 -- way, oldest first.
-attachPane :: WsConn -> Maybe Text -> Attempt (SessionId, BlockId, Ticket, [Event])
+attachPane :: Logged -> Maybe Text -> Attempt (SessionId, BlockId, Ticket, [Event])
 attachPane control wanted = do
     early <- newIORef []
     let -- The next message that is not an event; events are kept.
-        next = recvMessage control >>= \case
+        next = recvControl control >>= \case
             GotText bs -> case decodeServerMessage bs of
                 Left e -> pure (Left (refuse ("unreadable Rex message: " <> e)))
                 Right (EventMessage _ ev) -> modifyIORef' early (ev :) >> next
@@ -130,7 +189,7 @@ attachPane control wanted = do
             other -> pure (Left (ended other))
         call :: Int -> Call -> (Value -> Either Text a) -> Attempt a
         call n c decode = do
-            sendText control (BL.toStrict (Aeson.encode (request n c)))
+            sendControl control (request n c)
             let await = next >>= \case
                     Right (ResponseMessage r) | r.id == T.pack (show n) -> pure $ case r.result of
                         Left err -> Left (refuse (c.method <> ": " <> err.message))
@@ -141,7 +200,7 @@ attachPane control wanted = do
         orEnd :: Attempt a -> (a -> Attempt b) -> Attempt b
         orEnd attempt k = attempt >>= either (pure . Left) k
         checked = either (Left . refuse) Right
-    sendText control (BL.toStrict (Aeson.encode (hello platform)))
+    sendControl control (hello platform)
     next `orEnd` \case
         WelcomeMessage w | Right () <- checkWelcome w ->
             call 1 sessionList decodeSessionList `orEnd` \sessions ->
@@ -164,8 +223,8 @@ attachPane control wanted = do
 -- | Open a pane's stream with its ticket and decode the snapshot at its
 -- head: the channel nonce, the pane's terminal, and the stream bytes
 -- already read past the snapshot.
-openStream :: WsConn -> Ticket -> Attempt (Nonce, Emulator, ByteString)
-openStream stream ticket = do
+openStream :: WsConn -> (ByteString -> IO ()) -> Ticket -> Attempt (Nonce, Emulator, ByteString)
+openStream stream record ticket = do
     sendBinary stream (encodeHello ticket)
     recvMessage stream >>= \case
         GotBinary reply -> case decodeHandshakeReply reply of
@@ -173,7 +232,7 @@ openStream stream ticket = do
             Right (DataReject why) -> pure (Left (refuse (rejectText why)))
             Right (DataWelcome nonce) -> do
                 end <- newIORef Nothing
-                let chunk = recvMessage stream >>= \case
+                let chunk = recvStream stream record >>= \case
                         GotBinary bs | B.null bs -> chunk
                                      | otherwise -> pure bs
                         GotText _ -> chunk
@@ -198,9 +257,9 @@ streamOutcome = \case
 -- | Draw the pane over the whole terminal and follow its stream until
 -- something ends the attach.
 showPane
-    :: Dialect -> WsConn -> SessionId -> BlockId -> [Event]
-    -> WsConn -> Nonce -> Emulator -> ByteString -> IO ExitReason
-showPane dialect control sid bid early stream nonce emu leftover = do
+    :: Dialect -> Logged -> SessionId -> BlockId -> [Event]
+    -> IO Received -> Nonce -> Emulator -> ByteString -> IO ExitReason
+showPane dialect control sid bid early nextStream nonce emu leftover = do
     size <- newTVarIO =<< ttySize
     -- Bumped by whatever changes what a frame would show.
     dirty <- newTVarIO (1 :: Int)
@@ -218,14 +277,14 @@ showPane dialect control sid bid early stream nonce emu leftover = do
                 StreamError e -> writeIORef failure (Just e)
             atomically touch
             maybe (Right carry') Left <$> readIORef failure
-        follow carry = recvMessage stream >>= \case
+        follow carry = nextStream >>= \case
             GotBinary bs -> mirror carry bs >>= either (pure . refuse) follow
             GotText _ -> follow carry
             other -> pure (streamOutcome other)
         events = \case
             ev : _ | endsAttach sid bid ev -> pure SessionEnded
             _ : rest -> events rest
-            [] -> recvMessage control >>= \case
+            [] -> recvControl control >>= \case
                 GotText bs -> case decodeServerMessage bs of
                     Left e -> pure (refuse ("unreadable Rex message: " <> e))
                     Right (EventMessage _ ev) -> events [ev]

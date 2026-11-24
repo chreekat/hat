@@ -26,6 +26,7 @@ import Hat.PathSpec qualified
 import Hat.Rex.ConnSpec qualified
 import Hat.Rex.ControlSpec qualified
 import Hat.Rex.DataSpec qualified
+import Hat.Rex.LogSpec qualified
 import Hat.Rex.ReplaySpec qualified
 import Hat.Rex.SessionSpec qualified
 import Hat.Client.RexSpec qualified
@@ -205,6 +206,7 @@ main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     describe "Hat.Rex.Conn" Hat.Rex.ConnSpec.spec
     describe "Hat.Rex.Control" Hat.Rex.ControlSpec.spec
     describe "Hat.Rex.Data" Hat.Rex.DataSpec.spec
+    describe "Hat.Rex.Log" Hat.Rex.LogSpec.spec
     describe "Hat.Rex.Replay" Hat.Rex.ReplaySpec.spec
     describe "Hat.Rex.Session" Hat.Rex.SessionSpec.spec
     describe "Hat.Client.Rex" Hat.Client.RexSpec.spec

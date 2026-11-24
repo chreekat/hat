@@ -105,6 +105,7 @@ library
         Hat.Rex.Conn
         Hat.Rex.Control
         Hat.Rex.Data
+        Hat.Rex.Log
         Hat.Rex.Session
         Hat.Rex.Stream
         Hat.Rex.View
@@ -360,6 +361,7 @@ test-suite hat-test
         Hat.Rex.ConnSpec
         Hat.Rex.ControlSpec
         Hat.Rex.DataSpec
+        Hat.Rex.LogSpec
         Hat.Rex.ReplaySpec
         Hat.Rex.SessionSpec
         Hat.Rex.StreamSpec
