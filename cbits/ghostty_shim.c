@@ -71,6 +71,27 @@ void *ghost_shim_clone(void *t) {
     return c;
 }
 
+void *ghost_shim_decode(bool (*read)(void *, uint8_t *, size_t, size_t *),
+                        void *userdata, size_t *consumed) {
+    GhosttyReader reader = { .read = read, .userdata = userdata };
+    GhosttySnapshotDecoder d = NULL;
+    if (ghostty_snapshot_decoder_new(NULL, &d, reader) != GHOSTTY_SUCCESS) return NULL;
+    GhosttyTerminal t = NULL;
+    /* As in ghost_shim_clone. */
+    bool retain = true;
+    if (ghostty_snapshot_decoder_set(d, GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+            &retain) != GHOSTTY_SUCCESS
+     || ghostty_snapshot_decoder_decode(d, &t) != GHOSTTY_SUCCESS)
+        t = NULL;
+    else if (ghostty_snapshot_decoder_get(d, GHOSTTY_SNAPSHOT_DECODER_DATA_SOURCE_OFFSET,
+            consumed) != GHOSTTY_SUCCESS) {
+        ghostty_terminal_free(t);
+        t = NULL;
+    }
+    ghostty_snapshot_decoder_free(d);
+    return t;
+}
+
 void ghost_shim_free(void *t) {
     ghostty_terminal_free((GhosttyTerminal)t);
 }

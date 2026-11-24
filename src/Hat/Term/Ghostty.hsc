@@ -7,6 +7,9 @@ module Hat.Term.Ghostty
     , CRender
     , c_new
     , c_clone
+    , c_decode
+    , ReaderFn
+    , wrapReader
     , CTracked
     , c_track
     , c_tracked_at
@@ -88,6 +91,12 @@ foreign import ccall unsafe "ghost_shim_new"
     c_new :: CUShort -> CUShort -> CSize -> IO (Ptr CTerm)
 foreign import ccall safe "ghost_shim_clone"
     c_clone :: Ptr CTerm -> IO (Ptr CTerm)
+-- | A source of snapshot bytes: fill up to the capacity and store the count,
+-- zero meaning the end; false for a read error.
+type ReaderFn = Ptr () -> Ptr Word8 -> CSize -> Ptr CSize -> IO CBool
+foreign import ccall "wrapper" wrapReader :: ReaderFn -> IO (FunPtr ReaderFn)
+foreign import ccall safe "ghost_shim_decode"
+    c_decode :: FunPtr ReaderFn -> Ptr () -> Ptr CSize -> IO (Ptr CTerm)
 -- | A libghostty tracked grid reference; see 'c_track'.
 data CTracked
 foreign import ccall unsafe "ghost_shim_track"

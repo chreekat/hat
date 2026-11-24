@@ -25,6 +25,9 @@ import Hat.LogSpec qualified
 import Hat.PathSpec qualified
 import Hat.Rex.ConnSpec qualified
 import Hat.Rex.ControlSpec qualified
+import Hat.Rex.DataSpec qualified
+import Hat.Rex.ReplaySpec qualified
+import Hat.Rex.StreamSpec qualified
 import Hat.Model.PasteBuffersSpec qualified
 import Hat.Server.PersistSpec qualified
 import Hat.Server.FlashSpec qualified
@@ -199,3 +202,6 @@ main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     describe "Hat.Server.Floating" Hat.Server.FloatingSpec.spec
     describe "Hat.Rex.Conn" Hat.Rex.ConnSpec.spec
     describe "Hat.Rex.Control" Hat.Rex.ControlSpec.spec
+    describe "Hat.Rex.Data" Hat.Rex.DataSpec.spec
+    describe "Hat.Rex.Replay" Hat.Rex.ReplaySpec.spec
+    describe "Hat.Rex.Stream" Hat.Rex.StreamSpec.spec

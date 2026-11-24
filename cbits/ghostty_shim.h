@@ -1,6 +1,7 @@
 #ifndef GHOSTTY_SHIM_H
 #define GHOSTTY_SHIM_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -55,6 +56,10 @@ void  ghost_shim_free(void *t);
 /* An independent copy of the terminal (its screens, history and state), or
  * NULL when it cannot be snapshotted. */
 void *ghost_shim_clone(void *t);
+/* A terminal decoded from one snapshot drawn from a reader, with the count of
+ * source bytes the snapshot took, or NULL when it does not decode. */
+void *ghost_shim_decode(bool (*read)(void *, uint8_t *, size_t, size_t *),
+                        void *userdata, size_t *consumed);
 /* A reference to the cell at (x, y) under a point tag that follows the cell
  * through the terminal's later changes (a resize's reflow), or NULL. Free it
  * with ghost_shim_untrack. */

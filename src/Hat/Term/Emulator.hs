@@ -30,6 +30,8 @@ module Hat.Term.Emulator
     , decModeReplayBytes
     , decModes
     , newEmulator
+    , fromSnapshot
+    , feedMirror
     , clone
     , repaintedCopy
     , feed
@@ -85,8 +87,10 @@ module Hat.Term.Emulator
     , cursorPendingWrap
     ) where
 
+import Control.Concurrent.Async (wait, waitSTM, withAsync)
 import Control.Concurrent.MVar
-import Control.Exception (bracket, evaluate, finally)
+import Control.Concurrent.STM
+import Control.Exception (bracket, evaluate, finally, mask_, onException)
 import Control.Monad (filterM, forM, unless, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
@@ -261,20 +265,103 @@ newEmulator sz limit = do
         budget = max 65536 (fromIntegral limit * perRow) :: CSize
     t <- c_new (fromIntegral sz.cols) (fromIntegral sz.rows) budget
     if t == nullPtr then error "ghostty_terminal_new failed" else pure ()
-    wrapTerminal t (newHistory limit) EmulatorState
-        { colorSub = False
-        , cursorModel = defaultCursorModel
-        , title = ""
-        , titles = []
-        , keyRequest = 0
-        , policy = defaultHostPolicy
-        , passthrough = Outside ""
-        , hostCarry = HostCarry ""
-        , output = []
-        , events = []
-        }
+    wrapTerminal t (newHistory limit) freshState
         PaletteDefaults { builtin = Nothing, applied = Map.empty }
         noColours
+
+-- | The Haskell-side state of a terminal nothing has been fed to.
+freshState :: EmulatorState
+freshState = EmulatorState
+    { colorSub = False
+    , cursorModel = defaultCursorModel
+    , title = ""
+    , titles = []
+    , keyRequest = 0
+    , policy = defaultHostPolicy
+    , passthrough = Outside ""
+    , hostCarry = HostCarry ""
+    , output = []
+    , events = []
+    }
+
+-- | An emulator born from a libghostty snapshot at the head of a byte
+-- stream, for mirroring a terminal that lives elsewhere ('feedMirror').
+-- Takes the history limit and an action yielding the stream's next chunk,
+-- empty at its end; gives the emulator and the bytes already read past the
+-- snapshot. The snapshot's length is the decoder's to find, so a stream
+-- that ends or goes wrong inside it is a 'Left'. The Haskell-side state
+-- starts fresh: a snapshot carries none of it.
+fromSnapshot :: Int -> IO ByteString -> IO (Either Text (Emulator, ByteString))
+fromSnapshot limit nextChunk = do
+    wanted <- newEmptyTMVarIO     -- the decoder is out of bytes
+    supplied <- newEmptyTMVarIO   -- its next chunk
+    abandoned <- newTVarIO False
+    pending <- newIORef B.empty   -- supplied, not yet handed to the decoder
+    handed <- newIORef (0 :: Int)
+    -- Runs inside the decoder's foreign call, so it waits only in STM: the
+    -- stream itself is read by the calling thread, which stays cancellable.
+    let reader _ buf cap outRead = do
+            have <- readIORef pending
+            chunk <- if not (B.null have) then pure (Just have) else do
+                atomically (putTMVar wanted ())
+                atomically $ (Just <$> takeTMVar supplied)
+                    `orElse` (readTVar abandoned >>= check >> pure Nothing)
+            case chunk of
+                Nothing -> pure 0
+                Just c -> do
+                    let (now, later) = B.splitAt (fromIntegral cap) c
+                    BU.unsafeUseAsCStringLen now $ \(p, n) -> copyBytes buf (castPtr p) n
+                    poke outRead (fromIntegral (B.length now))
+                    writeIORef pending later
+                    modifyIORef' handed (+ B.length now)
+                    pure 1
+        decode = bracket (wrapReader reader) freeHaskellFunPtr $ \fn ->
+            alloca $ \consumedP -> do
+                t <- c_decode fn nullPtr consumedP
+                (t,) . fromIntegral <$> (if t == nullPtr then pure 0 else peek consumedP)
+        -- Supply chunks until the decoder is done, keeping what was supplied.
+        serve worker chunks = do
+            next <- atomically $
+                (Left <$> waitSTM worker) `orElse` (Right <$> takeTMVar wanted)
+            case next of
+                Left done -> pure (done, reverse chunks)
+                Right () -> do
+                    c <- nextChunk
+                    atomically (putTMVar supplied c)
+                    serve worker (c : chunks)
+        giveUp worker = do
+            atomically (writeTVar abandoned True)
+            (t, _) <- wait worker
+            unless (t == nullPtr) (c_free t)
+    withAsync decode $ \worker -> do
+        ((t, consumed), chunks) <- serve worker [] `onException` giveUp worker
+        given <- readIORef handed
+        if | t == nullPtr && any B.null chunks ->
+               pure (Left "the terminal stream ended inside its snapshot")
+           | t == nullPtr ->
+               pure (Left "libghostty-vt cannot decode the terminal's snapshot")
+           | consumed > given -> do
+               c_free t
+               pure (Left "the snapshot decoder read past the bytes it was given")
+           | otherwise -> mask_ $ do
+               e <- wrapTerminal t (newHistory limit) freshState
+                   PaletteDefaults { builtin = Nothing, applied = Map.empty }
+                   noColours
+               alt <- c_get t dataActiveScreen
+               if alt == screenAlternate
+                   then modifyIORef' e.history (\h -> h { primary = ResizedUnseen })
+                   else holdAllHistory e t
+               pure (Right (e, B.drop consumed (B.concat chunks)))
+
+-- | Feed a mirrored terminal's output as it is: no host-protocol scrubbing,
+-- and whatever the terminal would answer is dropped, since the terminal
+-- being mirrored has answered its program already.
+feedMirror :: Emulator -> ByteString -> IO ()
+feedMirror e bs = withMVar e.lock $ \_ -> withForeignPtr e.term $ \t -> do
+    noteColourBytes e bs
+    feedBytes t bs
+    reconcileHistory e t
+    modifyIORef' e.state $ \s -> s { output = [], events = [] }
 
 -- | An independent copy of the emulator as it stands: the same grid, history
 -- and state, which later output to either never reaches the other.
