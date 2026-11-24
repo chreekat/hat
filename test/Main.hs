@@ -24,6 +24,7 @@ import Hat.IntegrationSpec qualified
 import Hat.LogSpec qualified
 import Hat.PathSpec qualified
 import Hat.Rex.ConnSpec qualified
+import Hat.Rex.ControlSpec qualified
 import Hat.Model.PasteBuffersSpec qualified
 import Hat.Server.PersistSpec qualified
 import Hat.Server.FlashSpec qualified
@@ -197,3 +198,4 @@ main = withWatchdog 90 $ hspec $ labelItems $ parallel $ do
     describe "Hat.Server.Flash" Hat.Server.FlashSpec.spec
     describe "Hat.Server.Floating" Hat.Server.FloatingSpec.spec
     describe "Hat.Rex.Conn" Hat.Rex.ConnSpec.spec
+    describe "Hat.Rex.Control" Hat.Rex.ControlSpec.spec

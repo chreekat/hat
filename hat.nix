@@ -21,9 +21,9 @@ mkDerivation {
     unix vector
   ];
   testHaskellDepends = [
-    async base bytestring cborg containers directory filepath hspec
-    hspec-core HUnit network process QuickCheck serialise sqlite-simple
-    stm text time unix vector
+    aeson async base bytestring cborg containers directory filepath
+    hspec hspec-core HUnit network process QuickCheck serialise
+    sqlite-simple stm text time unix vector
   ];
   benchmarkHaskellDepends = [ base directory process unix ];
   description = "A terminal multiplexer";

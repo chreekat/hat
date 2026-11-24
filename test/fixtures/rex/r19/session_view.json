@@ -1,0 +1,43 @@
+{
+ "revision": 1,
+ "session_id": "session:01a20ce8-6af3-7b3f-a1bf-df8bdbcacd8a",
+ "label": "main",
+ "active_window_id": "window:01a20ce8-6b00-78ef-aad9-c75ce0d97b15",
+ "windows": [
+  {
+   "window_id": "window:01a20ce8-6b00-78ef-aad9-c75ce0d97b15",
+   "label": "main",
+   "focused_block_id": "block:01a20ce8-6af4-76be-aecf-6211a916db8d",
+   "layers": [
+    {
+     "layer_id": "layer:01a20ce8-6b00-790a-9ae0-a2e4e51df831",
+     "kind": "tiled",
+     "bounds": [
+      0,
+      0,
+      1,
+      1
+     ],
+     "layout": {
+      "rect": [
+       0,
+       0,
+       1,
+       1
+      ],
+      "block_id": "block:01a20ce8-6af4-76be-aecf-6211a916db8d"
+     },
+     "blocks": [
+      {
+       "block_id": "block:01a20ce8-6af4-76be-aecf-6211a916db8d",
+       "label": "shell",
+       "creator_name": "com.superlogical.terminal",
+       "flavor": "com.superlogical.terminal.shell",
+       "host_id": "6d5cbc46-c611-4d6e-989d-e9e056ae7ff9"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

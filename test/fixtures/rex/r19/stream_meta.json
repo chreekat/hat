@@ -1,0 +1,24 @@
+{
+ "nonce": 4554578536633190305,
+ "retention_ms": 60000,
+ "snapshot_len": 1159,
+ "after_snapshot_and_prompt": 1276,
+ "after_printf": 1370,
+ "frames": [
+  [
+   "bin",
+   0,
+   1276
+  ],
+  [
+   "bin",
+   1276,
+   94
+  ],
+  [
+   "close",
+   4000,
+   "block closed"
+  ]
+ ]
+}

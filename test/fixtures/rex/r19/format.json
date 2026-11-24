@@ -1,0 +1,3 @@
+{
+ "content": "$ printf '\\033[31mred\\033[0m hello-from-hat\\n'\nred hello-from-hat\n$ "
+}

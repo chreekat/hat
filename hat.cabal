@@ -101,6 +101,8 @@ library
         Hat.Path
         Hat.PtrEq
         Hat.Rex.Conn
+        Hat.Rex.Control
+        Hat.Rex.View
         Hat.Server
         Hat.Server.Alerts
         Hat.Server.ArgNumber
@@ -350,6 +352,7 @@ test-suite hat-test
         Hat.LogSpec
         Hat.PathSpec
         Hat.Rex.ConnSpec
+        Hat.Rex.ControlSpec
         Hat.Model.PasteBuffersSpec
         Hat.Server.PersistSpec
         Hat.TestSupport
@@ -422,6 +425,7 @@ test-suite hat-test
         Hat.Watchdog
     ghc-options:        -threaded -with-rtsopts=-N
     build-depends:
+        aeson       ^>= 2.2.3.0,
         async       ^>= 2.2.6,
         base        ^>= 4.20.2.0,
         bytestring  ^>= 0.12.2.0,
