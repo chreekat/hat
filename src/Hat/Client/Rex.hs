@@ -13,7 +13,6 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
 import Control.Exception (bracket, bracket_, finally)
-import Control.Monad (forM_)
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
@@ -45,8 +44,9 @@ import Hat.Rex.Conn
 import Hat.Rex.Control
 import Hat.Rex.Data
 import Hat.Rex.Session
-import Hat.Rex.Stream
+import Hat.Rex.Stream (noCarry)
 import Hat.Rex.Log
+import Hat.Rex.Mirror (mirrorChunk)
 import Hat.Rex.View (BlockId (..), SessionId)
 import Hat.Server.Render (composeFrame, diffFrame, fullRedraw)
 import Hat.Server.View (framePeriod)
@@ -277,16 +277,7 @@ showPane dialect control sid bid early nextStream nonce emu leftover = do
         onWinch = Catch $ do
             sz <- ttySize
             atomically (writeTVar size sz >> touch)
-        mirror carry bs = do
-            let (carry', pieces) = splitRex nonce carry bs
-            failure <- newIORef Nothing
-            forM_ pieces $ \case
-                TermBytes t -> Emu.feedMirror emu t
-                RexMessage (Resize sz) -> Emu.resize emu sz
-                RexMessage (UnknownStreamMessage _) -> pure ()
-                StreamError e -> writeIORef failure (Just e)
-            atomically touch
-            maybe (Right carry') Left <$> readIORef failure
+        mirror carry bs = mirrorChunk nonce emu carry bs <* atomically touch
         follow carry = nextStream >>= \case
             GotBinary bs -> mirror carry bs >>= either (pure . refuse) follow
             GotText _ -> follow carry

@@ -106,6 +106,7 @@ library
         Hat.Rex.Control
         Hat.Rex.Data
         Hat.Rex.Log
+        Hat.Rex.Mirror
         Hat.Rex.Session
         Hat.Rex.Stream
         Hat.Rex.View

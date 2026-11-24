@@ -14,7 +14,8 @@ import Test.Hspec
 
 import Hat.Geometry (Size (..))
 import Hat.Rex.Data (Nonce (..))
-import Hat.Rex.Stream
+import Hat.Rex.Mirror (mirrorChunk)
+import Hat.Rex.Stream (noCarry)
 import Hat.Term.Emulator
 
 -- | An action yielding these chunks in turn, then the end of the stream.
@@ -37,24 +38,18 @@ screenLines e = do
     scr <- snapshot e
     pure (dropWhileEnd T.null [ T.stripEnd (screenRowText scr r) | r <- [0 .. fromIntegral scr.size.rows - 1] ])
 
--- | Mirror a whole stream: the snapshot, then every piece in order.
+-- | Mirror a whole stream: the snapshot, then every chunk in order.
 mirror :: Nonce -> [ByteString] -> IO (Either Text Emulator)
 mirror nonce chunks = do
     next <- chunked chunks
     fromSnapshot 2000 next >>= \case
         Left e -> pure (Left e)
         Right (emu, leftover) -> do
-            let step carry bs = do
-                    let (carry', ps) = splitRex nonce carry bs
-                    forM_ ps $ \case
-                        TermBytes t -> feedMirror emu t
-                        RexMessage (Resize sz) -> resize emu sz
-                        RexMessage (UnknownStreamMessage _) -> pure ()
-                        StreamError err -> expectationFailure (T.unpack err)
-                    pure carry'
-                loop carry = next >>= \c ->
-                    if B.null c then pure () else step carry c >>= loop
-            Right emu <$ (step noCarry leftover >>= loop)
+            let follow carry bs = mirrorChunk nonce emu carry bs >>= \case
+                    Left e -> pure (Left e)
+                    Right carry' -> next >>= \c ->
+                        if B.null c then pure (Right emu) else follow carry' c
+            follow noCarry leftover
 
 spec :: Spec
 spec = describe "Rex stream replay (revision 19 capture)" $ do
@@ -91,6 +86,14 @@ spec = describe "Rex stream replay (revision 19 capture)" $ do
         next <- chunked [B.replicate 4096 0x41]
         r <- fromSnapshot 2000 next
         fmap (const ()) r `shouldSatisfy` isLeft
+
+    it "stops at a Rex message it cannot read, having applied what came before" $ do
+        stream <- fixture "stream.bin"
+        Right emu <- mirror nonce (frames stream)
+        r <- mirrorChunk nonce emu noCarry
+            "seen\ESC_rex1;4554578536633190305;{\"type\":\"resize\"}\ESC\\unseen"
+        fmap (const ()) r `shouldSatisfy` isLeft
+        last <$> screenLines emu `shouldReturn` "$ seen"
 
     it "starts a snapshot-born terminal with no title and nothing to answer" $ do
         stream <- fixture "stream.bin"
