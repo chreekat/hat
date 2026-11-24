@@ -17,9 +17,18 @@ right now. LLMs mean we can all scratch our own itches. Let's go!]
 
 **Alpha, and daily-driven.** Hat has been its author's only multiplexer since
 the first week of development, so it is heavily dog-fooded — but by one
-person, against one `tmux.conf`. The current scope is literally that config (see
-[FEATURES.md](FEATURES.md)): everything it uses works, and much of tmux beyond
-it does too. What's still missing is listed under [Rough edges](#rough-edges).
+person. It began as "whatever one `tmux.conf` needs"
+([FEATURES.md](FEATURES.md) is that original list) and has since grown to
+cover most of tmux: its option table, its default key bindings, mouse, menus,
+popups, floating panes, and control mode. What's still missing is listed under
+[Rough edges](#rough-edges).
+
+**Where it is going.** The experiment is over and Hat stays. The aim now is a
+multiplexer other people might want:
+
+1. A drop-in replacement for tmux, for any config and not just the author's.
+2. Documentation of its own.
+3. Performance within 20% of tmux on any benchmark. It is not there yet.
 
 **Written by an agent.** About 99% of the code was written by a coding agent.
 The author supplied the features wanted, the architecture and testing
@@ -34,13 +43,12 @@ typed, scrollback lines carried across a restart), so a regression shows up the
 same on any machine. Nonetheless, if LLM-written code is a dealbreaker for you,
 this is not your multiplexer.
 
-> [!WARNING]
-> While updating this README, we found that the forward-compatibility
-> principle had been miscommunicated, and **server downgrades are currently
-> broken**: `hat restart` into an *older* binary whose handover format
-> predates the running one can't read the handover, falls back to a clean
-> restart, and kills every pane. Upgrades are fine. Until this is fixed, don't
-> restart into an older build with running programs you care about.
+> [!NOTE]
+> **Downgrades need a full stop.** `hat restart` into a newer build keeps
+> your programs running. Into an *older* build it is refused, with the
+> running server left as it was: an older build can't yet read a newer
+> build's handover. To go back a version, exit the server and start the old
+> one; your sessions are restored, your running programs are not.
 > Tracked in [#1](https://github.com/chreekat/hat/issues/1).
 
 ## Why Hat
@@ -52,14 +60,17 @@ this is not your multiplexer.
   - Everything one version hands another is versioned from day one
     ([CLAUDE.md](CLAUDE.md) has the rules).
 - **libghostty-vt inside.** Each pane is emulated by Ghostty's VT core, so
-  what renders in a pane is what renders in Ghostty, and it's fast.
+  what renders in a pane is what renders in Ghostty.
 - **Follows your desktop theme.** On GNOME (or anything exposing its
   `color-scheme` setting), Hat restyles its own chrome when you flip
   light/dark, sources a per-scheme config of yours, and tells apps that
   subscribe to theme reports (DEC mode 2031).
-- **Speaks tmux.** Same commands, targets, key tables, format strings,
-  `if-shell`, `{ }` blocks, hooks, copy mode (emacs and vi), paste buffers,
-  and choose-tree. Point it at your existing `~/.tmux.conf`.
+- **Speaks tmux.** Same commands, targets, options, key tables, format
+  strings, `if-shell`, `{ }` blocks, hooks, copy mode (emacs and vi), paste
+  buffers, mouse, menus, popups, floating panes, choose-tree and customize
+  mode. Point it at your existing `~/.tmux.conf`.
+- **Fails loudly.** An option or command Hat doesn't implement is an error
+  you see, never something silently stored and ignored.
 
 ## History
 
@@ -76,6 +87,11 @@ this is not your multiplexer.
 - **August** — hooks and alerts, snapshot history, desktop theme following.
 - **September** — performance: frame diffing, the emulator bridge, and a
   much faster `hat restart`.
+- **October** — breadth: tmux's whole option table, mouse, menus, popups,
+  floating panes, control mode, and a fuzzy finder in the tree modes.
+- **November** — tmux's default key bindings line for line; a restart into a
+  build that can't take over is refused instead of attempted; libghostty-vt
+  1.0.0; copy mode on libghostty's own snapshots.
 
 ## Getting started
 
@@ -92,9 +108,10 @@ For a static musl binary you can copy to any Linux machine,
 `nix build github:chreekat/hat#hat-static` — but expect it to take hours: with
 nothing cached, it builds GHC from source.
 
-The defaults are tmux's: prefix `C-b`, `d` detach, `c` new window, `%`/`"`
-split, `[` copy mode, `:` command prompt. Commands also work from a shell:
-`hat list-sessions`, `hat display-message -p '#{session_name}'`.
+The key bindings are tmux's: prefix `C-b`, `d` detach, `c` new window, `%`/`"`
+split, `[` copy mode, `:` command prompt, `?` to list them all. Commands also
+work from a shell: `hat list-sessions`,
+`hat display-message -p '#{session_name}'`.
 
 ## Documentation
 
@@ -111,7 +128,25 @@ options, and formats; this section covers where Hat differs or adds.
 | Session store | `$XDG_DATA_HOME/hat/<socket>.db` (default `~/.local/share/hat/`), one per socket name. Override the directory with `HAT_STORE_DIR`. |
 | In a pane | `TMUX` and `TMUX_PANE` are set as tmux sets them, so tmux-aware tools work; `HAT` and `HAT_PANE` mirror them. |
 
-Invocation flags are `-f`, `-L`, `-S`, `-C` (control mode, partial) and `-V` (print the version).
+Invocation flags are `-f`, `-L`, `-S`, `-C` (control mode) and `-V` (print the
+version).
+
+### Where Hat differs from tmux
+
+- **Some defaults are Hat's own**: `escape-time 0`, `history-limit 50000`,
+  `display-time 3000`, `extended-keys on`, every terminal drawn in RGB, a
+  plain `hat` attaching to an existing session, and its own status-line
+  colours and terminal title. The full table, with tmux's value beside each,
+  is in [docs/options-audit.md](docs/options-audit.md) under "Hat's own
+  defaults"; set any of them back in your config.
+- **Searching a tree mode is a fuzzy finder.** In choose-tree, choose-buffer
+  and choose-client, typing a search narrows and ranks the list, and Enter
+  picks the best match. tmux jumps between substring matches.
+- **A pane flashes when it takes focus**, so you can see where you landed.
+- **The active pane's border arrow** is drawn Hat's way.
+- **Left out by design**: locking (`lock-server` and its options) and
+  `assume-paste-time`. Hat turns on bracketed paste and never guesses a paste
+  from key timing.
 
 ### Upgrading in place
 
@@ -122,9 +157,12 @@ hat restart ./hat       # ...or into a specific binary
 hat restart -C          # drop scrollback across the handover
 ```
 
-A new build takes over from any older one (but see the downgrade warning
-under [Status](#status)). `restart-server` and `restart-client` are the
-lower-level halves, restarting only the server or only the current client.
+A new build takes over from any older one. Before the handover the server
+asks the target binary whether it can read this server's state, and refuses
+the restart if it can't (see the downgrade note under [Status](#status)).
+Popups do not survive a restart. `restart-server` and `restart-client` are
+the lower-level halves, restarting only the server or only the current
+client.
 
 ### Persistence
 
@@ -158,28 +196,36 @@ set -g @color-scheme-light ~/.config/hat/light.conf
 
 ## Rough edges
 
-- **Not all of tmux.** Missing entirely: mouse support, `display-popup`,
-  `display-menu`, `display-panes`, `find-window`, `list-keys`,
-  `synchronize-panes`, OSC 52 clipboard, `window-size`, and
-  `terminal-overrides`. Control mode is partial. Because Hat fails loudly, a
-  config using any of these reports an error rather than half-working.
+- **Slower than tmux.** Hat is comfortable for daily use, but when last
+  compared (September 2026) it spent about 13 times tmux's CPU per keystroke.
+- **Not all of tmux.** Missing: `find-window`, `suspend-client`,
+  `switch-mode`, clicking and dragging a pane's scrollbar, read-only clients
+  (`attach -r`), and the options `codepoint-widths`,
+  `variation-selector-always-wide` and `switch-mode-match-style`. A few
+  other mouse features are missing too. Because Hat fails
+  loudly, a config using any of these reports an error rather than
+  half-working.
 - **No manual.** The section above plus `man tmux` is it. There is no
   `--help`; unknown arguments are treated as a tmux command.
 - **No releases.** Build from source with Nix; there are no tagged versions
   or distro packages.
-- **Known bugs** (tracked in [`bugs`](bugs)): a pane can't be closed while a
-  backgrounded daemon still holds its pty open; a rare first attach stays
-  blank.
-- **tmux's regress suite** still has scripts marked expected-to-fail in
+- **Known bugs** (tracked in [`bugs`](bugs)): a rare first attach stays
+  blank; after a restart a pane's cursor can sit in the wrong place; under
+  heavy load stray characters can linger on screen
+  until the window is switched away and back; `hat switch-client` run from a
+  shell outside any client moves no one.
+- **tmux's regress suite** still has 29 scripts marked expected-to-fail in
   [`tools/upstream-xfail.txt`](tools/upstream-xfail.txt), each with a note
-  on why.
+  on why. Some never will pass: they assert details of tmux's own screen
+  storage.
 
 ## Contributing
 
 Read [CLAUDE.md](CLAUDE.md) first: build and test norms (everything through
-`cabal` inside `nix develop`; `cabal test` for the suite,
-`cabal bench hat-perf` for the performance gate against
-`tools/bench/perf-baseline`, `tools/run-upstream-tests.sh ~/src/tmux` for
-tmux's), and the
-compatibility rules any change to a serialized format must follow. Design is
-in [ARCHITECTURE.md](ARCHITECTURE.md), scope in [FEATURES.md](FEATURES.md).
+`cabal` inside the Nix dev shell; `just test` for the suite, `just ghcid` for
+the typecheck loop, `cabal bench hat-perf` for the performance gate against
+`tools/bench/perf-baseline`, and `HAT_UPSTREAM=1 cabal test hat-upstream` for
+tmux's regress suite), and the compatibility rules any change to a
+serialized format must follow. Design is in
+[ARCHITECTURE.md](ARCHITECTURE.md), the original scope in
+[FEATURES.md](FEATURES.md).
