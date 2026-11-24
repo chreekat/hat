@@ -43,14 +43,6 @@ typed, scrollback lines carried across a restart), so a regression shows up the
 same on any machine. Nonetheless, if LLM-written code is a dealbreaker for you,
 this is not your multiplexer.
 
-> [!NOTE]
-> **Going back a version.** `hat restart` into a newer build keeps your
-> programs running. Into an *older* build it does too, unless the handover
-> format changed in between: then the restart is refused, with the running
-> server left as it was. To go back past such a change, exit the server and
-> start the old one; your sessions are restored, your running programs are
-> not. ([#1](https://github.com/chreekat/hat/issues/1))
-
 ## Why Hat
 
 - **Built to be upgraded.** Your running programs survive an upgrade, and your
@@ -157,10 +149,12 @@ hat restart ./hat       # ...or into a specific binary
 hat restart -C          # drop scrollback across the handover
 ```
 
-A new build takes over from any older one. Before the handover the server
-asks the target binary whether it can read this server's state, and refuses
-the restart if it can't (see the downgrade note under [Status](#status)).
-Popups do not survive a restart. `restart-server` and `restart-client` are
+A new build takes over from any older one. Going back to an older build
+works too, unless the handover format changed in between: the server asks
+the target binary whether it can read this server's state, and if it can't,
+refuses the restart and carries on as it was. To go back past such a change,
+exit the server and start the old one; your sessions are restored, your
+running programs are not. Popups do not survive a restart. `restart-server` and `restart-client` are
 the lower-level halves, restarting only the server or only the current
 client.
 

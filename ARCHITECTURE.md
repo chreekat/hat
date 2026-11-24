@@ -85,11 +85,10 @@ introduced:
   schema" below. Both directions hold.
 - **In-place reload handover** (`Hat.Server.Reload`): a frozen envelope with a
   version-independent cleanup core around an era-tagged payload. A build
-  reads and migrates every *older* era, but **not yet a newer one**: an
-  older build handed a newer era falls back to a clean restart, which ends
-  every pane. That is a gap against the goal above, not the design — see
-  "In-place reload" and
-  [#1](https://github.com/chreekat/hat/issues/1).
+  reads and migrates every *older* era, but not a newer one: the running
+  server asks the target build which eras it reads and refuses a reload it
+  could not adopt, so a downgrade across an era bump takes a full stop and
+  a restore from the store. See "In-place reload".
 
 A format that skips the substrate can orphan a running program or corrupt a
 store on the next upgrade — the exact failure the substrate exists to prevent.
@@ -896,14 +895,13 @@ floor applies — before the exec it is hung up and reaped
 Compatibility uses both mechanisms, split by what evolves. The frozen
 envelope (magic, `reloadEra`, and a version-independent cleanup core of
 fds) wraps an era-tagged payload, and a build decodes and migrates every
-era `1..current`. What it does **not** yet do is read a *newer* era: a
-downgrade across an era bump falls back to a clean restart (the cleanup
-core hangs up the inherited handles, so nothing is orphaned, but every
-pane ends). That fallback is last-ditch recovery for a corrupt payload,
-not an acceptable upgrade path; the planned fix is for the running server
-to ask the target build its era and encode the handover down to it, as
-the wire does per client
-([#1](https://github.com/chreekat/hat/issues/1)). Only the hot core is era-gated: the
+era `1..current`. It does not read a *newer* era, so before the exec the
+running server asks the target build which eras it reads
+(`hat --reload-eras`, `Hat.Server.ReloadProbe`) and refuses the reload,
+leaving itself running, when its own era is not among them. A payload
+that still proves unreadable after the exec falls back to a clean restart
+(the cleanup core hangs up the inherited handles, so nothing is orphaned,
+but every pane ends): last-ditch recovery for a corrupt payload. Only the hot core is era-gated: the
 tree inside evolves additively under the store's JSON rule, so a
 tree-shape change costs no era bump. A payload whose hot list and tree
 disagree pane-for-pane is refused like a corrupt one. The `ReloadSpec`
