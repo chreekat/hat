@@ -46,3 +46,9 @@ spec = do
                 recvMessage conn `shouldReturn` GotBinary "tail"
                 recvMessage conn
                     `shouldReturn` PeerClosed Close { code = 4000, reason = "block closed" }
+
+        it "shows a send to a vanished peer as a lost connection on the next receive" $
+            afterServer (\_ -> pure ()) $ \conn -> do
+                sendText conn "{\"type\":\"hello\"}"
+                sendBinary conn "\x01"
+                recvMessage conn `shouldReturn` ConnectionLost

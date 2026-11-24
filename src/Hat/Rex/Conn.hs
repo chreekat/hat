@@ -95,11 +95,14 @@ refusalText status body = "HTTP " <> T.pack (show status) <> case errorOf of
     errorOf = Aeson.decodeStrict body
         >>= Aeson.parseMaybe (Aeson.withObject "refusal" (Aeson..: "error"))
 
+-- | Send a text message. On a connection that has ended this does
+-- nothing: the next 'recvMessage' says how it ended.
 sendText :: WsConn -> ByteString -> IO ()
-sendText (WsConn c) = WS.sendTextData c
+sendText (WsConn c) = quietly . WS.sendTextData c
 
+-- | Send a binary message, as 'sendText' does.
 sendBinary :: WsConn -> ByteString -> IO ()
-sendBinary (WsConn c) = WS.sendBinaryData c
+sendBinary (WsConn c) = quietly . WS.sendBinaryData c
 
 -- | The next data message, or how the connection ended. Pings are answered
 -- on the way, and so is the peer's close; a peer that has hung up before
